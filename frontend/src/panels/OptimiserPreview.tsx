@@ -3,8 +3,8 @@
  *
  * Renders in the same slot as DataPreview when an optimiser solve has
  * completed.  Shows Frontier (default when data exists), Summary,
- * Rates (ratebook mode), Quotes (online mode) and Convergence tabs as
- * available. Publishing lives only in the node's Export pane, whose target
+ * Rates (ratebook mode), Adjustments and Quotes (online mode) and
+ * Convergence tabs as available. Publishing lives only in the node's Export pane, whose target
  * is the frontier point selected here.
  */
 
@@ -22,6 +22,7 @@ import { bandingLevelOrderForOptimiser } from "../utils/banding"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type {
   FrontierData,
+  OptimiserAdjustmentReport,
   OptimiserSolveResult,
 } from "../api/types"
 import type { SimpleEdge, SimpleNode } from "./editors"
@@ -46,10 +47,12 @@ import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import QuotesTab from "./optimiser/QuotesTab"
+import AdjustmentsTab, { type PointAdjustmentReports } from "./optimiser/AdjustmentsTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { optimiserResultProvenance } from "./optimiser/resultProvenance"
 import {
+  adjustmentsOffered,
   OPTIMISER_VIEW_INTRODUCTIONS,
   OPTIMISER_VIEW_LABELS,
   type OptimiserResultView,
@@ -97,6 +100,8 @@ type OptimiserReview = {
   sliceChoice: FrontierSliceChoice | null
   ratesFactor: string | null
   ratesSearch: string
+  /** Frontier point adjustment reports loaded in this review, by `pointAdjustmentKey`. */
+  adjustmentReports: PointAdjustmentReports
 }
 
 const EMPTY_COLUMNS: { name: string; dtype: string }[] = []
@@ -191,12 +196,13 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
     sliceChoice: null,
     ratesFactor: null,
     ratesSearch: "",
+    adjustmentReports: {},
   }
   const [review, setReview] = useState(freshReview)
   if (review.key !== reviewKey) {
     setReview(freshReview)
   }
-  const { tab, xConstraintIdx, sliceChoice, ratesFactor, ratesSearch } = review.key === reviewKey ? review : freshReview
+  const { tab, xConstraintIdx, sliceChoice, ratesFactor, ratesSearch, adjustmentReports } = review.key === reviewKey ? review : freshReview
   const setTab = useCallback((next: OptimiserResultView) => {
     setReview((current) => ({ ...current, tab: next }))
   }, [])
@@ -212,6 +218,13 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const setRatesSearch = useCallback((next: string) => {
     setReview((current) => ({ ...current, ratesSearch: next }))
   }, [])
+  const recordAdjustmentReport = useCallback((key: string, report: OptimiserAdjustmentReport) => {
+    setReview((current) => ({
+      ...current,
+      adjustmentReports: { ...current.adjustmentReports, [key]: report },
+    }))
+  }, [])
+  const openAdjustments = useCallback(() => setTab("adjustments"), [setTab])
 
   const height = useUIStore((s) => s.optimiserPreviewHeight)
   const rememberHeight = useUIStore((s) => s.setOptimiserPreviewHeight)
@@ -405,6 +418,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const iterationSummary = formatOptimiserIterationSummary(result)
   const availableTabs: OptimiserResultView[] = frontierWithPoints ? ["frontier", "summary"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
+  const offersAdjustments = adjustmentsOffered(solvedResult)
+  if (offersAdjustments) availableTabs.push("adjustments")
   if (result.mode !== "ratebook") availableTabs.push("quotes")
   // Convergence draws the solve's history or CD trace, so every result offers it.
   availableTabs.push("convergence")
@@ -528,6 +543,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           selectedPointIndex={selectedIdx}
           canMaterialiseRatebookRates={selectedRatebookRatesMissing}
           ratebookRatesDetail={ratesDetail}
+          onOpenAdjustments={offersAdjustments ? openAdjustments : undefined}
         />
       )}
 
@@ -546,6 +562,17 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
         ) : (
           <RatebookRatesPending detail={ratesDetail} onRetry={retryRates} />
         )
+      )}
+
+      {activeTab === "adjustments" && (
+        <AdjustmentsTab
+          jobId={jobId}
+          frontierGeneration={solvedResult.frontier_generation}
+          pointIndex={selectedIdx}
+          solvedResult={solvedResult}
+          pointReports={adjustmentReports}
+          onPointReport={recordAdjustmentReport}
+        />
       )}
 
       {activeTab === "convergence" && (

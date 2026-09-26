@@ -1240,6 +1240,9 @@ export interface SaveModelRequest {
 // included; the status responses parse execution metrics with the shared parser.
 export type {
   OptimiserApplyResponse as ApplyOptimiserResponse,
+  OptimiserAdjustmentBar,
+  OptimiserAdjustmentReport,
+  OptimiserAdjustmentWeighting,
   OptimiserDiagnosticError,
   OptimiserEffectiveBound,
   OptimiserFactorTableRow,
@@ -1257,8 +1260,6 @@ export type {
   OptimiserHistoryEntry,
   OptimiserMlflowLogResponse as MlflowLogResponse,
   OptimiserSaveResponse as SaveOptimiserResponse,
-  OptimiserScenarioValueHistogram,
-  OptimiserScenarioValueStats,
   OptimiserSolveResponse,
 } from "../generated/api-contracts.generated"
 

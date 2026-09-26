@@ -160,29 +160,22 @@ class TestFinalizeOnline:
         assert job["quote_grid"] == "my_grid"
         assert job["solve_result"] is result
 
-    def test_scenario_value_stats_populated_when_dataframe_present(self) -> None:
-        """When solve_result has a dataframe with optimal_scenario_value,
-        stats and histogram should be populated."""
+    def test_adjustment_report_built_from_the_per_quote_frame(self) -> None:
+        """An online result's per-quote frame gives the as-solved adjustment report."""
 
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         class ResultWithDF(_FakeSolveResult):
             def __init__(self, **kw: Any) -> None:
                 super().__init__(**kw)
+                steps = [0, 1, 1, 2]
                 self.dataframe = pl.DataFrame(
                     {
-                        "optimal_scenario_value": [
-                            1.0,
-                            1.05,
-                            0.95,
-                            1.1,
-                            0.98,
-                            1.02,
-                            1.03,
-                            0.97,
-                            1.01,
-                            1.04,
-                        ]
+                        "quote_id": ["a", "b", "c", "d"],
+                        "optimal_step": pl.Series(steps, dtype=pl.Int32),
+                        "optimal_scenario_value": pl.Series([0.9, 1.0, 1.0, 1.1], dtype=pl.Float32),
+                        "optimal_objective": pl.Series([1.0, 2.0, 3.0, 4.0], dtype=pl.Float32),
+                        "optimal_loss": pl.Series([0.5] * 4, dtype=pl.Float32),
                     }
                 )
 
@@ -198,10 +191,9 @@ class TestFinalizeOnline:
             job_id=job_id,
             elapsed=0.1,
         )
-        job = store.get_job(job_id)
-        rd = job["result"]
-        assert rd["scenario_value_stats"]
-        assert rd["scenario_value_histogram"]
+        report = store.get_job(job_id)["result"]["adjustments"]
+        assert [bar["quotes"] for bar in report["bars"]] == [1, 2, 1]
+        assert report["weightings"][0]["share_unadjusted"] == 0.5
 
     def test_no_extra_fields_when_none(self) -> None:
         """extra_fields=None should not add any extra keys."""

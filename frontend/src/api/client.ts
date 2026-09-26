@@ -1654,7 +1654,13 @@ export function cancelOptimiserFrontierAutoRange(
 }
 
 export function selectFrontierPoint(
-  payload: { job_id: string; point_index: number; include_ratebook_tables?: boolean },
+  payload: {
+    job_id: string
+    point_index: number
+    include_ratebook_tables?: boolean
+    /** Also answer the point's adjustment report, materialising its choices (online). */
+    include_adjustments?: boolean
+  },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierSelectResponse> {
   return post<unknown>("/api/optimiser/frontier/select", payload, options).then(async (data) => expectGeneratedContract("OptimiserFrontierSelectResponse", (await optimiserValidators()).validateOptimiserFrontierSelectResponse, data))

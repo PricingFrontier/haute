@@ -1540,43 +1540,54 @@ def _finalize(result: Any, *, mode: str = "online", config: dict | None = None, 
     return store.require_job(job_id)
 
 
+def _choices(steps: list[int], values: list[float]) -> pl.DataFrame:
+    """An online apply frame choosing *steps* of ``SOLVE_SCENARIO_GRID``."""
+    n = len(steps)
+    return pl.DataFrame(
+        {
+            "quote_id": [f"q{i}" for i in range(n)],
+            "optimal_step": pl.Series(steps, dtype=pl.Int32),
+            "optimal_scenario_value": pl.Series(values, dtype=pl.Float32),
+            "optimal_objective": pl.Series([1.0] * n, dtype=pl.Float32),
+            "optimal_loss": pl.Series([1.0] * n, dtype=pl.Float32),
+        }
+    )
+
+
 class TestResultDiagnostics:
     @pytest.mark.parametrize(
         ("dataframe", "message"),
         [
-            (pl.DataFrame({"quote_id": ["a"]}), "optimal_scenario_value"),
-            (
-                pl.DataFrame({"optimal_scenario_value": pl.Series([], dtype=pl.Float64)}),
-                "no quotes",
-            ),
-            (pl.DataFrame({"optimal_scenario_value": ["x", "y"]}), ""),
+            (pl.DataFrame({"quote_id": ["a"]}), "optimal_step"),
+            (_choices([], []), "no quotes"),
+            (_choices([5], [1.4]), "outside the recorded scenario grid"),
         ],
     )
-    def test_statistics_that_cannot_be_computed_are_reported_not_dropped(
+    def test_a_report_that_cannot_be_built_is_reported_not_dropped(
         self, dataframe: Any, message: str
     ) -> None:
         job = _finalize(_StatsResult(dataframe))
 
         assert job["status"] == "completed"
         result = job["result"]
-        assert result["scenario_value_stats"] is None
-        assert result["scenario_value_histogram"] is None
+        assert result["adjustments"] is None
         (error,) = result["diagnostics_errors"]
-        assert error["diagnostic"] == "scenario_value_stats"
+        assert error["diagnostic"] == "adjustments"
         assert error["error_type"]
         assert message in error["message"]
         OptimiserSolveResult.model_validate(result)
 
-    def test_computed_statistics_record_no_diagnostic(self) -> None:
-        job = _finalize(_StatsResult(pl.DataFrame({"optimal_scenario_value": [0.9, 1.1]})))
+    def test_a_built_report_records_no_diagnostic(self) -> None:
+        job = _finalize(_StatsResult(_choices([0, 2], [0.9, 1.1])))
 
-        assert job["result"]["scenario_value_stats"]["mean"] == pytest.approx(1.0)
+        assert job["result"]["adjustments"]["weightings"][0]["mean"] == pytest.approx(1.0)
         assert job["result"]["diagnostics_errors"] == []
+        OptimiserSolveResult.model_validate(job["result"])
 
-    def test_a_ratebook_solve_reports_no_statistics_by_design(self) -> None:
+    def test_a_ratebook_solve_has_no_report_until_ratebook_choices_exist(self) -> None:
         job = _finalize(_StatsResult(), mode="ratebook")
 
-        assert job["result"]["scenario_value_stats"] is None
+        assert job["result"]["adjustments"] is None
         assert job["result"]["diagnostics_errors"] == []
 
     def test_a_failed_frontier_is_in_the_list_and_keeps_frontier_error(self) -> None:
@@ -1603,7 +1614,7 @@ class TestResultDiagnostics:
         solver.frontier.side_effect = RuntimeError("frontier exploded")
         with solver_worker_context():
             _finalize_solve_result(
-                _StatsResult(pl.DataFrame({"optimal_scenario_value": [1.0]})),
+                _StatsResult(_choices([1], [1.0])),
                 mode="online",
                 solver=solver,
                 quote_grid=MagicMock(),

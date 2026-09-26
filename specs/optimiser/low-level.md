@@ -11,6 +11,7 @@
 | `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
+| `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
 | `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`), both handing each caller a `FlightSubscription`. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload` (a lazy count plus a bounded `head`, collected by the caller inside its lease), `limited_frontier_payload`. |
@@ -393,12 +394,15 @@ names must all agree, see Constraint bounds) the result carries:
   published artifact's `input_summary` and `solver_settings` are read from it (see Save and
   MLflow log), so there is one summary.
 - `diagnostics_errors: [{diagnostic, error_type, message}]` (`OptimiserDiagnosticError`,
-  `diagnostic` is `"scenario_value_stats"` or `"frontier"`): a diagnostic that could not be
-  produced is recorded here instead of silently becoming `null`. An online solve whose
-  scenario-value statistics cannot be computed (no per-quote frame, no
-  `optimal_scenario_value` column, no quotes, or a computation error) keeps
-  `scenario_value_stats`/`scenario_value_histogram` `null` and records the failure; a ratebook
-  solve reports no statistics by design and records nothing. A failed inline frontier keeps
+  `diagnostic` is `"adjustments"`, `"adjustment_weight"` or `"frontier"`): a diagnostic that
+  could not be produced is recorded here instead of silently becoming `null`. An online solve
+  whose adjustment report cannot be built keeps `adjustments` `null` and records an
+  `"adjustments"` entry (see "Adjustment reports (OPT-V10)"); a ratebook solve has no report
+  until OPT-V09C and records nothing. `"adjustment_weight"` entries appear only inside a
+  report's own `diagnostics_errors`, one per weighting refused for a negative value or a zero
+  total.
+- `adjustments` (`OptimiserAdjustmentReport | null`): the as-solved adjustment report (see
+  "Adjustment reports (OPT-V10)"). A failed inline frontier keeps
   `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
   entry. Every entry is also logged (`optimiser_diagnostic_skipped`).
 - `history: [OptimiserHistoryEntry]` (online): every online solve's per-iteration record
@@ -610,6 +614,10 @@ with the row's λ, as haute did before 0.5, could land on different tables than 
 picked.) The result is cached when the job's current result already matches that point's
 lambdas exactly, otherwise the job is updated atomically (409 if its state changed
 concurrently). Missing or misaligned `frontier_factor_tables` is a `500`, never a re-solve.
+With `include_adjustments` requested it also answers the point's adjustment report (see
+"Adjustment reports (OPT-V10)"); the route runs off the event loop through
+`run_until_disconnected`, so a client that leaves while the point materialises detaches only
+itself.
 
 ### Frontier generation
 
@@ -667,9 +675,10 @@ from, read from the typed point: total objective, constraint totals for every co
 constraint, swept or not (`totals`), `effective_bounds` (see Constraint bounds below, from the
 point's `bounds`), `lambdas`, converged, iterations, CD iterations (`null` on the row summary),
 clamp rate (a ratebook point's; `null` online), history, CD trace (`ratebook_cd_trace`, always
-`null`), scenario-value stats (an online point's
-`sv_*` columns; `null` for ratebook), scenario-value histogram, factor tables, the non-converged
-warning, the frontier error and `diagnostics_errors` (always `[]`: a point's statistics come from
+`null`), the adjustment report (`adjustments`, always `null`: a point's report is loaded on
+request through `POST /frontier/select` with `include_adjustments`, see "Adjustment reports
+(OPT-V10)"), factor tables, the non-converged
+warning, the frontier error and `diagnostics_errors` (always `[]`: a point's figures come from
 its row, so the solve's degraded diagnostics do not describe it). Every field is always present
 and `null` where the point has none; applying the summary to a base result removes a `null`
 field. `OptimiserFrontierPointSummary` is strict and its `constraints`, `effective_bounds` and
@@ -1095,15 +1104,11 @@ whose message already names every problem and the remedy.
   live data without Parquet backing, or a source whose metadata read raises `OSError`,
   `TypeError` or `ValueError`. The route does not catch anything else it raises. An
   unexpected failure is an error response, never an estimate with the total missing.
-- **Scenario-value statistics never silently disappear.** `_compute_scenario_value_stats`
-  raises when an online result has no per-quote frame, no `optimal_scenario_value` column or no
-  quotes; `_finalize_solve_result` records that (or any computation error) in
-  `diagnostics_errors` and leaves the statistics `null`, so a degraded result says why.
-- **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
-  `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
-  standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would
-  otherwise crash the subsequent numeric cast; `0.0` is treated as the true population value for
-  a singleton, not a fabricated fallback.
+- **The adjustment report never silently disappears.** Building an online solve's report
+  raises on a missing choice column, a step outside the grid or no quotes;
+  `_finalize_solve_result` records that (or any other failure) as an `"adjustments"` entry in
+  `diagnostics_errors` and leaves `adjustments` `null`, so a degraded result says why. A refused
+  weighting is named in the report's own `diagnostics_errors`, never dropped silently.
 - **Non-finite value validation happens post-cast, at Float32 precision.** The solver consumes
   Float32; `validate_input_value_contracts` checks for NaN/Inf *after* the Float32 cast
   specifically so a Float64 value that only overflows to ±Infinity once down-cast is still caught
@@ -1246,6 +1251,17 @@ whose message already names every problem and the remedy.
   for a retained point, an unmaterialised point after heavy-state expiry and a point evicted as
   the ninth artifact, and an eviction during a read deferred by the reader's lease.
   `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly.
+- `tests/test_optimiser_adjustments.py` covers OPT-V10's statistical contract: bar counts
+  against hand counts on a Float32 linspace grid and on `[0.8, 1.0, 1.3]`, zero-count steps kept
+  as empty bars; an available but unchosen 1.0 giving a 0 unadjusted share while
+  `[0.8, 0.95, 1.2, 1.4]` omits it, over the identical choice frame (grid-sourced, never
+  row-inferred); unchosen endpoints giving 0 edge shares with the bars still spanning the grid;
+  weighted quantiles by the inverted CDF and weighted means against hand values; the up/down
+  comparison at exactly 1.0; a negative weight and a zero total weight recorded in
+  `diagnostics_errors` with that weighting not computed. Over real solves: the as-solved report
+  at finalize, a point report equal to the report of that point's own apply frame, a cached
+  report served after the grid and the point's artifact are gone, a recompute invalidating the
+  cache, the 64-entry bound, the generation fence, and the report surviving grid eviction.
 - `tests/test_frontier_point_summary.py` covers `frontier_point_rows` (the library frame to typed
   points, per mode, failing on any schema mismatch or malformed value), the write-back to the
   library row the MLflow CSV uses, and `frontier_point_summary` over typed points.
@@ -1267,7 +1283,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 - **`tests/test_optimiser_routes.py`** — by far the largest file (dozens of test
   classes) covering the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/frontier/
-  frontier-select/mlflow-log routes, ratebook solve, solve-with-history, scenario-value stats,
+  frontier-select/mlflow-log routes, ratebook solve, solve-with-history, the as-solved adjustment report,
   column validation, non-convergence warnings, background-thread error classification, job-state
   guards (cancel/timeout/supersede races), pipeline-execution argument wiring, bounded-sink grid
   building, execute-pipeline cleanup, artifact-payload building (including extended/edge-case
@@ -1575,39 +1591,76 @@ reconciliation and breakdown accumulates those Float32 values in Float64.
 **Measured scaling.** See "Measured setup memory" below for the method, results and thresholds.
 ## Measured setup memory
 
-Peak RSS (`ru_maxrss`) of solve setup's processes with and without the quote-analysis
-extraction, measured on 26 September 2026 (Polars 1.44.2, price-contour 0.5.0, 22 logical
-CPUs so a 22-thread Polars pool, WSL2 with 31 GiB). The input is quote-contiguous, 10 scenario
-steps per quote, one Float32 constraint, Categorical quote ids as the setup worker writes them,
-and two analysis columns (an 8-level String `region` and an Int32 `tier`); the side-input case
-reduces a separate one-row-per-quote frame of the same two columns. Each case ran in a fresh
-process: three runs at 1M quotes (range shown), one run at 5M quotes (50M rows).
+Whole-process peak RSS of solve setup's processes with and without the quote-analysis
+extraction: each process's own `VmHWM`, never `ru_maxrss`, which Linux carries over `fork` and
+`exec` so a child can report its parent's peak. Measured on 26 September 2026 with
+`scripts/benchmarks/opt-v09a-setup-memory.py` (Polars 1.44.2, price-contour 0.5.0, 22 logical
+CPUs so a 22-thread Polars pool, WSL2 with 31 GiB). The data input is quote-contiguous, 10
+scenario steps per quote, a String quote id, a Float32 objective and one Float32 constraint,
+and two analysis columns (an 8-level String `region` and an Int32 `tier`); the side-input
+cases reduce a separate one-row-per-quote frame of the same two columns, resolved by
+`resolve_analysis_frame`. Each case ran in a fresh process started directly by the benchmark
+(three runs at 1M quotes, range shown; one run at 5M quotes, 50M rows), and ran the production
+functions in production order: the worker validates and projects the data input
+(`validate_and_project`), writes the solver input (`write_solver_input`) and then reduces the
+table (`write_quote_analysis`); the server builds the grid (`build_quote_grid`) from the file
+the worker wrote; thread mode does all of it in one process, the grid resident while the table
+is reduced. Every figure is the whole process's peak, imports included (129 MiB at the start),
+because that is what the worker's cap and the server's headroom see.
 
-| Process, step | 1M quotes | 5M quotes |
+| Process, steps | 1M quotes | 5M quotes |
 |---|---|---|
-| Server (parent): grid build, with or without analysis columns | 707–708 MiB | 1,783 MiB |
-| Setup worker: write the solver input, no analysis columns | 818–939 MiB | 2,555 MiB |
-| Setup worker: write the solver input, then the data-input table | 1,024–1,164 MiB | 3,295 MiB |
-| Setup worker: write the solver input, then the side-input table | 1,142–1,205 MiB | 3,494 MiB |
-| Thread mode (one process): grid, then the data-input table | 1,251–1,282 MiB | 4,726 MiB |
-| Thread mode (one process): grid, then the side-input table | 1,015–1,039 MiB | 2,998 MiB |
+| Server: grid build, no analysis columns (also the side-input path) | 730 MiB | 1,920 MiB |
+| Server: grid build, the data-input path's file with analysis columns | 708–709 MiB | 1,780 MiB |
+| Setup worker: validate and write the solver input, no analysis | 1,063–1,113 MiB | 2,958 MiB |
+| Setup worker: the same, then the data-input table | 1,204–1,275 MiB | 3,364 MiB |
+| Setup worker: the same, then the side-input table | 1,134–1,196 MiB | 2,832 MiB |
+| Thread mode: validate, write, grid; no analysis | 1,114–1,234 MiB | 2,739 MiB |
+| Thread mode: validate, write, grid, then the data-input table | 1,262–1,305 MiB | 4,832 MiB |
+| Thread mode: validate, write, grid, then the side-input table | 1,130–1,238 MiB | 3,274 MiB |
 
-The extraction runs in the setup worker because the same reduction in the server process added
-about 2.9 GiB at 5M quotes (the thread-mode rows). The design choices behind these numbers were
-measured at 1M quotes: one `group_by` pass instead of a separate check pass (−160 MiB), the
-hash comparison instead of `n_unique` (−300 MiB), and the grid built before, not after, the
+The benchmark also records each step's own peak (`VmHWM` reset before the step through
+`/proc/self/clear_refs`). The worker's peak is the solver-input write (2,958 MiB at 5M quotes),
+except on the data-input path at 5M quotes, where the reduction peaks slightly above it (3,364
+against 3,282 MiB). The side-input reduction peaks well below the write (1,954 MiB at 5M
+quotes), so the worker's peak does not change on that path; its 5M figure below the
+no-analysis one is run-to-run variation, which is up to 5% at 1M quotes. The server's grid
+build reads fewer rows per chunk from the data-input path's wider file (9.6M against 13.4M rows
+at 1M quotes; the chunk size is a byte budget over the estimated row width), so its peak is
+lower on that path, not higher.
+
+The first V09A figures read `ru_maxrss`. They were not inflated by an inherited peak: each case
+was launched from the shell through `uv run`, whose own peak is about 27 MiB, and the fixture
+was written by an earlier, separate process; the server figure they reported (707–708 MiB and
+1,783 MiB) matches the data-input server row above. They measured narrower steps than
+production runs, though: the server only on the file with analysis columns (the path without
+them peaks 3% higher at 1M quotes and 8% higher at 5M), the worker from an already-Categorical
+file without validation (which put its no-analysis peak 14–23% low and the extraction ratios
+up to 1.41×), and thread mode without the solver-input write. The table above replaces them.
+
+The extraction runs in the setup worker, not the server, and these figures confirm that: in
+process mode the server's peak does not rise with analysis columns, whereas the same reduction
+in the server's process (thread mode) raises the peak from the server's 1,920 MiB grid build to
+4,832 MiB at 5M quotes on the data-input path, the reduction alone growing the process by
+3.2 GiB. The design choices behind the reduction were measured at 1M quotes in the first V09A
+run (with `ru_maxrss`, which is sound for a difference between two such runs) and were not
+re-measured: one `group_by` pass instead of a separate check pass (−160 MiB), the hash
+comparison instead of `n_unique` (−300 MiB), and the grid built before, not after, the
 extraction when both share a process (−150 MiB).
 
 Thresholds, which a change to this path must re-measure against with the same method:
 
 - The server process's setup peak with analysis columns stays within 5% of its peak without
-  them: the extraction never runs in the server in process mode.
-- The setup worker's peak with the extraction stays within 1.5× its peak without it (measured,
-  median against median, 1.29× and 1.41× at 1M quotes and 1.29× and 1.37× at 5M quotes for the
-  data-input and side-input paths), and adds at most 250 bytes per quote at 5M quotes (measured
-  155 bytes per quote on the data-input path and 197 on the side-input path).
+  them (measured 0.97× at 1M quotes and 0.93× at 5M quotes): the extraction never runs in the
+  server in process mode.
+- The setup worker's peak with the extraction stays within 1.25× its peak without it (median
+  against median, measured 1.11× and 1.08× at 1M quotes and 1.14× and 0.96× at 5M quotes for
+  the data-input and side-input paths), and adds at most 150 bytes per quote at 5M quotes
+  (measured 85 on the data-input path and none on the side-input path).
 - The thread compatibility mode, which runs everything in one process, stays within 3× the
-  grid-only peak (measured 2.65× at 5M quotes on the data-input path).
+  server's grid-only peak (measured 1.77× at 1M quotes and 2.52× at 5M quotes on the
+  data-input path, 1.71× on the side-input path) and within 2× its own peak without analysis
+  columns (measured 1.76× at 5M quotes on the data-input path and 1.20× on the side-input path).
 
 ## Bounded choice queries and point materialisation
 
@@ -1655,8 +1708,10 @@ count the rows were taken from.
 
 - `ScenarioHistogram()` — one row per step of the job's `scenario_grid`, in step order, including
   steps no quote chose (zero quotes and zero sums): `optimal_step`, `scenario_value` (from the
-  grid, never from the chosen rows), `quotes`, and `optimal_objective` and each `optimal_<c>` as
-  Float64 sums of the Float32 values. `total` is the number of quotes. A chosen step outside the
+  grid, never from the chosen rows), `quotes`, `optimal_objective` and each `optimal_<c>` as
+  Float64 sums of the Float32 values, and `negative_optimal_objective` and each
+  `negative_optimal_<c>`, the number of the step's quotes whose value is below zero (what
+  OPT-V10's weight guard reads). `total` is the number of quotes. A chosen step outside the
   grid is a `ChoiceJoinError`.
 - `SegmentGroupBy(columns, limit)` — groups by one or more analysis columns (each must be one;
   none configured is a 400): the keys, `quotes`, `mean_scenario_value` (Float64 mean) and the
@@ -1785,3 +1840,91 @@ Thresholds, which a change to this path must re-measure against with the same me
   side table), top-k at most 160 bytes (123 and 138), the group-by at most 320 bytes (267), and
   the row index at most 64 MiB in all without the side table (25 MiB) and 100 bytes per quote
   with it (63).
+
+## Adjustment reports (OPT-V10)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). An
+adjustment report describes what the optimiser chose for one target, the as-solved result or
+one frontier point: how many quotes (or how much of a weight) took each scenario value, where
+1.0 is the unadjusted base price. It is a description of the solution, never a comparison with
+current or deployed pricing.
+
+**The pure report** (`src/haute/routes/_optimiser_adjustments.py`).
+`adjustment_report(histogram, spec)` turns one `ScenarioHistogram` result (see "Bounded choice
+queries and point materialisation") into a strict `OptimiserAdjustmentReport`
+(`extra="forbid"`, no NaN or Infinity). It reads nothing else: no file, job or grid. The
+statistical contract:
+
+- **Quantity.** The chosen scenario value of each quote, keyed by its `optimal_step`.
+- **Bars.** One bar per step of the job's recorded `scenario_grid`, in step order, including
+  steps no quote chose (zero quotes, zero weights): `{optimal_step, scenario_value, quotes,
+  weights}`. `scenario_value` is the grid's; `weights` holds, per computed weighting other than
+  quote count, the Float64 sum of that weight over the step's quotes. There is no binning, so a
+  Float32 linspace grid and a non-uniform grid such as `[0.8, 1.0, 1.3]` are described
+  exactly.
+- **Base price.** `has_unadjusted` is whether the grid holds a step whose value is exactly 1.0
+  (the Float32 grid value widened, as recorded). A quote is *adjusted up* when its step's value
+  is above 1.0, *adjusted down* when below, and *unadjusted* when it equals 1.0. Without a 1.0
+  step, unadjusted is not a category: its share is `null`, never 0. With a 1.0 step nobody
+  chose, the unadjusted share is 0.
+- **Population.** Every quote of the target; nothing is excluded.
+- **Weightings** (`weightings`, quote count first). `"quotes"` weighs each quote by 1. Each
+  per-quote value column of the choice frame, `optimal_objective` and `optimal_<c>` in
+  configured order, is also a candidate weighting, evaluated **at the chosen scenario**
+  (labelled "Objective at the chosen scenario" and "<c> at the chosen scenario"). A candidate
+  is computed only when every quote's value is non-negative and the total is positive: a
+  negative value (`ScenarioHistogram`'s `negative_<column>` count is non-zero) is a
+  `diagnostics_errors` entry `{diagnostic: "adjustment_weight", error_type: "NegativeWeight",
+  message}` naming the column and how many quotes are negative, and an all-zero column is
+  `{..., error_type: "ZeroTotalWeight", ...}`; that weighting is then absent from `weightings`
+  and from every bar's `weights`. The quote-count weighting always exists (a target with no
+  quotes is a `ValueError`).
+- **Summary figures per weighting**, with `W` the total weight and `w_s` a step's weight:
+  - `total` (`W`) and `mean`, `Σ w_s · v_s / W` (for quote count, the unweighted mean);
+  - `quantiles` `p5`, `p25`, `p50`, `p75`, `p95` by the **inverted CDF**: the smallest grid value
+    whose cumulative weight reaches `q · W` (the lower quantile, so always a grid value, and a
+    step of zero weight is never one);
+  - `share_up`, `share_down` and `share_unadjusted` (`null` without a 1.0 step), the weight
+    above, below and at 1.0 over `W`;
+  - `share_at_min` and `share_at_max`, the weight at the grid's first and last step over `W`:
+    "at the edge of the scenario range", which flags a solution pinned against the grid bounds.
+    A one-step grid's edge shares are both 1.
+  All sums are Float64 sums of the Float32 values the solver ingested (`math.fsum` over the
+  per-step Float64 sums), so a report's weighted totals equal the target's solved totals to
+  Float64 rounding.
+- `n_quotes` is the target's quote count (the histogram's `total`).
+
+The report is validated where it is built: bars list steps `0..n-1` with strictly increasing
+values, every weighting but `"quotes"` is keyed in every bar's `weights`, and
+`share_unadjusted` is `null` exactly when `has_unadjusted` is false.
+
+**As solved.** `_finalize_solve_result` computes an online solve's report before the completion
+is published, from the solve's in-memory per-quote frame through the same reducer
+(`histogram_of_frame(frame, spec)`, which runs `ScenarioHistogram` over the frame projected to
+the choice columns, with the job's `scenario_grid` and configured constraints), and stores it as
+`result["adjustments"]`. A report that cannot be built (a missing choice column, a step outside
+the grid, no quotes) leaves `adjustments` `null` and records an `"adjustments"` entry in the
+result's `diagnostics_errors`. A ratebook solve has no per-quote frame until OPT-V09C, so its
+`adjustments` is `null` with no entry (the hook `_ratebook_adjustments` names where
+OPT-V09C computes it from `RatebookResult.quote_results`).
+
+**A frontier point.** A point's summary carries `adjustments: null`, so selecting a point
+removes the as-solved report from the displayed result; the point's own report is loaded on
+request. `POST /frontier/select` with `include_adjustments: true` selects the point as before
+and then answers `adjustments` with the point's report: from the job's report cache when it
+holds `(frontier_generation, point_index)`, otherwise through
+`ChoiceQueryService.choice_query(job_id, ChoiceTarget(point_index), ScenarioHistogram())`
+(point materialisation, admission, single-flight, latest-wins, the named 409 and 410, and the
+ratebook 422 all as OPT-V09B specifies). The route runs off the event loop and a client that
+disconnects detaches only itself (`run_until_disconnected`). Without a point,
+`adjustments` is the as-solved report whether or not it was requested; with a point and
+without the flag it is `null`.
+
+**The point report cache.** `job["adjustment_reports"]` maps `(frontier_generation,
+point_index)` to a report, in insertion order, for the job's 24-hour lifetime: heavy-state
+slimming and the slimming after a user action never touch it, so a cached report is served
+after the quote grid and the point's apply artifact are gone. A computed report is stored under
+the parent's lock only when the job's `frontier_generation` still equals the one captured
+before the query (a recompute in between is the frontier-changed 409, and nothing is stored).
+It holds at most `MAX_CACHED_ADJUSTMENT_REPORTS = 64` reports; storing a 65th drops the oldest.
+A frontier recompute clears it in the same update that advances the generation.

@@ -2810,8 +2810,8 @@ describe("OptimiserConfig", () => {
       const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
-        cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
-        scenario_value_histogram: null, factor_tables: null, diagnostics_errors: [],
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null,
+        factor_tables: null, diagnostics_errors: [],
       })
       const config = seedSolve({
         result: ratebook,
@@ -2852,8 +2852,8 @@ describe("OptimiserConfig", () => {
       const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
-        cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
-        scenario_value_histogram: null, factor_tables: null, diagnostics_errors: [],
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null,
+        factor_tables: null, diagnostics_errors: [],
       })
       const config = seedSolve({
         result: ratebook,
@@ -2929,8 +2929,7 @@ describe("OptimiserConfig", () => {
             cd_iterations: null,
             clamp_rate: null,
             history: null,
-            scenario_value_stats: null,
-            scenario_value_histogram: null,
+            adjustments: null,
             factor_tables: null,
           })),
           n_points: 2,

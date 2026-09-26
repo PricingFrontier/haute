@@ -836,7 +836,7 @@ class TestFrontierPointSummaryContract:
 
         for index, summary in enumerate(summaries):
             point = frontier["points"][index]
-            assert summary["scenario_value_stats"]["mean"] == point["sv_mean"]
+            assert summary["adjustments"] is None
             assert set(point["lambdas"]) == {"volume"}
             assert summary["lambdas"] == point["lambdas"]
             response = client.post(
@@ -876,7 +876,7 @@ class TestSolveResultContract:
             "chunk_size": None,
         }
         assert result["diagnostics_errors"] == []
-        assert result["scenario_value_stats"] is not None
+        assert result["adjustments"]["n_quotes"] == 5
 
     def test_every_online_solve_records_its_history(self, client, tmp_path):
         """Q5: there is no flag; the history is always recorded, bounded by max_iter."""

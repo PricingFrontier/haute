@@ -1,7 +1,8 @@
-import { cleanup, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import SummaryTab from "../SummaryTab"
 import { makeSolveResult } from "../../../test-utils/factories"
+import { makeAdjustmentReport, makeOnlineSolveResult } from "./fixtures"
 
 afterEach(cleanup)
 
@@ -121,7 +122,7 @@ describe("optimiser SummaryTab diagnostics issues", () => {
         result={makeSolveResult({
           diagnostics_errors: [
             {
-              diagnostic: "scenario_value_stats",
+              diagnostic: "adjustments",
               error_type: "ValueError",
               message: "The solve result has no quotes to summarise",
             },
@@ -137,7 +138,7 @@ describe("optimiser SummaryTab diagnostics issues", () => {
 
     const alert = screen.getByRole("alert", { name: "Diagnostic issues" })
     expect(alert).toHaveTextContent("Diagnostics Issues")
-    expect(within(alert).getByText("Scenario-value statistics")).toBeInTheDocument()
+    expect(within(alert).getByText("Adjustment report")).toBeInTheDocument()
     expect(within(alert).getByText("Efficient frontier")).toBeInTheDocument()
     expect(within(alert).getByText("ValueError")).toBeInTheDocument()
     expect(within(alert).getByText("The solve result has no quotes to summarise")).toBeInTheDocument()
@@ -148,5 +149,69 @@ describe("optimiser SummaryTab diagnostics issues", () => {
     render(<SummaryTab selectedPointIndex={null} result={makeSolveResult()} />)
 
     expect(screen.queryByRole("alert", { name: "Diagnostic issues" })).not.toBeInTheDocument()
+  })
+})
+
+describe("optimiser SummaryTab adjustments summary", () => {
+  it("states the as-solved shares compactly and links to the Adjustments tab", () => {
+    const onOpenAdjustments = vi.fn()
+    render(
+      <SummaryTab
+        selectedPointIndex={null}
+        result={makeOnlineSolveResult()}
+        onOpenAdjustments={onOpenAdjustments}
+      />,
+    )
+
+    const summary = screen.getByRole("group", { name: "Adjustments" })
+    expect(within(summary).getByText("Adjusted up").nextSibling).toHaveTextContent("42.0%")
+    expect(within(summary).getByText("Adjusted down").nextSibling).toHaveTextContent("28.0%")
+    expect(within(summary).getByText("Unadjusted").nextSibling).toHaveTextContent("30.0%")
+    // 2.0% at the grid's minimum plus 6.0% at its maximum.
+    expect(within(summary).getByText("At the range edge").nextSibling).toHaveTextContent("8.0%")
+    fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+    expect(onOpenAdjustments).toHaveBeenCalledTimes(1)
+    // The old unlabelled histogram is gone.
+    expect(screen.queryByText("Scenario Value Distribution")).not.toBeInTheDocument()
+  })
+
+  it("omits the unadjusted share when the grid has no 1.0", () => {
+    const quotes = { ...makeAdjustmentReport().weightings[0], share_unadjusted: null }
+    render(
+      <SummaryTab
+        selectedPointIndex={null}
+        result={makeOnlineSolveResult({
+          adjustments: makeAdjustmentReport({ has_unadjusted: false, weightings: [quotes] }),
+        })}
+        onOpenAdjustments={() => {}}
+      />,
+    )
+
+    const summary = screen.getByRole("group", { name: "Adjustments" })
+    expect(within(summary).queryByText("Unadjusted")).not.toBeInTheDocument()
+    expect(within(summary).getByText("The scenario grid has no 1.0 step, so no quote is unadjusted."))
+      .toBeInTheDocument()
+  })
+
+  it("sends a selected point's adjustments to the Adjustments tab", () => {
+    const onOpenAdjustments = vi.fn()
+    render(
+      <SummaryTab
+        selectedPointIndex={2}
+        result={makeOnlineSolveResult({ adjustments: null })}
+        onOpenAdjustments={onOpenAdjustments}
+      />,
+    )
+
+    const summary = screen.getByRole("group", { name: "Adjustments" })
+    expect(summary).toHaveTextContent("Frontier point 3's adjustments load in the Adjustments tab.")
+    fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+    expect(onOpenAdjustments).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows no adjustments summary where the workspace offers no Adjustments tab", () => {
+    render(<SummaryTab selectedPointIndex={null} result={makeOnlineSolveResult()} />)
+
+    expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
   })
 })

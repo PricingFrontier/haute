@@ -89,6 +89,15 @@ Out of scope (see "Out of scope and not applicable" below):
   the Solve pane: every online solve records its per-iteration history, which
   `max_iter` bounds, and every live ratebook solve its coordinate-descent
   trace (`OPT-V05`).
+- **Adjustments are weighted by quote count by default (Q4, decided 26 September
+  2026).** The Adjustments tab (`OPT-V10`) weighs each quote by 1 unless the user picks,
+  in its Weight by switch, a non-negative objective or constraint column evaluated at the
+  chosen scenario. A negative value or a zero total refuses that weighting by name in the
+  report's `diagnostics_errors`; it is never computed.
+- **A grid without 1.0 only gets a note (Q12, decided 26 September 2026).** Such a grid has
+  no unadjusted scenario, so the Adjustments tab omits the unadjusted share and says "The
+  scenario grid has no 1.0 step, so no quote is unadjusted." The Scenario Expander is not
+  changed to force 1.0 into the grid.
 - **Ratebook per-quote results take option (a) (Q8, decided 25 September
   2026).** price-contour 0.5.0 surfaces the per-quote frame the solver
   computes (`RatebookResult.quote_results`) and a public
@@ -650,6 +659,14 @@ Agreement tests per quote and in aggregate for the objective and every constrain
 
 **Evidence:** Current code this package changes or relies on: `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_frontier_point_summary.py`, `src/haute/routes/optimiser.py`, `src/haute/schemas.py`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/api/client.ts`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/OptimiserPreview.tsx`, `frontend/src/panels/modelling/__tests__/ValidationDistributionTabs.test.tsx`, `tests/test_frontier_point_summary.py`.
 
+**Implemented (26 September 2026).** As specified in the optimiser low-level specification ("Adjustment reports (OPT-V10)") and the frontend specification, with these choices the plan left open:
+
+- The negative-weight guard is per quote, not per step: `ScenarioHistogram` also counts each step's quotes whose objective or constraint value is below zero (`negative_<column>`), since a step's sum can be positive while one of its quotes is negative.
+- "Served without the grid" means a cached point report needs neither the quote grid nor the point's apply artifact; each bar still carries its grid value.
+- `POST /frontier/select` runs off the event loop (`run_until_disconnected`), because with `include_adjustments` it can wait for a point to materialise.
+- Ratebook results have no report yet: the as-solved report is `null` with no diagnostic, and the Adjustments tab is offered for online results only. The hooks OPT-V09C fills are `_ratebook_adjustments` (`_optimiser_solver.py`) and `adjustmentsOffered` (`resultViews.ts`); the choice queries already refuse ratebook jobs by name.
+- Summary's compact adjustments summary appears wherever the workspace offers the Adjustments tab. The Quotes "at range edge" filter in the acceptance list belongs to OPT-V12, which reads the same `scenario_grid`.
+
 ### OPT-V11 — Segments tab: where the optimiser adjusted (AvE-style layout)
 
 **Why:** For each analysis column (and each rating factor, once OPT-V09C lands), show per level: the quotes, the mean chosen scenario value (weighted or unweighted), the share adjusted up and down, and the share at the range edge. The layout follows FeatureDiagnosticTab. Gaps closed: G07 (re-scoped: adjustments by segment, with no before–after).
@@ -902,9 +919,9 @@ One-to-one with the gap analysis. Several are closed in re-scoped form after the
 
 ## Open questions
 
-- **Q4, Adjustments weighting default:** the plan uses quote count, with an
+- **Q4 (resolved 26 September 2026):** quote count by default, with an
   optional non-negative objective or constraint column at the chosen
-  scenario.
+  scenario. See Decisions and `OPT-V10`.
 - **Q5 (resolved 26 September 2026):** `record_history` is removed and every
   online solve records its history, bounded by `max_iter`. See Decisions and
   `OPT-V05`.
@@ -922,9 +939,9 @@ One-to-one with the gap analysis. Several are closed in re-scoped form after the
 - **Q11, inputs vs outputs:** the pre-solve `OptimiserDataPreview` becomes
   unreachable once a result exists. Add an "Inputs" tab to the result
   workspace?
-- **Q12, grids without 1.0:** such a grid has no unadjusted scenario. Warn
-  only in the config (the plan), or make the Scenario Expander always
-  include 1.0?
+- **Q12 (resolved 26 September 2026):** a grid without 1.0 only gets the
+  Adjustments tab's "no unadjusted scenario" note; the Scenario Expander is
+  unchanged. See Decisions.
 - **Q15, interruptible apply:** see `OPT-PC02`.
 - **Q17 (resolved 25 September 2026):** the Apply node clamps the combined
   factor to the scored grid range (`combined_factor_bounds`) and does not

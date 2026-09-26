@@ -16,7 +16,7 @@ import type { FrontierData, OptimiserPreviewData } from "../OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
 import { makeHistoryEntry, makeInputSummary, makeSolveResult } from "../../test-utils/factories"
-import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
+import { makeAdjustmentReport, makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 
 vi.mock("../../api/client", () => ({
   selectFrontierPoint: vi.fn(() => new Promise(() => {})),
@@ -72,6 +72,7 @@ function onlineResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserS
       makeHistoryEntry({ iteration: 1, total_objective: 1_100_000 }),
       makeHistoryEntry({ iteration: 2, total_objective: 1_200_000 }),
     ],
+    adjustments: makeAdjustmentReport(),
     ...overrides,
   })
 }
@@ -111,6 +112,7 @@ describe("Optimiser workspace", () => {
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Frontier",
       "Summary",
+      "Adjustments",
       "Quotes",
       "Convergence",
     ])
@@ -250,6 +252,7 @@ describe("Optimiser workspace", () => {
     const expected: Record<string, string> = {
       Frontier: "Efficient frontier",
       Summary: "Solve summary",
+      Adjustments: "Adjustments",
       Quotes: "Per-quote choices",
       Convergence: "Convergence",
     }

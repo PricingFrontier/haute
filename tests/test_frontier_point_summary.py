@@ -175,20 +175,7 @@ def test_summary_reads_every_point_specific_field_from_the_typed_point() -> None
         "clamp_rate": None,
         "history": None,
         "ratebook_cd_trace": None,
-        "scenario_value_stats": {
-            "mean": 1.02,
-            "std": 0.03,
-            "min": 0.95,
-            "p5": 0.96,
-            "p25": 1.0,
-            "p50": 1.02,
-            "p75": 1.04,
-            "p95": 1.08,
-            "max": 1.1,
-            "pct_increase": 0.7,
-            "pct_decrease": 0.2,
-        },
-        "scenario_value_histogram": None,
+        "adjustments": None,
         "factor_tables": None,
         "warning": None,
         "frontier_error": None,
@@ -196,11 +183,11 @@ def test_summary_reads_every_point_specific_field_from_the_typed_point() -> None
     }
 
 
-def test_a_ratebook_summary_reports_the_clamp_rate_and_no_statistics() -> None:
+def test_a_ratebook_summary_reports_the_clamp_rate_and_no_report() -> None:
     summary = frontier_point_summary(_ratebook_point(), _KINDS)
 
     assert summary["clamp_rate"] == 0.25
-    assert summary["scenario_value_stats"] is None
+    assert summary["adjustments"] is None
     assert summary["iterations"] == 7
 
 
@@ -221,10 +208,10 @@ def test_applying_a_summary_replaces_point_fields_and_removes_absent_ones() -> N
         "lambdas": {"volume": 0.1},
         "iterations": 3,
         "history": [{"iteration": 1}],
-        "scenario_value_histogram": {"counts": [1], "edges": [0.0, 1.0]},
+        "adjustments": {"n_quotes": 3},
         "warning": "stale",
         "diagnostics_errors": [
-            {"diagnostic": "scenario_value_stats", "error_type": "ValueError", "message": "x"}
+            {"diagnostic": "adjustments", "error_type": "ValueError", "message": "x"}
         ],
     }
 
@@ -237,7 +224,8 @@ def test_applying_a_summary_replaces_point_fields_and_removes_absent_ones() -> N
     assert result["iterations"] == 7
     # The solve's degraded diagnostics do not describe a point.
     assert result["diagnostics_errors"] == []
-    for removed in ("history", "scenario_value_histogram", "warning", "factor_tables"):
+    # The solve's adjustment report does not describe a point: its own loads on request.
+    for removed in ("history", "adjustments", "warning", "factor_tables"):
         assert removed not in result
 
 

@@ -7,11 +7,14 @@ import type { OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 import {
+  makeAdjustmentReport,
   makeOnlineFrontier,
   makeOnlineFrontierPoint,
   makeOnlineSolveResult,
   makePointSummary,
+  makeRatebookSolveResult,
 } from "../optimiser/__tests__/fixtures"
+import { makeFrontierSelect } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -1101,26 +1104,55 @@ describe("OptimiserPreview", () => {
       })
     }
 
-    function statsFor(label: string) {
-      return screen.getByRole("group", { name: `Scenario value statistics: ${label}` })
+    function adjustmentRequests() {
+      return mockSelectFrontierPointAPI.mock.calls.filter(([payload]) => payload.include_adjustments)
     }
 
-    it("labels the as-solved statistics under the histogram", () => {
+    it("summarises the as-solved adjustments and opens the Adjustments tab from Summary", () => {
       renderPreview()
 
-      expect(screen.getByText("Scenario Value Distribution")).toBeInTheDocument()
-      expect(within(statsFor("As solved")).getByText("1.0213")).toBeInTheDocument()
+      const summary = screen.getByRole("group", { name: "Adjustments" })
+      expect(within(summary).getByText("Adjusted up").nextSibling).toHaveTextContent("42.0%")
+      fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+
+      expect(screen.getByRole("tab", { name: "Adjustments" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("img", { name: "Chosen scenario values histogram" })).toBeInTheDocument()
+      expect(screen.getByText("As solved: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(0)
     })
 
-    it("keeps a selected point's statistics though the point has no histogram", () => {
+    it("loads a selected point's adjustments only while the Adjustments tab is open", async () => {
       const frontier = makeFrontier()
+      mockSelectFrontierPointAPI.mockResolvedValue(makeFrontierSelect({
+        point_index: 2,
+        adjustments: makeAdjustmentReport({ n_quotes: 50000 }),
+      }))
       renderPreview({ data: selectedData(frontier, 2) })
       fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
 
-      expect(frontier.point_summaries[2].scenario_value_histogram).toBeNull()
-      // Point 3's own mean (sv_mean 1.02), not the solve's 1.0213.
-      expect(within(statsFor("Frontier point 3")).getByText("1.0200")).toBeInTheDocument()
-      expect(screen.queryByText("1.0213")).not.toBeInTheDocument()
+      expect(screen.getByRole("group", { name: "Adjustments" }))
+        .toHaveTextContent("Frontier point 3's adjustments load in the Adjustments tab.")
+      expect(adjustmentRequests()).toHaveLength(0)
+
+      fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
+      expect(await screen.findByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toEqual([
+        [{ job_id: "job_123", point_index: 2, include_adjustments: true }, expect.anything()],
+      ])
+
+      // The loaded report belongs to the review: reopening the tab asks again for nothing.
+      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
+      expect(screen.getByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(1)
+    })
+
+    it("offers Adjustments for online results only, until ratebook choices exist", () => {
+      const ratebook = makeRatebookSolveResult()
+      renderPreview({ data: makeData({ result: ratebook, solvedResult: ratebook }) })
+
+      expect(screen.queryByRole("tab", { name: "Adjustments" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
     })
 
     it("keeps Convergence for a selected point and says whose history it shows", () => {

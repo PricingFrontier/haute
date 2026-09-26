@@ -51,6 +51,7 @@ from haute.routes._frontier_point_summary import (
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason
 from haute.routes._job_store import JobSnapshot, JobStore, RunningJobFields
+from haute.routes._optimiser_adjustments import ADJUSTMENT_REPORTS_KEY
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KEY,
     _RATEBOOK_FACTORS_HANDLE_KEY,
@@ -1333,6 +1334,8 @@ class OptimiserFrontierService:
                             points_returned=frontier_dict["points_returned"],
                         ),
                         _FRONTIER_GENERATION_KEY: next_frontier_generation,
+                        # The old points' reports describe points that no longer exist.
+                        ADJUSTMENT_REPORTS_KEY: {},
                         "selected_frontier_point": None,
                         "artifact_handles": retained_handles,
                     },

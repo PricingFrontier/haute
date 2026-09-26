@@ -472,9 +472,25 @@ def _float64_sums(spec: ChoiceFrameSpec) -> list[pl.Expr]:
     return [pl.col(column).cast(pl.Float64).sum() for column in spec.value_columns]
 
 
+NEGATIVE_PREFIX = "negative_"
+"""A histogram column counting a step's quotes whose value column is below zero."""
+
+
+def _negative_counts(spec: ChoiceFrameSpec) -> list[pl.Expr]:
+    import polars as pl
+
+    return [
+        (pl.col(column) < 0).sum().cast(pl.Int64).alias(f"{NEGATIVE_PREFIX}{column}")
+        for column in spec.value_columns
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class ScenarioHistogram:
-    """Quotes and Float64 totals per step of the recorded scenario grid, every step included."""
+    """Quotes, Float64 totals and negative-value counts per step of the recorded grid.
+
+    Every step is included, chosen or not.
+    """
 
     joins_every_quote: ClassVar[bool] = False
 
@@ -491,8 +507,15 @@ class ScenarioHistogram:
         import polars as pl
 
         per_step = frames.choice.group_by("optimal_step").agg(
-            pl.len().cast(pl.Int64).alias("quotes"), *_float64_sums(spec)
+            pl.len().cast(pl.Int64).alias("quotes"),
+            *_float64_sums(spec),
+            *_negative_counts(spec),
         )
+        counted_columns = [
+            "quotes",
+            *spec.value_columns,
+            *(f"{NEGATIVE_PREFIX}{column}" for column in spec.value_columns),
+        ]
         grid = pl.LazyFrame(
             {
                 "optimal_step": [step for step, _value in spec.scenario_grid],
@@ -502,7 +525,7 @@ class ScenarioHistogram:
         )
         rows = frames.collect(
             grid.join(per_step, on="optimal_step", how="left")
-            .with_columns(pl.col("quotes", *spec.value_columns).fill_null(0))
+            .with_columns(pl.col(counted_columns).fill_null(0))
             .sort("optimal_step")
         )
         counted = int(rows["quotes"].sum())
@@ -512,6 +535,26 @@ class ScenarioHistogram:
                 "recorded scenario grid."
             )
         return ChoiceQueryResult(rows=rows, total=row_count)
+
+
+def histogram_of_frame(frame: pl.LazyFrame, spec: ChoiceFrameSpec) -> ChoiceQueryResult:
+    """``ScenarioHistogram`` over an apply frame already held in memory.
+
+    For the solve's own per-quote frame at finalize, before any artifact
+    exists: projected to the choice columns and collected directly (the frame
+    is resident, so there is nothing to admit).
+    """
+    import polars as pl
+
+    choice = _choice_frame(frame, spec.choice_columns)
+    row_count = int(choice.select(pl.len()).collect().item())
+    frames = ChoiceFrames(
+        choice=choice,
+        analysis=None,
+        analysis_key=CHOICE_QUOTE_ID,
+        collect=lambda plan: plan.collect(),
+    )
+    return ScenarioHistogram().run(frames, spec, row_count)
 
 
 @dataclass(frozen=True, slots=True)

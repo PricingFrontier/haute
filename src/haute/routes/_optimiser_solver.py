@@ -67,6 +67,7 @@ from haute.routes._job_lifecycle import (
 from haute.routes._job_store import (
     JobStore,
 )
+from haute.routes._optimiser_adjustments import adjustment_report
 from haute.routes._optimiser_input import (
     _chunk_size_decision_for_parquet,
     _ChunkSizeDecision,
@@ -76,7 +77,7 @@ from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
 )
-from haute.routes._optimiser_outcomes import require_scenario_grid
+from haute.routes._optimiser_outcomes import _choice_spec, histogram_of_frame, require_scenario_grid
 from haute.schemas import (
     OptimiserRatebookCdTrace,
     _normalise_frontier_range_pair,
@@ -85,7 +86,6 @@ from haute.schemas import (
 logger = get_logger(component="server.optimiser.solve")
 
 # ── Default constants ─────────────────────────────────────────────
-_HISTOGRAM_BINS = 20  # bin count for scenario-value distribution histogram
 
 
 _DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
@@ -173,54 +173,23 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
     return max(fallback_elapsed, time.monotonic() - float(start_time), 0.0)
 
 
-def _compute_scenario_value_stats(
-    solve_result: SolveResultLike,
-) -> tuple[dict[str, float], dict[str, list[int] | list[float]]]:
-    """Scenario value distribution statistics and histogram of an online solve.
+def _as_solved_adjustments(solve_result: SolveResultLike, job: Mapping[str, Any]) -> dict[str, Any]:
+    """The online solve's adjustment report (OPT-V10), from its resident per-quote frame."""
+    frame = getattr(solve_result, "dataframe", None)
+    if frame is None:
+        raise ValueError("The online solve result has no per-quote frame to describe.")
+    spec = _choice_spec(job)
+    return adjustment_report(histogram_of_frame(frame.lazy(), spec), spec).model_dump()
 
-    Raises ``ValueError`` when the result has no per-quote frame, no
-    ``optimal_scenario_value`` column or no quotes; the caller records any
-    failure in ``diagnostics_errors`` rather than dropping the statistics.
+
+def _ratebook_adjustments(solve_result: Any, job: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The ratebook solve's adjustment report: none yet.
+
+    TODO(OPT-V09C): build it from ``RatebookResult.quote_results`` (the canonical
+    per-quote evaluation) through ``histogram_of_frame`` and ``adjustment_report``,
+    as the online path does, once ratebook per-quote choices are persisted.
     """
-    if not hasattr(solve_result, "dataframe"):
-        raise ValueError("The solve result has no per-quote frame to summarise")
-    df = solve_result.dataframe
-    if "optimal_scenario_value" not in df.columns:
-        raise ValueError("The solve result's per-quote frame has no optimal_scenario_value column")
-
-    col = df["optimal_scenario_value"]
-    n = len(col)
-    if n == 0:
-        raise ValueError("The solve result has no quotes to summarise")
-    # polars' sample std (ddof=1) is undefined (null) for a single quote and
-    # would crash the float() cast after the solve already succeeded. A
-    # complete one-quote result set has exactly zero spread, so 0.0 is the
-    # true population statistic for n == 1 — not a fabricated estimate
-    # (mirrors the degenerate-input convention used by the gini metrics).
-    # The response schema (OptimiserScenarioValueStats.std) and the frontend
-    # guard both require ``std`` to be a number, so omitting or nulling just
-    # this field is not a shape the contract permits.
-    stats = {
-        "mean": float(col.mean()),
-        "std": 0.0 if n == 1 else float(col.std()),
-        "min": float(col.min()),
-        "max": float(col.max()),
-        "p5": float(col.quantile(0.05)),
-        "p25": float(col.quantile(0.25)),
-        "p50": float(col.quantile(0.50)),
-        "p75": float(col.quantile(0.75)),
-        "p95": float(col.quantile(0.95)),
-        "pct_increase": float((col > 1.0).sum() / n),
-        "pct_decrease": float((col < 1.0).sum() / n),
-    }
-
-    vals = col.to_numpy()
-    counts, edges = np.histogram(vals, bins=_HISTOGRAM_BINS)
-    histogram: dict[str, list[int] | list[float]] = {
-        "counts": [int(c) for c in counts],
-        "edges": [float(e) for e in edges],
-    }
-    return stats, histogram
+    return None
 
 
 def _diagnostic_error(
@@ -966,17 +935,16 @@ def _finalize_solve_result(
         the completion that publishes this result.
     """
     diagnostics_errors: list[dict[str, str]] = []
-    scenario_value_stats: dict[str, float] | None = None
-    scenario_value_histogram: dict[str, list[int] | list[float]] | None = None
-    # Only an online solve has a per-quote frame; a ratebook solve reports no
-    # statistics by design.
+    # Read through JobStore so concurrent eviction cannot race this snapshot.
+    job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
+    adjustments: dict[str, Any] | None = None
     if mode == "online":
         try:
-            scenario_value_stats, scenario_value_histogram = _compute_scenario_value_stats(
-                solve_result
-            )
+            adjustments = _as_solved_adjustments(solve_result, job_snapshot)
         except Exception as exc:
-            diagnostics_errors.append(_diagnostic_error("scenario_value_stats", exc, job_id=job_id))
+            diagnostics_errors.append(_diagnostic_error("adjustments", exc, job_id=job_id))
+    else:
+        adjustments = _ratebook_adjustments(solve_result, job_snapshot)
 
     result_dict: dict[str, Any] = {
         "mode": mode,
@@ -986,8 +954,7 @@ def _finalize_solve_result(
         "baseline_constraints": solve_result.baseline_constraints,
         "lambdas": solve_result.lambdas,
         "converged": solve_result.converged,
-        "scenario_value_stats": scenario_value_stats,
-        "scenario_value_histogram": scenario_value_histogram,
+        "adjustments": adjustments,
     }
     if extra_fields:
         result_dict.update(extra_fields)
@@ -998,8 +965,6 @@ def _finalize_solve_result(
     frontier_data = None
     frontier_factor_tables: list[dict[str, dict[str, float]]] | None = None
     frontier_error = None
-    # Read through JobStore so concurrent eviction cannot race this snapshot.
-    job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
     config = job_snapshot.get("config", {})
     result_dict["input_summary"] = solve_input_summary(job_snapshot)
     # The grid setup recorded from the solver input; never re-derived here.

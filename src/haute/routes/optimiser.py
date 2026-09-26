@@ -53,6 +53,11 @@ from haute.routes._frontier_point_summary import frontier_point_library_row
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
+from haute.routes._optimiser_adjustments import (
+    ADJUSTMENT_REPORTS_KEY,
+    adjustment_report,
+    cache_point_report,
+)
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KEY,
     APPLY_RESULT_UNAVAILABLE_DETAIL,
@@ -60,10 +65,12 @@ from haute.routes._optimiser_artifacts import (
 )
 from haute.routes._optimiser_frontier import (
     _CONSTRAINT_THRESHOLD_KEYS,
+    _FRONTIER_CHANGED_DETAIL,
     OptimiserFrontierService,
     _artifact_handles_or_raise,
     _base_result_for_frontier,
     _dataframe_or_raise,
+    _frontier_generation_or_raise,
     _frontier_point_constraints_override,
     _frontier_point_mlflow_summary,
     _job_has_frontier_points,
@@ -79,7 +86,13 @@ from haute.routes._optimiser_input import (
 from haute.routes._optimiser_limits import (
     limited_apply_preview_payload,
 )
-from haute.routes._optimiser_outcomes import ChoiceQueryService, lease_apply_frame
+from haute.routes._optimiser_outcomes import (
+    ChoiceQueryService,
+    ChoiceTarget,
+    ScenarioHistogram,
+    _choice_spec,
+    lease_apply_frame,
+)
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
 from haute.routes._optimiser_solver import _job_elapsed_seconds
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
@@ -91,6 +104,7 @@ from haute.routes.pipeline import (
     _raise_interactive_worker_crash_http_error,
 )
 from haute.schemas import (
+    OptimiserAdjustmentReport,
     OptimiserApplyRequest,
     OptimiserApplyResponse,
     OptimiserEstimateRequest,
@@ -204,7 +218,9 @@ def _optimiser_input_metrics_in_worker(
     return outcome.metrics
 
 
-def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelectResponse:
+def _frontier_select_response(
+    result: dict[str, Any], adjustments: Mapping[str, Any] | None
+) -> OptimiserFrontierSelectResponse:
     return OptimiserFrontierSelectResponse(
         status="ok",
         point_index=result.get("selected_frontier_point"),
@@ -221,8 +237,9 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         history=result.get("history"),
         ratebook_cd_trace=result.get("ratebook_cd_trace"),
         warning=result.get("warning"),
-        scenario_value_stats=result.get("scenario_value_stats"),
-        scenario_value_histogram=result.get("scenario_value_histogram"),
+        adjustments=(
+            None if adjustments is None else OptimiserAdjustmentReport.model_validate(adjustments)
+        ),
         clamp_rate=result.get("clamp_rate"),
         combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
         frontier_generation=result["frontier_generation"],
@@ -556,9 +573,65 @@ def cancel_frontier(job_id: str) -> OptimiserFrontierStatusResponse:
 
 
 @router.post("/frontier/select", response_model=OptimiserFrontierSelectResponse)
-def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFrontierSelectResponse:
-    """Select a frontier summary point without re-solving the optimiser."""
-    return _frontier_select_response(_frontier_service.select_point(body))
+async def select_frontier_point(
+    body: OptimiserFrontierSelectRequest, request: Request
+) -> OptimiserFrontierSelectResponse:
+    """Select a frontier summary point without re-solving the optimiser.
+
+    With ``include_adjustments`` a point's adjustment report is answered too,
+    which may wait for the point's choices to materialise; a client that
+    leaves stops waiting without stopping that work for others.
+    """
+    return await run_until_disconnected(request, lambda token: _select_point(body, token))
+
+
+def _select_point(
+    body: OptimiserFrontierSelectRequest, token: ExecutionCancellationToken
+) -> OptimiserFrontierSelectResponse:
+    result = _frontier_service.select_point(body)
+    if body.point_index is None:
+        # Without a point the result is the solve's, which carries its own report.
+        return _frontier_select_response(result, result.get("adjustments"))
+    adjustments = (
+        _point_adjustments(body.job_id, body.point_index, token)
+        if body.include_adjustments
+        else None
+    )
+    return _frontier_select_response(result, adjustments)
+
+
+def _point_adjustments(
+    job_id: str, point_index: int, token: ExecutionCancellationToken
+) -> dict[str, Any]:
+    """A frontier point's adjustment report: cached for the job's life, else computed.
+
+    The report is stored only if the frontier generation it was computed for is
+    still current; a recompute in between is the frontier-changed 409.
+    """
+    job = _store.require_completed_job(job_id)
+    generation = _frontier_generation_or_raise(job)
+    key = (generation, point_index)
+    cached = (job.get(ADJUSTMENT_REPORTS_KEY) or {}).get(key)
+    if cached is not None:
+        return cast(dict[str, Any], cached)
+    histogram = _choice_service.choice_query(
+        job_id, ChoiceTarget(point_index), ScenarioHistogram(), cancellation_token=token
+    )
+    report = adjustment_report(histogram, _choice_spec(job)).model_dump()
+    with _frontier_service.parent_lock(job_id):
+        latest = _store.require_completed_job(job_id)
+        if _frontier_generation_or_raise(latest) != generation:
+            raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+        _store.atomic_update(
+            job_id,
+            {
+                ADJUSTMENT_REPORTS_KEY: cache_point_report(
+                    latest.get(ADJUSTMENT_REPORTS_KEY) or {}, key, report
+                )
+            },
+            expected_status="completed",
+        )
+    return report
 
 
 def _input_summary(solve_summary: Mapping[str, Any]) -> dict[str, Any]:

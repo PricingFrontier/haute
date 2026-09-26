@@ -30,7 +30,7 @@ import {
   makeFrontierSelect,
 } from "../../test-utils/factories.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
-import { makeOnlineFrontierPoint } from "../../panels/optimiser/__tests__/fixtures.ts"
+import { makeAdjustmentReport, makeOnlineFrontierPoint } from "../../panels/optimiser/__tests__/fixtures.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -102,8 +102,7 @@ function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPo
     clamp_rate: null,
     history: null,
     ratebook_cd_trace: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
+    adjustments: null,
     factor_tables: null,
     warning: null,
     frontier_error: null,
@@ -1481,19 +1480,6 @@ describe("useNodeResultsStore", () => {
     it("selectFrontierPoint shows the summary's diagnostics and clears the fields it nulls", () => {
       const s = useNodeResultsStore.getState()
       s.startSolveJob("n1", "j1", "Node 1", {}, "h1", "live", 0)
-      const pointStats = {
-        mean: 1.08,
-        std: 0.03,
-        min: 0.95,
-        max: 1.2,
-        p5: 0.99,
-        p25: 1.03,
-        p50: 1.07,
-        p75: 1.12,
-        p95: 1.18,
-        pct_increase: 0.8,
-        pct_decrease: 0.2,
-      }
       const frontier = makeFrontier({
         status: "ok",
         points: [onlinePoint(150)],
@@ -1502,9 +1488,8 @@ describe("useNodeResultsStore", () => {
             iterations: 19,
             cd_iterations: 4,
             clamp_rate: 0.01,
-            scenario_value_stats: pointStats,
             history: null,
-            scenario_value_histogram: null,
+            adjustments: null,
             factor_tables: null,
             warning: null,
             frontier_error: null,
@@ -1521,7 +1506,7 @@ describe("useNodeResultsStore", () => {
         history: [
           makeHistoryEntry({ iteration: 1, total_objective: 100, max_lambda_change: 0.1, all_constraints_satisfied: false }),
         ],
-        scenario_value_histogram: { counts: [1, 2, 3], edges: [0.9, 1, 1.1, 1.2] },
+        adjustments: makeAdjustmentReport(),
         factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 }] },
         warning: "base warning should not leak",
         frontier,
@@ -1533,9 +1518,9 @@ describe("useNodeResultsStore", () => {
       expect(selected.iterations).toBe(19)
       expect(selected.cd_iterations).toBe(4)
       expect(selected.clamp_rate).toBe(0.01)
-      expect(selected.scenario_value_stats).toEqual(pointStats)
       expect(selected.history).toBeUndefined()
-      expect(selected.scenario_value_histogram).toBeUndefined()
+      // The solve's report does not describe the point; the Adjustments tab loads the point's.
+      expect(selected.adjustments).toBeUndefined()
       // A point without tables has none, as the server's result reports it.
       expect(selected.factor_tables).toEqual({})
       expect(selected.warning).toBeUndefined()
@@ -1802,20 +1787,6 @@ describe("useNodeResultsStore", () => {
       const history = [
         makeHistoryEntry({ iteration: 1, total_objective: 250, max_lambda_change: 0.04, all_constraints_satisfied: true }),
       ]
-      const scenario_value_stats = {
-        mean: 1.08,
-        std: 0.03,
-        min: 0.95,
-        max: 1.2,
-        p5: 0.99,
-        p25: 1.03,
-        p50: 1.07,
-        p75: 1.12,
-        p95: 1.18,
-        pct_increase: 0.8,
-        pct_decrease: 0.2,
-      }
-      const scenario_value_histogram = { counts: [4, 5], edges: [0.95, 1.05, 1.2] }
       const factor_tables = {
         region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 10 }],
       }
@@ -1833,8 +1804,8 @@ describe("useNodeResultsStore", () => {
         cd_iterations: 5,
         clamp_rate: 0.04,
         history,
-        scenario_value_stats,
-        scenario_value_histogram,
+        // A report in the response stays out of the point's summary.
+        adjustments: makeAdjustmentReport(),
         factor_tables,
         error: null,
       }))
@@ -1848,15 +1819,13 @@ describe("useNodeResultsStore", () => {
         cd_iterations: 5,
         clamp_rate: 0.04,
         history,
-        scenario_value_stats,
-        scenario_value_histogram,
+        adjustments: null,
         factor_tables,
       }))
       expect(cached.frontier!.point_summaries[1]).toBe(secondSummary)
       expect(cached.result?.iterations).toBe(18)
       expect(cached.result?.history).toEqual(history)
-      expect(cached.result?.scenario_value_stats).toEqual(scenario_value_stats)
-      expect(cached.result?.scenario_value_histogram).toEqual(scenario_value_histogram)
+      expect(cached.result?.adjustments).toBeUndefined()
       expect(cached.result?.factor_tables).toEqual(factor_tables)
     })
 
@@ -1984,20 +1953,7 @@ describe("useNodeResultsStore", () => {
         history: [
           makeHistoryEntry({ iteration: 1, total_objective: 100, max_lambda_change: 0.1, all_constraints_satisfied: false }),
         ],
-        scenario_value_stats: {
-          mean: 1,
-          std: 0.02,
-          min: 0.9,
-          max: 1.1,
-          p5: 0.94,
-          p25: 0.98,
-          p50: 1,
-          p75: 1.04,
-          p95: 1.08,
-          pct_increase: 0.55,
-          pct_decrease: 0.45,
-        },
-        scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1, 1.1] },
+        adjustments: makeAdjustmentReport(),
         factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 }] },
       })
       s.completeSolveJob("n1", original)
@@ -2020,8 +1976,7 @@ describe("useNodeResultsStore", () => {
       expect(cached.result?.cd_iterations).toBeUndefined()
       expect(cached.result?.clamp_rate).toBeUndefined()
       expect(cached.result?.history).toBeUndefined()
-      expect(cached.result?.scenario_value_stats).toBeUndefined()
-      expect(cached.result?.scenario_value_histogram).toBeUndefined()
+      expect(cached.result?.adjustments).toBeUndefined()
       // The select response always carries its point's factor tables, empty here.
       expect(cached.result?.factor_tables).toEqual({})
     })

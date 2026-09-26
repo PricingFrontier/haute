@@ -1,12 +1,12 @@
 /**
  * Shared optimiser result fixtures, shaped like what the server sends.
  *
- * The online solve carries scenario-value statistics, a histogram and a
- * history with λ and constraint totals; its frontier points are typed rows
- * (`thresholds`, `bounds`, `totals` and `lambdas` maps, `converged`,
- * `iterations`, `solver_path` and `sv_*`) with point summaries derived from
- * them as the backend's `frontier_point_summary` does (statistics from `sv_*`,
- * no histogram or history). The ratebook solve carries factor tables with
+ * The online solve carries its as-solved adjustment report over a seven-step
+ * grid and a history with λ and constraint totals; its frontier points are
+ * typed rows (`thresholds`, `bounds`, `totals` and `lambdas` maps,
+ * `converged`, `iterations`, `solver_path` and `sv_*`) with point summaries
+ * derived from them as the backend's `frontier_point_summary` does (no report,
+ * no history). The ratebook solve carries factor tables with
  * `quote_count` and a coordinate-descent trace.
  * Tests override only what they are about, so selected-point views run on
  * real-shaped data rather than nulls.
@@ -19,8 +19,7 @@ import type {
   OptimiserOnlineFrontierPoint,
   OptimiserRatebookCdTrace,
   OptimiserRatebookFrontierPoint,
-  OptimiserScenarioValueHistogram,
-  OptimiserScenarioValueStats,
+  OptimiserAdjustmentReport,
   OptimiserSolveResult,
 } from "../../../api/types"
 import type { FactorTables } from "../ratebookFactorTables"
@@ -30,29 +29,65 @@ import { makeHistoryEntry, makeSolveResult } from "../../../test-utils/factories
 export const NON_CONVERGED_WARNING =
   "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
-export function makeScenarioValueStats(
-  overrides: Partial<OptimiserScenarioValueStats> = {},
-): OptimiserScenarioValueStats {
-  return {
-    mean: 1.0213,
-    std: 0.0452,
-    min: 0.9,
-    max: 1.15,
-    p5: 0.95,
-    p25: 0.99,
-    p50: 1.02,
-    p75: 1.05,
-    p95: 1.1,
-    pct_increase: 0.62,
-    pct_decrease: 0.31,
-    ...overrides,
-  }
-}
+/** The online solve's seven-step grid, 0.85 to 1.15 by 0.05, with 1.0 at step 3. */
+export const ONLINE_SCENARIO_GRID = [0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15].map(
+  (scenario_value, optimal_step) => ({ optimal_step, scenario_value }),
+)
 
-export function makeScenarioValueHistogram(): OptimiserScenarioValueHistogram {
+const ONLINE_QUOTES_PER_STEP = [1000, 4000, 9000, 15000, 12000, 6000, 3000]
+const ONLINE_OBJECTIVE_PER_STEP = [20000, 90000, 200000, 350000, 300000, 170000, 104567]
+
+/** The online solve's adjustment report, as the backend's `adjustment_report`
+ *  builds it for 50,000 quotes over `ONLINE_SCENARIO_GRID`: quote count and the
+ *  objective weigh it; `loss_ratio` is refused for three negative values. */
+export function makeAdjustmentReport(
+  overrides: Partial<OptimiserAdjustmentReport> = {},
+): OptimiserAdjustmentReport {
   return {
-    counts: [3, 12, 40, 30, 10, 5],
-    edges: [0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2],
+    n_quotes: 50000,
+    has_unadjusted: true,
+    bars: ONLINE_SCENARIO_GRID.map(({ optimal_step, scenario_value }) => ({
+      optimal_step,
+      scenario_value,
+      quotes: ONLINE_QUOTES_PER_STEP[optimal_step],
+      weights: { optimal_objective: ONLINE_OBJECTIVE_PER_STEP[optimal_step] },
+    })),
+    weightings: [
+      {
+        key: "quotes",
+        label: "Quotes",
+        total: 50000,
+        mean: 1.013,
+        quantiles: { p5: 0.9, p25: 0.95, p50: 1.0, p75: 1.05, p95: 1.15 },
+        share_up: 0.42,
+        share_down: 0.28,
+        share_unadjusted: 0.3,
+        share_at_min: 0.02,
+        share_at_max: 0.06,
+      },
+      {
+        key: "optimal_objective",
+        label: "Objective at the chosen scenario",
+        total: 1234567,
+        mean: 1.0208049056875812,
+        quantiles: { p5: 0.9, p25: 0.95, p50: 1.0, p75: 1.05, p95: 1.15 },
+        share_up: 0.4653996097417151,
+        share_down: 0.25110018330313383,
+        share_unadjusted: 0.2835002069551511,
+        share_at_min: 0.016200011826008633,
+        share_at_max: 0.08469933183051223,
+      },
+    ],
+    diagnostics_errors: [
+      {
+        diagnostic: "adjustment_weight",
+        error_type: "NegativeWeight",
+        message:
+          "loss_ratio at the chosen scenario cannot weigh the adjustments: 3 quotes have a "
+          + "negative value (optimal_loss_ratio).",
+      },
+    ],
+    ...overrides,
   }
 }
 
@@ -95,8 +130,8 @@ export function makeOnlineSolveResult(
     n_quotes: 50000,
     n_steps: 7,
     history: makeOnlineHistory(),
-    scenario_value_stats: makeScenarioValueStats(),
-    scenario_value_histogram: makeScenarioValueHistogram(),
+    scenario_grid: ONLINE_SCENARIO_GRID,
+    adjustments: makeAdjustmentReport(),
     ...overrides,
   })
 }
@@ -142,25 +177,13 @@ export function summaryForOnlinePoint(point: OptimiserOnlineFrontierPoint): Fron
     lambdas: point.lambdas,
     converged: point.converged,
     iterations: point.iterations,
-    scenario_value_stats: makeScenarioValueStats({
-      mean: point.sv_mean,
-      std: point.sv_std,
-      min: point.sv_min,
-      p5: point.sv_p5,
-      p25: point.sv_p25,
-      p50: point.sv_median,
-      p75: point.sv_p75,
-      p95: point.sv_p95,
-      max: point.sv_max,
-      pct_increase: point.sv_pct_increase,
-      pct_decrease: point.sv_pct_decrease,
-    }),
     warning: point.converged ? null : NON_CONVERGED_WARNING,
   })
 }
 
-/** A frontier point summary: statistics, iterations and convergence as a
- *  point reports them; a point has no histogram or history. */
+/** A frontier point summary: totals, iterations and convergence as a point
+ *  reports them; a point has no history, and its adjustment report is loaded
+ *  on request, never kept in its summary. */
 export function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
   return {
     total_objective: 0,
@@ -173,8 +196,7 @@ export function makePointSummary(overrides: Partial<FrontierPointSummary> = {}):
     clamp_rate: null,
     history: null,
     ratebook_cd_trace: null,
-    scenario_value_stats: makeScenarioValueStats(),
-    scenario_value_histogram: null,
+    adjustments: null,
     factor_tables: null,
     warning: null,
     frontier_error: null,
@@ -255,8 +277,8 @@ export function makeRatebookSolveResult(
     factor_tables: makeRatebookFactorTables(),
     combined_factor_bounds: { min: 0.8, max: 1.2 },
     ratebook_cd_trace: makeRatebookCdTrace(),
-    scenario_value_stats: makeScenarioValueStats(),
-    scenario_value_histogram: makeScenarioValueHistogram(),
+    // No per-quote ratebook choices until OPT-V09C.
+    adjustments: null,
     ...overrides,
   })
 }
@@ -288,7 +310,6 @@ export function makeRatebookFrontier(
       lambdas: row.lambdas,
       iterations: row.iterations,
       clamp_rate: row.clamp_rate,
-      scenario_value_stats: null,
     })),
     n_points: rows.length,
     points_returned: rows.length,

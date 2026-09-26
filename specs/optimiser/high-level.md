@@ -201,6 +201,21 @@ Invariants:
   estimate and refused (507, naming the remedy) when it would not fit; identical concurrent
   queries share one run. They cover online solves only until ratebook per-quote choices exist
   (a ratebook query is a named 422).
+- The adjustments the optimiser chose are described exactly, for the as-solved result and for
+  any frontier point: one bar per step of the recorded scenario grid (steps nobody chose
+  included), against 1.0 as the unadjusted base price, over every quote. A quote is adjusted
+  up above 1.0, down below it and unadjusted at 1.0; a grid without 1.0 has no unadjusted
+  category, and says so, rather than reporting 0. Counts weigh each quote by 1; optionally the
+  objective or a constraint, evaluated at the chosen scenario, weighs them instead, but only
+  when no quote's value is negative and the total is positive: otherwise that weighting is
+  refused by name in the report's diagnostics, never computed. The report gives the weighted
+  and unweighted mean, the 5th, 25th, 50th, 75th and 95th percentiles as grid values (the lower
+  quantile of the inverted CDF), the shares adjusted up, down and unadjusted, and the shares at
+  the grid's minimum and maximum ("at the edge of the scenario range"). The as-solved report is
+  built when the solve completes; a point's is built on request from that point's per-quote
+  choices and kept for the job's lifetime (at most 64 per job), so it is still served after the
+  grid is gone, until a frontier recompute replaces the points. It describes the solution only;
+  it never compares with current or deployed pricing. Ratebook results gain it with OPT-V09C.
 - Crash-surviving apply-result, ratebook-factor and quote-analysis directories carry distinct
   versioned Haute ownership markers. Startup cleanup can remove only stale marked direct
   children of those three dedicated roots; unmarked or foreign temporary data is never swept.

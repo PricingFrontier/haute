@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -40,7 +40,7 @@ from haute.routes._optimiser_service import (
     _estimate_scenario_frontier_ranges,
     _looks_chunk_local_user_code,
 )
-from haute.routes._optimiser_solver import SolveContext, _compute_scenario_value_stats
+from haute.routes._optimiser_solver import SolveContext, _as_solved_adjustments
 from haute.routes.optimiser import _build_artifact_payload
 from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
@@ -5451,7 +5451,6 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "factor_tables": {"region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]},
         "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-        "scenario_value_histogram": {"counts": [1, 2], "edges": [0.9, 1.0, 1.1]},
         "diagnostics_errors": [],
         "input_summary": make_input_summary(),
         "scenario_grid": SOLVE_SCENARIO_GRID,
@@ -5644,9 +5643,9 @@ class TestSolveWithHistory:
         assert "total_objective" in first
 
 
-class TestScenarioValueStats:
+class TestAdjustmentReport:
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_scenario_value_stats_in_result(self, client, scored_data):
+    def test_adjustments_in_result(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
@@ -5656,17 +5655,12 @@ class TestScenarioValueStats:
         status = _poll_until_done(client, job_id)
         assert status["status"] == "completed"
         result = status["result"]
-        assert "scenario_value_stats" in result
-        stats = result["scenario_value_stats"]
-        assert "mean" in stats
-        assert "p50" in stats
-        assert "pct_increase" in stats
-        assert "scenario_value_histogram" in result
-        hist = result["scenario_value_histogram"]
-        assert "counts" in hist
-        assert "edges" in hist
-        assert len(hist["counts"]) == 20
-        assert len(hist["edges"]) == 21
+        report = result["adjustments"]
+        assert [bar["optimal_step"] for bar in report["bars"]] == [
+            step["optimal_step"] for step in result["scenario_grid"]
+        ]
+        assert sum(bar["quotes"] for bar in report["bars"]) == report["n_quotes"]
+        assert report["weightings"][0]["key"] == "quotes"
 
 
 class TestColumnValidation:
@@ -6762,41 +6756,38 @@ class TestFrontierRoute:
 # ---------------------------------------------------------------------------
 
 
-class TestComputeScenarioValueStats:
-    """Unit tests for _compute_scenario_value_stats."""
+class TestAsSolvedAdjustments:
+    """Unit tests for _as_solved_adjustments (the finalize-time report)."""
+
+    _JOB: ClassVar[dict[str, Any]] = {
+        "config": {"constraints": {}},
+        "scenario_grid": SOLVE_SCENARIO_GRID,
+    }
 
     def test_no_dataframe_attribute(self):
         """An object without .dataframe raises; finalize records it as a diagnostics error."""
-        result = SimpleNamespace()  # no .dataframe
         with pytest.raises(ValueError, match="no per-quote frame"):
-            _compute_scenario_value_stats(result)
+            _as_solved_adjustments(SimpleNamespace(), self._JOB)
 
     def test_missing_column(self):
-        """A frame without optimal_scenario_value raises rather than omitting the stats."""
-        df = pl.DataFrame({"other_col": [1.0, 2.0, 3.0]})
-        result = SimpleNamespace(dataframe=df)
-        with pytest.raises(ValueError, match="optimal_scenario_value"):
-            _compute_scenario_value_stats(result)
+        """A frame without the chosen-scenario columns raises rather than omitting the report."""
+        from haute.routes._optimiser_outcomes import ChoiceJoinError
 
-    def test_valid_scenario_values(self):
-        """Normal case with optimal_scenario_value column."""
-        df = pl.DataFrame(
+        result = SimpleNamespace(dataframe=pl.DataFrame({"other_col": [1.0, 2.0, 3.0]}))
+        with pytest.raises(ChoiceJoinError, match="optimal_step"):
+            _as_solved_adjustments(result, self._JOB)
+
+    def test_empty_dataframe_raises_rather_than_omitting_the_report(self):
+        frame = pl.DataFrame(
             {
-                "optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8],
+                "quote_id": pl.Series([], dtype=pl.String),
+                "optimal_step": pl.Series([], dtype=pl.Int32),
+                "optimal_scenario_value": pl.Series([], dtype=pl.Float32),
+                "optimal_objective": pl.Series([], dtype=pl.Float32),
             }
         )
-        result = SimpleNamespace(dataframe=df)
-        stats, hist = _compute_scenario_value_stats(result)
-        assert "mean" in stats
-        assert "p50" in stats
-        assert "pct_increase" in stats
-        assert "pct_decrease" in stats
-        assert stats["pct_increase"] > 0  # 1.1 and 1.2 are > 1.0
-        assert stats["pct_decrease"] > 0  # 0.9 and 0.8 are < 1.0
-        assert "counts" in hist
-        assert "edges" in hist
-        assert len(hist["counts"]) == 20
-        assert len(hist["edges"]) == 21
+        with pytest.raises(ValueError, match="no quotes"):
+            _as_solved_adjustments(SimpleNamespace(dataframe=frame), self._JOB)
 
 
 class TestBuildArtifactPayload:
@@ -9715,35 +9706,6 @@ class TestValidateConfig:
 
 
 # ---------------------------------------------------------------------------
-# _compute_scenario_value_stats unit tests (gap: empty dataframe)
-# ---------------------------------------------------------------------------
-
-
-class TestComputeScenarioValueStatsExtended:
-    def test_empty_dataframe_raises_rather_than_omitting_the_distribution(self):
-        df = pl.DataFrame({"optimal_scenario_value": pl.Series([], dtype=pl.Float64)})
-        result = SimpleNamespace(dataframe=df)
-        with pytest.raises(ValueError, match="no quotes"):
-            _compute_scenario_value_stats(result)
-
-    def test_normal_distribution_returns_full_stats(self):
-        rng = np.random.RandomState(0)
-        values = rng.normal(1.0, 0.1, 1000).tolist()
-        df = pl.DataFrame({"optimal_scenario_value": values})
-        result = SimpleNamespace(dataframe=df)
-        stats, hist = _compute_scenario_value_stats(result)
-        for key in ("mean", "std", "min", "max", "p5", "p25", "p50", "p75", "p95"):
-            assert key in stats, f"Missing stat key: {key}"
-        assert stats["mean"] == pytest.approx(1.0, abs=0.05)
-        assert stats["std"] > 0
-        assert stats["p5"] < stats["p25"] < stats["p50"] < stats["p75"] < stats["p95"]
-        assert "counts" in hist
-        assert "edges" in hist
-        assert len(hist["counts"]) == 20
-        assert len(hist["edges"]) == 21
-
-
-# ---------------------------------------------------------------------------
 # _finalize_solve_result unit tests
 # ---------------------------------------------------------------------------
 
@@ -9751,7 +9713,16 @@ class TestComputeScenarioValueStatsExtended:
 @pytest.mark.usefixtures("_in_solver_worker_context")
 class TestFinalizeSolveResult:
     def _make_solve_result(self, *, converged=True):
-        df = pl.DataFrame({"optimal_scenario_value": [0.9, 1.0, 1.1, 1.2, 0.8]})
+        # A per-quote frame over SOLVE_SCENARIO_GRID (0.9, 1.0, 1.1).
+        df = pl.DataFrame(
+            {
+                "quote_id": ["a", "b", "c", "d", "e"],
+                "optimal_step": pl.Series([0, 1, 2, 2, 0], dtype=pl.Int32),
+                "optimal_scenario_value": pl.Series([0.9, 1.0, 1.1, 1.1, 0.9], dtype=pl.Float32),
+                "optimal_objective": pl.Series([20.0] * 5, dtype=pl.Float32),
+                "optimal_volume": pl.Series([0.2] * 5, dtype=pl.Float32),
+            }
+        )
         return SimpleNamespace(
             dataframe=df,
             total_objective=100.0,
@@ -12069,19 +12040,17 @@ class TestSelectFrontierPointResolve:
         job = clean_job_store.require_job("fsel")
         assert "warning" not in job["result"]
 
-    def test_resolve_records_scenario_stats(self, client, clean_job_store):
-        """After selection, scenario stats are derived from stored frontier columns."""
+    def test_select_removes_the_solves_adjustment_report(self, client, clean_job_store):
+        """A selected point's summary carries no report: it is loaded on request."""
         self._make_frontier_job(clean_job_store)
         resp = client.post(
             "/api/optimiser/frontier/select",
             json={"job_id": "fsel", "point_index": 1},
         )
         assert resp.status_code == 200
+        assert resp.json()["adjustments"] is None
         job = clean_job_store.require_job("fsel")
-        assert "scenario_value_stats" in job["result"]
-        assert "scenario_value_histogram" not in job["result"]
-        stats = job["result"]["scenario_value_stats"]
-        assert "mean" in stats
+        assert "adjustments" not in job["result"]
 
     def test_select_ratebook_frontier_point_does_not_reuse_base_factor_tables(
         self,
@@ -12104,7 +12073,7 @@ class TestSelectFrontierPointResolve:
         assert job["result"]["selected_frontier_point"] == 0
         assert job["result"]["total_objective"] == 220.0
         assert "factor_tables" not in job["result"]
-        assert "scenario_value_histogram" not in job["result"]
+        assert "adjustments" not in job["result"]
         mock_solver.solve.assert_not_called()
 
     def test_select_ratebook_frontier_point_can_materialise_factor_tables(
@@ -13671,8 +13640,12 @@ class TestSolveRatebookUnit:
             assert job["status"] == "completed"
             assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
             assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
-            assert job["result"]["scenario_value_stats"] is None
-            assert job["result"]["scenario_value_histogram"] is None
+            # No per-quote ratebook frame until OPT-V09C: no report, and no error.
+            assert job["result"]["adjustments"] is None
+            assert not any(
+                error["diagnostic"] == "adjustments"
+                for error in job["result"]["diagnostics_errors"]
+            )
 
     def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
         """Ratebook rates are serialised in the source banding row order."""

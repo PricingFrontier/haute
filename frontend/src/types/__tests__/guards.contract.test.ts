@@ -3161,8 +3161,7 @@ describe("API response guards", () => {
         clamp_rate: null,
         history: null,
         ratebook_cd_trace: null,
-        scenario_value_stats: null,
-        scenario_value_histogram: null,
+        adjustments: null,
         factor_tables: null,
         warning: null,
         frontier_error: null,
@@ -3247,8 +3246,7 @@ describe("API response guards", () => {
       clamp_rate: null,
       history: null,
       ratebook_cd_trace: null,
-      scenario_value_stats: null,
-      scenario_value_histogram: null,
+      adjustments: null,
       factor_tables: null,
       warning: null,
       frontier_error: null,
@@ -3285,8 +3283,7 @@ describe("API response guards", () => {
       clamp_rate: null,
       history: null,
       ratebook_cd_trace: null,
-      scenario_value_stats: null,
-      scenario_value_histogram: null,
+      adjustments: null,
       factor_tables: null,
       warning: null,
       frontier_error: null,
@@ -3321,10 +3318,6 @@ describe("API response guards", () => {
   })
 
   it("parses every field of a fully populated frontier point summary", () => {
-    const stats = {
-      mean: 1.08, std: 0.03, min: 0.95, max: 1.2, p5: 0.99, p25: 1.03,
-      p50: 1.07, p75: 1.12, p95: 1.18, pct_increase: 0.8, pct_decrease: 0.2,
-    }
     const summary = {
       total_objective: 151,
       constraints: { loss: 0.93 },
@@ -3345,8 +3338,7 @@ describe("API response guards", () => {
         }],
         truncated: false,
       },
-      scenario_value_stats: stats,
-      scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1.0, 1.1] },
+      adjustments: null,
       factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 12 }] },
       warning: "Solver did not converge.",
       frontier_error: "Frontier unavailable: example",
@@ -3371,7 +3363,8 @@ describe("API response guards", () => {
       parseFrontierResponse({
         status: "ok",
         points: [lossPoint(151)],
-        point_summaries: [{ ...summary, scenario_value_histogram: { counts: ["x"], edges: [] } }],
+        // A point's report is loaded on request, never carried in its summary.
+        point_summaries: [{ ...summary, adjustments: { n_quotes: 1 } }],
         n_points: 1,
         points_returned: 1,
         constraint_names: ["loss"],
@@ -3382,7 +3375,7 @@ describe("API response guards", () => {
         job_id: null,
       }),
     ).toThrow(
-      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/scenario_value_histogram/counts/0: type",
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/adjustments: type",
     )
   })
 
@@ -3429,10 +3422,9 @@ describe("API response guards", () => {
     expect(deleted.branch).toContain("feat/")
   })
 
-  it("rejects scenario_value_histogram payloads missing counts or edges", () => {
-    // CLAUDE.md: do not silently fall back.  A present histogram object
-    // missing one of its required arrays is a contract violation; throw so
-    // we surface the bug instead of rendering with empty arrays.
+  it("rejects an adjustment report missing its bars or a bar's weights", () => {
+    // Do not silently fall back: a present report missing a required field is
+    // a contract violation; throw so the bug surfaces instead of an empty chart.
     const selected = {
       status: "ok",
       point_index: 0,
@@ -3449,20 +3441,38 @@ describe("API response guards", () => {
       history: null,
       ratebook_cd_trace: null,
       warning: null,
-      scenario_value_stats: null,
-      scenario_value_histogram: null,
+      adjustments: null,
       clamp_rate: null,
       combined_factor_bounds: null,
       frontier_generation: 0,
       diagnostics_errors: [],
       error: null,
     }
+    const report = {
+      n_quotes: 2,
+      has_unadjusted: true,
+      bars: [
+        { optimal_step: 0, scenario_value: 0.9, quotes: 1, weights: {} },
+        { optimal_step: 1, scenario_value: 1.0, quotes: 1, weights: {} },
+      ],
+      weightings: [{
+        key: "quotes", label: "Quotes", total: 2, mean: 0.95,
+        quantiles: { p5: 0.9, p25: 0.9, p50: 0.9, p75: 1.0, p95: 1.0 },
+        share_up: 0, share_down: 0.5, share_unadjusted: 0.5, share_at_min: 0.5, share_at_max: 0.5,
+      }],
+      diagnostics_errors: [],
+    }
+    expect(parseFrontierSelectResponse({ ...selected, adjustments: report }).adjustments).toEqual(report)
+    const { bars: _bars, ...withoutBars } = report; void _bars
     expect(() =>
-      parseFrontierSelectResponse({ ...selected, scenario_value_histogram: { counts: [1, 2] } }),
-    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /scenario_value_histogram/edges: required")
+      parseFrontierSelectResponse({ ...selected, adjustments: withoutBars }),
+    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /adjustments/bars: required")
     expect(() =>
-      parseFrontierSelectResponse({ ...selected, scenario_value_histogram: { edges: [0, 1, 2] } }),
-    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /scenario_value_histogram/counts: required")
+      parseFrontierSelectResponse({
+        ...selected,
+        adjustments: { ...report, bars: [{ optimal_step: 0, scenario_value: 0.9, quotes: 2 }] },
+      }),
+    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /adjustments/bars/0/weights: required")
   })
 
   it("rejects malformed optimiser lambda maps", () => {

@@ -1322,6 +1322,7 @@ export interface OptimiserFrontierResponse {
  * solve's result removes it.
  */
 export interface OptimiserFrontierPointSummary {
+  adjustments: null;
   cd_iterations: number | null;
   clamp_rate: number | null;
   constraints: {
@@ -1342,8 +1343,6 @@ export interface OptimiserFrontierPointSummary {
     [k: string]: number;
   };
   ratebook_cd_trace: OptimiserRatebookCdTrace | null;
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
-  scenario_value_stats: OptimiserScenarioValueStats | null;
   total_objective: number;
   warning: string | null;
 }
@@ -1351,7 +1350,7 @@ export interface OptimiserFrontierPointSummary {
  * A result diagnostic that could not be produced, and why.
  */
 export interface OptimiserDiagnosticError {
-  diagnostic: 'scenario_value_stats' | 'frontier';
+  diagnostic: 'adjustments' | 'adjustment_weight' | 'frontier';
   error_type: string;
   message: string;
 }
@@ -1419,23 +1418,6 @@ export interface OptimiserRatebookCdTraceRecord {
   };
   total_objective: number;
 }
-export interface OptimiserScenarioValueHistogram {
-  counts: number[];
-  edges: number[];
-}
-export interface OptimiserScenarioValueStats {
-  max: number;
-  mean: number;
-  min: number;
-  p25: number;
-  p5: number;
-  p50: number;
-  p75: number;
-  p95: number;
-  pct_decrease: number;
-  pct_increase: number;
-  std: number;
-}
 /**
  * An online frontier row (``frontier_points_schema("online", ...)``).
  */
@@ -1497,6 +1479,7 @@ export interface OptimiserRatebookFrontierPoint {
   };
 }
 export interface OptimiserSolveResult {
+  adjustments: OptimiserAdjustmentReport | null;
   baseline_constraints: {
     [k: string]: number;
   };
@@ -1532,11 +1515,70 @@ export interface OptimiserSolveResult {
    * @minItems 1
    */
   scenario_grid: OptimiserScenarioGridStep[];
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
-  scenario_value_stats: OptimiserScenarioValueStats | null;
   selected_frontier_point: number | null;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * The distribution of one target's chosen scenario values against the 1.0 base price.
+ *
+ * One bar per step of the solve's scenario grid (steps nobody chose included)
+ * and, per computed weighting (quote count first), the summary figures. A
+ * refused weighting (a negative value or a zero total) is named in
+ * ``diagnostics_errors`` and appears nowhere else.
+ */
+export interface OptimiserAdjustmentReport {
+  /**
+   * @minItems 1
+   */
+  bars: OptimiserAdjustmentBar[];
+  diagnostics_errors: OptimiserDiagnosticError[];
+  has_unadjusted: boolean;
+  n_quotes: number;
+  /**
+   * @minItems 1
+   */
+  weightings: OptimiserAdjustmentWeighting[];
+}
+/**
+ * One step of the scenario grid in an adjustment report, chosen or not.
+ */
+export interface OptimiserAdjustmentBar {
+  optimal_step: number;
+  quotes: number;
+  scenario_value: number;
+  weights: {
+    [k: string]: number;
+  };
+}
+/**
+ * The summary figures of the chosen scenario values under one weighting.
+ *
+ * ``key`` is ``"quotes"`` (each quote weighs 1) or the choice-frame column
+ * that weighs them (``optimal_objective``, ``optimal_<constraint>``),
+ * evaluated at the chosen scenario.
+ */
+export interface OptimiserAdjustmentWeighting {
+  key: string;
+  label: string;
+  mean: number;
+  quantiles: OptimiserAdjustmentQuantiles;
+  share_at_max: number;
+  share_at_min: number;
+  share_down: number;
+  share_unadjusted: number | null;
+  share_up: number;
+  total: number;
+}
+/**
+ * Inverted-CDF (lower) quantiles of the chosen scenario values: always grid values.
+ */
+export interface OptimiserAdjustmentQuantiles {
+  p25: number;
+  p5: number;
+  p50: number;
+  p75: number;
+  p95: number;
 }
 /**
  * The scenario range a ratebook solve scored: the deployed factor's collar.
@@ -1698,6 +1740,7 @@ export interface OptimiserFrontierRange {
   min: number;
 }
 export interface OptimiserFrontierSelectResponse {
+  adjustments: OptimiserAdjustmentReport | null;
   baseline_constraints: {
     [k: string]: number;
   };
@@ -1725,8 +1768,6 @@ export interface OptimiserFrontierSelectResponse {
   };
   point_index: number | null;
   ratebook_cd_trace: OptimiserRatebookCdTrace | null;
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
-  scenario_value_stats: OptimiserScenarioValueStats | null;
   status: string;
   total_objective: number;
   warning: string | null;

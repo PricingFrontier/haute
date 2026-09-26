@@ -450,13 +450,14 @@ docked height remembered for the session, results-style tabs, a short introducti
 tab, and a provenance strip on every tab naming the mode, the grid solved (quotes × scenario
 steps), the data the solve ran on (the scenario and the pipeline file), whether the figures are
 as solved or a frontier point (i of N), and that they are expected values from the scoring
-models, not observed outcomes. When a diagnostic could not be produced (the scenario-value
-statistics, or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
+models, not observed outcomes. When a diagnostic could not be produced (the adjustment report,
+or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
 each one and why, in the same form as model validation. A failed solve with no earlier result
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
 never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
 side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Quotes (online) and Convergence; it has no
+Summary, Rates (ratebook), Quotes (online), Adjustments (online; ratebook with per-quote
+ratebook evaluation) and Convergence; it has no
 Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
 detail card says so. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
@@ -471,9 +472,20 @@ always shown. There is no "binding" judgement. Quotes loads the per-quote detail
 the publish target on demand (bounded rows, with the total and cap stated) and names columns in
 neutral scenario terms; reopening Quotes for the same target shows the loaded detail again
 without a new request, and a new solve or a recomputed frontier loads it afresh. Quotes and Rates
-failures offer **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Selecting a frontier point never removes a view: Summary keeps the
-scenario-value statistics (labelled "As solved" or "Frontier point N"; a point reports statistics
-but no histogram), Convergence stays available and, for a selected point, says "History is recorded for the solved result; frontier point N: converged
+failures offer **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Adjustments shows how the optimiser adjusted the book relative to the base price, for the
+solved result or the selected frontier point: one bar per scenario value of the solve's grid
+(values nobody chose included, as empty bars), labelled by the value, on an axis named
+"Scenario value (1.0 = base price)", with a dashed line at 1.0 = base price (no adjustment).
+A **Weight by** switch weighs the bars by quote count or by the objective or a constraint at the
+chosen scenario (a weighting with a negative value or a zero total is not offered, and the view
+says why). Below it: the 5th, 25th, 50th, 75th and 95th percentiles and the mean, the shares
+adjusted up, down and unadjusted, and the shares at the scenario range's minimum and maximum; a
+grid without 1.0 has no unadjusted share and a note says so. Each bar can be hovered or focused
+to read its exact values, and a values table lists them. A selected point's adjustments load
+only while the view is open, with a loading state; a failure offers **Retry**, and a point whose
+choices are no longer available says so. It describes the solution, not an impact: nothing is
+compared with current pricing. Summary shows the shares compactly with a link to the view.
+Selecting a frontier point never removes a view: Convergence stays available and, for a selected point, says "History is recorded for the solved result; frontier point N: converged
 (or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
 position. The Frontier chart fits the pane, names its axes (the objective
 column and the x constraint) at 12 px, and has a legend. A multi-constraint sweep is shown one

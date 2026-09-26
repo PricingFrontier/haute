@@ -1,13 +1,31 @@
+import type { OptimiserSolveResult } from "../../api/types"
 import type { ResultsWorkspaceIntro } from "../ResultsWorkspace"
 import { LAMBDA_LABEL } from "./lambdaCopy"
 
 /** The optimiser result workspace's views, in tab order. */
-export type OptimiserResultView = "frontier" | "summary" | "rates" | "quotes" | "convergence"
+export type OptimiserResultView =
+  | "frontier"
+  | "summary"
+  | "rates"
+  | "adjustments"
+  | "quotes"
+  | "convergence"
+
+/**
+ * Whether the Adjustments view describes this result: online results only.
+ * TODO(OPT-V09C): offer it for ratebook results once their per-quote choices
+ * (price-contour's canonical `quote_results`) are persisted and the choice
+ * queries accept ratebook jobs.
+ */
+export function adjustmentsOffered(result: OptimiserSolveResult): boolean {
+  return result.mode === "online"
+}
 
 export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
   frontier: "Frontier",
   summary: "Summary",
   rates: "Rates",
+  adjustments: "Adjustments",
   quotes: "Quotes",
   convergence: "Convergence",
 }
@@ -26,7 +44,7 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
     title: "Solve summary",
     description:
       "The expected objective and constraint totals of the result shown, whether the solver "
-      + "converged, and how the chosen scenario values are spread.",
+      + "converged, and how many quotes the optimiser adjusted up or down.",
   },
   rates: {
     title: "Ratebook rates",
@@ -36,6 +54,13 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
       + "search-space diagnostic: the mean, over every grouped solve, of the fraction of "
       + "(quote, candidate) targets that fell strictly outside the scenario range. Quotes at a "
       + "grid edge are not counted in it.",
+  },
+  adjustments: {
+    title: "Adjustments",
+    description:
+      "How the optimiser adjusted the book relative to the base price: the quotes (or weight) "
+      + "at each scenario value of the grid, where 1.0 is the base price with no adjustment. "
+      + "It describes the solution only; nothing is compared with current pricing.",
   },
   quotes: {
     title: "Per-quote choices",

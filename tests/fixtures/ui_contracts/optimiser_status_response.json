@@ -44,31 +44,95 @@
     ],
     "ratebook_cd_trace": null,
     "warning": null,
-    "scenario_value_stats": {
-      "mean": 1.01,
-      "std": 0.07,
-      "min": 0.8,
-      "max": 1.2,
-      "p5": 0.85,
-      "p25": 0.95,
-      "p50": 1.0,
-      "p75": 1.08,
-      "p95": 1.18,
-      "pct_increase": 0.6,
-      "pct_decrease": 0.25
-    },
-    "scenario_value_histogram": {
-      "counts": [
-        2,
-        3,
-        1
+    "adjustments": {
+      "n_quotes": 100,
+      "has_unadjusted": true,
+      "bars": [
+        {
+          "optimal_step": 0,
+          "scenario_value": 0.8,
+          "quotes": 25,
+          "weights": {
+            "optimal_objective": 30.0,
+            "optimal_loss": 0.2
+          }
+        },
+        {
+          "optimal_step": 1,
+          "scenario_value": 1.0,
+          "quotes": 35,
+          "weights": {
+            "optimal_objective": 45.0,
+            "optimal_loss": 0.32
+          }
+        },
+        {
+          "optimal_step": 2,
+          "scenario_value": 1.2,
+          "quotes": 40,
+          "weights": {
+            "optimal_objective": 50.0,
+            "optimal_loss": 0.4
+          }
+        }
       ],
-      "edges": [
-        0.8,
-        0.9,
-        1.0,
-        1.1
-      ]
+      "weightings": [
+        {
+          "key": "quotes",
+          "label": "Quotes",
+          "total": 100.0,
+          "mean": 1.03,
+          "quantiles": {
+            "p5": 0.8,
+            "p25": 0.8,
+            "p50": 1.0,
+            "p75": 1.2,
+            "p95": 1.2
+          },
+          "share_up": 0.4,
+          "share_down": 0.25,
+          "share_unadjusted": 0.35,
+          "share_at_min": 0.25,
+          "share_at_max": 0.4
+        },
+        {
+          "key": "optimal_objective",
+          "label": "Objective at the chosen scenario",
+          "total": 125.0,
+          "mean": 1.032,
+          "quantiles": {
+            "p5": 0.8,
+            "p25": 1.0,
+            "p50": 1.0,
+            "p75": 1.2,
+            "p95": 1.2
+          },
+          "share_up": 0.4,
+          "share_down": 0.24,
+          "share_unadjusted": 0.36,
+          "share_at_min": 0.24,
+          "share_at_max": 0.4
+        },
+        {
+          "key": "optimal_loss",
+          "label": "loss at the chosen scenario",
+          "total": 0.92,
+          "mean": 1.0434782608695652,
+          "quantiles": {
+            "p5": 0.8,
+            "p25": 1.0,
+            "p50": 1.0,
+            "p75": 1.2,
+            "p95": 1.2
+          },
+          "share_up": 0.43478260869565216,
+          "share_down": 0.21739130434782608,
+          "share_unadjusted": 0.34782608695652173,
+          "share_at_min": 0.21739130434782608,
+          "share_at_max": 0.43478260869565216
+        }
+      ],
+      "diagnostics_errors": []
     },
     "clamp_rate": null,
     "combined_factor_bounds": null,
@@ -128,20 +192,7 @@
           "clamp_rate": null,
           "history": null,
           "ratebook_cd_trace": null,
-          "scenario_value_stats": {
-            "mean": 1.02,
-            "std": 0.03,
-            "min": 0.95,
-            "max": 1.1,
-            "p5": 0.96,
-            "p25": 1.0,
-            "p50": 1.02,
-            "p75": 1.04,
-            "p95": 1.08,
-            "pct_increase": 0.7,
-            "pct_decrease": 0.2
-          },
-          "scenario_value_histogram": null,
+          "adjustments": null,
           "factor_tables": null,
           "warning": null,
           "frontier_error": null,
@@ -247,20 +298,7 @@
         "clamp_rate": null,
         "history": null,
         "ratebook_cd_trace": null,
-        "scenario_value_stats": {
-          "mean": 1.02,
-          "std": 0.03,
-          "min": 0.95,
-          "max": 1.1,
-          "p5": 0.96,
-          "p25": 1.0,
-          "p50": 1.02,
-          "p75": 1.04,
-          "p95": 1.08,
-          "pct_increase": 0.7,
-          "pct_decrease": 0.2
-        },
-        "scenario_value_histogram": null,
+        "adjustments": null,
         "factor_tables": null,
         "warning": null,
         "frontier_error": null,

@@ -3300,7 +3300,7 @@ class OptimiserDiagnosticError(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    diagnostic: Literal["scenario_value_stats", "frontier"]
+    diagnostic: Literal["adjustments", "adjustment_weight", "frontier"]
     error_type: str
     message: str
 
@@ -3392,23 +3392,98 @@ class OptimiserRatebookCdTrace(BaseModel):
         return names
 
 
-class OptimiserScenarioValueStats(BaseModel):
-    mean: float
-    std: float
-    min: float
-    max: float
+class OptimiserAdjustmentBar(BaseModel):
+    """One step of the scenario grid in an adjustment report, chosen or not."""
+
+    model_config = _STRICT_ROW
+
+    optimal_step: int = Field(ge=0)
+    scenario_value: float
+    quotes: int = Field(ge=0)
+    # Per computed weighting other than quote count, the Float64 sum at this step.
+    weights: dict[str, float]
+
+
+class OptimiserAdjustmentQuantiles(BaseModel):
+    """Inverted-CDF (lower) quantiles of the chosen scenario values: always grid values."""
+
+    model_config = _STRICT_ROW
+
     p5: float
     p25: float
     p50: float
     p75: float
     p95: float
-    pct_increase: float
-    pct_decrease: float
 
 
-class OptimiserScenarioValueHistogram(BaseModel):
-    counts: list[int] = Field(default_factory=list)
-    edges: list[float] = Field(default_factory=list)
+class OptimiserAdjustmentWeighting(BaseModel):
+    """The summary figures of the chosen scenario values under one weighting.
+
+    ``key`` is ``"quotes"`` (each quote weighs 1) or the choice-frame column
+    that weighs them (``optimal_objective``, ``optimal_<constraint>``),
+    evaluated at the chosen scenario.
+    """
+
+    model_config = _STRICT_ROW
+
+    key: str
+    label: str
+    total: float = Field(gt=0)
+    mean: float
+    quantiles: OptimiserAdjustmentQuantiles
+    share_up: float = Field(ge=0, le=1)
+    share_down: float = Field(ge=0, le=1)
+    # ``None`` exactly when the grid has no 1.0 step: not a category, never 0.
+    share_unadjusted: float | None = Field(ge=0, le=1)
+    share_at_min: float = Field(ge=0, le=1)
+    share_at_max: float = Field(ge=0, le=1)
+
+
+class OptimiserAdjustmentReport(BaseModel):
+    """The distribution of one target's chosen scenario values against the 1.0 base price.
+
+    One bar per step of the solve's scenario grid (steps nobody chose included)
+    and, per computed weighting (quote count first), the summary figures. A
+    refused weighting (a negative value or a zero total) is named in
+    ``diagnostics_errors`` and appears nowhere else.
+    """
+
+    model_config = _STRICT_ROW
+
+    n_quotes: int = Field(gt=0)
+    has_unadjusted: bool
+    bars: list[OptimiserAdjustmentBar] = Field(min_length=1)
+    weightings: list[OptimiserAdjustmentWeighting] = Field(min_length=1)
+    diagnostics_errors: list[OptimiserDiagnosticError]
+
+    @model_validator(mode="after")
+    def _bars_and_weightings_agree(self) -> OptimiserAdjustmentReport:
+        steps = [bar.optimal_step for bar in self.bars]
+        if steps != list(range(len(steps))):
+            raise ValueError(f"adjustment bars must list steps 0..n-1 in order, got {steps}")
+        values = [bar.scenario_value for bar in self.bars]
+        if any(later <= earlier for earlier, later in itertools.pairwise(values)):
+            raise ValueError(f"adjustment bar values must be strictly increasing, got {values}")
+        if self.has_unadjusted != (1.0 in values):
+            raise ValueError("has_unadjusted must say whether the grid has a 1.0 step")
+        if sum(bar.quotes for bar in self.bars) != self.n_quotes:
+            raise ValueError("adjustment bars must count every quote exactly once")
+        keys = [weighting.key for weighting in self.weightings]
+        if keys[0] != "quotes" or len(set(keys)) != len(keys):
+            raise ValueError(f"weightings must start with 'quotes' and be unique, got {keys}")
+        for bar in self.bars:
+            if set(bar.weights) != set(keys[1:]):
+                raise ValueError(
+                    f"bar {bar.optimal_step} weights {sorted(bar.weights)} must be the computed "
+                    f"weightings {keys[1:]}"
+                )
+        for weighting in self.weightings:
+            if (weighting.share_unadjusted is None) == self.has_unadjusted:
+                raise ValueError(
+                    f"weighting {weighting.key!r}: share_unadjusted is null exactly when the "
+                    "grid has no 1.0 step"
+                )
+        return self
 
 
 class OptimiserEffectiveBound(BaseModel):
@@ -3442,13 +3517,14 @@ class OptimiserFrontierPointSummary(BaseModel):
     clamp_rate: float | None
     history: list[OptimiserHistoryEntry] | None
     ratebook_cd_trace: OptimiserRatebookCdTrace | None
-    scenario_value_stats: OptimiserScenarioValueStats | None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None
+    # Always ``None``: a point's report is loaded on request (frontier select
+    # with ``include_adjustments``), so applying the summary removes the solve's.
+    adjustments: None
     factor_tables: dict[str, list[OptimiserFactorTableRow]] | None
     warning: str | None
     frontier_error: str | None
     diagnostics_errors: list[OptimiserDiagnosticError]
-    """Always empty: a point's statistics come from its own frontier row."""
+    """Always empty: a point's figures come from its own frontier row."""
 
     @model_validator(mode="after")
     def _maps_share_constraint_names(self) -> OptimiserFrontierPointSummary:
@@ -3521,8 +3597,9 @@ class OptimiserSolveResult(BaseModel):
     # Ratebook only: the live solve's coordinate-descent trace.
     ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
-    scenario_value_stats: OptimiserScenarioValueStats | None = None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    # The as-solved adjustment report (OPT-V10): online only until OPT-V09C; ``None``
+    # for a selected frontier point, whose report is loaded on request.
+    adjustments: OptimiserAdjustmentReport | None = None
     clamp_rate: float | None = None
     # Ratebook only; ``None`` for online solves.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
@@ -3600,6 +3677,8 @@ class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
     point_index: int | None = Field(..., ge=0)
     include_ratebook_tables: bool = False
+    # Also answer the point's adjustment report (OPT-V10), materialising its choices.
+    include_adjustments: bool = False
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
@@ -3619,8 +3698,9 @@ class OptimiserFrontierSelectResponse(BaseModel):
     history: list[OptimiserHistoryEntry] | None = None
     ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
-    scenario_value_stats: OptimiserScenarioValueStats | None = None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    # Without a point, the as-solved report; with one, its report when
+    # ``include_adjustments`` was requested, else ``None``.
+    adjustments: OptimiserAdjustmentReport | None = None
     clamp_rate: float | None = None
     # Ratebook only: the solve's collar, shared by every frontier point.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None

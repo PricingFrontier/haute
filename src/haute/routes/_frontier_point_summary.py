@@ -23,21 +23,6 @@ NON_CONVERGED_WARNING = (
     "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 )
 
-_SCENARIO_VALUE_STAT_COLUMNS = {
-    "mean": "sv_mean",
-    "std": "sv_std",
-    "min": "sv_min",
-    "p5": "sv_p5",
-    "p25": "sv_p25",
-    "p50": "sv_median",
-    "p75": "sv_p75",
-    "p95": "sv_p95",
-    "max": "sv_max",
-    "pct_increase": "sv_pct_increase",
-    "pct_decrease": "sv_pct_decrease",
-}
-
-
 ConstraintKind = Literal["min", "max"]
 
 # The configured threshold key of a constraint and the direction it bounds.
@@ -200,13 +185,6 @@ def frontier_point_library_row(
     return row
 
 
-def _scenario_value_stats(point: Mapping[str, Any]) -> dict[str, float] | None:
-    """An online point's ``sv_*`` statistics; a ratebook point reports none."""
-    if point["mode"] != "online":
-        return None
-    return {stat: point[column] for stat, column in _SCENARIO_VALUE_STAT_COLUMNS.items()}
-
-
 def frontier_point_summary(
     point: Mapping[str, Any],
     kinds: Mapping[str, ConstraintKind],
@@ -228,12 +206,13 @@ def frontier_point_summary(
         "clamp_rate": point["clamp_rate"] if point["mode"] == "ratebook" else None,
         "history": None,
         "ratebook_cd_trace": None,
-        "scenario_value_stats": _scenario_value_stats(point),
-        "scenario_value_histogram": None,
+        # A point's adjustment report is loaded on request (frontier select with
+        # ``include_adjustments``); applying the summary removes the solve's.
+        "adjustments": None,
         "factor_tables": None,
         "warning": None if converged else NON_CONVERGED_WARNING,
         "frontier_error": None,
-        # A point's statistics come from its own row: the solve's degraded
+        # A point's figures come from its own row: the solve's degraded
         # diagnostics do not describe it.
         "diagnostics_errors": [],
     }
