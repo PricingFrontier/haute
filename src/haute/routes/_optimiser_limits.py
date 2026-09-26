@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from haute.routes._frontier_point_summary import (
     ConstraintKind,
@@ -11,10 +11,13 @@ from haute.routes._frontier_point_summary import (
     frontier_point_summary,
 )
 
-if TYPE_CHECKING:
-    import polars as pl
+# Defined beside the request schema that bounds ``limit`` by it.
+from haute.schemas import APPLY_PREVIEW_ROW_LIMIT as APPLY_PREVIEW_ROW_LIMIT
 
-APPLY_PREVIEW_ROW_LIMIT = 100
+# The deepest row a Quotes page may reach (``offset + limit``): a sorted page
+# holds a top-(offset + limit) of the matching quotes, so this bounds it; a
+# reviewer past it narrows the filter or search instead of paging on.
+QUOTE_PAGE_DEPTH_LIMIT = 10_000
 FRONTIER_POINT_LIMIT = 2_000
 
 
@@ -70,27 +73,6 @@ def enforce_frontier_compute_budget(
                 f"{FRONTIER_COMPUTE_LIMIT:,} points (price-contour max_total_points). "
                 "Reduce n_points_per_dim or the number of swept constraints."
             )
-
-
-def limited_apply_preview_payload(frame: pl.LazyFrame) -> dict[str, Any]:
-    """Return a capped optimiser-apply preview with explicit row metadata.
-
-    *frame* is the lazy apply frame: only its count and first
-    ``APPLY_PREVIEW_ROW_LIMIT`` rows are collected, so a caller reading a
-    persisted artifact calls this inside its lease.
-    """
-    import polars as pl
-
-    row_count = int(frame.select(pl.len()).collect().item())
-    preview = frame.head(APPLY_PREVIEW_ROW_LIMIT).collect().to_dicts()
-
-    return {
-        "preview": preview,
-        "row_count": row_count,
-        "preview_row_count": len(preview),
-        "preview_row_limit": APPLY_PREVIEW_ROW_LIMIT,
-        "preview_truncated": row_count > len(preview),
-    }
 
 
 def limited_frontier_payload(

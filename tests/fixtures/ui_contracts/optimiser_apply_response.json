@@ -4,16 +4,27 @@
   "constraints": {
     "loss": 0.95
   },
-  "from_artifact": false,
+  "from_artifact": true,
+  "columns": [
+    {"name": "quote_id", "role": "id", "sortable": false, "filterable": false},
+    {"name": "optimal_scenario_value", "role": "scenario", "sortable": true, "filterable": false},
+    {"name": "optimal_objective", "role": "objective", "sortable": true, "filterable": false},
+    {"name": "optimal_loss", "role": "constraint", "sortable": true, "filterable": false},
+    {"name": "region", "role": "analysis", "sortable": true, "filterable": true}
+  ],
   "preview": [
     {
-      "scenario": "A",
-      "factor": 1.1
+      "quote_id": "Q1",
+      "optimal_scenario_value": 1.1,
+      "optimal_objective": 125.0,
+      "optimal_loss": 0.95,
+      "region": "North"
     }
   ],
-  "row_count": 1,
+  "row_count": 250,
+  "matched_row_count": 12,
+  "offset": 0,
   "preview_row_count": 1,
   "preview_row_limit": 100,
-  "preview_truncated": false,
   "error": null
 }

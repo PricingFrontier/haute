@@ -421,7 +421,7 @@ class AnalysisSegments:
             rows = _categorical_levels(grouped, [str(v) for v in grouped[_LEVEL]], spec)
         frame = pl.DataFrame(rows, infer_schema_length=None)
         _require_every_quote(frame, row_count)
-        return ChoiceQueryResult(rows=frame, total=n_levels)
+        return ChoiceQueryResult(rows=frame, total=n_levels, quotes=row_count)
 
     def _numeric(
         self,
@@ -530,7 +530,7 @@ class FactorLevelSegments:
         ]
         frame = pl.DataFrame(_categorical_levels(grouped, labels, spec), infer_schema_length=None)
         _require_every_quote(frame, row_count)
-        return ChoiceQueryResult(rows=frame, total=n_levels)
+        return ChoiceQueryResult(rows=frame, total=n_levels, quotes=row_count)
 
 
 def _format_bound(value: Any, dtype: pl.DataType) -> str:

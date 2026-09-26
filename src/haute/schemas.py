@@ -21,6 +21,9 @@ from pydantic import (
     Field,
     RootModel,
     StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -3815,22 +3818,93 @@ class OptimiserStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+APPLY_PREVIEW_ROW_LIMIT = 100
+"""The most rows one Quotes page (``POST /apply``) returns."""
+
+OptimiserQuoteEqualityValue = StrictStr | StrictInt | StrictFloat | StrictBool | None
+
+
+class OptimiserQuoteFilters(BaseModel):
+    """The Quotes explorer's filters (OPT-V12), combined with AND; each is optional."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    # An inclusive range of the chosen scenario value, compared in Float64.
+    scenario_value_min: float | None = None
+    scenario_value_max: float | None = None
+    # Quotes at the first or last step of the recorded scenario grid.
+    at_range_edge: bool = False
+    # ``{analysis column: value}``; ``None`` matches a missing value.
+    analysis_equals: dict[str, OptimiserQuoteEqualityValue] = Field(default_factory=dict)
+    # Ratebook only: the deployed factor differs from the evaluated step.
+    deployed_factor_differs: bool = False
+
+
 class OptimiserApplyRequest(BaseModel):
+    """One page of the target's chosen scenarios (the Quotes explorer, OPT-V12)."""
+
+    model_config = ConfigDict(extra="forbid")
+
     job_id: str
     point_index: int | None = Field(default=None, ge=0)
+    # ``None`` keeps the apply frame's quote order; ties always break by quote id.
+    sort_by: str | None = Field(default=None, min_length=1)
+    descending: bool = False
+    quote_id_prefix: str | None = Field(default=None, min_length=1)
+    filters: OptimiserQuoteFilters = Field(default_factory=OptimiserQuoteFilters)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=APPLY_PREVIEW_ROW_LIMIT, ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
+
+
+class OptimiserQuoteColumn(BaseModel):
+    """One column of a Quotes page and its role (OPT-V12)."""
+
+    model_config = _STRICT_ROW
+
+    name: str
+    role: Literal["id", "scenario", "objective", "constraint", "factor", "flag", "analysis"]
+    # Whether ``sort_by`` accepts it.
+    sortable: bool
+    # Whether ``filters.analysis_equals`` accepts it.
+    filterable: bool
 
 
 class OptimiserApplyResponse(BaseModel):
+    """One Quotes page: the target's totals, typed columns, rows and counts."""
+
     status: str
-    total_objective: float = 0.0
-    constraints: dict[str, float] = Field(default_factory=dict)
-    from_artifact: bool = False
-    preview: list[dict[str, Any]] = Field(default_factory=list)
-    row_count: int = 0
-    preview_row_count: int = 0
-    preview_row_limit: int | None = None
-    preview_truncated: bool = False
+    total_objective: float
+    constraints: dict[str, float]
+    from_artifact: bool
+    columns: list[OptimiserQuoteColumn]
+    preview: list[dict[str, Any]]
+    # The target's quotes, and those matching the search and filters.
+    row_count: int = Field(ge=0)
+    matched_row_count: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    preview_row_count: int = Field(ge=0)
+    preview_row_limit: int = Field(ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _page_agrees_with_its_counts(self) -> OptimiserApplyResponse:
+        if self.matched_row_count > self.row_count:
+            raise ValueError(
+                f"matched_row_count {self.matched_row_count} exceeds row_count {self.row_count}"
+            )
+        if self.preview_row_count != len(self.preview):
+            raise ValueError(
+                f"preview_row_count {self.preview_row_count} but {len(self.preview)} rows"
+            )
+        if self.preview_row_count > self.preview_row_limit:
+            raise ValueError(
+                f"{self.preview_row_count} rows exceed the page limit {self.preview_row_limit}"
+            )
+        names = [column.name for column in self.columns]
+        for row in self.preview:
+            if list(row) != names:
+                raise ValueError(f"a Quotes row has keys {list(row)}, expected {names}")
+        return self
 
 
 class OptimiserFrontierSelectRequest(BaseModel):

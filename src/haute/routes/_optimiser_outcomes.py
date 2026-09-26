@@ -396,10 +396,11 @@ class ChoiceTarget:
 
 @dataclass(frozen=True, slots=True)
 class ChoiceQueryResult:
-    """A reducer's bounded rows and the count they were taken from."""
+    """A reducer's bounded rows, the count they were taken from and the target's quotes."""
 
     rows: pl.DataFrame
     total: int
+    quotes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -636,7 +637,7 @@ class ScenarioHistogram:
                 f"{row_count - counted} of {row_count} quotes chose a step outside the "
                 "recorded scenario grid."
             )
-        return ChoiceQueryResult(rows=rows, total=row_count)
+        return ChoiceQueryResult(rows=rows, total=row_count, quotes=row_count)
 
 
 def histogram_of_frame(frame: pl.LazyFrame, spec: ChoiceFrameSpec) -> ChoiceQueryResult:
@@ -693,7 +694,7 @@ class SegmentGroupBy:
         keys = list(self.columns)
         rows = frames.collect(_largest_groups(frames.joined(), keys, spec, self.limit))
         total = int(rows[_TOTAL_COLUMN][0]) if rows.height else 0
-        return ChoiceQueryResult(rows=rows.drop(_TOTAL_COLUMN), total=total)
+        return ChoiceQueryResult(rows=rows.drop(_TOTAL_COLUMN), total=total, quotes=row_count)
 
 
 def _largest_groups(
@@ -766,7 +767,15 @@ class FactorSegments:
         rows = grouped.drop(_TOTAL_COLUMN, *columns).insert_column(
             0, pl.Series("level", levels, dtype=pl.String)
         )
-        return ChoiceQueryResult(rows=rows, total=total)
+        return ChoiceQueryResult(rows=rows, total=total, quotes=row_count)
+
+
+def ranked(frame: pl.LazyFrame, by: str, descending: bool) -> pl.LazyFrame:
+    """*frame* sorted by *by*, ties broken by quote id ascending in either direction.
+
+    Nulls sort last both ways, so a page of equal values is always the same rows.
+    """
+    return frame.sort([by, CHOICE_QUOTE_ID], descending=[descending, False], nulls_last=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -793,12 +802,8 @@ class TopK:
         return True
 
     def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
-        rows = frames.collect(
-            frames.choice.sort(
-                [self.by, CHOICE_QUOTE_ID], descending=[self.descending, False]
-            ).head(self.k)
-        )
-        return ChoiceQueryResult(rows=frames.with_analysis(rows), total=row_count)
+        rows = frames.collect(ranked(frames.choice, self.by, self.descending).head(self.k))
+        return ChoiceQueryResult(rows=frames.with_analysis(rows), total=row_count, quotes=row_count)
 
 
 @dataclass(frozen=True, slots=True)
@@ -826,7 +831,7 @@ class RowIndex:
 
     def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
         rows = frames.collect(frames.choice.slice(self.offset, self.limit))
-        return ChoiceQueryResult(rows=frames.with_analysis(rows), total=row_count)
+        return ChoiceQueryResult(rows=frames.with_analysis(rows), total=row_count, quotes=row_count)
 
 
 @contextmanager
@@ -1095,16 +1100,14 @@ def _choice_spec(job: Mapping[str, Any], mode: ChoiceMode | None = None) -> Choi
     *mode* is the solve's; a completed job's is read from it (``None``). The solve's
     finalize passes its own, before the job records a result.
     """
-    from haute.routes._optimiser_frontier import _job_mode
+    from haute.routes._optimiser_frontier import _artifact_handles_or_raise, _job_mode
 
     resolved_mode = _job_mode(job) if mode is None else mode
     if resolved_mode not in ("online", "ratebook"):
         raise ValueError(f"Unknown optimiser mode {resolved_mode!r}.")
     config = job["config"]
     constraints = config.get("constraints") or {}
-    handle = (job.get("artifact_handles") or {}).get(
-        _optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY
-    )
+    handle = _artifact_handles_or_raise(job).get(_optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY)
     analysis_columns = tuple(handle["columns"]) if isinstance(handle, Mapping) else ()
     factor_columns = (
         tuple(tuple(str(column) for column in group) for group in config["factor_columns"])

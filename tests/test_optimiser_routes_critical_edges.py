@@ -14,9 +14,11 @@ from fastapi import HTTPException
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.job_store_support import discard_corrupt_job, seed_job
 from tests.optimiser_fixtures import (
+    SOLVE_SCENARIO_GRID,
     library_frontier_frame,
     logged_json_artifacts,
     make_input_summary,
+    make_online_apply_frame,
     run_frontier_and_wait,
     typed_frontier_point,
     use_local_mlflow_store,
@@ -30,7 +32,7 @@ def _as_solved_handles() -> dict:
     """The job's as-solved apply artifact: a point's apply is estimated from it."""
     from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
-    frame = pl.DataFrame({"quote_id": ["q1", "q2"], "optimal_scenario_value": [0.9, 1.0]})
+    frame = make_online_apply_frame(["q1", "q2"], steps=[0, 1])
     return {"apply_result": _persist_apply_result_artifact(SimpleNamespace(dataframe=frame))}
 
 
@@ -48,6 +50,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
     job = {
         "status": "completed",
         "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+        "scenario_grid": SOLVE_SCENARIO_GRID,
         "solver": solver,
         "quote_grid": MagicMock(),
         "heavy_objects_expires_at": time.time() + 3600,
@@ -350,6 +353,7 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "frontier_generation": 0,
                 "status": "ok",
@@ -446,9 +450,7 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
         "select_store_failure",
         _frontier_job(artifact_handles=_as_solved_handles()),
     )
-    apply_result = SimpleNamespace(
-        dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}),
-    )
+    apply_result = SimpleNamespace(dataframe=make_online_apply_frame(["q1"]))
 
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
@@ -737,12 +739,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
     """
     from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
-    persisted_df = pl.DataFrame(
-        {
-            "quote_id": ["q1", "q2"],
-            "optimal_scenario_value": [1.04, 0.97],
-        }
-    )
+    persisted_df = make_online_apply_frame(["q1", "q2"], steps=[2, 0])
     handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=persisted_df))
     assert handle is not None
 
@@ -762,6 +759,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [point],
@@ -797,8 +795,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
     # Response is sourced from the persisted artifact, not a fresh solve.
     assert data["from_artifact"] is True
     assert data["row_count"] == persisted_df.height
-    response_preview = pl.DataFrame(data["preview"])
-    assert response_preview.equals(persisted_df)
+    assert data["preview"] == persisted_df.drop("optimal_step").to_dicts()
     apply_mock.assert_not_called()
     # The artifact file is still on disk afterwards (not consumed).
     assert Path(handle["path"]).is_file()
@@ -823,6 +820,7 @@ def test_apply_returns_named_410_when_quote_grid_evicted_from_heavy_state(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [
@@ -885,6 +883,7 @@ def test_apply_returns_named_410_when_quote_grid_value_is_none_after_touch(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [
@@ -950,7 +949,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
     concurrent state change, the just-written artifact must be cleaned up
     so it does not leak.  The user gets a 409 Conflict, not a 500.
     """
-    persisted_df = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [0.99]})
+    persisted_df = make_online_apply_frame(["q1"])
     apply_result = SimpleNamespace(
         total_objective=130.0,
         baseline_objective=90.0,
@@ -968,6 +967,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
         {
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             "frontier_data": {
                 "status": "ok",
                 "points": [

@@ -58,23 +58,15 @@ from haute.routes._optimiser_adjustments import (
     adjustment_report,
     cache_point_report,
 )
-from haute.routes._optimiser_artifacts import (
-    _APPLY_RESULT_HANDLE_KEY,
-    APPLY_RESULT_UNAVAILABLE_DETAIL,
-    frontier_point_unavailable_detail,
-)
 from haute.routes._optimiser_frontier import (
     _CONSTRAINT_THRESHOLD_KEYS,
     _FRONTIER_CHANGED_DETAIL,
     OptimiserFrontierService,
-    _artifact_handles_or_raise,
     _base_result_for_frontier,
-    _dataframe_or_raise,
     _frontier_generation_or_raise,
     _frontier_point_constraints_override,
     _frontier_point_mlflow_summary,
     _job_has_frontier_points,
-    _job_mode,
     _summary_solve_result,
 )
 from haute.routes._optimiser_input import (
@@ -83,16 +75,13 @@ from haute.routes._optimiser_input import (
     _find_optimiser_node,
     estimate_failure_http_exception,
 )
-from haute.routes._optimiser_limits import (
-    limited_apply_preview_payload,
-)
 from haute.routes._optimiser_outcomes import (
     ChoiceQueryService,
     ChoiceTarget,
     ScenarioHistogram,
     _choice_spec,
-    lease_apply_frame,
 )
+from haute.routes._optimiser_quotes import QuoteQueries
 from haute.routes._optimiser_segments import SegmentQueries
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
 from haute.routes._optimiser_solver import _job_elapsed_seconds
@@ -142,6 +131,7 @@ _solve_service = OptimiserSolveService(_store)
 _frontier_service = OptimiserFrontierService(_store)
 _choice_service = ChoiceQueryService(_store, _frontier_service)
 _segment_queries = SegmentQueries(_store, _choice_service, _frontier_service)
+_quote_queries = QuoteQueries(_store, _choice_service, _frontier_service)
 
 OPTIMISER_SEGMENTS_ROUTE: Final[Literal["/api/optimiser/segments"]] = "/api/optimiser/segments"
 """A result's chosen scenarios broken down by one segment key (OPT-V11)."""
@@ -442,11 +432,11 @@ async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
 
 @router.post("/apply", response_model=OptimiserApplyResponse)
 async def apply_lambdas(body: OptimiserApplyRequest, request: Request) -> OptimiserApplyResponse:
-    """Return the per-quote detail preview of the solve or one frontier point.
+    """Return one Quotes page of the solve's or one frontier point's chosen scenarios.
 
-    Both modes: a ratebook preview holds price-contour's canonical per-quote
-    evaluation. A client that leaves stops waiting for a point's apply without
-    stopping it.
+    Both modes: a ratebook page holds price-contour's canonical per-quote
+    evaluation. Sorting, search and filters run over every quote (OPT-V12). A
+    client that leaves stops waiting for a point's apply without stopping it.
     """
     return await run_until_disconnected(request, lambda token: _apply_preview(body, token))
 
@@ -454,81 +444,9 @@ async def apply_lambdas(body: OptimiserApplyRequest, request: Request) -> Optimi
 def _apply_preview(
     body: OptimiserApplyRequest, token: ExecutionCancellationToken
 ) -> OptimiserApplyResponse:
-    logger.info("apply_requested", job_id=body.job_id)
-    job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
-
-    # ``point_index`` names the target: a frontier point, or (``None``) the
-    # job's own solve — never the server-side selected point.
-    if body.point_index is not None:
-        ticket = _frontier_service.request_point_apply(body.job_id, body.point_index)
-        ticket.wait(token)
-        result = _frontier_service.select_applied_point(
-            body.job_id, body.point_index, ticket.generation
-        )
-        with lease_apply_frame(
-            _store,
-            body.job_id,
-            ticket.handle_key,
-            unavailable_detail=frontier_point_unavailable_detail(
-                body.point_index, grid_expired=False
-            ),
-        ) as frame:
-            preview = limited_apply_preview_payload(frame)
-        response = OptimiserApplyResponse(
-            status="ok",
-            total_objective=result["total_objective"],
-            constraints=result["constraints"],
-            from_artifact=ticket.from_artifact,
-            **preview,
-        )
-        # Keep the solver and quote grid so the other points stay inspectable.
-        _clear_result_data_after_user_action(body.job_id)
-        return response
-
-    # A ratebook result's per-quote frame is only ever its persisted artifact.
-    solve_result = job.get("solve_result") if _job_mode(job) == "online" else None
-    from_artifact = False
-    if solve_result is not None and not hasattr(solve_result, "dataframe"):
-        _dataframe_or_raise(solve_result, context="Job solve_result")
-    if solve_result is not None and getattr(solve_result, "dataframe", None) is not None:
-        typed_solve_result = cast(SolveResultLike, solve_result)
-        df = _dataframe_or_raise(solve_result, context="Job solve_result")
-        total_objective = typed_solve_result.total_objective
-        constraints = typed_solve_result.total_constraints
-        preview = limited_apply_preview_payload(df.lazy())
-    else:
-        from_artifact = True
-        artifact_handles = _artifact_handles_or_raise(job)
-        if not isinstance(artifact_handles.get(_APPLY_RESULT_HANDLE_KEY), dict):
-            raise HTTPException(
-                status_code=400,
-                detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
-            )
-        with lease_apply_frame(
-            _store,
-            body.job_id,
-            _APPLY_RESULT_HANDLE_KEY,
-            unavailable_detail=APPLY_RESULT_UNAVAILABLE_DETAIL,
-        ) as frame:
-            preview = limited_apply_preview_payload(frame)
-        job_result = _base_result_for_frontier(job)
-        raw_total_objective = job_result.get("total_objective")
-        raw_constraints = job_result.get("constraints", {})
-        if not isinstance(raw_total_objective, (int, float)) or not isinstance(
-            raw_constraints,
-            dict,
-        ):
-            raise HTTPException(status_code=500, detail="Job summary is incomplete")
-        total_objective = float(raw_total_objective)
-        constraints = cast(dict[str, float], raw_constraints)
-
-    response = OptimiserApplyResponse(
-        status="ok",
-        total_objective=total_objective,
-        constraints=constraints,
-        from_artifact=from_artifact,
-        **preview,
-    )
+    logger.info("apply_requested", job_id=body.job_id, point_index=body.point_index)
+    response = _quote_queries.page(body, token)
+    # A point request keeps the solver and quote grid so the other points stay inspectable.
     _clear_result_data_after_user_action(body.job_id)
     return response
 

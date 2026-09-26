@@ -28,7 +28,8 @@ In scope:
   estimation of viable efficient-frontier threshold ranges (`/frontier/auto-range/start`).
 - Computing an efficient frontier for a completed solve and letting a user select — or
   materialise, for ratebook — one of its points as the active result.
-- Producing a bounded, size-limited per-quote apply preview for online results.
+- Serving bounded, sortable and filterable pages of the per-quote chosen scenarios (the Quotes
+  explorer) for online and ratebook results.
 - Persisting a solved result as a JSON artifact on disk, or logging it (plus a frontier CSV
   and MLflow metrics/params) to MLflow.
 - Loading a previously saved optimiser artifact — from a local file or from MLflow — for the
@@ -110,10 +111,16 @@ ratebook) factor tables are available as a job summary. From there a user can:
   be stopped through `POST /frontier/cancel/{job_id}`; timeout polling requests the same
   cooperative stop before publishing `timed_out`. A stopped sweep may never publish frontier data
   to the parent solve job, even if the underlying solver call returns later.
-- Preview the result as a capped table of per-quote selected scenarios, in both modes: a
-  ratebook preview holds price-contour's canonical per-quote evaluation (the evaluated step, its
-  objective and constraint values, the factor product and whether it was clamped to a grid
-  end).
+- Explore the per-quote chosen scenarios of the as-solved result or any frontier point, in both
+  modes, one bounded page at a time: each quote's chosen scenario value, its objective and
+  constraint values at that scenario, its analysis columns and, for a ratebook result,
+  price-contour's canonical evaluation (the factor product and whether the deployed factor
+  differs from the evaluated step). Sorting, a quote-id prefix search and filters (a scenario
+  value range, "at the edge of the scenario range" judged from the recorded grid, an analysis
+  column equal to a value, and for ratebook "deployed factor differs") run on the server over
+  every quote, never over the first page, with ties broken by quote id so pages are stable. A
+  page states how many quotes match and how many the target has; pages reach at most 10,000
+  rows deep, beyond which the request is refused with a message asking to narrow the filter.
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
   and the same artifact. Publishing names its target explicitly: no point index means the job's
   own solve (the anchor), a point index means that frontier point, and the server's currently
@@ -193,7 +200,7 @@ Invariants:
   differs from evaluated step" flag (its factor product is not its evaluated value and it was not
   clamped to a grid end) and the adjustment report counts them; a product past a grid edge
   deploys at that edge and is not flagged.
-- Every capped/paginated response (apply preview, frontier points) states its true total count
+- Every capped/paginated response (the quotes page, frontier points) states its true total count
   and whether it was truncated; nothing is silently dropped without saying so.
 - A completed solve retains at most eight per-frontier-point apply artifacts. Materialising a
   ninth point evicts and deletes the oldest point artifact (after any reader still holding it

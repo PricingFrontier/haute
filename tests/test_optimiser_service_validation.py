@@ -598,7 +598,7 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
     preview = pl.DataFrame(applied["preview"])
     assert preview.height == 1
     assert preview["quote_id"].to_list() == ["q1"]
-    assert preview["optimal_step"].to_list() == [1]
+    # Quotes pages identify the chosen scenario by its value (step 1 of the grid).
     assert preview["optimal_scenario_value"].to_list() == pytest.approx([1.0])
 
 

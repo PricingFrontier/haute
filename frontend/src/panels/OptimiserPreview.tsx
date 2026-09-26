@@ -3,7 +3,7 @@
  *
  * Renders in the same slot as DataPreview when an optimiser solve has
  * completed.  Shows Frontier (default when data exists), Summary,
- * Rates (ratebook mode), Adjustments and Segments (both modes), Quotes (online mode) and
+ * Rates (ratebook mode), Adjustments, Segments and Quotes (both modes) and
  * Convergence tabs as available. Publishing lives only in the node's Export pane, whose target
  * is the frontier point selected here.
  */
@@ -454,7 +454,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   availableTabs.push("adjustments")
   // Segments too: analysis columns, a ratebook result's factors, or the empty state.
   availableTabs.push("segments")
-  if (result.mode !== "ratebook") availableTabs.push("quotes")
+  // Quotes pages any result's chosen scenarios (a ratebook's evaluated steps).
+  availableTabs.push("quotes")
   // Convergence draws the solve's history or CD trace, so every result offers it.
   availableTabs.push("convergence")
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
@@ -638,6 +639,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
         <QuotesTab
           nodeId={nodeId}
           jobId={jobId}
+          mode={result.mode}
           frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
         />

@@ -1130,9 +1130,9 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByRole("tab", { name: "Export" })).not.toBeInTheDocument()
     })
 
-    it("has no Quotes tab for ratebook results", () => {
+    it("offers Quotes for ratebook results too", () => {
       renderPreview({ data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }) })
-      expect(screen.queryByRole("tab", { name: "Quotes" })).not.toBeInTheDocument()
+      expect(screen.getByRole("tab", { name: "Quotes" })).toBeInTheDocument()
     })
   })
 

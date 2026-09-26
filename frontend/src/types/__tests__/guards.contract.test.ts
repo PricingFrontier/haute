@@ -3089,21 +3089,24 @@ describe("API response guards", () => {
       expect(estimate.scenarios_per_quote_min).toBe(20)
       expect(estimate.scenarios_per_quote_max).toBe(20)
       expect(estimate.expanded_row_count).toBe(10000)
-      expect(apply.from_artifact).toBe(false)
-    expect(apply.preview[0]?.scenario).toBe("A")
+      expect(apply.from_artifact).toBe(true)
+    expect(apply.preview[0]?.quote_id).toBe("Q1")
     const parsedApply = parseApplyOptimiserResponse({
       status: "ok",
       total_objective: 0,
       constraints: {},
       from_artifact: false,
       error: null,
-      preview: [{ scenario: "A" }],
+      columns: [{ name: "quote_id", role: "id", sortable: false, filterable: false }],
+      preview: [{ quote_id: "Q9" }],
       row_count: 200,
-      preview_row_count: 100,
+      matched_row_count: 101,
+      offset: 100,
+      preview_row_count: 1,
       preview_row_limit: 100,
-      preview_truncated: true,
     })
-    expect(parsedApply.preview_truncated).toBe(true)
+    expect(parsedApply.matched_row_count).toBe(101)
+    expect(parsedApply.offset).toBe(100)
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
     expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })

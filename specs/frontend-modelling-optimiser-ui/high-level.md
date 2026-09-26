@@ -456,7 +456,7 @@ each one and why, in the same form as model validation. A failed solve with no e
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
 never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
 side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Adjustments and Segments (both modes), Quotes (online) and Convergence; it has no
+Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence; it has no
 Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
 detail card says so. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
@@ -467,8 +467,12 @@ constraint, swept or not, as Constraint | Kind | Bound | Achieved | Slack | Stat
 the backend's `effective_bounds` for that result, the bound it was actually solved at, so the
 two panes cannot disagree. Status is text ("Met" or "Breached") with an icon, colour only a
 secondary cue, judged by a strict comparison with no tolerance; the signed slack percentage is
-always shown. There is no "binding" judgement. Quotes loads the per-quote detail of
-the publish target on demand (bounded rows, with the total and cap stated) and names columns in
+always shown. There is no "binding" judgement. Quotes explores the per-quote chosen
+scenarios of the publish target on demand, a page at a time sorted, searched and filtered on the
+server over every quote: sortable headers, presets ("Highest adjustment", "Lowest adjustment",
+"At range edge", and for ratebook "Deployed ≠ evaluated"), a quote-id search, a filter per
+analysis value, the scenario value marked up or down against 1.0 by a glyph and words as well
+as colour, and a pager stating "Showing a–b of M matching (of N)"; columns are named in
 neutral scenario terms; reopening Quotes for the same target shows the loaded detail again
 without a new request, and a new solve or a recomputed frontier loads it afresh. Quotes and Rates
 failures offer **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Adjustments shows how the optimiser adjusted the book relative to the base price, for the

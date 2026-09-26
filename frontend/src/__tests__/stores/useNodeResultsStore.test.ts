@@ -19,7 +19,7 @@ import useNodeResultsStore, {
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
-import type { ApplyOptimiserResponse, FrontierPoint, FrontierPointSummary, OptimiserSolveResult } from "../../api/types.ts"
+import type { ApplyOptimiserResponse, FrontierPoint, FrontierPointSummary, OptimiserApplyQuery, OptimiserSolveResult } from "../../api/types.ts"
 import type { ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import {
@@ -1106,17 +1106,34 @@ describe("useNodeResultsStore", () => {
   // ────────────────────────────────────────────────────────────────
 
   describe("optimiser apply cache", () => {
+    const QUERY: OptimiserApplyQuery = {
+      sort_by: null,
+      descending: false,
+      quote_id_prefix: null,
+      filters: {
+        scenario_value_min: null,
+        scenario_value_max: null,
+        at_range_edge: false,
+        analysis_equals: {},
+        deployed_factor_differs: false,
+      },
+      offset: 0,
+      limit: 100,
+    }
+
     function applyResponse(rowCount: number): ApplyOptimiserResponse {
       return {
         status: "ok",
         total_objective: 100,
         constraints: { premium: 50 },
-        from_artifact: false,
+        from_artifact: true,
+        columns: [{ name: "quote_id", role: "id", sortable: false, filterable: false }],
         preview: [{ quote_id: `Q${rowCount}` }],
         row_count: rowCount,
+        matched_row_count: rowCount,
+        offset: 0,
         preview_row_count: 1,
         preview_row_limit: 100,
-        preview_truncated: rowCount > 1,
         error: null,
       }
     }
@@ -1143,7 +1160,7 @@ describe("useNodeResultsStore", () => {
     function currentIdentity(nodeId: string) {
       const cached = useNodeResultsStore.getState().solveResults[nodeId]
       if (cached.result === null) throw new Error(`Node ${nodeId} has no solve result`)
-      return optimiserApplyIdentityFor(cached, {})
+      return optimiserApplyIdentityFor(cached, QUERY)
     }
 
     function cachedKeys(): string[] {
@@ -1152,21 +1169,34 @@ describe("useNodeResultsStore", () => {
 
     it("derives the node's current identity from its job, frontier generation and selection", () => {
       solve("n1", "j1", frontierResult(3))
-      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: 0, query: {} })
+      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: 0, query: QUERY })
 
       useNodeResultsStore.getState().selectFrontierPoint("n1", null)
-      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: "solved", query: {} })
+      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: "solved", query: QUERY })
     })
 
-    it("keys every part of the identity", () => {
-      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const, query: {} }
+    it("keys every part of the identity, the full query included", () => {
+      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const, query: QUERY }
       const keys = new Set([
         optimiserApplyKey(base),
         optimiserApplyKey({ ...base, jobId: "j2" }),
         optimiserApplyKey({ ...base, frontierGeneration: 1 }),
         optimiserApplyKey({ ...base, target: 0 }),
+        optimiserApplyKey({ ...base, query: { ...QUERY, offset: 100 } }),
+        optimiserApplyKey({ ...base, query: { ...QUERY, sort_by: "optimal_objective" } }),
+        optimiserApplyKey({ ...base, query: { ...QUERY, quote_id_prefix: "Q1" } }),
+        optimiserApplyKey({
+          ...base,
+          query: { ...QUERY, filters: { ...QUERY.filters, analysis_equals: { region: "North" } } },
+        }),
       ])
-      expect(keys.size).toBe(4)
+      expect(keys.size).toBe(8)
+    })
+
+    it("canonicalises the query, so key order never splits one query into two entries", () => {
+      const reordered = Object.fromEntries(Object.entries(QUERY).reverse()) as OptimiserApplyQuery
+      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const }
+      expect(optimiserApplyKey({ ...base, query: reordered })).toBe(optimiserApplyKey({ ...base, query: QUERY }))
     })
 
     it("stores a response for the current identity and drops one for a target no longer shown", () => {

@@ -389,6 +389,7 @@ def make_completed_job(
         },
         "result": result if result is not None else make_solved_result(),
         "artifact_handles": artifact_handles if artifact_handles is not None else {},
+        "scenario_grid": SOLVE_SCENARIO_GRID,
         "created_at": now,
         "completed_at": now,
     }
@@ -452,6 +453,7 @@ def make_online_frontier_job(
         "frontier_generation": 0,
         "result": result,
         "artifact_handles": {},
+        "scenario_grid": SOLVE_SCENARIO_GRID,
         "created_at": now,
         "completed_at": now,
     }
@@ -644,6 +646,35 @@ def setup_grid_stub(grid: object | None = None) -> Any:
     from haute.routes._optimiser_service import SetupGrid
 
     return SetupGrid(grid=object() if grid is None else grid, quote_analysis_handle=None)
+
+
+def make_online_apply_frame(
+    quote_ids: list[str],
+    *,
+    steps: list[int] | None = None,
+    constraint_names: tuple[str, ...] = ("volume",),
+) -> pl.DataFrame:
+    """An online apply frame with exactly price-contour's schema, on ``SOLVE_SCENARIO_GRID``.
+
+    Each quote chooses *steps* (default step 1, the 1.0 scenario); its objective is
+    ``10 * (position + 1)`` and each constraint ``0.5``.
+    """
+    chosen = steps if steps is not None else [1] * len(quote_ids)
+    values = [SOLVE_SCENARIO_GRID[step]["scenario_value"] for step in chosen]
+    return pl.DataFrame(
+        {
+            "quote_id": pl.Series(quote_ids, dtype=pl.String),
+            "optimal_step": pl.Series(chosen, dtype=pl.Int32),
+            "optimal_scenario_value": pl.Series(values, dtype=pl.Float32),
+            "optimal_objective": pl.Series(
+                [10.0 * (index + 1) for index in range(len(quote_ids))], dtype=pl.Float32
+            ),
+            **{
+                f"optimal_{name}": pl.Series([0.5] * len(quote_ids), dtype=pl.Float32)
+                for name in constraint_names
+            },
+        }
+    )
 
 
 def make_ratebook_quote_results(constraint_names: list[str]) -> pl.DataFrame:

@@ -1248,6 +1248,7 @@ export type {
   OptimiserFactorTableRow,
   OptimiserInputSummary,
   OptimiserOnlineFrontierPoint,
+  OptimiserQuoteColumn,
   OptimiserRatebookCdTrace,
   OptimiserRatebookCdTraceRecord,
   OptimiserRatebookFrontierPoint,
@@ -1271,7 +1272,29 @@ export type {
 
 export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
-export interface ApplyOptimiserRequest {
+/** The Quotes explorer's filters (OPT-V12), combined with AND; unset ones are null, false or `{}`. */
+export interface OptimiserQuoteFilters {
+  scenario_value_min: number | null
+  scenario_value_max: number | null
+  at_range_edge: boolean
+  /** `{analysis column: value}`; `null` matches a missing value. */
+  analysis_equals: Record<string, string | number | boolean | null>
+  deployed_factor_differs: boolean
+}
+
+/** A Quotes page's query beyond its target, always fully specified so one query has one cache key. */
+export interface OptimiserApplyQuery {
+  /** `null` keeps the apply frame's quote order; ties always break by quote id. */
+  sort_by: string | null
+  descending: boolean
+  quote_id_prefix: string | null
+  filters: OptimiserQuoteFilters
+  offset: number
+  limit: number
+}
+
+/** Omitting `point_index` pages the job's own solve; a number, that frontier point. */
+export interface ApplyOptimiserRequest extends OptimiserApplyQuery {
   job_id: string
   point_index?: number
 }

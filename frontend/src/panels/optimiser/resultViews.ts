@@ -66,7 +66,9 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
     title: "Per-quote choices",
     description:
       "The scenario value the optimiser chose for each quote of the publish target, with its "
-      + "expected objective and constraint values.",
+      + "expected objective and constraint values there. Sorting, the quote ID search and the "
+      + "filters run over every quote; a ratebook result shows the step the solver evaluated, "
+      + "the factor product and whether the deployed factor differs from that step.",
   },
   convergence: {
     title: "Convergence",

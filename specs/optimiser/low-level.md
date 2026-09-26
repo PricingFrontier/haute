@@ -15,7 +15,8 @@
 | `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
 | `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`), both handing each caller a `FlightSubscription`. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
-| `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload` (a lazy count plus a bounded `head`, collected by the caller inside its lease), `limited_frontier_payload`. |
+| `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT` (the most rows one Quotes page returns, defined beside the request schema in `haute.schemas` and re-exported here), `QUOTE_PAGE_DEPTH_LIMIT` (the deepest row a Quotes page reaches), `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_frontier_payload`. |
+| `src/haute/routes/_optimiser_quotes.py` | The Quotes explorer (OPT-V12): the page reducers over the choice frame (`QuotePage`, and `AnalysisQuotePage` when the sort or a filter reads an analysis column: sort with the quote-id tie-break, the quote-id prefix search, the scenario-value range, at-range-edge, analysis-equality and deployed-factor filters, the offset and the depth guard), the typed column roles (`quote_columns`) and the route's service (`QuoteQueries.page`). See "Quotes explorer (OPT-V12)" below. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
 | `src/haute/_ratebook_collar.py` | The ratebook combined-factor collar: `COMBINED_FACTOR_BOUNDS_KEY`, `combined_factor_bounds_from_grid` (the solve's `[sv_min, sv_max]`), `parse_combined_factor_bounds` and `CombinedFactorBoundsError`, shared by the solver, artifact validation, the runtime apply and the trace. |
@@ -714,37 +715,39 @@ judges attainment only against `effective_bounds` (see the
 
 ### Apply preview (`POST /apply`, `haute.routes.optimiser.apply_lambdas`)
 
-Serves both modes. `point_index` names the target explicitly: a number resolves that frontier
-point and `null` resolves the anchor solve — never the server-side `selected_frontier_point`.
-A ratebook preview holds the rows of the per-quote frame price-contour evaluated
-(`quote_results`: the online columns plus `factor_product`, `clamped_low` and `clamped_high`; see
-"Ratebook per-quote choices (OPT-V09C)"). The route is
-asynchronous and runs its blocking work through `run_until_disconnected`, so a client that
-leaves stops waiting (see "Bounded choice queries and point materialisation").
+Serves both modes: one bounded, sorted and filtered page of the target's chosen scenarios (the
+Quotes explorer, OPT-V12; see "Quotes explorer (OPT-V12)" below for the request, the reducer and
+the response). `point_index` names the target explicitly: a number resolves that frontier point
+and `null` resolves the anchor solve — never the server-side `selected_frontier_point`. A
+ratebook page holds rows of the per-quote frame price-contour evaluated (`quote_results`; see
+"Ratebook per-quote choices (OPT-V09C)"). The route is asynchronous and runs its blocking work
+through `run_until_disconnected`, so a client that leaves stops waiting (see "Bounded choice
+queries and point materialisation").
 
-- *Anchor.* For an online job the still-live in-memory `solve_result.dataframe` if present;
-  otherwise, and always for a ratebook job, the persisted apply-result artifact, read with `scan_parquet` inside a `JobStore.lease` on
-  `artifact_handles["apply_result"]` (`lease_apply_frame`); totals come from the anchor summary
-  (`base_result`, else `result`).
+- *Anchor.* Always the persisted as-solved apply artifact (`artifact_handles["apply_result"]`,
+  held for the job's 24-hour life), read by `ChoiceQueryService.choice_query` inside its lease;
+  a job without the handle is the 400 "Job has no apply artifact handle. Re-run the solve to
+  regenerate it." and a handle whose file is gone the stable 410. The in-memory
+  `solve_result.dataframe` is never read. `from_artifact` is `true`. Totals come from the anchor
+  summary (`base_result`, else `result`).
 - *Frontier point.* `OptimiserFrontierService.request_point_apply` answers at once from the
   point's retained `frontier_apply_result:<i>` artifact (`from_artifact: true`), or queues its
-  materialisation on the job's `LatestWinsQueue` and the request waits for it. Then
-  `select_applied_point` records the point as selected (`base_result`, `selected_frontier_point`,
-  `result`) under the parent's lock, refusing with 409 if `frontier_generation` moved since the
-  request captured it, and the preview reads the point's artifact inside a lease. For a ratebook
-  point the recorded result is the materialised one (`materialise_ratebook_point`: the row
-  summary with the point's factor tables), as `POST /frontier/select` with
-  `include_ratebook_tables` records it, so the job's result never shows a point's totals beside
-  the solve's tables.
+  materialisation on the job's `LatestWinsQueue` and the request waits for it (`from_artifact:
+  false`). Then `select_applied_point` records the point as selected (`base_result`,
+  `selected_frontier_point`, `result`) under the parent's lock, refusing with 409 if
+  `frontier_generation` moved since the request captured it, and the page is a `choice_query`
+  over `ChoiceTarget(point_index)`, after which the job must still be at the captured
+  generation (else the frontier-changed 409), so a page never pairs one generation's rows with
+  another's totals. For a ratebook point the recorded result is the materialised one
+  (`materialise_ratebook_point`: the row summary with the point's factor tables), as `POST
+  /frontier/select` with `include_ratebook_tables` records it, so the job's result never shows a
+  point's totals beside the solve's tables.
 
-`limited_apply_preview_payload(frame)` takes the lazy frame and returns a lazy count and the
-first `APPLY_PREVIEW_ROW_LIMIT` rows (`head`), both collected inside the lease, with explicit
-`row_count`/`preview_truncated` metadata; the whole frame is never read. After answering, a
-frontier-point request slims only `solve_result` (`_clear_result_data_after_user_action`), so
-`solver` and `quote_grid` stay available for other points; an anchor request on a job without
-frontier points clears all heavy state, and a later anchor preview reads the persisted apply
-artifact. Handle insertion re-reads and merges the latest mapping while holding the parent's
-lock. Materialisation captures `frontier_generation` before external solver/artifact work and
+After answering, a frontier-point request slims only `solve_result`
+(`_clear_result_data_after_user_action`), so `solver` and `quote_grid` stay available for other
+points; an anchor request on a job without frontier points clears all heavy state. Handle
+insertion re-reads and merges the latest mapping while holding the parent's lock.
+Materialisation captures `frontier_generation` before external solver/artifact work and
 compares the integer again before publishing, returning 409 only when a recompute actually
 advanced it; copying or serialising the unchanged `frontier_data` payload does not invalidate the
 request. At most eight `frontier_apply_result:*` handles are retained; the oldest excess handle is
@@ -1289,6 +1292,15 @@ whose message already names every problem and the remedy.
   the admission refusal of `k0`…`k2000` (HyperLogLog estimate 1,980) by the margin, and, with an
   admitted estimate injected, the exact check refusing 2,001 levels before truncation and
   accepting 2,000.
+- `tests/test_optimiser_quotes.py` covers OPT-V12: over hand-built choice frames, a sort with
+  ties paged in quote-id order in both directions (and nulls last), each filter (the
+  scenario-value range at grid values, at-range-edge from the recorded grid, analysis equality
+  including `null` and a mismatched dtype refused, deployed-factor-differs on a ratebook frame
+  and refused online), the prefix search, the matched count, an offset past the end, the depth
+  guard at exactly 10,000 and one past it, and the column roles of each mode; over real solves
+  through `POST /apply`, the default page, a sort by an analysis column, the limit cap (a 422), a
+  frontier point target (selected, its own rows), the at-range-edge filter after the quote grid
+  is evicted, admission refusal (507) and a ratebook page with its factor product and flag.
 - `tests/test_optimiser_ratebook_choices.py` covers OPT-V09C against the real price-contour
   library: the "deployed factor differs from evaluated step" flag against a hand count on a frame
   the kernel evaluated from hand-chosen tables (products on a grid value and on an end value not
@@ -1751,8 +1763,8 @@ with a 400 naming it, since the rows could not keep both.
 **Reducers.** A reducer is a frozen dataclass whose lazy plan runs over the choice frame and
 returns a small, bounded result; no API returns the whole frame. Each validates its own
 arguments with a 400 (`MAX_CHOICE_ROWS = 1000` bounds every row count) and supplies its own
-memory estimate. `choice_query` returns `ChoiceQueryResult(rows, total)`, where `total` is the
-count the rows were taken from.
+memory estimate. `choice_query` returns `ChoiceQueryResult(rows, total, quotes)`, where `total`
+is the count the rows were taken from and `quotes` the target's number of quotes.
 
 - `ScenarioHistogram()` — one row per step of the job's `scenario_grid`, in step order, including
   steps no quote chose (zero quotes and zero sums): `optimal_step`, `scenario_value` (from the
@@ -1780,7 +1792,8 @@ each group's.
 
 `ApplyOptimiser.with_explainer_columns` emits `selected`, `is_baseline` and `linearised_<c>` per
 candidate row of one traced quote; none of them is a per-quote chosen value a reducer returns,
-so nothing here derives the same value twice. OPT-V12 repeats that check for its columns.
+so nothing here derives the same value twice. The Quotes explorer (OPT-V12) returns only
+choice-frame and analysis columns, so the same holds for its columns.
 
 **Precision.** Sums and means cast the Float32 values to Float64 before aggregating, as
 price-contour accumulates its totals. The histogram's sums over every step equal the solve's
@@ -2165,3 +2178,82 @@ point_index)`, stored under the parent's lock only when the generation is unchan
 in between is the frontier-changed 409), at most `MAX_CACHED_SEGMENT_INDEXES = 64` (the oldest
 dropped, through the adjustment report cache's `cache_point_report`), never slimmed, and cleared
 by a frontier recompute in the update that advances the generation.
+
+## Quotes explorer (OPT-V12)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). The
+Quotes explorer answers "which quotes, with which chosen scenario": one bounded page of the
+target's chosen scenarios (the as-solved result or one frontier point), sorted, searched and
+filtered on the server over every quote. It describes the solution only, never a comparison
+with current or deployed pricing.
+
+**The request** (`OptimiserApplyRequest`, `extra="forbid"`, so a misspelt field is a 422):
+
+- `job_id`, `point_index` (`null` for the as-solved result) as before;
+- `sort_by`: `null` keeps the apply frame's quote order; otherwise one sortable column of the
+  target (below), and `descending` (default `false`). Rows are sorted by the column and then by
+  `quote_id` ascending, whatever `descending` is, so equal values are always paged in one
+  order; nulls (an analysis value) sort last in both directions;
+- `quote_id_prefix`: the quotes whose id starts with it (case-sensitive; at least one
+  character, `null` for none);
+- `filters` (`OptimiserQuoteFilters`, `extra="forbid"`), every one optional and combined with
+  AND: `scenario_value_min` and `scenario_value_max`, an inclusive range compared with the
+  chosen scenario value widened to Float64 (so a grid value from the recorded `scenario_grid`
+  matches exactly; finite, and a minimum above the maximum is a 400); `at_range_edge`, the
+  quotes whose chosen `optimal_step` is the first or last step of the job's durable
+  `scenario_grid` (so it is answered after the quote grid is evicted, as the adjustment report's
+  edge shares are); `analysis_equals`, `{column: value}` with each column an analysis column of
+  the solve (any other is a 400) and `value` a JSON string, number, boolean or `null`
+  (`null` matches a missing value, including a side-input quote the analysis frame had no row
+  for); `deployed_factor_differs`, the ratebook quotes whose deployed factor differs from the
+  evaluated step (a 400 for an online result);
+- `offset` (`>= 0`, default 0) and `limit` (1 to `APPLY_PREVIEW_ROW_LIMIT = 100`, default 100;
+  a larger limit is a 422, never silently reduced).
+
+An equality value must suit its column's dtype (`equality_filter_supported`): a string for a
+String, Categorical or Enum column, an integer for an integer column, a number for a float
+column (compared in Float64, so the value a page returned matches its own row), a boolean for
+a Boolean column; `null` suits any. A column of any other dtype (temporal, decimal, nested)
+cannot be filtered by equality, and a mismatched value is a 400 naming the column, its dtype
+and the value.
+
+**The sortable columns** are `optimal_scenario_value`, `optimal_objective`, each `optimal_<c>`,
+each analysis column and, for a ratebook target, `factor_product`; any other `sort_by` is a 400
+listing them.
+
+**The depth guard.** A page must end within the first `QUOTE_PAGE_DEPTH_LIMIT = 10,000` rows:
+`offset + limit > 10,000` is refused with a 400 before anything is read, saying to narrow the
+filter or search. It bounds the sort's top-k (`offset + limit` rows held) and the result
+estimate. An offset past the last matching row is not an error: the page is empty and still
+states the counts.
+
+**The reducer** (`src/haute/routes/_optimiser_quotes.py`). `QuotePage(sort_by, descending,
+quote_id_prefix, filters, offset, limit)` is a V09B reducer over the choice frame; when the sort
+or an equality filter reads an analysis column it is `AnalysisQuotePage`, which reads
+`ChoiceFrames.joined()` (`joins_every_quote`, so admission counts the whole side-table join);
+otherwise the plan reads only the choice frame and attaches the analysis values to the page's
+own rows (`with_analysis`). The plan filters, counts the matching rows (one lazy count; the
+target's quote count when nothing filters), sorts with the quote-id tie-break and slices
+`[offset, offset + limit)`, so Polars keeps a top-`(offset + limit)` rather than sorting every
+quote; the result estimate is `offset + limit` rows for a sorted page and `limit` otherwise. A
+page with no sort and no filter reads only its own rows (`scans_every_quote` false), like
+`RowIndex`. It returns `ChoiceQueryResult(rows, total=matched, quotes=n)`. Admission,
+single-flight, point materialisation, the named 409 and 410 and availability are all as
+OPT-V09B specifies: an over-budget page is the 507 memory-limit payload.
+
+**The response** (`OptimiserApplyResponse`). `status`, `total_objective` and `constraints` (the
+target's totals), `from_artifact`, `columns`, `preview` (the page's rows), `row_count` (the
+target's quotes), `matched_row_count` (the quotes matching the search and filters),
+`offset` (the request's), `preview_row_count` (the rows returned) and `preview_row_limit` (the
+request's limit), and `error`. `columns` lists every key of every row, in order, each
+`{name, role, sortable, filterable}` (`OptimiserQuoteColumn`, strict): `quote_id` (`role:
+"id"`), `optimal_scenario_value` (`"scenario"`), `optimal_objective` (`"objective"`), each
+`optimal_<c>` in configured order (`"constraint"`), for a ratebook target `factor_product`
+(`"factor"`) and `deployed_factor_differs` (`"flag"`), then each analysis column in configured
+order (`"analysis"`). `optimal_step`, the clamp flags and the analysis presence marker are not
+returned. `sortable` is whether `sort_by` accepts the column; `filterable` is whether
+`analysis_equals` accepts it (an analysis column of a supported dtype, read from the side
+table's recorded `column_stats`). The response is validated where it is built: `matched_row_count
+<= row_count`, `preview_row_count <= preview_row_limit`, and every row's keys are the column
+names.
+

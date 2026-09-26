@@ -20,10 +20,10 @@ from tests.optimiser_fixtures import (
 from tests.optimiser_fixtures import (
     make_frontier_point as _frontier_point,
 )
+from tests.optimiser_fixtures import make_online_apply_frame, use_local_mlflow_store
 from tests.optimiser_fixtures import (
     make_online_frontier_job as _online_frontier_job,
 )
-from tests.optimiser_fixtures import use_local_mlflow_store
 
 # ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
@@ -183,7 +183,7 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
         baseline_constraints={"volume": 0.85},
         lambdas={"volume": 0.55},
         converged=False,
-        dataframe=pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.04]}),
+        dataframe=make_online_apply_frame(["q1"], steps=[2]),
     )
     quote_grid = MagicMock()
     solver = MagicMock()
@@ -209,7 +209,7 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
     data = resp.json()
     assert data["total_objective"] == 130.0
     assert data["constraints"] == {"volume": 0.93}
-    assert data["preview"][0]["optimal_scenario_value"] == 1.04
+    assert data["preview"][0]["optimal_scenario_value"] == pytest.approx(1.1)
     apply_from_grid.assert_called_once_with(
         quote_grid,
         lambdas={"volume": 0.55},
@@ -246,14 +246,7 @@ def test_concurrent_frontier_point_materialisations_run_one_at_a_time_and_keep_b
         time.sleep(0.05)
         with lock:
             running.remove(point_value)
-        return SimpleNamespace(
-            dataframe=pl.DataFrame(
-                {
-                    "quote_id": [f"q-{point_value}"],
-                    "optimal_scenario_value": [point_value],
-                }
-            )
-        )
+        return SimpleNamespace(dataframe=make_online_apply_frame([f"q-{point_value}"]))
 
     def request_point(point_index: int):
         return client.post(
@@ -310,14 +303,7 @@ def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
             {"frontier_data": dict(current["frontier_data"])},
             expected_status="completed",
         )
-        return SimpleNamespace(
-            dataframe=pl.DataFrame(
-                {
-                    "quote_id": ["q-store-copy"],
-                    "optimal_scenario_value": [1.0],
-                }
-            )
-        )
+        return SimpleNamespace(dataframe=make_online_apply_frame(["q-store-copy"]))
 
     with patch("price_contour.apply_from_grid", side_effect=apply_from_grid):
         response = client.post(
@@ -410,13 +396,7 @@ def test_apply_explicit_frontier_point_artifact_matches_response_preview(
     back later contains the same dataframe as the response — a divergence
     bug between persistence and response shaping could pass silently.
     """
-    persisted_df = pl.DataFrame(
-        {
-            "quote_id": ["q1", "q2", "q3"],
-            "optimal_scenario_value": [1.04, 0.97, 1.21],
-            "expected_income": [42.0, 31.5, 88.7],
-        }
-    )
+    persisted_df = make_online_apply_frame(["q1", "q2", "q3"], steps=[2, 0, 1])
     apply_result = SimpleNamespace(
         total_objective=130.0,
         baseline_objective=95.0,
@@ -445,8 +425,10 @@ def test_apply_explicit_frontier_point_artifact_matches_response_preview(
     # 1) The response preview must mirror what was passed to persistence.
     assert data["row_count"] == persisted_df.height
     assert data["preview_row_count"] == persisted_df.height
-    response_preview = pl.DataFrame(data["preview"])
-    assert response_preview.equals(persisted_df), (
+    response_preview = pl.DataFrame(
+        data["preview"], schema=persisted_df.drop("optimal_step").schema
+    )
+    assert response_preview.equals(persisted_df.drop("optimal_step")), (
         f"response preview diverges from the persisted dataframe:\n"
         f"  preview: {response_preview}\n"
         f"  persisted: {persisted_df}"

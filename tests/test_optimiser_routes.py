@@ -50,9 +50,11 @@ from tests.optimiser_fixtures import (
     SOLVE_SCENARIO_GRID,
     library_frontier_frame,
     logged_json_artifacts,
+    make_completed_job,
     make_frontier_data,
     make_frontier_point,
     make_input_summary,
+    make_online_apply_frame,
     make_ratebook_quote_results,
     make_solved_result,
     setup_grid_stub,
@@ -5089,7 +5091,8 @@ class TestApplyRoute:
         assert data["status"] == "ok"
         assert data["row_count"] > 0
         assert "total_objective" in data
-        assert data["from_artifact"] is False
+        # The as-solved page is always read from the persisted apply artifact.
+        assert data["from_artifact"] is True
 
     def test_apply_missing_job(self, client):
         resp = client.post("/api/optimiser/apply", json={"job_id": "nonexistent"})
@@ -10624,172 +10627,77 @@ class TestSolveStatusEdgeCases:
 
 
 class TestApplyLambdasUnit:
-    def test_apply_returns_row_count_and_preview(self, client, clean_job_store):
-        df = pl.DataFrame(
-            {
-                "quote_id": [f"q{i}" for i in range(5)],
-                "optimal_scenario_value": [1.0] * 5,
-            }
-        )
-        mock_solve_result = SimpleNamespace(
-            dataframe=df,
-            total_objective=500.0,
-            baseline_objective=0.0,
-            baseline_constraints={},
-            total_constraints={"volume": 0.95},
-            constraint_bounds={"volume": 0.9},
-        )
+    @staticmethod
+    def _seed_persisted(store: Any, job_id: str, frame: pl.DataFrame, **extra: Any) -> dict:
+        """A completed online job whose as-solved apply frame is the persisted *frame*."""
+        from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
+
+        handle = _persist_apply_frame_artifact(frame)
         seed_job(
-            clean_job_store,
-            "apply_unit",
-            {
-                "status": "completed",
-                "solve_result": mock_solve_result,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            store,
+            job_id,
+            make_completed_job(
+                result=make_solved_result(total_objective=500.0, constraints={"volume": 0.95}),
+                artifact_handles={"apply_result": handle},
+                **extra,
+            ),
         )
+        return handle
+
+    def test_apply_returns_row_count_and_preview(self, client, clean_job_store):
+        frame = make_online_apply_frame([f"q{i}" for i in range(5)])
+        self._seed_persisted(clean_job_store, "apply_unit", frame)
+
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_unit"})
-        assert resp.status_code == 200
+
+        assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["row_count"] == 5
+        assert data["row_count"] == data["matched_row_count"] == 5
         assert data["total_objective"] == 500.0
-        assert len(data["preview"]) == 5
+        assert data["constraints"] == {"volume": 0.95}
+        assert data["from_artifact"] is True
+        assert data["preview"] == frame.drop("optimal_step").to_dicts()
         assert data["preview_row_count"] == 5
         assert data["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
-        assert data["preview_truncated"] is False
 
-    def test_apply_preview_payload_is_capped_with_truncation_metadata(
-        self,
-        client,
-        clean_job_store,
-    ):
-        df = pl.DataFrame(
-            {
-                "quote_id": [f"q{i}" for i in range(APPLY_PREVIEW_ROW_LIMIT + 1)],
-                "optimal_scenario_value": [1.0] * (APPLY_PREVIEW_ROW_LIMIT + 1),
-            }
-        )
-        mock_solve_result = SimpleNamespace(
-            dataframe=df,
-            total_objective=500.0,
-            baseline_objective=0.0,
-            baseline_constraints={},
-            total_constraints={"volume": 0.95},
-            constraint_bounds={"volume": 0.9},
-        )
-        seed_job(
-            clean_job_store,
-            "apply_capped",
-            {
-                "status": "completed",
-                "solve_result": mock_solve_result,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
+    def test_apply_preview_payload_is_capped_with_the_counts(self, client, clean_job_store):
+        frame = make_online_apply_frame([f"q{i:03d}" for i in range(APPLY_PREVIEW_ROW_LIMIT + 1)])
+        self._seed_persisted(clean_job_store, "apply_capped", frame)
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_capped"})
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["row_count"] == APPLY_PREVIEW_ROW_LIMIT + 1
-        assert len(data["preview"]) == APPLY_PREVIEW_ROW_LIMIT
-        assert data["preview_row_count"] == APPLY_PREVIEW_ROW_LIMIT
+        assert data["row_count"] == data["matched_row_count"] == APPLY_PREVIEW_ROW_LIMIT + 1
+        assert len(data["preview"]) == data["preview_row_count"] == APPLY_PREVIEW_ROW_LIMIT
         assert data["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
-        assert data["preview_truncated"] is True
 
-    def test_apply_loads_persisted_artifact_handle_after_heavy_result_is_slimmed(
-        self,
-        client,
-        clean_job_store,
-    ):
-        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
-
-        df = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "optimal_scenario_value": [1.0, 1.1],
-            }
-        )
-        handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
-        assert handle is not None
-        seed_job(
-            clean_job_store,
-            "apply_handle",
-            {
-                "status": "completed",
-                "result": {
-                    "total_objective": 500.0,
-                    "constraints": {"volume": 0.95},
-                    "baseline_objective": 0.0,
-                    "baseline_constraints": {},
-                },
-                "artifact_handles": {"apply_result": handle},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
-
-        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_handle"})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-        assert data["total_objective"] == 500.0
-        assert data["constraints"] == {"volume": 0.95}
-        assert data["row_count"] == 2
-        assert data["preview"] == [
-            {"quote_id": "q1", "optimal_scenario_value": 1.0},
-            {"quote_id": "q2", "optimal_scenario_value": 1.1},
-        ]
+        last = client.post(
+            "/api/optimiser/apply",
+            json={"job_id": "apply_capped", "offset": APPLY_PREVIEW_ROW_LIMIT},
+        ).json()
+        assert [row["quote_id"] for row in last["preview"]] == [f"q{APPLY_PREVIEW_ROW_LIMIT:03d}"]
+        assert last["offset"] == APPLY_PREVIEW_ROW_LIMIT
 
     def test_apply_success_clears_heavy_result_but_keeps_handle_for_later_apply(
         self,
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
-
-        df = pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "optimal_scenario_value": [1.0, 1.1],
-            }
-        )
-        handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
-        assert handle is not None
-        seed_job(
+        frame = make_online_apply_frame(["q1", "q2"])
+        handle = self._seed_persisted(
             clean_job_store,
             "apply_terminal",
-            {
-                "status": "completed",
-                "solver": MagicMock(),
-                "quote_grid": MagicMock(),
-                "solve_result": SimpleNamespace(
-                    dataframe=df,
-                    total_objective=500.0,
-                    baseline_objective=0.0,
-                    baseline_constraints={},
-                    total_constraints={"volume": 0.95},
-                    constraint_bounds={"volume": 0.9},
-                ),
-                "result": {
-                    "total_objective": 500.0,
-                    "constraints": {"volume": 0.95},
-                    "baseline_objective": 0.0,
-                    "baseline_constraints": {},
-                },
-                "artifact_handles": {"apply_result": handle},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            frame,
+            solver=MagicMock(),
+            quote_grid=MagicMock(),
+            solve_result=SimpleNamespace(dataframe=frame),
         )
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         job = clean_job_store.require_job("apply_terminal")
         assert "solver" not in job
         assert "quote_grid" not in job
@@ -10799,39 +10707,17 @@ class TestApplyLambdasUnit:
         second_resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
 
         assert second_resp.status_code == 200
-        assert second_resp.json()["preview"] == [
-            {"quote_id": "q1", "optimal_scenario_value": 1.0},
-            {"quote_id": "q2", "optimal_scenario_value": 1.1},
-        ]
+        assert second_resp.json()["preview"] == frame.drop("optimal_step").to_dicts()
 
     def test_apply_missing_artifact_handle_returns_gone(
         self,
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
-
-        handle = _persist_apply_result_artifact(
-            SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]}))
+        handle = self._seed_persisted(
+            clean_job_store, "apply_missing_handle", make_online_apply_frame(["q1"])
         )
-        assert handle is not None
         Path(handle["path"]).unlink()
-        seed_job(
-            clean_job_store,
-            "apply_missing_handle",
-            {
-                "status": "completed",
-                "result": {
-                    "total_objective": 500.0,
-                    "constraints": {"volume": 0.95},
-                    "baseline_objective": 0.0,
-                    "baseline_constraints": {},
-                },
-                "artifact_handles": {"apply_result": handle},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
-        )
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_missing_handle"})
 
@@ -10840,43 +10726,21 @@ class TestApplyLambdasUnit:
             "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."
         )
 
-    def test_apply_solve_result_without_dataframe_attribute_fails_loudly(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """A solve_result missing ``dataframe`` is a backend bug, not a 500.
+    def test_a_damaged_apply_artifact_fails_loudly(self, client, clean_job_store):
+        """An artifact without its mode's schema is a defect: the sanitised 500, never a page."""
+        from haute.routes._optimiser_outcomes import ChoiceJoinError
 
-        Previously the ``cast(_DataFrameResultLike, ...).dataframe`` access
-        raised ``AttributeError`` which the broad ``except Exception``
-        funnelled into a generic 500 with no actionable detail.  Surface a
-        typed error instead so the cause is obvious in the response.
-        """
-        seed_job(
+        self._seed_persisted(
             clean_job_store,
-            "apply_no_dataframe",
-            {
-                "status": "completed",
-                "solve_result": SimpleNamespace(
-                    # No ``dataframe`` attribute on purpose.
-                    total_objective=42.0,
-                    baseline_objective=0.0,
-                    baseline_constraints={},
-                    total_constraints={"volume": 1.0},
-                    constraint_bounds={"volume": 0.9},
-                ),
-                "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            "apply_damaged",
+            make_online_apply_frame(["q1"]).drop("optimal_volume"),
         )
 
-        resp = client.post("/api/optimiser/apply", json={"job_id": "apply_no_dataframe"})
+        with patch("haute.server.logger.error") as log_error:
+            resp = client.post("/api/optimiser/apply", json={"job_id": "apply_damaged"})
 
         assert resp.status_code == 500
-        detail = resp.json()["detail"].lower()
-        assert "dataframe" in detail
-        assert "solve_result" in detail or "solve result" in detail
+        assert log_error.call_args.kwargs["error_class"] == ChoiceJoinError.__name__
 
     def test_apply_after_heavy_result_policy_expiry_without_handle_returns_400(
         self,
@@ -11194,6 +11058,7 @@ class TestRunFrontierUnit:
                 "solver": mock_solver,
                 "quote_grid": mock_grid,
                 "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "base_result": base_result,
                 "result": {**base_result, "selected_frontier_point": 0},
                 "frontier_data": {
@@ -11235,23 +11100,16 @@ class TestRunFrontierUnit:
         assert base_apply_path.is_file()
         assert not stale_frontier_path.exists()
 
-        apply_result = SimpleNamespace(
-            dataframe=pl.DataFrame(
-                {
-                    "quote_id": ["q1"],
-                    "optimal_scenario_value": [1.2],
-                }
-            )
-        )
+        apply_result = SimpleNamespace(dataframe=make_online_apply_frame(["q1"], steps=[2]))
         with patch("price_contour.apply_from_grid", return_value=apply_result) as mock_apply:
             apply_resp = client.post(
                 "/api/optimiser/apply",
                 json={"job_id": "frontier_recompute_artifacts", "point_index": 0},
             )
 
-        assert apply_resp.status_code == 200
+        assert apply_resp.status_code == 200, apply_resp.text
         assert apply_resp.json()["from_artifact"] is False
-        assert apply_resp.json()["preview"][0]["optimal_scenario_value"] == 1.2
+        assert apply_resp.json()["preview"][0]["optimal_scenario_value"] == pytest.approx(1.1)
         mock_apply.assert_called_once()
         assert mock_apply.call_args.kwargs["lambdas"] == {"volume": 0.8}
 
@@ -15581,32 +15439,25 @@ class TestApplyException:
     """Test apply endpoint exception handling."""
 
     def test_apply_exception_returns_500(self, client, clean_job_store):
-        """When solve_result.dataframe raises, apply returns 500."""
-        mock_solve_result = MagicMock()
-        mock_solve_result.dataframe = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError("boom"))
-        )
+        """An unexpected failure reading the apply artifact is the sanitised 500."""
+        from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
 
-        # Use a SimpleNamespace with a property that raises
-        class FailingResult:
-            @property
-            def dataframe(self):
-                raise RuntimeError("boom")
-
-            total_objective = 100.0
-            total_constraints = {"volume": 0.92}
-
+        handle = _persist_apply_frame_artifact(make_online_apply_frame(["q1"]))
         seed_job(
             clean_job_store,
             "apply_err",
-            {
-                "status": "completed",
-                "solve_result": FailingResult(),
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            make_completed_job(
+                artifact_handles={"apply_result": handle},
+                solve_result=SimpleNamespace(dataframe=None),
+            ),
         )
-        with patch("haute.server.logger.error") as log_error:
+        with (
+            patch(
+                "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("haute.server.logger.error") as log_error,
+        ):
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
 
         assert resp.status_code == 500
@@ -16594,14 +16445,14 @@ class TestOptimiserHelperValidators:
         assert "threshold is invalid" in exc.value.detail
 
     def test_dataframe_or_raise_returns_dataframe_when_present(self) -> None:
-        from haute.routes.optimiser import _dataframe_or_raise
+        from haute.routes._optimiser_frontier import _dataframe_or_raise
 
         result = SimpleNamespace(dataframe=pl.DataFrame({"a": [1]}))
         df = _dataframe_or_raise(result, context="ctx")
         assert df.shape == (1, 1)
 
     def test_artifact_handles_or_raise_invalid_type(self) -> None:
-        from haute.routes.optimiser import _artifact_handles_or_raise
+        from haute.routes._optimiser_frontier import _artifact_handles_or_raise
 
         with pytest.raises(HTTPException) as exc:
             _artifact_handles_or_raise({"artifact_handles": "not a dict"})
@@ -17554,13 +17405,15 @@ class TestPublishWithoutHeavyState:
                 "base_result": _anchor_result(),
                 "result": _anchor_result(total_objective=130.0, selected_frontier_point=1),
                 "selected_frontier_point": 1,
-                "config": {"mode": "online"},
+                "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "frontier_generation": 0,
                 "artifact_handles": {"apply_result": {"kind": "stub"}},
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
         )
-        frame = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.0]})
+        frame = make_online_apply_frame(["q1"])
         with patch(
             "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
             return_value=frame.lazy(),

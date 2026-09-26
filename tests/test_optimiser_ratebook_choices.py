@@ -366,7 +366,13 @@ class TestAsSolvedRatebookChoices:
         assert body["from_artifact"] is True
         assert body["row_count"] == 9
         assert body["total_objective"] == status["result"]["total_objective"]
-        assert set(body["preview"][0]) == set(apply_frame_schema("ratebook", ["volume"]))
+        # A Quotes page row: the frame's columns but the chosen step and the clamp flags,
+        # with the per-quote "deployed factor differs" flag.
+        schema = apply_frame_schema("ratebook", ["volume"])
+        assert list(body["preview"][0]) == [
+            *(c for c in schema if c not in ("optimal_step", "clamped_low", "clamped_high")),
+            "deployed_factor_differs",
+        ]
 
     def test_composite_factor_segments_need_no_analysis_columns(self, client, tmp_path):
         job_id, status, _scored, _banding = _solve(client, tmp_path, [["region", "age"]])

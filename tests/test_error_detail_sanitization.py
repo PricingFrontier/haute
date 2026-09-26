@@ -538,22 +538,20 @@ class TestOptimiserRoutesSafeDetail:
         _store.clear_all()
 
     def test_apply_500_no_leak(self, client: TestClient, clean_job_store) -> None:
-        store = clean_job_store
-        mock_solve_result = MagicMock()
-        type(mock_solve_result).dataframe = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError("numpy internal: segfault at 0xdead"))
-        )
+        from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
+        from tests.optimiser_fixtures import make_completed_job, make_online_apply_frame
+
+        handle = _persist_apply_frame_artifact(make_online_apply_frame(["q1"]))
         seed_job(
-            store,
+            clean_job_store,
             "test_apply_err",
-            {
-                "status": "completed",
-                "solve_result": mock_solve_result,
-                "created_at": time.time(),
-                "completed_at": time.time(),
-            },
+            make_completed_job(artifact_handles={"apply_result": handle}),
         )
-        resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
+        with patch(
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            side_effect=RuntimeError("numpy internal: segfault at 0xdead"),
+        ):
+            resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "segfault" not in detail

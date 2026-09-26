@@ -34,7 +34,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) and the analysis frame's columns (the data-input columns when the analysis input is the data input, else a preview of the selected analysis input's source node), so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
 | `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node, the ratebook factor-table CSV and the combined-factor collar statement (read from the solve's `originalResult.combined_factor_bounds`). |
 | `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
-| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The online per-quote detail view for the publish target, read through the result store's identity-keyed `/apply` cache with Retry on failure, and the shared λ label and explanation. |
+| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity) with Retry on failure; and the shared λ label and explanation. |
+| `frontend/src/panels/SortableValuesTable.tsx`, `frontend/src/panels/valuesSort.ts` | The shared sortable values table (extracted from the GLM coefficients): column headers as sort buttons with `aria-sort` and a ▲/▼ indicator on the sorted column (a disabled button for a column that cannot be sorted now, plain text for one that never can), the caller's cells and an empty-state `role="status"` message; `ValuesTableSearch`, its labelled search input; and `nextSort` (`valuesSort.ts`, with `SortState`), the one sort cycle (a new column sorts ascending, the sorted column reverses). Sorting itself is the caller's: GLM sorts in the browser, Quotes asks the server. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
@@ -315,6 +316,27 @@ Only a current, accepted save response may acknowledge this revision transition.
    closed values table lists Level | Quotes | Mean (unweighted) | Mean (the weighting) | Adjusted
    up | Adjusted down | At range edge (and Deployed ≠ evaluated step for a ratebook result), with
    "—" for an unavailable weighted figure.
+   **Quotes** (every result, online and ratebook) explores the target's chosen scenarios one
+   server page at a time (`POST /apply` with the query; the selected point, else the solved
+   result). The table (`SortableValuesTable`, labelled "Per-quote detail") shows the response's
+   `columns` in order: Quote ID, "Scenario value" with a text glyph against 1.0 ("▲" above,
+   "▼" below, "=" at 1.0, and an accessible "adjusted up/down/unadjusted" label, so the
+   direction never rests on colour), "Objective", each constraint by name, for ratebook "Factor
+   product" and "Deployed ≠ evaluated" ("Yes"/"No"), and each analysis column; numbers through
+   `formatValue` (grouped, at most four decimals), a missing analysis value as "—". A sortable header (`sortable`) is a sort button
+   with `aria-sort`: the first click sorts ascending, the next descending, alternating; sorting
+   resets the offset. **Presets** (`aria-pressed` buttons): "Highest adjustment" (scenario value
+   descending), "Lowest adjustment" (ascending), "At range edge" (the `at_range_edge` filter, no
+   sort) and, for a ratebook result, "Deployed ≠ evaluated" (the `deployed_factor_differs`
+   filter); a preset replaces the sort and filters and resets the offset, and it is pressed
+   while the query is exactly its own. A filterable analysis cell is a button that adds
+   `analysis_equals` for that value ("Show only quotes with region = North"); each active
+   filter is listed as a removable chip. **Search** ("Search quote IDs", a `ValuesTableSearch`)
+   sends `quote_id_prefix` 300 ms after typing stops (an empty box sends none) and resets the
+   offset. The **pager** states "Showing a–b of M matching (of N)" (or "No quotes match (of
+   N)"), with Previous and Next moving by the limit; Next is disabled at the last matching row
+   and at the depth limit (10,000 rows), where a note asks to narrow the filter or search. A
+   refusal (400, 422, 507) shows the server's message with **Retry**; a 410 shows it without.
    Quotes reads `/apply` through the result store's apply cache (see Edge cases). The MLflow log request carries the node's current `mlflow_destination` (found
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
@@ -453,8 +475,10 @@ without broadening the exactly-one-direct fallback.
 - `/apply` responses are cached in `useNodeResultsStore` under their full request identity
   `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
   index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
-  the canonical (key-sorted) request query beyond the target — empty today, since `/apply` takes
-  none; OPT-V12 adds sort, filters, search, offset and limit. At most 16 entries are kept,
+  the canonical (key-sorted) request query beyond the target: `sort_by`, `descending`,
+  `quote_id_prefix`, `filters` and `offset`/`limit`, always fully specified (`null` and `false`
+  for what is unset, an empty `analysis_equals`), so one query has one key, and the request body
+  is exactly the query plus the job and point. At most 16 entries are kept,
   least recently used evicted first. Installing a solve result for a node (a new job, or the same
   job with another frontier generation, i.e. a recompute) drops that node's entries for any
   other `(jobId, frontierGeneration)`; a failed solve or clearing or evicting the node's result
@@ -531,6 +555,13 @@ build results from the shared fixtures in `frontend/src/panels/optimiser/__tests
 totals; typed online frontier points with `thresholds`, `bounds`, `totals` and `lambdas` maps,
 `converged`, `iterations`, `solver_path` and the `sv_*` statistics, and matching point summaries; a ratebook solve with factor tables carrying
 `quote_count`), so selected-point views are exercised with real-shaped data rather than nulls.
+`frontend/src/panels/optimiser/__tests__/QuotesTab.test.tsx` covers the Quotes explorer: the
+formatted columns and the up/down glyph with its label, `aria-sort` cycling ascending and
+descending with the matching request, each preset's request and pressed state (ratebook's
+only for ratebook), the analysis-value filter and its chip, the debounced search, the pager text
+and Previous/Next offsets, the depth note, a response for an earlier query dropped, Retry, and
+a ratebook page's factor product and flag. `frontend/src/panels/__tests__/GLMComponents.test.tsx` stays green over the
+extracted `SortableValuesTable`.
 Store-integration tests cover the apply cache (no second request on reopening Quotes, a refetch
 after a frontier recompute, late responses from an earlier job or generation discarded, the
 16-entry bound), the tab kept across stepper presses and reset on a new job or node, Convergence

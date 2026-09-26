@@ -1144,10 +1144,11 @@ def test_real_solve_apply_totals_match_selected_rows(
     assert selected_df.height == 2
     assert selected_df["quote_id"].to_list() == ["q1", "q2"]
 
-    selected_source = selected_df.select("quote_id", "optimal_step").join(
-        source_df,
-        left_on=["quote_id", "optimal_step"],
-        right_on=["quote_id", "scenario_index"],
+    # A page row carries the chosen scenario value (the widened Float32 grid value).
+    selected_source = selected_df.select("quote_id", "optimal_scenario_value").join(
+        source_df.with_columns(pl.col("scenario_value").cast(pl.Float64)),
+        left_on=["quote_id", "optimal_scenario_value"],
+        right_on=["quote_id", "scenario_value"],
         how="inner",
     )
     assert selected_source.height == 2

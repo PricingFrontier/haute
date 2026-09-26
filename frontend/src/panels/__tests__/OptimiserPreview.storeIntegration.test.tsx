@@ -465,13 +465,34 @@ describe("OptimiserPreview store integration", () => {
         total_objective: 1250000,
         constraints: { loss_ratio: 0.66 },
         from_artifact: true,
+        columns: [
+          { name: "quote_id", role: "id", sortable: false, filterable: false },
+          { name: "optimal_scenario_value", role: "scenario", sortable: true, filterable: false },
+        ],
         preview: [{ quote_id: quoteId, optimal_scenario_value: 1.05 }],
         row_count: rowCount,
-        preview_row_count: 100,
+        matched_row_count: rowCount,
+        offset: 0,
+        preview_row_count: 1,
         preview_row_limit: 100,
-        preview_truncated: rowCount > 100,
         error: null,
       }
+    }
+
+    /** The request body of the tab's default page: every query field is sent. */
+    const DEFAULT_PAGE = {
+      sort_by: null,
+      descending: false,
+      quote_id_prefix: null,
+      filters: {
+        scenario_value_min: null,
+        scenario_value_max: null,
+        at_range_edge: false,
+        analysis_equals: {},
+        deployed_factor_differs: false,
+      },
+      offset: 0,
+      limit: 100,
     }
 
     /** Install an online solve (with a frontier unless `frontier` is null) under `jobId`. */
@@ -503,9 +524,11 @@ describe("OptimiserPreview store integration", () => {
       openQuotes()
 
       expect(await screen.findByText("Q001")).toBeInTheDocument()
-      expect(mockApplyOptimiser).toHaveBeenCalledWith({ job_id: "job_123" }, { signal: expect.any(AbortSignal) })
-      expect(screen.getByText(/100 of 1,250 quotes, with the scenario the solved result chose/)).toBeInTheDocument()
-      expect(screen.getByText(/capped at 100 rows/)).toBeInTheDocument()
+      expect(mockApplyOptimiser).toHaveBeenCalledWith(
+        { job_id: "job_123", ...DEFAULT_PAGE },
+        { signal: expect.any(AbortSignal) },
+      )
+      expect(screen.getByText("Showing 1–1 of 1,250 matching (of 1,250)")).toBeInTheDocument()
     })
 
     it("follows the selected frontier point, and Retry refetches after a failure", async () => {
@@ -519,7 +542,7 @@ describe("OptimiserPreview store integration", () => {
 
       expect(await screen.findByRole("alert")).toHaveTextContent("Per-quote detail could not be loaded: artifact missing")
       expect(mockApplyOptimiser).toHaveBeenCalledWith(
-        { job_id: "job_123", point_index: 1 },
+        { job_id: "job_123", point_index: 1, ...DEFAULT_PAGE },
         { signal: expect.any(AbortSignal) },
       )
 
@@ -528,7 +551,7 @@ describe("OptimiserPreview store integration", () => {
       expect(await screen.findByText("Q002")).toBeInTheDocument()
       expect(mockApplyOptimiser).toHaveBeenCalledTimes(2)
       expect(mockApplyOptimiser).toHaveBeenLastCalledWith(
-        { job_id: "job_123", point_index: 1 },
+        { job_id: "job_123", point_index: 1, ...DEFAULT_PAGE },
         { signal: expect.any(AbortSignal) },
       )
     })
@@ -563,7 +586,7 @@ describe("OptimiserPreview store integration", () => {
       expect(await screen.findByText("NEW_POINT")).toBeInTheDocument()
       expect(mockApplyOptimiser).toHaveBeenCalledTimes(2)
       expect(mockApplyOptimiser).toHaveBeenLastCalledWith(
-        { job_id: "job_123", point_index: 0 },
+        { job_id: "job_123", point_index: 0, ...DEFAULT_PAGE },
         { signal: expect.any(AbortSignal) },
       )
     })

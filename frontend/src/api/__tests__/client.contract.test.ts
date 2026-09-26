@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { ApiResponseValidationError } from "../responseValidation"
+import type { OptimiserApplyQuery } from "../types"
 import {
   applyOptimiser,
   cancelExplorePivot,
@@ -91,6 +92,22 @@ function jsonResponse(body: unknown, status = 200) {
 const dummyGraph = {
   nodes: [{ id: "n1", type: "custom", position: { x: 0, y: 0 }, data: {} }],
   edges: [],
+}
+
+/** A Quotes page's default query: every field is sent. */
+const APPLY_QUERY: OptimiserApplyQuery = {
+  sort_by: null,
+  descending: false,
+  quote_id_prefix: null,
+  filters: {
+    scenario_value_min: null,
+    scenario_value_max: null,
+    at_range_edge: false,
+    analysis_equals: {},
+    deployed_factor_differs: false,
+  },
+  offset: 0,
+  limit: 100,
 }
 
 beforeEach(() => {
@@ -917,12 +934,15 @@ describe("client runtime contracts", () => {
 
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
 
-    const applyResult = await applyOptimiser({ job_id: "opt-job-1" })
+    const applyResult = await applyOptimiser({ job_id: "opt-job-1", ...APPLY_QUERY })
 
-    expect(applyResult.from_artifact).toBe(false)
+    expect(applyResult.from_artifact).toBe(true)
     expect(applyResult.preview_row_count).toBe(1)
     expect(applyResult.preview_row_limit).toBe(100)
-    expect(applyResult.preview_truncated).toBe(false)
+    expect(applyResult.matched_row_count).toBe(12)
+    expect(applyResult.columns.map((column) => column.role)).toEqual([
+      "id", "scenario", "objective", "constraint", "analysis",
+    ])
   })
 
   it("posts trained model saves and destination previews to the modelling save routes", async () => {
@@ -950,10 +970,13 @@ describe("client runtime contracts", () => {
 
   it("sends explicit frontier point indexes on terminal optimiser actions", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
-    await applyOptimiser({ job_id: "opt-job-1", point_index: 3 })
-    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+    await applyOptimiser({ job_id: "opt-job-1", point_index: 3, ...APPLY_QUERY, sort_by: "region" })
+    // The whole query is sent, beside the explicit target.
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
       job_id: "opt-job-1",
       point_index: 3,
+      ...APPLY_QUERY,
+      sort_by: "region",
     })
 
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_save_response")))
@@ -1145,7 +1168,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "applyOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_apply_response"), constraints: { loss: "bad" } },
-      call: () => applyOptimiser({ job_id: "opt-job-1" }),
+      call: () => applyOptimiser({ job_id: "opt-job-1", ...APPLY_QUERY }),
       error: "OptimiserApplyResponse: invalid contract at /constraints/loss: type",
     },
     {

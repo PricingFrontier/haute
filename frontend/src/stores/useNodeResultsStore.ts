@@ -30,6 +30,7 @@ import type {
   FrontierPointSummary,
   FrontierSelectResponse,
   JobStatus,
+  OptimiserApplyQuery,
   OptimiserEffectiveBound,
   OptimiserSolveResult,
   TrainResponse,
@@ -44,12 +45,8 @@ export const MAX_CACHED_TRAIN_RESULTS = 8
 export const MAX_CACHED_EXPLORE_PIVOT_RESULTS = 32
 export const MAX_CACHED_OPTIMISER_APPLY = 16
 
-/**
- * The `/apply` request's query beyond its target. The endpoint takes none yet
- * (the server returns its bounded default preview), so the only query is `{}`;
- * OPT-V12 adds sort, filters, search, offset and limit here.
- */
-export type OptimiserApplyQuery = Readonly<Record<string, never>>
+/** The `/apply` request's query beyond its target (OPT-V12): sort, search, filters and page. */
+export type { OptimiserApplyQuery }
 
 /** Everything an `/apply` response depends on: a recompute reuses point
  *  indices for different points, so the frontier generation is part of it. */

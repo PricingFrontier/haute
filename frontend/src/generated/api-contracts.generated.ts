@@ -1644,21 +1644,35 @@ export interface OptimiserSegmentKey {
   source: 'analysis' | 'factor';
   unavailable_reason: string | null;
 }
+/**
+ * One Quotes page: the target's totals, typed columns, rows and counts.
+ */
 export interface OptimiserApplyResponse {
+  columns: OptimiserQuoteColumn[];
   constraints: {
     [k: string]: number;
   };
   error: string | null;
   from_artifact: boolean;
+  matched_row_count: number;
+  offset: number;
   preview: {
     [k: string]: unknown;
   }[];
   preview_row_count: number;
-  preview_row_limit: number | null;
-  preview_truncated: boolean;
+  preview_row_limit: number;
   row_count: number;
   status: string;
   total_objective: number;
+}
+/**
+ * One column of a Quotes page and its role (OPT-V12).
+ */
+export interface OptimiserQuoteColumn {
+  filterable: boolean;
+  name: string;
+  role: 'id' | 'scenario' | 'objective' | 'constraint' | 'factor' | 'flag' | 'analysis';
+  sortable: boolean;
 }
 export interface OptimiserSaveResponse {
   apply_path: string;

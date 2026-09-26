@@ -8236,7 +8236,15 @@
       "type": "object"
     },
     "OptimiserApplyResponse": {
+      "description": "One Quotes page: the target's totals, typed columns, rows and counts.",
       "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/OptimiserQuoteColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
         "constraints": {
           "additionalProperties": {
             "type": "number"
@@ -8257,9 +8265,18 @@
           "title": "Error"
         },
         "from_artifact": {
-          "default": false,
           "title": "From Artifact",
           "type": "boolean"
+        },
+        "matched_row_count": {
+          "minimum": 0,
+          "title": "Matched Row Count",
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
         },
         "preview": {
           "items": {
@@ -8270,29 +8287,18 @@
           "type": "array"
         },
         "preview_row_count": {
-          "default": 0,
+          "minimum": 0,
           "title": "Preview Row Count",
           "type": "integer"
         },
         "preview_row_limit": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Preview Row Limit"
-        },
-        "preview_truncated": {
-          "default": false,
-          "title": "Preview Truncated",
-          "type": "boolean"
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Preview Row Limit",
+          "type": "integer"
         },
         "row_count": {
-          "default": 0,
+          "minimum": 0,
           "title": "Row Count",
           "type": "integer"
         },
@@ -8301,7 +8307,6 @@
           "type": "string"
         },
         "total_objective": {
-          "default": 0.0,
           "title": "Total Objective",
           "type": "number"
         }
@@ -8311,11 +8316,13 @@
         "total_objective",
         "constraints",
         "from_artifact",
+        "columns",
         "preview",
         "row_count",
+        "matched_row_count",
+        "offset",
         "preview_row_count",
         "preview_row_limit",
-        "preview_truncated",
         "error"
       ],
       "title": "OptimiserApplyResponse",
@@ -9754,6 +9761,45 @@
         "sv_pct_decrease"
       ],
       "title": "OptimiserOnlineFrontierPoint",
+      "type": "object"
+    },
+    "OptimiserQuoteColumn": {
+      "additionalProperties": false,
+      "description": "One column of a Quotes page and its role (OPT-V12).",
+      "properties": {
+        "filterable": {
+          "title": "Filterable",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "id",
+            "scenario",
+            "objective",
+            "constraint",
+            "factor",
+            "flag",
+            "analysis"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sortable": {
+          "title": "Sortable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "sortable",
+        "filterable"
+      ],
+      "title": "OptimiserQuoteColumn",
       "type": "object"
     },
     "OptimiserRatebookCdTrace": {

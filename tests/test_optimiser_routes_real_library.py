@@ -58,6 +58,8 @@ REAL_APPLY_DETAIL_COLUMNS = [
     "optimal_objective",
     "optimal_volume",
 ]
+# A Quotes page's row keys (OPT-V12): the apply frame's columns but the chosen step.
+_REAL_PAGE_COLUMNS = [column for column in REAL_APPLY_DETAIL_COLUMNS if column != "optimal_step"]
 
 _TERMINAL = {
     "completed",
@@ -692,11 +694,11 @@ class TestOnlineApplyDetailRealSchema:
         client,
         tmp_path,
     ):
-        """solve → apply (live solve_result) → apply again (parquet artifact).
+        """solve → apply → apply again, both from the persisted apply artifact.
 
-        Both responses must carry the pinned real per-quote schema and
-        identical rows; the second response must come from the persisted
-        artifact after heavy state is cleared by the first apply.
+        Both pages carry the real per-quote columns (the chosen step is not a
+        page column) and identical rows, before and after the first apply
+        clears the heavy state.
         """
         df = _scored_frame(n_quotes=7, n_steps=3)
         path = tmp_path / "online_scored.parquet"
@@ -707,10 +709,10 @@ class TestOnlineApplyDetailRealSchema:
         assert first.status_code == 200, first.text
         data = first.json()
         assert data["status"] == "ok"
-        assert data["from_artifact"] is False
+        assert data["from_artifact"] is True
         assert data["row_count"] == 7
         assert data["preview_row_count"] == 7
-        assert list(data["preview"][0].keys()) == REAL_APPLY_DETAIL_COLUMNS
+        assert list(data["preview"][0].keys()) == _REAL_PAGE_COLUMNS
 
         second = client.post("/api/optimiser/apply", json={"job_id": job_id})
         assert second.status_code == 200, second.text
@@ -746,7 +748,7 @@ class TestOnlineApplyDetailRealSchema:
         data = first.json()
         assert data["from_artifact"] is False
         assert data["row_count"] == 5
-        assert list(data["preview"][0].keys()) == REAL_APPLY_DETAIL_COLUMNS
+        assert list(data["preview"][0].keys()) == _REAL_PAGE_COLUMNS
 
         second = client.post(
             "/api/optimiser/apply",
