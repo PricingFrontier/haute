@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from pydantic import ValidationError
 
 from haute.routes._frontier_point_summary import (
     NON_CONVERGED_WARNING,
@@ -14,6 +15,7 @@ from haute.routes._frontier_point_summary import (
     frontier_point_summary,
 )
 from haute.routes._optimiser_limits import limited_frontier_payload
+from haute.schemas import OptimiserFrontierResponse
 
 _SV = {
     "sv_mean": 1.0,
@@ -114,13 +116,58 @@ def test_applying_a_summary_replaces_point_fields_and_removes_absent_ones() -> N
 def test_the_frontier_payload_carries_one_summary_per_returned_point() -> None:
     points = pl.DataFrame([_row(total_objective=110.0), _row(total_objective=130.0)])
 
-    payload = limited_frontier_payload(points, constraint_kinds=_KINDS, swept_axes=["volume"])
+    payload = limited_frontier_payload(
+        points, constraint_kinds=_KINDS, swept_axes=["volume"], frontier_generation=0
+    )
 
     assert [summary["total_objective"] for summary in payload["point_summaries"]] == [
         110.0,
         130.0,
     ]
     assert payload["point_summaries"][0] == frontier_point_summary(payload["points"][0], _KINDS)
+
+
+# ---------------------------------------------------------------------------
+# OPT-V02: every computed frontier reports the job's frontier generation
+# ---------------------------------------------------------------------------
+
+
+def test_the_frontier_payload_reports_its_generation() -> None:
+    payload = limited_frontier_payload(
+        pl.DataFrame([_row()]),
+        constraint_kinds=_KINDS,
+        swept_axes=["volume"],
+        frontier_generation=3,
+    )
+
+    assert payload["frontier_generation"] == 3
+    assert OptimiserFrontierResponse(**payload).frontier_generation == 3
+
+
+def test_a_computed_frontier_without_a_generation_is_rejected() -> None:
+    payload = limited_frontier_payload(
+        pl.DataFrame([_row()]),
+        constraint_kinds=_KINDS,
+        swept_axes=["volume"],
+        frontier_generation=0,
+    )
+    del payload["frontier_generation"]
+
+    with pytest.raises(ValidationError, match="frontier_generation"):
+        OptimiserFrontierResponse(**payload)
+
+
+def test_a_negative_generation_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="frontier_generation"):
+        OptimiserFrontierResponse(status="ok", frontier_generation=-1)
+
+
+def test_only_the_started_handle_has_no_generation() -> None:
+    started = OptimiserFrontierResponse(status="started", job_id="sweep_1")
+    assert started.frontier_generation is None
+
+    with pytest.raises(ValidationError, match="frontier_generation"):
+        OptimiserFrontierResponse(status="started", job_id="sweep_1", frontier_generation=0)
 
 
 @pytest.mark.parametrize(
@@ -142,7 +189,10 @@ def test_a_point_that_cannot_be_summarised_fails_the_frontier(
 ) -> None:
     with pytest.raises(FrontierPointDataError, match=message) as exc:
         limited_frontier_payload(
-            pl.DataFrame([row]), constraint_kinds=_KINDS, swept_axes=["volume"]
+            pl.DataFrame([row]),
+            constraint_kinds=_KINDS,
+            swept_axes=["volume"],
+            frontier_generation=0,
         )
 
     assert exc.value.status_code == status_code
@@ -190,6 +240,7 @@ def test_the_frontier_payload_lists_every_constraint_and_the_swept_axes_apart() 
         pl.DataFrame([_two_constraint_row()]),
         constraint_kinds=_TWO_KINDS,
         swept_axes=["volume"],
+        frontier_generation=0,
     )
 
     assert payload["constraint_names"] == ["volume", "margin"]
@@ -203,6 +254,7 @@ def test_a_swept_axis_that_is_not_a_configured_constraint_is_rejected() -> None:
             pl.DataFrame([_row()]),
             constraint_kinds=_KINDS,
             swept_axes=["conversion"],
+            frontier_generation=0,
         )
 
 

@@ -41,6 +41,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
         "quote_grid": MagicMock(),
         "heavy_objects_expires_at": time.time() + 3600,
         "frontier_data": {
+            "frontier_generation": 0,
             "status": "ok",
             "points": [
                 {
@@ -62,6 +63,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
             "baseline_constraints": {"volume": 0.85},
             "lambdas": {"volume": 0.3},
             "converged": True,
+            "frontier_generation": 0,
         },
         "created_at": time.time(),
         "completed_at": time.time(),
@@ -359,6 +361,7 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
             "status": "completed",
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "frontier_data": {
+                "frontier_generation": 0,
                 "status": "ok",
                 "points": [
                     {
@@ -376,6 +379,7 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
             "result": {
                 "baseline_objective": 90.0,
                 "baseline_constraints": {"volume": 0.85},
+                "frontier_generation": 0,
             },
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -1098,6 +1102,7 @@ def _ratebook_materialise_job(**overrides: object) -> dict:
         "status": "completed",
         "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
         "frontier_data": {
+            "frontier_generation": 0,
             "status": "ok",
             "points": [
                 {
@@ -1123,6 +1128,7 @@ def _ratebook_materialise_job(**overrides: object) -> dict:
             "baseline_constraints": {"volume": 0.85},
             "lambdas": {"volume": 0.0},
             "converged": True,
+            "frontier_generation": 0,
         },
         "factor_columns_valid": [["region"]],
         "factor_level_counts": {"region": {"North": 1}},
@@ -1351,6 +1357,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "converged": True,
     }
     cached_result = {
+        "frontier_generation": 0,
         "mode": "ratebook",
         "total_objective": 130.0,
         "baseline_objective": 90.0,
@@ -1371,6 +1378,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
             "status": "completed",
             "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
             "frontier_data": {
+                "frontier_generation": 0,
                 "status": "ok",
                 "points": [point],
                 "n_points": 1,

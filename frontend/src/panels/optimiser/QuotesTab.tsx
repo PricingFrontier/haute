@@ -3,22 +3,29 @@
  * chose for each quote, for the current publish target (the solved result or
  * one frontier point).
  *
- * Loaded when the tab opens and again when the target changes. The server
- * bounds the rows it returns, so the tab states both the total and the cap.
- * Viewing detail never consumes the result: saving and logging still work.
+ * Loaded when the tab opens and again when the target changes, through the
+ * result store's `/apply` cache: a response is kept under its full request
+ * identity (job, frontier generation, target and query), so reopening the tab
+ * for the same target makes no request, while a new job or a recomputed
+ * frontier loads afresh. A response that arrives after the identity changed
+ * is dropped. The server bounds the rows it returns, so the tab states both
+ * the total and the cap. Viewing detail never consumes the result: saving and
+ * logging still work.
  */
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AlertCircle, Loader2 } from "lucide-react"
 import { applyOptimiser } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
-import type { ApplyOptimiserResponse } from "../../api/types"
+import useNodeResultsStore, {
+  optimiserApplyKey,
+  type OptimiserApplyIdentity,
+  type OptimiserApplyQuery,
+} from "../../stores/useNodeResultsStore"
 import { formatNumber } from "../../utils/formatValue"
 
-type QuotesState =
-  | { status: "loading"; key: string }
-  | { status: "loaded"; key: string; data: ApplyOptimiserResponse }
-  | { status: "error"; key: string; error: string }
+/** `/apply` takes no query beyond its target yet (OPT-V12 adds one). */
+const APPLY_QUERY: OptimiserApplyQuery = {}
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return ""
@@ -26,28 +33,68 @@ function formatCell(value: unknown): string {
   return String(value)
 }
 
-export default function QuotesTab({ jobId, pointIndex }: { jobId: string; pointIndex: number | null }) {
-  const key = `${jobId}:${pointIndex ?? "solved"}`
-  const [state, setState] = useState<QuotesState>({ status: "loading", key })
-  // Adjust-on-render: a new target shows loading at once, never the old rows.
-  if (state.key !== key) setState({ status: "loading", key })
+interface QuotesTabProps {
+  nodeId: string
+  jobId: string
+  /** The solve's frontier generation: point indices are only meaningful within one. */
+  frontierGeneration: number
+  /** The publish target: a frontier point, or null for the solved result. */
+  pointIndex: number | null
+}
+
+export default function QuotesTab({ nodeId, jobId, frontierGeneration, pointIndex }: QuotesTabProps) {
+  const identity = useMemo<OptimiserApplyIdentity>(
+    () => ({ jobId, frontierGeneration, target: pointIndex ?? "solved", query: APPLY_QUERY }),
+    [jobId, frontierGeneration, pointIndex],
+  )
+  const key = optimiserApplyKey(identity)
+  const cached = useNodeResultsStore((s) => s.optimiserApplyCache.find((entry) => entry.key === key))
+  const recordApply = useNodeResultsStore((s) => s.recordOptimiserApply)
+  const touchApply = useNodeResultsStore((s) => s.touchOptimiserApply)
+  const [failure, setFailure] = useState<{ key: string; error: string } | null>(null)
+  const hasCached = cached !== undefined
+  const failed = failure !== null && failure.key === key
 
   useEffect(() => {
+    if (hasCached) {
+      touchApply(key)
+      return
+    }
+    // A failed request is reissued only by Retry, which clears the failure.
+    if (failed) return
     const controller = new AbortController()
     applyOptimiser(
-      { job_id: jobId, ...(pointIndex !== null ? { point_index: pointIndex } : {}) },
+      { job_id: identity.jobId, ...(identity.target !== "solved" ? { point_index: identity.target } : {}) },
       { signal: controller.signal },
     )
-      .then((data) => {
-        if (!controller.signal.aborted) setState({ status: "loaded", key, data })
+      .then((response) => {
+        // Aborted means this tab's identity (its query included) moved on; the
+        // store also refuses an identity whose job, generation or target did.
+        if (!controller.signal.aborted) recordApply(nodeId, identity, response)
       })
       .catch((error) => {
-        if (!controller.signal.aborted) setState({ status: "error", key, error: apiErrorMessage(error, "The request failed.") })
+        if (!controller.signal.aborted) setFailure({ key, error: apiErrorMessage(error, "The request failed.") })
       })
     return () => controller.abort()
-  }, [jobId, key, pointIndex])
+  }, [failed, hasCached, identity, key, nodeId, recordApply, touchApply])
 
-  if (state.status === "loading") {
+  if (failed) {
+    return (
+      <div role="alert" className="flex items-start gap-2 text-xs px-3 py-2 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+        <span className="flex-1">Per-quote detail could not be loaded: {failure.error}</span>
+        <button
+          type="button"
+          onClick={() => setFailure(null)}
+          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
+          style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+  if (!cached) {
     return (
       <div className="flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
         <Loader2 size={14} className="animate-spin" />
@@ -55,16 +102,8 @@ export default function QuotesTab({ jobId, pointIndex }: { jobId: string; pointI
       </div>
     )
   }
-  if (state.status === "error") {
-    return (
-      <div role="alert" className="flex items-start gap-2 text-xs px-3 py-2 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-        <span>Per-quote detail could not be loaded: {state.error}</span>
-      </div>
-    )
-  }
 
-  const { data } = state
+  const data = cached.response
   const rows = data.preview
   const columns = rows.length > 0 ? Object.keys(rows[0]) : []
   const shown = data.preview_row_count ?? rows.length

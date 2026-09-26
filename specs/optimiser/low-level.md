@@ -88,7 +88,9 @@ unlimited frontier points — distinct from `result["frontier"]`, which is the s
 frontend payload), `frontier_factor_tables` (ratebook only: one `{factor: {level: rate}}` dict per
 retained frontier point, aligned with `frontier_data["points"]`, stored by the solve-time
 frontier and replaced by every recompute; `None` for online jobs), `frontier_generation` (a non-negative integer initialised to `0` at solve
-completion and incremented by every explicit recompute), `selected_frontier_point`,
+completion and incremented by every explicit recompute; the same atomic update writes it into
+`result`, `base_result`, `frontier_data` and `result["frontier"]`, so every response that
+carries a result or a frontier reports it — see "Frontier generation" below), `selected_frontier_point`,
 `artifact_handles` (dict of named artifact handles, see below), `publish_summary` (the anchor's
 MLflow summary — `params`/`metrics`/`artifacts` from `solver.summary(solve_result)` — computed
 once in `_finalize_solve_result` before the apply dataframe is persisted, with every Polars
@@ -518,6 +520,19 @@ with the row's λ, as haute did before 0.5, could land on different tables than 
 picked.) The result is cached when the job's current result already matches that point's
 lambdas exactly, otherwise the job is updated atomically (409 if its state changed
 concurrently). Missing or misaligned `frontier_factor_tables` is a `500`, never a re-solve.
+
+### Frontier generation
+
+The job's `frontier_generation` is exposed as `frontier_generation` on `OptimiserSolveResult`
+(the solve status `result`), on `OptimiserFrontierSelectResponse`, and on every computed
+`OptimiserFrontierResponse` (the solve-time frontier, the solve status `frontier`, and a recompute
+sweep's own `result`). It is `0` for a solve and its solve-time frontier and the parent's
+incremented value for a recompute, set on the recompute's frontier payload and its reset result
+under the parent's lock in the same update that increments the job field. Only the
+`status="started"` handle returned by `POST /frontier` has none (`null`); a computed frontier
+without one fails validation. Clients key anything derived from a frontier point (the
+browser's `/apply` cache) by `(job_id, frontier_generation)`, since a recompute reuses point
+indices for different points.
 
 ### Frontier point summaries
 

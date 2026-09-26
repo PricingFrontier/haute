@@ -85,6 +85,7 @@ function makeFrontier(n = 5): FrontierData {
     swept_axes: ["loss_ratio"],
     points_limit: 2000,
     points_truncated: false,
+    frontier_generation: 0,
   }
 }
 
@@ -107,8 +108,10 @@ function onlineResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserS
 }
 
 function makeData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+  const solvedResult = overrides.solvedResult ?? overrides.result ?? onlineResult()
   return {
-    result: onlineResult(),
+    result: solvedResult,
+    solvedResult,
     jobId: "job_1",
     constraints: { loss_ratio: { max: 0.7 } },
     nodeLabel: "Price optimiser",

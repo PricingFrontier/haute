@@ -295,6 +295,23 @@ another round trip), and — critically — if the user has since selected a
 summary but does not regress the displayed `result`/`selectedPointIndex` to
 the stale response's point (the "stale-response guard").
 
+**Optimiser apply cache** (`optimiserApplyCache`, `recordOptimiserApply`,
+`touchOptimiserApply`, `optimiserApplyIdentityFor`, `optimiserApplyKey`): the
+`/apply` per-quote responses, at most `MAX_CACHED_OPTIMISER_APPLY` (16)
+entries in least-recently-used order, each keyed by the full request identity
+`(jobId, frontierGeneration, target: "solved" | pointIndex, canonical query)`
+and owned by one node. `optimiserApplyIdentityFor(cached, query)` derives a
+node's current identity from its cached solve (`jobId`,
+`originalResult.frontier_generation`, `selectedPointIndex`).
+`recordOptimiserApply` stores a response only when that identity is still the
+node's current one and returns whether it did; otherwise the response is late
+and dropped. `completeSolveJob` keeps only the node's entries for the
+installed `(jobId, frontierGeneration)` (so a new job or a recomputed frontier
+refetches), and `failSolveJob`, clearing the node's results and solve-cache
+eviction drop all the node's entries. `touchOptimiserApply` marks a hit most
+recently used. See the
+[optimiser UI spec](../frontend-modelling-optimiser-ui/low-level.md#edge-cases-and-invariants).
+
 **Constraint bounds** (`effectiveConstraintBounds`): the one selector the
 optimiser Summary and frontier detail card read a result's constraint bounds
 from. It returns the displayed result's backend `effective_bounds` (the

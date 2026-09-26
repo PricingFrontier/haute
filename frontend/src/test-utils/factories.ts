@@ -409,6 +409,7 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     frontier: null,
     frontier_error: null,
     selected_frontier_point: null,
+    frontier_generation: 0,
     ...overrides,
   }
 }
@@ -440,6 +441,7 @@ export function makeFrontier(overrides: Partial<FrontierResponse> = {}): Frontie
     swept_axes: [],
     points_limit: null,
     points_truncated: false,
+    frontier_generation: 0,
     job_id: null,
     ...overrides,
   }
@@ -480,6 +482,7 @@ export function makeFrontierSelect(
     scenario_value_histogram: null,
     clamp_rate: null,
     combined_factor_bounds: null,
+    frontier_generation: 0,
     error: null,
     ...overrides,
   }

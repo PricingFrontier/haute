@@ -1,17 +1,24 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import OptimiserPreview from "../OptimiserPreview"
-import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types"
+import type { ApplyOptimiserResponse } from "../../api/types"
 import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
 import useGraphStore from "../../stores/useGraphStore"
-import { makeSolveResult as makeSolveResultFactory, makeFrontier } from "../../test-utils/factories"
+import { makeFrontier } from "../../test-utils/factories"
+import {
+  makeOnlineFrontier,
+  makeOnlineSolveResult,
+  makeRatebookFrontier,
+  makeRatebookSolveResult,
+} from "../optimiser/__tests__/fixtures"
 
 const mockSelectFrontierPoint = vi.fn()
+const mockApplyOptimiser = vi.fn()
 
 vi.mock("../../api/client", () => ({
-  applyOptimiser: vi.fn(),
+  applyOptimiser: (...args: unknown[]) => mockApplyOptimiser(...args),
   saveOptimiser: vi.fn(),
   logOptimiserToMlflow: vi.fn(),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPoint(...args),
@@ -52,26 +59,6 @@ vi.mock("../../stores/useSettingsStore", () => ({
   useMlflowDestinations: () => MLFLOW_INVENTORY,
 }))
 
-function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
-  return {
-    total_objective: 0,
-    constraints: {},
-    effective_bounds: {},
-    lambdas: {},
-    converged: true,
-    iterations: null,
-    cd_iterations: null,
-    clamp_rate: null,
-    history: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
-    factor_tables: null,
-    warning: null,
-    frontier_error: null,
-    ...overrides,
-  }
-}
-
 function resetStore() {
   resetNodeResultsDerivedCaches()
   useGraphStore.setState({ structuralVersion: 0 })
@@ -83,21 +70,7 @@ function resetStore() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
-  })
-}
-
-function makeSolveResult(
-  overrides: Partial<OptimiserSolveResult> = {},
-): OptimiserSolveResult {
-  return makeSolveResultFactory({
-    total_objective: 100,
-    baseline_objective: 80,
-    constraints: { loss_ratio: 0.6 },
-    baseline_constraints: { loss_ratio: 0.55 },
-    effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
-    lambdas: { loss_ratio: 0.1 },
-    converged: true,
-    ...overrides,
+    optimiserApplyCache: [],
   })
 }
 
@@ -105,6 +78,7 @@ describe("OptimiserPreview store integration", () => {
   beforeEach(() => {
     resetStore()
     mockSelectFrontierPoint.mockReset()
+    mockApplyOptimiser.mockReset()
   })
 
   afterEach(() => {
@@ -117,29 +91,7 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "My Optimiser", { loss_ratio: { max: 1.05 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        frontier: makeFrontier({
-          status: "ok",
-          points: Array.from({ length: 5 }, (_, i) => ({
-            total_objective: 120 + i,
-            loss_ratio: 0.55 + i * 0.02,
-            lambda_loss_ratio: 0.01 + i * 0.01,
-            converged: true,
-          })),
-          point_summaries: Array.from({ length: 5 }, (_, i) => makePointSummary({
-            total_objective: 120 + i,
-            constraints: { loss_ratio: 0.55 + i * 0.02 },
-            effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
-            lambdas: { loss_ratio: 0.01 + i * 0.01 },
-          })),
-          n_points: 5,
-          points_returned: 5,
-          constraint_names: ["loss_ratio"],
-          swept_axes: ["loss_ratio"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
-      }),
+      makeOnlineSolveResult({ frontier: makeFrontier(makeOnlineFrontier(5)) }),
     )
 
     const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
@@ -176,29 +128,11 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        mode: "ratebook",
+      makeRatebookSolveResult({
         factor_tables: {
           region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
         },
-        frontier: makeFrontier({
-          status: "ok",
-          points: [
-            {
-              total_objective: 120,
-              total_volume: 0.9,
-              lambda_volume: 0.1,
-              converged: true,
-            },
-          ],
-          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.1 } })],
-          n_points: 1,
-          points_returned: 1,
-          constraint_names: ["volume"],
-          swept_axes: ["volume"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
+        frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
     )
 
@@ -246,26 +180,8 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        mode: "ratebook",
-        frontier: makeFrontier({
-          status: "ok",
-          points: [
-            {
-              total_objective: 120,
-              total_volume: 0.9,
-              lambda_volume: 0.1,
-              converged: true,
-            },
-          ],
-          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.1 } })],
-          n_points: 1,
-          points_returned: 1,
-          constraint_names: ["volume"],
-          swept_axes: ["volume"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
+      makeRatebookSolveResult({
+        frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
     )
 
@@ -322,29 +238,11 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        mode: "ratebook",
+      makeRatebookSolveResult({
         factor_tables: {
           region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
         },
-        frontier: makeFrontier({
-          status: "ok",
-          points: [
-            {
-              total_objective: 120,
-              total_volume: 0.9,
-              lambda_volume: 0.1,
-              converged: true,
-            },
-          ],
-          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.1 } })],
-          n_points: 1,
-          points_returned: 1,
-          constraint_names: ["volume"],
-          swept_axes: ["volume"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
+        frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
     )
 
@@ -382,29 +280,11 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        mode: "ratebook",
+      makeRatebookSolveResult({
         factor_tables: {
           region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
         },
-        frontier: makeFrontier({
-          status: "ok",
-          points: [
-            {
-              total_objective: 120,
-              total_volume: 0.9,
-              lambda_volume: 0.1,
-              converged: true,
-            },
-          ],
-          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.1 } })],
-          n_points: 1,
-          points_returned: 1,
-          constraint_names: ["volume"],
-          swept_axes: ["volume"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
+        frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
     )
 
@@ -428,26 +308,8 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        mode: "ratebook",
-        frontier: makeFrontier({
-          status: "ok",
-          points: [
-            {
-              total_objective: 120,
-              total_volume: 0.9,
-              lambda_volume: 0.1,
-              converged: true,
-            },
-          ],
-          point_summaries: [makePointSummary({ total_objective: 120, constraints: { volume: 0.9 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.1 } })],
-          n_points: 1,
-          points_returned: 1,
-          constraint_names: ["volume"],
-          swept_axes: ["volume"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
+      makeRatebookSolveResult({
+        frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
     )
 
@@ -517,35 +379,11 @@ describe("OptimiserPreview store integration", () => {
     store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
     store.completeSolveJob(
       "opt_1",
-      makeSolveResult({
-        mode: "ratebook",
-        frontier: makeFrontier({
-          status: "ok",
-          points: [
-            {
-              total_objective: 100,
-              total_volume: 0.9,
-              lambda_volume: 0.05,
-              converged: true,
-            },
-            {
-              total_objective: 130,
-              total_volume: 0.93,
-              lambda_volume: 0.55,
-              converged: true,
-            },
-          ],
-          point_summaries: [
-            makePointSummary({ total_objective: 100, constraints: { volume: 0.9 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.05 } }),
-            makePointSummary({ total_objective: 130, constraints: { volume: 0.93 }, effective_bounds: { volume: { kind: "min", bound: 0.9 } }, lambdas: { volume: 0.55 } }),
-          ],
-          n_points: 2,
-          points_returned: 2,
-          constraint_names: ["volume"],
-          swept_axes: ["volume"],
-          points_limit: 2000,
-          points_truncated: false,
-        }),
+      makeRatebookSolveResult({
+        frontier: makeFrontier(makeRatebookFrontier([
+          { objective: 100, volume: 0.9, lambda: 0.05 },
+          { objective: 130, volume: 0.93, lambda: 0.55 },
+        ])),
       }),
     )
 
@@ -612,5 +450,196 @@ describe("OptimiserPreview store integration", () => {
     // request, not stale leftovers.  This is the safer contract: no
     // partial enrichment from a request the user has already moved past.
     expect(final.frontier!.point_summaries[0].factor_tables).toBeNull()
+  })
+
+  describe("per-quote detail (Quotes)", () => {
+    function applyResponse(quoteId: string, rowCount = 1250): ApplyOptimiserResponse {
+      return {
+        status: "ok",
+        total_objective: 1250000,
+        constraints: { loss_ratio: 0.66 },
+        from_artifact: true,
+        preview: [{ quote_id: quoteId, optimal_scenario_value: 1.05 }],
+        row_count: rowCount,
+        preview_row_count: 100,
+        preview_row_limit: 100,
+        preview_truncated: rowCount > 100,
+        error: null,
+      }
+    }
+
+    /** Install an online solve (with a frontier unless `frontier` is null) under `jobId`. */
+    function solveOnline(jobId: string, { generation = 0, frontier = true } = {}) {
+      const store = useNodeResultsStore.getState()
+      store.startSolveJob("opt_1", jobId, "My Optimiser", { loss_ratio: { max: 1.05 } }, "h1", "live", 0)
+      store.completeSolveJob("opt_1", makeOnlineSolveResult({
+        frontier_generation: generation,
+        frontier: frontier
+          ? makeFrontier(makeOnlineFrontier(5, { frontier_generation: generation }))
+          : null,
+      }))
+    }
+
+    function renderLive() {
+      const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")
+      if (!data) throw new Error("No optimiser preview for opt_1")
+      return render(<OptimiserPreview data={data} nodeId="opt_1" allNodes={[]} edges={[]} />)
+    }
+
+    function openQuotes() {
+      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
+    }
+
+    it("shows the solved result's per-quote detail without a point index", async () => {
+      mockApplyOptimiser.mockResolvedValueOnce(applyResponse("Q001"))
+      solveOnline("job_123", { frontier: false })
+      renderLive()
+      openQuotes()
+
+      expect(await screen.findByText("Q001")).toBeInTheDocument()
+      expect(mockApplyOptimiser).toHaveBeenCalledWith({ job_id: "job_123" }, { signal: expect.any(AbortSignal) })
+      expect(screen.getByText(/100 of 1,250 quotes, with the scenario the solved result chose/)).toBeInTheDocument()
+      expect(screen.getByText(/capped at 100 rows/)).toBeInTheDocument()
+    })
+
+    it("follows the selected frontier point, and Retry refetches after a failure", async () => {
+      mockApplyOptimiser
+        .mockRejectedValueOnce(new Error("artifact missing"))
+        .mockResolvedValueOnce(applyResponse("Q002"))
+      solveOnline("job_123")
+      useNodeResultsStore.getState().selectFrontierPoint("opt_1", 1)
+      renderLive()
+      openQuotes()
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Per-quote detail could not be loaded: artifact missing")
+      expect(mockApplyOptimiser).toHaveBeenCalledWith(
+        { job_id: "job_123", point_index: 1 },
+        { signal: expect.any(AbortSignal) },
+      )
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+
+      expect(await screen.findByText("Q002")).toBeInTheDocument()
+      expect(mockApplyOptimiser).toHaveBeenCalledTimes(2)
+      expect(mockApplyOptimiser).toHaveBeenLastCalledWith(
+        { job_id: "job_123", point_index: 1 },
+        { signal: expect.any(AbortSignal) },
+      )
+    })
+
+    it("makes no second request when Quotes is reopened for the same target", async () => {
+      mockApplyOptimiser.mockResolvedValue(applyResponse("Q001"))
+      solveOnline("job_123")
+      renderLive()
+      openQuotes()
+      expect(await screen.findByText("Q001")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      openQuotes()
+
+      expect(screen.getByText("Q001")).toBeInTheDocument()
+      expect(mockApplyOptimiser).toHaveBeenCalledTimes(1)
+    })
+
+    it("refetches the same point index after a frontier recompute", async () => {
+      mockApplyOptimiser
+        .mockResolvedValueOnce(applyResponse("OLD_POINT"))
+        .mockResolvedValueOnce(applyResponse("NEW_POINT"))
+      solveOnline("job_123", { generation: 0 })
+      renderLive()
+      openQuotes()
+      expect(await screen.findByText("OLD_POINT")).toBeInTheDocument()
+
+      // The recomputed frontier reuses point index 0 for a different point.
+      act(() => solveOnline("job_123", { generation: 1 }))
+      openQuotes()
+
+      expect(await screen.findByText("NEW_POINT")).toBeInTheDocument()
+      expect(mockApplyOptimiser).toHaveBeenCalledTimes(2)
+      expect(mockApplyOptimiser).toHaveBeenLastCalledWith(
+        { job_id: "job_123", point_index: 0 },
+        { signal: expect.any(AbortSignal) },
+      )
+    })
+
+    it("discards a late response from an earlier job", async () => {
+      let resolveEarlier!: (response: ApplyOptimiserResponse) => void
+      mockApplyOptimiser
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve }))
+        .mockResolvedValueOnce(applyResponse("NEW_JOB"))
+      solveOnline("job_123")
+      renderLive()
+      openQuotes()
+      await waitFor(() => expect(mockApplyOptimiser).toHaveBeenCalledTimes(1))
+
+      act(() => solveOnline("job_456"))
+      openQuotes()
+      expect(await screen.findByText("NEW_JOB")).toBeInTheDocument()
+
+      await act(async () => { resolveEarlier(applyResponse("EARLIER_JOB")) })
+
+      expect(screen.queryByText("EARLIER_JOB")).not.toBeInTheDocument()
+      expect(screen.getByText("NEW_JOB")).toBeInTheDocument()
+      const cached = useNodeResultsStore.getState().optimiserApplyCache
+      expect(cached.map((entry) => entry.identity.jobId)).toEqual(["job_456"])
+    })
+
+    it("discards a late response from an earlier frontier generation", async () => {
+      let resolveEarlier!: (response: ApplyOptimiserResponse) => void
+      mockApplyOptimiser
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve }))
+        .mockResolvedValueOnce(applyResponse("RECOMPUTED"))
+      solveOnline("job_123", { generation: 0 })
+      renderLive()
+      openQuotes()
+      await waitFor(() => expect(mockApplyOptimiser).toHaveBeenCalledTimes(1))
+
+      act(() => solveOnline("job_123", { generation: 1 }))
+      openQuotes()
+      expect(await screen.findByText("RECOMPUTED")).toBeInTheDocument()
+
+      await act(async () => { resolveEarlier(applyResponse("EARLIER_GENERATION")) })
+
+      expect(screen.queryByText("EARLIER_GENERATION")).not.toBeInTheDocument()
+      const cached = useNodeResultsStore.getState().optimiserApplyCache
+      expect(cached.map((entry) => entry.identity.frontierGeneration)).toEqual([1])
+    })
+  })
+
+  it("offers Retry when selected ratebook rates fail to load, and Retry refetches them", async () => {
+    mockSelectFrontierPoint
+      .mockRejectedValueOnce(Object.assign(new Error("HTTP 500"), { detail: "Rates unavailable." }))
+      .mockResolvedValueOnce({
+        status: "ok",
+        point_index: 0,
+        total_objective: 120,
+        constraints: { volume: 0.9 },
+        baseline_objective: 80,
+        baseline_constraints: { volume: 0.8 },
+        effective_bounds: { volume: { kind: "min", bound: 0.9 } },
+        lambdas: { volume: 0.1 },
+        converged: true,
+        cd_iterations: 5,
+        factor_tables: {
+          region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 120 }],
+        },
+        frontier_generation: 0,
+        error: null,
+      })
+    const store = useNodeResultsStore.getState()
+    store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
+    store.completeSolveJob("opt_1", makeRatebookSolveResult({
+      frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
+    }))
+    const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")!
+    render(<OptimiserPreview data={data} nodeId="opt_1" allNodes={[]} edges={[]} />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rates" }))
+    expect(await screen.findByText(/Rate table load failed: Rates unavailable./)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+
+    expect(await screen.findByText("North")).toBeInTheDocument()
+    expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
   })
 })

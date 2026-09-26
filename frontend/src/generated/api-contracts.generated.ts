@@ -1304,6 +1304,7 @@ export interface OptimiserStatusResponse {
 }
 export interface OptimiserFrontierResponse {
   constraint_names: string[];
+  frontier_generation: number | null;
   job_id: string | null;
   n_points: number;
   point_summaries: OptimiserFrontierPointSummary[];
@@ -1410,6 +1411,7 @@ export interface OptimiserSolveResult {
   };
   frontier: OptimiserFrontierResponse | null;
   frontier_error: string | null;
+  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   iterations: number | null;
   lambdas: {
@@ -1572,6 +1574,7 @@ export interface OptimiserFrontierSelectResponse {
       [k: string]: unknown;
     }[];
   };
+  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   iterations: number | null;
   lambdas: {

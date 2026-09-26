@@ -8,7 +8,10 @@ import useNodeResultsStore, {
   MAX_CACHED_SOLVE_RESULTS,
   MAX_CACHED_TRAIN_RESULTS,
   MAX_CACHED_EXPLORE_PIVOT_RESULTS,
+  MAX_CACHED_OPTIMISER_APPLY,
   effectiveConstraintBounds,
+  optimiserApplyIdentityFor,
+  optimiserApplyKey,
   explorePivotResultKey,
   hashConfig,
   resetNodeResultsDerivedCaches,
@@ -16,7 +19,7 @@ import useNodeResultsStore, {
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
-import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types.ts"
+import type { ApplyOptimiserResponse, FrontierPointSummary, OptimiserSolveResult } from "../../api/types.ts"
 import type { ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import {
@@ -46,6 +49,7 @@ function resetStore() {
     trainJobs: {},
     pivotResults: {},
     pivotJobs: {},
+    optimiserApplyCache: [],
   })
 }
 
@@ -1063,6 +1067,171 @@ describe("useNodeResultsStore", () => {
   // getOptimiserPreview
   // ────────────────────────────────────────────────────────────────
 
+  describe("optimiser apply cache", () => {
+    function applyResponse(rowCount: number): ApplyOptimiserResponse {
+      return {
+        status: "ok",
+        total_objective: 100,
+        constraints: { premium: 50 },
+        from_artifact: false,
+        preview: [{ quote_id: `Q${rowCount}` }],
+        row_count: rowCount,
+        preview_row_count: 1,
+        preview_row_limit: 100,
+        preview_truncated: rowCount > 1,
+        error: null,
+      }
+    }
+
+    function frontierResult(generation: number): OptimiserSolveResult {
+      return makeSolveResult({
+        frontier_generation: generation,
+        frontier: makeFrontier({
+          points: [{ total_objective: 150 }, { total_objective: 160 }],
+          point_summaries: [pointSummary(), pointSummary({ total_objective: 160 })],
+          n_points: 2,
+          points_returned: 2,
+          frontier_generation: generation,
+        }),
+      })
+    }
+
+    function solve(nodeId: string, jobId: string, result: OptimiserSolveResult) {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob(nodeId, jobId, "Optimiser", {}, "h", "live", 0)
+      s.completeSolveJob(nodeId, result)
+    }
+
+    function currentIdentity(nodeId: string) {
+      return optimiserApplyIdentityFor(useNodeResultsStore.getState().solveResults[nodeId], {})
+    }
+
+    function cachedKeys(): string[] {
+      return useNodeResultsStore.getState().optimiserApplyCache.map((entry) => entry.key)
+    }
+
+    it("derives the node's current identity from its job, frontier generation and selection", () => {
+      solve("n1", "j1", frontierResult(3))
+      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: 0, query: {} })
+
+      useNodeResultsStore.getState().selectFrontierPoint("n1", null)
+      expect(currentIdentity("n1")).toEqual({ jobId: "j1", frontierGeneration: 3, target: "solved", query: {} })
+    })
+
+    it("keys every part of the identity", () => {
+      const base = { jobId: "j1", frontierGeneration: 0, target: "solved" as const, query: {} }
+      const keys = new Set([
+        optimiserApplyKey(base),
+        optimiserApplyKey({ ...base, jobId: "j2" }),
+        optimiserApplyKey({ ...base, frontierGeneration: 1 }),
+        optimiserApplyKey({ ...base, target: 0 }),
+      ])
+      expect(keys.size).toBe(4)
+    })
+
+    it("stores a response for the current identity and drops one for a target no longer shown", () => {
+      solve("n1", "j1", frontierResult(0))
+      const s = useNodeResultsStore.getState()
+      const pointZero = currentIdentity("n1")
+
+      expect(s.recordOptimiserApply("n1", pointZero, applyResponse(1))).toBe(true)
+      expect(cachedKeys()).toEqual([optimiserApplyKey(pointZero)])
+
+      s.selectFrontierPoint("n1", 1)
+      expect(s.recordOptimiserApply("n1", pointZero, applyResponse(2))).toBe(false)
+      expect(useNodeResultsStore.getState().optimiserApplyCache[0].response.row_count).toBe(1)
+    })
+
+    it("drops a late response from an earlier job or frontier generation", () => {
+      solve("n1", "j1", frontierResult(0))
+      const earlierJob = currentIdentity("n1")
+      solve("n1", "j1", frontierResult(1))
+      const earlierGeneration = currentIdentity("n1")
+      solve("n1", "j2", frontierResult(1))
+      const s = useNodeResultsStore.getState()
+
+      expect(s.recordOptimiserApply("n1", earlierJob, applyResponse(1))).toBe(false)
+      expect(s.recordOptimiserApply("n1", earlierGeneration, applyResponse(1))).toBe(false)
+      expect(s.recordOptimiserApply("n2", currentIdentity("n1"), applyResponse(1))).toBe(false)
+      expect(cachedKeys()).toEqual([])
+    })
+
+    it("keeps the node's entries for the same job and generation, and clears them on a new job or recompute", () => {
+      solve("n1", "j1", frontierResult(0))
+      solve("n2", "j9", frontierResult(0))
+      const s = useNodeResultsStore.getState()
+      const n1 = currentIdentity("n1")
+      const n2 = currentIdentity("n2")
+      s.recordOptimiserApply("n1", n1, applyResponse(1))
+      s.recordOptimiserApply("n2", n2, applyResponse(2))
+
+      // Re-installing the same job and generation keeps the entry.
+      solve("n1", "j1", frontierResult(0))
+      expect(cachedKeys()).toEqual([optimiserApplyKey(n1), optimiserApplyKey(n2)])
+
+      // A recompute (same job, next generation) clears only that node.
+      solve("n1", "j1", frontierResult(1))
+      expect(cachedKeys()).toEqual([optimiserApplyKey(n2)])
+
+      s.recordOptimiserApply("n1", currentIdentity("n1"), applyResponse(3))
+      solve("n1", "j3", frontierResult(0))
+      expect(cachedKeys()).toEqual([optimiserApplyKey(n2)])
+    })
+
+    it("clears a node's entries when its solve fails or its results are cleared", () => {
+      solve("n1", "j1", frontierResult(0))
+      solve("n2", "j2", frontierResult(0))
+      const s = useNodeResultsStore.getState()
+      s.recordOptimiserApply("n1", currentIdentity("n1"), applyResponse(1))
+      s.recordOptimiserApply("n2", currentIdentity("n2"), applyResponse(2))
+
+      s.startSolveJob("n1", "j3", "Optimiser", {}, "h", "live", 0)
+      s.failSolveJob("n1", "boom")
+      expect(cachedKeys()).toEqual([optimiserApplyKey(currentIdentity("n2"))])
+
+      s.clearNode("n2")
+      expect(cachedKeys()).toEqual([])
+    })
+
+    it("keeps at most the 16 most recently used entries", () => {
+      expect(MAX_CACHED_OPTIMISER_APPLY).toBe(16)
+      const pointCount = MAX_CACHED_OPTIMISER_APPLY + 1
+      solve("n1", "j1", makeSolveResult({
+        frontier: makeFrontier({
+          points: Array.from({ length: pointCount }, (_, i) => ({ total_objective: i })),
+          point_summaries: Array.from({ length: pointCount }, (_, i) => pointSummary({ total_objective: i })),
+          n_points: pointCount,
+          points_returned: pointCount,
+        }),
+      }))
+      const s = useNodeResultsStore.getState()
+      const identities = []
+      for (let index = 0; index < MAX_CACHED_OPTIMISER_APPLY; index += 1) {
+        s.selectFrontierPoint("n1", index)
+        identities.push(currentIdentity("n1"))
+        s.recordOptimiserApply("n1", currentIdentity("n1"), applyResponse(index))
+      }
+      // Reading point 0 again makes it the most recently used.
+      s.touchOptimiserApply(optimiserApplyKey(identities[0]))
+      s.selectFrontierPoint("n1", MAX_CACHED_OPTIMISER_APPLY)
+      s.recordOptimiserApply("n1", currentIdentity("n1"), applyResponse(99))
+
+      const keys = cachedKeys()
+      expect(keys).toHaveLength(MAX_CACHED_OPTIMISER_APPLY)
+      expect(keys).not.toContain(optimiserApplyKey(identities[1]))
+      expect(keys).toContain(optimiserApplyKey(identities[0]))
+      expect(keys.at(-1)).toBe(optimiserApplyKey(currentIdentity("n1")))
+    })
+
+    it("refuses a result whose frontier reports a different generation", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Optimiser", {}, "h", "live", 0)
+      const result = frontierResult(2)
+      expect(() => s.completeSolveJob("n1", { ...result, frontier: { ...result.frontier!, frontier_generation: 1 } }))
+        .toThrow("Optimiser frontier generation 1 does not match its result's generation 2")
+    })
+  })
+
   describe("getOptimiserPreview", () => {
     it("returns null when no solve result exists", () => {
       expect(useNodeResultsStore.getState().getOptimiserPreview("n1")).toBeNull()
@@ -1078,9 +1247,31 @@ describe("useNodeResultsStore", () => {
       const preview = useNodeResultsStore.getState().getOptimiserPreview("n1")
       expect(preview).not.toBeNull()
       expect(preview!.result).toEqual(result)
+      expect(preview!.solvedResult).toBe(preview!.result)
       expect(preview!.jobId).toBe("j1")
       expect(preview!.constraints).toEqual(constraints)
       expect(preview!.nodeLabel).toBe("Optim Node")
+    })
+
+    it("carries the as-solved result beside the selected point's", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Optim Node", {}, "h", "live", 0)
+      const result = makeSolveResult({
+        history: [makeHistoryEntry({ iteration: 1 })],
+        frontier: makeFrontier({
+          points: [{ total_objective: 150 }],
+          point_summaries: [pointSummary()],
+          n_points: 1,
+          points_returned: 1,
+        }),
+      })
+      s.completeSolveJob("n1", result)
+
+      const preview = useNodeResultsStore.getState().getOptimiserPreview("n1")!
+      expect(preview.selectedPointIndex).toBe(0)
+      expect(preview.result.total_objective).toBe(150)
+      expect(preview.result.history).toBeUndefined()
+      expect(preview.solvedResult).toBe(result)
     })
   })
 

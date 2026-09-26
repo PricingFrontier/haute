@@ -28,5 +28,6 @@
   "scenario_value_histogram": null,
   "clamp_rate": null,
   "combined_factor_bounds": null,
+  "frontier_generation": 0,
   "error": null
 }

@@ -47,7 +47,10 @@ import ResultsWorkspace from "./ResultsWorkspace"
 export type { FrontierData }
 
 export type OptimiserPreviewData = {
+  /** The displayed result: the selected frontier point's, else the solve's. */
   result: OptimiserSolveResult
+  /** The as-solved result, whatever point is selected. */
+  solvedResult: OptimiserSolveResult
   jobId: string
   constraints: Record<string, Record<string, number>>
   nodeLabel: string
@@ -71,7 +74,6 @@ type RatesDetailState =
   | { status: "loading"; key: string }
   | { status: "error"; key: string; error: string }
 
-const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
 const EMPTY_COLUMNS: { name: string; dtype: string }[] = []
 
 const REQUEST_FAILED = "The request failed."
@@ -137,19 +139,35 @@ function HeaderPointStepper({
 export default function OptimiserPreview({ data, nodeId, allNodes, edges, submodels, onRefresh }: OptimiserPreviewProps) {
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
-  const { result, jobId, constraints } = displayData
+  const { result, solvedResult, jobId, constraints } = displayData
 
-  // Default tab: frontier when frontier data exists, otherwise summary
-  const [tab, setTab] = useState<OptimiserResultView>(() =>
-    displayData.frontier && displayData.frontier.points.length > 0 ? "frontier" : "summary",
+  // The tab and X axis belong to one review: one node's one solve job. Stepping
+  // through points builds a new result each press, so they must not follow
+  // `result`; a new job or another optimiser node starts at the default tab.
+  // Adjusted during render so a stale tab never paints.
+  const reviewKey = JSON.stringify([nodeId, jobId])
+  const defaultTab: OptimiserResultView = (
+    displayData.frontier && displayData.frontier.points.length > 0 ? "frontier" : "summary"
   )
+  const [review, setReview] = useState<{ key: string; tab: OptimiserResultView; xConstraintIdx: number }>(
+    { key: reviewKey, tab: defaultTab, xConstraintIdx: 0 },
+  )
+  if (review.key !== reviewKey) {
+    setReview({ key: reviewKey, tab: defaultTab, xConstraintIdx: 0 })
+  }
+  const { tab, xConstraintIdx } = review.key === reviewKey ? review : { tab: defaultTab, xConstraintIdx: 0 }
+  const setTab = useCallback((next: OptimiserResultView) => {
+    setReview((current) => ({ ...current, tab: next }))
+  }, [])
+  const setXConstraintIdx = useCallback((next: number) => {
+    setReview((current) => ({ ...current, xConstraintIdx: next }))
+  }, [])
 
   const height = useUIStore((s) => s.optimiserPreviewHeight)
   const rememberHeight = useUIStore((s) => s.setOptimiserPreviewHeight)
 
   // X-axis constraint picker for multi-constraint frontiers
   const constraintNames = useMemo(() => Object.keys(constraints), [constraints])
-  const [xConstraintIdx, setXConstraintIdx] = useState(0)
 
   // Store actions
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
@@ -192,6 +210,12 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   }, [allNodes, edges, nodeConfig, nodeId, rerunReadiness.canSolve, submodels])
 
   const [ratesDetail, setRatesDetail] = useState<RatesDetailState>({ status: "idle" })
+  // Retry reissues a failed materialisation: the failed key is already released.
+  const [ratesAttempt, setRatesAttempt] = useState(0)
+  const retryRates = useCallback(() => {
+    setRatesDetail({ status: "idle" })
+    setRatesAttempt((current) => current + 1)
+  }, [])
   const requestedRatesRef = useRef<Map<string, number>>(new Map())
   const ratesRequestSeqRef = useRef(0)
   const factorLevelOrder = useMemo(
@@ -270,7 +294,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
       }
       controller.abort()
     }
-  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, nodeId, storeUpdateAfterSelect])
+  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, nodeId, storeUpdateAfterSelect, ratesAttempt])
 
   // A click selects a point as the publish target; the selected point stays
   // selected (the Export pane's target choice returns to the solved result).
@@ -293,7 +317,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   )
 
   // Tabs available
-  const hasFrontier = frontier && frontier.points.length > 0
+  const frontierWithPoints = frontier && frontier.points.length > 0 ? frontier : null
   const ratebookFactorTables = result.mode === "ratebook" && hasFactorTables(result.factor_tables)
     ? result.factor_tables
     : null
@@ -301,10 +325,12 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const canMaterialiseSelectedRates = result.mode === "ratebook" && frontier != null && selectedIdx != null
   const headerPointCount = frontier?.points.length ?? 0
   const iterationSummary = formatOptimiserIterationSummary(result)
-  const availableTabs: OptimiserResultView[] = hasFrontier ? ["frontier", "summary"] : ["summary"]
+  const availableTabs: OptimiserResultView[] = frontierWithPoints ? ["frontier", "summary"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   if (result.mode !== "ratebook") availableTabs.push("quotes")
-  if (result.history && result.history.length > 0) availableTabs.push("convergence")
+  // Only the solve records a history, so a selected point keeps Convergence.
+  const solvedHistoryRecorded = solvedResult.history != null && solvedResult.history.length > 0
+  if (solvedHistoryRecorded) availableTabs.push("convergence")
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
 
   const tabs = availableTabs.map((key) => ({ key, label: OPTIMISER_VIEW_LABELS[key] }))
@@ -363,6 +389,17 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
               </button>
             </div>
           )}
+          {result.warning && (
+            <div
+              role="status"
+              aria-label="Result warning"
+              className="flex shrink-0 items-start gap-2 px-4 py-1.5 text-xs"
+              style={{ background: "var(--warning-soft)", borderBottom: "1px solid var(--warning-border)", color: "var(--warning-strong)" }}
+            >
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{result.warning}</span>
+            </div>
+          )}
           {result.frontier_error && (
             <div
               className="flex shrink-0 items-start gap-2 px-4 py-2 text-xs"
@@ -385,10 +422,11 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
       )}
       intro={OPTIMISER_VIEW_INTRODUCTIONS[activeTab]}
     >
-      {activeTab === "frontier" && (
+      {activeTab === "frontier" && frontierWithPoints && (
         <FrontierTab
-          frontier={frontier}
+          frontier={frontierWithPoints}
           result={result}
+          solvedResult={solvedResult}
           constraintNames={constraintNames}
           selectedIdx={selectedIdx}
           xConstraintIdx={xConstraintIdx}
@@ -400,6 +438,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
       {activeTab === "summary" && (
         <SummaryTab
           result={result}
+          selectedPointIndex={selectedIdx}
           canMaterialiseRatebookRates={selectedRatebookRatesMissing}
           ratebookRatesDetail={ratesDetail}
         />
@@ -409,15 +448,25 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
         ratebookFactorTables ? (
           <RatebookRatesTab factorTables={ratebookFactorTables} factorLevelOrder={factorLevelOrder} />
         ) : (
-          <RatebookRatesPending detail={ratesDetail} />
+          <RatebookRatesPending detail={ratesDetail} onRetry={retryRates} />
         )
       )}
 
-      {activeTab === "convergence" && result.history && result.history.length > 0 && (
-        <ConvergenceChart result={result} />
+      {activeTab === "convergence" && (
+        <ConvergenceChart
+          solvedResult={solvedResult}
+          selectedPoint={selectedIdx == null ? null : { index: selectedIdx, result }}
+        />
       )}
 
-      {activeTab === "quotes" && <QuotesTab jobId={jobId} pointIndex={selectedIdx} />}
+      {activeTab === "quotes" && (
+        <QuotesTab
+          nodeId={nodeId}
+          jobId={jobId}
+          frontierGeneration={solvedResult.frontier_generation}
+          pointIndex={selectedIdx}
+        />
+      )}
     </ResultsWorkspace>
   )
 }
@@ -425,8 +474,11 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
 // Frontier Tab
 
 interface FrontierTabProps {
-  frontier: FrontierData | null
+  frontier: FrontierData
+  /** The displayed result, for the selected point's detail card. */
   result: OptimiserSolveResult
+  /** The as-solved result, which anchors the chart's as-solved marker. */
+  solvedResult: OptimiserSolveResult
   constraintNames: string[]
   selectedIdx: number | null
   xConstraintIdx: number
@@ -452,6 +504,7 @@ function frontierConstraintPointValue(point: Record<string, unknown>, name: stri
 function FrontierTab({
   frontier,
   result,
+  solvedResult,
   constraintNames,
   selectedIdx,
   xConstraintIdx,
@@ -459,7 +512,7 @@ function FrontierTab({
   onPointClick,
 }: FrontierTabProps) {
   const xPickerId = useId()
-  const points = frontier?.points ?? EMPTY_FRONTIER_POINTS
+  const points = frontier.points
   const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
   const xKey = xConstraintName ? `total_${xConstraintName}` : null
   const yKey = "total_objective"
@@ -472,14 +525,6 @@ function FrontierTab({
     })
   }, [points, xConstraintName, xKey])
 
-  if (!frontier || points.length === 0) {
-    return (
-      <div className="text-xs py-4" style={{ color: "var(--text-muted)" }}>
-        No frontier data available. Choose Efficient frontier in the Constraints pane and run the optimiser.
-      </div>
-    )
-  }
-
   const shownPointCount = frontier.points_returned || points.length
   const totalPointCount = frontier.n_points || points.length
 
@@ -489,9 +534,9 @@ function FrontierTab({
 
   const hasChartData = xKey && xVals.length >= 2 && yVals.length >= 2
 
-  // Current solve result marker position
-  const currentX = xConstraintName ? result.constraints[xConstraintName] : null
-  const currentY = result.total_objective
+  // The as-solved marker stays where the solve is whichever point is selected.
+  const currentX = xConstraintName ? solvedResult.constraints[xConstraintName] : null
+  const currentY = solvedResult.total_objective
 
   return (
     <div className="optimiser-frontier-layout">
@@ -552,15 +597,24 @@ function FrontierTab({
   )
 }
 
-function RatebookRatesPending({ detail }: { detail: RatesDetailState }) {
+function RatebookRatesPending({ detail, onRetry }: { detail: RatesDetailState; onRetry: () => void }) {
   if (detail.status === "error") {
     return (
       <div
+        role="alert"
         className="flex items-start gap-2 text-xs px-3 py-2 rounded"
         style={{ background: "var(--danger-soft)", color: "var(--danger)" }}
       >
         <AlertCircle size={14} className="mt-0.5 shrink-0" />
-        <span>Rate table load failed: {detail.error}</span>
+        <span className="flex-1">Rate table load failed: {detail.error}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
+          style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
+        >
+          Retry
+        </button>
       </div>
     )
   }

@@ -1227,6 +1227,7 @@ class TestStatusRoute:
         clean_job_store,
     ):
         frontier_data = {
+            "frontier_generation": 0,
             "status": "ok",
             "points": [{"total_objective": 100.0, "lambda_volume": 0.25}],
             "n_points": 3,
@@ -1246,6 +1247,7 @@ class TestStatusRoute:
                 "elapsed_seconds": 0.2,
                 "frontier_data": frontier_data,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
@@ -5361,6 +5363,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
     mock_grid = MagicMock()
     mock_solver = MagicMock()
     base_result = {
+        "frontier_generation": 0,
         "mode": "ratebook",
         "total_objective": 100.0,
         "baseline_objective": 95.0,
@@ -5396,6 +5399,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
             "base_result": base_result,
             "result": dict(base_result),
             "frontier_data": {
+                "frontier_generation": 0,
                 "status": "ok",
                 "n_points": 1,
                 "points_returned": 1,
@@ -8994,6 +8998,7 @@ class TestFrontierSelect:
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [{"total_objective": 1.0, "lambda_volume": 0.5}],
                     "n_points": 1,
@@ -9028,6 +9033,7 @@ class TestFrontierSelect:
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [{"total_objective": 1.0, "lambda_volume": 0.5}],
                     "n_points": 3,
@@ -9090,6 +9096,7 @@ class TestFrontierSelect:
                 "factor_columns_valid": [["region"]],
                 "artifact_handles": {},
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.92},
@@ -9099,6 +9106,7 @@ class TestFrontierSelect:
                     "converged": True,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "n_points": 1,
                     "points_returned": 1,
@@ -9254,6 +9262,7 @@ class TestFrontierSelect:
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -9271,6 +9280,7 @@ class TestFrontierSelect:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
@@ -9335,6 +9345,7 @@ class TestFrontierSelect:
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -9347,6 +9358,7 @@ class TestFrontierSelect:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
@@ -9393,6 +9405,7 @@ class TestFrontierSelect:
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -9405,6 +9418,7 @@ class TestFrontierSelect:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
@@ -10382,6 +10396,7 @@ class TestSolveStatusEdgeCases:
                 "message": "Completed",
                 "elapsed_seconds": 5.0,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 200.0,
                     "baseline_objective": 180.0,
@@ -10392,6 +10407,7 @@ class TestSolveStatusEdgeCases:
                     "converged": True,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [{"obj": 1.0}],
                     "n_points": 1,
@@ -11473,6 +11489,7 @@ class TestSelectFrontierPointIdempotent:
                 "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 2,
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 150.0,
                     "constraints": {"volume": 0.93},
                     "baseline_objective": 140.0,
@@ -11485,6 +11502,7 @@ class TestSelectFrontierPointIdempotent:
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -11537,6 +11555,7 @@ class TestSelectFrontierPointIdempotent:
                 "status": "completed",
                 "selected_frontier_point": 2,
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 150.0,
                     "constraints": {"volume": 0.93},
                     "baseline_objective": 140.0,
@@ -11578,6 +11597,7 @@ class TestSelectFrontierPointIdempotent:
                 "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 1,
                 "base_result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "constraints": {"volume": 0.9},
                     "baseline_objective": 90.0,
@@ -11587,6 +11607,7 @@ class TestSelectFrontierPointIdempotent:
                     "converged": True,
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 999.0,
                     "constraints": {"volume": 0.01},
                     "baseline_objective": 90.0,
@@ -11596,6 +11617,7 @@ class TestSelectFrontierPointIdempotent:
                     "converged": True,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -11646,6 +11668,7 @@ class TestSelectFrontierPointIdempotent:
                 "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 1,
                 "base_result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "constraints": {"volume": 0.9},
                     "baseline_objective": 90.0,
@@ -11655,6 +11678,7 @@ class TestSelectFrontierPointIdempotent:
                     "converged": True,
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 999.0,
                     "constraints": {"volume": 0.01},
                     "baseline_objective": 90.0,
@@ -11665,6 +11689,7 @@ class TestSelectFrontierPointIdempotent:
                     "selected_frontier_point": 1,
                 },
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -11716,6 +11741,7 @@ class TestSelectFrontierPointResolve:
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -11734,6 +11760,7 @@ class TestSelectFrontierPointResolve:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "total_objective": 100.0,
                     "baseline_objective": 90.0,
                     "constraints": {"volume": 0.9},
@@ -12132,6 +12159,7 @@ class TestSelectFrontierPointResolve:
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         {"total_objective": 100.0, "some_col": 0.5},
@@ -12162,6 +12190,7 @@ class TestSelectFrontierPointResolve:
                 "solver": None,
                 "quote_grid": None,
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -12174,6 +12203,7 @@ class TestSelectFrontierPointResolve:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
                     "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
@@ -12202,6 +12232,7 @@ class TestSelectFrontierPointResolve:
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "frontier_data": {
+                    "frontier_generation": 0,
                     "status": "ok",
                     "points": [
                         _frontier_point_summary(
@@ -12214,6 +12245,7 @@ class TestSelectFrontierPointResolve:
                     "constraint_names": ["volume"],
                 },
                 "result": {
+                    "frontier_generation": 0,
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
                     "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
@@ -12699,6 +12731,7 @@ class TestSolveStatusTimeout:
                     "message": "Completed",
                     "elapsed_seconds": 12.0,
                     "result": {
+                        "frontier_generation": 0,
                         "mode": "online",
                         "total_objective": 100.0,
                         "baseline_objective": 95.0,
@@ -12825,6 +12858,7 @@ class TestSolveStatusTimeout:
                 "timeout": 10,
                 "elapsed_seconds": 12.0,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,
@@ -12857,6 +12891,7 @@ class TestSolveStatusTimeout:
                 "message": "Completed",
                 "elapsed_seconds": 2.0,
                 "result": {
+                    "frontier_generation": 0,
                     "mode": "online",
                     "total_objective": 100.0,
                     "baseline_objective": 95.0,

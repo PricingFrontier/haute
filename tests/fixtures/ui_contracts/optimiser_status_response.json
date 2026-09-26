@@ -73,6 +73,7 @@
     "warning": null,
     "frontier_error": null,
     "selected_frontier_point": null,
+    "frontier_generation": 0,
     "frontier": {
       "status": "ok",
       "points": [
@@ -120,6 +121,7 @@
       ],
       "points_limit": 2000,
       "points_truncated": false,
+      "frontier_generation": 0,
       "job_id": null
     }
   },
@@ -170,6 +172,7 @@
     ],
     "points_limit": 2000,
     "points_truncated": false,
+    "frontier_generation": 0,
     "job_id": null
   },
   "terminal_reason": "completed",

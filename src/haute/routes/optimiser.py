@@ -225,6 +225,7 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         scenario_value_histogram=result.get("scenario_value_histogram"),
         clamp_rate=result.get("clamp_rate"),
         combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
+        frontier_generation=result["frontier_generation"],
     )
 
 

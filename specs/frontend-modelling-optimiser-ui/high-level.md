@@ -454,7 +454,16 @@ two panes cannot disagree. Status is text ("Met" or "Breached") with an icon, co
 secondary cue, judged by a strict comparison with no tolerance; the signed slack percentage is
 always shown. There is no "binding" judgement. Quotes loads the per-quote detail of
 the publish target on demand (bounded rows, with the total and cap stated) and names columns in
-neutral scenario terms. When the node configuration has changed since the result was produced,
+neutral scenario terms; reopening Quotes for the same target shows the loaded detail again
+without a new request, and a new solve or a recomputed frontier loads it afresh. Quotes and Rates
+failures offer **Retry**. Selecting a frontier point never removes a view: Summary keeps the
+scenario-value statistics (labelled "As solved" or "Frontier point N"; a point reports statistics
+but no histogram), Convergence stays available whenever the solve recorded history and, for a
+selected point, says "History is recorded for the solved result; frontier point N: converged
+(or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
+position. Stepping through points keeps the current tab; a new solve job, or switching to another
+optimiser node, returns to the default tab. A displayed result's warning (such as the
+non-convergence reason) shows as an amber strip. When the node configuration has changed since the result was produced,
 the preview shows a strip saying so with a **Re-run** action that starts the solve directly. Re-run applies the Solve pane's blocking rules: while any issue blocks the solve it is disabled and the strip names the first issue. λ is shown
 for online and ratebook results alike, labelled "λ (multiplier)" and explained as the solver's
 Lagrange multiplier on the constraint's term; it is never read as a tightness claim, because in

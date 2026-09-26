@@ -86,12 +86,15 @@ def limited_frontier_payload(
     *,
     constraint_kinds: Mapping[str, ConstraintKind],
     swept_axes: Sequence[str],
+    frontier_generation: int,
 ) -> dict[str, Any]:
     """Return a capped frontier payload while preserving total point count.
 
     ``constraint_kinds`` is every configured constraint, swept or not, and
     each point summary carries all of them; ``swept_axes`` is the constraints
-    the sweep varied.
+    the sweep varied. ``frontier_generation`` is the solve job's generation
+    this frontier becomes: ``0`` at solve time, the incremented value for a
+    recompute.
     """
     constraint_names = list(constraint_kinds)
     unknown_axes = [name for name in swept_axes if name not in constraint_kinds]
@@ -118,4 +121,5 @@ def limited_frontier_payload(
         "swept_axes": list(swept_axes),
         "points_limit": FRONTIER_POINT_LIMIT,
         "points_truncated": total_points > len(points),
+        "frontier_generation": frontier_generation,
     }

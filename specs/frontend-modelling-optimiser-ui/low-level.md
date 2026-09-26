@@ -32,7 +32,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
 | `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node, the ratebook factor-table CSV and the combined-factor collar statement (read from the solve's `originalResult.combined_factor_bounds`). |
 | `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
-| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The online per-quote detail view for the publish target, and the shared λ label and explanation. |
+| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The online per-quote detail view for the publish target, read through the result store's identity-keyed `/apply` cache with Retry on failure, and the shared λ label and explanation. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
@@ -233,7 +233,21 @@ Only a current, accepted save response may acknowledge this revision transition.
    request sequence bookkeeping drops stale replies and persists accepted tables in the result
    store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
    solved result) and never consume the server-side result, so they and the Quotes view may run
-   in any order. The MLflow log request carries the node's current `mlflow_destination` (found
+   in any order. `OptimiserPreviewData` carries `solvedResult` (the store's as-solved
+   `originalResult`) beside the displayed `result`: Convergence availability and its history,
+   and the Frontier tab's as-solved marker, read `solvedResult`, so selecting or stepping a point
+   never removes Convergence or moves the marker. With a point selected, Convergence adds "History
+   is recorded for the solved result; frontier point N: converged|not converged, K iterations"
+   (K from `formatOptimiserIterationSummary` of the displayed result; omitted when the point
+   reports none). The tab is owned by the `(nodeId, jobId)` pair and resets to its default
+   (Frontier when the frontier has points, else Summary) when either changes, adjusted during
+   render so a stale tab never paints; it does not reset when only `result` changes, because
+   every stepper press builds a new displayed result. The X-axis constraint choice resets with
+   it. `result.warning` renders as an amber `role="status"` strip in the workspace notices slot.
+   Rates and Quotes error states offer **Retry**, which reissues the failed request. Summary
+   renders the scenario-value statistics grid whenever `scenario_value_stats` is present,
+   whether or not a histogram is, captioned "As solved" or "Frontier point N".
+   Quotes reads `/apply` through the result store's apply cache (see Edge cases). The MLflow log request carries the node's current `mlflow_destination` (found
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
    one solve job. Export's factor-table load stores its
@@ -310,6 +324,20 @@ without broadening the exactly-one-direct fallback.
   point is the number of points returned, the same count the header stepper uses.
   A result that does not report its grid shape says so in the strip instead of
   omitting it.
+- `/apply` responses are cached in `useNodeResultsStore` under their full request identity
+  `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
+  index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
+  the canonical (key-sorted) request query beyond the target — empty today, since `/apply` takes
+  none; OPT-V12 adds sort, filters, search, offset and limit. At most 16 entries are kept,
+  least recently used evicted first. Installing a solve result for a node (a new job, or the same
+  job with another frontier generation, i.e. a recompute) drops that node's entries for any
+  other `(jobId, frontierGeneration)`; a failed solve or clearing or evicting the node's result
+  drops all of the node's entries. `recordOptimiserApply` accepts a response only when its
+  identity's job, generation and target are the node's current ones, so a late response from an
+  earlier job, generation or target is discarded and never displayed; QuotesTab additionally
+  drops a response whose query is no longer its current query. A cache hit makes no request and
+  marks the entry most recently used. `completeSolveJob` throws when the result's frontier
+  carries a different `frontier_generation` from the result itself.
 - The Frontier tab lays the chart beside the detail card and stacks the chart above
   it when the workspace container is at most 640px wide. Its labels and footnote use
   the workspace type scale (12-13px, sentence case), not 9-11px uppercase labels.
@@ -371,7 +399,17 @@ strip on every tab, per-tab intros, and the Frontier tab's narrow-width stacking
 `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`, and
 `frontend/src/panels/__tests__/OptimiserDataPreview.test.tsx`, and
-`frontend/src/panels/__tests__/optimiserScenarioStats.test.ts`. Modelling subcomponents have suites
+`frontend/src/panels/__tests__/optimiserScenarioStats.test.ts`. The optimiser preview suites
+build results from the shared fixtures in `frontend/src/panels/optimiser/__tests__/fixtures.ts`
+(an online solve with scenario-value statistics, histogram and history carrying λ and constraint
+totals; frontier points with `threshold_*`, `bound_*`, `converged`, `iterations` and `sv_*`
+columns and matching point summaries; a ratebook solve with factor tables carrying
+`quote_count`), so selected-point views are exercised with real-shaped data rather than nulls.
+Store-integration tests cover the apply cache (no second request on reopening Quotes, a refetch
+after a frontier recompute, late responses from an earlier job or generation discarded, the
+16-entry bound), the tab kept across stepper presses and reset on a new job or node, Convergence
+and the statistics kept after point select, the fixed as-solved marker, the warning strip and
+Retry. Modelling subcomponents have suites
 under `frontend/src/panels/modelling/__tests__/`; optimiser helper/frontier coverage is under
 `frontend/src/panels/optimiser/__tests__/`. `frontend/src/__tests__/utils/banding.test.ts` covers
 the factor-level and optimiser-source utility. Smaller visual summaries/charts are also exercised

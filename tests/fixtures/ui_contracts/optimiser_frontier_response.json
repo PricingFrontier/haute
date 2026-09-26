@@ -46,5 +46,6 @@
   ],
   "points_limit": 2000,
   "points_truncated": false,
+  "frontier_generation": 0,
   "job_id": null
 }

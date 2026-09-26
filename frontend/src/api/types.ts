@@ -1297,8 +1297,11 @@ export type FrontierResponse = Omit<GeneratedOptimiserFrontierResponse, "points"
   points: FrontierPoint[]
 }
 
-/** A solve's frontier as the results store keeps it. */
-export type FrontierData = Omit<FrontierResponse, "status" | "job_id">
+/** A solve's frontier as the results store keeps it: always a computed
+ *  frontier, so it always has its generation. */
+export type FrontierData = Omit<FrontierResponse, "status" | "job_id" | "frontier_generation"> & {
+  frontier_generation: number
+}
 
 export const JOB_STATUS_VALUES = [
   "running",

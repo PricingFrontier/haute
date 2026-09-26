@@ -22,6 +22,7 @@ import {
 import type { PreviewData } from "../panels/DataPreview"
 import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
 import type {
+  ApplyOptimiserResponse,
   ExecutionMetrics,
   ExplorePivotResult,
   ExplorePivotStatusResponse,
@@ -41,6 +42,30 @@ export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
 export const MAX_CACHED_TRAIN_RESULTS = 8
 export const MAX_CACHED_EXPLORE_PIVOT_RESULTS = 32
+export const MAX_CACHED_OPTIMISER_APPLY = 16
+
+/**
+ * The `/apply` request's query beyond its target. The endpoint takes none yet
+ * (the server returns its bounded default preview), so the only query is `{}`;
+ * OPT-V12 adds sort, filters, search, offset and limit here.
+ */
+export type OptimiserApplyQuery = Readonly<Record<string, never>>
+
+/** Everything an `/apply` response depends on: a recompute reuses point
+ *  indices for different points, so the frontier generation is part of it. */
+export interface OptimiserApplyIdentity {
+  jobId: string
+  frontierGeneration: number
+  target: "solved" | number
+  query: OptimiserApplyQuery
+}
+
+export interface OptimiserApplyCacheEntry {
+  nodeId: string
+  key: string
+  identity: OptimiserApplyIdentity
+  response: ApplyOptimiserResponse
+}
 
 type TrainEstimateSample = {
   iteration: number
@@ -343,22 +368,23 @@ export function hashConfig(config: Record<string, unknown>): string {
   const json = JSON.stringify(semanticConfig)
   const jsonValue: unknown = JSON.parse(json)
 
-  const sortObjectKeys = (value: unknown): unknown => {
-    if (Array.isArray(value)) {
-      return value.map(sortObjectKeys)
-    }
-    if (value !== null && typeof value === "object") {
-      const object = value as Record<string, unknown>
-      return Object.fromEntries(
-        Object.keys(object)
-          .sort()
-          .map(key => [key, sortObjectKeys(object[key])]),
-      )
-    }
-    return value
-  }
-
   return JSON.stringify(sortObjectKeys(jsonValue))
+}
+
+/** A JSON value with every object's keys sorted, so equal values stringify equally. */
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortObjectKeys)
+  }
+  if (value !== null && typeof value === "object") {
+    const object = value as Record<string, unknown>
+    return Object.fromEntries(
+      Object.keys(object)
+        .sort()
+        .map(key => [key, sortObjectKeys(object[key])]),
+    )
+  }
+  return value
 }
 
 // ─── Derived-getter caches (Issue #13) ──────────────────────────
@@ -410,6 +436,7 @@ function dropCachedResult(recency: Map<string, number>, key: string): void {
 function buildOptimiserPreview(cached: CachedSolveResult): OptimiserPreviewData {
   return {
     result: cached.result,
+    solvedResult: cached.originalResult,
     jobId: cached.jobId,
     constraints: cached.constraints,
     nodeLabel: cached.nodeLabel,
@@ -451,6 +478,7 @@ const FAILED_SOLVE_RESULT: OptimiserSolveResult = {
   frontier: null,
   frontier_error: null,
   selected_frontier_point: null,
+  frontier_generation: 0,
 }
 
 /** The as-solved result with a frontier point's server summary applied; a
@@ -492,6 +520,58 @@ export function effectiveConstraintBounds(result: OptimiserSolveResult): Record<
     }
   }
   return bounds
+}
+
+/** The cache key of an `/apply` request identity, with the query canonicalised. */
+export function optimiserApplyKey(identity: OptimiserApplyIdentity): string {
+  return JSON.stringify([
+    identity.jobId,
+    identity.frontierGeneration,
+    identity.target,
+    sortObjectKeys(identity.query),
+  ])
+}
+
+/** The `/apply` identity a node's cached solve shows now: its job, frontier
+ *  generation and selected target. */
+export function optimiserApplyIdentityFor(
+  cached: CachedSolveResult,
+  query: OptimiserApplyQuery,
+): OptimiserApplyIdentity {
+  return {
+    jobId: cached.jobId,
+    frontierGeneration: cached.originalResult.frontier_generation,
+    target: cached.selectedPointIndex ?? "solved",
+    query,
+  }
+}
+
+function sameApplyTarget(a: OptimiserApplyIdentity, b: OptimiserApplyIdentity): boolean {
+  return a.jobId === b.jobId && a.frontierGeneration === b.frontierGeneration && a.target === b.target
+}
+
+/** The node's entries for any job or generation other than the one installed. */
+function withoutSupersededApplyEntries(
+  entries: OptimiserApplyCacheEntry[],
+  nodeId: string,
+  installed: { jobId: string; frontierGeneration: number },
+): OptimiserApplyCacheEntry[] {
+  const kept = entries.filter((entry) => (
+    entry.nodeId !== nodeId
+    || (entry.identity.jobId === installed.jobId
+      && entry.identity.frontierGeneration === installed.frontierGeneration)
+  ))
+  return kept.length === entries.length ? entries : kept
+}
+
+function withoutApplyEntriesForNodes(
+  entries: OptimiserApplyCacheEntry[],
+  nodeIds: readonly string[],
+): OptimiserApplyCacheEntry[] {
+  if (nodeIds.length === 0) return entries
+  const dropped = new Set(nodeIds)
+  const kept = entries.filter((entry) => !dropped.has(entry.nodeId))
+  return kept.length === entries.length ? entries : kept
 }
 
 /** A select response is the server's complete result for its point. */
@@ -615,6 +695,8 @@ interface NodeResultsState {
   // Optimiser
   solveResults: Record<string, CachedSolveResult>
   solveJobs: Record<string, ActiveSolveJob>
+  /** `/apply` responses, least recently used first; see `recordOptimiserApply`. */
+  optimiserApplyCache: OptimiserApplyCacheEntry[]
 
   // Training
   trainResults: Record<string, CachedTrainResult>
@@ -662,6 +744,15 @@ interface NodeResultsState {
    * displayed result changes only if that point is (still) selected.
    */
   recordFrontierPointSummary: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
+  /**
+   * Cache an `/apply` response under its request identity. It is stored only
+   * while that identity's job, frontier generation and target are still the
+   * node's; otherwise it is a late response and dropped. Returns whether it
+   * was stored.
+   */
+  recordOptimiserApply: (nodeId: string, identity: OptimiserApplyIdentity, response: ApplyOptimiserResponse) => boolean
+  /** Mark a cached `/apply` response most recently used. */
+  touchOptimiserApply: (key: string) => void
 
   // ── Training actions ──
   startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number, lineage?: string) => void
@@ -722,6 +813,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   columnCache: {},
   solveResults: {},
   solveJobs: {},
+  optimiserApplyCache: [],
   trainResults: {},
   trainJobs: {},
   pivotResults: {},
@@ -828,6 +920,12 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       // Extract frontier data from the result if present
       const rawFrontier = result.frontier
+      if (rawFrontier && rawFrontier.frontier_generation !== result.frontier_generation) {
+        throw new Error(
+          `Optimiser frontier generation ${rawFrontier.frontier_generation} does not match `
+          + `its result's generation ${result.frontier_generation}`,
+        )
+      }
       const frontier: FrontierData | null = rawFrontier && rawFrontier.points?.length
         ? {
             points: rawFrontier.points,
@@ -838,6 +936,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
             swept_axes: rawFrontier.swept_axes,
             points_limit: rawFrontier.points_limit,
             points_truncated: rawFrontier.points_truncated,
+            frontier_generation: result.frontier_generation,
           }
         : null
       const initialPointIndex = frontier ? 0 : null
@@ -874,9 +973,19 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         delete _optimiserPreviewCache[evictedNodeId]
       }
       if (bounded.records[nodeId]) cacheOptimiserPreview(nodeId, bounded.records[nodeId])
+      // A new job or a recomputed frontier makes the node's /apply responses
+      // answers to other requests.
+      const optimiserApplyCache = withoutApplyEntriesForNodes(
+        withoutSupersededApplyEntries(s.optimiserApplyCache, nodeId, {
+          jobId: job.jobId,
+          frontierGeneration: result.frontier_generation,
+        }),
+        bounded.evicted,
+      )
       return {
         solveJobs: remainingJobs,
         solveResults: bounded.records,
+        optimiserApplyCache,
       }
     }),
 
@@ -921,6 +1030,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return {
         solveJobs: remainingJobs,
         solveResults: bounded.records,
+        optimiserApplyCache: withoutApplyEntriesForNodes(
+          s.optimiserApplyCache,
+          [nodeId, ...bounded.evicted],
+        ),
       }
     }),
 
@@ -1023,6 +1136,36 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return { solveResults: { ...s.solveResults, [nodeId]: nextCached } }
     })
   },
+
+  recordOptimiserApply: (nodeId, identity, response) => {
+    const cached = get().solveResults[nodeId]
+    if (!cached || !sameApplyTarget(identity, optimiserApplyIdentityFor(cached, identity.query))) {
+      return false
+    }
+    const key = optimiserApplyKey(identity)
+    set((s) => ({
+      optimiserApplyCache: [
+        ...s.optimiserApplyCache.filter((entry) => entry.key !== key),
+        { nodeId, key, identity, response },
+      ].slice(-MAX_CACHED_OPTIMISER_APPLY),
+    }))
+    return true
+  },
+
+  touchOptimiserApply: (key) =>
+    set((s) => {
+      const index = s.optimiserApplyCache.findIndex((entry) => entry.key === key)
+      if (index === -1) throw new Error(`No cached optimiser apply response for ${key}`)
+      if (index === s.optimiserApplyCache.length - 1) return s
+      const entry = s.optimiserApplyCache[index]
+      return {
+        optimiserApplyCache: [
+          ...s.optimiserApplyCache.slice(0, index),
+          ...s.optimiserApplyCache.slice(index + 1),
+          entry,
+        ],
+      }
+    }),
 
   // ── Training ──
 
@@ -1414,6 +1557,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         columnCache,
         solveResults,
         solveJobs,
+        optimiserApplyCache: withoutApplyEntriesForNodes(s.optimiserApplyCache, [nodeId]),
         trainResults,
         trainJobs,
         pivotResults,

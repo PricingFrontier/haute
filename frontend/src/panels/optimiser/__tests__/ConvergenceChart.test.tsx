@@ -24,7 +24,8 @@ describe("ConvergenceChart", () => {
   it("scales each series on its own padded domain, so both use the full height", () => {
     const { container } = render(
       <ConvergenceChart
-        result={result([
+        selectedPoint={null}
+        solvedResult={result([
           { total_objective: 1000, max_lambda_change: 0.5 },
           { total_objective: 900, max_lambda_change: 0.1 },
           { total_objective: 800, max_lambda_change: 0.01 },
@@ -40,7 +41,8 @@ describe("ConvergenceChart", () => {
   it("draws a constant series through the middle of the chart", () => {
     const { container } = render(
       <ConvergenceChart
-        result={result([
+        selectedPoint={null}
+        solvedResult={result([
           { total_objective: 5, max_lambda_change: 0 },
           { total_objective: 5, max_lambda_change: 0 },
         ])}

@@ -116,6 +116,7 @@ def make_frontier_data(
         "points_limit": points_limit,
         "points_truncated": False,
         "constraint_names": constraint_names if constraint_names is not None else ["volume"],
+        "frontier_generation": 0,
     }
     data.update(extra)
     return data
@@ -154,6 +155,7 @@ def make_solved_result(
         ),
         "lambdas": lambdas if lambdas is not None else {"volume": 0.0},
         "converged": converged,
+        "frontier_generation": 0,
     }
     result.update(extra)
     return result

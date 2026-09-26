@@ -1238,22 +1238,26 @@ class OptimiserFrontierService:
                     check_cancelled=lambda: self._raise_if_sweep_stopped(frontier_job_id),
                 )
                 self._raise_if_sweep_stopped(frontier_job_id)
-            response = OptimiserFrontierResponse(
-                **limited_frontier_payload(
-                    frontier_result.points,
-                    constraint_kinds=constraint_kinds,
-                    swept_axes=list(ranges),
-                )
-            )
-            frontier_dict = response.model_dump(exclude={"job_id"})
-            result_dict = dict(base_result)
-            result_dict["frontier"] = frontier_dict
-            result_dict.pop("frontier_error", None)
-            result_dict.pop("selected_frontier_point", None)
             with self.parent_lock(parent_job_id):
                 self._raise_if_sweep_stopped(frontier_job_id)
                 latest_job = self._store.require_completed_job(parent_job_id)
                 next_frontier_generation = _frontier_generation_or_raise(latest_job) + 1
+                # The payload and the reset result report the generation this
+                # update publishes, read under the same lock that increments it.
+                response = OptimiserFrontierResponse(
+                    **limited_frontier_payload(
+                        frontier_result.points,
+                        constraint_kinds=constraint_kinds,
+                        swept_axes=list(ranges),
+                        frontier_generation=next_frontier_generation,
+                    )
+                )
+                frontier_dict = response.model_dump(exclude={"job_id"})
+                result_dict = dict(base_result)
+                result_dict["frontier"] = frontier_dict
+                result_dict["frontier_generation"] = next_frontier_generation
+                result_dict.pop("frontier_error", None)
+                result_dict.pop("selected_frontier_point", None)
                 retained_handles, invalidated_handles = _invalidate_frontier_apply_artifact_handles(
                     latest_job
                 )

@@ -8738,6 +8738,19 @@
           "title": "Constraint Names",
           "type": "array"
         },
+        "frontier_generation": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frontier Generation"
+        },
         "job_id": {
           "anyOf": [
             {
@@ -8814,6 +8827,7 @@
         "swept_axes",
         "points_limit",
         "points_truncated",
+        "frontier_generation",
         "job_id"
       ],
       "title": "OptimiserFrontierResponse",
@@ -8909,6 +8923,11 @@
           },
           "title": "Factor Tables",
           "type": "object"
+        },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
         },
         "history": {
           "anyOf": [
@@ -9019,6 +9038,7 @@
         "scenario_value_histogram",
         "clamp_rate",
         "combined_factor_bounds",
+        "frontier_generation",
         "error"
       ],
       "title": "OptimiserFrontierSelectResponse",
@@ -9541,6 +9561,11 @@
           "default": null,
           "title": "Frontier Error"
         },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
         "history": {
           "anyOf": [
             {
@@ -9684,7 +9709,8 @@
         "combined_factor_bounds",
         "frontier",
         "frontier_error",
-        "selected_frontier_point"
+        "selected_frontier_point",
+        "frontier_generation"
       ],
       "title": "OptimiserSolveResult",
       "type": "object"

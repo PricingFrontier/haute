@@ -421,19 +421,21 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
   afterEach(cleanup)
 
   function makeData(): OptimiserPreviewData {
+    const result = makeSolveResult({
+      total_objective: 1234567,
+      baseline_objective: 1200000,
+      constraints: { loss_ratio: 0.65 },
+      baseline_constraints: { loss_ratio: 0.60 },
+      effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
+      lambdas: { loss_ratio: 0.005 },
+      converged: true,
+      iterations: 15,
+      n_quotes: 50000,
+      history: null,
+    })
     return {
-      result: makeSolveResult({
-        total_objective: 1234567,
-        baseline_objective: 1200000,
-        constraints: { loss_ratio: 0.65 },
-        baseline_constraints: { loss_ratio: 0.60 },
-        effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
-        lambdas: { loss_ratio: 0.005 },
-        converged: true,
-        iterations: 15,
-        n_quotes: 50000,
-        history: null,
-      }),
+      result,
+      solvedResult: result,
       jobId: "job_123",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "My Optimiser",
@@ -465,6 +467,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
         swept_axes: ["loss_ratio"],
         points_limit: 2000,
         points_truncated: false,
+        frontier_generation: 0,
       },
       selectedPointIndex: null,
     }

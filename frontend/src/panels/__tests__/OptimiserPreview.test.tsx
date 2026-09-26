@@ -3,10 +3,14 @@ import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-li
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
-import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types"
+import type { OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
-import { makeSolveResult as makeSolveResultFactory, makeHistoryEntry } from "../../test-utils/factories"
+import {
+  makeOnlineFrontier,
+  makeOnlineSolveResult,
+  makePointSummary,
+} from "../optimiser/__tests__/fixtures"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -132,72 +136,13 @@ function optimiserNode(config: Record<string, unknown> = {}): SimpleNode {
 function makeSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
 ): OptimiserSolveResult {
-  return makeSolveResultFactory({
-    total_objective: 1234567,
-    baseline_objective: 1200000,
-    constraints: { loss_ratio: 0.65 },
-    baseline_constraints: { loss_ratio: 0.60 },
-    // The solve's own bound, the configured max below.
-    effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
-    lambdas: { loss_ratio: 0.005 },
-    converged: true,
-    iterations: 15,
-    n_quotes: 50000,
-    history: [
-      makeHistoryEntry({ iteration: 1, total_objective: 1100000, max_lambda_change: 0.1, all_constraints_satisfied: false }),
-      makeHistoryEntry({ iteration: 2, total_objective: 1200000, max_lambda_change: 0.01, all_constraints_satisfied: true }),
-    ],
-    ...overrides,
-  })
-}
-
-function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
-  return {
-    total_objective: 0,
-    constraints: {},
-    effective_bounds: {},
-    lambdas: {},
-    converged: true,
-    iterations: null,
-    cd_iterations: null,
-    clamp_rate: null,
-    history: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
-    factor_tables: null,
-    warning: null,
-    frontier_error: null,
-    ...overrides,
-  }
+  return makeOnlineSolveResult(overrides)
 }
 
 function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierData {
   // Each point is solved at its own swept max, 0.58, 0.59, ...: point 4
   // (0.63 against 0.62) breaches it, though it meets the configured 1.05.
-  const points = Array.from({ length: n }, (_, i) => ({
-    total_objective: 1200000 + i * 10000,
-    total_loss_ratio: 0.55 + i * 0.02,
-    threshold_loss_ratio: 0.58 + i * 0.01,
-    bound_loss_ratio: 0.58 + i * 0.01,
-    lambda_loss_ratio: 0.001 + i * 0.001,
-    converged: true,
-  }))
-  return {
-    points,
-    point_summaries: points.map((point) => makePointSummary({
-      total_objective: point.total_objective,
-      constraints: { loss_ratio: point.total_loss_ratio },
-      effective_bounds: { loss_ratio: { kind: "max", bound: point.bound_loss_ratio } },
-      lambdas: { loss_ratio: point.lambda_loss_ratio },
-    })),
-    n_points: n,
-    points_returned: n,
-    constraint_names: ["loss_ratio"],
-    swept_axes: ["loss_ratio"],
-    points_limit: 2000,
-    points_truncated: false,
-    ...overrides,
-  }
+  return makeOnlineFrontier(n, overrides)
 }
 
 /** The displayed result for a selected point, as the results store builds it:
@@ -218,8 +163,14 @@ function attainmentCells(name: string): (string | null)[] {
 }
 
 function makeData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+  // A result given without its solve is the as-solved result itself, unless
+  // it is a selected point's (see pointResult), whose solve is the default.
+  const result = overrides.result ?? makeSolveResult()
+  const solvedResult = overrides.solvedResult
+    ?? (result.selected_frontier_point == null ? result : makeSolveResult())
   return {
-    result: makeSolveResult(),
+    result,
+    solvedResult,
     jobId: "job_123",
     constraints: { loss_ratio: { max: 1.05 } },
     nodeLabel: "My Optimiser",
@@ -300,7 +251,7 @@ describe("OptimiserPreview", () => {
 
     it("renders quote count", () => {
       renderPreview()
-      expect(screen.getByText(/50,000 quotes/)).toBeInTheDocument()
+      expect(screen.getByText("Converged | 15 iters | 50,000 quotes")).toBeInTheDocument()
     })
 
     it("surfaces frontier computation failures", () => {
@@ -850,6 +801,7 @@ describe("OptimiserPreview", () => {
             point_summaries: [],
             n_points: 0,
             points_returned: 0,
+            frontier_generation: 0,
             constraint_names: [],
             swept_axes: [],
             points_limit: 2000,
@@ -970,6 +922,7 @@ describe("OptimiserPreview", () => {
         swept_axes: ["loss_ratio", "volume"],
         points_limit: 2000,
         points_truncated: false,
+        frontier_generation: 0,
       }
       renderPreview({
         data: makeData({
@@ -1027,43 +980,137 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByRole("tab", { name: "Export" })).not.toBeInTheDocument()
     })
 
-    it("shows the solved result's per-quote detail without a point index", async () => {
-      mockApplyOptimiser.mockResolvedValueOnce({
-        status: "ok",
-        total_objective: 1250000,
-        constraints: { loss_ratio: 0.66 },
-        from_artifact: true,
-        preview: [{ quote_id: "Q001", optimal_scenario_value: 1.05 }],
-        row_count: 1250,
-        preview_row_count: 100,
-        preview_row_limit: 100,
-        preview_truncated: true,
-        error: null,
-      })
-      renderPreview()
-      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
-
-      expect(await screen.findByText("Q001")).toBeInTheDocument()
-      expect(mockApplyOptimiser).toHaveBeenCalledWith({ job_id: "job_123" }, { signal: expect.any(AbortSignal) })
-      expect(screen.getByText(/100 of 1,250 quotes, with the scenario the solved result chose/)).toBeInTheDocument()
-      expect(screen.getByText(/capped at 100 rows/)).toBeInTheDocument()
-    })
-
-    it("follows the selected frontier point and says when detail cannot load", async () => {
-      mockApplyOptimiser.mockRejectedValueOnce(new Error("artifact missing"))
-      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 1 }) })
-      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
-
-      expect(await screen.findByRole("alert")).toHaveTextContent("Per-quote detail could not be loaded: artifact missing")
-      expect(mockApplyOptimiser).toHaveBeenCalledWith(
-        { job_id: "job_123", point_index: 1 },
-        { signal: expect.any(AbortSignal) },
-      )
-    })
-
     it("has no Quotes tab for ratebook results", () => {
       renderPreview({ data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }) })
       expect(screen.queryByRole("tab", { name: "Quotes" })).not.toBeInTheDocument()
+    })
+  })
+
+  describe("selected-point integrity", () => {
+    /** The preview's data after the stepper selected `index`, as the store builds it. */
+    function selectedData(frontier: FrontierData, index: number, overrides: Partial<OptimiserPreviewData> = {}) {
+      return makeData({
+        frontier,
+        selectedPointIndex: index,
+        result: pointResult(frontier, index),
+        solvedResult: makeSolveResult(),
+        ...overrides,
+      })
+    }
+
+    function statsFor(label: string) {
+      return screen.getByRole("group", { name: `Scenario value statistics: ${label}` })
+    }
+
+    it("labels the as-solved statistics under the histogram", () => {
+      renderPreview()
+
+      expect(screen.getByText("Scenario Value Distribution")).toBeInTheDocument()
+      expect(within(statsFor("As solved")).getByText("1.0213")).toBeInTheDocument()
+    })
+
+    it("keeps a selected point's statistics though the point has no histogram", () => {
+      const frontier = makeFrontier()
+      renderPreview({ data: selectedData(frontier, 2) })
+      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+
+      expect(frontier.point_summaries[2].scenario_value_histogram).toBeNull()
+      // Point 3's own mean (sv_mean 1.02), not the solve's 1.0213.
+      expect(within(statsFor("Frontier point 3")).getByText("1.0200")).toBeInTheDocument()
+      expect(screen.queryByText("1.0213")).not.toBeInTheDocument()
+    })
+
+    it("keeps Convergence for a selected point and says whose history it shows", () => {
+      const frontier = makeFrontier()
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      expect(screen.getByText(
+        "History is recorded for the solved result; frontier point 2: converged, 11 iterations",
+      )).toBeInTheDocument()
+      // The solve's two recorded iterations.
+      expect(screen.getByText("N")).toBeInTheDocument()
+      expect(screen.getByText("Y")).toBeInTheDocument()
+    })
+
+    it("says when the selected point did not converge", () => {
+      const frontier = makeFrontier()
+      frontier.point_summaries[1] = { ...frontier.point_summaries[1], converged: false, iterations: 50 }
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      expect(screen.getByText(
+        "History is recorded for the solved result; frontier point 2: not converged, 50 iterations",
+      )).toBeInTheDocument()
+    })
+
+    it("offers no Convergence when the solve recorded no history", () => {
+      const frontier = makeFrontier()
+      renderPreview({ data: selectedData(frontier, 1, { solvedResult: makeSolveResult({ history: null }) }) })
+
+      expect(screen.queryByRole("tab", { name: "Convergence" })).not.toBeInTheDocument()
+    })
+
+    it("keeps the tab when the stepper selects another point", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 1) })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 2)} />)
+
+      expect(screen.getByRole("tab", { name: "Convergence" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByText(/frontier point 3: converged, 12 iterations/)).toBeInTheDocument()
+    })
+
+    it("returns to the default tab for a new solve job", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 1) })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 0, { jobId: "job_456" })} />)
+
+      expect(screen.getByRole("tab", { name: "Frontier" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("returns to the default tab for another optimiser node", () => {
+      const { rerender, props } = renderPreview()
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} nodeId="opt_2" />)
+
+      expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("keeps the as-solved marker where the solve is when a point is selected", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 0) })
+      const marker = () => screen.getByTestId("frontier-as-solved-marker").querySelector("circle")!
+      const before = [marker().getAttribute("cx"), marker().getAttribute("cy")]
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 3)} />)
+
+      expect([marker().getAttribute("cx"), marker().getAttribute("cy")]).toEqual(before)
+    })
+
+    it("shows the displayed result's warning as a strip", () => {
+      const frontier = makeFrontier()
+      frontier.point_summaries[1] = {
+        ...frontier.point_summaries[1],
+        converged: false,
+        warning: "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+      }
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      expect(screen.getByRole("status", { name: "Result warning" })).toHaveTextContent(
+        "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+      )
+    })
+
+    it("shows no warning strip for a result without a warning", () => {
+      renderPreview()
+      expect(screen.queryByRole("status", { name: "Result warning" })).not.toBeInTheDocument()
     })
   })
 

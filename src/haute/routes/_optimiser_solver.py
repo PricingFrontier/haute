@@ -936,6 +936,7 @@ def _finalize_solve_result(
                     frontier_result.points,
                     constraint_kinds=kinds,
                     swept_axes=list(ranges),
+                    frontier_generation=0,
                 )
                 frontier_factor_tables = frontier_point_factor_tables(
                     frontier_result,
@@ -959,6 +960,8 @@ def _finalize_solve_result(
             )
 
     result_dict["frontier"] = frontier_data
+    # A solve starts the job's frontier generations; see ``completion_fields``.
+    result_dict["frontier_generation"] = 0
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
     # Built before the publisher persists (and drops) the apply dataframe the

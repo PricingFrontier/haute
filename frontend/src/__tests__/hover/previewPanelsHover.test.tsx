@@ -482,8 +482,10 @@ function makeSolveResult(): OptimiserSolveResult {
 }
 
 function makeOptimiserPreviewData(): OptimiserPreviewData {
+  const result = makeSolveResult()
   return {
-    result: makeSolveResult(),
+    result,
+    solvedResult: result,
     jobId: "job-1",
     constraints: { c1: { target: 0.5 } },
     nodeLabel: "Opt Node",

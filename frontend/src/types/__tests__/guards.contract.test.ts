@@ -3158,6 +3158,7 @@ describe("API response guards", () => {
       swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: true,
+      frontier_generation: 0,
       job_id: null,
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
@@ -3192,6 +3193,7 @@ describe("API response guards", () => {
         swept_axes: ["loss"],
         points_limit: 2000,
         points_truncated: false,
+        frontier_generation: 0,
         job_id: null,
       }),
     ).toThrow(
@@ -3226,6 +3228,7 @@ describe("API response guards", () => {
       swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: false,
+      frontier_generation: 0,
       job_id: null,
     })
     const { warning: _warning, ...withoutWarning } = summary; void _warning
@@ -3277,6 +3280,7 @@ describe("API response guards", () => {
       swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: false,
+      frontier_generation: 0,
       job_id: null,
     }).point_summaries[0]
 
@@ -3292,6 +3296,7 @@ describe("API response guards", () => {
         swept_axes: ["loss"],
         points_limit: 2000,
         points_truncated: false,
+        frontier_generation: 0,
         job_id: null,
       }),
     ).toThrow(
@@ -3365,6 +3370,7 @@ describe("API response guards", () => {
       scenario_value_histogram: null,
       clamp_rate: null,
       combined_factor_bounds: null,
+      frontier_generation: 0,
       error: null,
     }
     expect(() =>

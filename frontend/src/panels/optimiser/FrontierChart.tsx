@@ -145,9 +145,9 @@ export default function FrontierChart({
         )
       })}
 
-      {/* Current solve result marker (diamond ring) */}
+      {/* As-solved result marker (diamond ring) */}
       {currentX != null && Number.isFinite(currentX) && Number.isFinite(currentY) && (
-        <g aria-hidden="true" pointerEvents="none" style={{ pointerEvents: "none" }}>
+        <g data-testid="frontier-as-solved-marker" aria-hidden="true" pointerEvents="none" style={{ pointerEvents: "none" }}>
           <circle
             cx={xScale(currentX)}
             cy={yScale(currentY)}

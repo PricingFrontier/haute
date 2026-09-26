@@ -16,6 +16,7 @@ describe("optimiser SummaryTab constraint attainment", () => {
   it("states bound, achieved, signed slack, status and λ in text", () => {
     render(
       <SummaryTab
+        selectedPointIndex={null}
         result={makeSolveResult({
           mode: "online",
           constraints: { volume: 1_012_400 },
@@ -32,6 +33,7 @@ describe("optimiser SummaryTab constraint attainment", () => {
   it("reads a positive λ beside positive slack as Met, never as binding", () => {
     render(
       <SummaryTab
+        selectedPointIndex={null}
         result={makeSolveResult({
           constraints: { volume: 5.5 },
           effective_bounds: { volume: { kind: "min", bound: 5 } },
@@ -48,6 +50,7 @@ describe("optimiser SummaryTab constraint attainment", () => {
   it("says a breach in words with its signed percentage", () => {
     render(
       <SummaryTab
+        selectedPointIndex={null}
         result={makeSolveResult({
           constraints: { loss_ratio: 100.01 },
           effective_bounds: { loss_ratio: { kind: "max", bound: 100 } },
@@ -64,6 +67,7 @@ describe("optimiser SummaryTab constraint attainment", () => {
   it("lists every constraint the backend bounds, swept or not, in its order", () => {
     render(
       <SummaryTab
+        selectedPointIndex={null}
         result={makeSolveResult({
           constraints: { margin: 389.7, volume: 5.2 },
           effective_bounds: {
@@ -82,6 +86,7 @@ describe("optimiser SummaryTab constraint attainment", () => {
   it("shows λ for a ratebook result too", () => {
     render(
       <SummaryTab
+        selectedPointIndex={null}
         result={makeSolveResult({
           mode: "ratebook",
           constraints: { volume: 0.93 },
@@ -97,6 +102,7 @@ describe("optimiser SummaryTab constraint attainment", () => {
   it("fails loudly when the backend sent no bound for a constraint", () => {
     expect(() => render(
       <SummaryTab
+        selectedPointIndex={null}
         result={makeSolveResult({
           constraints: { volume: 5.2 },
           effective_bounds: {},

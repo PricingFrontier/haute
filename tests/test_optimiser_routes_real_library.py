@@ -783,6 +783,53 @@ class TestFrontierPointSummaryContract:
                 assert selected.get(field) == expected, field
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestFrontierGenerationContract:
+    def test_every_response_reports_the_generation_and_a_recompute_increments_it(
+        self, client, tmp_path
+    ):
+        """The browser keys point-derived data (the /apply cache) by
+        ``(job_id, frontier_generation)``: a recompute reuses point indices for
+        different points, so each recompute must report a new generation on the
+        solve result, its frontier, the sweep's own result and select."""
+        df = _scored_frame(n_quotes=5, n_steps=3)
+        path = tmp_path / "online_frontier_generation.parquet"
+        df.write_parquet(path)
+        job_id = _solve_completed(client, _online_graph(str(path)))
+        assert _poll_until_done(client, job_id)["result"]["frontier_generation"] == 0
+
+        for expected_generation in (1, 2):
+            sweep = run_frontier_and_wait(
+                client,
+                {
+                    "job_id": job_id,
+                    "threshold_ranges": {"volume": [4.0, 6.0]},
+                    "n_points_per_dim": 2,
+                },
+            )
+            assert sweep["status"] == "completed", sweep.get("message", "")
+            assert sweep["result"]["frontier_generation"] == expected_generation
+
+            solve_status = _poll_until_done(client, job_id)
+            assert solve_status["result"]["frontier_generation"] == expected_generation
+            assert solve_status["result"]["frontier"]["frontier_generation"] == expected_generation
+            assert solve_status["frontier"]["frontier_generation"] == expected_generation
+
+            selected = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": 1},
+            )
+            assert selected.status_code == 200, selected.text
+            assert selected.json()["frontier_generation"] == expected_generation
+            # Returning to the solved result reports the same generation.
+            solved = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": None},
+            )
+            assert solved.status_code == 200, solved.text
+            assert solved.json()["frontier_generation"] == expected_generation
+
+
 _TWO_CONSTRAINTS = {"volume": {"min": 5.5}, "margin": {"max": 400.0}}
 
 
@@ -842,6 +889,8 @@ class TestEffectiveBoundsContract:
             "margin": {"kind": "max", "bound": 400.0},
         }
         frontier = result["frontier"]
+        # The solve-time frontier is the job's first generation.
+        assert result["frontier_generation"] == frontier["frontier_generation"] == 0
         assert frontier["constraint_names"] == ["volume", "margin"]
         assert frontier["swept_axes"] == ["volume"]
         assert [point["threshold_volume"] for point in frontier["points"]] == [5.0, 5.5, 6.0]

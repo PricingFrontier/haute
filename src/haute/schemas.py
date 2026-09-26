@@ -3132,8 +3132,21 @@ class OptimiserFrontierResponse(BaseModel):
     """The constraints the sweep varied (a subset of ``constraint_names``)."""
     points_limit: int | None = None
     points_truncated: bool = False
+    frontier_generation: int | None = Field(default=None, ge=0)
+    """The solve job's frontier generation this frontier belongs to: ``0`` for the
+    solve-time frontier, incremented by every recompute. Every computed frontier
+    carries it; only the ``status == "started"`` handle has none."""
     job_id: str | None = None
     """Pollable frontier job handle when ``status == "started"``."""
+
+    @model_validator(mode="after")
+    def _generation_iff_computed(self) -> OptimiserFrontierResponse:
+        started = self.status == "started"
+        if started and self.frontier_generation is not None:
+            raise ValueError("A started frontier handle has no frontier_generation")
+        if not started and self.frontier_generation is None:
+            raise ValueError("A computed frontier requires frontier_generation")
+        return self
 
 
 class OptimiserFrontierStatusResponse(BaseModel):
@@ -3248,6 +3261,8 @@ class OptimiserSolveResult(BaseModel):
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
+    # The job's frontier generation (0 until a recompute); see OptimiserFrontierResponse.
+    frontier_generation: int = Field(ge=0)
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -3306,6 +3321,8 @@ class OptimiserFrontierSelectResponse(BaseModel):
     clamp_rate: float | None = None
     # Ratebook only: the solve's collar, shared by every frontier point.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
+    # The frontier generation the point index refers to.
+    frontier_generation: int = Field(ge=0)
     error: str | None = None
 
 
