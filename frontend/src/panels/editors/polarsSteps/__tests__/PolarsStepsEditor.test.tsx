@@ -593,7 +593,7 @@ describe("PolarsStepsEditor in frame mode", () => {
   })
 })
 
-/* The step editor's experience: keys, focus, notes, linked code, first steps. */
+/* The step editor's experience: keys, focus, notes and linked code. */
 
 const quotesTyped: InputSource = { ...quotes, columns: COLUMNS }
 const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
@@ -693,21 +693,6 @@ describe("PolarsStepsEditor keys and focus", () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Column name")), { timeout: 5000 })
     expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
     expect(screen.getByRole("combobox", { name: "Formula" })).toHaveAttribute("placeholder", "e.g. (premium + commission) * tax / 12")
-  })
-
-  it("offers three first steps while a connected node has only its start step, and the hint goes once a card exists", async () => {
-    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} />)
-    const hint = screen.getByTestId("polars-steps-first-run")
-    expect(hint).toHaveTextContent("Steps run top to bottom on quotes")
-    expect(within(hint).getAllByRole("button").map((b) => b.textContent)).toEqual(["Filter rows", "Add column", "Group and aggregate"])
-    fireEvent.click(within(hint).getByRole("button", { name: "Filter rows" }))
-    await waitFor(() => expect(screen.queryByTestId("polars-steps-first-run")).not.toBeInTheDocument(), { timeout: 5000 })
-    expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toHaveAttribute("aria-expanded", "true")
-  })
-
-  it("offers the first steps on the node's own data in frame mode", () => {
-    render(<Harness initial={{ steps: [] }} inputSources={[]} start="frame" />)
-    expect(screen.getByTestId("polars-steps-first-run")).toHaveTextContent("Steps run top to bottom on this node's data")
   })
 })
 

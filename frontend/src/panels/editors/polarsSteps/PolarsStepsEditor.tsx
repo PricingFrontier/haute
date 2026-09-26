@@ -6,7 +6,7 @@ import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
 import AddStepMenu from "./AddStepMenu"
-import { STEP_CATALOGUE, createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
+import { createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
 import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
@@ -28,9 +28,6 @@ const SWITCH_CONFIRMATION =
 
 /** Join and concat need an input name to reference; withheld while none is eligible. */
 const INPUT_REFERENCING_KINDS: ReadonlySet<Exclude<StepKind, "source">> = new Set(["join", "concat"])
-
-/** The kinds a node with no steps yet offers as a first step. */
-const FIRST_STEP_KINDS: Array<Exclude<StepKind, "source">> = ["filter", "with_column", "group_by"]
 
 /** Canvas shortcuts (with Ctrl/Cmd) that act on the graph and must not fire from the step editor. */
 const GRAPH_SHORTCUT_KEYS: ReadonlySet<string> = new Set(["a", "c", "g", "v"])
@@ -343,7 +340,6 @@ export default function PolarsStepsEditor({
   const cardOffset = startStep === null ? 0 : 1
   const stepCards = steps.slice(cardOffset)
   const withheldKinds = inputNames.length === 0 ? INPUT_REFERENCING_KINDS : undefined
-  const firstKinds = FIRST_STEP_KINDS.filter((kind) => !withheldKinds?.has(kind))
 
   const switchButton = (
     <button
@@ -507,33 +503,6 @@ export default function PolarsStepsEditor({
                   </div>
                 )
               })}
-            </div>
-          )}
-
-          {stepCards.length === 0 && canAdd && (
-            <div data-testid="polars-steps-first-run" className="grid gap-2 rounded-lg px-3 py-2.5" style={{ border: "1px dashed var(--border)" }}>
-              <p className="m-0 text-[11px] leading-snug" style={{ color: "var(--text-secondary)" }}>
-                Steps run top to bottom on {isFrame ? "this node's data" : <code className="font-mono" style={{ color: "var(--text-primary)" }}>{effectiveStart}</code>}. Start with:
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {firstKinds.map((kind) => {
-                  const info = STEP_CATALOGUE.find((entry) => entry.kind === kind)
-                  const Icon = STEP_ICONS[kind]
-                  return (
-                    <button
-                      key={kind}
-                      type="button"
-                      onClick={() => addStep(kind)}
-                      title={info?.description}
-                      className="add-row-btn focus-ring inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
-                      style={{ color: "var(--text-primary)", background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
-                    >
-                      <Icon size={12} aria-hidden="true" style={{ color: NODE_GROUP_COLORS.transform }} />
-                      {info?.label ?? kind}
-                    </button>
-                  )
-                })}
-              </div>
             </div>
           )}
 

@@ -306,10 +306,7 @@ search box that takes focus and filters the kinds by label, description or Polar
 (never SAS or Excel names; Enter adds the first match), a line at its foot giving the
 focused or hovered kind's description and Polars call, arrow keys that move between the
 search box and the kinds, and Escape that closes and returns focus; choosing a kind moves
-focus into the new card. While a node has no operation cards (only its start step in
-`input` mode, an empty list in `frame` mode) one line says the steps run top to bottom on
-the start input (in `frame` mode, on the node's data) with buttons for Filter rows, Add
-column and Group and aggregate. The chooser covers filter, derived
+focus into the new card. The chooser covers filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable. Short forms read as
 sentences (`Keep the first [100] rows`, `Sort by [column] [ascending]`, `Rename [column]
