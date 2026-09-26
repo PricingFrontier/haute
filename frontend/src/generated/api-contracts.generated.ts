@@ -1982,6 +1982,10 @@ export interface TrainResponse {
   status: 'started' | 'completed' | 'error';
   total_source_rows: number | null;
   tuning?: TuningReportPayload;
+  validation_loss_history: {
+    [k: string]: number;
+  }[];
+  validation_loss_history_truncated: boolean;
   warning: string | null;
 }
 /**

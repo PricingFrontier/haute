@@ -537,7 +537,18 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    clearly. The final parameters replace CatBoost iteration aliases and remove
    early-stopping controls; with no validation
    or with GLM, parameters remain unchanged. The completed result carries the derived
-   `final_tree_count` through the worker and response contract. On-demand MLflow export
+   `final_tree_count` through the worker and response contract. `run_evaluation_fit`
+   returns a `SelectionFit`: the persisted `EvaluationFitResult` and the fit's loss
+   history, which is never persisted. When the run had exactly one validation fit (holdout)
+   and a final refit, and no tuning, the completed result carries that fit's history as
+   `validation_loss_history`; the refit's own history, fitted without an evaluation set,
+   stays `loss_history`. The response bounds each history to
+   `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` rows (default 200) by thinning, never by keeping the
+   tail: it keeps the first and last rows, the row of the fit's best iteration (the row whose
+   `iteration` is `best_iteration + 1`, since `best_iteration` is zero-based and rows count
+   from one; the validation history uses the selection fit's) and an even stride between
+   them, and sets `loss_history_truncated` or `validation_loss_history_truncated` when it
+   dropped rows. On-demand MLflow export
    projects the recorded fixed parameters with that count; results without it
    retain their original parameters. A refit at a small derived count can predict a
    constant; CatBoost then reports NaN `PredictionValuesChange` importances (a

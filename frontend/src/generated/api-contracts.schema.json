@@ -11959,6 +11959,21 @@
         "tuning": {
           "$ref": "#/$defs/TuningReportPayload"
         },
+        "validation_loss_history": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Validation Loss History",
+          "type": "array"
+        },
+        "validation_loss_history_truncated": {
+          "default": false,
+          "title": "Validation Loss History Truncated",
+          "type": "boolean"
+        },
         "warning": {
           "anyOf": [
             {
@@ -11990,6 +12005,8 @@
         "fit_evidence",
         "loss_history",
         "loss_history_truncated",
+        "validation_loss_history",
+        "validation_loss_history_truncated",
         "double_lift",
         "shap_summary",
         "feature_importance_loss",

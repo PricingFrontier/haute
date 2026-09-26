@@ -204,11 +204,28 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
 
 def _bounded_loss_history(
     history: Iterable[dict[str, float]],
+    *,
+    best_iteration: int | None,
 ) -> tuple[list[dict[str, float]], bool]:
+    """Thin a fit's loss history to the limit, keeping its whole span.
+
+    Keeps the first and last rows, the best iteration's row (rows count from
+    one, ``best_iteration`` from zero) and an even stride between them.
+    """
     rows = list(history)
-    if len(rows) <= _max_train_loss_history():
+    limit = _max_train_loss_history()
+    if len(rows) <= limit:
         return rows, False
-    return rows[-_max_train_loss_history() :], True
+    kept = {0, len(rows) - 1}
+    if best_iteration is not None:
+        kept.update(
+            index for index, row in enumerate(rows) if row["iteration"] == best_iteration + 1
+        )
+    spare = limit - len(kept)
+    if spare > 0:
+        step = (len(rows) - 1) / (spare + 1)
+        kept.update(round(step * slot) for slot in range(1, spare + 1))
+    return [rows[index] for index in sorted(kept)][:limit], True
 
 
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
@@ -452,6 +469,7 @@ def _training_response_payload(
 ) -> dict[str, Any]:
     loss_history, loss_history_truncated = _bounded_loss_history(
         train_result.loss_history,
+        best_iteration=train_result.best_iteration,
     )
     diagnostics_set: Literal["development", "validation", "final_test"] = (
         train_result.diagnostics_set
@@ -460,6 +478,15 @@ def _training_response_payload(
         train_result.final_test_metrics if diagnostics_set == "final_test" else train_result.metrics
     )
     evaluation_payload = EvaluationReportPayload.model_validate(evaluation)
+    validation_best: int | None = None
+    if train_result.validation_loss_history:
+        if len(evaluation_payload.selection_fits) != 1:
+            raise ValueError("a validation loss history needs exactly one selection fit")
+        validation_best = evaluation_payload.selection_fits[0].best_iteration
+    validation_loss_history, validation_loss_history_truncated = _bounded_loss_history(
+        train_result.validation_loss_history,
+        best_iteration=validation_best,
+    )
     tuning_payload = TuningReportPayload.model_validate(tuning) if tuning is not None else None
     response = TrainResponse(
         status="completed",
@@ -478,6 +505,8 @@ def _training_response_payload(
         fit_evidence=train_result.fit_evidence,
         loss_history=loss_history,
         loss_history_truncated=loss_history_truncated,
+        validation_loss_history=validation_loss_history,
+        validation_loss_history_truncated=validation_loss_history_truncated,
         double_lift=train_result.double_lift,
         shap_summary=train_result.shap_summary,
         feature_importance_loss=train_result.feature_importance_loss,

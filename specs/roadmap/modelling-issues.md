@@ -39,7 +39,6 @@ the demo pipeline has been rewritten in the declaration format.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | MDL-01 | Planned | P2 | The memory estimate says how many rows training will really use, and never reports a join's worst case as the row count. |
-| MDL-03 | Planned | P2 | The Loss tab shows the whole fit and says which fit it is. |
 | MDL-06 | Decision | P3 | A CatBoost model with small categorical columns does not train many times slower than it needs to. |
 | MDL-07 | Decision | P3 | The Summary tab leads with the out-of-sample metrics when a validation fit ran. |
 | MDL-08 | Planned | P3 | An open page recovers when the frontend it was served from has been rebuilt. |
@@ -105,39 +104,6 @@ all rows trained; a component test renders both box states.
 `src/haute/routes/modelling.py::estimate_training`;
 `src/haute/routes/_training_lifecycle.py`;
 `frontend/src/panels/modelling/TrainingActionsAndResults.tsx::TrainingActionsAndResults`.
-
-### MDL-03 — The Loss tab shows only the last 200 iterations
-**Why:** After the demo model trained, the Loss tab plotted one curve over
-iterations 512 to 711: a nearly flat tail, with the steep early descent
-missing. The results payload runs the loss history through
-`_bounded_loss_history`, which keeps the last `HAUTE_TRAIN_LOSS_HISTORY_LIMIT`
-rows (default 200), and `LossTab` does not read `loss_history_truncated`, so
-nothing says the curve is a window. Only one curve was drawn, although the
-validation fit ran with an evaluation set; the history comes from the fit
-result the training job keeps, and after a validation fit and a final refit
-on all rows that appears to be the refit, which has no evaluation set. The
-early stopping point, the reason the refit uses the tree count it does, is
-therefore not visible either.
-
-**Plan:** Bound the history by thinning, not by keeping the tail: keep the
-first and last iterations, the best iteration and an even stride between
-them, up to the limit. Show the validation fit's train and eval curves, with
-the best iteration marked, when a validation fit ran, and say so in the tab's
-intro ("Validation fit: 80,000 training, 20,000 validation rows"); a refit's
-training curve can follow as its own series or a note. When the history was
-thinned, the tab says how many iterations it spans.
-
-**Acceptance:** A unit test thins a 1,000-row history to 200 rows that
-include iteration 1, the last iteration and the best iteration; a training
-test with holdout validation asserts the results carry the validation fit's
-train and eval history; a `LossTab` component test renders both curves, the
-best-iteration marker and the span note.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_training_worker.py::_bounded_loss_history`;
-`src/haute/modelling/_training_job.py`;
-`frontend/src/panels/modelling/LossTab.tsx::LossTab`.
 
 ### MDL-06 — CatBoost's default encoding of small categorical columns is slow
 **Why:** The demo model takes minutes to train: 134 s from Train Model to

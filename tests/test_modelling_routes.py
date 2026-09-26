@@ -819,20 +819,30 @@ class TestTrainStatusTimeout:
             _store.delete_job("train_done_past_timeout")
 
 
-def test_bounded_loss_history_retains_latest_rows() -> None:
+def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
     from haute.routes import _train_service
 
-    history = [
-        {"iteration": float(index), "rmse": float(index)}
-        for index in range(_train_service._max_train_loss_history() + 5)
-    ]
+    # Rows count iterations from one; best_iteration is zero-based.
+    history = [{"iteration": float(n), "train_rmse": 1.0 / n} for n in range(1, 1001)]
 
-    bounded, truncated = _train_service._bounded_loss_history(history)
+    bounded, truncated = _train_service._bounded_loss_history(history, best_iteration=660)
 
     assert truncated is True
-    assert len(bounded) == _train_service._max_train_loss_history()
-    assert bounded[0]["iteration"] == 5.0
-    assert bounded[-1]["iteration"] == float(_train_service._max_train_loss_history() + 4)
+    assert len(bounded) == _train_service._max_train_loss_history() == 200
+    iterations = [row["iteration"] for row in bounded]
+    assert iterations == sorted(set(iterations))
+    assert {1.0, 661.0, 1000.0} <= set(iterations)
+    # An even stride: no gap between kept rows is more than twice the average.
+    gaps = [later - earlier for earlier, later in zip(iterations, iterations[1:], strict=False)]
+    assert max(gaps) <= 2 * (999 / 199)
+
+
+def test_bounded_loss_history_keeps_a_short_history_whole() -> None:
+    from haute.routes import _train_service
+
+    history = [{"iteration": float(n), "train_rmse": 1.0} for n in range(1, 201)]
+
+    assert _train_service._bounded_loss_history(history, best_iteration=None) == (history, False)
 
 
 class TestExportEndpoint:

@@ -265,6 +265,8 @@ class TrainResult:
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"
     best_iteration: int | None = None
     loss_history: list[dict[str, float]] = field(default_factory=list)
+    #: The holdout validation fit's history when the final model is its refit.
+    validation_loss_history: list[dict[str, float]] = field(default_factory=list)
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
@@ -296,6 +298,14 @@ class TrainResult:
     final_tree_count: int | None = None
     #: The final fit's threads, round ceiling, fitted rounds, and stopping reason.
     fit_evidence: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class SelectionFit:
+    """One selection fit: its persisted result and its loss history, which is not."""
+
+    result: EvaluationFitResult
+    loss_history: list[dict[str, float]]
 
 
 @dataclass
@@ -1133,7 +1143,7 @@ class TrainingJob:
         progress: Callable[[str, float], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
-    ) -> EvaluationFitResult:
+    ) -> SelectionFit:
         """Fit one selection partition without publishing model or diagnostics."""
         if self.evaluation_plan is None or self.evaluation_fit_index is None:
             raise HauteValidationError(
@@ -1221,7 +1231,7 @@ class TrainingJob:
                 trained.fit_result.best_iteration,
             )
             report("Validation complete", 1.0)
-            return result
+            return SelectionFit(result, trained.fit_result.loss_history)
         finally:
             self._cleanup_owned_temp_parquets(prepared, split_result)
 
@@ -1358,7 +1368,7 @@ class TrainingJob:
                         child.run_evaluation_fit(
                             check_cancelled=check_cancelled,
                             execution_context=execution_context,
-                        )
+                        ).result
                     )
                     completed_fits += 1
                     checkpoint(f"after_tuning_trial_{trial_index}_fit_{fit_index}")
@@ -1544,6 +1554,8 @@ class TrainingJob:
             plan_digest = evaluation_file_sha256(plan_path)
             selection_fit_count = len(plan.validation_fits)
             tuning_response: dict[str, Any] | None = None
+            # Refit selection fits' histories; tuning trials keep none.
+            selection_histories: list[list[dict[str, float]]] = []
             if self.tuning is not None:
                 with tempfile.TemporaryDirectory(prefix="haute_tuning_fits_") as tuning_fit_root:
                     fits, final_params, tuning_response = self._run_tuning_trials(
@@ -1598,13 +1610,13 @@ class TrainingJob:
                             )
 
                         if self.refit_on_development:
-                            ordinary_fits.append(
-                                child.run_evaluation_fit(
-                                    progress=fit_progress,
-                                    check_cancelled=check_cancelled,
-                                    execution_context=execution_context,
-                                )
+                            selection = child.run_evaluation_fit(
+                                progress=fit_progress,
+                                check_cancelled=check_cancelled,
+                                execution_context=execution_context,
                             )
+                            ordinary_fits.append(selection.result)
+                            selection_histories.append(selection.loss_history)
                         else:
                             selected_result = child.run(
                                 progress=fit_progress,
@@ -1707,6 +1719,9 @@ class TrainingJob:
                     check_cancelled=check_cancelled,
                     execution_context=execution_context,
                 )
+                if len(selection_histories) == 1:
+                    # One holdout fit chose the refit's tree count: keep its curves.
+                    result.validation_loss_history = selection_histories[0]
             else:
                 assert selected_result is not None
                 result = selected_result

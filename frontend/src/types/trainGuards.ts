@@ -365,6 +365,12 @@ function trainResponseFromContract(response: GeneratedTrainResponse): TrainRespo
     ...response,
     feature_importance: parseArray(p, response.feature_importance, "feature_importance", parseFeatureImportanceRow),
     loss_history: parseArray(p, response.loss_history, "loss_history", parseLossHistoryEntry),
+    validation_loss_history: parseArray(
+      p,
+      response.validation_loss_history,
+      "validation_loss_history",
+      parseLossHistoryEntry,
+    ),
     double_lift: parseArray(p, response.double_lift, "double_lift", parseDoubleLiftRow),
     shap_summary: parseArray(p, response.shap_summary, "shap_summary", parseShapSummaryRow),
     feature_importance_loss: parseArray(p, response.feature_importance_loss, "feature_importance_loss", parseFeatureImportanceRow),

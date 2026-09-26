@@ -2424,6 +2424,8 @@ class TrainResponse(BaseModel):
     fit_evidence: FitEvidencePayload | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
+    validation_loss_history: list[dict[str, float]] = Field(default_factory=list)
+    validation_loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)

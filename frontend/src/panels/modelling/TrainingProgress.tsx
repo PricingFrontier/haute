@@ -6,7 +6,8 @@ import type { TrainProgress } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatDuration } from "../../utils/formatValue"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
-import { LossChart, lossCurveKeys } from "./LossChart"
+import { LossChart } from "./LossChart"
+import { lossCurveKeys } from "./lossHistory"
 
 type TrainingProgressProps = {
   trainProgress: TrainProgress

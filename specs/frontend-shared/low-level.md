@@ -979,7 +979,8 @@ The following remain shared-infrastructure-owned:
   `frontend/src/stores/useNodeResultsStore.ts` share the backend's `train_loss_history` and
   `train_loss_history_truncated` status fields, which the server always sends.
   `parseTrainStatusResponse` requires both and parses every row through the same
-  finite-number/required-iteration contract as completed `loss_history`; malformed or missing
+  finite-number/required-iteration contract as completed `loss_history` and
+  `validation_loss_history`; malformed or missing
   history throws, and no latest-loss reconstruction is invented. The store's type keeps them
   optional for the entries it makes itself.
 - `frontend/src/stores/useNodeResultsStore.ts` keeps each active job's latest status/history

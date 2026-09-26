@@ -528,6 +528,8 @@ export default function ModellingConfig({
           best_iteration: null,
           loss_history: [],
           loss_history_truncated: false,
+          validation_loss_history: [],
+          validation_loss_history_truncated: false,
           double_lift: [],
           shap_summary: [],
           feature_importance_loss: [],
