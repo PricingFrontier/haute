@@ -7,7 +7,7 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import { IterationLinesChart } from "../IterationLinesChart"
 import { ChartEmptyState, ResponsiveChart } from "./ChartScaffold"
-import type { LossEntry } from "./LossChart"
+import { shownFit, type ShownFit } from "./lossHistory"
 
 interface LossTabProps {
   result: TrainResult
@@ -22,47 +22,6 @@ const EMPTY_VALID_HISTORY_MESSAGE = "No valid loss history data available"
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value)
-
-/** The fit the tab draws: its rows, whether they were thinned, its best iteration and intro. */
-type ShownFit = {
-  history: LossEntry[]
-  thinned: boolean
-  bestIteration: number | null
-  intro: string | null
-}
-
-/**
- * The validation fit when one ran (after a refit its own history, otherwise
- * the model's), else the model's fit.
- */
-function shownFit(result: TrainResult): ShownFit {
-  const evaluation = result.evaluation
-  const holdout = evaluation?.validation_method === "single" ? evaluation.selection_fits[0] : undefined
-  const validationIntro = holdout
-    ? `Validation fit: ${holdout.train_rows.toLocaleString()} training, `
-      + `${holdout.validation_rows.toLocaleString()} validation rows.`
-    : null
-  if (holdout && result.validation_loss_history.length > 0) {
-    const iterations =
-      result.final_tree_count != null
-        ? ` for ${result.final_tree_count.toLocaleString()} iterations`
-        : ""
-    return {
-      history: result.validation_loss_history,
-      thinned: result.validation_loss_history_truncated,
-      bestIteration: holdout.best_iteration ?? null,
-      intro:
-        `${validationIntro} The final model was refit on all `
-        + `${result.development_rows.toLocaleString()} development rows${iterations}.`,
-    }
-  }
-  return {
-    history: result.loss_history,
-    thinned: result.loss_history_truncated,
-    bestIteration: result.best_iteration,
-    intro: evaluation?.refit_on_development === false ? validationIntro : null,
-  }
-}
 
 export function LossTab({ result, width, height = 280 }: LossTabProps) {
   const fit = shownFit(result)

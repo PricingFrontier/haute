@@ -23,6 +23,7 @@ import { PdpTab } from "./modelling/PdpTab"
 import { ResidualsTab } from "./modelling/ResidualsTab"
 import { SummaryTab } from "./modelling/SummaryTab"
 import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
+import { shownFit } from "./modelling/lossHistory"
 import ResultsWorkspace from "./ResultsWorkspace"
 
 export type ModellingPreviewData = {
@@ -161,7 +162,8 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
       case "terms":
         return (result.ebm_terms ?? []).length > 0
       case "loss":
-        return result.loss_history && result.loss_history.length > 1
+        // The fit the tab draws: after a holdout refit, the validation fit.
+        return shownFit(result).history.length > 1
       case "lift":
         return (
           (result.double_lift && result.double_lift.length > 0) ||

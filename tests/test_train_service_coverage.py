@@ -37,7 +37,7 @@ from haute.errors import BoundedMemoryUnsupportedError, PreambleError
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
-from tests.conftest import make_edge, make_graph, make_ready_file_input_config
+from tests.conftest import make_edge, make_graph, make_ram_estimate, make_ready_file_input_config
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
@@ -170,7 +170,7 @@ class TestEstimateRamFailure:
 
 class TestCheckGpuFallbackFailure:
     def test_vram_estimate_failure_is_swallowed(self):
-        """A VRAM-probe exception must not propagate; ram_warning is unchanged."""
+        """A VRAM-probe exception must not propagate; it becomes a job advisory."""
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -182,23 +182,22 @@ class TestCheckGpuFallbackFailure:
             "haute.routes._training_lifecycle._check_gpu_vram",
             side_effect=RuntimeError("nvml exploded"),
         ):
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=100,
                 total_source_rows=200,
                 probe_columns=5,
-                ram_warning="prior warning",
                 job_id=job_id,
             )
 
-        # Exception swallowed: original warning returned, task_type left on GPU,
-        # and the failed check is surfaced as a job advisory rather than silence.
-        assert result == "prior warning"
+        # Exception swallowed: task_type left on GPU, and the failed check is
+        # surfaced as a job advisory rather than silence. A RAM downsampling
+        # warning joins it only after the prepared input shows rows were removed.
         assert train_params["task_type"] == "GPU"
         job = store.require_job(job_id)
         assert job["status"] == "running"
         assert "could not be checked" in job["gpu_warning"]
-        assert job["warning"] == f"prior warning\n{job['gpu_warning']}"
+        assert job["warning"] == job["gpu_warning"]
 
     def test_non_gpu_task_returns_early(self):
         """Non-GPU task_type short-circuits without any VRAM probe."""
@@ -210,17 +209,16 @@ class TestCheckGpuFallbackFailure:
 
         train_params: dict[str, object] = {"task_type": "CPU"}
         with patch("haute.routes._training_lifecycle._check_gpu_vram") as mock_vram:
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=None,
                 total_source_rows=None,
                 probe_columns=0,
-                ram_warning=None,
                 job_id=job_id,
             )
 
-        assert result is None
         mock_vram.assert_not_called()
+        assert store.require_job(job_id).get("warning") is None
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +481,7 @@ class TestStartGlmMergeAndKeepColumns:
             patch.object(
                 service,
                 "_estimate_ram",
-                return_value=(None, None, 100, 3),
+                return_value=make_ram_estimate(),
             ),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(service, "_execute_and_sink", side_effect=fake_execute_and_sink),
@@ -551,7 +549,7 @@ class TestStartGlmMergeAndKeepColumns:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(
                 service,
@@ -990,7 +988,7 @@ class TestStartExecutionContextLifecycle:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._training_lifecycle.create_admitted_execution_context",
@@ -1036,7 +1034,7 @@ class TestStartExecutionContextLifecycle:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._training_lifecycle.create_admitted_execution_context",
@@ -1320,7 +1318,7 @@ class TestStartCategoricalLevelsMerge:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(service, "_execute_and_sink", return_value="/tmp/fake.parquet"),
             patch.object(service, "_launch_background", side_effect=fake_launch),
@@ -1335,15 +1333,14 @@ class TestStartCategoricalLevelsMerge:
 
 
 # ---------------------------------------------------------------------------
-# _check_gpu_vram_before_launch — feasible GPU VRAM returns the prior warning
-# (the 768->794 short-circuit: vram_check.warning is falsy).
+# _check_gpu_vram_before_launch — feasible GPU VRAM records nothing
+# (the short-circuit: vram_check.warning is falsy).
 # ---------------------------------------------------------------------------
 
 
 class TestCheckGpuFallbackNoWarning:
-    def test_gpu_task_with_feasible_vram_returns_ram_warning(self):
-        """task_type=GPU but VRAM fits → no exception, ram_warning passed through
-        (branch 768->794)."""
+    def test_gpu_task_with_feasible_vram_records_no_warning(self):
+        """task_type=GPU but VRAM fits → no exception and no job warning."""
         from haute.routes._job_store import JobStore
         from haute.routes._train_service import _VramCheck
 
@@ -1356,17 +1353,17 @@ class TestCheckGpuFallbackNoWarning:
             "haute.routes._training_lifecycle._check_gpu_vram",
             return_value=_VramCheck(estimated_mb=10.0, available_mb=100.0, warning=None),
         ):
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=50,
                 total_source_rows=100,
                 probe_columns=4,
-                ram_warning="ram!",
                 job_id=job_id,
             )
 
-        assert result == "ram!"
-        assert store.require_job(job_id)["status"] == "running"
+        job = store.require_job(job_id)
+        assert job["status"] == "running"
+        assert job.get("warning") is None and job.get("gpu_warning") is None
 
     def test_gpu_task_with_unknown_vram_warns_and_proceeds(self):
         """Unknown VRAM attaches a job warning but does not refuse the launch."""
@@ -1388,19 +1385,17 @@ class TestCheckGpuFallbackNoWarning:
                 insufficient=False,
             ),
         ):
-            result = service._check_gpu_vram_before_launch(
+            service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=50,
                 total_source_rows=100,
                 probe_columns=4,
-                ram_warning="ram!",
                 job_id=job_id,
             )
 
-        assert result == "ram!"
         job = store.require_job(job_id)
         assert job["gpu_warning"] == advisory
-        assert job["warning"] == f"ram!\n{advisory}"
+        assert job["warning"] == advisory
 
 
 # ---------------------------------------------------------------------------
@@ -2502,7 +2497,7 @@ class TestTrainServiceLifecycles:
             return str(prep_file)
 
         monkeypatch.setattr(service, "_compile_preamble", lambda _graph: None)
-        monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: (None, None, 100, 3))
+        monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: make_ram_estimate())
         monkeypatch.setattr(service, "_check_gpu_vram_before_launch", lambda *a, **k: None)
         monkeypatch.setattr(service, "_execute_and_sink", fake_execute_and_sink)
 

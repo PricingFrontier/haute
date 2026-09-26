@@ -37,6 +37,7 @@ from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
 from haute.routes._training_preparation import prepare_training_data_worker
 from haute.schemas import TrainRequest
+from tests.conftest import make_ram_estimate
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 120
@@ -240,7 +241,9 @@ def _train(
         monkeypatch.setattr(
             TrainService,
             "_estimate_ram",
-            lambda *args, **kwargs: (None, row_limit, _ROWS, 4),
+            lambda *args, **kwargs: make_ram_estimate(
+                total_rows=_ROWS, probe_columns=4, safe_row_limit=row_limit
+            ),
         )
     job_id = store.create_job(
         {

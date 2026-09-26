@@ -112,8 +112,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   history_row)`, called after each iteration. `metrics` is the progress readout: the
   training metric under its native name and an evaluation set's as `<dataset>_<metric>`.
   `history_row` is the row the adapter appends to `FitResult.loss_history` (`iteration` plus
-  `train_`/`eval_`-prefixed values), or `None` from a fit that measures no per-iteration loss
-  (EBM, GLM, and CatBoost's GPU fit, which polls only the iteration). The training worker
+  `train_`/`eval_`-prefixed values), or `None` when the call adds no row: EBM's calls around
+  its fit, a GLM's first call (its second carries the one deviance row its history holds), and
+  CatBoost's GPU fit, which polls only the iteration. The training worker
   forwards both in its `iteration` progress event, whose `history` field is that row or
   `null`. The job's live `train_loss_history` appends each row, keeps the last
   `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200, setting `train_loss_history_truncated`),

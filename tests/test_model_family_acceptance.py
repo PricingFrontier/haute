@@ -20,6 +20,7 @@ from haute._model_scorer import score_frame
 from haute.errors import HauteValidationError
 from haute.modelling._training_job import TrainingJob, model_contract_filename
 from haute.routes._training_worker import _training_response_payload
+from tests.conftest import make_ram_estimate
 
 EVALUATION = {
     "schema_version": 1,
@@ -508,7 +509,7 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
         return str(prepared)
 
     monkeypatch.setattr(service, "_compile_preamble", lambda _graph: None)
-    monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: (None, None, 100, 3))
+    monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: make_ram_estimate())
     monkeypatch.setattr(service, "_check_gpu_vram_before_launch", lambda *a, **k: None)
     monkeypatch.setattr(service, "_execute_and_sink", execute_and_sink)
 

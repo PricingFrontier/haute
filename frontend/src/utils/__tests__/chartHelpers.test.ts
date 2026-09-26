@@ -28,6 +28,15 @@ describe("formatChartNumber", () => {
 })
 
 describe("formatChartTicks", () => {
+  it("keeps near-constant padded axes distinct without rejecting their float spacing", () => {
+    // A series that barely moves: the axis pads it and spaces ticks below the
+    // values' last significant digit, where floating point is uneven.
+    for (const values of [[100, 100.0000001], [107, 107.00000001]]) {
+      const labels = formatChartTicks(chartTicks(...chartDomain(values), 5))
+      expect(new Set(labels).size).toBe(labels.length)
+    }
+  })
+
   it("labels a narrow range with distinct numbers at one precision", () => {
     // formatChartNumber labels each of these ticks "107".
     expect(formatChartTicks(chartTicks(107, 107.3, 5))).toEqual(["107.00", "107.08", "107.15", "107.23", "107.30"])

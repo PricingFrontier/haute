@@ -31,12 +31,6 @@ function roundTo(value: number, decimals: number): number {
   return magnitude === 0 ? 0 : Math.sign(value) * magnitude
 }
 
-/** Whether `value` is a whole number of units in the `decimals` place. */
-function isRoundAt(value: number, decimals: number): boolean {
-  const units = value * decade(decimals)
-  return Math.abs(units - Math.round(units)) <= 1e-9 * Math.max(1, Math.abs(units))
-}
-
 function tickLabel(value: number, notation: TickNotation, decimals: number): string {
   // A tick that rounds to zero is labelled 0, never "-0.00".
   const shown = Math.abs(value) < decade(-decimals) / 2 ? 0 : value
@@ -69,11 +63,14 @@ function tickLabel(value: number, notation: TickNotation, decimals: number): str
 export function formatChartTicks(ticks: readonly number[]): string[] {
   if (ticks.length < 2) return ticks.map(formatChartNumber)
   const step = (ticks[ticks.length - 1] - ticks[0]) / (ticks.length - 1)
-  const uneven = ticks.some((tick, i) => i > 0 && Math.abs(tick - ticks[i - 1] - step) > Math.abs(step) * 1e-6)
+  const largest = Math.max(...ticks.map(Math.abs))
+  // Ticks spaced near the values' last significant digit carry float error of
+  // that size, so evenness is judged against it as well as the step.
+  const tolerance = Math.abs(step) * 1e-6 + largest * Number.EPSILON * 8
+  const uneven = ticks.some((tick, i) => i > 0 && Math.abs(tick - ticks[i - 1] - step) > tolerance)
   if (!(Math.abs(step) > 0) || uneven) {
     throw new Error(`Axis ticks must be distinct and evenly spaced to share one precision: ${ticks.join(", ")}`)
   }
-  const largest = Math.max(...ticks.map(Math.abs))
   const notation: TickNotation =
     largest >= COMPACT_FROM ? "compact" : largest < EXPONENTIAL_BELOW ? "exponential" : "standard"
   // Three significant figures, or two for the exponential mantissa, as formatChartNumber.
@@ -86,8 +83,13 @@ export function formatChartTicks(ticks: readonly number[]): string[] {
     labels = labelsAt(decimals)
   }
   if (notation !== "standard") return labels
-  while (decimals > 0 && ticks.every((tick) => isRoundAt(tick, decimals - 1))) decimals -= 1
-  return labelsAt(decimals)
+  // Drop a decimal only while every label ends in a zero there, which removes
+  // nothing a label shows, so the labels stay distinct.
+  while (decimals > 0 && labels.every((label) => label.endsWith("0"))) {
+    decimals -= 1
+    labels = labelsAt(decimals)
+  }
+  return labels
 }
 
 /** A padded domain also gives constant and single-point series a finite scale. */
