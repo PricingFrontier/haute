@@ -9,6 +9,12 @@
   "baseline_constraints": {
     "loss": 1.0
   },
+  "effective_bounds": {
+    "loss": {
+      "kind": "max",
+      "bound": 0.95
+    }
+  },
   "lambdas": {
     "loss": 0.3
   },
@@ -17,10 +23,12 @@
   "cd_iterations": null,
   "factor_tables": {},
   "history": null,
+  "ratebook_cd_trace": null,
   "warning": null,
-  "scenario_value_stats": null,
-  "scenario_value_histogram": null,
+  "adjustments": null,
   "clamp_rate": null,
   "combined_factor_bounds": null,
+  "frontier_generation": 0,
+  "diagnostics_errors": [],
   "error": null
 }

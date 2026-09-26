@@ -116,6 +116,8 @@ class SolveInput:
     path: str
     constraint_cols: list[str]
     ratebook_factors_handle: dict[str, Any] | None
+    # The quote-analysis table written into the parent's directory; None without one.
+    quote_analysis_handle: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,7 @@ class SolveInputWorkerRequest:
     output_path: str
     scratch_dir: str
     ratebook_factors_dir: str | None
+    quote_analysis_dir: str | None
 
 
 @dataclass(frozen=True)
@@ -325,6 +328,7 @@ def materialise_solve_input_worker(
                     execution_context=context,
                     output_path=request.output_path,
                     ratebook_factors_dir=request.ratebook_factors_dir,
+                    quote_analysis_dir=request.quote_analysis_dir,
                     seed_plan=request.seed_plan,
                 )
             except Exception as exc:

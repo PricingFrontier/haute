@@ -1304,16 +1304,16 @@ export interface OptimiserStatusResponse {
 }
 export interface OptimiserFrontierResponse {
   constraint_names: string[];
+  frontier_generation: number | null;
   job_id: string | null;
   n_points: number;
   point_summaries: OptimiserFrontierPointSummary[];
-  points: {
-    [k: string]: unknown;
-  }[];
+  points: (OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint)[];
   points_limit: number | null;
   points_returned: number;
   points_truncated: boolean;
   status: string;
+  swept_axes: string[];
 }
 /**
  * Every result field of one frontier point that differs from its solve.
@@ -1322,16 +1322,19 @@ export interface OptimiserFrontierResponse {
  * solve's result removes it.
  */
 export interface OptimiserFrontierPointSummary {
+  adjustments: null;
   cd_iterations: number | null;
   clamp_rate: number | null;
   constraints: {
     [k: string]: number;
   };
   converged: boolean;
+  diagnostics_errors: OptimiserDiagnosticError[];
+  effective_bounds: {
+    [k: string]: OptimiserEffectiveBound;
+  };
   factor_tables: {
-    [k: string]: {
-      [k: string]: unknown;
-    }[];
+    [k: string]: OptimiserFactorTableRow[];
   } | null;
   frontier_error: string | null;
   history: OptimiserHistoryEntry[] | null;
@@ -1339,10 +1342,39 @@ export interface OptimiserFrontierPointSummary {
   lambdas: {
     [k: string]: number;
   };
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
-  scenario_value_stats: OptimiserScenarioValueStats | null;
+  ratebook_cd_trace: OptimiserRatebookCdTrace | null;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * A result diagnostic that could not be produced, and why.
+ */
+export interface OptimiserDiagnosticError {
+  diagnostic: 'adjustments' | 'adjustment_weight' | 'frontier' | 'segment_weight';
+  error_type: string;
+  message: string;
+}
+/**
+ * The absolute bound a result was solved at for one constraint.
+ *
+ * ``bound`` is price-contour's (``constraint_bounds`` or a frontier row's
+ * ``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the
+ * fraction times the constraint's baseline total, never the fraction.
+ */
+export interface OptimiserEffectiveBound {
+  bound: number;
+  kind: 'min' | 'max';
+}
+/**
+ * One level of a solved ratebook factor table.
+ *
+ * The wire keys are the solver's (``__factor_group__``), which the saved
+ * artifact and every apply path read, so the row always serialises by alias.
+ */
+export interface OptimiserFactorTableRow {
+  __factor_group__: string;
+  optimal_scenario_value: number;
+  quote_count: number;
 }
 export interface OptimiserHistoryEntry {
   all_constraints_satisfied: boolean | null;
@@ -1356,24 +1388,98 @@ export interface OptimiserHistoryEntry {
   };
   total_objective: number;
 }
-export interface OptimiserScenarioValueHistogram {
-  counts: number[];
-  edges: number[];
+/**
+ * A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.
+ *
+ * Holds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``
+ * says earlier ones were dropped.
+ */
+export interface OptimiserRatebookCdTrace {
+  /**
+   * @minItems 1
+   */
+  records: OptimiserRatebookCdTraceRecord[];
+  truncated: boolean;
 }
-export interface OptimiserScenarioValueStats {
-  max: number;
-  mean: number;
-  min: number;
-  p25: number;
-  p5: number;
-  p50: number;
-  p75: number;
-  p95: number;
-  pct_decrease: number;
-  pct_increase: number;
-  std: number;
+/**
+ * One inner grouped solve of a ratebook coordinate descent (price-contour's
+ * ``PerFactorRecord``): the totals and λ after updating ``factor`` in pass
+ * ``cd_iteration``, on the search's working multiplier.
+ */
+export interface OptimiserRatebookCdTraceRecord {
+  cd_iteration: number;
+  factor: string;
+  factor_index: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
+}
+/**
+ * An online frontier row (``frontier_points_schema("online", ...)``).
+ */
+export interface OptimiserOnlineFrontierPoint {
+  bounds: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  iterations: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  mode: 'online';
+  non_convergence_reason: 'above_envelope' | 'bracket_exhausted' | 'iteration_budget_exhausted' | null;
+  solver_path: 'bisection' | 'subgradient';
+  sv_max: number;
+  sv_mean: number;
+  sv_median: number;
+  sv_min: number;
+  sv_p25: number;
+  sv_p5: number;
+  sv_p75: number;
+  sv_p95: number;
+  sv_pct_decrease: number;
+  sv_pct_increase: number;
+  sv_std: number;
+  thresholds: {
+    [k: string]: number;
+  };
+  total_objective: number;
+  totals: {
+    [k: string]: number;
+  };
+}
+/**
+ * A ratebook frontier row (``frontier_points_schema("ratebook", ...)``).
+ *
+ * ``iterations`` is the point's coordinate-descent pass count.
+ */
+export interface OptimiserRatebookFrontierPoint {
+  bounds: {
+    [k: string]: number;
+  };
+  clamp_rate: number;
+  converged: boolean;
+  iterations: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  mode: 'ratebook';
+  n_quotes_clamped_high: number;
+  n_quotes_clamped_low: number;
+  thresholds: {
+    [k: string]: number;
+  };
+  total_objective: number;
+  totals: {
+    [k: string]: number;
+  };
 }
 export interface OptimiserSolveResult {
+  adjustments: OptimiserAdjustmentReport | null;
   baseline_constraints: {
     [k: string]: number;
   };
@@ -1385,26 +1491,101 @@ export interface OptimiserSolveResult {
     [k: string]: number;
   };
   converged: boolean;
+  diagnostics_errors: OptimiserDiagnosticError[];
+  effective_bounds: {
+    [k: string]: OptimiserEffectiveBound;
+  };
   factor_tables: {
-    [k: string]: {
-      [k: string]: unknown;
-    }[];
+    [k: string]: OptimiserFactorTableRow[];
   };
   frontier: OptimiserFrontierResponse | null;
   frontier_error: string | null;
+  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
+  input_summary: OptimiserInputSummary;
   iterations: number | null;
   lambdas: {
     [k: string]: number;
   };
-  mode: string | null;
+  mode: 'online' | 'ratebook';
   n_quotes: number | null;
   n_steps: number | null;
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
-  scenario_value_stats: OptimiserScenarioValueStats | null;
+  ratebook_cd_trace: OptimiserRatebookCdTrace | null;
+  /**
+   * @minItems 1
+   */
+  scenario_grid: OptimiserScenarioGridStep[];
+  segment_keys: OptimiserSegmentKey[];
   selected_frontier_point: number | null;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * The distribution of one target's chosen scenario values against the 1.0 base price.
+ *
+ * One bar per step of the solve's scenario grid (steps nobody chose included)
+ * and, per computed weighting (quote count first), the summary figures. A
+ * refused weighting (a negative value or a zero total) is named in
+ * ``diagnostics_errors`` and appears nowhere else.
+ *
+ * ``deployed_factor_differs`` is, for a ratebook target, how many quotes'
+ * deployed factor (the unsnapped product of the rates, collared to the
+ * scenario range) differs from the grid step the solver evaluated; ``None``
+ * for an online target, whose deployed scenario is the chosen step.
+ */
+export interface OptimiserAdjustmentReport {
+  /**
+   * @minItems 1
+   */
+  bars: OptimiserAdjustmentBar[];
+  deployed_factor_differs: number | null;
+  diagnostics_errors: OptimiserDiagnosticError[];
+  has_unadjusted: boolean;
+  n_quotes: number;
+  /**
+   * @minItems 1
+   */
+  weightings: OptimiserAdjustmentWeighting[];
+}
+/**
+ * One step of the scenario grid in an adjustment report, chosen or not.
+ */
+export interface OptimiserAdjustmentBar {
+  optimal_step: number;
+  quotes: number;
+  scenario_value: number;
+  weights: {
+    [k: string]: number;
+  };
+}
+/**
+ * The summary figures of the chosen scenario values under one weighting.
+ *
+ * ``key`` is ``"quotes"`` (each quote weighs 1) or the choice-frame column
+ * that weighs them (``optimal_objective``, ``optimal_<constraint>``),
+ * evaluated at the chosen scenario.
+ */
+export interface OptimiserAdjustmentWeighting {
+  key: string;
+  label: string;
+  mean: number;
+  quantiles: OptimiserAdjustmentQuantiles;
+  share_at_max: number;
+  share_at_min: number;
+  share_down: number;
+  share_unadjusted: number | null;
+  share_up: number;
+  total: number;
+}
+/**
+ * Inverted-CDF (lower) quantiles of the chosen scenario values: always grid values.
+ */
+export interface OptimiserAdjustmentQuantiles {
+  p25: number;
+  p5: number;
+  p50: number;
+  p75: number;
+  p95: number;
 }
 /**
  * The scenario range a ratebook solve scored: the deployed factor's collar.
@@ -1416,21 +1597,83 @@ export interface OptimiserCombinedFactorBounds {
   max: number;
   min: number;
 }
+/**
+ * What a solve ran on: the job's input provenance and its solver settings.
+ */
+export interface OptimiserInputSummary {
+  data_source: string;
+  graph_fingerprint: string;
+  node_id: string;
+  solver_settings: OptimiserSolverSettings;
+  source_file: string | null;
+}
+/**
+ * The solver settings a solve ran with, the solver defaults applied.
+ */
+export interface OptimiserSolverSettings {
+  cd_tolerance?: number;
+  chunk_size: number | null;
+  frontier_enabled?: boolean;
+  frontier_ranges?: {
+    [k: string]: unknown;
+  };
+  frontier_steps?: number;
+  max_cd_iterations?: number;
+  max_iter: number;
+  tolerance: number;
+}
+/**
+ * One step of the solve's scenario grid: its index and the value the solver scored.
+ */
+export interface OptimiserScenarioGridStep {
+  optimal_step: number;
+  scenario_value: number;
+}
+/**
+ * One key a result can be broken down by (OPT-V11), and whether it can be.
+ *
+ * ``source`` is an analysis column or a ratebook rating factor (named as the
+ * Rates tab names it); ``binning`` says whether its levels are quantile bins
+ * or distinct values. The cardinality gate decides ``available``;
+ * ``unavailable_reason`` says why not, and is ``None`` exactly when it is.
+ */
+export interface OptimiserSegmentKey {
+  available: boolean;
+  binning: 'numeric' | 'categorical';
+  key: string;
+  source: 'analysis' | 'factor';
+  unavailable_reason: string | null;
+}
+/**
+ * One Quotes page: the target's totals, typed columns, rows and counts.
+ */
 export interface OptimiserApplyResponse {
+  columns: OptimiserQuoteColumn[];
   constraints: {
     [k: string]: number;
   };
   error: string | null;
   from_artifact: boolean;
+  frontier_generation: number;
+  matched_row_count: number;
+  offset: number;
   preview: {
     [k: string]: unknown;
   }[];
   preview_row_count: number;
-  preview_row_limit: number | null;
-  preview_truncated: boolean;
+  preview_row_limit: number;
   row_count: number;
   status: string;
   total_objective: number;
+}
+/**
+ * One column of a Quotes page and its role (OPT-V12).
+ */
+export interface OptimiserQuoteColumn {
+  filterable: boolean;
+  name: string;
+  role: 'id' | 'scenario' | 'objective' | 'constraint' | 'factor' | 'flag' | 'analysis';
+  sortable: boolean;
 }
 export interface OptimiserSaveResponse {
   apply_path: string;
@@ -1534,6 +1777,7 @@ export interface OptimiserFrontierRange {
   min: number;
 }
 export interface OptimiserFrontierSelectResponse {
+  adjustments: OptimiserAdjustmentReport | null;
   baseline_constraints: {
     [k: string]: number;
   };
@@ -1545,23 +1789,101 @@ export interface OptimiserFrontierSelectResponse {
     [k: string]: number;
   };
   converged: boolean;
+  diagnostics_errors: OptimiserDiagnosticError[];
+  effective_bounds: {
+    [k: string]: OptimiserEffectiveBound;
+  };
   error: string | null;
   factor_tables: {
-    [k: string]: {
-      [k: string]: unknown;
-    }[];
+    [k: string]: OptimiserFactorTableRow[];
   };
+  frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
   iterations: number | null;
   lambdas: {
     [k: string]: number;
   };
   point_index: number | null;
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
-  scenario_value_stats: OptimiserScenarioValueStats | null;
+  ratebook_cd_trace: OptimiserRatebookCdTrace | null;
   status: string;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * The chosen scenario values of one target, per level of one key (OPT-V11).
+ */
+export interface OptimiserSegmentsResponse {
+  binning: 'numeric' | 'categorical';
+  diagnostics_errors: OptimiserDiagnosticError[];
+  frontier_generation: number;
+  key: string;
+  mean_scenario_value: number;
+  n_levels: number;
+  n_quotes: number;
+  point_index: number | null;
+  /**
+   * @minItems 1
+   */
+  rows: OptimiserSegmentRow[];
+  source: 'analysis' | 'factor';
+  weight: string;
+  weight_label: string;
+  weighted_mean_scenario_value: number | null;
+}
+/**
+ * One level of a segment breakdown.
+ *
+ * ``weighted`` is ``None`` when the weighting was refused for the target, or
+ * when this level's weight totals 0 (a diagnostics entry names it); the quote
+ * count and the unweighted figures always remain.
+ */
+export interface OptimiserSegmentRow {
+  deployed_factor_differs: number | null;
+  kind: 'bin' | 'value' | 'other' | 'missing';
+  label: string;
+  lower: number | null;
+  merged_levels: number | null;
+  quotes: number;
+  unweighted: OptimiserSegmentFigures;
+  upper: number | null;
+  weight_total: number | null;
+  weighted: OptimiserSegmentFigures | null;
+}
+/**
+ * A level's chosen scenario values against the 1.0 base price, under one weighting.
+ */
+export interface OptimiserSegmentFigures {
+  mean_scenario_value: number;
+  share_at_edge: number;
+  share_down: number;
+  share_up: number;
+}
+/**
+ * The keys of one target ranked by their adjustment spread (OPT-V11).
+ */
+export interface OptimiserSegmentIndexResponse {
+  frontier_generation: number;
+  keys: OptimiserSegmentIndexKey[];
+  point_index: number | null;
+  statistic: OptimiserSegmentIndexStatistic;
+}
+/**
+ * A segment key with its ranking statistic (``None`` when it is unavailable).
+ */
+export interface OptimiserSegmentIndexKey {
+  available: boolean;
+  binning: 'numeric' | 'categorical';
+  key: string;
+  source: 'analysis' | 'factor';
+  spread: number | null;
+  unavailable_reason: string | null;
+}
+/**
+ * What ranks the segment keys, named for the browser's header.
+ */
+export interface OptimiserSegmentIndexStatistic {
+  description: string;
+  label: string;
 }
 export interface SessionStatusResponse {
   ok: boolean;

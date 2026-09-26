@@ -2,11 +2,35 @@
   "status": "ok",
   "points": [
     {
-      "index": 0,
       "total_objective": 125.0,
-      "constraints": {
+      "thresholds": {
+        "loss": 1.0
+      },
+      "bounds": {
+        "loss": 1.0
+      },
+      "totals": {
         "loss": 0.95
-      }
+      },
+      "lambdas": {
+        "loss": 0.3
+      },
+      "iterations": 7,
+      "converged": true,
+      "mode": "online",
+      "solver_path": "bisection",
+      "non_convergence_reason": null,
+      "sv_mean": 1.02,
+      "sv_std": 0.03,
+      "sv_min": 0.95,
+      "sv_p5": 0.96,
+      "sv_p25": 1.0,
+      "sv_median": 1.02,
+      "sv_p75": 1.04,
+      "sv_p95": 1.08,
+      "sv_max": 1.1,
+      "sv_pct_increase": 0.7,
+      "sv_pct_decrease": 0.2
     }
   ],
   "point_summaries": [
@@ -15,19 +39,26 @@
       "constraints": {
         "loss": 0.95
       },
+      "effective_bounds": {
+        "loss": {
+          "kind": "max",
+          "bound": 1.0
+        }
+      },
       "lambdas": {
         "loss": 0.3
       },
       "converged": true,
-      "iterations": null,
+      "iterations": 7,
       "cd_iterations": null,
       "clamp_rate": null,
       "history": null,
-      "scenario_value_stats": null,
-      "scenario_value_histogram": null,
+      "ratebook_cd_trace": null,
+      "adjustments": null,
       "factor_tables": null,
       "warning": null,
-      "frontier_error": null
+      "frontier_error": null,
+      "diagnostics_errors": []
     }
   ],
   "n_points": 1,
@@ -35,7 +66,11 @@
   "constraint_names": [
     "loss"
   ],
+  "swept_axes": [
+    "loss"
+  ],
   "points_limit": 2000,
   "points_truncated": false,
+  "frontier_generation": 0,
   "job_id": null
 }

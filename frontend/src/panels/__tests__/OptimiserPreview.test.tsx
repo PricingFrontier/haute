@@ -1,12 +1,20 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
-import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types"
+import type { OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
-import { makeSolveResult as makeSolveResultFactory, makeHistoryEntry } from "../../test-utils/factories"
+import {
+  makeAdjustmentReport,
+  makeOnlineFrontier,
+  makeOnlineFrontierPoint,
+  makeOnlineSolveResult,
+  makePointSummary,
+  makeRatebookSolveResult,
+} from "../optimiser/__tests__/fixtures"
+import { makeFrontierSelect } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -15,8 +23,12 @@ const mockSaveOptimiser = vi.fn()
 const mockLogOptimiserToMlflow = vi.fn()
 const mockApplyOptimiser = vi.fn()
 const mockSolveOptimiser = vi.fn()
+const mockGetOptimiserSegments = vi.fn()
+const mockGetOptimiserSegmentIndex = vi.fn()
 
 vi.mock("../../api/client", () => ({
+  getOptimiserSegments: (...args: unknown[]) => mockGetOptimiserSegments(...args),
+  getOptimiserSegmentIndex: (...args: unknown[]) => mockGetOptimiserSegmentIndex(...args),
   solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
   cancelOptimiserSolve: vi.fn(),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPointAPI(...args),
@@ -132,68 +144,41 @@ function optimiserNode(config: Record<string, unknown> = {}): SimpleNode {
 function makeSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
 ): OptimiserSolveResult {
-  return makeSolveResultFactory({
-    total_objective: 1234567,
-    baseline_objective: 1200000,
-    constraints: { loss_ratio: 0.65 },
-    baseline_constraints: { loss_ratio: 0.60 },
-    lambdas: { loss_ratio: 0.005 },
-    converged: true,
-    iterations: 15,
-    n_quotes: 50000,
-    history: [
-      makeHistoryEntry({ iteration: 1, total_objective: 1100000, max_lambda_change: 0.1, all_constraints_satisfied: false }),
-      makeHistoryEntry({ iteration: 2, total_objective: 1200000, max_lambda_change: 0.01, all_constraints_satisfied: true }),
-    ],
-    ...overrides,
-  })
-}
-
-function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
-  return {
-    total_objective: 0,
-    constraints: {},
-    lambdas: {},
-    converged: true,
-    iterations: null,
-    cd_iterations: null,
-    clamp_rate: null,
-    history: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
-    factor_tables: null,
-    warning: null,
-    frontier_error: null,
-    ...overrides,
-  }
+  return makeOnlineSolveResult(overrides)
 }
 
 function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierData {
-  const points = Array.from({ length: n }, (_, i) => ({
-    total_objective: 1200000 + i * 10000,
-    total_loss_ratio: 0.55 + i * 0.02,
-    lambda_loss_ratio: 0.001 + i * 0.001,
-    converged: true,
-  }))
-  return {
-    points,
-    point_summaries: points.map((point) => makePointSummary({
-      total_objective: point.total_objective,
-      constraints: { loss_ratio: point.total_loss_ratio },
-      lambdas: { loss_ratio: point.lambda_loss_ratio },
-    })),
-    n_points: n,
-    points_returned: n,
-    constraint_names: ["loss_ratio"],
-    points_limit: 2000,
-    points_truncated: false,
-    ...overrides,
-  }
+  // Each point is solved at its own swept max, 0.58, 0.59, ...: point 4
+  // (0.63 against 0.62) breaches it, though it meets the configured 1.05.
+  return makeOnlineFrontier(n, overrides)
+}
+
+/** The displayed result for a selected point, as the results store builds it:
+ *  the point's server summary over the as-solved result. */
+function pointResult(frontier: FrontierData, index: number, base = makeSolveResult()): OptimiserSolveResult {
+  const summary = frontier.point_summaries[index]
+  const overlay: Record<string, unknown> = {}
+  for (const [field, value] of Object.entries(summary)) overlay[field] = value ?? undefined
+  return { ...base, ...overlay, selected_frontier_point: index }
+}
+
+/** The text of each cell in one constraint's attainment row. */
+function attainmentCells(name: string): (string | null)[] {
+  const table = screen.getByRole("table", { name: "Constraint attainment" })
+  const row = within(table).getByRole("rowheader", { name }).closest("tr")
+  if (!row) throw new Error(`No attainment row for ${name}`)
+  return within(row).getAllByRole("cell").map((cell) => cell.textContent)
 }
 
 function makeData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+  // A result given without its solve is the as-solved result itself, unless
+  // it is a selected point's (see pointResult), whose solve is the default.
+  const result = overrides.result ?? makeSolveResult()
+  const solvedResult = overrides.solvedResult
+    ?? (result.selected_frontier_point == null ? result : makeSolveResult())
   return {
-    result: makeSolveResult(),
+    result,
+    solvedResult,
     jobId: "job_123",
     constraints: { loss_ratio: { max: 1.05 } },
     nodeLabel: "My Optimiser",
@@ -233,6 +218,7 @@ describe("OptimiserPreview", () => {
       baseline_constraints: { loss_ratio: 0.60 },
       lambdas: { loss_ratio: 0.006 },
       converged: true,
+      frontier_generation: 0,
       error: null,
     })
     mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_My_Optimiser_opt_1.json", message: "" })
@@ -274,7 +260,7 @@ describe("OptimiserPreview", () => {
 
     it("renders quote count", () => {
       renderPreview()
-      expect(screen.getByText(/50,000 quotes/)).toBeInTheDocument()
+      expect(screen.getByText("Converged | 15 iters | 50,000 quotes")).toBeInTheDocument()
     })
 
     it("surfaces frontier computation failures", () => {
@@ -317,7 +303,8 @@ describe("OptimiserPreview", () => {
     it("renders lambda values", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.getByText("λ (shadow price)")).toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
@@ -367,11 +354,11 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.125 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125, quote_count: 10 },
               ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
             },
           }),
@@ -380,19 +367,85 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Rates"))
 
-      expect(screen.getByText("age_band")).toBeInTheDocument()
-      expect(screen.getByText("17-24")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
+      expect(screen.getAllByText("17-24").length).toBeGreaterThan(0)
       expect(screen.getAllByText("0.8750").length).toBeGreaterThan(0)
-      expect(screen.getByText("25-39")).toBeInTheDocument()
+      expect(screen.getAllByText("25-39").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1250").length).toBeGreaterThan(0)
       expect(screen.queryByText("North")).not.toBeInTheDocument()
 
-      fireEvent.change(screen.getByLabelText("Rate factor"), { target: { value: "region" } })
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
 
-      expect(screen.getByText("region")).toBeInTheDocument()
-      expect(screen.getByText("North")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
+      expect(screen.getAllByText("North").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.0500").length).toBeGreaterThan(0)
       expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+    })
+
+    it("keeps the chosen Rates factor across tab switches", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125, quote_count: 10 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
+      fireEvent.click(screen.getByText("Summary"))
+      fireEvent.click(screen.getByText("Rates"))
+
+      expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
+    })
+
+    it("shares the chosen key between Rates and Segments", async () => {
+      mockGetOptimiserSegmentIndex.mockReturnValue(new Promise(() => {}))
+      mockGetOptimiserSegments.mockReturnValue(new Promise(() => {}))
+      const factorKey = (key: string) => ({
+        key,
+        source: "factor" as const,
+        binning: "categorical" as const,
+        available: true,
+        unavailable_reason: null,
+      })
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+              ],
+            },
+            segment_keys: [factorKey("age_band"), factorKey("region")],
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
+      fireEvent.click(screen.getByText("Segments"))
+
+      expect(screen.getByRole("button", { name: "region" }).getAttribute("aria-pressed")).toBe("true")
+      await waitFor(() => expect(mockGetOptimiserSegments).toHaveBeenCalled())
+      expect(mockGetOptimiserSegments.mock.calls[0][0]).toMatchObject({ key: "region", weight: "quotes" })
+
+      fireEvent.click(screen.getByRole("button", { name: "age_band" }))
+      fireEvent.click(screen.getByText("Rates"))
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
     })
 
     it("orders Rates tab factors and levels by the configured banding source", () => {
@@ -463,19 +516,19 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               channel_band: [
-                { __factor_group__: "broker", optimal_scenario_value: 1.2 },
-                { __factor_group__: "direct_web", optimal_scenario_value: 1.1 },
+                { __factor_group__: "broker", optimal_scenario_value: 1.2, quote_count: 10 },
+                { __factor_group__: "direct_web", optimal_scenario_value: 1.1, quote_count: 10 },
               ],
               vehicle_age_band: [
-                { __factor_group__: "10-11", optimal_scenario_value: 0.9 },
-                { __factor_group__: "1-3", optimal_scenario_value: 1.0 },
-                { __factor_group__: "missing", optimal_scenario_value: 0.8 },
-                { __factor_group__: "4-5", optimal_scenario_value: 1.05 },
+                { __factor_group__: "10-11", optimal_scenario_value: 0.9, quote_count: 10 },
+                { __factor_group__: "1-3", optimal_scenario_value: 1.0, quote_count: 10 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.8, quote_count: 10 },
+                { __factor_group__: "4-5", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
               proposer_age_band: [
-                { __factor_group__: "28-34", optimal_scenario_value: 0.95 },
-                { __factor_group__: "20-27", optimal_scenario_value: 1.1 },
-                { __factor_group__: "missing", optimal_scenario_value: 0.85 },
+                { __factor_group__: "28-34", optimal_scenario_value: 0.95, quote_count: 10 },
+                { __factor_group__: "20-27", optimal_scenario_value: 1.1, quote_count: 10 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.85, quote_count: 10 },
               ],
             },
           }),
@@ -484,17 +537,9 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Rates"))
 
-      const factorSelect = screen.getByLabelText("Rate factor") as HTMLSelectElement
-      expect(Array.from(factorSelect.options).map(option => option.value)).toEqual([
-        "proposer_age_band",
-        "vehicle_age_band",
-        "channel_band",
-      ])
-
-      fireEvent.change(factorSelect, { target: { value: "vehicle_age_band" } })
-      const levelCells = Array.from(document.querySelectorAll("tbody tr td:first-child"))
-        .map(cell => cell.textContent)
-      expect(levelCells).toEqual(["1-3", "4-5", "10-11", "missing"])
+      fireEvent.click(screen.getByRole("button", { name: "vehicle_age_band" }))
+      const levels = screen.getAllByTestId("relativity-row").map(row => row.getAttribute("data-key"))
+      expect(levels).toEqual(["1-3", "4-5", "10-11", "missing"])
     })
 
     it("keeps factor tables out of Summary once the Rates tab exists", () => {
@@ -504,7 +549,7 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
               ],
             },
           }),
@@ -514,25 +559,22 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Summary"))
 
       expect(screen.queryByText("Factor Tables")).not.toBeInTheDocument()
-      expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+      // A level appears on Summary only in the beeswarm's own values table.
+      const levelCells = screen.queryAllByText("17-24")
+      expect(levelCells).toHaveLength(1)
+      expect(levelCells[0].closest("table")).toHaveAttribute("aria-label", "Mechanical price effect values")
     })
 
+    // The beeswarm's own behaviour is pinned in optimiser/__tests__/RatebookImpactBeeswarm.test.tsx.
     it("shows a ratebook mechanical price effect beeswarm on Summary", () => {
       renderPreview({
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
             factor_tables: {
-              age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.40 },
-                { __factor_group__: "40-49", optimal_scenario_value: 1.41 },
-                { __factor_group__: "50-59", optimal_scenario_value: 1.42 },
-                { __factor_group__: "60-69", optimal_scenario_value: 1.43 },
-              ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
-                { __factor_group__: "South", optimal_scenario_value: 0.98 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+                { __factor_group__: "South", optimal_scenario_value: 0.98, quote_count: 10 },
               ],
             },
           }),
@@ -541,150 +583,8 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Summary"))
 
-      expect(screen.getByText("Mechanical Price Effect")).toBeInTheDocument()
       expect(screen.getByTestId("ratebook-impact-beeswarm")).toBeInTheDocument()
-      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
-      expect(factorLabels.map((label) => label.textContent)).toEqual(["age_band", "region"])
-      expect(screen.getByLabelText("age_band 17-24: -25.0%")).toBeInTheDocument()
-      expect(screen.getByLabelText("age_band 25-39: +40.0%")).toBeInTheDocument()
-      expect(screen.getByText("Log rate effect")).toBeInTheDocument()
-      expect(screen.getByText("Factor value")).toBeInTheDocument()
-      expect(screen.getByText("Low")).toBeInTheDocument()
-      expect(screen.getByText("High")).toBeInTheDocument()
-
-      const decreasingDot = screen.getByLabelText("age_band 17-24: -25.0%")
-      const increasingDots = [
-        screen.getByLabelText("age_band 25-39: +40.0%"),
-        screen.getByLabelText("age_band 40-49: +41.0%"),
-        screen.getByLabelText("age_band 50-59: +42.0%"),
-        screen.getByLabelText("age_band 60-69: +43.0%"),
-      ]
-      expect(decreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
-      expect(increasingDots[0]).toHaveAttribute("data-impact-direction", "increasing")
-      expect(decreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
-      expect(increasingDots[3]).toHaveAttribute("data-factor-value-position", "1.00")
-      expect(decreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
-      )
-      expect(increasingDots[3]).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
-      )
-      expect(new Set(increasingDots.map((dot) => dot.getAttribute("cy"))).size).toBeGreaterThan(1)
-    })
-
-    it("orders mechanical price effect factors by quote-count weighted impact", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              sparse_extreme: [
-                { __factor_group__: "Rare", optimal_scenario_value: 2.50, quote_count: 1 },
-                { __factor_group__: "Common", optimal_scenario_value: 1.00, quote_count: 999 },
-              ],
-              common_moderate: [
-                { __factor_group__: "Low", optimal_scenario_value: 0.90, quote_count: 500 },
-                { __factor_group__: "High", optimal_scenario_value: 1.10, quote_count: 500 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
-      expect(factorLabels.map((label) => label.textContent)).toEqual([
-        "common_moderate",
-        "sparse_extreme",
-      ])
-    })
-
-    it("colours dash-separated numeric bands across unicode dash variants", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              age_band: [
-                { __factor_group__: "18–19", optimal_scenario_value: 0.95, quote_count: 10 },
-                { __factor_group__: "20-29", optimal_scenario_value: 1.00, quote_count: 10 },
-                { __factor_group__: "30 − 39", optimal_scenario_value: 1.05, quote_count: 10 },
-                { __factor_group__: "40 - 49", optimal_scenario_value: 1.10, quote_count: 10 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      expect(screen.getByLabelText("age_band 18–19: -5.0%")).toHaveAttribute(
-        "data-factor-value-position",
-        "0.00",
-      )
-      expect(screen.getByLabelText("age_band 20-29: 0.0%")).not.toHaveAttribute(
-        "data-factor-value-position",
-        "unknown",
-      )
-      expect(screen.getByLabelText("age_band 30 − 39: +5.0%")).not.toHaveAttribute(
-        "data-factor-value-position",
-        "unknown",
-      )
-      expect(screen.getByLabelText("age_band 40 - 49: +10.0%")).toHaveAttribute(
-        "data-factor-value-position",
-        "1.00",
-      )
-    })
-
-    it("colours ratebook impact dots by factor value rather than impact direction", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              net_premium: [
-                {
-                  __factor_group__: "100",
-                  net_premium: 100,
-                  optimal_scenario_value: 1.25,
-                },
-                {
-                  __factor_group__: "500",
-                  net_premium: 500,
-                  optimal_scenario_value: 0.80,
-                },
-              ],
-              region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      const lowValueIncreasingDot = screen.getByLabelText("net_premium 100: +25.0%")
-      const highValueDecreasingDot = screen.getByLabelText("net_premium 500: -20.0%")
-      const unorderedCategoryDot = screen.getByLabelText("region North: +5.0%")
-
-      expect(lowValueIncreasingDot).toHaveAttribute("data-impact-direction", "increasing")
-      expect(lowValueIncreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
-      expect(lowValueIncreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
-      )
-      expect(highValueDecreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
-      expect(highValueDecreasingDot).toHaveAttribute("data-factor-value-position", "1.00")
-      expect(highValueDecreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
-      )
-      expect(unorderedCategoryDot).toHaveAttribute("data-factor-value-position", "unknown")
-      expect(unorderedCategoryDot).toHaveAttribute("fill", "var(--chart-impact-value-neutral)")
+      expect(screen.getByLabelText("region North: +5.0%")).toBeInTheDocument()
     })
 
     it("does not show the mechanical price effect chart for online results", () => {
@@ -694,7 +594,7 @@ describe("OptimiserPreview", () => {
             mode: "online",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.75, quote_count: 10 },
               ],
             },
           }),
@@ -713,7 +613,7 @@ describe("OptimiserPreview", () => {
             mode: "online",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
               ],
             },
           }),
@@ -729,7 +629,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
-            factor_tables: undefined,
+            factor_tables: {},
           }),
         }),
       })
@@ -745,7 +645,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
-            factor_tables: undefined,
+            factor_tables: {},
           }),
           frontier: makeFrontier(),
           selectedPointIndex: 0,
@@ -763,12 +663,17 @@ describe("OptimiserPreview", () => {
     it("switches to Convergence tab on click", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      expect(screen.getByText("Iterations")).toBeInTheDocument()
+      expect(screen.getByRole("img", { name: "Objective by iteration" })).toBeInTheDocument()
     })
 
-    it("hides Convergence tab when no history data", () => {
-      renderPreview({ data: makeData({ result: makeSolveResult({ history: null }) }) })
-      expect(screen.queryByText("Convergence")).not.toBeInTheDocument()
+    it("offers Convergence for a ratebook result without a trace and says why it is empty", () => {
+      renderPreview({
+        data: makeData({ result: makeSolveResult({ mode: "ratebook", history: null, ratebook_cd_trace: null }) }),
+      })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+      expect(screen.getByText(
+        "The coordinate-descent trace is recorded by live solves only; this result has none.",
+      )).toBeInTheDocument()
     })
 
     it("defaults to Frontier tab when frontier data exists", () => {
@@ -823,7 +728,9 @@ describe("OptimiserPreview", () => {
             point_summaries: [],
             n_points: 0,
             points_returned: 0,
+            frontier_generation: 0,
             constraint_names: [],
+            swept_axes: [],
             points_limit: 2000,
             points_truncated: false,
           },
@@ -888,15 +795,12 @@ describe("OptimiserPreview", () => {
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("detail card shows constraint values with met/unmet indicators", () => {
+    it("detail card states the point's attainment against its own bound in text", () => {
+      const frontier = makeFrontier()
       renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
+        data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      // The constraint name should appear in the detail card
-      expect(screen.getByText("Constraints")).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")).toEqual(["max", "0.58", "0.55", "+0.03 (+5.17%)", "Met", "0.001000"])
     })
 
     it("detail card does not show baseline comparisons for selected frontier points", () => {
@@ -904,11 +808,11 @@ describe("OptimiserPreview", () => {
         data: makeData({
           frontier: makeFrontier(1, {
             points: [
-              {
+              makeOnlineFrontierPoint(0, {
                 total_objective: 1250000,
-                total_loss_ratio: 0.72,
-                lambda_loss_ratio: 0.012345,
-              },
+                totals: { loss_ratio: 0.72 },
+                lambdas: { loss_ratio: 0.012345 },
+              }),
             ],
           }),
           selectedPointIndex: 0,
@@ -920,41 +824,21 @@ describe("OptimiserPreview", () => {
     })
 
     it("detail card shows lambda values", () => {
+      const frontier = makeFrontier()
       renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
+        data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      expect(screen.getByText("λ (shadow price)")).toBeInTheDocument()
-    })
-
-    it("detail card reads nested constraint and lambda maps from frontier rows", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(1, {
-            points: [
-              {
-                total_objective: 1250000,
-                constraints: { loss_ratio: 0.72 },
-                lambdas: { loss_ratio: 0.012345 },
-              },
-            ],
-          }),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      expect(screen.getByText("0.7200")).toBeInTheDocument()
-      expect(screen.getByText("0.012345")).toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
     })
 
     it("constraint dropdown appears when multiple constraints exist", () => {
       const frontier: FrontierData = {
-        points: Array.from({ length: 3 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          total_loss_ratio: 0.55 + i * 0.02,
-          total_volume: 100 + i * 10,
+        points: Array.from({ length: 3 }, (_, i) => makeOnlineFrontierPoint(i, {
+          thresholds: { loss_ratio: 0.6, volume: 90 },
+          bounds: { loss_ratio: 0.6, volume: 90 },
+          totals: { loss_ratio: 0.55 + i * 0.02, volume: 100 + i * 10 },
+          lambdas: { loss_ratio: 0.001, volume: 0 },
         })),
         point_summaries: Array.from({ length: 3 }, (_, i) => makePointSummary({
           total_objective: 1200000 + i * 10000,
@@ -963,12 +847,22 @@ describe("OptimiserPreview", () => {
         n_points: 3,
         points_returned: 3,
         constraint_names: ["loss_ratio", "volume"],
+        swept_axes: ["loss_ratio", "volume"],
         points_limit: 2000,
         points_truncated: false,
+        frontier_generation: 0,
       }
       renderPreview({
         data: makeData({
           frontier,
+          result: makeSolveResult({
+            constraints: { loss_ratio: 0.65, volume: 100 },
+            effective_bounds: {
+              loss_ratio: { kind: "max", bound: 1.05 },
+              volume: { kind: "min", bound: 95 },
+            },
+            lambdas: { loss_ratio: 0.005, volume: 0 },
+          }),
           constraints: { loss_ratio: { max: 1.05 }, volume: { min: 95 } },
         }),
       })
@@ -989,29 +883,244 @@ describe("OptimiserPreview", () => {
     })
   })
 
+  describe("frontier slices (OPT-V06)", () => {
+    /** A 2×3 sweep: volume (min) at 5, 5.5, 6 against margin (max) at 400 and
+     *  450, margin varying fastest, so each slice's global indices interleave. */
+    const GRID = [
+      // [volume bound, margin bound, objective, volume total, margin total]
+      [5, 400, 130, 5.2, 390],
+      [5, 450, 140, 5.1, 440],
+      [5.5, 400, 120, 5.6, 395],
+      [5.5, 450, 128, 5.7, 445],
+      [6, 400, 105, 6.1, 398],
+      [6, 450, 110, 6.2, 449],
+    ]
+
+    function gridFrontier(): FrontierData {
+      const points = GRID.map(([volume, margin, objective, volumeTotal, marginTotal], i) => makeOnlineFrontierPoint(i, {
+        total_objective: objective,
+        thresholds: { volume, margin },
+        bounds: { volume, margin },
+        totals: { volume: volumeTotal, margin: marginTotal },
+        lambdas: { volume: 0.5, margin: 0.01 },
+      }))
+      return makeOnlineFrontier(6, {
+        points,
+        point_summaries: points.map((point) => makePointSummary({
+          total_objective: point.total_objective,
+          constraints: point.totals,
+          effective_bounds: {
+            volume: { kind: "min", bound: point.bounds.volume },
+            margin: { kind: "max", bound: point.bounds.margin },
+          },
+          lambdas: point.lambdas,
+          iterations: point.iterations,
+        })),
+        constraint_names: ["volume", "margin"],
+        swept_axes: ["volume", "margin"],
+      })
+    }
+
+    /** The as-solved result, solved at volume ≥ 5.5 and margin ≤ `margin`. */
+    function gridSolve(margin = 400): OptimiserSolveResult {
+      return makeSolveResult({
+        total_objective: 121,
+        constraints: { volume: 5.6, margin: 396 },
+        effective_bounds: {
+          volume: { kind: "min", bound: 5.5 },
+          margin: { kind: "max", bound: margin },
+        },
+        lambdas: { volume: 0.5, margin: 0.01 },
+      })
+    }
+
+    function gridData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+      const frontier = gridFrontier()
+      const index = overrides.selectedPointIndex ?? null
+      const solved = overrides.solvedResult ?? gridSolve()
+      return makeData({
+        frontier,
+        solvedResult: solved,
+        result: index == null ? solved : pointResult(frontier, index, solved),
+        constraints: { volume: { min: 5.5 }, margin: { max: 400 } },
+        ...overrides,
+      })
+    }
+
+    function shownPoints(): (string | null)[] {
+      return screen.getAllByRole("button", { name: /^Select frontier point/ })
+        .map((button) => button.getAttribute("aria-label"))
+    }
+
+    it("shows point 1's slice by default, one line in bound order, and names the slice", () => {
+      renderPreview({ data: gridData() })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 1",
+        "Select frontier point 3",
+        "Select frontier point 5",
+      ])
+      const holding = screen.getByLabelText("Holding margin at")
+      expect(within(holding).getAllByRole("option").map((option) => option.textContent)).toEqual(["400", "450"])
+      expect(screen.getByText(/This slice holds 3 of the 6 frontier points\./)).toBeInTheDocument()
+    })
+
+    it("offers only the swept constraints on the X axis and re-slices when it changes", () => {
+      renderPreview({ data: gridData() })
+
+      fireEvent.change(screen.getByLabelText("X axis:"), { target: { value: "1" } })
+
+      expect(shownPoints()).toEqual(["Select frontier point 1", "Select frontier point 2"])
+      expect(screen.getByLabelText("Holding volume at")).toBeInTheDocument()
+    })
+
+    it("picks another slice from the Holding select", () => {
+      renderPreview({ data: gridData() })
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 2",
+        "Select frontier point 4",
+        "Select frontier point 6",
+      ])
+    })
+
+    it("selects the global point index from a slice, never its place in the slice", () => {
+      renderPreview({ data: gridData() })
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      // Point 4 is the second of its slice: global index 3, slice-local 1.
+      fireEvent.click(screen.getByRole("button", { name: "Select frontier point 4" }))
+
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+    })
+
+    it("switches to the slice of a point selected from outside the displayed slice", () => {
+      const { rerender, props } = renderPreview({ data: gridData() })
+      expect(shownPoints()).toContain("Select frontier point 1")
+
+      // Summary or the stepper selects point 4, which lies in the other slice.
+      rerender(<OptimiserPreview {...props} data={gridData({ selectedPointIndex: 3 })} />)
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 2",
+        "Select frontier point 4",
+        "Select frontier point 6",
+      ])
+      expect(screen.getByLabelText("Holding margin at")).toHaveValue("1")
+    })
+
+    it("keeps a slice the user picks while the selection stays put", () => {
+      renderPreview({ data: gridData({ selectedPointIndex: 3 }) })
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "0" } })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 1",
+        "Select frontier point 3",
+        "Select frontier point 5",
+      ])
+    })
+
+    it("steps within the selected point's slice and stops at its ends", () => {
+      const { rerender, props } = renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
+
+      expect(screen.getByText("Point 3 of 6")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", 4)
+      fireEvent.click(screen.getByRole("button", { name: "Previous frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", 0)
+
+      rerender(<OptimiserPreview {...props} data={gridData({ selectedPointIndex: 4 })} />)
+      // Point 6 (index 5) follows globally but lies in the other slice.
+      expect(screen.getByRole("button", { name: "Next frontier point" })).toBeDisabled()
+    })
+
+    it("always draws the as-solved anchor, hollow with a note when it lies off the slice", () => {
+      renderPreview({ data: gridData() })
+      const marker = () => screen.getByTestId("frontier-as-solved-marker")
+      // Solved at margin ≤ 400: the default slice's held bound.
+      expect(marker()).toHaveAttribute("data-on-slice", "true")
+      expect(screen.getByText("As solved")).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      expect(marker()).toHaveAttribute("data-on-slice", "false")
+      expect(screen.getByText("As solved (different slice)")).toBeInTheDocument()
+    })
+
+    it("names the y axis by the objective column the result was solved for", () => {
+      renderPreview({
+        data: gridData(),
+        allNodes: [optimiserNode({ objective: "expected_income" })],
+      })
+      expect(screen.getByRole("group", { name: "Efficient frontier: expected_income against volume" }))
+        .toBeInTheDocument()
+    })
+
+    it("names the y axis Objective when the config no longer matches the result", () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      renderPreview({
+        data: gridData(),
+        allNodes: [optimiserNode({ objective: "expected_income" })],
+      })
+      expect(screen.getByRole("group", { name: "Efficient frontier: Objective against volume" }))
+        .toBeInTheDocument()
+    })
+
+    it("shows the selected point's trade-off to its slice neighbour in the detail card", () => {
+      renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
+      const term = screen.getByText(
+        "Objective change per unit of volume bound relaxed, to the next point in this slice",
+        { selector: "dt" },
+      )
+      // (130 − 120) / (5.5 − 5) to point 1, in point 3's slice.
+      expect(term.nextElementSibling).toHaveTextContent("+20 (to point 1)")
+    })
+
+    it("lists the slice's points in a values table", () => {
+      renderPreview({ data: gridData() })
+      fireEvent.click(screen.getByText("View slice values"))
+      const table = screen.getByRole("table", { name: "Frontier slice values" })
+      const rows = within(table).getAllByRole("row").slice(1)
+      expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
+        "Point 1",
+        "Point 3",
+        "Point 5",
+      ])
+      expect(within(rows[1]).getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+        "5.5",
+        "5.6",
+        "120",
+        "Yes",
+        "12",
+        "Feasible",
+      ])
+    })
+  })
+
   describe("Convergence tab", () => {
-    it("renders convergence chart and iteration table", () => {
+    it("draws the solve's history as small multiples on real axes", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      expect(screen.getByText("Iterations")).toBeInTheDocument()
-      // Check iteration numbers are rendered
-      expect(screen.getByText("1")).toBeInTheDocument()
-      expect(screen.getByText("2")).toBeInTheDocument()
+      for (const name of [
+        "Objective by iteration",
+        "Largest λ change by iteration",
+        "loss_ratio total by iteration",
+        "λ by iteration",
+      ]) {
+        expect(screen.getByRole("img", { name })).toBeInTheDocument()
+      }
     })
 
-    it("renders objective and lambda change columns", () => {
+    it("lists each iteration, and whether it met every constraint, in the values table", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      // "Objective" appears in convergence legend
-      expect(screen.getByText("Max dLambda")).toBeInTheDocument()
-    })
-
-    it("renders constraints-satisfied column", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Convergence"))
-      // First iteration: N, Second: Y
-      expect(screen.getByText("N")).toBeInTheDocument()
-      expect(screen.getByText("Y")).toBeInTheDocument()
+      const table = screen.getByRole("table", { name: "Iteration values" })
+      const met = within(table).getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("cell").at(-1)?.textContent)
+      expect(met).toEqual(["No", "Yes"])
     })
   })
 
@@ -1022,43 +1131,167 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByRole("tab", { name: "Export" })).not.toBeInTheDocument()
     })
 
-    it("shows the solved result's per-quote detail without a point index", async () => {
-      mockApplyOptimiser.mockResolvedValueOnce({
-        status: "ok",
-        total_objective: 1250000,
-        constraints: { loss_ratio: 0.66 },
-        from_artifact: true,
-        preview: [{ quote_id: "Q001", optimal_scenario_value: 1.05 }],
-        row_count: 1250,
-        preview_row_count: 100,
-        preview_row_limit: 100,
-        preview_truncated: true,
-        error: null,
-      })
-      renderPreview()
-      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
+    it("offers Quotes for ratebook results too", () => {
+      renderPreview({ data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }) })
+      expect(screen.getByRole("tab", { name: "Quotes" })).toBeInTheDocument()
+    })
+  })
 
-      expect(await screen.findByText("Q001")).toBeInTheDocument()
-      expect(mockApplyOptimiser).toHaveBeenCalledWith({ job_id: "job_123" }, { signal: expect.any(AbortSignal) })
-      expect(screen.getByText(/100 of 1,250 quotes, with the scenario the solved result chose/)).toBeInTheDocument()
-      expect(screen.getByText(/capped at 100 rows/)).toBeInTheDocument()
+  describe("selected-point integrity", () => {
+    /** The preview's data after the stepper selected `index`, as the store builds it. */
+    function selectedData(frontier: FrontierData, index: number, overrides: Partial<OptimiserPreviewData> = {}) {
+      return makeData({
+        frontier,
+        selectedPointIndex: index,
+        result: pointResult(frontier, index),
+        solvedResult: makeSolveResult(),
+        ...overrides,
+      })
+    }
+
+    function adjustmentRequests() {
+      return mockSelectFrontierPointAPI.mock.calls.filter(([payload]) => payload.include_adjustments)
+    }
+
+    it("summarises the as-solved adjustments and opens the Adjustments tab from Summary", () => {
+      renderPreview()
+
+      const summary = screen.getByRole("group", { name: "Adjustments" })
+      expect(within(summary).getByText("Adjusted up").nextSibling).toHaveTextContent("42.0%")
+      fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+
+      expect(screen.getByRole("tab", { name: "Adjustments" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByRole("img", { name: "Chosen scenario values histogram" })).toBeInTheDocument()
+      expect(screen.getByText("As solved: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(0)
     })
 
-    it("follows the selected frontier point and says when detail cannot load", async () => {
-      mockApplyOptimiser.mockRejectedValueOnce(new Error("artifact missing"))
-      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 1 }) })
-      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
+    it("loads a selected point's adjustments only while the Adjustments tab is open", async () => {
+      const frontier = makeFrontier()
+      mockSelectFrontierPointAPI.mockResolvedValue(makeFrontierSelect({
+        point_index: 2,
+        adjustments: makeAdjustmentReport({ n_quotes: 50000 }),
+      }))
+      renderPreview({ data: selectedData(frontier, 2) })
+      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
 
-      expect(await screen.findByRole("alert")).toHaveTextContent("Per-quote detail could not be loaded: artifact missing")
-      expect(mockApplyOptimiser).toHaveBeenCalledWith(
-        { job_id: "job_123", point_index: 1 },
-        { signal: expect.any(AbortSignal) },
+      expect(screen.getByRole("group", { name: "Adjustments" }))
+        .toHaveTextContent("Frontier point 3's adjustments load in the Adjustments tab.")
+      expect(adjustmentRequests()).toHaveLength(0)
+
+      fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
+      expect(await screen.findByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toEqual([
+        [{ job_id: "job_123", point_index: 2, include_adjustments: true }, expect.anything()],
+      ])
+
+      // The loaded report belongs to the review: reopening the tab asks again for nothing.
+      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
+      expect(screen.getByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
+      expect(adjustmentRequests()).toHaveLength(1)
+    })
+
+    it("offers Adjustments for a ratebook result, summarised on Summary", () => {
+      const ratebook = makeRatebookSolveResult()
+      renderPreview({ data: makeData({ result: ratebook, solvedResult: ratebook }) })
+
+      const summary = screen.getByRole("group", { name: "Adjustments" })
+      expect(within(summary).getByText("Deployed ≠ evaluated step").nextSibling)
+        .toHaveTextContent("18 quotes")
+      fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+
+      expect(screen.getByRole("tab", { name: "Adjustments" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByText("As solved: 200 quotes")).toBeInTheDocument()
+      expect(within(screen.getByRole("group", { name: "Deployed factor" }))
+        .getByText("Deployed factor differs from evaluated step").nextSibling)
+        .toHaveTextContent("18 quotes (9.0%)")
+    })
+
+    it("keeps Convergence for a selected point and says whose history it shows", () => {
+      const frontier = makeFrontier()
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      expect(screen.getByText(
+        "History is recorded for the solved result; frontier point 2: converged, 11 iterations",
+      )).toBeInTheDocument()
+      // The solve's two recorded iterations.
+      expect(within(screen.getByRole("table", { name: "Iteration values" })).getAllByRole("row")).toHaveLength(3)
+    })
+
+    it("says when the selected point did not converge", () => {
+      const frontier = makeFrontier()
+      frontier.point_summaries[1] = { ...frontier.point_summaries[1], converged: false, iterations: 50 }
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      expect(screen.getByText(
+        "History is recorded for the solved result; frontier point 2: not converged, 50 iterations",
+      )).toBeInTheDocument()
+    })
+
+
+    it("keeps the tab when the stepper selects another point", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 1) })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 2)} />)
+
+      expect(screen.getByRole("tab", { name: "Convergence" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByText(/frontier point 3: converged, 12 iterations/)).toBeInTheDocument()
+    })
+
+    it("returns to the default tab for a new solve job", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 1) })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 0, { jobId: "job_456" })} />)
+
+      expect(screen.getByRole("tab", { name: "Frontier" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("returns to the default tab for another optimiser node", () => {
+      const { rerender, props } = renderPreview()
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+
+      rerender(<OptimiserPreview {...props} nodeId="opt_2" />)
+
+      expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true")
+    })
+
+    it("keeps the as-solved marker where the solve is when a point is selected", () => {
+      const frontier = makeFrontier()
+      const { rerender, props } = renderPreview({ data: selectedData(frontier, 0) })
+      const marker = () => screen.getByTestId("frontier-as-solved-marker").querySelector("circle")!
+      const before = [marker().getAttribute("cx"), marker().getAttribute("cy")]
+
+      rerender(<OptimiserPreview {...props} data={selectedData(frontier, 3)} />)
+
+      expect([marker().getAttribute("cx"), marker().getAttribute("cy")]).toEqual(before)
+    })
+
+    it("shows the displayed result's warning as a strip", () => {
+      const frontier = makeFrontier()
+      frontier.point_summaries[1] = {
+        ...frontier.point_summaries[1],
+        converged: false,
+        warning: "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+      }
+      renderPreview({ data: selectedData(frontier, 1) })
+
+      expect(screen.getByRole("status", { name: "Result warning" })).toHaveTextContent(
+        "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
       )
     })
 
-    it("has no Quotes tab for ratebook results", () => {
-      renderPreview({ data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }) })
-      expect(screen.queryByRole("tab", { name: "Quotes" })).not.toBeInTheDocument()
+    it("shows no warning strip for a result without a warning", () => {
+      renderPreview()
+      expect(screen.queryByRole("status", { name: "Result warning" })).not.toBeInTheDocument()
     })
   })
 
@@ -1126,33 +1359,49 @@ describe("OptimiserPreview", () => {
     })
   })
 
-  describe("Summary tab constraint indicators", () => {
-    it("renders met constraint with green indicator dot", () => {
+  describe("Summary tab constraint status", () => {
+    it("says a met constraint is Met in text", () => {
       const data = makeData({
         result: makeSolveResult({
           constraints: { loss_ratio: 0.60 },
           baseline_constraints: { loss_ratio: 0.60 },
         }),
-        constraints: { loss_ratio: { max: 1.05 } },
       })
-      const { container } = renderPreview({ data })
+      renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const dots = container.querySelectorAll('span[style*="background: var(--success)"]')
-      expect(dots.length).toBeGreaterThanOrEqual(1)
+      expect(attainmentCells("loss_ratio")[4]).toBe("Met")
     })
 
-    it("renders unmet constraint with red indicator dot", () => {
+    it("says a breached constraint is Breached, with its signed slack", () => {
       const data = makeData({
         result: makeSolveResult({
           constraints: { loss_ratio: 999 },
           baseline_constraints: { loss_ratio: 1 },
         }),
-        constraints: { loss_ratio: { max: 1.05 } },
       })
-      const { container } = renderPreview({ data })
+      renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const redDots = container.querySelectorAll('span[style*="background: var(--danger)"]')
-      expect(redDots.length).toBeGreaterThanOrEqual(1)
+      const cells = attainmentCells("loss_ratio")
+      expect(cells[4]).toBe("Breached")
+      expect(cells[3]).toBe("-997.95 (-95,042.86%)")
+    })
+  })
+
+  describe("constraint attainment across panes (G03)", () => {
+    it("prints the selected point's own bound and status on Summary and the detail card alike", () => {
+      const frontier = makeFrontier()
+      renderPreview({
+        data: makeData({ frontier, selectedPointIndex: 4, result: pointResult(frontier, 4) }),
+      })
+
+      const detail = attainmentCells("loss_ratio")
+      fireEvent.click(screen.getByText("Summary"))
+      const summary = attainmentCells("loss_ratio")
+
+      expect(summary).toEqual(detail)
+      // The point's swept 0.62 breaches; the configured and as-solved 1.05 would not.
+      expect(summary.slice(0, 3)).toEqual(["max", "0.62", "0.63"])
+      expect(summary[4]).toBe("Breached")
     })
   })
 
@@ -1163,12 +1412,11 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
-    it("renders lambda constraint name", () => {
+    it("renders the λ column beside its constraint", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      const lambdaSection = screen.getByText("λ (shadow price)")
-      expect(lambdaSection).toBeInTheDocument()
-      expect(screen.getAllByText("loss_ratio").length).toBeGreaterThanOrEqual(1)
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")[5]).toBe("0.005000")
     })
   })
 
@@ -1214,12 +1462,13 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/\? CD iters/)).not.toBeInTheDocument()
     })
 
-    it("hides Lambdas section in ratebook mode", () => {
+    it("shows λ on Summary for a ratebook result, as the detail card does", () => {
       renderPreview({
         data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }),
       })
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.queryByText("Lambdas")).not.toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")[5]).toBe("0.005000")
     })
 
     it("shows clamp rate in ratebook mode", () => {
@@ -1238,16 +1487,16 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "18-25", optimal_scenario_value: 1.15 },
-                { __factor_group__: "26-35", optimal_scenario_value: 0.95 },
+                { __factor_group__: "18-25", optimal_scenario_value: 1.15, quote_count: 10 },
+                { __factor_group__: "26-35", optimal_scenario_value: 0.95, quote_count: 10 },
               ],
             },
           }),
         }),
       })
       fireEvent.click(screen.getByText("Rates"))
-      expect(screen.getByText("age_band")).toBeInTheDocument()
-      expect(screen.getByText("18-25")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
+      expect(screen.getAllByText("18-25").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1500").length).toBeGreaterThan(0)
     })
   })

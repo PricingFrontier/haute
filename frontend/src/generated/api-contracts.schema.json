@@ -8028,8 +8028,223 @@
       "title": "NodeDataProfileResponse",
       "type": "object"
     },
-    "OptimiserApplyResponse": {
+    "OptimiserAdjustmentBar": {
+      "additionalProperties": false,
+      "description": "One step of the scenario grid in an adjustment report, chosen or not.",
       "properties": {
+        "optimal_step": {
+          "minimum": 0,
+          "title": "Optimal Step",
+          "type": "integer"
+        },
+        "quotes": {
+          "minimum": 0,
+          "title": "Quotes",
+          "type": "integer"
+        },
+        "scenario_value": {
+          "title": "Scenario Value",
+          "type": "number"
+        },
+        "weights": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Weights",
+          "type": "object"
+        }
+      },
+      "required": [
+        "optimal_step",
+        "scenario_value",
+        "quotes",
+        "weights"
+      ],
+      "title": "OptimiserAdjustmentBar",
+      "type": "object"
+    },
+    "OptimiserAdjustmentQuantiles": {
+      "additionalProperties": false,
+      "description": "Inverted-CDF (lower) quantiles of the chosen scenario values: always grid values.",
+      "properties": {
+        "p25": {
+          "title": "P25",
+          "type": "number"
+        },
+        "p5": {
+          "title": "P5",
+          "type": "number"
+        },
+        "p50": {
+          "title": "P50",
+          "type": "number"
+        },
+        "p75": {
+          "title": "P75",
+          "type": "number"
+        },
+        "p95": {
+          "title": "P95",
+          "type": "number"
+        }
+      },
+      "required": [
+        "p5",
+        "p25",
+        "p50",
+        "p75",
+        "p95"
+      ],
+      "title": "OptimiserAdjustmentQuantiles",
+      "type": "object"
+    },
+    "OptimiserAdjustmentReport": {
+      "additionalProperties": false,
+      "description": "The distribution of one target's chosen scenario values against the 1.0 base price.\n\nOne bar per step of the solve's scenario grid (steps nobody chose included)\nand, per computed weighting (quote count first), the summary figures. A\nrefused weighting (a negative value or a zero total) is named in\n``diagnostics_errors`` and appears nowhere else.\n\n``deployed_factor_differs`` is, for a ratebook target, how many quotes'\ndeployed factor (the unsnapped product of the rates, collared to the\nscenario range) differs from the grid step the solver evaluated; ``None``\nfor an online target, whose deployed scenario is the chosen step.",
+      "properties": {
+        "bars": {
+          "items": {
+            "$ref": "#/$defs/OptimiserAdjustmentBar"
+          },
+          "minItems": 1,
+          "title": "Bars",
+          "type": "array"
+        },
+        "deployed_factor_differs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deployed Factor Differs"
+        },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "has_unadjusted": {
+          "title": "Has Unadjusted",
+          "type": "boolean"
+        },
+        "n_quotes": {
+          "exclusiveMinimum": 0,
+          "title": "N Quotes",
+          "type": "integer"
+        },
+        "weightings": {
+          "items": {
+            "$ref": "#/$defs/OptimiserAdjustmentWeighting"
+          },
+          "minItems": 1,
+          "title": "Weightings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "n_quotes",
+        "has_unadjusted",
+        "bars",
+        "weightings",
+        "diagnostics_errors",
+        "deployed_factor_differs"
+      ],
+      "title": "OptimiserAdjustmentReport",
+      "type": "object"
+    },
+    "OptimiserAdjustmentWeighting": {
+      "additionalProperties": false,
+      "description": "The summary figures of the chosen scenario values under one weighting.\n\n``key`` is ``\"quotes\"`` (each quote weighs 1) or the choice-frame column\nthat weighs them (``optimal_objective``, ``optimal_<constraint>``),\nevaluated at the chosen scenario.",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "mean": {
+          "title": "Mean",
+          "type": "number"
+        },
+        "quantiles": {
+          "$ref": "#/$defs/OptimiserAdjustmentQuantiles"
+        },
+        "share_at_max": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share At Max",
+          "type": "number"
+        },
+        "share_at_min": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share At Min",
+          "type": "number"
+        },
+        "share_down": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share Down",
+          "type": "number"
+        },
+        "share_unadjusted": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Share Unadjusted"
+        },
+        "share_up": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share Up",
+          "type": "number"
+        },
+        "total": {
+          "exclusiveMinimum": 0,
+          "title": "Total",
+          "type": "number"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "total",
+        "mean",
+        "quantiles",
+        "share_up",
+        "share_down",
+        "share_unadjusted",
+        "share_at_min",
+        "share_at_max"
+      ],
+      "title": "OptimiserAdjustmentWeighting",
+      "type": "object"
+    },
+    "OptimiserApplyResponse": {
+      "description": "One Quotes page: the target's totals, typed columns, rows and counts.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/OptimiserQuoteColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
         "constraints": {
           "additionalProperties": {
             "type": "number"
@@ -8050,9 +8265,23 @@
           "title": "Error"
         },
         "from_artifact": {
-          "default": false,
           "title": "From Artifact",
           "type": "boolean"
+        },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
+        "matched_row_count": {
+          "minimum": 0,
+          "title": "Matched Row Count",
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
         },
         "preview": {
           "items": {
@@ -8063,29 +8292,18 @@
           "type": "array"
         },
         "preview_row_count": {
-          "default": 0,
+          "minimum": 0,
           "title": "Preview Row Count",
           "type": "integer"
         },
         "preview_row_limit": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Preview Row Limit"
-        },
-        "preview_truncated": {
-          "default": false,
-          "title": "Preview Truncated",
-          "type": "boolean"
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Preview Row Limit",
+          "type": "integer"
         },
         "row_count": {
-          "default": 0,
+          "minimum": 0,
           "title": "Row Count",
           "type": "integer"
         },
@@ -8094,7 +8312,6 @@
           "type": "string"
         },
         "total_objective": {
-          "default": 0.0,
           "title": "Total Objective",
           "type": "number"
         }
@@ -8104,11 +8321,14 @@
         "total_objective",
         "constraints",
         "from_artifact",
+        "columns",
         "preview",
         "row_count",
+        "matched_row_count",
+        "offset",
         "preview_row_count",
         "preview_row_limit",
-        "preview_truncated",
+        "frontier_generation",
         "error"
       ],
       "title": "OptimiserApplyResponse",
@@ -8222,6 +8442,60 @@
       "title": "OptimiserCombinedFactorBounds",
       "type": "object"
     },
+    "OptimiserDiagnosticError": {
+      "additionalProperties": false,
+      "description": "A result diagnostic that could not be produced, and why.",
+      "properties": {
+        "diagnostic": {
+          "enum": [
+            "adjustments",
+            "adjustment_weight",
+            "frontier",
+            "segment_weight"
+          ],
+          "title": "Diagnostic",
+          "type": "string"
+        },
+        "error_type": {
+          "title": "Error Type",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "diagnostic",
+        "error_type",
+        "message"
+      ],
+      "title": "OptimiserDiagnosticError",
+      "type": "object"
+    },
+    "OptimiserEffectiveBound": {
+      "description": "The absolute bound a result was solved at for one constraint.\n\n``bound`` is price-contour's (``constraint_bounds`` or a frontier row's\n``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the\nfraction times the constraint's baseline total, never the fraction.",
+      "properties": {
+        "bound": {
+          "title": "Bound",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "min",
+            "max"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "bound"
+      ],
+      "title": "OptimiserEffectiveBound",
+      "type": "object"
+    },
     "OptimiserEstimateResponse": {
       "description": "Result shape for ``POST /api/optimiser/estimate``.",
       "properties": {
@@ -8307,6 +8581,32 @@
         "expanded_row_count"
       ],
       "title": "OptimiserEstimateResponse",
+      "type": "object"
+    },
+    "OptimiserFactorTableRow": {
+      "additionalProperties": false,
+      "description": "One level of a solved ratebook factor table.\n\nThe wire keys are the solver's (``__factor_group__``), which the saved\nartifact and every apply path read, so the row always serialises by alias.",
+      "properties": {
+        "__factor_group__": {
+          "title": "Factor Group",
+          "type": "string"
+        },
+        "optimal_scenario_value": {
+          "title": "Optimal Scenario Value",
+          "type": "number"
+        },
+        "quote_count": {
+          "minimum": 0,
+          "title": "Quote Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "__factor_group__",
+        "optimal_scenario_value",
+        "quote_count"
+      ],
+      "title": "OptimiserFactorTableRow",
       "type": "object"
     },
     "OptimiserFrontierAutoRangeResponse": {
@@ -8530,8 +8830,13 @@
       "type": "object"
     },
     "OptimiserFrontierPointSummary": {
+      "additionalProperties": false,
       "description": "Every result field of one frontier point that differs from its solve.\n\n``None`` means the point has no such field: applying the summary to the\nsolve's result removes it.",
       "properties": {
+        "adjustments": {
+          "title": "Adjustments",
+          "type": "null"
+        },
         "cd_iterations": {
           "anyOf": [
             {
@@ -8565,13 +8870,26 @@
           "title": "Converged",
           "type": "boolean"
         },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "effective_bounds": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserEffectiveBound"
+          },
+          "title": "Effective Bounds",
+          "type": "object"
+        },
         "factor_tables": {
           "anyOf": [
             {
               "additionalProperties": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/$defs/OptimiserFactorTableRow"
                 },
                 "type": "array"
               },
@@ -8626,20 +8944,10 @@
           "title": "Lambdas",
           "type": "object"
         },
-        "scenario_value_histogram": {
+        "ratebook_cd_trace": {
           "anyOf": [
             {
-              "$ref": "#/$defs/OptimiserScenarioValueHistogram"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "scenario_value_stats": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserScenarioValueStats"
+              "$ref": "#/$defs/OptimiserRatebookCdTrace"
             },
             {
               "type": "null"
@@ -8665,17 +8973,19 @@
       "required": [
         "total_objective",
         "constraints",
+        "effective_bounds",
         "lambdas",
         "converged",
         "iterations",
         "cd_iterations",
         "clamp_rate",
         "history",
-        "scenario_value_stats",
-        "scenario_value_histogram",
+        "ratebook_cd_trace",
+        "adjustments",
         "factor_tables",
         "warning",
-        "frontier_error"
+        "frontier_error",
+        "diagnostics_errors"
       ],
       "title": "OptimiserFrontierPointSummary",
       "type": "object"
@@ -8707,6 +9017,19 @@
           "title": "Constraint Names",
           "type": "array"
         },
+        "frontier_generation": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frontier Generation"
+        },
         "job_id": {
           "anyOf": [
             {
@@ -8733,8 +9056,14 @@
         },
         "points": {
           "items": {
-            "additionalProperties": true,
-            "type": "object"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OptimiserOnlineFrontierPoint"
+              },
+              {
+                "$ref": "#/$defs/OptimiserRatebookFrontierPoint"
+              }
+            ]
           },
           "title": "Points",
           "type": "array"
@@ -8764,6 +9093,13 @@
         "status": {
           "title": "Status",
           "type": "string"
+        },
+        "swept_axes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Swept Axes",
+          "type": "array"
         }
       },
       "required": [
@@ -8773,8 +9109,10 @@
         "n_points",
         "points_returned",
         "constraint_names",
+        "swept_axes",
         "points_limit",
         "points_truncated",
+        "frontier_generation",
         "job_id"
       ],
       "title": "OptimiserFrontierResponse",
@@ -8782,6 +9120,17 @@
     },
     "OptimiserFrontierSelectResponse": {
       "properties": {
+        "adjustments": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserAdjustmentReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "baseline_constraints": {
           "additionalProperties": {
             "type": "number"
@@ -8790,7 +9139,6 @@
           "type": "object"
         },
         "baseline_objective": {
-          "default": 0.0,
           "title": "Baseline Objective",
           "type": "number"
         },
@@ -8837,9 +9185,22 @@
           "type": "object"
         },
         "converged": {
-          "default": true,
           "title": "Converged",
           "type": "boolean"
+        },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "effective_bounds": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserEffectiveBound"
+          },
+          "title": "Effective Bounds",
+          "type": "object"
         },
         "error": {
           "anyOf": [
@@ -8856,13 +9217,17 @@
         "factor_tables": {
           "additionalProperties": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/OptimiserFactorTableRow"
             },
             "type": "array"
           },
           "title": "Factor Tables",
           "type": "object"
+        },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
         },
         "history": {
           "anyOf": [
@@ -8910,21 +9275,10 @@
           "default": null,
           "title": "Point Index"
         },
-        "scenario_value_histogram": {
+        "ratebook_cd_trace": {
           "anyOf": [
             {
-              "$ref": "#/$defs/OptimiserScenarioValueHistogram"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "scenario_value_stats": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserScenarioValueStats"
+              "$ref": "#/$defs/OptimiserRatebookCdTrace"
             },
             {
               "type": "null"
@@ -8937,7 +9291,6 @@
           "type": "string"
         },
         "total_objective": {
-          "default": 0.0,
           "title": "Total Objective",
           "type": "number"
         },
@@ -8961,17 +9314,20 @@
         "constraints",
         "baseline_objective",
         "baseline_constraints",
+        "effective_bounds",
         "lambdas",
         "converged",
         "iterations",
         "cd_iterations",
         "factor_tables",
         "history",
+        "ratebook_cd_trace",
         "warning",
-        "scenario_value_stats",
-        "scenario_value_histogram",
+        "adjustments",
         "clamp_rate",
         "combined_factor_bounds",
+        "frontier_generation",
+        "diagnostics_errors",
         "error"
       ],
       "title": "OptimiserFrontierSelectResponse",
@@ -9153,6 +9509,47 @@
       "title": "OptimiserHistoryEntry",
       "type": "object"
     },
+    "OptimiserInputSummary": {
+      "additionalProperties": false,
+      "description": "What a solve ran on: the job's input provenance and its solver settings.",
+      "properties": {
+        "data_source": {
+          "title": "Data Source",
+          "type": "string"
+        },
+        "graph_fingerprint": {
+          "title": "Graph Fingerprint",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "solver_settings": {
+          "$ref": "#/$defs/OptimiserSolverSettings"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source File"
+        }
+      },
+      "required": [
+        "node_id",
+        "data_source",
+        "source_file",
+        "graph_fingerprint",
+        "solver_settings"
+      ],
+      "title": "OptimiserInputSummary",
+      "type": "object"
+    },
     "OptimiserMlflowLogResponse": {
       "properties": {
         "backend": {
@@ -9227,6 +9624,343 @@
       "title": "OptimiserMlflowLogResponse",
       "type": "object"
     },
+    "OptimiserOnlineFrontierPoint": {
+      "additionalProperties": false,
+      "description": "An online frontier row (``frontier_points_schema(\"online\", ...)``).",
+      "properties": {
+        "bounds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Bounds",
+          "type": "object"
+        },
+        "converged": {
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "iterations": {
+          "minimum": 0,
+          "title": "Iterations",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "mode": {
+          "const": "online",
+          "title": "Mode",
+          "type": "string"
+        },
+        "non_convergence_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "above_envelope",
+                "bracket_exhausted",
+                "iteration_budget_exhausted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Non Convergence Reason"
+        },
+        "solver_path": {
+          "enum": [
+            "bisection",
+            "subgradient"
+          ],
+          "title": "Solver Path",
+          "type": "string"
+        },
+        "sv_max": {
+          "title": "Sv Max",
+          "type": "number"
+        },
+        "sv_mean": {
+          "title": "Sv Mean",
+          "type": "number"
+        },
+        "sv_median": {
+          "title": "Sv Median",
+          "type": "number"
+        },
+        "sv_min": {
+          "title": "Sv Min",
+          "type": "number"
+        },
+        "sv_p25": {
+          "title": "Sv P25",
+          "type": "number"
+        },
+        "sv_p5": {
+          "title": "Sv P5",
+          "type": "number"
+        },
+        "sv_p75": {
+          "title": "Sv P75",
+          "type": "number"
+        },
+        "sv_p95": {
+          "title": "Sv P95",
+          "type": "number"
+        },
+        "sv_pct_decrease": {
+          "title": "Sv Pct Decrease",
+          "type": "number"
+        },
+        "sv_pct_increase": {
+          "title": "Sv Pct Increase",
+          "type": "number"
+        },
+        "sv_std": {
+          "title": "Sv Std",
+          "type": "number"
+        },
+        "thresholds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Thresholds",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "totals": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Totals",
+          "type": "object"
+        }
+      },
+      "required": [
+        "total_objective",
+        "thresholds",
+        "bounds",
+        "totals",
+        "lambdas",
+        "iterations",
+        "converged",
+        "mode",
+        "solver_path",
+        "non_convergence_reason",
+        "sv_mean",
+        "sv_std",
+        "sv_min",
+        "sv_p5",
+        "sv_p25",
+        "sv_median",
+        "sv_p75",
+        "sv_p95",
+        "sv_max",
+        "sv_pct_increase",
+        "sv_pct_decrease"
+      ],
+      "title": "OptimiserOnlineFrontierPoint",
+      "type": "object"
+    },
+    "OptimiserQuoteColumn": {
+      "additionalProperties": false,
+      "description": "One column of a Quotes page and its role (OPT-V12).",
+      "properties": {
+        "filterable": {
+          "title": "Filterable",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "id",
+            "scenario",
+            "objective",
+            "constraint",
+            "factor",
+            "flag",
+            "analysis"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sortable": {
+          "title": "Sortable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "sortable",
+        "filterable"
+      ],
+      "title": "OptimiserQuoteColumn",
+      "type": "object"
+    },
+    "OptimiserRatebookCdTrace": {
+      "additionalProperties": false,
+      "description": "A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.\n\nHolds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``\nsays earlier ones were dropped.",
+      "properties": {
+        "records": {
+          "items": {
+            "$ref": "#/$defs/OptimiserRatebookCdTraceRecord"
+          },
+          "minItems": 1,
+          "title": "Records",
+          "type": "array"
+        },
+        "truncated": {
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "records",
+        "truncated"
+      ],
+      "title": "OptimiserRatebookCdTrace",
+      "type": "object"
+    },
+    "OptimiserRatebookCdTraceRecord": {
+      "additionalProperties": false,
+      "description": "One inner grouped solve of a ratebook coordinate descent (price-contour's\n``PerFactorRecord``): the totals and λ after updating ``factor`` in pass\n``cd_iteration``, on the search's working multiplier.",
+      "properties": {
+        "cd_iteration": {
+          "minimum": 1,
+          "title": "Cd Iteration",
+          "type": "integer"
+        },
+        "factor": {
+          "title": "Factor",
+          "type": "string"
+        },
+        "factor_index": {
+          "minimum": 0,
+          "title": "Factor Index",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "total_constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Total Constraints",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        }
+      },
+      "required": [
+        "cd_iteration",
+        "factor",
+        "factor_index",
+        "total_objective",
+        "total_constraints",
+        "lambdas"
+      ],
+      "title": "OptimiserRatebookCdTraceRecord",
+      "type": "object"
+    },
+    "OptimiserRatebookFrontierPoint": {
+      "additionalProperties": false,
+      "description": "A ratebook frontier row (``frontier_points_schema(\"ratebook\", ...)``).\n\n``iterations`` is the point's coordinate-descent pass count.",
+      "properties": {
+        "bounds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Bounds",
+          "type": "object"
+        },
+        "clamp_rate": {
+          "title": "Clamp Rate",
+          "type": "number"
+        },
+        "converged": {
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "iterations": {
+          "minimum": 0,
+          "title": "Iterations",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "mode": {
+          "const": "ratebook",
+          "title": "Mode",
+          "type": "string"
+        },
+        "n_quotes_clamped_high": {
+          "minimum": 0,
+          "title": "N Quotes Clamped High",
+          "type": "integer"
+        },
+        "n_quotes_clamped_low": {
+          "minimum": 0,
+          "title": "N Quotes Clamped Low",
+          "type": "integer"
+        },
+        "thresholds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Thresholds",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "totals": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Totals",
+          "type": "object"
+        }
+      },
+      "required": [
+        "total_objective",
+        "thresholds",
+        "bounds",
+        "totals",
+        "lambdas",
+        "iterations",
+        "converged",
+        "mode",
+        "clamp_rate",
+        "n_quotes_clamped_low",
+        "n_quotes_clamped_high"
+      ],
+      "title": "OptimiserRatebookFrontierPoint",
+      "type": "object"
+    },
     "OptimiserSaveResponse": {
       "properties": {
         "apply_path": {
@@ -9264,91 +9998,455 @@
       "title": "OptimiserSaveResponse",
       "type": "object"
     },
-    "OptimiserScenarioValueHistogram": {
+    "OptimiserScenarioGridStep": {
+      "additionalProperties": false,
+      "description": "One step of the solve's scenario grid: its index and the value the solver scored.",
       "properties": {
-        "counts": {
-          "items": {
-            "type": "integer"
-          },
-          "title": "Counts",
-          "type": "array"
+        "optimal_step": {
+          "minimum": 0,
+          "title": "Optimal Step",
+          "type": "integer"
         },
-        "edges": {
-          "items": {
-            "type": "number"
-          },
-          "title": "Edges",
-          "type": "array"
+        "scenario_value": {
+          "title": "Scenario Value",
+          "type": "number"
         }
       },
       "required": [
-        "counts",
-        "edges"
+        "optimal_step",
+        "scenario_value"
       ],
-      "title": "OptimiserScenarioValueHistogram",
+      "title": "OptimiserScenarioGridStep",
       "type": "object"
     },
-    "OptimiserScenarioValueStats": {
+    "OptimiserSegmentFigures": {
+      "additionalProperties": false,
+      "description": "A level's chosen scenario values against the 1.0 base price, under one weighting.",
       "properties": {
-        "max": {
-          "title": "Max",
+        "mean_scenario_value": {
+          "title": "Mean Scenario Value",
           "type": "number"
         },
-        "mean": {
-          "title": "Mean",
+        "share_at_edge": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share At Edge",
           "type": "number"
         },
-        "min": {
-          "title": "Min",
+        "share_down": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share Down",
           "type": "number"
         },
-        "p25": {
-          "title": "P25",
-          "type": "number"
-        },
-        "p5": {
-          "title": "P5",
-          "type": "number"
-        },
-        "p50": {
-          "title": "P50",
-          "type": "number"
-        },
-        "p75": {
-          "title": "P75",
-          "type": "number"
-        },
-        "p95": {
-          "title": "P95",
-          "type": "number"
-        },
-        "pct_decrease": {
-          "title": "Pct Decrease",
-          "type": "number"
-        },
-        "pct_increase": {
-          "title": "Pct Increase",
-          "type": "number"
-        },
-        "std": {
-          "title": "Std",
+        "share_up": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share Up",
           "type": "number"
         }
       },
       "required": [
-        "mean",
-        "std",
-        "min",
-        "max",
-        "p5",
-        "p25",
-        "p50",
-        "p75",
-        "p95",
-        "pct_increase",
-        "pct_decrease"
+        "mean_scenario_value",
+        "share_up",
+        "share_down",
+        "share_at_edge"
       ],
-      "title": "OptimiserScenarioValueStats",
+      "title": "OptimiserSegmentFigures",
+      "type": "object"
+    },
+    "OptimiserSegmentIndexKey": {
+      "additionalProperties": false,
+      "description": "A segment key with its ranking statistic (``None`` when it is unavailable).",
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "binning": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Binning",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "analysis",
+            "factor"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "spread": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Spread"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unavailable Reason"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "binning",
+        "available",
+        "unavailable_reason",
+        "spread"
+      ],
+      "title": "OptimiserSegmentIndexKey",
+      "type": "object"
+    },
+    "OptimiserSegmentIndexResponse": {
+      "additionalProperties": false,
+      "description": "The keys of one target ranked by their adjustment spread (OPT-V11).",
+      "properties": {
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
+        "keys": {
+          "items": {
+            "$ref": "#/$defs/OptimiserSegmentIndexKey"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Point Index"
+        },
+        "statistic": {
+          "$ref": "#/$defs/OptimiserSegmentIndexStatistic"
+        }
+      },
+      "required": [
+        "point_index",
+        "frontier_generation",
+        "statistic",
+        "keys"
+      ],
+      "title": "OptimiserSegmentIndexResponse",
+      "type": "object"
+    },
+    "OptimiserSegmentIndexStatistic": {
+      "additionalProperties": false,
+      "description": "What ranks the segment keys, named for the browser's header.",
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description"
+      ],
+      "title": "OptimiserSegmentIndexStatistic",
+      "type": "object"
+    },
+    "OptimiserSegmentKey": {
+      "additionalProperties": false,
+      "description": "One key a result can be broken down by (OPT-V11), and whether it can be.\n\n``source`` is an analysis column or a ratebook rating factor (named as the\nRates tab names it); ``binning`` says whether its levels are quantile bins\nor distinct values. The cardinality gate decides ``available``;\n``unavailable_reason`` says why not, and is ``None`` exactly when it is.",
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "binning": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Binning",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "analysis",
+            "factor"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unavailable Reason"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "binning",
+        "available",
+        "unavailable_reason"
+      ],
+      "title": "OptimiserSegmentKey",
+      "type": "object"
+    },
+    "OptimiserSegmentRow": {
+      "additionalProperties": false,
+      "description": "One level of a segment breakdown.\n\n``weighted`` is ``None`` when the weighting was refused for the target, or\nwhen this level's weight totals 0 (a diagnostics entry names it); the quote\ncount and the unweighted figures always remain.",
+      "properties": {
+        "deployed_factor_differs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deployed Factor Differs"
+        },
+        "kind": {
+          "enum": [
+            "bin",
+            "value",
+            "other",
+            "missing"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "lower": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lower"
+        },
+        "merged_levels": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Merged Levels"
+        },
+        "quotes": {
+          "exclusiveMinimum": 0,
+          "title": "Quotes",
+          "type": "integer"
+        },
+        "unweighted": {
+          "$ref": "#/$defs/OptimiserSegmentFigures"
+        },
+        "upper": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Upper"
+        },
+        "weight_total": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weight Total"
+        },
+        "weighted": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserSegmentFigures"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "kind",
+        "lower",
+        "upper",
+        "merged_levels",
+        "quotes",
+        "weight_total",
+        "unweighted",
+        "weighted",
+        "deployed_factor_differs"
+      ],
+      "title": "OptimiserSegmentRow",
+      "type": "object"
+    },
+    "OptimiserSegmentsResponse": {
+      "additionalProperties": false,
+      "description": "The chosen scenario values of one target, per level of one key (OPT-V11).",
+      "properties": {
+        "binning": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Binning",
+          "type": "string"
+        },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "mean_scenario_value": {
+          "title": "Mean Scenario Value",
+          "type": "number"
+        },
+        "n_levels": {
+          "minimum": 0,
+          "title": "N Levels",
+          "type": "integer"
+        },
+        "n_quotes": {
+          "exclusiveMinimum": 0,
+          "title": "N Quotes",
+          "type": "integer"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Point Index"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/OptimiserSegmentRow"
+          },
+          "minItems": 1,
+          "title": "Rows",
+          "type": "array"
+        },
+        "source": {
+          "enum": [
+            "analysis",
+            "factor"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "weight": {
+          "title": "Weight",
+          "type": "string"
+        },
+        "weight_label": {
+          "title": "Weight Label",
+          "type": "string"
+        },
+        "weighted_mean_scenario_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weighted Mean Scenario Value"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "binning",
+        "weight",
+        "weight_label",
+        "point_index",
+        "frontier_generation",
+        "n_quotes",
+        "n_levels",
+        "mean_scenario_value",
+        "weighted_mean_scenario_value",
+        "rows",
+        "diagnostics_errors"
+      ],
+      "title": "OptimiserSegmentsResponse",
       "type": "object"
     },
     "OptimiserSolveResponse": {
@@ -9396,6 +10494,17 @@
     },
     "OptimiserSolveResult": {
       "properties": {
+        "adjustments": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserAdjustmentReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "baseline_constraints": {
           "additionalProperties": {
             "type": "number"
@@ -9453,11 +10562,24 @@
           "title": "Converged",
           "type": "boolean"
         },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "effective_bounds": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserEffectiveBound"
+          },
+          "title": "Effective Bounds",
+          "type": "object"
+        },
         "factor_tables": {
           "additionalProperties": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/OptimiserFactorTableRow"
             },
             "type": "array"
           },
@@ -9487,6 +10609,11 @@
           "default": null,
           "title": "Frontier Error"
         },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
         "history": {
           "anyOf": [
             {
@@ -9501,6 +10628,9 @@
           ],
           "default": null,
           "title": "History"
+        },
+        "input_summary": {
+          "$ref": "#/$defs/OptimiserInputSummary"
         },
         "iterations": {
           "anyOf": [
@@ -9522,16 +10652,12 @@
           "type": "object"
         },
         "mode": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "enum": [
+            "online",
+            "ratebook"
           ],
-          "default": null,
-          "title": "Mode"
+          "title": "Mode",
+          "type": "string"
         },
         "n_quotes": {
           "anyOf": [
@@ -9557,10 +10683,10 @@
           "default": null,
           "title": "N Steps"
         },
-        "scenario_value_histogram": {
+        "ratebook_cd_trace": {
           "anyOf": [
             {
-              "$ref": "#/$defs/OptimiserScenarioValueHistogram"
+              "$ref": "#/$defs/OptimiserRatebookCdTrace"
             },
             {
               "type": "null"
@@ -9568,16 +10694,20 @@
           ],
           "default": null
         },
-        "scenario_value_stats": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserScenarioValueStats"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "scenario_grid": {
+          "items": {
+            "$ref": "#/$defs/OptimiserScenarioGridStep"
+          },
+          "minItems": 1,
+          "title": "Scenario Grid",
+          "type": "array"
+        },
+        "segment_keys": {
+          "items": {
+            "$ref": "#/$defs/OptimiserSegmentKey"
+          },
+          "title": "Segment Keys",
+          "type": "array"
         },
         "selected_frontier_point": {
           "anyOf": [
@@ -9614,6 +10744,7 @@
         "baseline_objective",
         "constraints",
         "baseline_constraints",
+        "effective_bounds",
         "lambdas",
         "converged",
         "iterations",
@@ -9622,16 +10753,74 @@
         "cd_iterations",
         "factor_tables",
         "history",
+        "ratebook_cd_trace",
         "warning",
-        "scenario_value_stats",
-        "scenario_value_histogram",
+        "adjustments",
         "clamp_rate",
         "combined_factor_bounds",
         "frontier",
         "frontier_error",
-        "selected_frontier_point"
+        "selected_frontier_point",
+        "frontier_generation",
+        "input_summary",
+        "diagnostics_errors",
+        "scenario_grid",
+        "segment_keys"
       ],
       "title": "OptimiserSolveResult",
+      "type": "object"
+    },
+    "OptimiserSolverSettings": {
+      "additionalProperties": false,
+      "description": "The solver settings a solve ran with, the solver defaults applied.",
+      "properties": {
+        "cd_tolerance": {
+          "title": "Cd Tolerance",
+          "type": "number"
+        },
+        "chunk_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Chunk Size"
+        },
+        "frontier_enabled": {
+          "title": "Frontier Enabled",
+          "type": "boolean"
+        },
+        "frontier_ranges": {
+          "additionalProperties": true,
+          "title": "Frontier Ranges",
+          "type": "object"
+        },
+        "frontier_steps": {
+          "title": "Frontier Steps",
+          "type": "integer"
+        },
+        "max_cd_iterations": {
+          "title": "Max Cd Iterations",
+          "type": "integer"
+        },
+        "max_iter": {
+          "title": "Max Iter",
+          "type": "integer"
+        },
+        "tolerance": {
+          "title": "Tolerance",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_iter",
+        "tolerance",
+        "chunk_size"
+      ],
+      "title": "OptimiserSolverSettings",
       "type": "object"
     },
     "OptimiserStatusResponse": {
@@ -11846,6 +13035,12 @@
     "OptimiserSaveResponse": {
       "$ref": "#/$defs/OptimiserSaveResponse"
     },
+    "OptimiserSegmentIndexResponse": {
+      "$ref": "#/$defs/OptimiserSegmentIndexResponse"
+    },
+    "OptimiserSegmentsResponse": {
+      "$ref": "#/$defs/OptimiserSegmentsResponse"
+    },
     "OptimiserSolveResponse": {
       "$ref": "#/$defs/OptimiserSolveResponse"
     },
@@ -11974,7 +13169,9 @@
     "OptimiserFrontierStatusResponse",
     "OptimiserFrontierAutoRangeStartResponse",
     "OptimiserFrontierAutoRangeStatusResponse",
-    "OptimiserFrontierSelectResponse"
+    "OptimiserFrontierSelectResponse",
+    "OptimiserSegmentsResponse",
+    "OptimiserSegmentIndexResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -12058,7 +13255,9 @@
       "OptimiserFrontierStatusResponse",
       "OptimiserFrontierAutoRangeStartResponse",
       "OptimiserFrontierAutoRangeStatusResponse",
-      "OptimiserFrontierSelectResponse"
+      "OptimiserFrontierSelectResponse",
+      "OptimiserSegmentsResponse",
+      "OptimiserSegmentIndexResponse"
     ],
     "session": [
       "SessionStatusResponse",

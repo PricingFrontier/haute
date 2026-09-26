@@ -30,7 +30,8 @@
     "region": [
       {
         "__factor_group__": "North",
-        "optimal_scenario_value": 1.1
+        "optimal_scenario_value": 1.1,
+        "quote_count": 400
       }
     ]
   },
@@ -62,12 +63,12 @@
     }
   },
   "input_summary": {
-    "n_quotes": null,
-    "n_steps": null,
-    "node_id": null,
-    "data_source": null,
+    "n_quotes": 400,
+    "n_steps": 7,
+    "node_id": "ratebook_opt",
+    "data_source": "batch",
     "source_file": null,
-    "graph_fingerprint": null
+    "graph_fingerprint": "beef"
   },
   "stale_at_publish": false
 }

@@ -65,7 +65,6 @@ import type {
   ExplorePivotStatusResponse,
   FrontierAutoRangeStatusResponse,
   FrontierStatusResponse,
-  FrontierPoint,
   FrontierResponse,
   OutputDestinationResponse,
   InputCacheBuildResponse,
@@ -2466,24 +2465,24 @@ export function explorePivotMembersFromContract(
 // Optimiser contracts
 // ---------------------------------------------------------------------------
 
-// The generated optimiser validators own the responses' structure. The server
-// leaves each frontier point an open object, so the UI types the fields it
-// reads; it keeps one summary per point (it applies a point's summary by
-// index) and parses execution metrics with the shared parser.
-function parseFrontierPoint(value: Record<string, unknown>, field: string): FrontierPoint {
-  const parser = "parseOptimiserStatusResponse"
-  return {
-    ...value,
-    index: value.index === undefined ? undefined : expectNumber(parser, value.index, `${field}.index`),
-    total_objective: value.total_objective === undefined
-      ? undefined
-      : expectNumber(parser, value.total_objective, `${field}.total_objective`),
-    constraints: value.constraints === undefined
-      ? undefined
-      : parseNumberRecord(parser, value.constraints, `${field}.constraints`),
-    lambdas: value.lambdas === undefined
-      ? undefined
-      : parseNumberRecord(parser, value.lambdas, `${field}.lambdas`),
+// The generated optimiser validators own the responses' structure, every typed
+// frontier point and factor-table row included. The one frontier guard adds what
+// JSON Schema cannot say: one summary per point (the UI applies a point's
+// summary by index), every point of one mode, and every point's and summary's
+// constraint-keyed maps holding exactly the frontier's constraint names.
+function requireConstraintNames(
+  keys: Record<string, unknown>,
+  constraintNames: readonly string[],
+  field: string,
+): void {
+  const names = Object.keys(keys)
+  const exact = names.length === constraintNames.length
+    && constraintNames.every((name) => Object.hasOwn(keys, name))
+  if (!exact) {
+    throw new Error(
+      `parseOptimiserStatusResponse: expected ${field} to hold exactly the constraint names `
+      + `[${constraintNames.join(", ")}], got [${names.join(", ")}]`,
+    )
   }
 }
 
@@ -2496,10 +2495,24 @@ function frontierFromContract(
       `parseOptimiserStatusResponse: expected ${field}.point_summaries to hold one summary per point, got ${frontier.point_summaries.length} for ${frontier.points.length} points`,
     )
   }
-  return {
-    ...frontier,
-    points: frontier.points.map((point, index) => parseFrontierPoint(point, `${field}.points[${index}]`)),
+  const modes = [...new Set(frontier.points.map((point) => point.mode))]
+  if (modes.length > 1) {
+    throw new Error(
+      `parseOptimiserStatusResponse: expected every ${field}.points entry to be of one mode, got ${modes.join(", ")}`,
+    )
   }
+  const names = frontier.constraint_names
+  frontier.points.forEach((point, index) => {
+    for (const map of ["thresholds", "bounds", "totals", "lambdas"] as const) {
+      requireConstraintNames(point[map], names, `${field}.points[${index}].${map}`)
+    }
+  })
+  frontier.point_summaries.forEach((summary, index) => {
+    for (const map of ["constraints", "effective_bounds", "lambdas"] as const) {
+      requireConstraintNames(summary[map], names, `${field}.point_summaries[${index}].${map}`)
+    }
+  })
+  return frontier
 }
 
 export function optimiserStatusFromContract(

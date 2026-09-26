@@ -1,12 +1,15 @@
 /**
  * How the optimiser's Lagrange multipliers are named wherever they are shown.
  *
- * The solver keeps each λ non-negative and prices a constraint by it, so λ is
- * the constraint's shadow price: the objective gained per unit the bound is
- * relaxed. 0 means the constraint is not binding at the solution.
+ * λ is the multiplier the solver put on a constraint's term when it chose each
+ * quote's scenario. It is shown as its own quantity and never read as a claim
+ * about how tight the constraint is: in this discrete solve a positive λ can sit
+ * beside positive slack, so whether a constraint is met is judged only from its
+ * bound and achieved total.
  */
-export const LAMBDA_LABEL = "λ (shadow price)"
+export const LAMBDA_LABEL = "λ (multiplier)"
 
 export const LAMBDA_HELP =
-  "The objective gained per unit the constraint's bound is relaxed, in objective units " +
-  "per constraint unit. 0 means the constraint is not binding at this solution."
+  "The solver's Lagrange multiplier on this constraint's term: the weight it gave the " +
+  "constraint when choosing each quote's scenario. It is not a measure of whether the " +
+  "constraint is met; read Status and Slack for that."

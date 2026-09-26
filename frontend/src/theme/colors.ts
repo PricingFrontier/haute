@@ -17,6 +17,11 @@ export const MODEL_COLORS = {
   logAction: "var(--model-log-action)",
 } as const
 
+export const OPTIMISER_COLORS = {
+  accent: "var(--optimiser-accent)",
+  accentSoft: "var(--optimiser-accent-soft)",
+} as const
+
 export const CHART_COLORS = {
   train: "var(--chart-train)",
   eval: "var(--chart-eval)",

@@ -1,39 +1,17 @@
 import { buildCsv } from "../editors/shared/tableClipboard"
+import type { OptimiserFactorTableRow } from "../../api/types"
 
-export type FactorTableRow = Record<string, unknown>
+/** One level of a solved factor table, typed by the generated contract. */
+export type FactorTableRow = OptimiserFactorTableRow
 export type FactorTables = Record<string, FactorTableRow[]>
 export type FactorLevelOrder = Record<string, readonly string[]>
 
-export const RATE_COLUMN = "optimal_scenario_value"
-export const GROUP_COLUMN = "__factor_group__"
-export const QUOTE_COUNT_COLUMN = "quote_count"
+/** The columns of a factor-table row, in the order the CSV writes them. */
+const FACTOR_TABLE_COLUMNS = ["__factor_group__", "optimal_scenario_value", "quote_count"] as const
 
-export function formatFactorLevel(row: FactorTableRow, index: number): string {
-  const explicitGroup = row[GROUP_COLUMN]
-  if (explicitGroup != null) return String(explicitGroup)
-
-  const fallbackKey = Object.keys(row).find((key) => key !== RATE_COLUMN)
-  const fallbackValue = fallbackKey ? row[fallbackKey] : null
-  return fallbackValue == null ? `Level ${index + 1}` : String(fallbackValue)
-}
-
-export function numericRate(row: FactorTableRow): number | null {
-  const value = row[RATE_COLUMN]
-  return typeof value === "number" && Number.isFinite(value) ? value : null
-}
-
-export function numericQuoteCount(row: FactorTableRow): number | null {
-  const value = row[QUOTE_COUNT_COLUMN]
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
-}
-
-export function hasFactorTables(
-  factorTables: FactorTables | null | undefined,
-): factorTables is FactorTables {
-  return (
-    factorTables != null
-    && Object.values(factorTables).some((rows) => Array.isArray(rows) && rows.length > 0)
-  )
+/** Whether any factor table has a level. */
+export function hasFactorTables(factorTables: FactorTables): boolean {
+  return Object.values(factorTables).some((rows) => rows.length > 0)
 }
 
 /** Stable sort comparator: items with a defined `orderIndex` come first in
@@ -61,7 +39,7 @@ export function orderFactorTableRows(
     .map((row, originalIndex) => ({
       row,
       originalIndex,
-      orderIndex: levelIndex.get(formatFactorLevel(row, originalIndex)),
+      orderIndex: levelIndex.get(row.__factor_group__),
     }))
     .sort(byOrderIndex)
     .map(({ row }) => row)
@@ -74,7 +52,7 @@ export function orderedFactorTableEntries(
   const factorIndex = new Map(Object.keys(factorLevelOrder).map((factor, index) => [factor, index]))
 
   return Object.entries(factorTables)
-    .filter(([, rows]) => Array.isArray(rows) && rows.length > 0)
+    .filter(([, rows]) => rows.length > 0)
     .map(([factorName, rows], originalIndex) => ({
       factorName,
       originalIndex,
@@ -85,6 +63,65 @@ export function orderedFactorTableEntries(
     .map(({ factorName, rows }) => [factorName, rows] as [string, FactorTableRow[]])
 }
 
+/** A level's rate as a log effect. A solved rate is a scenario value on the
+ *  solve's grid, which is positive; anything else is a broken contract. */
+export function logRate(factor: string, row: FactorTableRow): number {
+  const rate = row.optimal_scenario_value
+  if (!(rate > 0)) {
+    throw new Error(`Factor ${factor} level ${row.__factor_group__} has a non-positive rate ${rate}`)
+  }
+  return Math.log(rate)
+}
+
+function factorQuoteTotal(factor: string, rows: readonly FactorTableRow[]): number {
+  const total = rows.reduce((sum, row) => sum + row.quote_count, 0)
+  if (!(total > 0)) throw new Error(`Factor ${factor} has no quotes`)
+  return total
+}
+
+/**
+ * How far a factor's rates move from the neutral 1.0: the quote-weighted mean
+ * |ln rate|. It ranks factors in the Rates browser and the Summary beeswarm.
+ */
+export function factorRateSpread(factor: string, rows: readonly FactorTableRow[]): number {
+  const total = factorQuoteTotal(factor, rows)
+  return rows.reduce((sum, row) => sum + Math.abs(logRate(factor, row)) * row.quote_count, 0) / total
+}
+
+/**
+ * Each level's share of its factor's quotes, in percent to one decimal, in row
+ * order. Rounded by largest remainder (ties to the earlier level) so the
+ * shares shown always sum to exactly 100.0.
+ */
+export function levelQuoteShares(factor: string, rows: readonly FactorTableRow[]): number[] {
+  const total = factorQuoteTotal(factor, rows)
+  // Work in tenths of a percent: 1000 units in all.
+  const exact = rows.map((row) => (row.quote_count * 1000) / total)
+  const floors = exact.map(Math.floor)
+  let remaining = 1000 - floors.reduce((sum, value) => sum + value, 0)
+  const byRemainder = exact
+    .map((value, index) => ({ index, remainder: value - floors[index] }))
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index)
+  for (const { index } of byRemainder) {
+    if (remaining === 0) break
+    floors[index] += 1
+    remaining -= 1
+  }
+  return floors.map((units) => units / 10)
+}
+
+/** A rate against the neutral 1.0 (the unadjusted base price), e.g. "+5.0%". */
+export function formatVsNeutral(rate: number): string {
+  const pct = (rate - 1) * 100
+  const sign = pct > 0 ? "+" : ""
+  return `${sign}${pct.toFixed(1)}%`
+}
+
+/** A rate as the Rates tab and the beeswarm print it. */
+export function formatRate(rate: number): string {
+  return rate.toFixed(4)
+}
+
 /** The scenario range a ratebook solve scored; the deployed combined factor is clipped to it. */
 export type CombinedFactorCollar = { min: number; max: number }
 
@@ -92,24 +129,18 @@ export const COLLAR_MIN_COLUMN = "combined_factor_min"
 export const COLLAR_MAX_COLUMN = "combined_factor_max"
 
 /**
- * One CSV of every factor table: the table name, then each row's own columns,
- * then the combined-factor collar on every row. The collar applies to the
+ * One CSV of every factor table: the table name, then each row's level, rate
+ * and quote count, then the combined-factor collar on every row. The collar applies to the
  * product of a quote's rates, not to any one table, and repeats per row so the
  * file stays one rectangular table a rating engine can load as it is.
  */
 export function factorTablesCsv(factorTables: FactorTables, collar: CombinedFactorCollar): string {
-  const columns: string[] = []
-  for (const rows of Object.values(factorTables)) {
-    for (const row of rows) {
-      for (const key of Object.keys(row)) if (!columns.includes(key)) columns.push(key)
-    }
-  }
-  const lines: string[][] = [["factor", ...columns, COLLAR_MIN_COLUMN, COLLAR_MAX_COLUMN]]
+  const lines: string[][] = [["factor", ...FACTOR_TABLE_COLUMNS, COLLAR_MIN_COLUMN, COLLAR_MAX_COLUMN]]
   for (const [factor, rows] of Object.entries(factorTables)) {
     for (const row of rows) {
       lines.push([
         factor,
-        ...columns.map((column) => (row[column] == null ? "" : String(row[column]))),
+        ...FACTOR_TABLE_COLUMNS.map((column) => String(row[column])),
         String(collar.min),
         String(collar.max),
       ])

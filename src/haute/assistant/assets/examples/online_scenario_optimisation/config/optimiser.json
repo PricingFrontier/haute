@@ -6,6 +6,5 @@
   "scenario_index": "scenario_index",
   "scenario_value": "scenario_value",
   "max_iter": 20,
-  "tolerance": 0.0001,
-  "record_history": true
+  "tolerance": 0.0001
 }

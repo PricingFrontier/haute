@@ -10,13 +10,20 @@ import { useState, useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatFixed } from "../../utils/formatValue"
+import {
+  SortableValuesTable,
+  ValuesTableSearch,
+  type SortableValuesColumn,
+} from "../SortableValuesTable"
+import { nextSort, type SortState } from "../valuesSort"
 
 interface GLMCoefficientsTabProps {
   result: TrainResult
 }
 
 type SortKey = "feature" | "coefficient" | "std_error" | "z_value" | "p_value"
-type SortDir = "asc" | "desc"
+type ColumnKey = SortKey | "significance"
+type CoefficientRow = TrainResult["glm_coefficients"][number]
 
 const STATISTIC_KEYS: ReadonlySet<SortKey> = new Set(["std_error", "z_value", "p_value"])
 const DASH = "–"
@@ -51,7 +58,7 @@ export function GLMCoefficientsTab({ result }: GLMCoefficientsTabProps) {
       ? inference.standard_errors
       : null
   // null keeps the design order; valid inference starts in p-value order.
-  const [chosenSort, setChosenSort] = useState<{ key: SortKey; dir: SortDir } | null>(null)
+  const [chosenSort, setChosenSort] = useState<SortState<SortKey> | null>(null)
   const sort =
     chosenSort && (valid || !STATISTIC_KEYS.has(chosenSort.key))
       ? chosenSort
@@ -92,25 +99,62 @@ export function GLMCoefficientsTab({ result }: GLMCoefficientsTabProps) {
   }
 
   const sortable = (key: SortKey) => valid || !STATISTIC_KEYS.has(key)
-  const handleSort = (key: SortKey) => {
-    if (!sortable(key)) return
-    setChosenSort(
-      sort?.key === key ? { key, dir: sort.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" },
-    )
+  const handleSort = (key: ColumnKey) => {
+    if (key === "significance" || !sortable(key)) return
+    setChosenSort(nextSort(sort, key))
   }
-  const sortIndicator = (key: SortKey) =>
-    sort?.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : ""
+  const sortColumn = (key: SortKey): "sortable" | "disabled" => (sortable(key) ? "sortable" : "disabled")
 
-  const columns: { key: SortKey; label: string; align: string }[] = [
-    { key: "feature", label: "Term", align: "text-left" },
-    { key: "coefficient", label: "Estimate", align: "text-right" },
+  const columns: SortableValuesColumn<CoefficientRow, ColumnKey>[] = [
+    {
+      key: "feature",
+      label: "Term",
+      align: "left",
+      sort: sortColumn("feature"),
+      cell: (row) => row.feature,
+      cellClassName: "break-words",
+      cellStyle: { maxWidth: 300 },
+    },
+    {
+      key: "coefficient",
+      label: "Estimate",
+      align: "right",
+      sort: sortColumn("coefficient"),
+      cell: (row) => formatFixed(row.coefficient, 6),
+    },
     {
       key: "std_error",
       label: robust ? `Robust SE (${robust})` : "Std. Error",
-      align: "text-right",
+      align: "right",
+      sort: sortColumn("std_error"),
+      cell: (row) => formatStatistic(row.std_error, 6),
+      cellStyle: { color: "var(--text-secondary)" },
     },
-    { key: "z_value", label: "z", align: "text-right" },
-    { key: "p_value", label: "Pr(>|z|)", align: "text-right" },
+    {
+      key: "z_value",
+      label: "z",
+      align: "right",
+      sort: sortColumn("z_value"),
+      cell: (row) => formatStatistic(row.z_value, 3),
+      cellStyle: { color: "var(--text-secondary)" },
+    },
+    {
+      key: "p_value",
+      label: "Pr(>|z|)",
+      align: "right",
+      sort: sortColumn("p_value"),
+      cell: (row) => formatPValue(row.p_value),
+      cellStyle: { color: NEUTRAL_STATISTIC_COLOR },
+    },
+    {
+      key: "significance",
+      label: "Sig.",
+      align: "center",
+      sort: "none",
+      cell: (row) => (row.significance === null ? DASH : row.significance),
+      cellClassName: "font-bold",
+      cellStyle: { color: NEUTRAL_STATISTIC_COLOR },
+    },
   ]
 
   return (
@@ -134,20 +178,7 @@ export function GLMCoefficientsTab({ result }: GLMCoefficientsTabProps) {
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <label className="min-w-0 flex-1 text-[13px]" style={{ color: "var(--text-secondary)" }}>
-          Search coefficient terms
-          <input
-            aria-label="Search coefficient terms"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            className="mt-1 block w-full rounded border px-2 py-1 text-[13px]"
-            style={{
-              background: "var(--bg-input)",
-              borderColor: "var(--border)",
-              color: "var(--text-primary)",
-            }}
-          />
-        </label>
+        <ValuesTableSearch label="Search coefficient terms" value={search} onChange={setSearch} />
         {intervalAvailable && (
           <div className="flex gap-1">
             <button
@@ -171,95 +202,18 @@ export function GLMCoefficientsTab({ result }: GLMCoefficientsTabProps) {
           </div>
         )}
       </div>
-      {visibleRows.length === 0 ? (
-        <p role="status" className="text-[13px]" style={{ color: "var(--text-muted)" }}>
-          No coefficient terms match your search.
-        </p>
-      ) : view === "interval" && intervalAvailable ? (
+      {view === "interval" && intervalAvailable && visibleRows.length > 0 ? (
         <IntervalView rows={visibleRows} />
       ) : (
-        <>
-          <div className="overflow-auto" style={{ maxHeight: 480 }}>
-            <table
-              className="w-full text-[13px] font-sans [&_td]:tabular-nums"
-              style={{ borderCollapse: "collapse" }}
-            >
-              <thead
-                className="sticky top-0"
-                style={{ background: "var(--bg-elevated)", zIndex: 1 }}
-              >
-                <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {columns.map((col) => (
-                    <th
-                      key={col.key}
-                      aria-sort={
-                        sort?.key === col.key
-                          ? sort.dir === "asc"
-                            ? "ascending"
-                            : "descending"
-                          : undefined
-                      }
-                      className={`px-2 py-1.5 font-semibold ${col.align}`}
-                      style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}
-                    >
-                      <button
-                        type="button"
-                        disabled={!sortable(col.key)}
-                        onClick={() => handleSort(col.key)}
-                        className="focus-ring disabled:cursor-not-allowed"
-                      >
-                        {col.label}
-                        {sortIndicator(col.key)}
-                      </button>
-                    </th>
-                  ))}
-                  <th
-                    className="px-2 py-1.5 text-center font-semibold"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    Sig.
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((row, i) => (
-                  <tr
-                    key={row.feature}
-                    style={{
-                      borderBottom: "1px solid var(--border)",
-                      background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.02)",
-                    }}
-                  >
-                    <td
-                      className="px-2 py-1 text-left break-words"
-                      style={{ color: "var(--text-primary)", maxWidth: 300 }}
-                    >
-                      {row.feature}
-                    </td>
-                    <td className="px-2 py-1 text-right" style={{ color: "var(--text-primary)" }}>
-                      {formatFixed(row.coefficient, 6)}
-                    </td>
-                    <td className="px-2 py-1 text-right" style={{ color: "var(--text-secondary)" }}>
-                      {formatStatistic(row.std_error, 6)}
-                    </td>
-                    <td className="px-2 py-1 text-right" style={{ color: "var(--text-secondary)" }}>
-                      {formatStatistic(row.z_value, 3)}
-                    </td>
-                    <td className="px-2 py-1 text-right" style={{ color: NEUTRAL_STATISTIC_COLOR }}>
-                      {formatPValue(row.p_value)}
-                    </td>
-                    <td
-                      className="px-2 py-1 text-center font-bold"
-                      style={{ color: NEUTRAL_STATISTIC_COLOR }}
-                    >
-                      {row.significance === null ? DASH : row.significance}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+        <SortableValuesTable
+          label="Coefficients"
+          columns={columns}
+          rows={visibleRows}
+          rowKey={(row) => row.feature}
+          sort={sort}
+          onSort={handleSort}
+          emptyMessage="No coefficient terms match your search."
+        />
       )}
 
       <div className="flex flex-wrap gap-3 text-[12px]" style={{ color: "var(--text-muted)" }}>

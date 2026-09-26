@@ -5,14 +5,11 @@
  */
 
 import { useEffect, useState } from "react"
-import { Maximize2, Minimize2 } from "lucide-react"
-import ModalShell from "../components/ModalShell"
 
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useGraphStore from "../stores/useGraphStore"
 import useUIStore from "../stores/useUIStore"
-import { MODEL_COLORS } from "../theme/colors"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { AveTab } from "./modelling/AveTab"
@@ -25,9 +22,8 @@ import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
 import { ResidualsTab } from "./modelling/ResidualsTab"
 import { SummaryTab } from "./modelling/SummaryTab"
-import PreviewPanelFrame from "./PreviewPanelFrame"
-import PreviewPanelTabs from "./PreviewPanelTabs"
-import "./modelling/validation.css"
+import { diagnosticsRowCount, diagnosticsSetLabel } from "./modelling/diagnosticsSet"
+import ResultsWorkspace from "./ResultsWorkspace"
 
 export type ModellingPreviewData = {
   result: TrainResult
@@ -117,7 +113,6 @@ const VIEW_INTRODUCTIONS: Record<
 export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewProps) {
   const { result } = data
   const [tab, setTab] = useState<TabKey>("summary")
-  const [focused, setFocused] = useState(false)
   const [selectedFeature, setSelectedFeature] = useState<string | null>(null)
   const [featureSearch, setFeatureSearch] = useState("")
   const initialHeight = useUIStore((s) => s.modellingPreviewHeight)
@@ -227,118 +222,52 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
   }
 
   return (
-    <ModalShell
-      active={focused}
+    <ResultsWorkspace
       ariaLabel="Model validation"
-      onClose={() => setFocused(false)}
-      width="w-[calc(100vw-24px)] h-[calc(100dvh-24px)]"
-    >
-      <PreviewPanelFrame
-        nodeLabel={data.nodeLabel}
-        nodeType={NODE_TYPES.MODELLING}
-        onRefresh={onRefresh}
-        collapsedMeta={result.status === "error" ? "Error" : metricsSummary}
-        data-testid="modelling-preview-frame"
-        initialHeight={initialHeight}
-        onHeightChange={rememberHeight}
-        focused={focused}
-        actions={
-          <button
-            type="button"
-            onClick={() => setFocused(!focused)}
-            className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-[var(--bg-hover)] focus-ring"
-            style={{ color: MODEL_COLORS.accent }}
-          >
-            {focused ? (
-              <Minimize2 size={14} aria-hidden="true" />
-            ) : (
-              <Maximize2 size={14} aria-hidden="true" />
-            )}
-            {focused ? "Exit focus view" : "Focus view"}
-          </button>
-        }
-      >
-        {trainProgress && (
-          <div className="h-1 w-full shrink-0" style={{ background: MODEL_COLORS.accentSoft }}>
-            <div
-              className="h-full transition-all duration-300"
-              style={{
-                width: `${Math.max(trainProgress.progress * 100, 2)}%`,
-                background: MODEL_COLORS.accent,
-              }}
-            />
-          </div>
-        )}
-
-        <div className="shrink-0 overflow-x-auto">
-          <PreviewPanelTabs
-            tabs={tabs}
-            activeTab={activeTab}
-            onChange={setTab}
-            ariaLabel="Model result panes"
-            accentColor={MODEL_COLORS.accent}
-            idPrefix="modelling-preview"
-            appearance="results"
-          />
-        </div>
-
-        <div
-          className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-4 py-2 text-xs"
-          style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
-        >
+      idPrefix="modelling-preview"
+      tabsAriaLabel="Model result panes"
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setTab}
+      nodeLabel={data.nodeLabel}
+      nodeType={NODE_TYPES.MODELLING}
+      onRefresh={onRefresh}
+      collapsedMeta={result.status === "error" ? "Error" : metricsSummary}
+      data-testid="modelling-preview-frame"
+      height={initialHeight}
+      onHeightChange={rememberHeight}
+      progress={trainProgress ? trainProgress.progress : null}
+      provenance={
+        <>
           <span>
-            Diagnostics: {result.diagnostics_set === "final_test" ? "Test" : result.diagnostics_set === "validation" ? "Validation" : "Training"} ·{" "}
-            {(result.diagnostics_set === "final_test"
-              ? result.final_test_rows
-              : result.diagnostics_set === "validation"
-                ? result.evaluation!.selection_fits[0].validation_rows
-              : result.development_rows
-            ).toLocaleString()}{" "}
-            rows
+            Diagnostics: {diagnosticsSetLabel(result.diagnostics_set)} ·{" "}
+            {diagnosticsRowCount(result).toLocaleString()} rows
           </span>
           {result.diagnostics_set === "development" && (
             <span style={{ color: "var(--warning)" }}>
               Training diagnostics are in-sample performance.
             </span>
           )}
-        </div>
-
-        <div
-          key={activeTab}
-          id={`modelling-preview-${activeTab}-pane`}
-          role="tabpanel"
-          aria-labelledby={`modelling-preview-${activeTab}-tab`}
-          tabIndex={0}
-          className="validation-workspace flex-1 min-h-0 overflow-auto p-4 focus-ring"
-        >
-          {introduction && (
-            <div className="mb-4">
-              <h3 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
-                {introduction.title}
-              </h3>
-              <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
-                {introduction.description}
-              </p>
-            </div>
-          )}
-          {activeTab === "summary" && (
-            <SummaryTab
-              result={result}
-              onUseBestParameters={useBestAsFixedParameters}
-              elapsedSeconds={trainProgress?.elapsed_seconds}
-            />
-          )}
-          {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
-          {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}
-          {activeTab === "terms" && <EBMTermsTab result={result} />}
-          {activeTab === "loss" && <LossTab result={result} />}
-          {activeTab === "lift" && <LiftTab result={result} />}
-          {activeTab === "residuals" && <ResidualsTab result={result} />}
-          {activeTab === "features" && <FeaturesTab result={result} />}
-          {activeTab === "ave" && <AveTab result={result} featureBrowser={featureBrowser} />}
-          {activeTab === "pdp" && <PdpTab result={result} featureBrowser={featureBrowser} />}
-        </div>
-      </PreviewPanelFrame>
-    </ModalShell>
+        </>
+      }
+      intro={introduction}
+    >
+      {activeTab === "summary" && (
+        <SummaryTab
+          result={result}
+          onUseBestParameters={useBestAsFixedParameters}
+          elapsedSeconds={trainProgress?.elapsed_seconds}
+        />
+      )}
+      {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
+      {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}
+      {activeTab === "terms" && <EBMTermsTab result={result} />}
+      {activeTab === "loss" && <LossTab result={result} />}
+      {activeTab === "lift" && <LiftTab result={result} />}
+      {activeTab === "residuals" && <ResidualsTab result={result} />}
+      {activeTab === "features" && <FeaturesTab result={result} />}
+      {activeTab === "ave" && <AveTab result={result} featureBrowser={featureBrowser} />}
+      {activeTab === "pdp" && <PdpTab result={result} featureBrowser={featureBrowser} />}
+    </ResultsWorkspace>
   )
 }

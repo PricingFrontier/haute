@@ -86,4 +86,26 @@ describe("FeatureBrowser", () => {
     const root = container.firstChild as HTMLElement
     expect(root.style.width).toBe("240px")
   })
+  it("names what it ranks by and what it lists, for a non-importance ranking", () => {
+    render(
+      <FeatureBrowser
+        features={FEATURES}
+        selected={null}
+        onSelect={() => {}}
+        itemNoun="factor"
+        rankedBy={{ label: "Rate spread", description: "How far the factor's rates move from 1.0, weighted by quotes." }}
+      />,
+    )
+    expect(screen.getByText("Rate spread")).toBeInTheDocument()
+    expect(screen.getByText("How far the factor's rates move from 1.0, weighted by quotes.")).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "Factors ranked by rate spread" })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole("textbox", { name: "Search factors" }), { target: { value: "zzz" } })
+    expect(screen.getByText("No factors found")).toBeInTheDocument()
+  })
+
+  it("keeps feature wording and no ranking caption by default", () => {
+    render(<FeatureBrowser features={FEATURES} selected={null} onSelect={() => {}} />)
+    expect(screen.getByRole("textbox", { name: "Search features" })).toBeInTheDocument()
+    expect(screen.queryByText("Rate spread")).not.toBeInTheDocument()
+  })
 })

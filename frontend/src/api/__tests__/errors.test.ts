@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { ApiError } from "../client"
-import { apiErrorCode, apiErrorMessage } from "../errors"
+import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../errors"
 
 describe("apiErrorCode", () => {
   it("reads the code from a structured detail", () => {
@@ -15,6 +15,15 @@ describe("apiErrorCode", () => {
     expect(apiErrorCode(new ApiError("HTTP 400", 400, "bad", undefined, "bad"))).toBeNull()
     expect(apiErrorCode(new ApiError("HTTP 400", 400, undefined, undefined, { error_code: "" }))).toBeNull()
     expect(apiErrorCode(new Error("boom"))).toBeNull()
+  })
+})
+
+describe("apiErrorStatus", () => {
+  it("reads an HTTP error's status and nothing else's", () => {
+    expect(apiErrorStatus(new ApiError("HTTP 410", 410, "gone"))).toBe(410)
+    expect(apiErrorStatus(new Error("boom"))).toBeNull()
+    expect(apiErrorStatus({ status: "410" })).toBeNull()
+    expect(apiErrorStatus(null)).toBeNull()
   })
 })
 

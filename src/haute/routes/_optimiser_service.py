@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from haute.chunking import ChunkPlan
 
+from haute._config_validation import validate_optimiser_analysis_config
 from haute._contracts import Contract, get_column_contract
 from haute._env import int_env, optional_int_env
 from haute._execution_admission import (
@@ -68,6 +69,7 @@ from haute._worker_isolation import (
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ChunkPlanUnsupportedError,
+    ConfigError,
     ContractMismatchError,
     SchemaMismatchError,
 )
@@ -121,10 +123,17 @@ from haute.routes._optimiser_input import (
     extract_ratebook_factors,
     grid_chunk_decision,
     grid_construction_failures,
+    resolve_analysis_frame,
+    resolve_analysis_plan,
     resolve_data_input_frame,
     validate_and_project,
     validate_and_project_auto_range,
     write_solver_input,
+)
+from haute.routes._optimiser_outcomes import (
+    require_one_row_per_solved_quote,
+    scenario_grid_from_values,
+    write_quote_analysis,
 )
 from haute.routes._optimiser_solver import (
     SolveContext,
@@ -160,6 +169,26 @@ from haute.schemas import (
 )
 
 logger = get_logger(component="server.optimiser.solve")
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisSource:
+    """The analysis columns to keep, and the side-input frame they come from.
+
+    ``frame`` is ``None`` on the data-input path, where the columns are read
+    back from the written solver input.
+    """
+
+    columns: tuple[str, ...]
+    frame: Any
+
+
+@dataclass(frozen=True, slots=True)
+class SetupGrid:
+    """The quote grid setup built, and the analysis table it wrote (setup-owned until adopted)."""
+
+    grid: QuoteGrid
+    quote_analysis_handle: dict[str, Any] | None
 
 
 # Env-tunable defaults — resolved per call so overrides set after import
@@ -1316,8 +1345,11 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None
         launch_started = False
         ratebook_factors_handle: Any = None
+        quote_analysis_handle: dict[str, Any] | None = None
         solver_input_path: str | None = None
         ratebook_factors_dir: Path | None = None
+        quote_analysis_dir: Path | None = None
+        analysis_plan = resolve_analysis_plan(body.graph, body.node_id, config)
         job = self._store.require_job(job_id)
         raw_start_time = job.get("start_time")
         start_time = (
@@ -1348,6 +1380,8 @@ class OptimiserSolveService:
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 if resolve_interactive_execution_mode() == "process":
                     solver_input_path = _optimiser_artifacts._new_solver_input_path()
+                    if analysis_plan is not None:
+                        quote_analysis_dir = _optimiser_artifacts._new_quote_analysis_directory()
                     if mode == "ratebook":
                         ratebook_factors_dir = (
                             _optimiser_artifacts._new_ratebook_factors_directory()
@@ -1362,8 +1396,10 @@ class OptimiserSolveService:
                         execution_context=execution_context,
                         output_path=solver_input_path,
                         ratebook_factors_dir=ratebook_factors_dir,
+                        quote_analysis_dir=quote_analysis_dir,
                     )
                     ratebook_factors_handle = solve_input.ratebook_factors_handle
+                    quote_analysis_handle = solve_input.quote_analysis_handle
                     self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                     quote_grid = self._build_grid_from_parquet(
                         solve_input.path,
@@ -1373,8 +1409,10 @@ class OptimiserSolveService:
                         job_id,
                         execution_context=execution_context,
                     )
+                    if quote_analysis_handle is not None:
+                        require_one_row_per_solved_quote(quote_analysis_handle, quote_grid.n_quotes)
                 else:
-                    constraint_cols, scored_lf, ratebook_factors_handle = (
+                    constraint_cols, scored_lf, ratebook_factors_handle, analysis = (
                         self._prepare_solver_frame(
                             body,
                             job_id,
@@ -1386,14 +1424,17 @@ class OptimiserSolveService:
                         )
                     )
                     self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                    quote_grid = self._build_grid(
+                    setup_grid = self._build_grid(
                         scored_lf,
                         constraint_cols,
                         config,
                         body.node_id,
                         job_id,
                         execution_context=execution_context,
+                        analysis=analysis,
                     )
+                    quote_grid = setup_grid.grid
+                    quote_analysis_handle = setup_grid.quote_analysis_handle
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 self._record_execution_metrics(job_id, execution_context)
                 self._launch_background(
@@ -1408,6 +1449,7 @@ class OptimiserSolveService:
                     config=config,
                     quote_grid=quote_grid,
                     ratebook_factors_handle=ratebook_factors_handle,
+                    quote_analysis_handle=quote_analysis_handle,
                     factor_level_order=factor_level_order,
                 )
                 launch_started = True
@@ -1426,6 +1468,16 @@ class OptimiserSolveService:
                     if execution_context is not None:
                         execution_context.release_admission()
                     self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
+                    if quote_analysis_handle is not None:
+                        # Setup still owns the table: no solve will adopt it.
+                        _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
+                            quote_analysis_handle,
+                            job_id=job_id,
+                            event="setup_orphan_quote_analysis_cleanup_failed",
+                        )
+                    elif quote_analysis_dir is not None:
+                        # A worker that failed or was stopped handed back no table.
+                        _optimiser_artifacts._remove_quote_analysis_directory(quote_analysis_dir)
                     if (
                         mode == "ratebook"
                         and isinstance(ratebook_factors_handle, dict)
@@ -1455,13 +1507,17 @@ class OptimiserSolveService:
         execution_context: ExecutionContext,
         seed_plan: SeedPlanHandoff | None = None,
         ratebook_factors_dir: str | None = None,
-    ) -> tuple[list[str], Any, Any]:
+    ) -> tuple[list[str], Any, Any, _AnalysisSource | None]:
         """Execute, resolve, validate and project the solve's input; persist ratebook factors.
 
-        Returns the constraint columns, the projected solver frame, and the
-        ratebook factors handle (``None`` in online mode). The frame stays
-        valid while *resources* holds the run's seed plan.
+        Returns the constraint columns, the projected solver frame (carrying
+        the analysis columns on the data-input path), the ratebook factors
+        handle (``None`` in online mode) and the analysis columns to reduce,
+        with the projected side-input frame they come from (``None`` without
+        analysis columns). The frames stay valid while *resources* holds the
+        run's seed plan.
         """
+        analysis_plan = resolve_analysis_plan(body.graph, body.node_id, config)
         lazy_outputs = self._execute_pipeline(
             body,
             job_id,
@@ -1483,8 +1539,22 @@ class OptimiserSolveService:
             source_lf,
             config,
             job_id,
+            analysis_columns=(
+                analysis_plan.columns
+                if analysis_plan is not None and analysis_plan.path == "data_input"
+                else ()
+            ),
             execution_context=execution_context,
         )
+        analysis: _AnalysisSource | None = None
+        if analysis_plan is not None and analysis_plan.path == "side_input":
+            with self._recorded_setup_failures(job_id, execution_context):
+                analysis = _AnalysisSource(
+                    analysis_plan.columns,
+                    resolve_analysis_frame(lazy_outputs, config, analysis_plan),
+                )
+        elif analysis_plan is not None:
+            analysis = _AnalysisSource(analysis_plan.columns, None)
         self._raise_if_solve_stopped(job_id, execution_context=execution_context)
         ratebook_factors_handle = self._extract_factors(
             lazy_outputs,
@@ -1497,7 +1567,7 @@ class OptimiserSolveService:
         )
         del lazy_outputs
         gc.collect()
-        return constraint_cols, scored_lf, ratebook_factors_handle
+        return constraint_cols, scored_lf, ratebook_factors_handle, analysis
 
     def _materialise_solve_input(
         self,
@@ -1511,6 +1581,7 @@ class OptimiserSolveService:
         execution_context: ExecutionContext,
         output_path: str,
         ratebook_factors_dir: str | None,
+        quote_analysis_dir: str | None = None,
         seed_plan: SeedPlanHandoff | None = None,
     ) -> SolveInput:
         """Write the projected, validated solver input to *output_path* (a worker's step).
@@ -1518,9 +1589,12 @@ class OptimiserSolveService:
         The input is always written, never borrowed: a snapshot this run
         captured is released when the worker's plan closes, before the parent
         reads the file. Ratebook factors go to the parent's *ratebook_factors_dir*,
-        which the parent removes if the job never adopts them.
+        which the parent removes if the job never adopts them. With analysis
+        columns, the quote-analysis table is reduced here, under the worker's
+        cap, into the parent's *quote_analysis_dir* (see
+        ``_write_quote_analysis``).
         """
-        constraint_cols, scored_lf, ratebook_factors_handle = self._prepare_solver_frame(
+        constraint_cols, scored_lf, ratebook_factors_handle, analysis = self._prepare_solver_frame(
             body,
             job_id,
             resources,
@@ -1539,10 +1613,24 @@ class OptimiserSolveService:
             execution_context=execution_context,
             allow_borrow=False,
         )
+        quote_analysis_handle = None
+        if analysis is not None:
+            if quote_analysis_dir is None:
+                raise RuntimeError("Analysis columns need the parent's quote-analysis directory")
+            quote_analysis_handle = self._write_quote_analysis(
+                input_path,
+                analysis,
+                config,
+                body.node_id,
+                job_id,
+                directory=Path(quote_analysis_dir),
+                execution_context=execution_context,
+            )
         return SolveInput(
             path=input_path,
             constraint_cols=constraint_cols,
             ratebook_factors_handle=ratebook_factors_handle,
+            quote_analysis_handle=quote_analysis_handle,
         )
 
     def _materialise_solve_input_in_worker(
@@ -1557,6 +1645,7 @@ class OptimiserSolveService:
         execution_context: ExecutionContext,
         output_path: str,
         ratebook_factors_dir: Path | None,
+        quote_analysis_dir: Path | None,
     ) -> SolveInput:
         """Supervise one hard-capped worker that materialises the solve's input.
 
@@ -1590,6 +1679,9 @@ class OptimiserSolveService:
                     ratebook_factors_dir=(
                         str(ratebook_factors_dir) if ratebook_factors_dir is not None else None
                     ),
+                    quote_analysis_dir=(
+                        str(quote_analysis_dir) if quote_analysis_dir is not None else None
+                    ),
                 ),
                 job_id=job_id,
                 node_id=body.node_id,
@@ -1608,6 +1700,18 @@ class OptimiserSolveService:
             raise RuntimeError("Optimiser setup worker returned neither an input nor a failure")
         if solve_input.path != output_path:
             raise RuntimeError("Optimiser setup worker wrote its input outside the setup's file")
+        analysis_handle = solve_input.quote_analysis_handle
+        if (analysis_handle is None) != (quote_analysis_dir is None):
+            raise RuntimeError("Optimiser setup worker's analysis table disagrees with its setup")
+        if analysis_handle is not None:
+            assert quote_analysis_dir is not None
+            _analysis_path, analysis_dir = (
+                _optimiser_artifacts._validate_quote_analysis_artifact_handle(analysis_handle)
+            )
+            if analysis_dir != quote_analysis_dir.resolve():
+                raise RuntimeError(
+                    "Optimiser setup worker wrote its analysis table outside the setup's directory"
+                )
         handle = solve_input.ratebook_factors_handle
         if handle is not None:
             _factors_path, factors_dir = (
@@ -2010,6 +2114,17 @@ class OptimiserSolveService:
             elapsed_seconds=time.monotonic() - start_time,
         )
         return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    def reject_completed_result(self, job_id: str, *, message: str) -> JobSnapshot:
+        """Correct a completed solve whose result cannot satisfy the API contract."""
+        corrected = self._lifecycle.transition(
+            job_id,
+            to="error",
+            message=message,
+            fields={"result": None, "frontier_data": None},
+            expected_status="completed",
+        )
+        return corrected if corrected is not None else self._store.require_job(job_id)
 
     def _frontier_auto_range_status_response(
         self,
@@ -3179,6 +3294,10 @@ class OptimiserSolveService:
             _explicit_chunk_size_from_config(config)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            validate_optimiser_analysis_config(config)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return str(mode)
 
@@ -3501,6 +3620,7 @@ class OptimiserSolveService:
         config: dict[str, Any],
         job_id: str,
         *,
+        analysis_columns: Iterable[str] = (),
         validate_quote_id_nulls: bool = True,
         execution_context: ExecutionContext | None = None,
     ) -> tuple[list[str], Any]:
@@ -3515,6 +3635,7 @@ class OptimiserSolveService:
             return validate_and_project(
                 source_lf,
                 config,
+                analysis_columns=analysis_columns,
                 validate_quote_id_nulls=validate_quote_id_nulls,
                 execution_context=execution_context,
             )
@@ -3584,6 +3705,38 @@ class OptimiserSolveService:
                 allow_borrow=allow_borrow,
             )
 
+    def _write_quote_analysis(
+        self,
+        input_path: str,
+        analysis: _AnalysisSource,
+        config: dict[str, Any],
+        node_id: str,
+        job_id: str,
+        *,
+        directory: Path | None,
+        execution_context: ExecutionContext | None,
+    ) -> dict[str, Any]:
+        """Reduce the analysis columns to ``quote_analysis.parquet``; setup owns the handle.
+
+        A side-input frame is executed here, so a pipeline failure is typed as a
+        solver-input write failure is.
+        """
+        with (
+            self._recorded_setup_failures(job_id, execution_context),
+            grid_construction_failures(node_id),
+            _execution_stage(
+                execution_context, "optimiser_extract_quote_analysis", node_id=node_id
+            ),
+        ):
+            return write_quote_analysis(
+                solver_input_path=input_path,
+                analysis_frame=analysis.frame,
+                quote_id=str(config.get("quote_id", "quote_id")),
+                columns=analysis.columns,
+                directory=directory,
+                execution_context=execution_context,
+            )
+
     def _build_grid(
         self,
         scored_lf: Any,
@@ -3593,8 +3746,14 @@ class OptimiserSolveService:
         job_id: str,
         *,
         execution_context: ExecutionContext | None = None,
-    ) -> QuoteGrid:
-        """Sink scored data to parquet and build the QuoteGrid."""
+        analysis: _AnalysisSource | None = None,
+    ) -> SetupGrid:
+        """Sink scored data to parquet, build the QuoteGrid, then any analysis table.
+
+        The thread compatibility path. The table is reduced after the grid is
+        built: in one process, extracting first measured a higher peak, because
+        the grid build does not reuse the memory the extraction frees.
+        """
         tmp_path = _optimiser_artifacts._new_solver_input_path()
         try:
             input_path = self._write_solver_input(
@@ -3605,7 +3764,7 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             del scored_lf
-            return self._build_grid_from_parquet(
+            grid = self._build_grid_from_parquet(
                 input_path,
                 constraint_cols,
                 config,
@@ -3613,6 +3772,27 @@ class OptimiserSolveService:
                 job_id,
                 execution_context=execution_context,
             )
+            if analysis is None:
+                return SetupGrid(grid=grid, quote_analysis_handle=None)
+            handle = self._write_quote_analysis(
+                input_path,
+                analysis,
+                config,
+                node_id,
+                job_id,
+                directory=None,
+                execution_context=execution_context,
+            )
+            try:
+                require_one_row_per_solved_quote(handle, grid.n_quotes)
+            except BaseException:
+                _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
+                    handle,
+                    job_id=job_id,
+                    event="setup_quote_analysis_row_count_cleanup_failed",
+                )
+                raise
+            return SetupGrid(grid=grid, quote_analysis_handle=handle)
         finally:
             _optimiser_artifacts._remove_solver_input(tmp_path)
 
@@ -3626,7 +3806,10 @@ class OptimiserSolveService:
         *,
         execution_context: ExecutionContext | None = None,
     ) -> QuoteGrid:
-        """Build the solver's QuoteGrid from a written or borrowed solver-input parquet."""
+        """Build the solver's QuoteGrid from a written or borrowed solver-input parquet.
+
+        The job records the grid's ``scenario_grid`` as soon as it exists.
+        """
         with (
             self._recorded_setup_failures(job_id, execution_context),
             grid_construction_failures(node_id),
@@ -3634,13 +3817,23 @@ class OptimiserSolveService:
         ):
             decision = grid_chunk_decision(config, input_path)
             self._record_setup_chunking(job_id, "optimiser_grid", decision.provenance)
-            return build_quote_grid(
+            grid = build_quote_grid(
                 input_path,
                 constraint_cols,
                 config,
                 decision.chunk_size,
                 execution_context=execution_context,
             )
+            self._record_scenario_grid(job_id, grid)
+            return grid
+
+    def _record_scenario_grid(self, job_id: str, quote_grid: QuoteGrid) -> None:
+        """Record the solver input's complete grid on the job, once, before the solve."""
+        self._store.atomic_update(
+            job_id,
+            {"scenario_grid": scenario_grid_from_values(quote_grid.scenario_values)},
+            expected_status="running",
+        )
 
     def _record_setup_chunking(
         self,
@@ -3663,9 +3856,14 @@ class OptimiserSolveService:
         config: dict[str, Any],
         quote_grid: QuoteGrid,
         ratebook_factors_handle: Any,
+        quote_analysis_handle: dict[str, Any] | None = None,
         factor_level_order: dict[str, list[str]] | None = None,
     ) -> None:
-        """Start the solver in a background thread."""
+        """Start the solver in a background thread.
+
+        The solve adopts *quote_analysis_handle* at completion; the worker
+        removes it when the job never did.
+        """
         job_id = ctx.job_id
         node_id = ctx.node_id
         mode = ctx.mode
@@ -3707,6 +3905,8 @@ class OptimiserSolveService:
             )
 
         def _solve_background() -> None:
+            # Set only by a published completion; the job then owns the handles.
+            adopted = False
             try:
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 # Use atomic_update so status-polling reads see a consistent snapshot.
@@ -3733,12 +3933,13 @@ class OptimiserSolveService:
                                 execution_context=execution_context,
                             ),
                         )
-                        _solve_ratebook(
+                        adopted = _solve_ratebook(
                             solve_ctx,
                             quote_grid=quote_grid,
                             config=config,
                             ratebook_factors_handle=ratebook_factors_handle,
                             factor_level_order=factor_level_order,
+                            quote_analysis_handle=quote_analysis_handle,
                         )
                 else:
                     with execution_context.stage("optimiser_solver_solve", node_id=node_id):
@@ -3751,10 +3952,11 @@ class OptimiserSolveService:
                                 execution_context=execution_context,
                             ),
                         )
-                        _solve_online(
+                        adopted = _solve_online(
                             solve_ctx,
                             quote_grid=quote_grid,
                             config=config,
+                            quote_analysis_handle=quote_analysis_handle,
                         )
             except BackgroundJobStoppedError:
                 logger.info("solve_worker_stopped", job_id=job_id)
@@ -3871,6 +4073,14 @@ class OptimiserSolveService:
                             job_id=job_id,
                             event="solve_worker_orphan_ratebook_factors_cleanup_failed",
                         )
+                if quote_analysis_handle is not None and not adopted:
+                    # Never re-read the job here: once adopted, only the job's own
+                    # removal may delete the table, which a reader's lease defers.
+                    _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
+                        quote_analysis_handle,
+                        job_id=job_id,
+                        event="solve_worker_orphan_quote_analysis_cleanup_failed",
+                    )
 
         def _solve_background_in_worker_context() -> None:
             with self._job_ownership_scope(

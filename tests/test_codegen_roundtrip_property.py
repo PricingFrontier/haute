@@ -369,7 +369,6 @@ def _capstone_root_graph(
                     "max_iter": 7,
                     "tolerance": 0.001,
                     "chunk_size": 128,
-                    "record_history": False,
                 }
             ),
             description="optimiser " + description,

@@ -529,7 +529,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
         captured["constraint_cols"] = constraint_cols
         captured["config"] = dict(config)
         grid_captured.set()
-        return MagicMock()
+        return setup_grid_stub(MagicMock())
 
     from haute.routes import optimiser as optimiser_routes
 
@@ -658,7 +658,11 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
 
     with (
         patch.object(optimiser_routes._solve_service, "_launch_setup_background") as setup_launch,
-        patch.object(optimiser_routes._solve_service, "_build_grid", return_value=MagicMock()),
+        patch.object(
+            optimiser_routes._solve_service,
+            "_build_grid",
+            return_value=setup_grid_stub(MagicMock()),
+        ),
         patch.object(
             optimiser_routes._solve_service,
             "_launch_background",
@@ -1140,12 +1144,613 @@ def test_real_solve_apply_totals_match_selected_rows(
     assert selected_df.height == 2
     assert selected_df["quote_id"].to_list() == ["q1", "q2"]
 
-    selected_source = selected_df.select("quote_id", "optimal_step").join(
-        source_df,
-        left_on=["quote_id", "optimal_step"],
-        right_on=["quote_id", "scenario_index"],
+    # A page row carries the chosen scenario value (the widened Float32 grid value).
+    selected_source = selected_df.select("quote_id", "optimal_scenario_value").join(
+        source_df.with_columns(pl.col("scenario_value").cast(pl.Float64)),
+        left_on=["quote_id", "optimal_scenario_value"],
+        right_on=["quote_id", "scenario_value"],
         how="inner",
     )
     assert selected_source.height == 2
     assert applied["total_objective"] == pytest.approx(selected_source["expected_income"].sum())
     assert applied["constraints"]["volume"] == pytest.approx(selected_source["volume"].sum())
+
+
+# ---------------------------------------------------------------------------
+# OPT-V04: strict result rows, input provenance, diagnostics_errors, finite JSON
+# ---------------------------------------------------------------------------
+
+from typing import Any  # noqa: E402
+
+from pydantic import ValidationError  # noqa: E402
+
+from haute.schemas import (  # noqa: E402
+    OptimiserFactorTableRow,
+    OptimiserFrontierPointSummary,
+    OptimiserFrontierResponse,
+    OptimiserFrontierSelectResponse,
+    OptimiserOnlineFrontierPoint,
+    OptimiserRatebookFrontierPoint,
+    OptimiserSolveResult,
+)
+from tests.optimiser_fixtures import (  # noqa: E402
+    SOLVE_SCENARIO_GRID,
+    make_completed_job,
+    make_frontier_data,
+    make_frontier_point,
+    make_input_summary,
+    make_scenario_grid,
+    make_solved_result,
+    setup_grid_stub,
+)
+
+_PROVENANCE = {
+    "node_id": "opt",
+    "data_source": "batch",
+    "source_file": "main.py",
+    "graph_fingerprint": "fp-1",
+}
+
+
+def _summary_for(point: dict[str, Any]) -> dict[str, Any]:
+    from haute.routes._frontier_point_summary import frontier_point_summary
+
+    return frontier_point_summary(point, {name: "min" for name in point["totals"]})
+
+
+def _frontier(points: list[dict[str, Any]], **overrides: Any) -> dict[str, Any]:
+    names = list(points[0]["totals"]) if points else ["volume"]
+    payload = make_frontier_data(
+        points,
+        constraint_names=names,
+        swept_axes=names,
+        point_summaries=[_summary_for(point) for point in points],
+    )
+    payload.update(overrides)
+    return payload
+
+
+class TestStrictFrontierPoints:
+    def test_both_point_shapes_validate(self) -> None:
+        OptimiserOnlineFrontierPoint.model_validate(make_frontier_point())
+        OptimiserRatebookFrontierPoint.model_validate(make_frontier_point(mode="ratebook"))
+
+    @pytest.mark.parametrize(
+        ("mode", "change", "message"),
+        [
+            ("online", {"cd_iterations": 3}, "Extra inputs are not permitted"),
+            ("online", {"sv_median": None}, "sv_median"),
+            ("online", {"total_objective": float("nan")}, "finite number"),
+            ("online", {"totals": {"volume": float("inf")}}, "finite number"),
+            ("online", {"iterations": True}, "iterations"),
+            ("online", {"iterations": "7"}, "iterations"),
+            ("online", {"solver_path": "newton"}, "solver_path"),
+            ("ratebook", {"sv_mean": 1.0}, "Extra inputs are not permitted"),
+            ("ratebook", {"n_quotes_clamped_low": -1}, "n_quotes_clamped_low"),
+        ],
+    )
+    def test_a_malformed_point_is_rejected(self, mode: str, change: dict, message: str) -> None:
+        model = OptimiserOnlineFrontierPoint if mode == "online" else OptimiserRatebookFrontierPoint
+        with pytest.raises(ValidationError, match=message):
+            model.model_validate({**make_frontier_point(mode=mode), **change})
+
+    def test_an_online_point_requires_every_sv_statistic(self) -> None:
+        point = make_frontier_point()
+        del point["sv_p95"]
+        with pytest.raises(ValidationError, match="sv_p95"):
+            OptimiserOnlineFrontierPoint.model_validate(point)
+
+    @pytest.mark.parametrize("field", ["thresholds", "bounds", "totals", "lambdas"])
+    def test_a_point_whose_constraint_maps_disagree_is_rejected(self, field: str) -> None:
+        point = make_frontier_point()
+        point[field] = {"volume": 1.0, "margin": 2.0}
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserOnlineFrontierPoint.model_validate(point)
+
+
+class TestFrontierResponseCompleteness:
+    def test_a_complete_frontier_validates(self) -> None:
+        OptimiserFrontierResponse.model_validate(_frontier([make_frontier_point()]))
+
+    @pytest.mark.parametrize("field", ["thresholds", "bounds", "totals", "lambdas"])
+    def test_a_point_missing_a_configured_constraint_is_rejected(self, field: str) -> None:
+        point = make_frontier_point(
+            thresholds={"volume": 0.9, "margin": 1.0},
+            bounds={"volume": 0.9, "margin": 1.0},
+            totals={"volume": 0.91, "margin": 1.1},
+            lambdas={"volume": 0.4, "margin": 0.0},
+        )
+        payload = _frontier([point])
+        payload["points"][0][field] = {"volume": 1.0}
+        for other in ("thresholds", "bounds", "totals", "lambdas"):
+            payload["points"][0][other] = {"volume": 1.0}
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserFrontierResponse.model_validate(payload)
+
+    @pytest.mark.parametrize("field", ["constraints", "effective_bounds", "lambdas"])
+    def test_a_summary_missing_a_configured_constraint_is_rejected(self, field: str) -> None:
+        payload = _frontier([make_frontier_point()])
+        payload["point_summaries"][0][field] = {}
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserFrontierResponse.model_validate(payload)
+
+    def test_points_of_two_modes_are_rejected(self) -> None:
+        payload = _frontier([make_frontier_point(), make_frontier_point(mode="ratebook")])
+        with pytest.raises(ValidationError, match="one mode"):
+            OptimiserFrontierResponse.model_validate(payload)
+
+    def test_a_summary_per_point_is_required(self) -> None:
+        payload = _frontier([make_frontier_point(), make_frontier_point()])
+        payload["point_summaries"] = payload["point_summaries"][:1]
+        with pytest.raises(ValidationError, match="one summary per point"):
+            OptimiserFrontierResponse.model_validate(payload)
+
+    def test_a_swept_axis_outside_the_constraints_is_rejected(self) -> None:
+        payload = _frontier([make_frontier_point()], swept_axes=["margin"])
+        with pytest.raises(ValidationError, match="swept_axes"):
+            OptimiserFrontierResponse.model_validate(payload)
+
+
+class TestStrictSummariesAndRows:
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 3, "x": 1},
+            {"__factor_group__": "North", "optimal_scenario_value": 1.1},
+            {"__factor_group__": "North", "optimal_scenario_value": float("nan"), "quote_count": 3},
+            {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": -1},
+            {"__factor_group__": 7, "optimal_scenario_value": 1.1, "quote_count": 3},
+            {"level": "North", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ],
+    )
+    def test_a_malformed_factor_table_row_is_rejected(self, row: dict) -> None:
+        with pytest.raises(ValidationError):
+            OptimiserFactorTableRow.model_validate(row)
+
+    def test_a_factor_table_row_serialises_under_its_wire_keys(self) -> None:
+        row = {"__factor_group__": "North", "optimal_scenario_value": 1.1, "quote_count": 3}
+        assert OptimiserFactorTableRow.model_validate(row).model_dump(by_alias=True) == row
+
+    @pytest.mark.parametrize("field", ["constraints", "effective_bounds", "lambdas"])
+    def test_a_point_summary_whose_constraint_keys_disagree_is_rejected(self, field: str) -> None:
+        summary = _summary_for(make_frontier_point())
+        summary[field] = {**summary[field], "margin": summary[field]["volume"]}
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserFrontierPointSummary.model_validate(summary)
+
+    def test_a_point_summary_rejects_unknown_fields(self) -> None:
+        summary = {**_summary_for(make_frontier_point()), "baseline_objective": 1.0}
+        with pytest.raises(ValidationError, match="Extra inputs"):
+            OptimiserFrontierPointSummary.model_validate(summary)
+
+
+class TestSolveResultContract:
+    def test_the_fixture_result_validates(self) -> None:
+        result = OptimiserSolveResult.model_validate(make_solved_result())
+        assert result.input_summary.data_source == "batch"
+        assert result.diagnostics_errors == []
+        assert [step.optimal_step for step in result.scenario_grid] == [0, 1, 2]
+
+    @pytest.mark.parametrize(
+        ("grid", "message"),
+        [
+            ([], "at least 1"),
+            (
+                [
+                    {"optimal_step": 1, "scenario_value": 0.9},
+                    {"optimal_step": 0, "scenario_value": 1.0},
+                ],
+                "steps 0..n-1 in order",
+            ),
+            (
+                [
+                    {"optimal_step": 0, "scenario_value": 1.0},
+                    {"optimal_step": 1, "scenario_value": 1.0},
+                ],
+                "strictly increasing",
+            ),
+            ([{"optimal_step": 0, "scenario_value": 1.0, "x": 1}], "Extra inputs"),
+        ],
+    )
+    def test_a_malformed_scenario_grid_is_rejected(
+        self, grid: list[dict[str, Any]], message: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=message):
+            OptimiserSolveResult.model_validate(make_solved_result(scenario_grid=grid))
+
+    def test_n_steps_must_match_the_scenario_grid(self) -> None:
+        with pytest.raises(ValidationError, match="n_steps"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(n_steps=5, scenario_grid=make_scenario_grid(3))
+            )
+
+    @pytest.mark.parametrize(
+        "field", ["constraints", "baseline_constraints", "lambdas", "effective_bounds"]
+    )
+    def test_constraint_keyed_maps_must_agree(self, field: str) -> None:
+        result = make_solved_result()
+        result[field] = {}
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserSolveResult.model_validate(result)
+
+    @pytest.mark.parametrize(
+        "missing", ["mode", "input_summary", "diagnostics_errors", "scenario_grid", "segment_keys"]
+    )
+    def test_required_fields_have_no_silent_default(self, missing: str) -> None:
+        result = make_solved_result()
+        del result[missing]
+        with pytest.raises(ValidationError, match=missing):
+            OptimiserSolveResult.model_validate(result)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"graph_fingerprint": None},
+            {"extra": "x"},
+            {"solver_settings": {"max_iter": 50, "tolerance": 1e-6, "chunk_size": None, "x": 1}},
+        ],
+    )
+    def test_the_input_summary_is_strict(self, change: dict) -> None:
+        result = make_solved_result(input_summary={**make_input_summary(), **change})
+        with pytest.raises(ValidationError, match="input_summary"):
+            OptimiserSolveResult.model_validate(result)
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"diagnostic": "shap", "error_type": "ValueError", "message": "x"},
+            {"diagnostic": "frontier", "error_type": "ValueError"},
+            {"diagnostic": "frontier", "error_type": "ValueError", "error": "x"},
+        ],
+    )
+    def test_a_malformed_diagnostics_error_is_rejected(self, entry: dict) -> None:
+        with pytest.raises(ValidationError, match="diagnostics_errors"):
+            OptimiserSolveResult.model_validate(make_solved_result(diagnostics_errors=[entry]))
+
+    @staticmethod
+    def _trace(**record_changes: Any) -> dict[str, Any]:
+        record = {
+            "cd_iteration": 1,
+            "factor": "region",
+            "factor_index": 0,
+            "total_objective": 95.0,
+            "total_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.0},
+            **record_changes,
+        }
+        return {"records": [record], "truncated": False}
+
+    def test_a_ratebook_result_carries_its_cd_trace(self) -> None:
+        result = OptimiserSolveResult.model_validate(
+            make_solved_result(mode="ratebook", ratebook_cd_trace=self._trace())
+        )
+        assert result.ratebook_cd_trace is not None
+        assert result.ratebook_cd_trace.records[0].factor == "region"
+
+    def test_the_cd_trace_is_ratebook_only_and_history_online_only(self) -> None:
+        with pytest.raises(ValidationError, match="ratebook_cd_trace"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="online", ratebook_cd_trace=self._trace())
+            )
+        entry = {"iteration": 0, "total_objective": 1.0, "max_lambda_change": 0.0}
+        with pytest.raises(ValidationError, match="history"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", history=[entry])
+            )
+
+    @pytest.mark.parametrize("field", ["total_constraints", "lambdas"])
+    def test_a_cd_trace_record_holds_exactly_the_results_constraints(self, field: str) -> None:
+        trace = self._trace(**{field: {"volume": 0.5, "margin": 0.1}})
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", ratebook_cd_trace=trace)
+            )
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"cd_iteration": 0},
+            {"factor_index": -1},
+            {"total_objective": float("inf")},
+            {"clamp_rate": 0.1},
+        ],
+    )
+    def test_a_malformed_cd_trace_record_is_rejected(self, change: dict) -> None:
+        with pytest.raises(ValidationError, match="ratebook_cd_trace"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", ratebook_cd_trace=self._trace(**change))
+            )
+
+    def test_a_cd_trace_has_at_least_one_record(self) -> None:
+        with pytest.raises(ValidationError, match="at least 1"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(
+                    mode="ratebook", ratebook_cd_trace={"records": [], "truncated": False}
+                )
+            )
+
+    def test_ratebook_factor_tables_are_typed_rows(self) -> None:
+        tables = {"region": [{"__factor_group__": "N", "optimal_scenario_value": 1.0}]}
+        with pytest.raises(ValidationError, match="quote_count"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", factor_tables=tables)
+            )
+
+    @pytest.mark.parametrize(
+        "missing", ["total_objective", "baseline_objective", "baseline_constraints", "converged"]
+    )
+    def test_a_select_response_has_no_default_baseline_or_totals(self, missing: str) -> None:
+        response = {
+            "status": "ok",
+            "point_index": 0,
+            "total_objective": 1.0,
+            "constraints": {"volume": 1.0},
+            "baseline_objective": 1.0,
+            "baseline_constraints": {"volume": 1.0},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
+            "lambdas": {"volume": 0.0},
+            "converged": True,
+            "diagnostics_errors": [],
+            "frontier_generation": 0,
+        }
+        OptimiserFrontierSelectResponse.model_validate(response)
+        del response[missing]
+        with pytest.raises(ValidationError, match=missing):
+            OptimiserFrontierSelectResponse.model_validate(response)
+
+
+class _StatsResult:
+    """An online solve result whose per-quote frame the test controls."""
+
+    def __init__(self, dataframe: Any = None) -> None:
+        self.converged = True
+        self.total_objective = 100.0
+        self.baseline_objective = 95.0
+        self.total_constraints = {"loss": 1.0}
+        self.baseline_constraints = {"loss": 0.9}
+        self.lambdas = {"loss": 0.5}
+        self.constraint_bounds = {"loss": 1.05}
+        if dataframe is not None:
+            self.dataframe = dataframe
+
+
+def _finalize(result: Any, *, mode: str = "online", config: dict | None = None, **job: Any):
+    from haute.routes._optimiser_solver import _finalize_solve_result
+
+    store = JobStore()
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "config": config
+            if config is not None
+            else {"mode": mode, "constraints": {"loss": {"max": 1.05}}, "max_iter": 12},
+            "input_provenance": dict(_PROVENANCE),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
+            **job,
+        }
+    )
+    _finalize_solve_result(
+        result,
+        mode=mode,
+        solver=MagicMock(),
+        quote_grid=MagicMock(),
+        store=store,
+        job_id=job_id,
+        elapsed=0.1,
+    )
+    return store.require_job(job_id)
+
+
+def _choices(steps: list[int], values: list[float]) -> pl.DataFrame:
+    """An online apply frame choosing *steps* of ``SOLVE_SCENARIO_GRID``."""
+    n = len(steps)
+    return pl.DataFrame(
+        {
+            "quote_id": pl.Series([f"q{i}" for i in range(n)], dtype=pl.String),
+            "optimal_step": pl.Series(steps, dtype=pl.Int32),
+            "optimal_scenario_value": pl.Series(values, dtype=pl.Float32),
+            "optimal_objective": pl.Series([1.0] * n, dtype=pl.Float32),
+            "optimal_loss": pl.Series([1.0] * n, dtype=pl.Float32),
+        }
+    )
+
+
+class TestResultDiagnostics:
+    @pytest.mark.parametrize(
+        ("dataframe", "message"),
+        [
+            (pl.DataFrame({"quote_id": ["a"]}), "optimal_step"),
+            (_choices([], []), "no quotes"),
+            (_choices([5], [1.4]), "outside the recorded scenario grid"),
+        ],
+    )
+    def test_a_report_that_cannot_be_built_is_reported_not_dropped(
+        self, dataframe: Any, message: str
+    ) -> None:
+        job = _finalize(_StatsResult(dataframe))
+
+        assert job["status"] == "completed"
+        result = job["result"]
+        assert result["adjustments"] is None
+        (error,) = result["diagnostics_errors"]
+        assert error["diagnostic"] == "adjustments"
+        assert error["error_type"]
+        assert message in error["message"]
+        OptimiserSolveResult.model_validate(result)
+
+    def test_a_built_report_records_no_diagnostic(self) -> None:
+        job = _finalize(_StatsResult(_choices([0, 2], [0.9, 1.1])))
+
+        assert job["result"]["adjustments"]["weightings"][0]["mean"] == pytest.approx(1.0)
+        assert job["result"]["diagnostics_errors"] == []
+        OptimiserSolveResult.model_validate(job["result"])
+
+    def test_a_ratebook_solve_reports_its_canonical_per_quote_evaluation(self) -> None:
+        result = _StatsResult()
+        # q0's product 0.93 rounds to the 0.9 step; q1's lies past the 1.1 end.
+        result.quote_results = _choices([0, 2], [0.9, 1.1]).with_columns(
+            pl.Series("factor_product", [0.93, 1.3], dtype=pl.Float32),
+            pl.Series("clamped_low", [False, False]),
+            pl.Series("clamped_high", [False, True]),
+        )
+        job = _finalize(
+            result,
+            mode="ratebook",
+            config={
+                "mode": "ratebook",
+                "constraints": {"loss": {"max": 1.05}},
+                "factor_columns": [["region"]],
+            },
+        )
+
+        report = job["result"]["adjustments"]
+        assert job["result"]["diagnostics_errors"] == []
+        assert [bar["quotes"] for bar in report["bars"]] == [1, 0, 1]
+        assert report["deployed_factor_differs"] == 1
+        OptimiserSolveResult.model_validate(job["result"])
+
+    def test_a_ratebook_result_without_its_per_quote_evaluation_fails_the_completion(
+        self,
+    ) -> None:
+        with pytest.raises(AttributeError, match="quote_results"):
+            _finalize(_StatsResult(), mode="ratebook")
+
+    def test_a_failed_frontier_is_in_the_list_and_keeps_frontier_error(self) -> None:
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "config": {
+                    "mode": "online",
+                    "constraints": {"loss": {"max": 1.05}},
+                    "frontier_enabled": True,
+                    "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
+                    "frontier_steps": 2,
+                },
+                "input_provenance": dict(_PROVENANCE),
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+            }
+        )
+        from haute.routes._optimiser_solver import solver_worker_context
+
+        solver = MagicMock()
+        solver.frontier.side_effect = RuntimeError("frontier exploded")
+        with solver_worker_context():
+            _finalize_solve_result(
+                _StatsResult(_choices([1], [1.0])),
+                mode="online",
+                solver=solver,
+                quote_grid=MagicMock(),
+                store=store,
+                job_id=job_id,
+                elapsed=0.1,
+            )
+
+        result = store.require_job(job_id)["result"]
+        assert result["frontier_error"] == "Frontier unavailable: frontier exploded"
+        assert result["diagnostics_errors"] == [
+            {"diagnostic": "frontier", "error_type": "RuntimeError", "message": "frontier exploded"}
+        ]
+
+
+class TestInputSummary:
+    def test_the_result_carries_the_job_provenance_and_solver_settings(self) -> None:
+        job = _finalize(_StatsResult(pl.DataFrame({"optimal_scenario_value": [1.0]})))
+
+        assert job["result"]["input_summary"] == {
+            **_PROVENANCE,
+            "solver_settings": {
+                "max_iter": 12,
+                "tolerance": 1e-6,
+                "chunk_size": None,
+            },
+        }
+        OptimiserSolveResult.model_validate(job["result"])
+
+    def test_a_solve_job_without_provenance_fails_loudly(self) -> None:
+        from haute.routes._optimiser_solver import solve_input_summary
+
+        with pytest.raises(KeyError, match="input_provenance"):
+            solve_input_summary({"config": {"mode": "online"}})
+
+    def test_the_artifact_reads_the_result_summary_rather_than_building_another(self) -> None:
+        from haute.routes._optimiser_frontier import _summary_solve_result
+        from haute.routes.optimiser import _build_artifact_payload
+
+        summary = make_input_summary(
+            data_source="scenario_b",
+            solver_settings={"max_iter": 9, "tolerance": 0.1, "chunk_size": 64},
+        )
+        result = make_solved_result(input_summary=summary, n_quotes=10, n_steps=3)
+        job = make_completed_job(result=result, config={"mode": "online", "max_iter": 50})
+
+        payload = _build_artifact_payload(job, _summary_solve_result(result))
+
+        assert payload["solver_settings"] == {"max_iter": 9, "tolerance": 0.1, "chunk_size": 64}
+        assert payload["input_summary"] == {
+            "n_quotes": 10,
+            "n_steps": 3,
+            "node_id": "opt",
+            "data_source": "scenario_b",
+            "source_file": "main.py",
+            "graph_fingerprint": "graph-fingerprint",
+        }
+
+
+class TestStatusFiniteWalk:
+    def _seed(self, store: JobStore, job_id: str, **overrides: Any) -> None:
+        from tests.job_store_support import seed_job
+
+        seed_job(store, job_id, make_completed_job(**overrides))
+
+    def test_a_non_finite_result_value_turns_the_job_into_an_error(
+        self, client, clean_job_store
+    ) -> None:
+        result = make_solved_result(constraints={"volume": float("nan")})
+        self._seed(clean_job_store, "nan_job", result=result)
+
+        response = client.get("/api/optimiser/solve/status/nan_job")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "error"
+        assert body["result"] is None
+        assert "non-finite" in body["message"]
+        assert "result.constraints.volume" in body["message"]
+
+    def test_a_non_finite_frontier_value_turns_the_job_into_an_error(
+        self, client, clean_job_store
+    ) -> None:
+        frontier = _frontier([make_frontier_point(sv_mean=float("inf"))])
+        self._seed(clean_job_store, "inf_job", frontier_data=frontier)
+
+        body = client.get("/api/optimiser/solve/status/inf_job").json()
+
+        assert body["status"] == "error"
+        assert "frontier.points[0].sv_mean" in body["message"]
+
+    def test_a_clean_walk_is_cached_for_its_generation_and_selection(
+        self, client, clean_job_store
+    ) -> None:
+        self._seed(clean_job_store, "clean_job")
+
+        first = client.get("/api/optimiser/solve/status/clean_job")
+
+        assert first.status_code == 200
+        assert first.json()["status"] == "completed"
+        assert "_result_finite_validated_for" not in first.text
+        job = clean_job_store.require_job("clean_job")
+        assert job["_result_finite_validated_for"] == [0, None]
+
+        # A later selection rewrites the result: the next poll walks it again.
+        clean_job_store.atomic_update(
+            "clean_job",
+            {
+                "selected_frontier_point": 1,
+                "result": make_solved_result(lambdas={"volume": float("nan")}),
+            },
+            expected_status="completed",
+        )
+        assert client.get("/api/optimiser/solve/status/clean_job").json()["status"] == "error"

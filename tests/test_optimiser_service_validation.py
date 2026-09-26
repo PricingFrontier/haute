@@ -6,9 +6,8 @@ Covers remediation items:
   objective, constraint, and scenario columns as a named contract error
   before any grid construction or solver work happens. Grid construction
   keeps its own loud rejection as a second line of defence (pinned here).
-- 3b.4 [M]: a single-quote solve must complete with sane distribution
-  diagnostics instead of crashing in ``_compute_scenario_value_stats``
-  after the solver already succeeded (``std()`` of one element is null).
+- 3b.4 [M]: a single-quote solve must complete with a sane adjustment
+  report (one quote, one chosen step) after the solver already succeeded.
 - 3b.8 share: the multi-quote solve and the single-quote lifecycle run the
   real ``price_contour`` solver end-to-end and pin the real result shape
   consumed by ``_optimiser_service``.
@@ -18,7 +17,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,7 +34,7 @@ from haute.routes._optimiser_service import (
     _normalise_memory_limit_payload,
     _optional_positive_int,
 )
-from haute.routes._optimiser_solver import SolveContext, _compute_scenario_value_stats
+from haute.routes._optimiser_solver import SolveContext
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 from tests.conftest import (
     make_edge,
@@ -45,20 +43,6 @@ from tests.conftest import (
 )
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
-
-_SCENARIO_STAT_KEYS = {
-    "mean",
-    "std",
-    "min",
-    "max",
-    "p5",
-    "p25",
-    "p50",
-    "p75",
-    "p95",
-    "pct_increase",
-    "pct_decrease",
-}
 
 
 @pytest.fixture()
@@ -547,26 +531,6 @@ def test_memory_limit_message_prefers_the_curated_http_payload_wording() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_compute_scenario_value_stats_single_row_has_zero_spread() -> None:
-    """``std()`` of one element is null in polars; the stats builder must
-    report the true zero spread of a complete one-quote result set instead
-    of crashing on ``float(None)``."""
-    df = pl.DataFrame({"optimal_scenario_value": pl.Series([1.1], dtype=pl.Float64)})
-    stats, histogram = _compute_scenario_value_stats(SimpleNamespace(dataframe=df))
-
-    assert stats is not None
-    assert set(stats) == _SCENARIO_STAT_KEYS
-    assert stats["std"] == 0.0
-    assert stats["mean"] == pytest.approx(1.1)
-    assert stats["min"] == stats["max"] == pytest.approx(1.1)
-    assert stats["p5"] == stats["p50"] == stats["p95"] == pytest.approx(1.1)
-    assert stats["pct_increase"] == 1.0
-    assert stats["pct_decrease"] == 0.0
-    assert histogram is not None
-    assert sum(histogram["counts"]) == 1
-    assert all(math.isfinite(edge) for edge in histogram["edges"])
-
-
 @pytest.mark.usefixtures("_widen_sandbox_root")
 def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_store) -> None:
     """Full single-quote lifecycle against the real price-contour solver:
@@ -599,21 +563,18 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
     assert result["constraints"]["volume"] == pytest.approx(1.0)
     assert result["lambdas"]["volume"] == pytest.approx(0.0)
 
-    stats = result["scenario_value_stats"]
-    assert stats is not None
-    assert stats["std"] == 0.0
-    assert stats["mean"] == pytest.approx(1.0)
-    assert stats["min"] == stats["max"] == pytest.approx(1.0)
-    assert stats["p5"] == stats["p50"] == stats["p95"] == pytest.approx(1.0)
-    assert stats["pct_increase"] == 0.0
-    assert stats["pct_decrease"] == 0.0
-    histogram = result["scenario_value_histogram"]
-    assert sum(histogram["counts"]) == 1
+    report = result["adjustments"]
+    assert report["n_quotes"] == 1
+    assert [bar["quotes"] for bar in report["bars"]] == [0, 1, 0]
+    quotes = report["weightings"][0]
+    assert quotes["mean"] == pytest.approx(1.0)
+    assert set(quotes["quantiles"].values()) == {1.0}
+    assert (quotes["share_up"], quotes["share_down"], quotes["share_unadjusted"]) == (0, 0, 1)
 
     # Results stay retrievable on a repeat poll.
     second = client.get(f"/api/optimiser/solve/status/{job_id}")
     assert second.status_code == 200
-    assert second.json()["result"]["scenario_value_stats"]["std"] == 0.0
+    assert second.json()["result"]["adjustments"] == report
 
     # Save path.
     out_path = tmp_path / "artifact.json"
@@ -637,7 +598,7 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
     preview = pl.DataFrame(applied["preview"])
     assert preview.height == 1
     assert preview["quote_id"].to_list() == ["q1"]
-    assert preview["optimal_step"].to_list() == [1]
+    # Quotes pages identify the chosen scenario by its value (step 1 of the grid).
     assert preview["optimal_scenario_value"].to_list() == pytest.approx([1.0])
 
 
@@ -686,23 +647,19 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     assert result["constraints"] == {"volume": pytest.approx(3.0)}
     assert result["baseline_constraints"] == {"volume": pytest.approx(3.0)}
     assert set(result["lambdas"]) == {"volume"}
-    assert result["history"] is None
+    # Every online solve records its history (Q5), one entry per iteration.
+    assert len(result["history"]) == result["iterations"]
+    assert result["ratebook_cd_trace"] is None
 
-    stats = result["scenario_value_stats"]
-    assert set(stats) == _SCENARIO_STAT_KEYS
-    assert stats["mean"] == pytest.approx(1.0, rel=1e-6)
-    # Sample std (ddof=1) of [1.0, 1.2, 0.8].
-    assert stats["std"] == pytest.approx(0.2, rel=1e-5)
-    assert stats["min"] == pytest.approx(0.8, rel=1e-6)
-    assert stats["max"] == pytest.approx(1.2, rel=1e-6)
-    assert stats["p50"] == pytest.approx(1.0, rel=1e-6)
-    assert stats["pct_increase"] == pytest.approx(1 / 3)
-    assert stats["pct_decrease"] == pytest.approx(1 / 3)
-
-    histogram = result["scenario_value_histogram"]
-    assert len(histogram["counts"]) == 20
-    assert len(histogram["edges"]) == 21
-    assert sum(histogram["counts"]) == 3
+    report = result["adjustments"]
+    # One quote at each of 0.8, 1.0 and 1.2.
+    assert [bar["quotes"] for bar in report["bars"]] == [1, 1, 1]
+    quotes = report["weightings"][0]
+    assert quotes["mean"] == pytest.approx(1.0, rel=1e-6)
+    assert quotes["quantiles"]["p50"] == 1.0
+    assert quotes["share_up"] == pytest.approx(1 / 3)
+    assert quotes["share_down"] == pytest.approx(1 / 3)
+    assert quotes["share_unadjusted"] == pytest.approx(1 / 3)
 
 
 def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> None:
@@ -766,6 +723,7 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
     job = store.create_job({"status": "running"})
     service = service_module.OptimiserSolveService(store)
     observed = []
+    grid = SimpleNamespace(scenario_values=[1.0])
     monkeypatch.setattr(
         "haute.routes._optimiser_input.bounded_sink",
         lambda *_a, **_k: pytest.fail("rewrote borrowed input"),
@@ -773,11 +731,11 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
     monkeypatch.setattr(
         price_contour,
         "build_grid_from_parquet_chunked",
-        lambda path, *_a, **_k: observed.append(Path(path)) or "grid",
+        lambda path, *_a, **_k: observed.append(Path(path)) or grid,
     )
     assert (
-        service._build_grid(frame, [], {"objective": "income", "chunk_size": 2}, "opt", job)
-        == "grid"
+        service._build_grid(frame, [], {"objective": "income", "chunk_size": 2}, "opt", job).grid
+        is grid
     )
     assert observed == [path]
     assert path.exists()
@@ -808,7 +766,7 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
     monkeypatch.setattr(
         price_contour,
         "build_grid_from_parquet_chunked",
-        lambda *_a, **_k: called.append(True) or "grid",
+        lambda *_a, **_k: called.append(True) or SimpleNamespace(scenario_values=[1.0]),
     )
     context = ExecutionContext(
         operation="grid_test",
@@ -818,17 +776,14 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
         memory_sampler=lambda: 100,
     )
     if accepted:
-        assert (
-            service._build_grid(
-                pl.scan_parquet(path),
-                [],
-                {"objective": "income", "chunk_size": 2},
-                "opt",
-                job,
-                execution_context=context,
-            )
-            == "grid"
-        )
+        assert service._build_grid(
+            pl.scan_parquet(path),
+            [],
+            {"objective": "income", "chunk_size": 2},
+            "opt",
+            job,
+            execution_context=context,
+        ).grid.scenario_values == [1.0]
         assert called == [True]
     else:
         with pytest.raises(ExecutionAdmissionError, match="resident optimiser grid"):

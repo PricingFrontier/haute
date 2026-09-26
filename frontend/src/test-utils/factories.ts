@@ -289,6 +289,7 @@ import type {
   FrontierSelectResponse,
   GitWorkingBranchResponse,
   OptimiserHistoryEntry,
+  OptimiserInputSummary,
   OptimiserSolveResult,
   OptimiserStatusResponse,
   TrainEstimate,
@@ -385,13 +386,25 @@ export function makeTrainStatus(
 // defaults, so a test states only what it is about.
 // ---------------------------------------------------------------------------
 
+export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {}): OptimiserInputSummary {
+  return {
+    node_id: "optimiser_1",
+    data_source: "batch",
+    source_file: "main.py",
+    graph_fingerprint: "3f9a1c",
+    solver_settings: { max_iter: 50, tolerance: 1e-6, chunk_size: null },
+    ...overrides,
+  }
+}
+
 export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserSolveResult {
   return {
-    mode: null,
+    mode: "online",
     total_objective: 0,
     baseline_objective: 0,
     constraints: {},
     baseline_constraints: {},
+    effective_bounds: {},
     lambdas: {},
     converged: true,
     iterations: null,
@@ -400,14 +413,23 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     cd_iterations: null,
     factor_tables: {},
     history: null,
+    ratebook_cd_trace: null,
     warning: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
+    adjustments: null,
     clamp_rate: null,
     combined_factor_bounds: null,
     frontier: null,
     frontier_error: null,
     selected_frontier_point: null,
+    frontier_generation: 0,
+    input_summary: makeInputSummary(),
+    diagnostics_errors: [],
+    scenario_grid: [
+      { optimal_step: 0, scenario_value: 0.9 },
+      { optimal_step: 1, scenario_value: 1.0 },
+      { optimal_step: 2, scenario_value: 1.1 },
+    ],
+    segment_keys: [],
     ...overrides,
   }
 }
@@ -436,8 +458,10 @@ export function makeFrontier(overrides: Partial<FrontierResponse> = {}): Frontie
     n_points: 0,
     points_returned: 0,
     constraint_names: [],
+    swept_axes: [],
     points_limit: null,
     points_truncated: false,
+    frontier_generation: 0,
     job_id: null,
     ...overrides,
   }
@@ -466,17 +490,20 @@ export function makeFrontierSelect(
     constraints: {},
     baseline_objective: 0,
     baseline_constraints: {},
+    effective_bounds: {},
     lambdas: {},
     converged: true,
     iterations: null,
     cd_iterations: null,
     factor_tables: {},
     history: null,
+    ratebook_cd_trace: null,
     warning: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
+    adjustments: null,
     clamp_rate: null,
     combined_factor_bounds: null,
+    frontier_generation: 0,
+    diagnostics_errors: [],
     error: null,
     ...overrides,
   }

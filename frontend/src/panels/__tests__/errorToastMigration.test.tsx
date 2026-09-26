@@ -45,6 +45,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import useToastStore from "../../stores/useToastStore"
 import { makeSolveResult } from "../../test-utils/factories"
+import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Source walker (shared by all structural tests)
@@ -341,7 +342,10 @@ vi.mock("../../hooks/useDragResize", () => ({
     onDragStart: vi.fn(),
   }),
 }))
-vi.mock("../../stores/useNodeResultsStore", () => ({
+vi.mock("../../stores/useNodeResultsStore", async (importOriginal) => ({
+  // Keep the module's pure helpers (e.g. effectiveConstraintBounds); only the
+  // store hook is replaced.
+  ...(await importOriginal<typeof import("../../stores/useNodeResultsStore")>()),
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       solveResults: {},
@@ -421,48 +425,25 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
   afterEach(cleanup)
 
   function makeData(): OptimiserPreviewData {
+    const result = makeSolveResult({
+      total_objective: 1234567,
+      baseline_objective: 1200000,
+      constraints: { loss_ratio: 0.65 },
+      baseline_constraints: { loss_ratio: 0.60 },
+      effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
+      lambdas: { loss_ratio: 0.005 },
+      converged: true,
+      iterations: 15,
+      n_quotes: 50000,
+      history: null,
+    })
     return {
-      result: makeSolveResult({
-        total_objective: 1234567,
-        baseline_objective: 1200000,
-        constraints: { loss_ratio: 0.65 },
-        baseline_constraints: { loss_ratio: 0.60 },
-        lambdas: { loss_ratio: 0.005 },
-        converged: true,
-        iterations: 15,
-        n_quotes: 50000,
-        history: null,
-      }),
+      result,
+      solvedResult: result,
       jobId: "job_123",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "My Optimiser",
-      frontier: {
-        points: Array.from({ length: 5 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          total_loss_ratio: 0.55 + i * 0.02,
-          lambda_loss_ratio: 0.001 + i * 0.001,
-        })),
-        point_summaries: Array.from({ length: 5 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          constraints: { loss_ratio: 0.55 + i * 0.02 },
-          lambdas: { loss_ratio: 0.001 + i * 0.001 },
-          converged: true,
-          iterations: null,
-          cd_iterations: null,
-          clamp_rate: null,
-          history: null,
-          scenario_value_stats: null,
-          scenario_value_histogram: null,
-          factor_tables: null,
-          warning: null,
-          frontier_error: null,
-        })),
-        n_points: 5,
-        points_returned: 5,
-        constraint_names: ["loss_ratio"],
-        points_limit: 2000,
-        points_truncated: false,
-      },
+      frontier: makeOnlineFrontier(5),
       selectedPointIndex: null,
     }
   }

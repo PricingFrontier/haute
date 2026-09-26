@@ -14,6 +14,13 @@ export function apiErrorCode(error: unknown): string | null {
   return typeof code === "string" && code ? code : null
 }
 
+/** The HTTP status of a failed request, or null for an error that is not an HTTP response. */
+export function apiErrorStatus(error: unknown): number | null {
+  if (typeof error !== "object" || error === null || !("status" in error)) return null
+  const status = (error as { status?: unknown }).status
+  return typeof status === "number" ? status : null
+}
+
 /**
  * The message to show for a failed request: the server's detail when it sent
  * one, a thrown error's own message otherwise, and `fallback` when neither is

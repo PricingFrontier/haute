@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from haute.routes._frontier_point_summary import frontier_point_summary
+from haute.routes._frontier_point_summary import (
+    ConstraintKind,
+    frontier_point_rows,
+    frontier_point_summary,
+)
 
-APPLY_PREVIEW_ROW_LIMIT = 100
+# Defined beside the request schema that bounds ``limit`` by it.
+from haute.schemas import APPLY_PREVIEW_ROW_LIMIT as APPLY_PREVIEW_ROW_LIMIT
+
+# The deepest row a Quotes page may reach (``offset + limit``): a sorted page
+# holds a top-(offset + limit) of the matching quotes, so this bounds it; a
+# reviewer past it narrows the filter or search instead of paging on.
+QUOTE_PAGE_DEPTH_LIMIT = 10_000
 FRONTIER_POINT_LIMIT = 2_000
 
 
@@ -64,46 +75,47 @@ def enforce_frontier_compute_budget(
             )
 
 
-def limited_apply_preview_payload(df: Any) -> dict[str, Any]:
-    """Return a capped optimiser-apply preview with explicit row metadata."""
-
-    row_count = len(df)
-    visible_df = df.head(APPLY_PREVIEW_ROW_LIMIT)
-    preview = visible_df.to_dicts()
-
-    return {
-        "preview": preview,
-        "row_count": row_count,
-        "preview_row_count": len(preview),
-        "preview_row_limit": APPLY_PREVIEW_ROW_LIMIT,
-        "preview_truncated": row_count > len(preview),
-    }
-
-
 def limited_frontier_payload(
     points_df: Any,
     *,
-    constraint_names: list[str],
+    mode: str,
+    constraint_kinds: Mapping[str, ConstraintKind],
+    swept_axes: Sequence[str],
+    frontier_generation: int,
 ) -> dict[str, Any]:
-    """Return a capped frontier payload while preserving total point count."""
+    """Return a capped frontier payload of typed points while preserving total point count.
+
+    ``points_df`` is price-contour's frontier ``points`` for ``mode``; each
+    returned row becomes a typed ``OptimiserFrontierPoint``
+    (``frontier_point_rows``). ``constraint_kinds`` is every configured
+    constraint, swept or not, and each point summary carries all of them;
+    ``swept_axes`` is the constraints the sweep varied. ``frontier_generation``
+    is the solve job's generation this frontier becomes: ``0`` at solve time,
+    the incremented value for a recompute.
+    """
+    constraint_names = list(constraint_kinds)
+    unknown_axes = [name for name in swept_axes if name not in constraint_kinds]
+    if unknown_axes:
+        raise ValueError(f"Frontier swept axes are not configured constraints: {unknown_axes}")
 
     total_points = len(points_df)
     is_truncated = total_points > FRONTIER_POINT_LIMIT
     visible_points_df = points_df.head(FRONTIER_POINT_LIMIT) if is_truncated else points_df
-    points = visible_points_df.to_dicts()
-    for point in points:
-        for name in constraint_names:
-            total_key = f"total_{name}"
-            if total_key not in point and name in point:
-                point[total_key] = point[name]
+    points = frontier_point_rows(
+        visible_points_df,
+        mode=mode,
+        constraint_names=constraint_names,
+    )
 
     return {
         "status": "ok",
         "points": points,
-        "point_summaries": [frontier_point_summary(point, constraint_names) for point in points],
+        "point_summaries": [frontier_point_summary(point, constraint_kinds) for point in points],
         "n_points": total_points,
         "points_returned": len(points),
         "constraint_names": constraint_names,
+        "swept_axes": list(swept_axes),
         "points_limit": FRONTIER_POINT_LIMIT,
         "points_truncated": total_points > len(points),
+        "frontier_generation": frontier_generation,
     }

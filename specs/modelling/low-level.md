@@ -8,9 +8,14 @@ controlled feature state into both diagnostic panes. The feature picker uses the
 union of AvE/PDP feature names in result order, preserving feature names verbatim
 (including commas), and explicitly distinguishes unavailable diagnostics.
 
+The frame, Focus view, tabs, intro and tabpanel come from the shared
+`ResultsWorkspace` shell (see
+[frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md)),
+which the optimiser result preview also uses; the modelling workspace passes the
+model accent and its diagnostics strip as the provenance slot.
 `PreviewPanelFrame` accepts opt-in initial height, height-change callback and
-focused/fill-height presentation. `useUIStore` remembers only the modelling docked
-height (initially 420px) for the session. Existing generic preview defaults remain
+focused/fill-height presentation. `useUIStore` remembers the modelling and optimiser
+docked heights separately (each initially 420px) for the session. Existing generic preview defaults remain
 256px. Focus view reuses `ModalShell` in an optionally inactive/docked state so the
 same React subtree remains mounted through focus transitions. The modal manages
 Escape, keyboard focus containment and restoration. Collapse and drag controls

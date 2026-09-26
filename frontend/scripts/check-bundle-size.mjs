@@ -67,7 +67,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // a 21.1 KiB lazy module, about 13 KiB of it the execution-metrics contract
 // again, while its hand guards leave the startup chunk (286.9 KiB). The
 // complete production bundle is 1,500.5 KiB; 1,511 KiB restores about 10 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1511
+// Optimiser validation adds lazy weight only: the Adjustments, Segments and
+// Quotes panes (OptimiserPreview 10.0 -> 22.8 KiB), the strict per-mode
+// frontier point contracts (optimiser validators 21.6 -> 30.8 KiB) and the
+// shared ResultsWorkspace chunk (6.1 KiB, ModellingPreview 16.2 -> 14.2 KiB).
+// The complete production bundle is 1,536.4 KiB; 1,547 KiB restores about 10 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1547
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

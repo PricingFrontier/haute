@@ -3,6 +3,7 @@ import { useState } from "react"
 import type { TrainAvePerFeatureRow } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
+import ChartFocusDetail from "../ChartFocusDetail"
 import {
   ChartEmptyState,
   ChartLegend,
@@ -204,18 +205,16 @@ function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
           )
         }}
       </ResponsiveChart>
-      <div className="validation-bin-detail" role="status" aria-live="polite">
-        {selected ? (
+      <ChartFocusDetail placeholder="Hover or focus a bin to inspect its values.">
+        {selected && (
           <>
             <strong>{selected.label}</strong>
             <span>Actual: {selected.avg_actual}</span>
             <span>Expected: {selected.avg_predicted}</span>
             <span>Exposure: {selected.exposure.toLocaleString()}</span>
           </>
-        ) : (
-          <span>Hover or focus a bin to inspect its values.</span>
         )}
-      </div>
+      </ChartFocusDetail>
       <ChartValuesTable
         summary="View bin values"
         ariaLabel="AvE bin values"

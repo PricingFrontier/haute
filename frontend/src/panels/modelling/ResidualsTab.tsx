@@ -11,6 +11,7 @@ import {
   MODELLING_CHART_GRID_COLOR as gridColor,
   TwoChartLayout,
 } from "./ChartScaffold"
+import HistogramChart from "../HistogramChart"
 import { chartDomain, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
 interface ResidualsTabProps {
@@ -72,113 +73,22 @@ function ResidualsHistogram({
   width: number
   height: number
 }) {
-  const marginLeft = 68,
-    marginRight = 24,
-    marginTop = 16,
-    marginBottom = 42
-  const plotWidth = Math.max(1, width - marginLeft - marginRight),
-    plotHeight = Math.max(1, height - marginTop - marginBottom)
-  const centers = data.map((bin) => bin.bin_center),
-    sortedCenters = [...centers].sort((left, right) => left - right)
-  const positiveSteps = sortedCenters
-    .slice(1)
-    .map((value, index) => value - sortedCenters[index])
-    .filter((value) => value > 0)
-  const binStep = positiveSteps.length ? Math.min(...positiveSteps) : 1
-  const [xMin, xMax] = [Math.min(...centers) - binStep / 2, Math.max(...centers) + binStep / 2]
-  const xSpan = xMax - xMin || 1
-  const maxCount = Math.max(0, ...data.map((bin) => bin.weighted_count))
-  const yMax = maxCount || 1
-  const xScale = (value: number) => marginLeft + ((value - xMin) / xSpan) * plotWidth
-  const yScale = (value: number) => marginTop + plotHeight - (value / yMax) * plotHeight
-  const barWidth = Math.min(
-    plotWidth,
-    Math.abs(xScale(centers[0] + binStep / 2) - xScale(centers[0] - binStep / 2)) * 0.85,
-  )
-  const tickCount = width < 400 ? 3 : 5
-  const hasZeroReference = xMin <= 0 && xMax >= 0
   return (
     <div>
-      <h4 className="text-[15px] font-medium" style={{ color: "var(--text-primary)" }}>
-        Residuals distribution
-      </h4>
-      <div className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-        Weighted residual counts by bin
-      </div>
-      <ChartSvg
+      <HistogramChart
+        title="Residuals distribution"
+        description="Weighted residual counts by bin"
+        ariaLabel="Residuals distribution histogram"
+        bars={data.map((bin, index) => ({ key: String(index), value: bin.weighted_count, center: bin.bin_center }))}
+        axis={{ kind: "numeric" }}
         width={width}
         height={height}
-        className="mt-1"
-        ariaLabel="Residuals distribution histogram"
-      >
-        <title>Residuals distribution histogram</title>
-        <ChartValueGrid ticks={chartTicks(0, yMax, 5)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
-        {chartTicks(xMin, xMax, tickCount).map((value, index, all) => (
-          <text
-            key={value}
-            x={xScale(value)}
-            y={marginTop + plotHeight + 15}
-            textAnchor={index === 0 ? "start" : index === all.length - 1 ? "end" : "middle"}
-            fontSize={axisFontSize}
-            fill={axisTextColor}
-          >
-            {formatChartNumber(value)}
-          </text>
-        ))}
-        {data.map((bin, index) => {
-          const barHeight = (bin.weighted_count / yMax) * plotHeight
-          return (
-            <rect
-              key={index}
-              data-testid="residual-histogram-bar"
-              x={xScale(bin.bin_center) - barWidth / 2}
-              y={marginTop + plotHeight - barHeight}
-              width={barWidth}
-              height={barHeight}
-              fill={barColor}
-              opacity={0.6}
-              rx={1}
-            />
-          )
-        })}
-        {hasZeroReference && (
-          <line
-            x1={xScale(0)}
-            y1={marginTop}
-            x2={xScale(0)}
-            y2={marginTop + plotHeight}
-            stroke={zeroLineColor}
-            strokeDasharray="4,3"
-          />
-        )}
-        <text
-          x={marginLeft + plotWidth / 2}
-          y={height - 4}
-          textAnchor="middle"
-          fontSize={axisFontSize}
-          fill={axisTextColor}
-        >
-          Residual
-        </text>
-        <text
-          x={12}
-          y={marginTop + plotHeight / 2}
-          textAnchor="middle"
-          fontSize={axisFontSize}
-          fill={axisTextColor}
-          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
-        >
-          Weighted count
-        </text>
-      </ChartSvg>
-      <ChartLegend
-        compact
-        items={[
-          { label: "Weighted count", color: barColor, swatch: "bar" },
-          ...(hasZeroReference
-            ? [{ label: "Zero residual", color: zeroLineColor, dashed: true }]
-            : []),
-        ]}
+        xLabel="Residual"
+        yLabel="Weighted count"
+        color={barColor}
+        barTestId="residual-histogram-bar"
+        reference={{ at: 0, color: zeroLineColor, label: "Zero residual" }}
+        legend={[{ label: "Weighted count", color: barColor, swatch: "bar" }]}
       />
       {stats && <StatsRow stats={stats} />}
     </div>

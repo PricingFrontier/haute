@@ -143,6 +143,14 @@ _ACCESSOR_CASES = [
         3600,
     ),
     (
+        "haute.routes._optimiser_solver",
+        "_max_ratebook_cd_trace",
+        "HAUTE_OPTIMISER_CD_TRACE_LIMIT",
+        "10",
+        10,
+        1000,
+    ),
+    (
         "haute.routes._train_service",
         "_max_train_loss_history",
         "HAUTE_TRAIN_LOSS_HISTORY_LIMIT",

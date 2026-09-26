@@ -14,7 +14,7 @@ import contextlib
 import contextvars
 import functools
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import product
 from typing import TYPE_CHECKING, Any, cast
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 
 from haute._banding_config import normalise_banding_factors
+from haute._env import int_env
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -45,6 +46,7 @@ from haute._rating import (
 from haute._types import (
     GraphNode,
     OnlineSolveResultLike,
+    PerFactorRecordLike,
     PipelineGraph,
     RatebookSolveResultLike,
     SolveResultLike,
@@ -54,13 +56,18 @@ from haute.routes import _optimiser_artifacts
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
 )
-from haute.routes._frontier_point_summary import NON_CONVERGED_WARNING
+from haute.routes._frontier_point_summary import (
+    NON_CONVERGED_WARNING,
+    constraint_kinds,
+    effective_bounds,
+)
 from haute.routes._job_lifecycle import (
     JobLifecycle,
 )
 from haute.routes._job_store import (
     JobStore,
 )
+from haute.routes._optimiser_adjustments import adjustment_report
 from haute.routes._optimiser_input import (
     _chunk_size_decision_for_parquet,
     _ChunkSizeDecision,
@@ -70,14 +77,21 @@ from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
 )
+from haute.routes._optimiser_outcomes import (
+    ChoiceMode,
+    _choice_spec,
+    histogram_of_frame,
+    require_scenario_grid,
+)
+from haute.routes._optimiser_segments import segment_keys
 from haute.schemas import (
+    OptimiserRatebookCdTrace,
     _normalise_frontier_range_pair,
 )
 
 logger = get_logger(component="server.optimiser.solve")
 
 # ── Default constants ─────────────────────────────────────────────
-_HISTOGRAM_BINS = 20  # bin count for scenario-value distribution histogram
 
 
 _DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
@@ -165,52 +179,122 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
     return max(fallback_elapsed, time.monotonic() - float(start_time), 0.0)
 
 
-def _compute_scenario_value_stats(
-    solve_result: SolveResultLike,
-) -> tuple[
-    dict[str, float] | None,
-    dict[str, list[int] | list[float]] | None,
-]:
-    """Compute scenario value distribution statistics and histogram from solve result."""
-    if not hasattr(solve_result, "dataframe"):
-        return None, None
-    df = solve_result.dataframe
-    if "optimal_scenario_value" not in df.columns:
-        return None, None
+def _report_of_frame(frame: pl.DataFrame, job: Mapping[str, Any], mode: str) -> dict[str, Any]:
+    spec = _choice_spec(job, cast(ChoiceMode, mode))
+    return adjustment_report(histogram_of_frame(frame.lazy(), spec), spec).model_dump()
 
-    col = df["optimal_scenario_value"]
-    n = len(col)
-    if n == 0:
-        return None, None
-    # polars' sample std (ddof=1) is undefined (null) for a single quote and
-    # would crash the float() cast after the solve already succeeded. A
-    # complete one-quote result set has exactly zero spread, so 0.0 is the
-    # true population statistic for n == 1 — not a fabricated estimate
-    # (mirrors the degenerate-input convention used by the gini metrics).
-    # The response schema (OptimiserScenarioValueStats.std) and the frontend
-    # guard both require ``std`` to be a number, so omitting or nulling just
-    # this field is not a shape the contract permits.
-    stats = {
-        "mean": float(col.mean()),
-        "std": 0.0 if n == 1 else float(col.std()),
-        "min": float(col.min()),
-        "max": float(col.max()),
-        "p5": float(col.quantile(0.05)),
-        "p25": float(col.quantile(0.25)),
-        "p50": float(col.quantile(0.50)),
-        "p75": float(col.quantile(0.75)),
-        "p95": float(col.quantile(0.95)),
-        "pct_increase": float((col > 1.0).sum() / n) if n else 0.0,
-        "pct_decrease": float((col < 1.0).sum() / n) if n else 0.0,
-    }
 
-    vals = col.to_numpy()
-    counts, edges = np.histogram(vals, bins=_HISTOGRAM_BINS)
-    histogram: dict[str, list[int] | list[float]] = {
-        "counts": [int(c) for c in counts],
-        "edges": [float(e) for e in edges],
+def _as_solved_adjustments(solve_result: SolveResultLike, job: Mapping[str, Any]) -> dict[str, Any]:
+    """The online solve's adjustment report (OPT-V10), from its resident per-quote frame."""
+    frame = getattr(solve_result, "dataframe", None)
+    if frame is None:
+        raise ValueError("The online solve result has no per-quote frame to describe.")
+    return _report_of_frame(frame, job, "online")
+
+
+def _ratebook_adjustments(solve_result: Any, job: Mapping[str, Any]) -> dict[str, Any]:
+    """The ratebook solve's adjustment report (OPT-V09C), from price-contour's canonical
+    per-quote evaluation of its factor tables (``RatebookResult.quote_results``)."""
+    return _report_of_frame(ratebook_quote_results(solve_result), job, "ratebook")
+
+
+def ratebook_quote_results(solve_result: Any) -> pl.DataFrame:
+    """A ratebook result's per-quote evaluation; a result without one is a defect, raised."""
+    import polars as pl
+
+    frame = solve_result.quote_results
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError(
+            "A ratebook result's quote_results must be a Polars DataFrame; got "
+            f"{type(frame).__name__}"
+        )
+    return frame
+
+
+def _diagnostic_error(
+    diagnostic: str,
+    exc: BaseException,
+    *,
+    job_id: str,
+) -> dict[str, str]:
+    """A ``diagnostics_errors`` entry for a diagnostic that could not be produced."""
+    logger.warning(
+        "optimiser_diagnostic_skipped",
+        diagnostic=diagnostic,
+        error=str(exc),
+        error_type=type(exc).__name__,
+        job_id=job_id,
+        exc_info=True,
+    )
+    return {"diagnostic": diagnostic, "error_type": type(exc).__name__, "message": str(exc)}
+
+
+def solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
+    """The solver settings a solve ran with, from its solve-time config snapshot."""
+    settings: dict[str, Any] = {
+        "max_iter": job_config.get("max_iter", _DEFAULT_MAX_ITER),
+        "tolerance": job_config.get("tolerance", _DEFAULT_TOLERANCE),
+        "chunk_size": job_config.get("chunk_size"),
     }
-    return stats, histogram
+    if job_config.get("mode") == "ratebook":
+        settings["max_cd_iterations"] = job_config.get(
+            "max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS
+        )
+        settings["cd_tolerance"] = job_config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE)
+    if job_config.get("frontier_enabled") is True:
+        settings["frontier_enabled"] = True
+        settings["frontier_steps"] = job_config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
+        settings["frontier_ranges"] = job_config.get("frontier_ranges")
+    return settings
+
+
+def _max_ratebook_cd_trace() -> int:
+    return int_env("HAUTE_OPTIMISER_CD_TRACE_LIMIT", 1000)
+
+
+def ratebook_cd_trace(
+    per_factor_results: Sequence[PerFactorRecordLike],
+    constraint_names: Sequence[str],
+) -> dict[str, Any]:
+    """A ratebook solve's coordinate-descent trace from price-contour's per-factor records.
+
+    Each record is read by field name (its pass and factor are the library's,
+    never inferred from position). The trace keeps the last
+    ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records, as ``loss_history`` is capped,
+    and is validated here so a malformed record fails the solve, not a later read.
+    """
+    records = [
+        {
+            "cd_iteration": record.cd_iteration,
+            "factor": record.factor,
+            "factor_index": record.factor_index,
+            "total_objective": record.total_objective,
+            "total_constraints": dict(record.total_constraints),
+            "lambdas": dict(record.lambdas),
+        }
+        for record in per_factor_results
+    ]
+    limit = _max_ratebook_cd_trace()
+    trace = OptimiserRatebookCdTrace.model_validate(
+        {"records": records[-limit:], "truncated": len(records) > limit}
+    )
+    trace_names = trace.constraint_names()
+    if set(trace_names) != set(constraint_names):
+        raise ValueError(
+            f"ratebook_cd_trace records hold the constraint names {trace_names}, "
+            f"not the solve's {list(constraint_names)}"
+        )
+    return trace.model_dump()
+
+
+def solve_input_summary(job: Mapping[str, Any]) -> dict[str, Any]:
+    """What a solve ran on: the job's ``input_provenance`` and its solver settings.
+
+    Built once when the solve completes; the published artifact reads it back.
+    A solve job always records its provenance when it is created, so a missing
+    one raises ``KeyError``.
+    """
+    return {**job["input_provenance"], "solver_settings": solver_settings(job["config"])}
 
 
 @require_solver_worker_context
@@ -835,8 +919,12 @@ def _finalize_solve_result(
     ratebook_factor_contexts: Any | None = None,
     factor_columns: list[list[str]] | None = None,
     check_cancelled: Callable[[], None] | None = None,
-) -> None:
+    quote_analysis_handle: dict[str, Any] | None = None,
+) -> bool:
     """Build the result dict and update the job with the solve outcome.
+
+    Returns whether this call published the completion, and so whether the job
+    adopted the artifact handles it was given.
 
     Shared by ``_solve_online`` and ``_solve_ratebook`` to avoid duplicating
     the ~30 lines of result-dict construction, convergence warning, and
@@ -861,8 +949,22 @@ def _finalize_solve_result(
     extra_fields:
         Mode-specific keys to merge into the result dict (e.g.
         ``iterations``, ``factor_tables``).
+    quote_analysis_handle:
+        The setup-owned analysis table, adopted into ``artifact_handles`` by
+        the completion that publishes this result.
     """
-    scenario_value_stats, scenario_value_histogram = _compute_scenario_value_stats(solve_result)
+    diagnostics_errors: list[dict[str, str]] = []
+    # Read through JobStore so concurrent eviction cannot race this snapshot.
+    job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
+    adjustments: dict[str, Any] | None = None
+    try:
+        adjustments = (
+            _as_solved_adjustments(solve_result, job_snapshot)
+            if mode == "online"
+            else _ratebook_adjustments(solve_result, job_snapshot)
+        )
+    except Exception as exc:
+        diagnostics_errors.append(_diagnostic_error("adjustments", exc, job_id=job_id))
 
     result_dict: dict[str, Any] = {
         "mode": mode,
@@ -872,8 +974,7 @@ def _finalize_solve_result(
         "baseline_constraints": solve_result.baseline_constraints,
         "lambdas": solve_result.lambdas,
         "converged": solve_result.converged,
-        "scenario_value_stats": scenario_value_stats,
-        "scenario_value_histogram": scenario_value_histogram,
+        "adjustments": adjustments,
     }
     if extra_fields:
         result_dict.update(extra_fields)
@@ -884,10 +985,23 @@ def _finalize_solve_result(
     frontier_data = None
     frontier_factor_tables: list[dict[str, dict[str, float]]] | None = None
     frontier_error = None
-    # Read through JobStore so concurrent eviction cannot race this snapshot.
-    job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
     config = job_snapshot.get("config", {})
+    result_dict["input_summary"] = solve_input_summary(job_snapshot)
+    # The grid setup recorded from the solver input; never re-derived here.
+    result_dict["scenario_grid"] = require_scenario_grid(job_snapshot)
+    # What the result can be broken down by, gated on metadata already held (OPT-V11).
+    result_dict["segment_keys"] = [
+        key.model_dump()
+        for key in segment_keys(
+            quote_analysis_handle,
+            factor_columns=(factor_columns or []) if mode == "ratebook" else [],
+            factor_tables=result_dict.get("factor_tables", {}),
+        )
+    ]
     constraints = config.get("constraints")
+    kinds = constraint_kinds(constraints or {})
+    # The absolute bounds the library solved at (pct constraints already scaled).
+    result_dict["effective_bounds"] = effective_bounds(kinds, solve_result.constraint_bounds)
     if constraints and config.get("frontier_enabled") is True:
         try:
             frontier_steps = config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
@@ -912,7 +1026,7 @@ def _finalize_solve_result(
                         job_id=job_id,
                         expected_status="running",
                     )
-                    return
+                    return False
                 job_snapshot = progress_job
                 frontier_result = _compute_frontier(
                     solver,
@@ -927,7 +1041,10 @@ def _finalize_solve_result(
                 )
                 frontier_data = limited_frontier_payload(
                     frontier_result.points,
-                    constraint_names=list(ranges.keys()),
+                    mode=mode,
+                    constraint_kinds=kinds,
+                    swept_axes=list(ranges),
+                    frontier_generation=0,
                 )
                 frontier_factor_tables = frontier_point_factor_tables(
                     frontier_result,
@@ -943,16 +1060,14 @@ def _finalize_solve_result(
             raise
         except Exception as exc:
             frontier_error = f"Frontier unavailable: {exc}"
-            logger.warning(
-                "frontier_computation_failed",
-                error=str(exc),
-                job_id=job_id,
-                exc_info=True,
-            )
+            diagnostics_errors.append(_diagnostic_error("frontier", exc, job_id=job_id))
 
     result_dict["frontier"] = frontier_data
+    # A solve starts the job's frontier generations; see ``completion_fields``.
+    result_dict["frontier_generation"] = 0
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
+    result_dict["diagnostics_errors"] = diagnostics_errors
     # Built before the publisher persists (and drops) the apply dataframe the
     # online summary reads, so publishing never needs the solver again.
     publish_summary = _publish_summary(solver, solve_result, job_id=job_id)
@@ -961,6 +1076,13 @@ def _finalize_solve_result(
         elapsed,
     )
     uncommitted_handles: list[tuple[dict[str, Any], str]] = []
+    if quote_analysis_handle is not None:
+        uncommitted_handles.append(
+            (
+                quote_analysis_handle,
+                "solve_completion_orphan_quote_analysis_cleanup_failed",
+            )
+        )
     if ratebook_factors_handle is not None:
         uncommitted_handles.append(
             (
@@ -972,16 +1094,22 @@ def _finalize_solve_result(
     def publish_completion_fields() -> Mapping[str, Any]:
         """Persist durable artifacts only after this worker owns completion."""
         artifact_handles: dict[str, Any] = {}
-        # Only an online solve has a per-quote frame; ratebook has factor tables.
-        if mode == "online":
-            apply_result_handle = _optimiser_artifacts._persist_apply_result_artifact(solve_result)
-            artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
-            uncommitted_handles.append(
-                (
-                    apply_result_handle,
-                    "solve_completion_orphan_apply_artifact_cleanup_failed",
-                )
+        # The as-solved per-quote frame: the online apply frame, or price-contour's
+        # canonical evaluation of the ratebook factor tables (OPT-V09C).
+        apply_result_handle = (
+            _optimiser_artifacts._persist_apply_result_artifact(solve_result)
+            if mode == "online"
+            else _optimiser_artifacts._persist_apply_frame_artifact(
+                ratebook_quote_results(solve_result)
             )
+        )
+        artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
+        uncommitted_handles.append(
+            (
+                apply_result_handle,
+                "solve_completion_orphan_apply_artifact_cleanup_failed",
+            )
+        )
 
         factor_handle = ratebook_factors_handle
         if factor_handle is None:
@@ -995,6 +1123,10 @@ def _finalize_solve_result(
                 )
         if factor_handle is not None:
             artifact_handles[_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY] = factor_handle
+        if quote_analysis_handle is not None:
+            artifact_handles[_optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY] = (
+                quote_analysis_handle
+            )
 
         completion_fields: dict[str, Any] = {
             "progress": 1.0,
@@ -1039,7 +1171,8 @@ def _finalize_solve_result(
     if updated_job is None:
         logger.info("solve_completion_skipped", job_id=job_id, expected_status="running")
         cleanup_uncommitted_handles()
-        return
+        return False
+    return True
 
 
 @require_solver_worker_context
@@ -1048,8 +1181,14 @@ def _solve_online(
     *,
     quote_grid: QuoteGrid,
     config: dict[str, Any],
-) -> None:
-    """Run the online optimiser solver on a pre-built QuoteGrid."""
+    quote_analysis_handle: dict[str, Any] | None = None,
+) -> bool:
+    """Run the online optimiser solver on a pre-built QuoteGrid.
+
+    *quote_analysis_handle* is the setup-owned analysis table the completion
+    adopts (``None`` without analysis columns). Returns whether the completion
+    was published, the job then owning the handles.
+    """
     if ctx.store is None:
         raise RuntimeError("_solve_online requires SolveContext.store to be set.")
     store = ctx.store
@@ -1067,7 +1206,8 @@ def _solve_online(
             constraints=config["constraints"] or None,
             max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
             tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
-            record_history=config.get("record_history", False),
+            # Every online solve records its history, bounded by max_iter (Q5).
+            record_history=True,
         )
         solve_result: OnlineSolveResultLike = solver.solve(quote_grid)
     except (BackgroundJobStoppedError, ExecutionCancelledError):
@@ -1076,6 +1216,10 @@ def _solve_online(
         raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
+    if solve_result.history is None:
+        raise RuntimeError(
+            "price_contour returned no history for an online solve run with record_history=True"
+        )
     elapsed = time.monotonic() - start_time
     logger.info(
         "solve_completed",
@@ -1084,7 +1228,7 @@ def _solve_online(
         converged=solve_result.converged,
     )
 
-    _finalize_solve_result(
+    return _finalize_solve_result(
         solve_result,
         mode="online",
         solver=solver,
@@ -1097,9 +1241,11 @@ def _solve_online(
             "iterations": solve_result.iterations,
             "n_quotes": solve_result.n_quotes,
             "n_steps": solve_result.n_steps,
-            "history": solve_result.history if config.get("record_history") else None,
+            "history": solve_result.history,
+            "ratebook_cd_trace": None,
         },
         check_cancelled=check_cancelled,
+        quote_analysis_handle=quote_analysis_handle,
     )
 
 
@@ -1126,8 +1272,14 @@ def _solve_ratebook(
     config: dict[str, Any],
     ratebook_factors_handle: dict[str, Any] | None,
     factor_level_order: dict[str, list[str]] | None = None,
-) -> None:
-    """Run the ratebook optimiser solver on a pre-built QuoteGrid."""
+    quote_analysis_handle: dict[str, Any] | None = None,
+) -> bool:
+    """Run the ratebook optimiser solver on a pre-built QuoteGrid.
+
+    *quote_analysis_handle* is the setup-owned analysis table the completion
+    adopts (``None`` without analysis columns). Returns whether the completion
+    was published, the job then owning the handles.
+    """
     if ctx.store is None:
         raise RuntimeError("_solve_ratebook requires SolveContext.store to be set.")
     store = ctx.store
@@ -1197,6 +1349,9 @@ def _solve_ratebook(
     elapsed = time.monotonic() - start_time
     converged = solve_result.converged
     logger.info("solve_completed", mode="ratebook", elapsed=f"{elapsed:.2f}s", converged=converged)
+    cd_trace = ratebook_cd_trace(
+        solve_result.per_factor_results, list(solve_result.total_constraints)
+    )
 
     factor_level_counts = _ratebook_factor_level_counts_from_artifact(
         ratebook_factors_handle,
@@ -1219,7 +1374,7 @@ def _solve_ratebook(
         factor_dtypes,
     )
 
-    _finalize_solve_result(
+    return _finalize_solve_result(
         solve_result,
         mode="ratebook",
         solver=solver,
@@ -1232,6 +1387,9 @@ def _solve_ratebook(
         elapsed=elapsed,
         extra_fields={
             "cd_iterations": solve_result.cd_iterations,
+            # The grid the solve scored, as an online result reports it.
+            "n_quotes": quote_grid.n_quotes,
+            "n_steps": quote_grid.n_steps,
             "factor_tables": factor_tables_serialised,
             "factor_dtypes": factor_dtypes,
             "clamp_rate": solve_result.clamp_rate,
@@ -1240,6 +1398,7 @@ def _solve_ratebook(
                 quote_grid.scenario_values
             ),
             "history": None,
+            "ratebook_cd_trace": cd_trace,
         },
         extra_job_fields={
             "factor_level_counts": factor_level_counts,
@@ -1248,4 +1407,5 @@ def _solve_ratebook(
             "setup_chunking": setup_chunking,
         },
         check_cancelled=check_cancelled,
+        quote_analysis_handle=quote_analysis_handle,
     )
