@@ -631,8 +631,8 @@ class TrainingJob:
         progress : callable | None
             Optional callback ``(message, fraction)`` for progress reporting.
         on_iteration : callable | None
-            Optional callback ``(iteration, total, metrics_dict)`` called
-            after each training iteration.
+            Optional callback ``(iteration, total, metrics_dict, history_row)``
+            called after each training iteration.
 
         Returns
         -------
@@ -1157,6 +1157,7 @@ class TrainingJob:
                 iteration: int,
                 total: int,
                 _metrics: dict[str, float],
+                _history_row: dict[str, float] | None,
             ) -> None:
                 if check_cancelled is not None:
                     check_cancelled()

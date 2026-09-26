@@ -545,6 +545,7 @@ def _run_training_process_job(
             iteration_number: int,
             total: int,
             metrics: dict[str, float],
+            history_row: dict[str, float] | None,
         ) -> None:
             execution_context.checkpoint(label="training_iteration")
             runtime.emit_progress(
@@ -555,6 +556,7 @@ def _run_training_process_job(
                     "iteration": iteration_number,
                     "total": total,
                     "metrics": metrics,
+                    "history": history_row,
                 },
             )
 

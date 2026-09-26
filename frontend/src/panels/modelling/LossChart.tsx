@@ -7,19 +7,26 @@ import { ChartLegend, ChartSvg } from "./ChartScaffold"
 
 export type LossEntry = { iteration: number; [key: string]: number }
 
+/** The keys a loss history draws its curves from, or null when it cannot draw one. */
+export function lossCurveKeys(
+  lossHistory: readonly LossEntry[],
+): { trainKey: string; evalKey: string | undefined } | null {
+  if (lossHistory.length < 2) return null
+  const keys = Object.keys(lossHistory[0]).filter((k) => k !== "iteration")
+  const trainKey = keys.find((k) => k.startsWith("train_"))
+  if (!trainKey) return null
+  return { trainKey, evalKey: keys.find((k) => k.startsWith("eval_")) }
+}
+
 type LossChartProps = {
   lossHistory: LossEntry[]
   bestIteration?: number | null
 }
 
 export function LossChart({ lossHistory, bestIteration }: LossChartProps) {
-  if (!lossHistory || lossHistory.length < 2) return null
-
-  // Find train and eval loss keys
-  const keys = Object.keys(lossHistory[0]).filter(k => k !== "iteration")
-  const trainKey = keys.find(k => k.startsWith("train_"))
-  const evalKey = keys.find(k => k.startsWith("eval_"))
-  if (!trainKey) return null
+  const curveKeys = lossCurveKeys(lossHistory)
+  if (!curveKeys) return null
+  const { trainKey, evalKey } = curveKeys
 
   const w = 280, h = 80, px = 4, py = 4
   const chartW = w - px * 2, chartH = h - py * 2

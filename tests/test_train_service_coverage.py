@@ -1661,7 +1661,9 @@ class TestLaunchBackgroundWorker:
                 progress("working", 0.5)
                 # Push more iterations than the cap so 1075-1076 truncates.
                 for i in range(cap + 3):
-                    on_iteration(i, cap + 3, {"loss": float(i)})
+                    on_iteration(
+                        i, cap + 3, {"RMSE": float(i)}, {"iteration": float(i), "train_RMSE": i}
+                    )
                 return super().run(progress, on_iteration, **kwargs)
 
         with (
@@ -1687,9 +1689,13 @@ class TestLaunchBackgroundWorker:
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
-        # The loss history was capped and flagged truncated.
+        # The loss history keeps the engine's prefixed rows, capped and flagged truncated;
+        # the readout keeps the engine's own metric name.
         assert job["train_loss_history_truncated"] is True
-        assert len(job["train_loss_history"]) == cap
+        pushed = [{"iteration": float(i), "train_RMSE": i} for i in range(cap + 3)]
+        # The base fake's run adds its own row last.
+        own = {"iteration": 1.0, "train_rmse": 0.5}
+        assert job["train_loss_history"] == [*pushed, own][-cap:]
         # Temp parquet removed in the worker finally (1229->exit true side).
         assert not Path(tmp_parquet).exists()
 
@@ -1942,7 +1948,31 @@ class TestProtocolCallbackValidation:
                         0.5,
                         "bad",
                         "iteration",
-                        {"iteration": True, "total": 1, "metrics": {}},
+                        {"iteration": True, "total": 1, "metrics": {}, "history": None},
+                    )
+                )
+            for history in (
+                {"iteration": 2.0, "train_loss": 0.5},
+                [1.0, 0.5],
+            ):
+                with pytest.raises(WorkerProtocolError, match="fields are malformed"):
+                    on_progress(
+                        WorkerProgressEvent(
+                            1,
+                            0.5,
+                            "bad history",
+                            "iteration",
+                            {"iteration": 1, "total": 2, "metrics": {}, "history": history},
+                        )
+                    )
+            with pytest.raises(WorkerProtocolError, match="fields are malformed"):
+                on_progress(
+                    WorkerProgressEvent(
+                        1,
+                        0.5,
+                        "no history",
+                        "iteration",
+                        {"iteration": 1, "total": 2, "metrics": {}},
                     )
                 )
             store.delete_job(job_id)
@@ -1953,9 +1983,49 @@ class TestProtocolCallbackValidation:
                         0.5,
                         "fit",
                         "iteration",
-                        {"iteration": 1, "total": 2, "metrics": {"loss": 0.5}},
+                        {"iteration": 1, "total": 2, "metrics": {"loss": 0.5}, "history": None},
                     )
                 )
+        finally:
+            on_finished()
+
+    def test_training_iteration_events_keep_the_rows_the_engine_built(self, tmp_path: Path) -> None:
+        store, job_id, captured = self._capture_training_launch(tmp_path)
+        on_progress = captured["on_progress"]
+        on_finished = captured["on_finished"]
+        assert callable(on_progress)
+        assert callable(on_finished)
+
+        try:
+            on_progress(
+                WorkerProgressEvent(
+                    1,
+                    0.5,
+                    "Iteration 1",
+                    "iteration",
+                    {
+                        "iteration": 1,
+                        "total": 2,
+                        "metrics": {"RMSE": 0.5, "validation_RMSE": 0.6},
+                        "history": {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6},
+                    },
+                )
+            )
+            # An iteration that adds no row (EBM, a GPU fit) updates only the readout.
+            on_progress(
+                WorkerProgressEvent(
+                    2,
+                    1.0,
+                    "Iteration 2",
+                    "iteration",
+                    {"iteration": 2, "total": 2, "metrics": {}, "history": None},
+                )
+            )
+            job = store.require_job(job_id)
+            assert job["train_loss_history"] == [
+                {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6}
+            ]
+            assert job["iteration"] == 2 and job["train_loss"] == {}
         finally:
             on_finished()
 

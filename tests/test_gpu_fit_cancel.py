@@ -77,7 +77,7 @@ class TestAlgorithmLevelCancel:
                 assert fit_release.wait(timeout=WAIT_MUST_HAPPEN_S), "fit gate was never released"
                 fit_finished.set()
 
-        def on_iteration(iteration: int, total: int, metrics: dict) -> None:
+        def on_iteration(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
             # Mirrors _train_service._on_iteration observing a cancelled
             # job: the (CPU stand-in) fit becomes free to finish, then the
             # cancellation is raised into the polling loop.
@@ -134,7 +134,7 @@ class TestMetricPollingHelper:
             assert fit_release.wait(timeout=WAIT_MUST_HAPPEN_S)
             fit_finished.set()
 
-        def on_iteration(iteration: int, total: int, metrics: dict) -> None:
+        def on_iteration(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
             fit_release.set()
             raise _CancelledForTestError("stop")
 
@@ -169,7 +169,7 @@ class TestMetricPollingHelper:
             assert fit_release.wait(timeout=WAIT_MUST_HAPPEN_S)
             fit_finished.set()
 
-        def on_iteration(iteration: int, total: int, metrics: dict) -> None:
+        def on_iteration(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
             raise _CancelledForTestError("stop")
 
         with structlog.testing.capture_logs() as logs:
@@ -216,7 +216,7 @@ class TestMetricPollingHelper:
 
         seen: list[int] = []
 
-        def on_iteration(iteration: int, total: int, metrics: dict) -> None:
+        def on_iteration(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
             seen.append(iteration)
 
         with pytest.raises(RuntimeError, match="GPU training failed"):
@@ -245,7 +245,7 @@ class TestMetricPollingHelper:
 
         seen: list[int] = []
 
-        def on_iteration(iteration: int, total: int, metrics: dict) -> None:
+        def on_iteration(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
             seen.append(iteration)
 
         _run_gpu_fit_with_metric_polling(

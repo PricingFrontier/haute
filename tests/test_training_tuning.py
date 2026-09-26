@@ -127,7 +127,7 @@ def test_tuning_runs_baseline_and_seeded_trials_then_one_selected_final_fit(
         def run(self, *, on_iteration=None, **_kwargs: Any) -> TrainResult:
             final_calls.append(dict(self.params))
             if on_iteration is not None:
-                on_iteration(1, 1, {"loss": 1.0})
+                on_iteration(1, 1, {"loss": 1.0}, None)
             return completed_final(
                 tmp_path,
                 development_rows=len(self.plan.development_positions),

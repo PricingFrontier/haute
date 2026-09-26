@@ -141,7 +141,7 @@ def test_selection_fits_are_sequential_evaluation_only_and_final_fit_is_once(
         def run(self, *, on_iteration=None, **_kwargs: Any) -> TrainResult:
             calls.append(("final", None))
             if on_iteration is not None:
-                on_iteration(1, 1, {"loss": 1.0})
+                on_iteration(1, 1, {"loss": 1.0}, None)
             return final_result(
                 tmp_path,
                 development=len(self.plan.development_positions),

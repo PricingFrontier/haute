@@ -39,7 +39,6 @@ the demo pipeline has been rewritten in the declaration format.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | MDL-01 | Planned | P2 | The memory estimate says how many rows training will really use, and never reports a join's worst case as the row count. |
-| MDL-02 | Planned | P2 | The live loss curve draws while CatBoost, LightGBM and XGBoost train. |
 | MDL-03 | Planned | P2 | The Loss tab shows the whole fit and says which fit it is. |
 | MDL-04 | Planned | P2 | Chart value axes label a narrow range with distinct numbers. |
 | MDL-05 | Planned | P3 | Training progress refreshes about once a second while it changes. |
@@ -110,42 +109,6 @@ all rows trained; a component test renders both box states.
 `src/haute/routes/_training_lifecycle.py`;
 `frontend/src/panels/modelling/TrainingActionsAndResults.tsx::TrainingActionsAndResults`.
 
-### MDL-02 — The live loss curve never draws
-**Why:** While the demo model trains, the progress panel shows the iteration,
-the bar, "Round 699/699 Tweedie:variance_power=1.99: 107.1548" and, once
-more than 200 iterations have passed, "Showing latest retained loss-history
-window.", with nothing under that line. `TrainingProgress` renders
-`LossChart` from `train_loss_history`, and `LossChart` returns `null` unless
-the first row has a key starting with `train_`. The live rows never have one:
-the progress handler in `_training_lifecycle.py` appends
-`{"iteration": ..., **metrics}`, and each engine's callback builds `metrics`
-with the training metric's bare name (`Tweedie:variance_power=1.99`) and the
-evaluation metric as `validation_<name>`. The same callbacks build a second,
-prefixed row (`train_<name>`, `eval_<name>`) for the final loss history,
-which is why the Loss tab after training does draw. The mismatch is shared by
-`_CatBoostProgressCallback`, the LightGBM `progress` callback and the XGBoost
-callback, so no boosted model has shown a live curve; GLM and EBM report no
-per-iteration loss.
-
-**Plan:** Send the prefixed row the callbacks already build as the progress
-event's history row, and keep the bare-named metrics only for the numeric
-readout; `LossChart` then finds `train_` and `eval_` keys as the Loss tab
-does. Hide the "latest retained window" note when there is no chart to
-qualify.
-
-**Acceptance:** A worker test for each of CatBoost, LightGBM and XGBoost
-asserts the live history rows carry `train_` keys, and `eval_` keys during a
-fit with an evaluation set; a `TrainingProgress` component test with such a
-history renders the loss curve, and with no curve renders no window note.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_algorithms.py::_CatBoostProgressCallback`;
-`src/haute/modelling/_lightgbm.py`; `src/haute/modelling/_xgboost.py`;
-`src/haute/routes/_training_lifecycle.py`;
-`frontend/src/panels/modelling/TrainingProgress.tsx::TrainingProgress`;
-`frontend/src/panels/modelling/LossChart.tsx::LossChart`.
-
 ### MDL-03 — The Loss tab shows only the last 200 iterations
 **Why:** After the demo model trained, the Loss tab plotted one curve over
 iterations 512 to 711: a nearly flat tail, with the steep early descent
@@ -173,7 +136,7 @@ test with holdout validation asserts the results carry the validation fit's
 train and eval history; a `LossTab` component test renders both curves, the
 best-iteration marker and the span note.
 
-**Dependencies:** MDL-02 (the same prefixed rows).
+**Dependencies:** None.
 
 **Evidence:** `src/haute/routes/_training_worker.py::_bounded_loss_history`;
 `src/haute/modelling/_training_job.py`;

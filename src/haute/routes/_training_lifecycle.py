@@ -203,6 +203,16 @@ class _DispersionRunningJob(RunningJobFields):
 # same sampler as training's RAM downsample) rather than paying full-data
 
 
+def _finite_numbers(values: Mapping[str, Any]) -> bool:
+    """Whether every value is a finite int or float (a bool is not a number here)."""
+    return all(
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and math.isfinite(float(value))
+        for value in values.values()
+    )
+
+
 def _default_train_timeout() -> int:
     return int_env("HAUTE_TRAIN_TIMEOUT", 3600)
 
@@ -1898,6 +1908,7 @@ class TrainService:
             iteration = event.fields.get("iteration")
             total = event.fields.get("total")
             metrics = event.fields.get("metrics")
+            row = event.fields.get("history")
             if (
                 isinstance(iteration, bool)
                 or not isinstance(iteration, int)
@@ -1906,11 +1917,15 @@ class TrainService:
                 or not isinstance(total, int)
                 or total < 0
                 or not isinstance(metrics, dict)
-                or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, int | float)
-                    or not math.isfinite(float(value))
-                    for value in metrics.values()
+                or not _finite_numbers(metrics)
+                or "history" not in event.fields
+                or not (
+                    row is None
+                    or (
+                        isinstance(row, dict)
+                        and _finite_numbers(row)
+                        and row.get("iteration") == iteration
+                    )
                 )
             ):
                 raise WorkerProtocolError("Training iteration event fields are malformed")
@@ -1918,7 +1933,8 @@ class TrainService:
             if current_job is None:
                 raise KeyError(f"Training job {job_id!r} disappeared during progress")
             history = list(current_job.get("train_loss_history") or [])
-            history.append({"iteration": float(iteration), **metrics})
+            if row is not None:
+                history.append(row)
             truncated = bool(current_job.get("train_loss_history_truncated"))
             if len(history) > _max_train_loss_history():
                 history = history[-_max_train_loss_history() :]

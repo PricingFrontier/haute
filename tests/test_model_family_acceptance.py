@@ -321,7 +321,7 @@ def test_a_native_fit_stops_at_the_first_progress_report_after_cancellation(
     before its fit starts. Nothing is saved from a cancelled fit."""
     reports: list[int] = []
 
-    def cancel_after_first(iteration: int, total: int, metrics: dict) -> None:
+    def cancel_after_first(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
         reports.append(iteration)
         raise _CancelledError
 
@@ -345,6 +345,48 @@ def test_a_native_fit_stops_at_the_first_progress_report_after_cancellation(
 
 # Four real trainings through the service; under CI coverage one CatBoost run
 # (fit, diagnostics, SHAP) takes about 18 s, beyond the 60 s default.
+@pytest.mark.parametrize("family", ["catboost", "lightgbm", "xgboost"])
+@pytest.mark.parametrize("refit", [False, True], ids=["validation-fit", "final-refit"])
+def test_a_boosted_fit_reports_its_loss_history_rows_as_it_trains(
+    tmp_path: Path, family: str, refit: bool
+) -> None:
+    """The live chart reads the same prefixed rows the Loss tab does (MDL-02)."""
+    readouts: list[dict[str, float]] = []
+    rows: list[dict[str, float] | None] = []
+
+    def record(
+        iteration: int, total: int, metrics: dict[str, float], row: dict[str, float] | None
+    ) -> None:
+        readouts.append(metrics)
+        rows.append(row)
+
+    result = TrainingJob(
+        name=family,
+        data=frame(),
+        target="claims",
+        algorithm=family,
+        loss_function="Poisson",
+        params=PARAMS[family],
+        metrics=["poisson_deviance"],
+        output_dir=str(tmp_path),
+        evaluation=EVALUATION,
+        refit_on_development=refit,
+        feature_columns=["region", "age"],
+    ).run(on_iteration=record)
+
+    # A refit trains the validation fit's weighted round count, not the configured 20.
+    assert len(rows) > 1
+    for number, row in enumerate(rows, start=1):
+        assert row is not None
+        assert row["iteration"] == number
+        assert any(key.startswith("train_") for key in row)
+        # Only a fit with an evaluation set (the kept validation fit) has eval rows.
+        assert any(key.startswith("eval_") for key in row) is not refit
+    # The readout keeps each engine's own metric names; only the rows are prefixed.
+    assert not any(key.startswith(("train_", "eval_")) for key in readouts[-1])
+    assert result.loss_history == rows
+
+
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("family", FAMILIES)
 def test_native_training_lifecycle_keeps_the_last_good_model(

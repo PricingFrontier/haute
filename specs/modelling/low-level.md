@@ -108,6 +108,19 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `feature_importance_typed` (CatBoost only), `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
+- **`IterationCallback`** (`_algorithm_base.py`) — `(iteration, total, metrics,
+  history_row)`, called after each iteration. `metrics` is the progress readout: the
+  training metric under its native name and an evaluation set's as `<dataset>_<metric>`.
+  `history_row` is the row the adapter appends to `FitResult.loss_history` (`iteration` plus
+  `train_`/`eval_`-prefixed values), or `None` from a fit that measures no per-iteration loss
+  (EBM, GLM, and CatBoost's GPU fit, which polls only the iteration). The training worker
+  forwards both in its `iteration` progress event, whose `history` field is that row or
+  `null`. The job's live `train_loss_history` appends each row, keeps the last
+  `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200, setting `train_loss_history_truncated`),
+  and the live chart finds its `train_` and `eval_` keys as the Loss tab does. Only the fit
+  whose model the job keeps sends iteration events: after a refit that is the final fit
+  (no evaluation set), while a validation fit that is refit reports only its progress
+  message.
 - **`ALGORITHM_REGISTRY`** (`_algorithms.py`) — `dict[str, type[BaseAlgorithm]]`,
   `{"catboost": CatBoostAlgorithm}` unconditionally; `"glm": GLMAlgorithm` is added only
   if `import rustystats` succeeds (lazy `try/except ImportError` at module import time),
