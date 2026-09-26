@@ -13,9 +13,10 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import OptimiserPreview from "../OptimiserPreview"
 import type { FrontierData, OptimiserPreviewData } from "../OptimiserPreview"
-import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types"
+import type { OptimiserSolveResult } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
-import { makeHistoryEntry, makeSolveResult } from "../../test-utils/factories"
+import { makeHistoryEntry, makeInputSummary, makeSolveResult } from "../../test-utils/factories"
+import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 
 vi.mock("../../api/client", () => ({
   selectFrontierPoint: vi.fn(() => new Promise(() => {})),
@@ -49,44 +50,11 @@ const INDEX_CSS = readFileSync(path.resolve(HERE, "..", "..", "index.css"), "utf
 
 const EXPECTED_VALUES =
   "Expected values from the scoring models on the solve quotes; not observed outcomes."
-
-function pointSummary(total: number, lossRatio: number): FrontierPointSummary {
-  return {
-    total_objective: total,
-    constraints: { loss_ratio: lossRatio },
-    lambdas: { loss_ratio: 0.01 },
-    converged: true,
-    iterations: null,
-    cd_iterations: null,
-    clamp_rate: null,
-    history: null,
-    scenario_value_stats: null,
-    scenario_value_histogram: null,
-    factor_tables: null,
-    warning: null,
-    frontier_error: null,
-    effective_bounds: { loss_ratio: { kind: "max", bound: 0.7 } },
-  }
-}
+// The source segment of the default input summary (makeInputSummary).
+const SOURCE = "Data: batch scenario of main.py"
 
 function makeFrontier(n = 5): FrontierData {
-  const points = Array.from({ length: n }, (_, i) => ({
-    total_objective: 1_200_000 + i * 10_000,
-    total_loss_ratio: 0.55 + i * 0.02,
-    lambda_loss_ratio: 0.001 + i * 0.001,
-    converged: true,
-  }))
-  return {
-    points,
-    point_summaries: points.map((p) => pointSummary(p.total_objective, p.total_loss_ratio)),
-    n_points: n,
-    points_returned: n,
-    constraint_names: ["loss_ratio"],
-    swept_axes: ["loss_ratio"],
-    points_limit: 2000,
-    points_truncated: false,
-    frontier_generation: 0,
-  }
+  return makeOnlineFrontier(n)
 }
 
 function onlineResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserSolveResult {
@@ -208,7 +176,7 @@ describe("Optimiser workspace", () => {
     for (const name of ["Frontier", "Summary", "Quotes", "Convergence"]) {
       fireEvent.click(screen.getByRole("tab", { name }))
       expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-        `Online · 50,000 quotes × 21 scenario steps · As solved · ${EXPECTED_VALUES}`,
+        `Online · 50,000 quotes × 21 scenario steps · ${SOURCE} · As solved · ${EXPECTED_VALUES}`,
       )
     }
   })
@@ -216,7 +184,7 @@ describe("Optimiser workspace", () => {
   it("names a selected frontier point as i of the points returned", () => {
     renderPreview(makeData({ selectedPointIndex: 2 }))
     expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-      `Online · 50,000 quotes × 21 scenario steps · Frontier point 3 of 5 · ${EXPECTED_VALUES}`,
+      `Online · 50,000 quotes × 21 scenario steps · ${SOURCE} · Frontier point 3 of 5 · ${EXPECTED_VALUES}`,
     )
   })
 
@@ -238,7 +206,7 @@ describe("Optimiser workspace", () => {
     for (const name of ["Summary", "Rates"]) {
       fireEvent.click(screen.getByRole("tab", { name }))
       expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-        `Ratebook · 1,200 quotes × 9 scenario steps · As solved · ${EXPECTED_VALUES}`,
+        `Ratebook · 1,200 quotes × 9 scenario steps · ${SOURCE} · As solved · ${EXPECTED_VALUES}`,
       )
     }
   })
@@ -246,20 +214,34 @@ describe("Optimiser workspace", () => {
   it("says so when a result does not report its grid, rather than omitting it", () => {
     renderPreview(makeData({ result: onlineResult({ n_quotes: null, n_steps: null }) }))
     expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-      `Online · Grid size not reported · As solved · ${EXPECTED_VALUES}`,
+      `Online · Grid size not reported · ${SOURCE} · As solved · ${EXPECTED_VALUES}`,
     )
   })
 
-  it("shows no strip for a failed solve that has no solved result", () => {
-    renderPreview(makeData({ frontier: null, result: makeSolveResult({ mode: null }) }))
-    expect(screen.getByRole("tab", { name: "Summary" })).toBeInTheDocument()
-    expect(screen.queryByTestId("optimiser-provenance")).not.toBeInTheDocument()
+  it("names the data the solve ran on, from the result's input summary", () => {
+    renderPreview(makeData({
+      result: onlineResult({
+        input_summary: makeInputSummary({ data_source: "renewals_2026", source_file: "pricing/main.py" }),
+      }),
+    }))
+    expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
+      "Data: renewals_2026 scenario of pricing/main.py",
+    )
+  })
+
+  it("names only the scenario when the pipeline has no source file", () => {
+    renderPreview(makeData({
+      result: onlineResult({ input_summary: makeInputSummary({ source_file: null }) }),
+    }))
+    const strip = screen.getByTestId("optimiser-provenance")
+    expect(strip).toHaveTextContent(`Data: batch scenario · As solved · ${EXPECTED_VALUES}`)
+    expect(strip).not.toHaveTextContent(" of ")
   })
 
   it("fails loudly on a mode it does not know", () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     expect(() =>
-      renderPreview(makeData({ result: onlineResult({ mode: "hybrid" }) })),
+      renderPreview(makeData({ result: onlineResult({ mode: "hybrid" as OptimiserSolveResult["mode"] }) })),
     ).toThrow(/Unknown optimiser mode "hybrid"/)
   })
 
@@ -341,8 +323,22 @@ describe("Optimiser workspace", () => {
   })
 
   it("labels the frontier axis picker in the workspace type scale", () => {
+    const base = makeFrontier()
+    // The picker offers the frontier's own constraints: every point names each one.
+    const frontier: FrontierData = {
+      ...base,
+      constraint_names: ["loss_ratio", "volume"],
+      points: base.points.map((point) => ({
+        ...point,
+        thresholds: { ...point.thresholds, volume: 0.9 },
+        bounds: { ...point.bounds, volume: 0.9 },
+        totals: { ...point.totals, volume: 0.95 },
+        lambdas: { ...point.lambdas, volume: 0 },
+      })),
+    }
     renderPreview(
       makeData({
+        frontier,
         constraints: { loss_ratio: { max: 0.7 }, volume: { min: 0.9 } },
       }),
     )

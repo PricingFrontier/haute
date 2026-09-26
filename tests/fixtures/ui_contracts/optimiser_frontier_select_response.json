@@ -29,5 +29,6 @@
   "clamp_rate": null,
   "combined_factor_bounds": null,
   "frontier_generation": 0,
+  "diagnostics_errors": [],
   "error": null
 }

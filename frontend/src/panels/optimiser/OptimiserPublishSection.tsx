@@ -30,7 +30,7 @@ import { downloadTextFile } from "../editors/shared/tableClipboard"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "../editors"
 import { useGraph } from "../useGraph"
 import { optimiserResultSavePath } from "./optimiserHelpers"
-import { factorTablesCsv, hasFactorTables, type FactorTables } from "./ratebookFactorTables"
+import { factorTablesCsv, hasFactorTables } from "./ratebookFactorTables"
 
 const SECTION_LABEL_CLASS = "text-[11px] font-bold uppercase tracking-[0.08em]"
 const INPUT_STYLE = { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
@@ -126,13 +126,13 @@ export default function OptimiserPublishSection({
   )
 
   function renderPublishBody() {
-    if (!cached || !jobId) return null
+    if (!cached || !jobId || cached.result === null) return null
     const points = cached.frontier?.points ?? []
     const target = cached.selectedPointIndex
     const busy = solving || !!publish?.saving || !!publish?.logging
     const isRatebook = cached.originalResult.mode === "ratebook"
     const factorTables = isRatebook && hasFactorTables(cached.result.factor_tables)
-      ? cached.result.factor_tables as FactorTables
+      ? cached.result.factor_tables
       : null
     // The scenario range the solve scored. Every frontier point shares its
     // solve's grid, so the solve's collar is the collar of whichever target is
@@ -210,7 +210,7 @@ export default function OptimiserPublishSection({
             <option value="">Solved result</option>
             {points.map((point, index) => (
               <option key={index} value={String(index)}>
-                {`Frontier point ${index + 1} (objective ${formatNumber(point.total_objective as number)})`}
+                {`Frontier point ${index + 1} (objective ${formatNumber(point.total_objective)})`}
               </option>
             ))}
           </select>

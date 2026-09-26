@@ -100,6 +100,9 @@ the solve executes against, the graph's `source_file`, and the `graph_fingerprin
 single-flight key already computes), and, only while heavy state is retained, `solver`,
 `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
 `publish_summary` and `input_provenance` are not heavy keys and survive every slimming.
+`_result_finite_validated_for` (private, never in a response) records the
+`(frontier_generation, selected_frontier_point)` whose `result` and `frontier_data` the status
+route last walked clean for NaN and Infinity (see the solve result contract below).
 
 ### Artifact handle shape
 
@@ -349,6 +352,42 @@ artifact (online mode only: `_persist_apply_result_artifact` requires a per-quot
 frame and raises `TypeError` otherwise; it frees the in-memory result dataframe as a side
 effect — see Artifact lifecycle below), and atomically transitions the job to `completed`.
 
+**The solve result contract (`OptimiserSolveResult`).** `mode` is `"online"` or `"ratebook"`
+and always present. Beside the totals, baselines, `effective_bounds` and λ (whose constraint
+names must all agree, see Constraint bounds) the result carries:
+
+- `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
+  `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
+  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, `chunk_size`, and `record_history` for
+  online or `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_enabled`,
+  `frontier_steps` and `frontier_ranges` only when the solve requested a frontier). It is built
+  once in `_finalize_solve_result` by `solve_input_summary(job)` from the solve-time config
+  snapshot and `input_provenance`; a solve job without `input_provenance` fails loudly. The
+  published artifact's `input_summary` and `solver_settings` are read from it (see Save and
+  MLflow log), so there is one summary.
+- `diagnostics_errors: [{diagnostic, error_type, message}]` (`OptimiserDiagnosticError`,
+  `diagnostic` is `"scenario_value_stats"` or `"frontier"`): a diagnostic that could not be
+  produced is recorded here instead of silently becoming `null`. An online solve whose
+  scenario-value statistics cannot be computed (no per-quote frame, no
+  `optimal_scenario_value` column, no quotes, or a computation error) keeps
+  `scenario_value_stats`/`scenario_value_histogram` `null` and records the failure; a ratebook
+  solve reports no statistics by design and records nothing. A failed inline frontier keeps
+  `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
+  entry. Every entry is also logged (`optimiser_diagnostic_skipped`).
+- `factor_tables: {table: [OptimiserFactorTableRow]}`: each row is strict, exactly
+  `__factor_group__` (the canonical level key, `level` in Python), `optimal_scenario_value`
+  (finite) and `quote_count` (a non-negative integer). Online results carry `{}`.
+
+`GET /solve/status` and `POST /solve/cancel` walk a completed job's `result` and
+`frontier_data` for NaN or Infinity with `_non_finite_paths` (the walk the artifact validation
+uses) before answering, the way the modelling status route applies `_assert_json_finite`. A
+non-finite value corrects the job from `completed` to `error` ("Optimiser result cannot be
+published: non-finite values at …", naming up to five paths) and clears its `result` and
+`frontier_data`. A clean walk is cached on the job as `_result_finite_validated_for`, the
+`(frontier_generation, selected_frontier_point)` it was made for, because a recompute or a
+selection rewrites the result; a later poll for the same pair skips the walk. The flag is never
+part of a response.
+
 The solver worker classifies failures by the boundary that translated them.
 `_OptimiserSolveInputError` names a user-actionable input-adaptation failure and
 transitions the job to `contract_error`. `_OptimiserSolverExecutionError`
@@ -534,18 +573,55 @@ without one fails validation. Clients key anything derived from a frontier point
 browser's `/apply` cache) by `(job_id, frontier_generation)`, since a recompute reuses point
 indices for different points.
 
+### Typed frontier points (`OptimiserFrontierPoint`)
+
+A frontier's `points` are typed rows, never open objects. `frontier_point_rows(points_df,
+mode=, constraint_names=)` in `_frontier_point_summary.py` converts price-contour's points frame
+once, when the frontier payload is built (`limited_frontier_payload`, which takes the job's
+`mode`): the frame's columns must be exactly `price_contour.frontier_points_schema(mode,
+constraint_names)` (any missing or unexpected column fails the frontier, naming both lists), and
+each row becomes one point in which the per-constraint columns are maps keyed by constraint
+name, in configured order (`thresholds` from `threshold_<c>`, `bounds` from `bound_<c>`, `totals`
+from `total_<c>`, `lambdas` from `lambda_<c>`) and every other column keeps its library name.
+The point carries its `mode`, so the two shapes are distinct models (a plain union, no
+discriminator keyword):
+
+- `OptimiserOnlineFrontierPoint` (`mode: "online"`): `total_objective`, the four maps,
+  `iterations`, `converged`, `solver_path` (`"bisection" | "subgradient"`),
+  `non_convergence_reason` (`"above_envelope" | "bracket_exhausted" |
+  "iteration_budget_exhausted" | null`; null on a converged point) and the eleven `sv_*`
+  statistics (`sv_mean`, `sv_std`, `sv_min`, `sv_p5`, `sv_p25`, `sv_median`, `sv_p75`, `sv_p95`,
+  `sv_max`, `sv_pct_increase`, `sv_pct_decrease`), all required.
+- `OptimiserRatebookFrontierPoint` (`mode: "ratebook"`): `total_objective`, the four maps,
+  `iterations` (the CD pass count), `converged`, `clamp_rate`, `n_quotes_clamped_low` and
+  `n_quotes_clamped_high`, and no `sv_*`.
+
+Both are strict (`extra="forbid"`, no coercion, no NaN or Infinity), and the four maps must hold
+the same constraint names. Each row is validated with its mode's model as it is converted, so a
+malformed library row fails the frontier (`FrontierPointDataError`, a 500) rather than reaching a
+client. `OptimiserFrontierResponse` then enforces **map-key completeness** against its
+`constraint_names`: every point's four maps and every point summary's `constraints`,
+`effective_bounds` and `lambdas` hold exactly those names; `swept_axes` is a subset of them;
+every point has the same mode; and a computed frontier has one summary per point. The stored
+`frontier_data["points"]` are these typed rows, so select, the effective-constraints override
+(`thresholds[name]`) and the MLflow CSV read them by name, never by parsing column prefixes.
+The MLflow `frontier.csv` writes each point back as price-contour's flat row, in
+`frontier_points_schema` column order (`frontier_point_library_row`), so the logged file is the
+library's points table.
+
 ### Frontier point summaries
 
 A frontier point's summary holds every result field that differs from the solve it was swept
-from: total objective, constraint totals for every configured constraint, swept or not (from
-`total_<name>`, else a nested constraints map, else the bare name), `effective_bounds` (see
-Constraint bounds below, from the row's `bound_<name>`), lambdas (from the `lambda_<name>` columns), converged, iterations, CD
-iterations, clamp rate, history, scenario-value stats (from the `sv_*` columns), scenario-value
-histogram, factor tables, the non-converged warning and the frontier error. Every field is
-always present and `null` where the point has none; applying the summary to a base result
-removes a `null` field. A point with no lambdas or no `converged` is a 400 when selected, and a
-missing or non-finite number (including a missing `bound_<name>`) or conflicting lambdas a 500;
-while the frontier is being built either fails the frontier. Select summarises the stored
+from, read from the typed point: total objective, constraint totals for every configured
+constraint, swept or not (`totals`), `effective_bounds` (see Constraint bounds below, from the
+point's `bounds`), `lambdas`, converged, iterations, CD iterations (`null` on the row summary),
+clamp rate (a ratebook point's; `null` online), history, scenario-value stats (an online point's
+`sv_*` columns; `null` for ratebook), scenario-value histogram, factor tables, the non-converged
+warning, the frontier error and `diagnostics_errors` (always `[]`: a point's statistics come from
+its row, so the solve's degraded diagnostics do not describe it). Every field is always present
+and `null` where the point has none; applying the summary to a base result removes a `null`
+field. `OptimiserFrontierPointSummary` is strict and its `constraints`, `effective_bounds` and
+`lambdas` must hold the same names. Select summarises the stored
 `frontier_data["constraint_names"]`, which must equal the job's configured constraints (a 500
 otherwise), so a selected ratebook point already carries every configured total when it is
 materialised.
@@ -562,7 +638,9 @@ never derived by haute: a solve result's `constraint_bounds[name]` (`OnlineResul
 `threshold_<name>` is a fraction, and the library's bound is that fraction times the
 constraint's baseline total at the grid's nearest-1.0 step; haute never multiplies a fraction
 by a baseline itself. A missing or non-finite bound, or a bound set that differs from the
-configured constraints, fails loudly. `effective_constraints` (the published artifact's
+configured constraints, fails loudly. The solve result, point summary and select response
+each validate that `constraints`, `lambdas` and `effective_bounds` (and, on a solve result or
+select response, `baseline_constraints`) hold exactly the same constraint names. `effective_constraints` (the published artifact's
 constraint specs) still comes from `_frontier_point_constraints_override`. The results pane
 judges attainment only against `effective_bounds` (see the
 [frontend spec](../frontend-modelling-optimiser-ui/high-level.md)).
@@ -610,13 +688,14 @@ column-name config, frontier-selection provenance for a point target only, and f
 factor tables plus ordered dtype descriptors taken from the target's own result, `clamp_rate`,
 and the solve's `combined_factor_bounds` — a frontier point shares its solve's grid and so its
 collar), plus the audit
-trail: `solver_settings` (from the solve-time config snapshot with the solver defaults applied:
+trail: `solver_settings` (the result's `input_summary.solver_settings`, built from the solve-time
+config snapshot with the solver defaults applied:
 `max_iter`, `tolerance`, `chunk_size`, and `record_history` for online or `max_cd_iterations` and
 `cd_tolerance` for ratebook; `frontier_enabled`, `frontier_steps` and `frontier_ranges` when the
 solve requested a frontier), `effective_constraints` (a point's constraint specs with that point's
 thresholds via `_frontier_point_constraints_override`; the configured constraints for the
-anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the job's
-`input_provenance`), and `stale_at_publish` (the request's `stale` flag, which the UI sets when
+anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the provenance fields of the
+result's own `input_summary`), and `stale_at_publish` (the request's `stale` flag, which the UI sets when
 the node configuration changed since the solve). The existing `constraints` key stays the
 configured constraints, because `OPTIMISER_APPLY` reads it. The payload is validated with
 `_validate_artifact_payload` (rejects a missing lambda
@@ -628,7 +707,8 @@ to 5 offending JSON paths), then either
 atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
-frontier-points CSV. Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
+frontier-points CSV (`frontier.csv`, the typed points written back as price-contour's flat rows,
+see Typed frontier points). Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
 — a relative path against the project root, the base `/pipeline/read-json` uses, and an absolute
 path only inside it. `OptimiserSaveRequest.overwrite` (default `false`) guards an existing
 destination: under a per-destination lock, an existing file without `overwrite` is a `409` with
@@ -948,6 +1028,10 @@ whose message already names every problem and the remedy.
   live data without Parquet backing, or a source whose metadata read raises `OSError`,
   `TypeError` or `ValueError`. The route does not catch anything else it raises. An
   unexpected failure is an error response, never an estimate with the total missing.
+- **Scenario-value statistics never silently disappear.** `_compute_scenario_value_stats`
+  raises when an online result has no per-quote frame, no `optimal_scenario_value` column or no
+  quotes; `_finalize_solve_result` records that (or any computation error) in
+  `diagnostics_errors` and leaves the statistics `null`, so a degraded result says why.
 - **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
   `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
   standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would
@@ -1067,7 +1151,17 @@ whose message already names every problem and the remedy.
 
 ## Testing
 
-- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, and solve/apply totals.
+- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, and solve/apply totals. Its OPT-V04 classes pin the result contract: strict frontier points (extra, missing, coerced or
+  non-finite fields and constraint maps that disagree are rejected), frontier map-key completeness
+  against `constraint_names`, strict factor-table rows and point summaries, the solve result's
+  required `mode`, `input_summary` and `diagnostics_errors` and agreeing constraint maps, a select
+  response with no default totals or baseline, statistics failures and a failed frontier recorded
+  in `diagnostics_errors`, the artifact reading the result's input summary, and the status route's
+  non-finite walk (a NaN or Infinity corrects the job to `error`; a clean walk is cached per
+  generation and selection).
+- `tests/test_frontier_point_summary.py` covers `frontier_point_rows` (the library frame to typed
+  points, per mode, failing on any schema mismatch or malformed value), the write-back to the
+  library row the MLflow CSV uses, and `frontier_point_summary` over typed points.
 
 Tests live under `tests/` (unit/integration, `tests/performance/` for size/perf assertions), and
 share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based tests were found

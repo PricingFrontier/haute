@@ -34,6 +34,21 @@ import polars as pl
 # ---------------------------------------------------------------------------
 
 
+SV_STATS: dict[str, float] = {
+    "sv_mean": 1.02,
+    "sv_std": 0.03,
+    "sv_min": 0.95,
+    "sv_p5": 0.96,
+    "sv_p25": 1.0,
+    "sv_median": 1.02,
+    "sv_p75": 1.04,
+    "sv_p95": 1.08,
+    "sv_max": 1.1,
+    "sv_pct_increase": 0.7,
+    "sv_pct_decrease": 0.2,
+}
+
+
 def make_frontier_point(
     *,
     objective: float = 123.0,
@@ -41,45 +56,106 @@ def make_frontier_point(
     lambda_volume: float = 0.42,
     threshold_volume: float = 0.9,
     converged: bool = True,
-    iterations: int | None = 7,
-    include_scenario_stats: bool = True,
+    iterations: int = 7,
+    mode: str = "online",
     **extra: Any,
 ) -> dict[str, Any]:
-    """One row of ``frontier_data['points']`` with deterministic defaults.
+    """One typed ``frontier_data['points']`` row (``OptimiserFrontierPoint``).
 
-    ``include_scenario_stats=False`` produces a slim point without
-    ``sv_*`` fields, used by tests that exercise the optional-stats
-    branch of ``_scenario_stats_from_frontier_point``.
+    A single ``volume`` constraint by default; pass ``thresholds``, ``bounds``,
+    ``totals`` and ``lambdas`` in ``extra`` for other constraint sets. An
+    online point carries the ``sv_*`` statistics and its solver path; a
+    ratebook point carries its clamp diagnostics instead.
     """
     point: dict[str, Any] = {
-        "threshold_volume": threshold_volume,
-        # price-contour's absolute bound; equal to the threshold for a min/max constraint.
-        "bound_volume": threshold_volume,
+        "mode": mode,
         "total_objective": objective,
-        "total_volume": volume,
-        "lambda_volume": lambda_volume,
+        "thresholds": {"volume": threshold_volume},
+        # price-contour's absolute bound; equal to the threshold for a min/max constraint.
+        "bounds": {"volume": threshold_volume},
+        "totals": {"volume": volume},
+        "lambdas": {"volume": lambda_volume},
+        "iterations": iterations,
         "converged": converged,
     }
-    if iterations is not None:
-        point["iterations"] = iterations
-    if include_scenario_stats:
+    if mode == "online":
         point.update(
             {
-                "sv_mean": 1.02,
-                "sv_std": 0.03,
-                "sv_min": 0.95,
-                "sv_p5": 0.96,
-                "sv_p25": 1.0,
-                "sv_median": 1.02,
-                "sv_p75": 1.04,
-                "sv_p95": 1.08,
-                "sv_max": 1.1,
-                "sv_pct_increase": 0.7,
-                "sv_pct_decrease": 0.2,
+                "solver_path": "bisection",
+                "non_convergence_reason": None if converged else "bracket_exhausted",
+                **SV_STATS,
             }
         )
+    else:
+        point.update({"clamp_rate": 0.1, "n_quotes_clamped_low": 0, "n_quotes_clamped_high": 0})
     point.update(extra)
     return point
+
+
+def library_frontier_frame(
+    rows: list[dict[str, Any]],
+    *,
+    mode: str = "online",
+    constraint_names: list[str] | None = None,
+) -> pl.DataFrame:
+    """A price-contour ``FrontierResult.points`` frame in the exact library schema.
+
+    Each row gives only the columns a test cares about; every other column of
+    ``frontier_points_schema(mode, constraint_names)`` takes a deterministic
+    test value (a constraint's bound defaults to its threshold, its threshold
+    to its total).
+    """
+    import price_contour
+
+    names = constraint_names if constraint_names is not None else ["volume"]
+    schema = price_contour.frontier_points_schema(mode, names)
+    defaults: dict[str, Any] = {"total_objective": 100.0, "iterations": 7, "converged": True}
+    if mode == "online":
+        defaults.update({"solver_path": "bisection", "non_convergence_reason": None, **SV_STATS})
+    else:
+        defaults.update({"clamp_rate": 0.1, "n_quotes_clamped_low": 0, "n_quotes_clamped_high": 0})
+    full_rows = []
+    for row in rows:
+        full = dict(defaults)
+        for name in names:
+            total = row.get(f"total_{name}", 1.0)
+            threshold = row.get(f"threshold_{name}", total)
+            full.update(
+                {
+                    f"total_{name}": total,
+                    f"threshold_{name}": threshold,
+                    f"bound_{name}": row.get(f"bound_{name}", threshold),
+                    f"lambda_{name}": row.get(f"lambda_{name}", 0.0),
+                }
+            )
+        full.update(row)
+        full_rows.append({column: full[column] for column in schema})
+    return pl.DataFrame(full_rows, schema=schema)
+
+
+def typed_frontier_point(
+    row: dict[str, Any],
+    *,
+    mode: str = "online",
+    constraint_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """A typed frontier point from a partial flat library row (see ``library_frontier_frame``).
+
+    ``constraint_names`` defaults to the constraints the row names in its
+    ``total_<c>``/``lambda_<c>`` columns.
+    """
+    from haute.routes._frontier_point_summary import frontier_point_rows
+
+    names = constraint_names
+    if names is None:
+        names = []
+        for key in row:
+            for prefix in ("total_", "lambda_", "threshold_", "bound_"):
+                name = key.removeprefix(prefix)
+                if key.startswith(prefix) and key != "total_objective" and name not in names:
+                    names.append(name)
+    frame = library_frontier_frame([row], mode=mode, constraint_names=names)
+    return frontier_point_rows(frame, mode=mode, constraint_names=names)[0]
 
 
 def make_frontier_data(
@@ -108,14 +184,21 @@ def make_frontier_data(
             ),
         ]
     )
+    from haute.routes._frontier_point_summary import frontier_point_summary
+
+    names = constraint_names if constraint_names is not None else ["volume"]
+    kinds = {name: "min" for name in names}
     data: dict[str, Any] = {
         "status": "ok",
         "points": actual_points,
+        # The server's summary of each point, as ``limited_frontier_payload`` builds it.
+        "point_summaries": [frontier_point_summary(point, kinds) for point in actual_points],
         "n_points": len(actual_points),
         "points_returned": len(actual_points),
         "points_limit": points_limit,
         "points_truncated": False,
-        "constraint_names": constraint_names if constraint_names is not None else ["volume"],
+        "constraint_names": names,
+        "swept_axes": list(names),
         "frontier_generation": 0,
     }
     data.update(extra)
@@ -125,6 +208,49 @@ def make_frontier_data(
 # ---------------------------------------------------------------------------
 # Result dicts (the cached "result" payload on a completed job)
 # ---------------------------------------------------------------------------
+
+
+# The ``input_provenance`` a solve job records when it is created.
+SOLVE_PROVENANCE: dict[str, str | None] = {
+    "node_id": "opt",
+    "data_source": "batch",
+    "source_file": "main.py",
+    "graph_fingerprint": "graph-fingerprint",
+}
+
+
+def make_input_summary(**overrides: Any) -> dict[str, Any]:
+    """A solve result's ``input_summary``: the job's provenance and solver settings."""
+    summary: dict[str, Any] = {
+        "node_id": "opt",
+        "data_source": "batch",
+        "source_file": "main.py",
+        "graph_fingerprint": "graph-fingerprint",
+        "solver_settings": {
+            "max_iter": 50,
+            "tolerance": 1e-6,
+            "chunk_size": None,
+            "record_history": False,
+        },
+    }
+    summary.update(overrides)
+    return summary
+
+
+def with_solve_summary(job: dict[str, Any]) -> dict[str, Any]:
+    """*job* whose solve result carries the ``input_summary`` its solve would have built.
+
+    The summary comes from the job's own config (and ``input_provenance``,
+    else ``SOLVE_PROVENANCE``) through the production builder, so a test that
+    varies the config sees the settings that config produces.
+    """
+    from haute.routes._optimiser_solver import solve_input_summary
+
+    provenance = job.get("input_provenance", SOLVE_PROVENANCE)
+    summary = solve_input_summary({**job, "input_provenance": provenance})
+    key = "base_result" if "base_result" in job else "result"
+    job[key] = {**job.get(key, {}), "input_summary": summary}
+    return job
 
 
 def make_solved_result(
@@ -137,9 +263,21 @@ def make_solved_result(
     lambdas: dict[str, float] | None = None,
     effective_bounds: dict[str, dict[str, Any]] | None = None,
     converged: bool = True,
+    constraint_names: list[str] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    """The base ``result`` dict an optimiser job persists post-solve."""
+    """The base ``result`` dict an optimiser job persists post-solve.
+
+    ``constraint_names`` keys every constraint map by those names (a ``min``
+    bound of 0.9 each) instead of the default single ``volume`` constraint.
+    """
+    if constraint_names is not None:
+        constraints = constraints or {name: 0.85 for name in constraint_names}
+        baseline_constraints = baseline_constraints or {name: 0.85 for name in constraint_names}
+        lambdas = lambdas or {name: 0.0 for name in constraint_names}
+        effective_bounds = effective_bounds or {
+            name: {"kind": "min", "bound": 0.9} for name in constraint_names
+        }
     result: dict[str, Any] = {
         "mode": mode,
         "total_objective": total_objective,
@@ -156,6 +294,8 @@ def make_solved_result(
         "lambdas": lambdas if lambdas is not None else {"volume": 0.0},
         "converged": converged,
         "frontier_generation": 0,
+        "input_summary": make_input_summary(),
+        "diagnostics_errors": [],
     }
     result.update(extra)
     return result
@@ -365,8 +505,6 @@ def make_select_job(
                     volume=0.95,
                     lambda_volume=0.1,
                     threshold_volume=0.95,
-                    include_scenario_stats=False,
-                    iterations=None,
                 ),
                 make_frontier_point(
                     objective=130.0,
@@ -374,8 +512,6 @@ def make_select_job(
                     lambda_volume=0.55,
                     threshold_volume=0.93,
                     converged=False,
-                    include_scenario_stats=False,
-                    iterations=None,
                 ),
             ],
         )

@@ -8222,6 +8222,35 @@
       "title": "OptimiserCombinedFactorBounds",
       "type": "object"
     },
+    "OptimiserDiagnosticError": {
+      "additionalProperties": false,
+      "description": "A result diagnostic that could not be produced, and why.",
+      "properties": {
+        "diagnostic": {
+          "enum": [
+            "scenario_value_stats",
+            "frontier"
+          ],
+          "title": "Diagnostic",
+          "type": "string"
+        },
+        "error_type": {
+          "title": "Error Type",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "diagnostic",
+        "error_type",
+        "message"
+      ],
+      "title": "OptimiserDiagnosticError",
+      "type": "object"
+    },
     "OptimiserEffectiveBound": {
       "description": "The absolute bound a result was solved at for one constraint.\n\n``bound`` is price-contour's (``constraint_bounds`` or a frontier row's\n``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the\nfraction times the constraint's baseline total, never the fraction.",
       "properties": {
@@ -8330,6 +8359,32 @@
         "expanded_row_count"
       ],
       "title": "OptimiserEstimateResponse",
+      "type": "object"
+    },
+    "OptimiserFactorTableRow": {
+      "additionalProperties": false,
+      "description": "One level of a solved ratebook factor table.\n\nThe wire keys are the solver's (``__factor_group__``), which the saved\nartifact and every apply path read, so the row always serialises by alias.",
+      "properties": {
+        "__factor_group__": {
+          "title": "Factor Group",
+          "type": "string"
+        },
+        "optimal_scenario_value": {
+          "title": "Optimal Scenario Value",
+          "type": "number"
+        },
+        "quote_count": {
+          "minimum": 0,
+          "title": "Quote Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "__factor_group__",
+        "optimal_scenario_value",
+        "quote_count"
+      ],
+      "title": "OptimiserFactorTableRow",
       "type": "object"
     },
     "OptimiserFrontierAutoRangeResponse": {
@@ -8553,6 +8608,7 @@
       "type": "object"
     },
     "OptimiserFrontierPointSummary": {
+      "additionalProperties": false,
       "description": "Every result field of one frontier point that differs from its solve.\n\n``None`` means the point has no such field: applying the summary to the\nsolve's result removes it.",
       "properties": {
         "cd_iterations": {
@@ -8588,6 +8644,13 @@
           "title": "Converged",
           "type": "boolean"
         },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
         "effective_bounds": {
           "additionalProperties": {
             "$ref": "#/$defs/OptimiserEffectiveBound"
@@ -8600,8 +8663,7 @@
             {
               "additionalProperties": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/$defs/OptimiserFactorTableRow"
                 },
                 "type": "array"
               },
@@ -8706,7 +8768,8 @@
         "scenario_value_histogram",
         "factor_tables",
         "warning",
-        "frontier_error"
+        "frontier_error",
+        "diagnostics_errors"
       ],
       "title": "OptimiserFrontierPointSummary",
       "type": "object"
@@ -8777,8 +8840,14 @@
         },
         "points": {
           "items": {
-            "additionalProperties": true,
-            "type": "object"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OptimiserOnlineFrontierPoint"
+              },
+              {
+                "$ref": "#/$defs/OptimiserRatebookFrontierPoint"
+              }
+            ]
           },
           "title": "Points",
           "type": "array"
@@ -8843,7 +8912,6 @@
           "type": "object"
         },
         "baseline_objective": {
-          "default": 0.0,
           "title": "Baseline Objective",
           "type": "number"
         },
@@ -8890,9 +8958,15 @@
           "type": "object"
         },
         "converged": {
-          "default": true,
           "title": "Converged",
           "type": "boolean"
+        },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
         },
         "effective_bounds": {
           "additionalProperties": {
@@ -8916,8 +8990,7 @@
         "factor_tables": {
           "additionalProperties": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/OptimiserFactorTableRow"
             },
             "type": "array"
           },
@@ -9002,7 +9075,6 @@
           "type": "string"
         },
         "total_objective": {
-          "default": 0.0,
           "title": "Total Objective",
           "type": "number"
         },
@@ -9039,6 +9111,7 @@
         "clamp_rate",
         "combined_factor_bounds",
         "frontier_generation",
+        "diagnostics_errors",
         "error"
       ],
       "title": "OptimiserFrontierSelectResponse",
@@ -9220,6 +9293,47 @@
       "title": "OptimiserHistoryEntry",
       "type": "object"
     },
+    "OptimiserInputSummary": {
+      "additionalProperties": false,
+      "description": "What a solve ran on: the job's input provenance and its solver settings.",
+      "properties": {
+        "data_source": {
+          "title": "Data Source",
+          "type": "string"
+        },
+        "graph_fingerprint": {
+          "title": "Graph Fingerprint",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "solver_settings": {
+          "$ref": "#/$defs/OptimiserSolverSettings"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source File"
+        }
+      },
+      "required": [
+        "node_id",
+        "data_source",
+        "source_file",
+        "graph_fingerprint",
+        "solver_settings"
+      ],
+      "title": "OptimiserInputSummary",
+      "type": "object"
+    },
     "OptimiserMlflowLogResponse": {
       "properties": {
         "backend": {
@@ -9292,6 +9406,232 @@
         "error"
       ],
       "title": "OptimiserMlflowLogResponse",
+      "type": "object"
+    },
+    "OptimiserOnlineFrontierPoint": {
+      "additionalProperties": false,
+      "description": "An online frontier row (``frontier_points_schema(\"online\", ...)``).",
+      "properties": {
+        "bounds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Bounds",
+          "type": "object"
+        },
+        "converged": {
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "iterations": {
+          "minimum": 0,
+          "title": "Iterations",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "mode": {
+          "const": "online",
+          "title": "Mode",
+          "type": "string"
+        },
+        "non_convergence_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "above_envelope",
+                "bracket_exhausted",
+                "iteration_budget_exhausted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Non Convergence Reason"
+        },
+        "solver_path": {
+          "enum": [
+            "bisection",
+            "subgradient"
+          ],
+          "title": "Solver Path",
+          "type": "string"
+        },
+        "sv_max": {
+          "title": "Sv Max",
+          "type": "number"
+        },
+        "sv_mean": {
+          "title": "Sv Mean",
+          "type": "number"
+        },
+        "sv_median": {
+          "title": "Sv Median",
+          "type": "number"
+        },
+        "sv_min": {
+          "title": "Sv Min",
+          "type": "number"
+        },
+        "sv_p25": {
+          "title": "Sv P25",
+          "type": "number"
+        },
+        "sv_p5": {
+          "title": "Sv P5",
+          "type": "number"
+        },
+        "sv_p75": {
+          "title": "Sv P75",
+          "type": "number"
+        },
+        "sv_p95": {
+          "title": "Sv P95",
+          "type": "number"
+        },
+        "sv_pct_decrease": {
+          "title": "Sv Pct Decrease",
+          "type": "number"
+        },
+        "sv_pct_increase": {
+          "title": "Sv Pct Increase",
+          "type": "number"
+        },
+        "sv_std": {
+          "title": "Sv Std",
+          "type": "number"
+        },
+        "thresholds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Thresholds",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "totals": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Totals",
+          "type": "object"
+        }
+      },
+      "required": [
+        "total_objective",
+        "thresholds",
+        "bounds",
+        "totals",
+        "lambdas",
+        "iterations",
+        "converged",
+        "mode",
+        "solver_path",
+        "non_convergence_reason",
+        "sv_mean",
+        "sv_std",
+        "sv_min",
+        "sv_p5",
+        "sv_p25",
+        "sv_median",
+        "sv_p75",
+        "sv_p95",
+        "sv_max",
+        "sv_pct_increase",
+        "sv_pct_decrease"
+      ],
+      "title": "OptimiserOnlineFrontierPoint",
+      "type": "object"
+    },
+    "OptimiserRatebookFrontierPoint": {
+      "additionalProperties": false,
+      "description": "A ratebook frontier row (``frontier_points_schema(\"ratebook\", ...)``).\n\n``iterations`` is the point's coordinate-descent pass count.",
+      "properties": {
+        "bounds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Bounds",
+          "type": "object"
+        },
+        "clamp_rate": {
+          "title": "Clamp Rate",
+          "type": "number"
+        },
+        "converged": {
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "iterations": {
+          "minimum": 0,
+          "title": "Iterations",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "mode": {
+          "const": "ratebook",
+          "title": "Mode",
+          "type": "string"
+        },
+        "n_quotes_clamped_high": {
+          "minimum": 0,
+          "title": "N Quotes Clamped High",
+          "type": "integer"
+        },
+        "n_quotes_clamped_low": {
+          "minimum": 0,
+          "title": "N Quotes Clamped Low",
+          "type": "integer"
+        },
+        "thresholds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Thresholds",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "totals": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Totals",
+          "type": "object"
+        }
+      },
+      "required": [
+        "total_objective",
+        "thresholds",
+        "bounds",
+        "totals",
+        "lambdas",
+        "iterations",
+        "converged",
+        "mode",
+        "clamp_rate",
+        "n_quotes_clamped_low",
+        "n_quotes_clamped_high"
+      ],
+      "title": "OptimiserRatebookFrontierPoint",
       "type": "object"
     },
     "OptimiserSaveResponse": {
@@ -9520,6 +9860,13 @@
           "title": "Converged",
           "type": "boolean"
         },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
         "effective_bounds": {
           "additionalProperties": {
             "$ref": "#/$defs/OptimiserEffectiveBound"
@@ -9530,8 +9877,7 @@
         "factor_tables": {
           "additionalProperties": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/OptimiserFactorTableRow"
             },
             "type": "array"
           },
@@ -9581,6 +9927,9 @@
           "default": null,
           "title": "History"
         },
+        "input_summary": {
+          "$ref": "#/$defs/OptimiserInputSummary"
+        },
         "iterations": {
           "anyOf": [
             {
@@ -9601,16 +9950,12 @@
           "type": "object"
         },
         "mode": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "enum": [
+            "online",
+            "ratebook"
           ],
-          "default": null,
-          "title": "Mode"
+          "title": "Mode",
+          "type": "string"
         },
         "n_quotes": {
           "anyOf": [
@@ -9710,9 +10055,68 @@
         "frontier",
         "frontier_error",
         "selected_frontier_point",
-        "frontier_generation"
+        "frontier_generation",
+        "input_summary",
+        "diagnostics_errors"
       ],
       "title": "OptimiserSolveResult",
+      "type": "object"
+    },
+    "OptimiserSolverSettings": {
+      "additionalProperties": false,
+      "description": "The solver settings a solve ran with, the solver defaults applied.",
+      "properties": {
+        "cd_tolerance": {
+          "title": "Cd Tolerance",
+          "type": "number"
+        },
+        "chunk_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Chunk Size"
+        },
+        "frontier_enabled": {
+          "title": "Frontier Enabled",
+          "type": "boolean"
+        },
+        "frontier_ranges": {
+          "additionalProperties": true,
+          "title": "Frontier Ranges",
+          "type": "object"
+        },
+        "frontier_steps": {
+          "title": "Frontier Steps",
+          "type": "integer"
+        },
+        "max_cd_iterations": {
+          "title": "Max Cd Iterations",
+          "type": "integer"
+        },
+        "max_iter": {
+          "title": "Max Iter",
+          "type": "integer"
+        },
+        "record_history": {
+          "title": "Record History",
+          "type": "boolean"
+        },
+        "tolerance": {
+          "title": "Tolerance",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_iter",
+        "tolerance",
+        "chunk_size"
+      ],
+      "title": "OptimiserSolverSettings",
       "type": "object"
     },
     "OptimiserStatusResponse": {

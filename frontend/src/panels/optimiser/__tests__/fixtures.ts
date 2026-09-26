@@ -2,20 +2,22 @@
  * Shared optimiser result fixtures, shaped like what the server sends.
  *
  * The online solve carries scenario-value statistics, a histogram and a
- * history with λ and constraint totals; its frontier points carry the library
- * columns (`threshold_*`, `bound_*`, `lambda_*`, `converged`, `iterations` and
- * `sv_*`) and point summaries derived from them as the backend's
- * `frontier_point_summary` does (statistics from `sv_*`, no histogram or
- * history). The ratebook solve carries factor tables with `quote_count`.
+ * history with λ and constraint totals; its frontier points are typed rows
+ * (`thresholds`, `bounds`, `totals` and `lambdas` maps, `converged`,
+ * `iterations`, `solver_path` and `sv_*`) with point summaries derived from
+ * them as the backend's `frontier_point_summary` does (statistics from `sv_*`,
+ * no histogram or history). The ratebook solve carries factor tables with
+ * `quote_count`.
  * Tests override only what they are about, so selected-point views run on
  * real-shaped data rather than nulls.
  */
 
 import type { FrontierData } from "../../OptimiserPreview"
 import type {
-  FrontierPoint,
   FrontierPointSummary,
   OptimiserHistoryEntry,
+  OptimiserOnlineFrontierPoint,
+  OptimiserRatebookFrontierPoint,
   OptimiserScenarioValueHistogram,
   OptimiserScenarioValueStats,
   OptimiserSolveResult,
@@ -98,17 +100,23 @@ export function makeOnlineSolveResult(
   })
 }
 
-/** Frontier point `i` of the online sweep, as the library emits it: each
- *  point is solved at its own swept max, 0.58, 0.59, ... */
-export function makeOnlineFrontierPoint(i: number, overrides: FrontierPoint = {}): FrontierPoint {
+/** Frontier point `i` of the online sweep, as the server types the library's
+ *  row: each point is solved at its own swept max, 0.58, 0.59, ... */
+export function makeOnlineFrontierPoint(
+  i: number,
+  overrides: Partial<OptimiserOnlineFrontierPoint> = {},
+): OptimiserOnlineFrontierPoint {
   return {
+    mode: "online",
     total_objective: 1200000 + i * 10000,
-    total_loss_ratio: 0.55 + i * 0.02,
-    threshold_loss_ratio: 0.58 + i * 0.01,
-    bound_loss_ratio: 0.58 + i * 0.01,
-    lambda_loss_ratio: 0.001 + i * 0.001,
+    thresholds: { loss_ratio: 0.58 + i * 0.01 },
+    bounds: { loss_ratio: 0.58 + i * 0.01 },
+    totals: { loss_ratio: 0.55 + i * 0.02 },
+    lambdas: { loss_ratio: 0.001 + i * 0.001 },
     converged: true,
     iterations: 10 + i,
+    solver_path: "bisection",
+    non_convergence_reason: null,
     sv_mean: 1.0 + i * 0.01,
     sv_std: 0.04,
     sv_min: 0.9,
@@ -124,37 +132,29 @@ export function makeOnlineFrontierPoint(i: number, overrides: FrontierPoint = {}
   }
 }
 
-function pointNumber(point: FrontierPoint, column: string): number {
-  const value = point[column]
-  if (typeof value !== "number") throw new Error(`Fixture point has no numeric ${column}`)
-  return value
-}
-
 /** A point's server summary, derived from its row as the backend does. */
-export function summaryForOnlinePoint(point: FrontierPoint): FrontierPointSummary {
-  const converged = point.converged
-  if (typeof converged !== "boolean") throw new Error("Fixture point has no converged flag")
+export function summaryForOnlinePoint(point: OptimiserOnlineFrontierPoint): FrontierPointSummary {
   return makePointSummary({
-    total_objective: pointNumber(point, "total_objective"),
-    constraints: { loss_ratio: pointNumber(point, "total_loss_ratio") },
-    effective_bounds: { loss_ratio: { kind: "max", bound: pointNumber(point, "bound_loss_ratio") } },
-    lambdas: { loss_ratio: pointNumber(point, "lambda_loss_ratio") },
-    converged,
-    iterations: pointNumber(point, "iterations"),
+    total_objective: point.total_objective,
+    constraints: point.totals,
+    effective_bounds: { loss_ratio: { kind: "max", bound: point.bounds.loss_ratio } },
+    lambdas: point.lambdas,
+    converged: point.converged,
+    iterations: point.iterations,
     scenario_value_stats: makeScenarioValueStats({
-      mean: pointNumber(point, "sv_mean"),
-      std: pointNumber(point, "sv_std"),
-      min: pointNumber(point, "sv_min"),
-      p5: pointNumber(point, "sv_p5"),
-      p25: pointNumber(point, "sv_p25"),
-      p50: pointNumber(point, "sv_median"),
-      p75: pointNumber(point, "sv_p75"),
-      p95: pointNumber(point, "sv_p95"),
-      max: pointNumber(point, "sv_max"),
-      pct_increase: pointNumber(point, "sv_pct_increase"),
-      pct_decrease: pointNumber(point, "sv_pct_decrease"),
+      mean: point.sv_mean,
+      std: point.sv_std,
+      min: point.sv_min,
+      p5: point.sv_p5,
+      p25: point.sv_p25,
+      p50: point.sv_median,
+      p75: point.sv_p75,
+      p95: point.sv_p95,
+      max: point.sv_max,
+      pct_increase: point.sv_pct_increase,
+      pct_decrease: point.sv_pct_decrease,
     }),
-    warning: converged ? null : NON_CONVERGED_WARNING,
+    warning: point.converged ? null : NON_CONVERGED_WARNING,
   })
 }
 
@@ -176,6 +176,7 @@ export function makePointSummary(overrides: Partial<FrontierPointSummary> = {}):
     factor_tables: null,
     warning: null,
     frontier_error: null,
+    diagnostics_errors: [],
     ...overrides,
   }
 }
@@ -242,25 +243,27 @@ export function makeRatebookSolveResult(
 export function makeRatebookFrontier(
   points: { objective: number; volume: number; lambda: number }[],
 ): FrontierData {
-  const rows = points.map(({ objective, volume, lambda }) => ({
+  const rows: OptimiserRatebookFrontierPoint[] = points.map(({ objective, volume, lambda }) => ({
+    mode: "ratebook",
     total_objective: objective,
-    total_volume: volume,
-    threshold_volume: 0.9,
-    bound_volume: 0.9,
-    lambda_volume: lambda,
+    thresholds: { volume: 0.9 },
+    bounds: { volume: 0.9 },
+    totals: { volume },
+    lambdas: { volume: lambda },
     converged: true,
     iterations: 4,
     clamp_rate: 0.02,
+    n_quotes_clamped_low: 0,
+    n_quotes_clamped_high: 0,
   }))
   return {
     points: rows,
     point_summaries: rows.map((row) => makePointSummary({
       total_objective: row.total_objective,
-      constraints: { volume: row.total_volume },
-      effective_bounds: { volume: { kind: "min", bound: row.bound_volume } },
-      lambdas: { volume: row.lambda_volume },
+      constraints: row.totals,
+      effective_bounds: { volume: { kind: "min", bound: row.bounds.volume } },
+      lambdas: row.lambdas,
       iterations: row.iterations,
-      cd_iterations: row.iterations,
       clamp_rate: row.clamp_rate,
       scenario_value_stats: null,
     })),

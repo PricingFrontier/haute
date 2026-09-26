@@ -45,6 +45,7 @@ import structlog.testing
 from haute._builders import _apply_ratebook, _ratebook_lookup_table
 from haute._optimiser_apply_explainability import _match_ratebook_entry
 from haute._rating import _apply_rating_table, rating_dtype_descriptor
+from tests.optimiser_fixtures import make_solved_result
 
 MISS_EVENT = "rating_table_lookup_misses"
 SEP = "\x1f"
@@ -333,20 +334,21 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
         },
-        "result": {
-            "mode": "ratebook",
-            "lambdas": solve_result.lambdas,
-            "total_objective": solve_result.total_objective,
-            "constraints": solve_result.total_constraints,
-            "baseline_objective": solve_result.baseline_objective,
-            "baseline_constraints": solve_result.baseline_constraints,
-            "converged": solve_result.converged,
-            "cd_iterations": solve_result.cd_iterations,
-            "clamp_rate": solve_result.clamp_rate,
-            "factor_tables": serialised,
-            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
-            "factor_dtypes": factor_dtypes,
-        },
+        "result": make_solved_result(
+            mode="ratebook",
+            constraint_names=list(solve_result.total_constraints),
+            lambdas=solve_result.lambdas,
+            total_objective=solve_result.total_objective,
+            constraints=solve_result.total_constraints,
+            baseline_objective=solve_result.baseline_objective,
+            baseline_constraints=solve_result.baseline_constraints,
+            converged=solve_result.converged,
+            cd_iterations=solve_result.cd_iterations,
+            clamp_rate=solve_result.clamp_rate,
+            factor_tables=serialised,
+            combined_factor_bounds={"min": 0.1, "max": 10.0},
+            factor_dtypes=factor_dtypes,
+        ),
     }
     # The save route publishes the anchor from its completion summary.
     return _build_artifact_payload(

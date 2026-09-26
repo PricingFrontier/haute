@@ -1,9 +1,6 @@
 import { useMemo, useState } from "react"
 import {
-  formatFactorLevel,
-  numericRate,
   orderedFactorTableEntries,
-  RATE_COLUMN,
   type FactorLevelOrder,
   type FactorTableRow,
   type FactorTables,
@@ -16,20 +13,14 @@ interface RatebookRatesTabProps {
 
 const EMPTY_FACTOR_ROWS: FactorTableRow[] = []
 
-function formatRate(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(4) : "N/A"
+function formatRate(value: number): string {
+  return value.toFixed(4)
 }
 
 function rateSummary(rows: FactorTableRow[]): { min: number | null; max: number | null } {
-  let min: number | null = null
-  let max: number | null = null
-  for (const row of rows) {
-    const value = numericRate(row)
-    if (value == null) continue
-    min = min == null ? value : Math.min(min, value)
-    max = max == null ? value : Math.max(max, value)
-  }
-  return { min, max }
+  if (rows.length === 0) return { min: null, max: null }
+  const rates = rows.map((row) => row.optimal_scenario_value)
+  return { min: Math.min(...rates), max: Math.max(...rates) }
 }
 
 export default function RatebookRatesTab({ factorTables, factorLevelOrder }: RatebookRatesTabProps) {
@@ -109,14 +100,14 @@ export default function RatebookRatesTab({ factorTables, factorLevelOrder }: Rat
             </thead>
             <tbody>
               {selectedRows.map((row, index) => {
-                const level = formatFactorLevel(row, index)
+                const level = row.__factor_group__
                 return (
                   <tr key={`${level}-${index}`}>
                     <td className="py-1 pr-3 truncate" style={{ color: "var(--text-secondary)" }} title={level}>
                       {level}
                     </td>
                     <td className="py-1 pl-3 text-right tabular-nums" style={{ color: "var(--text-primary)" }}>
-                      {formatRate(row[RATE_COLUMN])}
+                      {formatRate(row.optimal_scenario_value)}
                     </td>
                   </tr>
                 )

@@ -1308,9 +1308,7 @@ export interface OptimiserFrontierResponse {
   job_id: string | null;
   n_points: number;
   point_summaries: OptimiserFrontierPointSummary[];
-  points: {
-    [k: string]: unknown;
-  }[];
+  points: (OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint)[];
   points_limit: number | null;
   points_returned: number;
   points_truncated: boolean;
@@ -1330,13 +1328,12 @@ export interface OptimiserFrontierPointSummary {
     [k: string]: number;
   };
   converged: boolean;
+  diagnostics_errors: OptimiserDiagnosticError[];
   effective_bounds: {
     [k: string]: OptimiserEffectiveBound;
   };
   factor_tables: {
-    [k: string]: {
-      [k: string]: unknown;
-    }[];
+    [k: string]: OptimiserFactorTableRow[];
   } | null;
   frontier_error: string | null;
   history: OptimiserHistoryEntry[] | null;
@@ -1350,6 +1347,14 @@ export interface OptimiserFrontierPointSummary {
   warning: string | null;
 }
 /**
+ * A result diagnostic that could not be produced, and why.
+ */
+export interface OptimiserDiagnosticError {
+  diagnostic: 'scenario_value_stats' | 'frontier';
+  error_type: string;
+  message: string;
+}
+/**
  * The absolute bound a result was solved at for one constraint.
  *
  * ``bound`` is price-contour's (``constraint_bounds`` or a frontier row's
@@ -1359,6 +1364,17 @@ export interface OptimiserFrontierPointSummary {
 export interface OptimiserEffectiveBound {
   bound: number;
   kind: 'min' | 'max';
+}
+/**
+ * One level of a solved ratebook factor table.
+ *
+ * The wire keys are the solver's (``__factor_group__``), which the saved
+ * artifact and every apply path read, so the row always serialises by alias.
+ */
+export interface OptimiserFactorTableRow {
+  __factor_group__: string;
+  optimal_scenario_value: number;
+  quote_count: number;
 }
 export interface OptimiserHistoryEntry {
   all_constraints_satisfied: boolean | null;
@@ -1389,6 +1405,66 @@ export interface OptimiserScenarioValueStats {
   pct_increase: number;
   std: number;
 }
+/**
+ * An online frontier row (``frontier_points_schema("online", ...)``).
+ */
+export interface OptimiserOnlineFrontierPoint {
+  bounds: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  iterations: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  mode: 'online';
+  non_convergence_reason: 'above_envelope' | 'bracket_exhausted' | 'iteration_budget_exhausted' | null;
+  solver_path: 'bisection' | 'subgradient';
+  sv_max: number;
+  sv_mean: number;
+  sv_median: number;
+  sv_min: number;
+  sv_p25: number;
+  sv_p5: number;
+  sv_p75: number;
+  sv_p95: number;
+  sv_pct_decrease: number;
+  sv_pct_increase: number;
+  sv_std: number;
+  thresholds: {
+    [k: string]: number;
+  };
+  total_objective: number;
+  totals: {
+    [k: string]: number;
+  };
+}
+/**
+ * A ratebook frontier row (``frontier_points_schema("ratebook", ...)``).
+ *
+ * ``iterations`` is the point's coordinate-descent pass count.
+ */
+export interface OptimiserRatebookFrontierPoint {
+  bounds: {
+    [k: string]: number;
+  };
+  clamp_rate: number;
+  converged: boolean;
+  iterations: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  mode: 'ratebook';
+  n_quotes_clamped_high: number;
+  n_quotes_clamped_low: number;
+  thresholds: {
+    [k: string]: number;
+  };
+  total_objective: number;
+  totals: {
+    [k: string]: number;
+  };
+}
 export interface OptimiserSolveResult {
   baseline_constraints: {
     [k: string]: number;
@@ -1401,23 +1477,23 @@ export interface OptimiserSolveResult {
     [k: string]: number;
   };
   converged: boolean;
+  diagnostics_errors: OptimiserDiagnosticError[];
   effective_bounds: {
     [k: string]: OptimiserEffectiveBound;
   };
   factor_tables: {
-    [k: string]: {
-      [k: string]: unknown;
-    }[];
+    [k: string]: OptimiserFactorTableRow[];
   };
   frontier: OptimiserFrontierResponse | null;
   frontier_error: string | null;
   frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;
+  input_summary: OptimiserInputSummary;
   iterations: number | null;
   lambdas: {
     [k: string]: number;
   };
-  mode: string | null;
+  mode: 'online' | 'ratebook';
   n_quotes: number | null;
   n_steps: number | null;
   scenario_value_histogram: OptimiserScenarioValueHistogram | null;
@@ -1435,6 +1511,32 @@ export interface OptimiserSolveResult {
 export interface OptimiserCombinedFactorBounds {
   max: number;
   min: number;
+}
+/**
+ * What a solve ran on: the job's input provenance and its solver settings.
+ */
+export interface OptimiserInputSummary {
+  data_source: string;
+  graph_fingerprint: string;
+  node_id: string;
+  solver_settings: OptimiserSolverSettings;
+  source_file: string | null;
+}
+/**
+ * The solver settings a solve ran with, the solver defaults applied.
+ */
+export interface OptimiserSolverSettings {
+  cd_tolerance?: number;
+  chunk_size: number | null;
+  frontier_enabled?: boolean;
+  frontier_ranges?: {
+    [k: string]: unknown;
+  };
+  frontier_steps?: number;
+  max_cd_iterations?: number;
+  max_iter: number;
+  record_history?: boolean;
+  tolerance: number;
 }
 export interface OptimiserApplyResponse {
   constraints: {
@@ -1565,14 +1667,13 @@ export interface OptimiserFrontierSelectResponse {
     [k: string]: number;
   };
   converged: boolean;
+  diagnostics_errors: OptimiserDiagnosticError[];
   effective_bounds: {
     [k: string]: OptimiserEffectiveBound;
   };
   error: string | null;
   factor_tables: {
-    [k: string]: {
-      [k: string]: unknown;
-    }[];
+    [k: string]: OptimiserFactorTableRow[];
   };
   frontier_generation: number;
   history: OptimiserHistoryEntry[] | null;

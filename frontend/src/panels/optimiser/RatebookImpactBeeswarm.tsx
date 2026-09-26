@@ -1,10 +1,5 @@
 import { useMemo } from "react"
-import {
-  formatFactorLevel,
-  numericQuoteCount,
-  numericRate,
-  type FactorTables,
-} from "./ratebookFactorTables"
+import type { FactorTables } from "./ratebookFactorTables"
 
 interface RatebookImpactBeeswarmProps {
   factorTables: FactorTables | null | undefined
@@ -68,22 +63,21 @@ function parseImpacts(factorTables: FactorTables | null | undefined): FactorImpa
 
   return Object.entries(factorTables)
     .map(([factor, rows]) => {
-      const rawDots = Array.isArray(rows)
-        ? rows.flatMap((row, index) => {
-            const rate = numericRate(row)
-            if (rate == null || rate <= 0) return []
-            const level = formatFactorLevel(row, index)
-            return [{
-              factor,
-              level,
-              rate,
-              effect: Math.log(rate),
-              weight: numericQuoteCount(row) ?? 1,
-              featureValue: numericFeatureValue(row[factor]) ?? numericFeatureValue(level),
-              valuePosition: null,
-            }]
-          })
-        : []
+      const rawDots = rows.map((row) => {
+        const rate = row.optimal_scenario_value
+        // A solved rate is a scenario value on the solve's grid, which is positive.
+        if (rate <= 0) throw new Error(`Factor ${factor} level ${row.__factor_group__} has a non-positive rate ${rate}`)
+        const level = row.__factor_group__
+        return {
+          factor,
+          level,
+          rate,
+          effect: Math.log(rate),
+          weight: row.quote_count,
+          featureValue: numericFeatureValue(level),
+          valuePosition: null as number | null,
+        }
+      })
       const numericValues = rawDots.flatMap((dot) => (
         dot.featureValue == null ? [] : [dot.featureValue]
       ))

@@ -45,6 +45,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import useToastStore from "../../stores/useToastStore"
 import { makeSolveResult } from "../../test-utils/factories"
+import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Source walker (shared by all structural tests)
@@ -439,36 +440,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
       jobId: "job_123",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "My Optimiser",
-      frontier: {
-        points: Array.from({ length: 5 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          total_loss_ratio: 0.55 + i * 0.02,
-          lambda_loss_ratio: 0.001 + i * 0.001,
-        })),
-        point_summaries: Array.from({ length: 5 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          constraints: { loss_ratio: 0.55 + i * 0.02 },
-          effective_bounds: { loss_ratio: { kind: "max" as const, bound: 0.58 + i * 0.01 } },
-          lambdas: { loss_ratio: 0.001 + i * 0.001 },
-          converged: true,
-          iterations: null,
-          cd_iterations: null,
-          clamp_rate: null,
-          history: null,
-          scenario_value_stats: null,
-          scenario_value_histogram: null,
-          factor_tables: null,
-          warning: null,
-          frontier_error: null,
-        })),
-        n_points: 5,
-        points_returned: 5,
-        constraint_names: ["loss_ratio"],
-        swept_axes: ["loss_ratio"],
-        points_limit: 2000,
-        points_truncated: false,
-        frontier_generation: 0,
-      },
+      frontier: makeOnlineFrontier(5),
       selectedPointIndex: null,
     }
   }

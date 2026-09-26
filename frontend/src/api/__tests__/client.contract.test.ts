@@ -748,6 +748,28 @@ describe("client runtime contracts", () => {
     await expect(getTrainStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
   })
 
+  it("getOptimiserStatus reports a frontier point missing a constraint as a read error", async () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
+    const frontier = fixture.frontier as Record<string, unknown>
+    const [point] = frontier.points as Record<string, unknown>[]
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        ...fixture,
+        frontier: {
+          ...frontier,
+          points: [{ ...point, totals: {}, thresholds: {}, bounds: {}, lambdas: {} }],
+        },
+      }),
+    )
+
+    await expect(getOptimiserStatus("job-1")).rejects.toMatchObject({
+      name: "ApiResponseValidationError",
+      message:
+        "Could not read optimiser status: parseOptimiserStatusResponse: expected frontier.points[0].thresholds "
+        + "to hold exactly the constraint names [loss], got []",
+    })
+  })
+
   it("getOptimiserStatus rejects malformed optimiser result payloads", async () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
     const result = fixture.result as Record<string, unknown>

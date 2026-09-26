@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from haute.routes._frontier_point_summary import ConstraintKind, frontier_point_summary
+from haute.routes._frontier_point_summary import (
+    ConstraintKind,
+    frontier_point_rows,
+    frontier_point_summary,
+)
 
 APPLY_PREVIEW_ROW_LIMIT = 100
 FRONTIER_POINT_LIMIT = 2_000
@@ -84,17 +88,20 @@ def limited_apply_preview_payload(df: Any) -> dict[str, Any]:
 def limited_frontier_payload(
     points_df: Any,
     *,
+    mode: str,
     constraint_kinds: Mapping[str, ConstraintKind],
     swept_axes: Sequence[str],
     frontier_generation: int,
 ) -> dict[str, Any]:
-    """Return a capped frontier payload while preserving total point count.
+    """Return a capped frontier payload of typed points while preserving total point count.
 
-    ``constraint_kinds`` is every configured constraint, swept or not, and
-    each point summary carries all of them; ``swept_axes`` is the constraints
-    the sweep varied. ``frontier_generation`` is the solve job's generation
-    this frontier becomes: ``0`` at solve time, the incremented value for a
-    recompute.
+    ``points_df`` is price-contour's frontier ``points`` for ``mode``; each
+    returned row becomes a typed ``OptimiserFrontierPoint``
+    (``frontier_point_rows``). ``constraint_kinds`` is every configured
+    constraint, swept or not, and each point summary carries all of them;
+    ``swept_axes`` is the constraints the sweep varied. ``frontier_generation``
+    is the solve job's generation this frontier becomes: ``0`` at solve time,
+    the incremented value for a recompute.
     """
     constraint_names = list(constraint_kinds)
     unknown_axes = [name for name in swept_axes if name not in constraint_kinds]
@@ -104,12 +111,11 @@ def limited_frontier_payload(
     total_points = len(points_df)
     is_truncated = total_points > FRONTIER_POINT_LIMIT
     visible_points_df = points_df.head(FRONTIER_POINT_LIMIT) if is_truncated else points_df
-    points = visible_points_df.to_dicts()
-    for point in points:
-        for name in constraint_names:
-            total_key = f"total_{name}"
-            if total_key not in point and name in point:
-                point[total_key] = point[name]
+    points = frontier_point_rows(
+        visible_points_df,
+        mode=mode,
+        constraint_names=constraint_names,
+    )
 
     return {
         "status": "ok",

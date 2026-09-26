@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from haute.routes._job_store import JobStore
+from tests.optimiser_fixtures import library_frontier_frame
 
 # ──────────────────────────────────────────────────────────────────────
 # D6: _finalize_solve_result
@@ -47,7 +48,18 @@ class _FakeSolveResult:
 
 
 # A running solve job; its config names the constraint the fake result reports.
-_RUNNING_JOB = {"status": "running", "config": {"constraints": {"loss": {"max": 1.05}}}}
+# Recorded on every solve job when it is created.
+_PROVENANCE = {
+    "node_id": "opt",
+    "data_source": "batch",
+    "source_file": None,
+    "graph_fingerprint": "fp",
+}
+_RUNNING_JOB = {
+    "status": "running",
+    "config": {"constraints": {"loss": {"max": 1.05}}},
+    "input_provenance": _PROVENANCE,
+}
 
 
 class TestFinalizeOnline:
@@ -284,6 +296,7 @@ class TestFinalizeFrontier:
         job_id = store.create_job(
             {
                 "status": "running",
+                "input_provenance": _PROVENANCE,
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
@@ -296,24 +309,25 @@ class TestFinalizeFrontier:
 
         # Mock solver with a frontier() method that returns a FrontierResult
         mock_solver = MagicMock()
-        mock_points = MagicMock()
-        mock_points.to_dicts.return_value = [
-            {
-                "total_objective": 100.0,
-                "total_loss": 0.92,
-                "lambda_loss": 0.01,
-                "bound_loss": 1.05,
-                "converged": True,
-            },
-            {
-                "total_objective": 105.0,
-                "total_loss": 0.95,
-                "lambda_loss": 0.02,
-                "bound_loss": 1.05,
-                "converged": True,
-            },
-        ]
-        mock_points.__len__ = lambda self: 2
+        mock_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_loss": 0.92,
+                    "lambda_loss": 0.01,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 105.0,
+                    "total_loss": 0.95,
+                    "lambda_loss": 0.02,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+            ],
+            constraint_names=["loss"],
+        )
         mock_frontier_result = MagicMock()
         mock_frontier_result.points = mock_points
         mock_solver.frontier.return_value = mock_frontier_result
@@ -349,6 +363,7 @@ class TestFinalizeFrontier:
         job_id = store.create_job(
             {
                 "status": "running",
+                "input_provenance": _PROVENANCE,
                 "config": {
                     "mode": "ratebook",
                     "constraints": {"loss": {"max": 1.05}},
@@ -360,24 +375,26 @@ class TestFinalizeFrontier:
         )
         factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
         mock_solver = MagicMock()
-        mock_points = MagicMock()
-        mock_points.to_dicts.return_value = [
-            {
-                "total_objective": 100.0,
-                "total_loss": 0.92,
-                "lambda_loss": 0.01,
-                "bound_loss": 1.05,
-                "converged": True,
-            },
-            {
-                "total_objective": 105.0,
-                "total_loss": 0.95,
-                "lambda_loss": 0.02,
-                "bound_loss": 1.05,
-                "converged": True,
-            },
-        ]
-        mock_points.__len__ = lambda self: 2
+        mock_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_loss": 0.92,
+                    "lambda_loss": 0.01,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 105.0,
+                    "total_loss": 0.95,
+                    "lambda_loss": 0.02,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+            ],
+            constraint_names=["loss"],
+            mode="ratebook",
+        )
         mock_frontier_result = MagicMock()
         mock_frontier_result.points = mock_points
         mock_solver.frontier.return_value = mock_frontier_result
@@ -417,6 +434,7 @@ class TestFinalizeFrontier:
         job_id = store.create_job(
             {
                 "status": "running",
+                "input_provenance": _PROVENANCE,
                 "config": {
                     "mode": "online",
                     "constraints": {},
@@ -451,6 +469,7 @@ class TestFinalizeFrontier:
         job_id = store.create_job(
             {
                 "status": "running",
+                "input_provenance": _PROVENANCE,
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
@@ -492,6 +511,7 @@ class TestFinalizeFrontier:
         job_id = store.create_job(
             {
                 "status": "running",
+                "input_provenance": _PROVENANCE,
                 "config": {
                     "mode": "online",
                     "constraints": {
@@ -510,20 +530,21 @@ class TestFinalizeFrontier:
         )
 
         mock_solver = MagicMock()
-        mock_points = MagicMock()
-        mock_points.to_dicts.return_value = [
-            {
-                "total_objective": 100.0,
-                "total_loss": 0.92,
-                "lambda_loss": 0.01,
-                "bound_loss": 1.05,
-                "total_zero_cstr": 0.95,
-                "lambda_zero_cstr": 0.0,
-                "bound_zero_cstr": 1.0,
-                "converged": True,
-            },
-        ]
-        mock_points.__len__ = lambda self: 1
+        mock_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_loss": 0.92,
+                    "lambda_loss": 0.01,
+                    "bound_loss": 1.05,
+                    "total_zero_cstr": 0.95,
+                    "lambda_zero_cstr": 0.0,
+                    "bound_zero_cstr": 1.0,
+                    "converged": True,
+                },
+            ],
+            constraint_names=["loss", "zero_cstr"],
+        )
         mock_frontier_result = MagicMock()
         mock_frontier_result.points = mock_points
         mock_solver.frontier.return_value = mock_frontier_result

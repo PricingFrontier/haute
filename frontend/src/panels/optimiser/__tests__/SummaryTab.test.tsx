@@ -112,3 +112,41 @@ describe("optimiser SummaryTab constraint attainment", () => {
     )).toThrow(/volume/)
   })
 })
+
+describe("optimiser SummaryTab diagnostics issues", () => {
+  it("names each diagnostic that could not be produced, with its error, in an alert", () => {
+    render(
+      <SummaryTab
+        selectedPointIndex={null}
+        result={makeSolveResult({
+          diagnostics_errors: [
+            {
+              diagnostic: "scenario_value_stats",
+              error_type: "ValueError",
+              message: "The solve result has no quotes to summarise",
+            },
+            {
+              diagnostic: "frontier",
+              error_type: "RuntimeError",
+              message: "frontier exploded",
+            },
+          ],
+        })}
+      />,
+    )
+
+    const alert = screen.getByRole("alert", { name: "Diagnostic issues" })
+    expect(alert).toHaveTextContent("Diagnostics Issues")
+    expect(within(alert).getByText("Scenario-value statistics")).toBeInTheDocument()
+    expect(within(alert).getByText("Efficient frontier")).toBeInTheDocument()
+    expect(within(alert).getByText("ValueError")).toBeInTheDocument()
+    expect(within(alert).getByText("The solve result has no quotes to summarise")).toBeInTheDocument()
+    expect(within(alert).getByText("frontier exploded")).toBeInTheDocument()
+  })
+
+  it("shows no alert when every diagnostic was produced", () => {
+    render(<SummaryTab selectedPointIndex={null} result={makeSolveResult()} />)
+
+    expect(screen.queryByRole("alert", { name: "Diagnostic issues" })).not.toBeInTheDocument()
+  })
+})

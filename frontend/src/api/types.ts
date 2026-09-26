@@ -1236,12 +1236,16 @@ export interface SaveModelRequest {
 // Optimiser types
 // ---------------------------------------------------------------------------
 
-// The optimiser responses are generated. A frontier keeps the UI's typed view of
-// its open point objects, and the status responses parse execution metrics with
-// the shared parser.
+// The optimiser responses are generated, frontier points and factor-table rows
+// included; the status responses parse execution metrics with the shared parser.
 export type {
   OptimiserApplyResponse as ApplyOptimiserResponse,
+  OptimiserDiagnosticError,
   OptimiserEffectiveBound,
+  OptimiserFactorTableRow,
+  OptimiserInputSummary,
+  OptimiserOnlineFrontierPoint,
+  OptimiserRatebookFrontierPoint,
   OptimiserEstimateResponse as OptimiserEstimate,
   OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,
   OptimiserFrontierAutoRangeStartResponse as FrontierAutoRangeStartResponse,
@@ -1286,16 +1290,10 @@ export interface LogOptimiserToMlflowRequest {
   stale?: boolean
 }
 
-export type FrontierPoint = Record<string, unknown> & {
-  index?: number
-  total_objective?: number
-  constraints?: Record<string, number>
-  lambdas?: Record<string, number>
-}
+/** A typed frontier row: price-contour's point, per-constraint columns as maps. */
+export type FrontierPoint = GeneratedOptimiserFrontierResponse["points"][number]
 
-export type FrontierResponse = Omit<GeneratedOptimiserFrontierResponse, "points"> & {
-  points: FrontierPoint[]
-}
+export type FrontierResponse = GeneratedOptimiserFrontierResponse
 
 /** A solve's frontier as the results store keeps it: always a computed
  *  frontier, so it always has its generation. */

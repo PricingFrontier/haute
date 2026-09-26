@@ -171,21 +171,23 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
 
 def _compute_scenario_value_stats(
     solve_result: SolveResultLike,
-) -> tuple[
-    dict[str, float] | None,
-    dict[str, list[int] | list[float]] | None,
-]:
-    """Compute scenario value distribution statistics and histogram from solve result."""
+) -> tuple[dict[str, float], dict[str, list[int] | list[float]]]:
+    """Scenario value distribution statistics and histogram of an online solve.
+
+    Raises ``ValueError`` when the result has no per-quote frame, no
+    ``optimal_scenario_value`` column or no quotes; the caller records any
+    failure in ``diagnostics_errors`` rather than dropping the statistics.
+    """
     if not hasattr(solve_result, "dataframe"):
-        return None, None
+        raise ValueError("The solve result has no per-quote frame to summarise")
     df = solve_result.dataframe
     if "optimal_scenario_value" not in df.columns:
-        return None, None
+        raise ValueError("The solve result's per-quote frame has no optimal_scenario_value column")
 
     col = df["optimal_scenario_value"]
     n = len(col)
     if n == 0:
-        return None, None
+        raise ValueError("The solve result has no quotes to summarise")
     # polars' sample std (ddof=1) is undefined (null) for a single quote and
     # would crash the float() cast after the solve already succeeded. A
     # complete one-quote result set has exactly zero spread, so 0.0 is the
@@ -204,8 +206,8 @@ def _compute_scenario_value_stats(
         "p50": float(col.quantile(0.50)),
         "p75": float(col.quantile(0.75)),
         "p95": float(col.quantile(0.95)),
-        "pct_increase": float((col > 1.0).sum() / n) if n else 0.0,
-        "pct_decrease": float((col < 1.0).sum() / n) if n else 0.0,
+        "pct_increase": float((col > 1.0).sum() / n),
+        "pct_decrease": float((col < 1.0).sum() / n),
     }
 
     vals = col.to_numpy()
@@ -215,6 +217,56 @@ def _compute_scenario_value_stats(
         "edges": [float(e) for e in edges],
     }
     return stats, histogram
+
+
+def _diagnostic_error(
+    diagnostic: str,
+    exc: BaseException,
+    *,
+    job_id: str,
+) -> dict[str, str]:
+    """A ``diagnostics_errors`` entry for a diagnostic that could not be produced."""
+    logger.warning(
+        "optimiser_diagnostic_skipped",
+        diagnostic=diagnostic,
+        error=str(exc),
+        error_type=type(exc).__name__,
+        job_id=job_id,
+        exc_info=True,
+    )
+    return {"diagnostic": diagnostic, "error_type": type(exc).__name__, "message": str(exc)}
+
+
+def solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
+    """The solver settings a solve ran with, from its solve-time config snapshot."""
+    settings: dict[str, Any] = {
+        "max_iter": job_config.get("max_iter", _DEFAULT_MAX_ITER),
+        "tolerance": job_config.get("tolerance", _DEFAULT_TOLERANCE),
+        "chunk_size": job_config.get("chunk_size"),
+    }
+    if job_config.get("mode") == "ratebook":
+        settings["max_cd_iterations"] = job_config.get(
+            "max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS
+        )
+        settings["cd_tolerance"] = job_config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE)
+    else:
+        # The ratebook solver records no history, so the flag is online-only.
+        settings["record_history"] = bool(job_config.get("record_history", False))
+    if job_config.get("frontier_enabled") is True:
+        settings["frontier_enabled"] = True
+        settings["frontier_steps"] = job_config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
+        settings["frontier_ranges"] = job_config.get("frontier_ranges")
+    return settings
+
+
+def solve_input_summary(job: Mapping[str, Any]) -> dict[str, Any]:
+    """What a solve ran on: the job's ``input_provenance`` and its solver settings.
+
+    Built once when the solve completes; the published artifact reads it back.
+    A solve job always records its provenance when it is created, so a missing
+    one raises ``KeyError``.
+    """
+    return {**job["input_provenance"], "solver_settings": solver_settings(job["config"])}
 
 
 @require_solver_worker_context
@@ -866,7 +918,18 @@ def _finalize_solve_result(
         Mode-specific keys to merge into the result dict (e.g.
         ``iterations``, ``factor_tables``).
     """
-    scenario_value_stats, scenario_value_histogram = _compute_scenario_value_stats(solve_result)
+    diagnostics_errors: list[dict[str, str]] = []
+    scenario_value_stats: dict[str, float] | None = None
+    scenario_value_histogram: dict[str, list[int] | list[float]] | None = None
+    # Only an online solve has a per-quote frame; a ratebook solve reports no
+    # statistics by design.
+    if mode == "online":
+        try:
+            scenario_value_stats, scenario_value_histogram = _compute_scenario_value_stats(
+                solve_result
+            )
+        except Exception as exc:
+            diagnostics_errors.append(_diagnostic_error("scenario_value_stats", exc, job_id=job_id))
 
     result_dict: dict[str, Any] = {
         "mode": mode,
@@ -891,6 +954,7 @@ def _finalize_solve_result(
     # Read through JobStore so concurrent eviction cannot race this snapshot.
     job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
     config = job_snapshot.get("config", {})
+    result_dict["input_summary"] = solve_input_summary(job_snapshot)
     constraints = config.get("constraints")
     kinds = constraint_kinds(constraints or {})
     # The absolute bounds the library solved at (pct constraints already scaled).
@@ -934,6 +998,7 @@ def _finalize_solve_result(
                 )
                 frontier_data = limited_frontier_payload(
                     frontier_result.points,
+                    mode=mode,
                     constraint_kinds=kinds,
                     swept_axes=list(ranges),
                     frontier_generation=0,
@@ -952,18 +1017,14 @@ def _finalize_solve_result(
             raise
         except Exception as exc:
             frontier_error = f"Frontier unavailable: {exc}"
-            logger.warning(
-                "frontier_computation_failed",
-                error=str(exc),
-                job_id=job_id,
-                exc_info=True,
-            )
+            diagnostics_errors.append(_diagnostic_error("frontier", exc, job_id=job_id))
 
     result_dict["frontier"] = frontier_data
     # A solve starts the job's frontier generations; see ``completion_fields``.
     result_dict["frontier_generation"] = 0
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
+    result_dict["diagnostics_errors"] = diagnostics_errors
     # Built before the publisher persists (and drops) the apply dataframe the
     # online summary reads, so publishing never needs the solver again.
     publish_summary = _publish_summary(solver, solve_result, job_id=job_id)

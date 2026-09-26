@@ -31,10 +31,8 @@ from haute.routes._frontier_point_summary import (
     CONSTRAINT_THRESHOLD_KINDS,
     NON_CONVERGED_WARNING,
     ConstraintKind,
-    FrontierPointDataError,
     apply_frontier_point_summary,
     constraint_kinds,
-    finite_frontier_value,
     frontier_point_summary,
 )
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -236,13 +234,6 @@ def _with_bounded_frontier_apply_handle(
     return updated_handles, evicted_handles
 
 
-def _as_finite_float(value: Any, *, field: str) -> float:
-    try:
-        return finite_frontier_value(value, field=field)
-    except FrontierPointDataError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
 def _frontier_points_or_raise(
     job: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -308,7 +299,7 @@ def _base_result_for_frontier_recompute(job: Mapping[str, Any]) -> dict[str, Any
                 ),
             )
         if not isinstance(current_result, dict):
-            return {}
+            raise HTTPException(status_code=500, detail="Job summary is missing")
         result = dict(current_result)
     result.pop("selected_frontier_point", None)
     return result
@@ -333,10 +324,7 @@ def _frontier_point_result_dict(job: Mapping[str, Any], point_index: int) -> dic
             status_code=500,
             detail="Job frontier constraint names do not match the configured constraints",
         )
-    try:
-        summary = frontier_point_summary(point, kinds)
-    except FrontierPointDataError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    summary = frontier_point_summary(point, kinds)
 
     base_result = _base_result_for_frontier(job)
     result_dict = apply_frontier_point_summary(base_result, summary)
@@ -377,13 +365,9 @@ def _frontier_point_constraints_override(
                 status_code=500,
                 detail="Job optimiser constraint threshold is invalid",
             )
-        threshold_field = f"threshold_{name}"
-        if threshold_field not in point:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Frontier point field {threshold_field!r} is missing",
-            )
-        spec[threshold_keys[0]] = _as_finite_float(point[threshold_field], field=threshold_field)
+        # A typed point holds every configured constraint's threshold, in the
+        # user's units (a fraction for a pct constraint), as the spec states it.
+        spec[threshold_keys[0]] = point["thresholds"][name]
 
     return overrides
 
@@ -697,7 +681,7 @@ class OptimiserFrontierService:
                 ranges=ranges,
                 constraint_kinds=kinds,
                 n_points_per_dim=body.n_points_per_dim,
-                initial_lambdas=base_result.get("lambdas"),
+                initial_lambdas=base_result["lambdas"],
                 base_result=base_result,
                 start_time=start_time,
             )
@@ -1247,6 +1231,7 @@ class OptimiserFrontierService:
                 response = OptimiserFrontierResponse(
                     **limited_frontier_payload(
                         frontier_result.points,
+                        mode=mode,
                         constraint_kinds=constraint_kinds,
                         swept_axes=list(ranges),
                         frontier_generation=next_frontier_generation,
@@ -1256,7 +1241,13 @@ class OptimiserFrontierService:
                 result_dict = dict(base_result)
                 result_dict["frontier"] = frontier_dict
                 result_dict["frontier_generation"] = next_frontier_generation
+                # A frontier now exists: the solve-time frontier failure is history.
                 result_dict.pop("frontier_error", None)
+                result_dict["diagnostics_errors"] = [
+                    error
+                    for error in result_dict["diagnostics_errors"]
+                    if error["diagnostic"] != "frontier"
+                ]
                 result_dict.pop("selected_frontier_point", None)
                 retained_handles, invalidated_handles = _invalidate_frontier_apply_artifact_handles(
                     latest_job

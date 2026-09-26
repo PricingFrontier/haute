@@ -289,6 +289,7 @@ import type {
   FrontierSelectResponse,
   GitWorkingBranchResponse,
   OptimiserHistoryEntry,
+  OptimiserInputSummary,
   OptimiserSolveResult,
   OptimiserStatusResponse,
   TrainEstimate,
@@ -385,9 +386,20 @@ export function makeTrainStatus(
 // defaults, so a test states only what it is about.
 // ---------------------------------------------------------------------------
 
+export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {}): OptimiserInputSummary {
+  return {
+    node_id: "optimiser_1",
+    data_source: "batch",
+    source_file: "main.py",
+    graph_fingerprint: "3f9a1c",
+    solver_settings: { max_iter: 50, tolerance: 1e-6, chunk_size: null, record_history: false },
+    ...overrides,
+  }
+}
+
 export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserSolveResult {
   return {
-    mode: null,
+    mode: "online",
     total_objective: 0,
     baseline_objective: 0,
     constraints: {},
@@ -410,6 +422,8 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     frontier_error: null,
     selected_frontier_point: null,
     frontier_generation: 0,
+    input_summary: makeInputSummary(),
+    diagnostics_errors: [],
     ...overrides,
   }
 }
@@ -483,6 +497,7 @@ export function makeFrontierSelect(
     clamp_rate: null,
     combined_factor_bounds: null,
     frontier_generation: 0,
+    diagnostics_errors: [],
     error: null,
     ...overrides,
   }

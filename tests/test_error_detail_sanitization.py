@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from haute._graph_walker import CollectPolicy, walk_graph
 from tests.job_store_support import seed_job
-from tests.optimiser_fixtures import run_frontier_and_wait
+from tests.optimiser_fixtures import make_solved_result, run_frontier_and_wait
 from tests.training_artifacts_support import publish_trained_job
 
 # -- Shared constants and helpers ------------------------------------------
@@ -571,6 +571,8 @@ class TestOptimiserRoutesSafeDetail:
             "test_frontier_err",
             {
                 "status": "completed",
+                "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
+                "result": make_solved_result(),
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),

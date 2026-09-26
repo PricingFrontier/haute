@@ -70,6 +70,8 @@ REQUIRED_SYMBOLS: tuple[str, ...] = (
     # A ratebook frontier keeps each point's factor tables; haute materialises
     # a selected point from them instead of re-solving.
     "RatebookFrontierResult.factor_tables",
+    # The exact column set of a frontier's points, per mode; haute types the rows from it.
+    "frontier_points_schema",
 )
 
 # Keyword arguments haute passes by name, per Python wrapper. PyO3 builtins

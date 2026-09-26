@@ -42,6 +42,7 @@ import pytest
 
 from tests.conftest import make_edge, make_file_input_config, make_graph, make_output_config
 from tests.job_store_support import seed_job
+from tests.optimiser_fixtures import make_solved_result
 from tests.training_artifacts_support import publish_trained_job
 
 # These integration tests need the real core MLflow package. Keep the guard for
@@ -316,16 +317,14 @@ def _seed_optimiser_job(store: Any, job_id: str, config: dict[str, Any] | None =
         job_id,
         {
             "status": "completed",
-            "result": {
-                "mode": "online",
-                "lambdas": {"predicted_volume": 0.0},
-                "total_objective": 165.0,
-                "baseline_objective": 135.0,
-                "constraints": {"predicted_volume": 0.9},
-                "baseline_constraints": {"predicted_volume": 1.0},
-                "converged": True,
-                "iterations": 10,
-            },
+            "result": make_solved_result(
+                total_objective=165.0,
+                baseline_objective=135.0,
+                constraint_names=["predicted_volume"],
+                constraints={"predicted_volume": 0.9},
+                baseline_constraints={"predicted_volume": 1.0},
+                iterations=10,
+            ),
             "publish_summary": {
                 "params": {"mode": "online"},
                 "metrics": {"total_objective": 165.0},

@@ -24,9 +24,9 @@
     },
     "converged": true,
     "iterations": 7,
-    "cd_iterations": null,
     "n_quotes": 100,
     "n_steps": 3,
+    "cd_iterations": null,
     "factor_tables": {},
     "history": [
       {
@@ -42,6 +42,7 @@
         }
       }
     ],
+    "warning": null,
     "scenario_value_stats": {
       "mean": 1.01,
       "std": 0.07,
@@ -70,18 +71,39 @@
     },
     "clamp_rate": null,
     "combined_factor_bounds": null,
-    "warning": null,
-    "frontier_error": null,
-    "selected_frontier_point": null,
-    "frontier_generation": 0,
     "frontier": {
       "status": "ok",
       "points": [
         {
           "total_objective": 123.0,
-          "total_loss": 0.9,
-          "lambda_loss": 0.2,
-          "bound_loss": 0.9
+          "thresholds": {
+            "loss": 0.9
+          },
+          "bounds": {
+            "loss": 0.9
+          },
+          "totals": {
+            "loss": 0.9
+          },
+          "lambdas": {
+            "loss": 0.2
+          },
+          "iterations": 7,
+          "converged": true,
+          "mode": "online",
+          "solver_path": "bisection",
+          "non_convergence_reason": null,
+          "sv_mean": 1.02,
+          "sv_std": 0.03,
+          "sv_min": 0.95,
+          "sv_p5": 0.96,
+          "sv_p25": 1.0,
+          "sv_median": 1.02,
+          "sv_p75": 1.04,
+          "sv_p95": 1.08,
+          "sv_max": 1.1,
+          "sv_pct_increase": 0.7,
+          "sv_pct_decrease": 0.2
         }
       ],
       "point_summaries": [
@@ -100,15 +122,28 @@
             "loss": 0.2
           },
           "converged": true,
-          "iterations": null,
+          "iterations": 7,
           "cd_iterations": null,
           "clamp_rate": null,
           "history": null,
-          "scenario_value_stats": null,
+          "scenario_value_stats": {
+            "mean": 1.02,
+            "std": 0.03,
+            "min": 0.95,
+            "max": 1.1,
+            "p5": 0.96,
+            "p25": 1.0,
+            "p50": 1.02,
+            "p75": 1.04,
+            "p95": 1.08,
+            "pct_increase": 0.7,
+            "pct_decrease": 0.2
+          },
           "scenario_value_histogram": null,
           "factor_tables": null,
           "warning": null,
-          "frontier_error": null
+          "frontier_error": null,
+          "diagnostics_errors": []
         }
       ],
       "n_points": 1,
@@ -123,16 +158,57 @@
       "points_truncated": false,
       "frontier_generation": 0,
       "job_id": null
-    }
+    },
+    "frontier_error": null,
+    "selected_frontier_point": null,
+    "frontier_generation": 0,
+    "input_summary": {
+      "node_id": "optimiser_1",
+      "data_source": "batch",
+      "source_file": "main.py",
+      "graph_fingerprint": "3f9a1c",
+      "solver_settings": {
+        "max_iter": 50,
+        "tolerance": 1e-06,
+        "chunk_size": null,
+        "record_history": true
+      }
+    },
+    "diagnostics_errors": []
   },
   "frontier": {
     "status": "ok",
     "points": [
       {
         "total_objective": 123.0,
-        "total_loss": 0.9,
-        "lambda_loss": 0.2,
-        "bound_loss": 0.9
+        "thresholds": {
+          "loss": 0.9
+        },
+        "bounds": {
+          "loss": 0.9
+        },
+        "totals": {
+          "loss": 0.9
+        },
+        "lambdas": {
+          "loss": 0.2
+        },
+        "iterations": 7,
+        "converged": true,
+        "mode": "online",
+        "solver_path": "bisection",
+        "non_convergence_reason": null,
+        "sv_mean": 1.02,
+        "sv_std": 0.03,
+        "sv_min": 0.95,
+        "sv_p5": 0.96,
+        "sv_p25": 1.0,
+        "sv_median": 1.02,
+        "sv_p75": 1.04,
+        "sv_p95": 1.08,
+        "sv_max": 1.1,
+        "sv_pct_increase": 0.7,
+        "sv_pct_decrease": 0.2
       }
     ],
     "point_summaries": [
@@ -151,15 +227,28 @@
           "loss": 0.2
         },
         "converged": true,
-        "iterations": null,
+        "iterations": 7,
         "cd_iterations": null,
         "clamp_rate": null,
         "history": null,
-        "scenario_value_stats": null,
+        "scenario_value_stats": {
+          "mean": 1.02,
+          "std": 0.03,
+          "min": 0.95,
+          "max": 1.1,
+          "p5": 0.96,
+          "p25": 1.0,
+          "p50": 1.02,
+          "p75": 1.04,
+          "p95": 1.08,
+          "pct_increase": 0.7,
+          "pct_decrease": 0.2
+        },
         "scenario_value_histogram": null,
         "factor_tables": null,
         "warning": null,
-        "frontier_error": null
+        "frontier_error": null,
+        "diagnostics_errors": []
       }
     ],
     "n_points": 1,

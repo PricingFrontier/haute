@@ -437,8 +437,12 @@ needs attention"), so the reason Optimise is disabled is visible from every pane
 validation: a Focus view that fills the viewport and keeps the active tab (Escape returns), a
 docked height remembered for the session, results-style tabs, a short introduction on every
 tab, and a provenance strip on every tab naming the mode, the grid solved (quotes × scenario
-steps), whether the figures are as solved or a frontier point (i of N), and that they are
-expected values from the scoring models, not observed outcomes. Its accent is its own colour,
+steps), the data the solve ran on (the scenario and the pipeline file), whether the figures are
+as solved or a frontier point (i of N), and that they are expected values from the scoring
+models, not observed outcomes. When a diagnostic could not be produced (the scenario-value
+statistics, or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
+each one and why, in the same form as model validation. A failed solve with no earlier result
+opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
 never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
 side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
 Summary, Rates (ratebook), Quotes (online) and Convergence (when history was recorded); it has no

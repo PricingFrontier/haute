@@ -201,9 +201,7 @@ interface CachedPreview {
   nodeDataEpoch?: number
 }
 
-interface CachedSolveResult {
-  result: OptimiserSolveResult
-  originalResult: OptimiserSolveResult
+interface CachedSolveFields {
   error?: string
   terminalStatus?: SolveProgress | null
   jobId: string
@@ -214,9 +212,29 @@ interface CachedSolveResult {
   /** Constraint config snapshot for OptimiserPreview */
   constraints: Record<string, Record<string, number>>
   nodeLabel: string
+}
+
+/** A node's solve result: the displayed result (a selected frontier point's
+ *  summary applied, or the solve's) and the as-solved one. A later failed solve
+ *  keeps it and adds its `error`. */
+export interface SolvedCachedSolveResult extends CachedSolveFields {
+  result: OptimiserSolveResult
+  originalResult: OptimiserSolveResult
   frontier: FrontierData | null
   selectedPointIndex: number | null
 }
+
+/** A failed solve with no earlier result: nothing was solved, so no result is
+ *  fabricated for it (no zero objective or baseline) and there is nothing to preview. */
+interface FailedCachedSolveResult extends CachedSolveFields {
+  result: null
+  originalResult: null
+  error: string
+  frontier: null
+  selectedPointIndex: null
+}
+
+export type CachedSolveResult = SolvedCachedSolveResult | FailedCachedSolveResult
 
 interface ActiveSolveJob {
   jobId: string
@@ -393,7 +411,7 @@ function sortObjectKeys(value: unknown): unknown {
 
 type ModellingPreviewData = { result: TrainResult; jobId: string; nodeLabel: string; configHash: string }
 
-const _optimiserPreviewCache: Record<string, { source: CachedSolveResult; result: OptimiserPreviewData }> = {}
+const _optimiserPreviewCache: Record<string, { source: SolvedCachedSolveResult; result: OptimiserPreviewData }> = {}
 const _modellingPreviewCache: Record<string, { source: CachedTrainResult; nodeLabel: string; result: ModellingPreviewData }> = {}
 
 let resultCacheClock = 0
@@ -433,7 +451,7 @@ function dropCachedResult(recency: Map<string, number>, key: string): void {
   recency.delete(key)
 }
 
-function buildOptimiserPreview(cached: CachedSolveResult): OptimiserPreviewData {
+function buildOptimiserPreview(cached: SolvedCachedSolveResult): OptimiserPreviewData {
   return {
     result: cached.result,
     solvedResult: cached.originalResult,
@@ -446,50 +464,29 @@ function buildOptimiserPreview(cached: CachedSolveResult): OptimiserPreviewData 
 }
 
 function cacheOptimiserPreview(nodeId: string, cached: CachedSolveResult): void {
+  if (cached.result === null) {
+    delete _optimiserPreviewCache[nodeId]
+    return
+  }
   _optimiserPreviewCache[nodeId] = { source: cached, result: buildOptimiserPreview(cached) }
 }
 
-function readOptimiserPreview(nodeId: string, cached: CachedSolveResult): OptimiserPreviewData {
+function readOptimiserPreview(nodeId: string, cached: SolvedCachedSolveResult): OptimiserPreviewData {
   const prev = _optimiserPreviewCache[nodeId]
   return prev && prev.source === cached ? prev.result : buildOptimiserPreview(cached)
 }
 
-/** The result a failed solve with no earlier result is cached with. */
-const FAILED_SOLVE_RESULT: OptimiserSolveResult = {
-  mode: null,
-  total_objective: 0,
-  baseline_objective: 0,
-  constraints: {},
-  baseline_constraints: {},
-  effective_bounds: {},
-  lambdas: {},
-  converged: false,
-  iterations: null,
-  n_quotes: null,
-  n_steps: null,
-  cd_iterations: null,
-  factor_tables: {},
-  history: null,
-  warning: null,
-  scenario_value_stats: null,
-  scenario_value_histogram: null,
-  clamp_rate: null,
-  combined_factor_bounds: null,
-  frontier: null,
-  frontier_error: null,
-  selected_frontier_point: null,
-  frontier_generation: 0,
-}
-
 /** The as-solved result with a frontier point's server summary applied; a
- *  null summary field clears that field, as on the server. */
+ *  null summary field clears that field, as on the server. Factor tables are
+ *  never absent from a result: a point without them has none (`{}`), as the
+ *  server's result and select response report it. */
 function applyFrontierPointSummary(base: OptimiserSolveResult, summary: FrontierPointSummary): OptimiserSolveResult {
   const overlay: Record<string, unknown> = {}
   for (const [field, value] of Object.entries(summary)) overlay[field] = value ?? undefined
-  return { ...base, ...overlay }
+  return { ...base, ...overlay, factor_tables: summary.factor_tables ?? {} }
 }
 
-function resultForFrontierPoint(cached: CachedSolveResult, pointIndex: number): OptimiserSolveResult {
+function resultForFrontierPoint(cached: SolvedCachedSolveResult, pointIndex: number): OptimiserSolveResult {
   const summary = cached.frontier?.point_summaries[pointIndex]
   if (!summary) throw new Error(`Frontier point index ${pointIndex} is out of range`)
   return applyFrontierPointSummary(cached.originalResult, summary)
@@ -535,7 +532,7 @@ export function optimiserApplyKey(identity: OptimiserApplyIdentity): string {
 /** The `/apply` identity a node's cached solve shows now: its job, frontier
  *  generation and selected target. */
 export function optimiserApplyIdentityFor(
-  cached: CachedSolveResult,
+  cached: SolvedCachedSolveResult,
   query: OptimiserApplyQuery,
 ): OptimiserApplyIdentity {
   return {
@@ -591,6 +588,7 @@ function frontierPointSummaryFromSelect(selectResult: FrontierSelectResponse): F
     factor_tables: selectResult.factor_tables ?? null,
     warning: selectResult.warning ?? null,
     frontier_error: null,
+    diagnostics_errors: selectResult.diagnostics_errors,
   }
 }
 
@@ -998,11 +996,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       touchCachedResult(solveResultRecency, nodeId)
-      const nextCached: CachedSolveResult = {
-        ...(s.solveResults[nodeId] ?? {
-          result: FAILED_SOLVE_RESULT,
-          originalResult: FAILED_SOLVE_RESULT,
-        }),
+      const failure = {
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
@@ -1014,6 +1008,12 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         selectedPointIndex: null,
         error,
       }
+      // An earlier result is kept beside the error; with none, nothing was solved
+      // and no result stands in for one.
+      const previous = s.solveResults[nodeId]
+      const nextCached: CachedSolveResult = previous !== undefined && previous.result !== null
+        ? { ...previous, ...failure }
+        : { ...failure, result: null, originalResult: null }
       const bounded = trimCacheByRecency(
         {
           ...s.solveResults,
@@ -1040,12 +1040,13 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   selectFrontierPoint: (nodeId, pointIndex) =>
     set((s) => {
       const cached = s.solveResults[nodeId]
-      if (!cached) return s
+      // A failed solve with no result has no points to select.
+      if (!cached || cached.result === null) return s
       touchCachedResult(solveResultRecency, nodeId)
       const result = pointIndex === null
         ? cached.originalResult
         : resultForFrontierPoint(cached, pointIndex)
-      const nextCached = {
+      const nextCached: SolvedCachedSolveResult = {
         ...cached,
         selectedPointIndex: pointIndex,
         result,
@@ -1069,7 +1070,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     }
     set((s) => {
       const cached = s.solveResults[nodeId]
-      if (!cached) return s
+      if (!cached || cached.result === null) return s
       touchCachedResult(solveResultRecency, nodeId)
       const summary = frontierPointSummaryFromSelect(selectResult)
       // Keep the richer summary so re-selecting this point needs no round trip.
@@ -1086,7 +1087,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       // response after a fresh solve), which is not a stale case.
       if (cached.selectedPointIndex !== null && cached.selectedPointIndex !== pointIndex) {
         if (frontier === cached.frontier) return s
-        const nextCached = { ...cached, frontier }
+        const nextCached: SolvedCachedSolveResult = { ...cached, frontier }
         cacheOptimiserPreview(nodeId, nextCached)
         return {
           solveResults: {
@@ -1095,7 +1096,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           },
         }
       }
-      const nextCached = {
+      const nextCached: SolvedCachedSolveResult = {
         ...cached,
         frontier,
         selectedPointIndex: pointIndex,
@@ -1119,10 +1120,15 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     }
     set((s) => {
       const cached = s.solveResults[nodeId]
-      if (!cached || cached.jobId !== jobId || !cached.frontier?.point_summaries[pointIndex]) return s
+      if (
+        !cached
+        || cached.result === null
+        || cached.jobId !== jobId
+        || !cached.frontier?.point_summaries[pointIndex]
+      ) return s
       touchCachedResult(solveResultRecency, nodeId)
       const summary = frontierPointSummaryFromSelect(selectResult)
-      const nextCached = {
+      const nextCached: SolvedCachedSolveResult = {
         ...cached,
         frontier: {
           ...cached.frontier,
@@ -1139,7 +1145,11 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   recordOptimiserApply: (nodeId, identity, response) => {
     const cached = get().solveResults[nodeId]
-    if (!cached || !sameApplyTarget(identity, optimiserApplyIdentityFor(cached, identity.query))) {
+    if (
+      !cached
+      || cached.result === null
+      || !sameApplyTarget(identity, optimiserApplyIdentityFor(cached, identity.query))
+    ) {
       return false
     }
     const key = optimiserApplyKey(identity)
@@ -1477,7 +1487,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   getOptimiserPreview: (nodeId) => {
     const cached = get().solveResults[nodeId]
-    if (!cached) {
+    // A failed solve with no result has nothing to preview.
+    if (!cached || cached.result === null) {
       return null
     }
     return readOptimiserPreview(nodeId, cached)

@@ -2011,6 +2011,17 @@ class OptimiserSolveService:
         )
         return updated_job if updated_job is not None else self._store.require_job(job_id)
 
+    def reject_completed_result(self, job_id: str, *, message: str) -> JobSnapshot:
+        """Correct a completed solve whose result cannot satisfy the API contract."""
+        corrected = self._lifecycle.transition(
+            job_id,
+            to="error",
+            message=message,
+            fields={"result": None, "frontier_data": None},
+            expected_status="completed",
+        )
+        return corrected if corrected is not None else self._store.require_job(job_id)
+
     def _frontier_auto_range_status_response(
         self,
         job: Mapping[str, Any],

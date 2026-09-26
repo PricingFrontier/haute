@@ -118,10 +118,11 @@ describe("OptimiserPreview store integration", () => {
       cd_iterations: 5,
       factor_tables: {
         region: [
-          { __factor_group__: "North", optimal_scenario_value: 1.08 },
-          { __factor_group__: "South", optimal_scenario_value: 0.92 },
+          { __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 10 },
+          { __factor_group__: "South", optimal_scenario_value: 0.92, quote_count: 10 },
         ],
       },
+      diagnostics_errors: [],
       error: null,
     })
     const store = useNodeResultsStore.getState()
@@ -130,7 +131,7 @@ describe("OptimiserPreview store integration", () => {
       "opt_1",
       makeRatebookSolveResult({
         factor_tables: {
-          region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
+          region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0, quote_count: 10 }],
         },
         frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
@@ -170,10 +171,11 @@ describe("OptimiserPreview store integration", () => {
       cd_iterations: 5,
       factor_tables: {
         region: [
-          { __factor_group__: "North", optimal_scenario_value: 1.08 },
-          { __factor_group__: "South", optimal_scenario_value: 0.92 },
+          { __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 10 },
+          { __factor_group__: "South", optimal_scenario_value: 0.92, quote_count: 10 },
         ],
       },
+      diagnostics_errors: [],
       error: null,
     })
     const store = useNodeResultsStore.getState()
@@ -229,9 +231,10 @@ describe("OptimiserPreview store integration", () => {
         cd_iterations: 5,
         factor_tables: {
           region: [
-            { __factor_group__: "North", optimal_scenario_value: 1.08 },
+            { __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 10 },
           ],
         },
+        diagnostics_errors: [],
         error: null,
       })
     const store = useNodeResultsStore.getState()
@@ -240,7 +243,7 @@ describe("OptimiserPreview store integration", () => {
       "opt_1",
       makeRatebookSolveResult({
         factor_tables: {
-          region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
+          region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0, quote_count: 10 }],
         },
         frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
@@ -274,6 +277,7 @@ describe("OptimiserPreview store integration", () => {
       converged: true,
       cd_iterations: 5,
       factor_tables: {},
+      diagnostics_errors: [],
       error: null,
     })
     const store = useNodeResultsStore.getState()
@@ -282,7 +286,7 @@ describe("OptimiserPreview store integration", () => {
       "opt_1",
       makeRatebookSolveResult({
         factor_tables: {
-          region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
+          region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0, quote_count: 10 }],
         },
         frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
       }),
@@ -348,8 +352,9 @@ describe("OptimiserPreview store integration", () => {
       converged: true,
       cd_iterations: 3,
       factor_tables: {
-        region: [{ __factor_group__: "PointZero", optimal_scenario_value: 1.0 }],
+        region: [{ __factor_group__: "PointZero", optimal_scenario_value: 1.0, quote_count: 10 }],
       },
+      diagnostics_errors: [],
       error: null,
     }
     const point1Response = {
@@ -364,8 +369,9 @@ describe("OptimiserPreview store integration", () => {
       converged: true,
       cd_iterations: 5,
       factor_tables: {
-        region: [{ __factor_group__: "PointOne", optimal_scenario_value: 1.21 }],
+        region: [{ __factor_group__: "PointOne", optimal_scenario_value: 1.21, quote_count: 10 }],
       },
+      diagnostics_errors: [],
       error: null,
     }
     mockSelectFrontierPoint.mockImplementationOnce(
@@ -424,7 +430,7 @@ describe("OptimiserPreview store integration", () => {
     resolvePoint1(point1Response)
     await waitFor(() => {
       const cached = useNodeResultsStore.getState().solveResults.opt_1
-      expect(cached.result.factor_tables).toEqual(point1Response.factor_tables)
+      expect(cached.result?.factor_tables).toEqual(point1Response.factor_tables)
     })
 
     // ── Resolve point 0 LATE — must NOT clobber the store. ──
@@ -437,8 +443,8 @@ describe("OptimiserPreview store integration", () => {
     // The user's selection stays on point 1.
     expect(final.selectedPointIndex).toBe(1)
     // The visible result reflects point 1's response, not the late point 0.
-    expect(final.result.total_objective).toBe(130)
-    expect(final.result.factor_tables).toEqual(point1Response.factor_tables)
+    expect(final.result?.total_objective).toBe(130)
+    expect(final.result?.factor_tables).toEqual(point1Response.factor_tables)
     // Point 1's stored summary was enriched on the way in.
     expect(final.frontier!.point_summaries[1]).toEqual(
       expect.objectContaining({ factor_tables: point1Response.factor_tables }),
@@ -624,6 +630,7 @@ describe("OptimiserPreview store integration", () => {
           region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 120 }],
         },
         frontier_generation: 0,
+        diagnostics_errors: [],
         error: null,
       })
     const store = useNodeResultsStore.getState()

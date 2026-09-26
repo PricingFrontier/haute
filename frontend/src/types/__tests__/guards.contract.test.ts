@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
+  makeOnlineFrontier,
+  makeOnlineFrontierPoint,
+  makeRatebookFrontier,
+} from "../../panels/optimiser/__tests__/fixtures"
+import {
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
@@ -391,6 +396,15 @@ const parseFrontierResponse = (value: unknown) =>
       completedJob(value),
     ),
   ).result!
+// A typed online frontier point with one `loss` constraint.
+const lossPoint = (totalObjective: number) =>
+  makeOnlineFrontierPoint(0, {
+    total_objective: totalObjective,
+    thresholds: { loss: 1 },
+    bounds: { loss: 1 },
+    totals: { loss: 1 },
+    lambdas: { loss: 0.1 },
+  })
 const parseFrontierAutoRangeResponse = (value: unknown) =>
   parseFrontierAutoRangeStatusResponse(completedJob(value)).result!
 // A complete execution-metrics payload, as the server sends it.
@@ -3135,7 +3149,7 @@ describe("API response guards", () => {
     }).execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parseFrontierResponse({
       status: "ok",
-      points: [{ total_objective: 1 }],
+      points: [lossPoint(1)],
       point_summaries: [{
         total_objective: 1,
         constraints: { loss: 1 },
@@ -3151,6 +3165,7 @@ describe("API response guards", () => {
         factor_tables: null,
         warning: null,
         frontier_error: null,
+        diagnostics_errors: [],
       }],
       n_points: 2001,
       points_returned: 1,
@@ -3163,6 +3178,60 @@ describe("API response guards", () => {
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
+  })
+
+  describe("typed frontier points (OPT-V04)", () => {
+    const frontier = () => makeOnlineFrontier(2)
+    const payload = (overrides: Partial<ReturnType<typeof frontier>> = {}) => ({
+      status: "ok",
+      job_id: null,
+      ...frontier(),
+      ...overrides,
+    })
+
+    it("parses typed online points", () => {
+      const parsed = parseFrontierResponse(payload())
+      const [point] = parsed.points
+      expect(point.mode).toBe("online")
+      expect(point.totals).toEqual({ loss_ratio: 0.55 })
+    })
+
+    it("rejects an open, untyped point object", () => {
+      expect(() => parseFrontierResponse(payload({
+        points: [{ total_objective: 1 }, { total_objective: 2 }] as never,
+      }))).toThrow(/OptimiserFrontierStatusResponse: invalid contract at \/result\/points\/0/)
+    })
+
+    it.each(["thresholds", "bounds", "totals", "lambdas"] as const)(
+      "rejects a point whose %s miss a configured constraint",
+      (field) => {
+        const points = frontier().points
+        points[1] = { ...points[1], [field]: {} }
+        expect(() => parseFrontierResponse(payload({ points }))).toThrow(
+          `parseOptimiserStatusResponse: expected result.points[1].${field} to hold exactly the constraint names [loss_ratio], got []`,
+        )
+      },
+    )
+
+    it.each(["constraints", "effective_bounds", "lambdas"] as const)(
+      "rejects a point summary whose %s name another constraint",
+      (field) => {
+        const summaries = frontier().point_summaries
+        const value = Object.values(summaries[0][field])[0]
+        summaries[0] = { ...summaries[0], [field]: { volume: value } }
+        expect(() => parseFrontierResponse(payload({ point_summaries: summaries }))).toThrow(
+          `parseOptimiserStatusResponse: expected result.point_summaries[0].${field} to hold exactly the constraint names [loss_ratio], got [volume]`,
+        )
+      },
+    )
+
+    it("rejects points of two modes", () => {
+      const ratebook = makeRatebookFrontier([{ objective: 1, volume: 1, lambda: 0 }]).points[0]
+      const points = [frontier().points[0], { ...ratebook, totals: { loss_ratio: 1 }, thresholds: { loss_ratio: 1 }, bounds: { loss_ratio: 1 }, lambdas: { loss_ratio: 0 } }]
+      expect(() => parseFrontierResponse(payload({ points }))).toThrow(
+        "parseOptimiserStatusResponse: expected every result.points entry to be of one mode, got online, ratebook",
+      )
+    })
   })
 
   it("rejects frontier payloads without one point summary per point", () => {
@@ -3181,11 +3250,12 @@ describe("API response guards", () => {
       factor_tables: null,
       warning: null,
       frontier_error: null,
+      diagnostics_errors: [],
     }
     expect(() =>
       parseFrontierResponse({
         status: "ok",
-        points: [{ total_objective: 1 }, { total_objective: 2 }],
+        points: [lossPoint(1), lossPoint(2)],
         point_summaries: [summary],
         n_points: 2,
         points_returned: 2,
@@ -3217,10 +3287,11 @@ describe("API response guards", () => {
       factor_tables: null,
       warning: null,
       frontier_error: null,
+      diagnostics_errors: [],
     }
     const payload = (pointSummary: Record<string, unknown>) => ({
       status: "ok",
-      points: [{ total_objective: 1 }],
+      points: [lossPoint(1)],
       point_summaries: [pointSummary],
       n_points: 1,
       points_returned: 1,
@@ -3266,13 +3337,14 @@ describe("API response guards", () => {
       }],
       scenario_value_stats: stats,
       scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1.0, 1.1] },
-      factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
+      factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 12 }] },
       warning: "Solver did not converge.",
       frontier_error: "Frontier unavailable: example",
+      diagnostics_errors: [],
     }
     const parsed = parseFrontierResponse({
       status: "ok",
-      points: [{ total_objective: 151 }],
+      points: [lossPoint(151)],
       point_summaries: [summary],
       n_points: 1,
       points_returned: 1,
@@ -3288,7 +3360,7 @@ describe("API response guards", () => {
     expect(() =>
       parseFrontierResponse({
         status: "ok",
-        points: [{ total_objective: 151 }],
+        points: [lossPoint(151)],
         point_summaries: [{ ...summary, scenario_value_histogram: { counts: ["x"], edges: [] } }],
         n_points: 1,
         points_returned: 1,
@@ -3371,6 +3443,7 @@ describe("API response guards", () => {
       clamp_rate: null,
       combined_factor_bounds: null,
       frontier_generation: 0,
+      diagnostics_errors: [],
       error: null,
     }
     expect(() =>

@@ -55,81 +55,6 @@ def test_select_frontier_point_uses_stored_summary_without_solver(
     assert "solve_result" not in job
 
 
-def test_select_frontier_point_rejects_malformed_missing_constraint_total(
-    client,
-    clean_job_store,
-):
-    malformed = _frontier_point()
-    malformed.pop("total_volume")
-    solver = MagicMock()
-    seed_job(
-        clean_job_store,
-        "select_malformed",
-        _online_frontier_job(
-            frontier_data=_frontier_data([malformed]),
-            solver=solver,
-            quote_grid=MagicMock(),
-        ),
-    )
-
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={"job_id": "select_malformed", "point_index": 0},
-    )
-
-    assert resp.status_code == 500
-    assert "total_volume" in resp.json()["detail"]
-    solver.solve.assert_not_called()
-
-
-def test_select_frontier_point_accepts_raw_price_contour_constraint_column(
-    client,
-    clean_job_store,
-):
-    point = _frontier_point(objective=123.0, volume=0.91, lambda_volume=0.42)
-    point["volume"] = point.pop("total_volume")
-    seed_job(
-        clean_job_store,
-        "select_raw_constraint",
-        _online_frontier_job(
-            frontier_data=_frontier_data([point]),
-            solver=MagicMock(),
-            quote_grid=MagicMock(),
-        ),
-    )
-
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={"job_id": "select_raw_constraint", "point_index": 0},
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["constraints"] == {"volume": 0.91}
-
-
-def test_select_frontier_point_rejects_partial_scenario_stats(
-    client,
-    clean_job_store,
-):
-    malformed = _frontier_point()
-    malformed.pop("sv_std")
-    seed_job(
-        clean_job_store,
-        "select_partial_stats",
-        _online_frontier_job(
-            frontier_data=_frontier_data([malformed]),
-        ),
-    )
-
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={"job_id": "select_partial_stats", "point_index": 0},
-    )
-
-    assert resp.status_code == 500
-    assert "sv_std" in resp.json()["detail"]
-
-
 def test_save_explicit_frontier_point_without_solve_result(
     client,
     clean_job_store,
@@ -468,8 +393,8 @@ def test_select_frontier_point_returns_distinct_data_for_each_index(
             f"backend echoed index {data['point_index']} for request index {index}"
         )
         assert data["total_objective"] == point["total_objective"]
-        assert data["constraints"] == {"volume": point["total_volume"]}
-        assert data["lambdas"] == {"volume": point["lambda_volume"]}
+        assert data["constraints"] == point["totals"]
+        assert data["lambdas"] == point["lambdas"]
         assert data["converged"] is point["converged"]
         # The job's stored selected point must agree with the returned index.
         assert clean_job_store.require_job("select_distinct")["selected_frontier_point"] == index

@@ -70,7 +70,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
     expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
     expect(solveResults.s0).toBeUndefined()
     expect(solveResults.s1).toBeDefined()
-    expect(solveResults["s-new"]?.result.total_objective).toBe(999)
+    expect(solveResults["s-new"]?.result?.total_objective).toBe(999)
   })
 
   it("does not refresh modelling LRU recency when read during StrictMode render", () => {

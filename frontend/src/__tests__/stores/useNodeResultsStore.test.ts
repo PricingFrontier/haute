@@ -19,7 +19,7 @@ import useNodeResultsStore, {
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
-import type { ApplyOptimiserResponse, FrontierPointSummary, OptimiserSolveResult } from "../../api/types.ts"
+import type { ApplyOptimiserResponse, FrontierPoint, FrontierPointSummary, OptimiserSolveResult } from "../../api/types.ts"
 import type { ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import {
@@ -30,6 +30,7 @@ import {
   makeFrontierSelect,
 } from "../../test-utils/factories.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
+import { makeOnlineFrontierPoint } from "../../panels/optimiser/__tests__/fixtures.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -84,6 +85,11 @@ function makeSolveResult(
   })
 }
 
+/** A typed frontier point: the store keeps points as they are and reads only summaries. */
+function onlinePoint(totalObjective: number): FrontierPoint {
+  return makeOnlineFrontierPoint(0, { total_objective: totalObjective })
+}
+
 function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {
   return {
     total_objective: 150,
@@ -100,6 +106,7 @@ function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPo
     factor_tables: null,
     warning: null,
     frontier_error: null,
+    diagnostics_errors: [],
     ...overrides,
   }
 }
@@ -255,7 +262,7 @@ describe("useNodeResultsStore", () => {
 
       const final = useNodeResultsStore.getState()
       expect(Object.keys(final.solveJobs)).toHaveLength(0)
-      expect(final.solveResults["n1"].result.iterations).toBe(42)
+      expect(final.solveResults["n1"].result?.iterations).toBe(42)
     })
   })
 
@@ -302,6 +309,37 @@ describe("useNodeResultsStore", () => {
       const failedResult = useNodeResultsStore.getState().solveResults["n1"]
       expect(failedResult.terminalStatus).toEqual(terminalStatus)
       expect(failedResult.terminalStatus?.execution_metrics).toBe(executionMetrics)
+    })
+
+    it("caches no fabricated result for a failed solve with no earlier result", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h", "live", 0)
+
+      s.failSolveJob("n1", "Solver diverged")
+
+      const failed = useNodeResultsStore.getState().solveResults["n1"]
+      expect(failed.error).toBe("Solver diverged")
+      // No zero objective or baseline stands in for a result that does not exist.
+      expect(failed.result).toBeNull()
+      expect(failed.originalResult).toBeNull()
+      expect(useNodeResultsStore.getState().getOptimiserPreview("n1")).toBeNull()
+      // Selecting a point on it changes nothing.
+      s.selectFrontierPoint("n1", 0)
+      expect(useNodeResultsStore.getState().solveResults["n1"]).toBe(failed)
+    })
+
+    it("keeps the earlier result when a later solve fails", () => {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", "j1", "Node 1", {}, "h", "live", 0)
+      s.completeSolveJob("n1", makeSolveResult({ total_objective: 42 }))
+      s.startSolveJob("n1", "j2", "Node 1", {}, "h", "live", 0)
+
+      s.failSolveJob("n1", "Solver diverged")
+
+      const failed = useNodeResultsStore.getState().solveResults["n1"]
+      expect(failed.error).toBe("Solver diverged")
+      expect(failed.result?.total_objective).toBe(42)
+      expect(useNodeResultsStore.getState().getOptimiserPreview("n1")?.result?.total_objective).toBe(42)
     })
 
     it("is a no-op for unknown node", () => {
@@ -401,7 +439,7 @@ describe("useNodeResultsStore", () => {
 
       const final = useNodeResultsStore.getState()
       expect(Object.keys(final.trainJobs)).toHaveLength(0)
-      expect(final.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.02)
+      expect(final.trainResults["t1"].result?.final_test_metrics.rmse).toBe(0.02)
     })
   })
 
@@ -430,8 +468,8 @@ describe("useNodeResultsStore", () => {
       // Error is stored in trainResults
       const failedResult = useNodeResultsStore.getState().trainResults["t1"]
       expect(failedResult).toBeDefined()
-      expect(failedResult.result.error).toBe("Out of memory")
-      expect(failedResult.result.status).toBe("error")
+      expect(failedResult.result?.error).toBe("Out of memory")
+      expect(failedResult.result?.status).toBe("error")
     })
 
     it("retains structured terminal training diagnostics on failure", () => {
@@ -894,7 +932,7 @@ describe("useNodeResultsStore", () => {
       expect(solveJobs["active-solve"]).toBeDefined()
       expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
       expect(solveResults.s0).toBeUndefined()
-      expect(solveResults[`s${MAX_CACHED_SOLVE_RESULTS}`]?.result.total_objective).toBe(MAX_CACHED_SOLVE_RESULTS)
+      expect(solveResults[`s${MAX_CACHED_SOLVE_RESULTS}`]?.result?.total_objective).toBe(MAX_CACHED_SOLVE_RESULTS)
     })
 
     it("evicts cached optimiser previews when failed solve results push out old entries", () => {
@@ -930,7 +968,7 @@ describe("useNodeResultsStore", () => {
       expect(Object.keys(solveResults)).toHaveLength(MAX_CACHED_SOLVE_RESULTS)
       expect(solveResults.s0).toBeDefined()
       expect(solveResults.s1).toBeUndefined()
-      expect(solveResults["s-new"]?.result.total_objective).toBe(999)
+      expect(solveResults["s-new"]?.result?.total_objective).toBe(999)
     })
 
     it("keeps the pinned optimiser preview result when evicting by recency", () => {
@@ -951,8 +989,8 @@ describe("useNodeResultsStore", () => {
       expect(solveResults.s0).toBeDefined()
       expect(solveResults.s1).toBeUndefined()
       expect(solveResults.s2).toBeUndefined()
-      expect(solveResults["s-new-1"]?.result.total_objective).toBe(998)
-      expect(solveResults["s-new-2"]?.result.total_objective).toBe(999)
+      expect(solveResults["s-new-1"]?.result?.total_objective).toBe(998)
+      expect(solveResults["s-new-2"]?.result?.total_objective).toBe(999)
     })
 
     it("evicts the oldest cached train results without removing active train jobs", () => {
@@ -985,7 +1023,7 @@ describe("useNodeResultsStore", () => {
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeUndefined()
-      expect(trainResults["t-new"].result.status).toBe("error")
+      expect(trainResults["t-new"].result?.status).toBe("error")
     })
 
     it("keeps explicitly touched train results when evicting", () => {
@@ -1059,7 +1097,7 @@ describe("useNodeResultsStore", () => {
 
       expect(useNodeResultsStore.getState().solveResults["missing-solve"]).toBeUndefined()
       expect(useNodeResultsStore.getState().trainResults["missing-train"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().trainResults["t-error"].result.status).toBe("error")
+      expect(useNodeResultsStore.getState().trainResults["t-error"].result?.status).toBe("error")
     })
   })
 
@@ -1087,7 +1125,7 @@ describe("useNodeResultsStore", () => {
       return makeSolveResult({
         frontier_generation: generation,
         frontier: makeFrontier({
-          points: [{ total_objective: 150 }, { total_objective: 160 }],
+          points: [onlinePoint(150), onlinePoint(160)],
           point_summaries: [pointSummary(), pointSummary({ total_objective: 160 })],
           n_points: 2,
           points_returned: 2,
@@ -1103,7 +1141,9 @@ describe("useNodeResultsStore", () => {
     }
 
     function currentIdentity(nodeId: string) {
-      return optimiserApplyIdentityFor(useNodeResultsStore.getState().solveResults[nodeId], {})
+      const cached = useNodeResultsStore.getState().solveResults[nodeId]
+      if (cached.result === null) throw new Error(`Node ${nodeId} has no solve result`)
+      return optimiserApplyIdentityFor(cached, {})
     }
 
     function cachedKeys(): string[] {
@@ -1198,7 +1238,7 @@ describe("useNodeResultsStore", () => {
       const pointCount = MAX_CACHED_OPTIMISER_APPLY + 1
       solve("n1", "j1", makeSolveResult({
         frontier: makeFrontier({
-          points: Array.from({ length: pointCount }, (_, i) => ({ total_objective: i })),
+          points: Array.from({ length: pointCount }, (_, i) => (onlinePoint(i))),
           point_summaries: Array.from({ length: pointCount }, (_, i) => pointSummary({ total_objective: i })),
           n_points: pointCount,
           points_returned: pointCount,
@@ -1259,7 +1299,7 @@ describe("useNodeResultsStore", () => {
       const result = makeSolveResult({
         history: [makeHistoryEntry({ iteration: 1 })],
         frontier: makeFrontier({
-          points: [{ total_objective: 150 }],
+          points: [onlinePoint(150)],
           point_summaries: [pointSummary()],
           n_points: 1,
           points_returned: 1,
@@ -1269,8 +1309,8 @@ describe("useNodeResultsStore", () => {
 
       const preview = useNodeResultsStore.getState().getOptimiserPreview("n1")!
       expect(preview.selectedPointIndex).toBe(0)
-      expect(preview.result.total_objective).toBe(150)
-      expect(preview.result.history).toBeUndefined()
+      expect(preview.result?.total_objective).toBe(150)
+      expect(preview.result?.history).toBeUndefined()
       expect(preview.solvedResult).toBe(result)
     })
   })
@@ -1287,14 +1327,8 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          {
-            total_objective: 123,
-            total_vol: 0.95,
-            baseline_constraints: { vol: 0.91 },
-            lambda_vol: 0.01,
-            converged: true,
-          },
-          { total_objective: 135, total_vol: 1.05, lambda_vol: 0.03, converged: true },
+          onlinePoint(123),
+          onlinePoint(135),
         ],
         point_summaries: [
           pointSummary({ total_objective: 123, constraints: { vol: 0.95 }, lambdas: { vol: 0.01 } }),
@@ -1323,12 +1357,12 @@ describe("useNodeResultsStore", () => {
       expect(cached.frontier!.points_returned).toBe(2)
       expect(cached.frontier!.constraint_names).toEqual(["vol"])
       expect(cached.selectedPointIndex).toBe(0)
-      expect(cached.result.total_objective).toBe(123)
-      expect(cached.result.constraints).toEqual({ vol: 0.95 })
+      expect(cached.result?.total_objective).toBe(123)
+      expect(cached.result?.constraints).toEqual({ vol: 0.95 })
       // Summaries carry no baseline; it stays the as-solved one.
-      expect(cached.result.baseline_constraints).toEqual({ vol: 0.88 })
-      expect(cached.result.lambdas).toEqual({ vol: 0.01 })
-      expect(cached.originalResult.total_objective).toBe(100)
+      expect(cached.result?.baseline_constraints).toEqual({ vol: 0.88 })
+      expect(cached.result?.lambdas).toEqual({ vol: 0.01 })
+      expect(cached.originalResult?.total_objective).toBe(100)
     })
 
     it("completeSolveJob sets null frontier when points empty", () => {
@@ -1373,7 +1407,7 @@ describe("useNodeResultsStore", () => {
       s.completeSolveJob("n1", makeSolveResult({
         frontier: makeFrontier({
           status: "ok",
-          points: [{ total_objective: 150, total_premium: 70, lambda_premium: 0.25, converged: true }],
+          points: [onlinePoint(150)],
           point_summaries: [pointSummary({ total_objective: 150, constraints: { premium: 70 }, lambdas: { premium: 0.25 } })],
           n_points: 1,
           points_returned: 1,
@@ -1395,15 +1429,13 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          {
+          // The row's own values differ from the summary's: only the summary is shown.
+          makeOnlineFrontierPoint(0, {
             total_objective: 150,
-            total_premium: 70,
-            total_loss: 33,
-            lambda_premium: 0.25,
-            lambda_loss: 0.4,
-            baseline_objective: 60,
+            totals: { premium: 70, loss: 33 },
+            lambdas: { premium: 0.25, loss: 0.4 },
             converged: false,
-          },
+          }),
         ],
         point_summaries: [
           pointSummary({
@@ -1433,16 +1465,16 @@ describe("useNodeResultsStore", () => {
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.selectedPointIndex).toBe(0)
-      expect(cached.result.total_objective).toBe(151)
-      expect(cached.result.constraints).toEqual({ premium: 71, loss: 34 })
-      expect(cached.result.lambdas).toEqual({ premium: 0.99, loss: 0.77 })
-      expect(cached.result.converged).toBe(true)
+      expect(cached.result?.total_objective).toBe(151)
+      expect(cached.result?.constraints).toEqual({ premium: 71, loss: 34 })
+      expect(cached.result?.lambdas).toEqual({ premium: 0.99, loss: 0.77 })
+      expect(cached.result?.converged).toBe(true)
       // Fields the summary does not carry come from the as-solved result.
-      expect(cached.result.mode).toBe("ratebook")
-      expect(cached.result.baseline_objective).toBe(80)
-      expect(cached.result.baseline_constraints).toEqual({ premium: 45, loss: 18 })
-      expect(cached.result.n_quotes).toBe(4321)
-      expect(cached.result.baseline_objective).toBe(cached.originalResult.baseline_objective)
+      expect(cached.result?.mode).toBe("ratebook")
+      expect(cached.result?.baseline_objective).toBe(80)
+      expect(cached.result?.baseline_constraints).toEqual({ premium: 45, loss: 18 })
+      expect(cached.result?.n_quotes).toBe(4321)
+      expect(cached.result?.baseline_objective).toBe(cached.originalResult?.baseline_objective)
     })
 
     it("selectFrontierPoint shows the summary's diagnostics and clears the fields it nulls", () => {
@@ -1463,7 +1495,7 @@ describe("useNodeResultsStore", () => {
       }
       const frontier = makeFrontier({
         status: "ok",
-        points: [{ total_objective: 150, total_premium: 70, lambda_premium: 0.25, converged: true }],
+        points: [onlinePoint(150)],
         point_summaries: [
           pointSummary({
             iterations: 19,
@@ -1489,21 +1521,22 @@ describe("useNodeResultsStore", () => {
           makeHistoryEntry({ iteration: 1, total_objective: 100, max_lambda_change: 0.1, all_constraints_satisfied: false }),
         ],
         scenario_value_histogram: { counts: [1, 2, 3], edges: [0.9, 1, 1.1, 1.2] },
-        factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
+        factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 }] },
         warning: "base warning should not leak",
         frontier,
       }))
 
       s.selectFrontierPoint("n1", 0)
 
-      const selected = useNodeResultsStore.getState().solveResults["n1"].result
+      const selected = useNodeResultsStore.getState().solveResults["n1"].result!
       expect(selected.iterations).toBe(19)
       expect(selected.cd_iterations).toBe(4)
       expect(selected.clamp_rate).toBe(0.01)
       expect(selected.scenario_value_stats).toEqual(pointStats)
       expect(selected.history).toBeUndefined()
       expect(selected.scenario_value_histogram).toBeUndefined()
-      expect(selected.factor_tables).toBeUndefined()
+      // A point without tables has none, as the server's result reports it.
+      expect(selected.factor_tables).toEqual({})
       expect(selected.warning).toBeUndefined()
     })
 
@@ -1513,12 +1546,7 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          {
-            total_objective: 150,
-            total_premium: 70,
-            lambda_premium: 0.25,
-            converged: false,
-          },
+          onlinePoint(150),
         ],
         point_summaries: [pointSummary({ converged: false, warning: NON_CONVERGED_WARNING })],
         n_points: 1,
@@ -1535,7 +1563,7 @@ describe("useNodeResultsStore", () => {
 
       s.selectFrontierPoint("n1", 0)
 
-      expect(useNodeResultsStore.getState().solveResults.n1.result.warning).toBe(NON_CONVERGED_WARNING)
+      expect(useNodeResultsStore.getState().solveResults.n1.result?.warning).toBe(NON_CONVERGED_WARNING)
     })
 
     it("selectFrontierPoint null deselects and reverts result", () => {
@@ -1545,7 +1573,7 @@ describe("useNodeResultsStore", () => {
         total_objective: 100,
         frontier: makeFrontier({
           status: "ok",
-          points: [{ total_objective: 200, total_premium: 60, lambda_premium: 0.2, converged: true }],
+          points: [onlinePoint(200)],
           point_summaries: [pointSummary({ total_objective: 200, constraints: { premium: 60 }, lambdas: { premium: 0.2 } })],
           n_points: 1,
           points_returned: 1,
@@ -1559,17 +1587,17 @@ describe("useNodeResultsStore", () => {
       s.selectFrontierPoint("n1", 0)
 
       // The result should now reflect the frontier point
-      expect(useNodeResultsStore.getState().solveResults["n1"].result.total_objective).toBe(200)
+      expect(useNodeResultsStore.getState().solveResults["n1"].result?.total_objective).toBe(200)
 
       // Deselect — set back to null
       s.selectFrontierPoint("n1", null)
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.selectedPointIndex).toBeNull()
-      expect(cached.result.total_objective).toBe(100)
-      expect(cached.result.constraints).toEqual(original.constraints)
-      expect(cached.result.lambdas).toEqual(original.lambdas)
+      expect(cached.result?.total_objective).toBe(100)
+      expect(cached.result?.constraints).toEqual(original.constraints)
+      expect(cached.result?.lambdas).toEqual(original.lambdas)
       // The original result is preserved in originalResult for the caller to use
-      expect(cached.originalResult.total_objective).toBe(100)
+      expect(cached.originalResult?.total_objective).toBe(100)
     })
 
     it("effectiveConstraintBounds reads the displayed result's backend bounds, never the config", () => {
@@ -1584,7 +1612,7 @@ describe("useNodeResultsStore", () => {
         },
         lambdas: { premium: 0.1, loss: 0 },
         frontier: makeFrontier({
-          points: [{ total_objective: 150, total_premium: 55, threshold_premium: 52, converged: true }],
+          points: [onlinePoint(150)],
           point_summaries: [pointSummary({
             constraints: { premium: 55, loss: 21 },
             effective_bounds: {
@@ -1660,13 +1688,13 @@ describe("useNodeResultsStore", () => {
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.selectedPointIndex).toBe(2)
-      expect(cached.result.total_objective).toBe(250)
-      expect(cached.result.constraints).toEqual({ premium: 70 })
+      expect(cached.result?.total_objective).toBe(250)
+      expect(cached.result?.constraints).toEqual({ premium: 70 })
       // The point summary carries no baseline; it stays the as-solved one.
-      expect(cached.result.baseline_objective).toBe(80)
-      expect(cached.result.baseline_constraints).toEqual({ premium: 45 })
-      expect(cached.result.lambdas).toEqual({ premium: 0.3 })
-      expect(cached.result.converged).toBe(false)
+      expect(cached.result?.baseline_objective).toBe(80)
+      expect(cached.result?.baseline_constraints).toEqual({ premium: 45 })
+      expect(cached.result?.lambdas).toEqual({ premium: 0.3 })
+      expect(cached.result?.converged).toBe(false)
     })
 
     it("updateFrontierAfterSelect uses the backend non-convergence warning for select responses", () => {
@@ -1689,7 +1717,7 @@ describe("useNodeResultsStore", () => {
         error: null,
       }))
 
-      expect(useNodeResultsStore.getState().solveResults.n1.result.warning).toBe(NON_CONVERGED_WARNING)
+      expect(useNodeResultsStore.getState().solveResults.n1.result?.warning).toBe(NON_CONVERGED_WARNING)
     })
 
     it("updateFrontierAfterSelect stores materialised ratebook factor tables on the selected point", () => {
@@ -1698,8 +1726,8 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          { total_objective: 240, total_premium: 68, lambda_premium: 0.25, converged: true },
-          { total_objective: 260, total_premium: 72, lambda_premium: 0.32, converged: true },
+          onlinePoint(240),
+          onlinePoint(260),
         ],
         point_summaries: [
           pointSummary({ total_objective: 240, constraints: { premium: 68 }, lambdas: { premium: 0.25 } }),
@@ -1712,7 +1740,7 @@ describe("useNodeResultsStore", () => {
         points_truncated: false,
       })
       const factorTables = {
-        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08 }],
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 10 }],
       }
       s.completeSolveJob("n1", makeSolveResult({ mode: "ratebook", frontier }))
 
@@ -1731,23 +1759,23 @@ describe("useNodeResultsStore", () => {
       }))
 
       let cached = useNodeResultsStore.getState().solveResults.n1
-      expect(cached.result.factor_tables).toEqual(factorTables)
-      expect(cached.result.cd_iterations).toBe(5)
-      expect(cached.result.clamp_rate).toBe(0.04)
+      expect(cached.result?.factor_tables).toEqual(factorTables)
+      expect(cached.result?.cd_iterations).toBe(5)
+      expect(cached.result?.clamp_rate).toBe(0.04)
 
       // Move to another point, then back: point 0's tables come from its
       // stored summary with no further select response.
       s.selectFrontierPoint("n1", 1)
       cached = useNodeResultsStore.getState().solveResults.n1
-      expect(cached.result.factor_tables).toBeUndefined()
-      expect(cached.result.total_objective).toBe(260)
+      expect(cached.result?.factor_tables).toEqual({})
+      expect(cached.result?.total_objective).toBe(260)
       s.selectFrontierPoint("n1", 0)
       cached = useNodeResultsStore.getState().solveResults.n1
       expect(cached.frontier!.point_summaries[0].factor_tables).toEqual(factorTables)
-      expect(cached.result.total_objective).toBe(250)
-      expect(cached.result.factor_tables).toEqual(factorTables)
-      expect(cached.result.cd_iterations).toBe(5)
-      expect(cached.result.clamp_rate).toBe(0.04)
+      expect(cached.result?.total_objective).toBe(250)
+      expect(cached.result?.factor_tables).toEqual(factorTables)
+      expect(cached.result?.cd_iterations).toBe(5)
+      expect(cached.result?.clamp_rate).toBe(0.04)
     })
 
     it("updateFrontierAfterSelect enriches only the selected frontier point with optional detail", () => {
@@ -1757,18 +1785,8 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          {
-            total_objective: 240,
-            total_premium: 68,
-            lambda_premium: 0.28,
-            converged: true,
-          },
-          {
-            total_objective: 260,
-            total_premium: 72,
-            lambda_premium: 0.32,
-            converged: true,
-          },
+          onlinePoint(240),
+          onlinePoint(260),
         ],
         point_summaries: [
           pointSummary({ total_objective: 240, constraints: { premium: 68 }, lambdas: { premium: 0.28 } }),
@@ -1798,7 +1816,7 @@ describe("useNodeResultsStore", () => {
       }
       const scenario_value_histogram = { counts: [4, 5], edges: [0.95, 1.05, 1.2] }
       const factor_tables = {
-        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08 }],
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 10 }],
       }
       s.completeSolveJob("n1", makeSolveResult({ mode: "ratebook", frontier }))
 
@@ -1834,11 +1852,11 @@ describe("useNodeResultsStore", () => {
         factor_tables,
       }))
       expect(cached.frontier!.point_summaries[1]).toBe(secondSummary)
-      expect(cached.result.iterations).toBe(18)
-      expect(cached.result.history).toEqual(history)
-      expect(cached.result.scenario_value_stats).toEqual(scenario_value_stats)
-      expect(cached.result.scenario_value_histogram).toEqual(scenario_value_histogram)
-      expect(cached.result.factor_tables).toEqual(factor_tables)
+      expect(cached.result?.iterations).toBe(18)
+      expect(cached.result?.history).toEqual(history)
+      expect(cached.result?.scenario_value_stats).toEqual(scenario_value_stats)
+      expect(cached.result?.scenario_value_histogram).toEqual(scenario_value_histogram)
+      expect(cached.result?.factor_tables).toEqual(factor_tables)
     })
 
     it("updateFrontierAfterSelect drops a response when the user has moved to a different point", () => {
@@ -1852,8 +1870,8 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          { total_objective: 240, total_premium: 68, lambda_premium: 0.28, converged: true },
-          { total_objective: 260, total_premium: 72, lambda_premium: 0.32, converged: true },
+          onlinePoint(240),
+          onlinePoint(260),
         ],
         point_summaries: [
           pointSummary({ total_objective: 240, constraints: { premium: 68 }, lambdas: { premium: 0.28 } }),
@@ -1904,8 +1922,8 @@ describe("useNodeResultsStore", () => {
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
       expect(cached.selectedPointIndex).toBe(1)
-      expect(cached.result.total_objective).toBe(260)
-      expect(cached.result.constraints).toEqual({ premium: 72 })
+      expect(cached.result?.total_objective).toBe(260)
+      expect(cached.result?.constraints).toEqual({ premium: 72 })
       // Point 0's summary still takes the late response so a subsequent
       // select reuses it.
       expect(cached.frontier!.point_summaries[0]).toEqual(expect.objectContaining({ iterations: 11 }))
@@ -1924,8 +1942,8 @@ describe("useNodeResultsStore", () => {
         frontier: makeFrontier({
           status: "ok",
           points: [
-            { total_objective: 240, total_premium: 68, lambda_premium: 0.28, converged: true },
-            { total_objective: 260, total_premium: 72, lambda_premium: 0.32, converged: true },
+            onlinePoint(240),
+            onlinePoint(260),
           ],
           point_summaries: [
             pointSummary({ total_objective: 240, constraints: { premium: 68 }, lambdas: { premium: 0.28 } }),
@@ -1979,7 +1997,7 @@ describe("useNodeResultsStore", () => {
           pct_decrease: 0.45,
         },
         scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1, 1.1] },
-        factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
+        factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 }] },
       })
       s.completeSolveJob("n1", original)
 
@@ -1995,16 +2013,16 @@ describe("useNodeResultsStore", () => {
       }))
 
       const cached = useNodeResultsStore.getState().solveResults["n1"]
-      expect(cached.result.total_objective).toBe(999)
-      expect(cached.result.n_quotes).toBe(5000)
-      expect(cached.result.iterations).toBeUndefined()
-      expect(cached.result.cd_iterations).toBeUndefined()
-      expect(cached.result.clamp_rate).toBeUndefined()
-      expect(cached.result.history).toBeUndefined()
-      expect(cached.result.scenario_value_stats).toBeUndefined()
-      expect(cached.result.scenario_value_histogram).toBeUndefined()
+      expect(cached.result?.total_objective).toBe(999)
+      expect(cached.result?.n_quotes).toBe(5000)
+      expect(cached.result?.iterations).toBeUndefined()
+      expect(cached.result?.cd_iterations).toBeUndefined()
+      expect(cached.result?.clamp_rate).toBeUndefined()
+      expect(cached.result?.history).toBeUndefined()
+      expect(cached.result?.scenario_value_stats).toBeUndefined()
+      expect(cached.result?.scenario_value_histogram).toBeUndefined()
       // The select response always carries its point's factor tables, empty here.
-      expect(cached.result.factor_tables).toEqual({})
+      expect(cached.result?.factor_tables).toEqual({})
     })
 
     // ────────────────────────────────────────────────────────────
@@ -2165,13 +2183,13 @@ describe("useNodeResultsStore", () => {
 
       s.completeSolveJob("n1", makeSolveResult({ total_objective: 100 }))
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n1"].result.total_objective).toBe(100)
+      expect(useNodeResultsStore.getState().solveResults["n1"].result?.total_objective).toBe(100)
       expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeDefined()
 
       s.completeSolveJob("n2", makeSolveResult({ total_objective: 200 }))
       expect(useNodeResultsStore.getState().solveJobs["n2"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n2"].result.total_objective).toBe(200)
-      expect(useNodeResultsStore.getState().solveResults["n1"].result.total_objective).toBe(100)
+      expect(useNodeResultsStore.getState().solveResults["n2"].result?.total_objective).toBe(200)
+      expect(useNodeResultsStore.getState().solveResults["n1"].result?.total_objective).toBe(100)
     })
 
     it("failing one solve does not affect other nodes' solve jobs", () => {
@@ -2195,8 +2213,8 @@ describe("useNodeResultsStore", () => {
       const frontier = makeFrontier({
         status: "ok",
         points: [
-          { total_objective: 100, total_vol: 0.95, lambda_vol: 0.01 },
-          { total_objective: 110, total_vol: 0.92, lambda_vol: 0.02 },
+          onlinePoint(100),
+          onlinePoint(110),
         ],
         point_summaries: [
           pointSummary({ total_objective: 100, constraints: { vol: 0.95 }, lambdas: { vol: 0.01 } }),
@@ -2252,7 +2270,7 @@ describe("useNodeResultsStore", () => {
 
       const freshPreview = useNodeResultsStore.getState().getOptimiserPreview("n1")
       expect(freshPreview).not.toBe(stalePreview)
-      expect(freshPreview?.result.total_objective).toBe(999)
+      expect(freshPreview?.result?.total_objective).toBe(999)
       expect(freshPreview?.nodeLabel).toBe("Fresh Label")
     })
 

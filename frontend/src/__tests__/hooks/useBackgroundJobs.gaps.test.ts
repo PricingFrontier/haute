@@ -134,7 +134,7 @@ describe("useBackgroundJobs - gap tests", () => {
       const state = useNodeResultsStore.getState()
       // Both should be in results, removed from jobs
       expect(state.solveResults["s1"]).toBeDefined()
-      expect(state.solveResults["s1"].result.converged).toBe(true)
+      expect(state.solveResults["s1"].result?.converged).toBe(true)
       expect(state.trainResults["t1"]).toBeDefined()
       expect(state.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.01)
       expect(state.solveJobs["s1"]).toBeUndefined()

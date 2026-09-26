@@ -3121,7 +3121,8 @@ class OptimiserFrontierRequest(BaseModel):
 
 class OptimiserFrontierResponse(BaseModel):
     status: str
-    points: list[dict[str, Any]] = Field(default_factory=list)
+    points: list[OptimiserFrontierPoint] = Field(default_factory=list)
+    """price-contour's frontier rows, typed (``OptimiserFrontierPoint``), in sweep order."""
     point_summaries: list[OptimiserFrontierPointSummary] = Field(default_factory=list)
     """The server's summary of each returned point, in point order."""
     n_points: int = 0
@@ -3148,6 +3149,26 @@ class OptimiserFrontierResponse(BaseModel):
             raise ValueError("A computed frontier requires frontier_generation")
         return self
 
+    @model_validator(mode="after")
+    def _points_cover_the_constraints(self) -> OptimiserFrontierResponse:
+        """Every point and summary names exactly ``constraint_names``."""
+        names = self.constraint_names
+        unknown_axes = [name for name in self.swept_axes if name not in names]
+        if unknown_axes:
+            raise ValueError(f"swept_axes {unknown_axes} are not in constraint_names {names}")
+        if len({point.mode for point in self.points}) > 1:
+            raise ValueError("Frontier points must all be of one mode")
+        if self.status != "started" and len(self.point_summaries) != len(self.points):
+            raise ValueError(
+                f"A computed frontier needs one summary per point: {len(self.point_summaries)} "
+                f"summaries for {len(self.points)} points"
+            )
+        for index, point in enumerate(self.points):
+            _require_constraint_names(point.totals, names, field=f"points[{index}]")
+        for index, summary in enumerate(self.point_summaries):
+            _require_constraint_names(summary.constraints, names, field=f"point_summaries[{index}]")
+        return self
+
 
 class OptimiserFrontierStatusResponse(BaseModel):
     status: JobStatus
@@ -3160,6 +3181,162 @@ class OptimiserFrontierStatusResponse(BaseModel):
     http_status_code: int | None = None
     error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
+
+
+def _require_constraint_names(keys: Mapping[str, Any], names: list[str], *, field: str) -> None:
+    """Fail unless *keys* are exactly the constraint *names*."""
+    if set(keys) != set(names):
+        missing = [name for name in names if name not in keys]
+        unexpected = [name for name in keys if name not in names]
+        raise ValueError(
+            f"{field} does not hold exactly the constraint names {names}: "
+            f"missing {missing}, unexpected {unexpected}"
+        )
+
+
+def _require_same_constraint_names(maps: Mapping[str, Mapping[str, Any]]) -> None:
+    """Fail unless every constraint-keyed map in *maps* holds the same names."""
+    fields = list(maps)
+    names = list(maps[fields[0]])
+    for field in fields[1:]:
+        _require_constraint_names(maps[field], names, field=f"{field} (vs {fields[0]})")
+
+
+# A frontier row's values, typed: strict so a malformed library row can never
+# be coerced or pass NaN/Infinity through to a client.
+_STRICT_ROW = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class _OptimiserFrontierPointBase(BaseModel):
+    """The columns every price-contour frontier row has, per-constraint ones as maps.
+
+    ``thresholds`` (``threshold_<c>``, the user's units: a fraction for a pct
+    constraint), ``bounds`` (``bound_<c>``, the absolute bound), ``totals``
+    (``total_<c>``) and ``lambdas`` (``lambda_<c>``) each hold every configured
+    constraint, swept or not.
+    """
+
+    model_config = _STRICT_ROW
+
+    total_objective: float
+    thresholds: dict[str, float]
+    bounds: dict[str, float]
+    totals: dict[str, float]
+    lambdas: dict[str, float]
+    iterations: int = Field(ge=0)
+    converged: bool
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> _OptimiserFrontierPointBase:
+        _require_same_constraint_names(
+            {
+                "totals": self.totals,
+                "thresholds": self.thresholds,
+                "bounds": self.bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
+
+
+class OptimiserOnlineFrontierPoint(_OptimiserFrontierPointBase):
+    """An online frontier row (``frontier_points_schema("online", ...)``)."""
+
+    mode: Literal["online"]
+    solver_path: Literal["bisection", "subgradient"]
+    non_convergence_reason: (
+        Literal["above_envelope", "bracket_exhausted", "iteration_budget_exhausted"] | None
+    )
+    sv_mean: float
+    sv_std: float
+    sv_min: float
+    sv_p5: float
+    sv_p25: float
+    sv_median: float
+    sv_p75: float
+    sv_p95: float
+    sv_max: float
+    sv_pct_increase: float
+    sv_pct_decrease: float
+
+
+class OptimiserRatebookFrontierPoint(_OptimiserFrontierPointBase):
+    """A ratebook frontier row (``frontier_points_schema("ratebook", ...)``).
+
+    ``iterations`` is the point's coordinate-descent pass count.
+    """
+
+    mode: Literal["ratebook"]
+    clamp_rate: float
+    n_quotes_clamped_low: int = Field(ge=0)
+    n_quotes_clamped_high: int = Field(ge=0)
+
+
+OptimiserFrontierPoint = OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint
+
+
+class OptimiserFactorTableRow(BaseModel):
+    """One level of a solved ratebook factor table.
+
+    The wire keys are the solver's (``__factor_group__``), which the saved
+    artifact and every apply path read, so the row always serialises by alias.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", strict=True, allow_inf_nan=False, serialize_by_alias=True
+    )
+
+    level: str = Field(alias="__factor_group__")
+    """The canonical, apply-joinable level key."""
+    optimal_scenario_value: float
+    """The level's solved rate."""
+    quote_count: int = Field(ge=0)
+    """How many solve quotes fall in the level."""
+
+
+class OptimiserDiagnosticError(BaseModel):
+    """A result diagnostic that could not be produced, and why."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    diagnostic: Literal["scenario_value_stats", "frontier"]
+    error_type: str
+    message: str
+
+
+class OptimiserSolverSettings(BaseModel):
+    """The solver settings a solve ran with, the solver defaults applied."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    max_iter: int
+    tolerance: float
+    chunk_size: int | None
+    # Online only.
+    record_history: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Ratebook only.
+    max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Only when the solve requested a frontier.
+    frontier_enabled: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    frontier_steps: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    frontier_ranges: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
+class OptimiserInputSummary(BaseModel):
+    """What a solve ran on: the job's input provenance and its solver settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    data_source: str
+    """The batch scenario the pipeline executed against."""
+    source_file: str | None
+    """The pipeline file, when the graph came from one."""
+    graph_fingerprint: str
+    solver_settings: OptimiserSolverSettings
 
 
 class OptimiserHistoryEntry(BaseModel):
@@ -3209,6 +3386,8 @@ class OptimiserFrontierPointSummary(BaseModel):
     solve's result removes it.
     """
 
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
     total_objective: float
     constraints: dict[str, float]
     effective_bounds: dict[str, OptimiserEffectiveBound]
@@ -3220,9 +3399,22 @@ class OptimiserFrontierPointSummary(BaseModel):
     history: list[OptimiserHistoryEntry] | None
     scenario_value_stats: OptimiserScenarioValueStats | None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None
-    factor_tables: dict[str, list[dict[str, Any]]] | None
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] | None
     warning: str | None
     frontier_error: str | None
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    """Always empty: a point's statistics come from its own frontier row."""
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserFrontierPointSummary:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
 
 
 class OptimiserCombinedFactorBounds(BaseModel):
@@ -3237,7 +3429,7 @@ class OptimiserCombinedFactorBounds(BaseModel):
 
 
 class OptimiserSolveResult(BaseModel):
-    mode: str | None = None
+    mode: Literal["online", "ratebook"]
     total_objective: float
     baseline_objective: float
     constraints: dict[str, float] = Field(default_factory=dict)
@@ -3250,7 +3442,7 @@ class OptimiserSolveResult(BaseModel):
     n_quotes: int | None = None
     n_steps: int | None = None
     cd_iterations: int | None = None
-    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
     history: list[OptimiserHistoryEntry] | None = None
     warning: str | None = None
     scenario_value_stats: OptimiserScenarioValueStats | None = None
@@ -3263,6 +3455,22 @@ class OptimiserSolveResult(BaseModel):
     selected_frontier_point: int | None = None
     # The job's frontier generation (0 until a recompute); see OptimiserFrontierResponse.
     frontier_generation: int = Field(ge=0)
+    # What the solve ran on: the job's input provenance and solver settings.
+    input_summary: OptimiserInputSummary
+    # Diagnostics that could not be produced (the frontier's failure among them).
+    diagnostics_errors: list[OptimiserDiagnosticError]
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserSolveResult:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "baseline_constraints": self.baseline_constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -3303,17 +3511,17 @@ class OptimiserFrontierSelectRequest(BaseModel):
 class OptimiserFrontierSelectResponse(BaseModel):
     status: str
     point_index: int | None = None
-    total_objective: float = 0.0
-    constraints: dict[str, float] = Field(default_factory=dict)
-    baseline_objective: float = 0.0
-    baseline_constraints: dict[str, float] = Field(default_factory=dict)
+    total_objective: float
+    constraints: dict[str, float]
+    baseline_objective: float
+    baseline_constraints: dict[str, float]
     # The selected point's (or, with no point, the solve's) absolute bounds.
     effective_bounds: dict[str, OptimiserEffectiveBound]
-    lambdas: dict[str, float] = Field(default_factory=dict)
-    converged: bool = True
+    lambdas: dict[str, float]
+    converged: bool
     iterations: int | None = None
     cd_iterations: int | None = None
-    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
     history: list[OptimiserHistoryEntry] | None = None
     warning: str | None = None
     scenario_value_stats: OptimiserScenarioValueStats | None = None
@@ -3323,7 +3531,21 @@ class OptimiserFrontierSelectResponse(BaseModel):
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     # The frontier generation the point index refers to.
     frontier_generation: int = Field(ge=0)
+    # The selected point's (always empty) or, with no point, the solve's.
+    diagnostics_errors: list[OptimiserDiagnosticError]
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserFrontierSelectResponse:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "baseline_constraints": self.baseline_constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
 
 
 class OptimiserSaveRequest(BaseModel):

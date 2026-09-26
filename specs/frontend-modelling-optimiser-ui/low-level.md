@@ -26,7 +26,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. |
 | `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), the provenance strip, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
-| `frontend/src/panels/optimiser/resultViews.ts`, `frontend/src/panels/optimiser/resultProvenance.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`); and `optimiserResultProvenance`: the provenance strip's segments (mode, grid shape, as solved or frontier point i of N, and the expected-values statement). An unknown mode or a selected point outside the points returned throws; a result without a mode (a failed solve with no earlier result) has no strip. |
+| `frontend/src/panels/optimiser/resultViews.ts`, `frontend/src/panels/optimiser/resultProvenance.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`); and `optimiserResultProvenance`: the provenance strip's segments (mode, grid shape, the data source from the result's `input_summary`, as solved or frontier point i of N, and the expected-values statement). An unknown mode or a selected point outside the points returned throws. A failed solve with no earlier result has no result, so no preview and no strip. |
+| `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
 | `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
 | `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
@@ -68,7 +69,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective, the constraint-attainment table (with λ, for both modes), ratebook-impact state and scenario histogram. |
 | `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
 | `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence, selectable frontier and strict frontier-point detail display (the displayed result's objective and attainment table). Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
-| `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook tables, impact chart and factor-table normalisation/order; `factorTablesCsv(factorTables, collar)` appends `combined_factor_min`/`combined_factor_max` to every row. |
+| `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook tables, impact chart and factor-table order over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks; `factorTablesCsv(factorTables, collar)` appends `combined_factor_min`/`combined_factor_max` to every row. |
 | `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
 | `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
@@ -319,11 +320,19 @@ without broadening the exactly-one-direct fallback.
   fraction of (quote, candidate) targets strictly outside the scenario range; quotes
   at a grid edge are not counted in it.
 - The optimiser provenance strip shows on every tab: "Online|Ratebook · N quotes × M
-  scenario steps · As solved|Frontier point i of N · Expected values from the
-  scoring models on the solve quotes; not observed outcomes." N of the frontier
+  scenario steps · Data: <data_source> scenario of <source_file> · As solved|Frontier
+  point i of N · Expected values from the scoring models on the solve quotes; not
+  observed outcomes." The source segment reads the result's `input_summary`, and says
+  "Data: <data_source> scenario" when the graph has no source file. N of the frontier
   point is the number of points returned, the same count the header stepper uses.
   A result that does not report its grid shape says so in the strip instead of
   omitting it.
+- The optimiser Summary shows the result's `diagnostics_errors` in the shared
+  `DiagnosticsIssues` alert above its columns ("Scenario-value statistics",
+  "Efficient frontier"), so a degraded result says what is missing and why. A
+  selected frontier point's summary carries none.
+- The Frontier tab plots each typed point's `totals[x constraint]` against its
+  `total_objective`; it reads no other field shape.
 - `/apply` responses are cached in `useNodeResultsStore` under their full request identity
   `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
   index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
@@ -402,8 +411,8 @@ strip on every tab, per-tab intros, and the Frontier tab's narrow-width stacking
 `frontend/src/panels/__tests__/optimiserScenarioStats.test.ts`. The optimiser preview suites
 build results from the shared fixtures in `frontend/src/panels/optimiser/__tests__/fixtures.ts`
 (an online solve with scenario-value statistics, histogram and history carrying λ and constraint
-totals; frontier points with `threshold_*`, `bound_*`, `converged`, `iterations` and `sv_*`
-columns and matching point summaries; a ratebook solve with factor tables carrying
+totals; typed online frontier points with `thresholds`, `bounds`, `totals` and `lambdas` maps,
+`converged`, `iterations`, `solver_path` and the `sv_*` statistics, and matching point summaries; a ratebook solve with factor tables carrying
 `quote_count`), so selected-point views are exercised with real-shaped data rather than nulls.
 Store-integration tests cover the apply cache (no second request on reopening Quotes, a refetch
 after a frontier recompute, late responses from an earlier job or generation discarded, the

@@ -2818,7 +2818,7 @@ describe("OptimiserConfig", () => {
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
         cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
-        scenario_value_histogram: null, factor_tables: null,
+        scenario_value_histogram: null, factor_tables: null, diagnostics_errors: [],
       })
       const config = seedSolve({
         result: ratebook,
@@ -2840,7 +2840,7 @@ describe("OptimiserConfig", () => {
         point_index: 0,
         baseline_objective: 0,
         baseline_constraints: {},
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         error: null,
       })
       renderConfig(makeProps({ config }))
@@ -2860,7 +2860,7 @@ describe("OptimiserConfig", () => {
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
         cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
-        scenario_value_histogram: null, factor_tables: null,
+        scenario_value_histogram: null, factor_tables: null, diagnostics_errors: [],
       })
       const config = seedSolve({
         result: ratebook,
@@ -2882,7 +2882,7 @@ describe("OptimiserConfig", () => {
         point_index: 0,
         baseline_objective: 0,
         baseline_constraints: {},
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         error: null,
       }
       let resolveReply: (value: unknown) => void = () => {}
@@ -2900,7 +2900,7 @@ describe("OptimiserConfig", () => {
       const cached = useNodeResultsStore.getState().solveResults.opt_1
       expect(cached?.selectedPointIndex).toBeNull()
       expect(cached?.frontier?.point_summaries[0].factor_tables).toEqual({
-        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }],
+        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }],
       })
     })
 
@@ -2909,7 +2909,8 @@ describe("OptimiserConfig", () => {
       renderConfig(makeProps({ config }))
       fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
       act(() => {
-        const previous = useNodeResultsStore.getState().solveResults.opt_1!
+        const previous = useNodeResultsStore.getState().solveResults.opt_1
+        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
         useNodeResultsStore.setState({
           solveResults: { opt_1: { ...previous, jobId: "job_newer", selectedPointIndex: 0 } },
         })
@@ -2919,7 +2920,7 @@ describe("OptimiserConfig", () => {
       const cached = useNodeResultsStore.getState().solveResults.opt_1
       expect(cached?.jobId).toBe("job_newer")
       expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
-      expect(cached?.result.factor_tables).toEqual({})
+      expect(cached?.result?.factor_tables).toEqual({})
     })
 
     it("publishes the chosen frontier point, the same selection the preview shows", async () => {
@@ -3043,7 +3044,7 @@ describe("OptimiserConfig", () => {
     it("offers the factor tables as CSV for a ratebook result and states its collar", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         combined_factor_bounds: { min: 0.8999999761581421, max: 1.100000023841858 },
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })
@@ -3057,7 +3058,7 @@ describe("OptimiserConfig", () => {
     it("refuses to offer a ratebook CSV without the solve's collar", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         combined_factor_bounds: null,
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })

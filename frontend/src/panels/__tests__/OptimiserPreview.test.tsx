@@ -8,6 +8,7 @@ import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 import {
   makeOnlineFrontier,
+  makeOnlineFrontierPoint,
   makeOnlineSolveResult,
   makePointSummary,
 } from "../optimiser/__tests__/fixtures"
@@ -345,11 +346,11 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.125 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125, quote_count: 10 },
               ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
             },
           }),
@@ -441,19 +442,19 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               channel_band: [
-                { __factor_group__: "broker", optimal_scenario_value: 1.2 },
-                { __factor_group__: "direct_web", optimal_scenario_value: 1.1 },
+                { __factor_group__: "broker", optimal_scenario_value: 1.2, quote_count: 10 },
+                { __factor_group__: "direct_web", optimal_scenario_value: 1.1, quote_count: 10 },
               ],
               vehicle_age_band: [
-                { __factor_group__: "10-11", optimal_scenario_value: 0.9 },
-                { __factor_group__: "1-3", optimal_scenario_value: 1.0 },
-                { __factor_group__: "missing", optimal_scenario_value: 0.8 },
-                { __factor_group__: "4-5", optimal_scenario_value: 1.05 },
+                { __factor_group__: "10-11", optimal_scenario_value: 0.9, quote_count: 10 },
+                { __factor_group__: "1-3", optimal_scenario_value: 1.0, quote_count: 10 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.8, quote_count: 10 },
+                { __factor_group__: "4-5", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
               proposer_age_band: [
-                { __factor_group__: "28-34", optimal_scenario_value: 0.95 },
-                { __factor_group__: "20-27", optimal_scenario_value: 1.1 },
-                { __factor_group__: "missing", optimal_scenario_value: 0.85 },
+                { __factor_group__: "28-34", optimal_scenario_value: 0.95, quote_count: 10 },
+                { __factor_group__: "20-27", optimal_scenario_value: 1.1, quote_count: 10 },
+                { __factor_group__: "missing", optimal_scenario_value: 0.85, quote_count: 10 },
               ],
             },
           }),
@@ -482,7 +483,7 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
               ],
             },
           }),
@@ -502,15 +503,15 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.40 },
-                { __factor_group__: "40-49", optimal_scenario_value: 1.41 },
-                { __factor_group__: "50-59", optimal_scenario_value: 1.42 },
-                { __factor_group__: "60-69", optimal_scenario_value: 1.43 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.75, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.40, quote_count: 10 },
+                { __factor_group__: "40-49", optimal_scenario_value: 1.41, quote_count: 10 },
+                { __factor_group__: "50-59", optimal_scenario_value: 1.42, quote_count: 10 },
+                { __factor_group__: "60-69", optimal_scenario_value: 1.43, quote_count: 10 },
               ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
-                { __factor_group__: "South", optimal_scenario_value: 0.98 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+                { __factor_group__: "South", optimal_scenario_value: 0.98, quote_count: 10 },
               ],
             },
           }),
@@ -625,18 +626,18 @@ describe("OptimiserPreview", () => {
             factor_tables: {
               net_premium: [
                 {
-                  __factor_group__: "100",
-                  net_premium: 100,
+                  __factor_group__: "<200",
                   optimal_scenario_value: 1.25,
+                  quote_count: 10,
                 },
                 {
-                  __factor_group__: "500",
-                  net_premium: 500,
+                  __factor_group__: ">=400",
                   optimal_scenario_value: 0.80,
+                  quote_count: 10,
                 },
               ],
               region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05 },
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
               ],
             },
           }),
@@ -645,8 +646,8 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Summary"))
 
-      const lowValueIncreasingDot = screen.getByLabelText("net_premium 100: +25.0%")
-      const highValueDecreasingDot = screen.getByLabelText("net_premium 500: -20.0%")
+      const lowValueIncreasingDot = screen.getByLabelText("net_premium <200: +25.0%")
+      const highValueDecreasingDot = screen.getByLabelText("net_premium >=400: -20.0%")
       const unorderedCategoryDot = screen.getByLabelText("region North: +5.0%")
 
       expect(lowValueIncreasingDot).toHaveAttribute("data-impact-direction", "increasing")
@@ -672,7 +673,7 @@ describe("OptimiserPreview", () => {
             mode: "online",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.75, quote_count: 10 },
               ],
             },
           }),
@@ -691,7 +692,7 @@ describe("OptimiserPreview", () => {
             mode: "online",
             factor_tables: {
               age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.875 },
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
               ],
             },
           }),
@@ -707,7 +708,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
-            factor_tables: undefined,
+            factor_tables: {},
           }),
         }),
       })
@@ -723,7 +724,7 @@ describe("OptimiserPreview", () => {
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
-            factor_tables: undefined,
+            factor_tables: {},
           }),
           frontier: makeFrontier(),
           selectedPointIndex: 0,
@@ -881,11 +882,11 @@ describe("OptimiserPreview", () => {
         data: makeData({
           frontier: makeFrontier(1, {
             points: [
-              {
+              makeOnlineFrontierPoint(0, {
                 total_objective: 1250000,
-                total_loss_ratio: 0.72,
-                lambda_loss_ratio: 0.012345,
-              },
+                totals: { loss_ratio: 0.72 },
+                lambdas: { loss_ratio: 0.012345 },
+              }),
             ],
           }),
           selectedPointIndex: 0,
@@ -907,10 +908,11 @@ describe("OptimiserPreview", () => {
 
     it("constraint dropdown appears when multiple constraints exist", () => {
       const frontier: FrontierData = {
-        points: Array.from({ length: 3 }, (_, i) => ({
-          total_objective: 1200000 + i * 10000,
-          total_loss_ratio: 0.55 + i * 0.02,
-          total_volume: 100 + i * 10,
+        points: Array.from({ length: 3 }, (_, i) => makeOnlineFrontierPoint(i, {
+          thresholds: { loss_ratio: 0.6, volume: 90 },
+          bounds: { loss_ratio: 0.6, volume: 90 },
+          totals: { loss_ratio: 0.55 + i * 0.02, volume: 100 + i * 10 },
+          lambdas: { loss_ratio: 0.001, volume: 0 },
         })),
         point_summaries: Array.from({ length: 3 }, (_, i) => makePointSummary({
           total_objective: 1200000 + i * 10000,
@@ -1306,8 +1308,8 @@ describe("OptimiserPreview", () => {
             mode: "ratebook",
             factor_tables: {
               age_band: [
-                { __factor_group__: "18-25", optimal_scenario_value: 1.15 },
-                { __factor_group__: "26-35", optimal_scenario_value: 0.95 },
+                { __factor_group__: "18-25", optimal_scenario_value: 1.15, quote_count: 10 },
+                { __factor_group__: "26-35", optimal_scenario_value: 0.95, quote_count: 10 },
               ],
             },
           }),

@@ -19,6 +19,7 @@ import pytest
 from haute.errors import InvalidPathError, PathOutsideProjectError
 from tests.conftest import make_file_input_config
 from tests.job_store_support import seed_job
+from tests.optimiser_fixtures import make_input_summary
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +52,8 @@ def _make_completed_job(tmp_path: Path) -> dict:
             "baseline_objective": 90.0,
             "baseline_constraints": {"volume": 0.85},
             "iterations": 10,
+            "input_summary": make_input_summary(),
+            "diagnostics_errors": [],
         },
         "config": {},
         "node_label": "test_opt",

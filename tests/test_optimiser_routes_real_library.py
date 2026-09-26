@@ -362,6 +362,51 @@ class TestRealLibraryShapeContracts:
             "requests between the smaller and larger value become opaque 500s."
         )
 
+    @pytest.mark.parametrize("mode", ["online", "ratebook"])
+    def test_real_frontier_points_are_the_schema_haute_types(self, mode: str) -> None:
+        """OPT-V04 types the library's frontier rows from ``frontier_points_schema``:
+        a real frontier of either mode carries exactly those columns, with no nulls
+        beyond an online point's ``non_convergence_reason``, and every row types."""
+        import price_contour as pc
+
+        from haute.routes._frontier_point_summary import (
+            frontier_point_library_row,
+            frontier_point_rows,
+        )
+        from haute.schemas import OptimiserOnlineFrontierPoint, OptimiserRatebookFrontierPoint
+
+        df = _scored_frame(n_quotes=6, n_steps=3)
+        ranges = {"volume": (4.0, 7.5)}
+        if mode == "online":
+            solver = pc.OnlineOptimiser(
+                objective="expected_income", constraints={"volume": {"min": 0.9}}, max_iter=20
+            )
+            frontier = solver.frontier(df, threshold_ranges=ranges, n_points_per_dim=3)
+        else:
+            factors = pl.DataFrame(
+                {"quote_id": [f"q_{q:04d}" for q in range(6)], "region": ["N", "S"] * 3}
+            )
+            solver = pc.RatebookOptimiser(
+                objective="expected_income",
+                constraints={"volume": {"min": 0.9}},
+                factor_columns=[["region"]],
+                max_cd_iterations=2,
+                max_iter=10,
+            )
+            frontier = solver.frontier(df, factors, threshold_ranges=ranges, n_points_per_dim=3)
+        points = frontier.points
+
+        assert dict(points.schema) == pc.frontier_points_schema(mode, ["volume"])
+        nullable = {"non_convergence_reason"} if mode == "online" else set()
+        null_counts = points.null_count().row(0, named=True)
+        assert {name for name, count in null_counts.items() if count} <= nullable
+
+        rows = frontier_point_rows(points, mode=mode, constraint_names=["volume"])
+        assert [frontier_point_library_row(row, ["volume"]) for row in rows] == points.to_dicts()
+        model = OptimiserOnlineFrontierPoint if mode == "online" else OptimiserRatebookFrontierPoint
+        for row in rows:
+            assert model.model_validate(row).mode == mode
+
 
 # ---------------------------------------------------------------------------
 # 2. Ratebook apply / "Load detail" contract (HTTP, real solver)
@@ -545,14 +590,15 @@ class TestRatebookApplyDetailContract:
             assert resp.status_code == 200, resp.text
             selected = resp.json()
             assert selected["total_objective"] == point["total_objective"]
-            assert selected["constraints"] == {"volume": point["total_volume"]}
+            assert set(point["totals"]) == {"volume"}
+            assert selected["constraints"] == point["totals"]
             tables = {
                 name: {row["__factor_group__"]: row["optimal_scenario_value"] for row in rows}
                 for name, rows in selected["factor_tables"].items()
             }
             evaluation = evaluator.evaluate(scored, banding, tables)
             assert evaluation.total_objective == point["total_objective"]
-            assert evaluation.total_constraints == {"volume": point["total_volume"]}
+            assert evaluation.total_constraints == point["totals"]
 
     def test_save_without_point_pins_real_artifact_shape(self, client, tmp_path):
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
@@ -769,7 +815,8 @@ class TestFrontierPointSummaryContract:
         for index, summary in enumerate(summaries):
             point = frontier["points"][index]
             assert summary["scenario_value_stats"]["mean"] == point["sv_mean"]
-            assert summary["lambdas"] == {"volume": point["lambda_volume"]}
+            assert set(point["lambdas"]) == {"volume"}
+            assert summary["lambdas"] == point["lambdas"]
             response = client.post(
                 "/api/optimiser/frontier/select",
                 json={"job_id": job_id, "point_index": index},
@@ -781,6 +828,53 @@ class TestFrontierPointSummaryContract:
                 # The select response reports "no tables" as {} rather than null.
                 expected = {} if field == "factor_tables" and value is None else value
                 assert selected.get(field) == expected, field
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestSolveResultContract:
+    """OPT-V04: a real solve returns its provenance, no degraded diagnostics, and
+    typed frontier points of its own mode."""
+
+    def test_online_result_carries_its_input_summary_and_no_diagnostics_errors(
+        self, client, tmp_path
+    ):
+        path = tmp_path / "online_contract.parquet"
+        _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)
+        job_id = _solve_completed(client, _online_graph(str(path)))
+
+        result = _poll_until_done(client, job_id)["result"]
+
+        summary = result["input_summary"]
+        assert summary["node_id"] == "opt"
+        assert summary["data_source"] == "batch"
+        assert isinstance(summary["graph_fingerprint"], str) and summary["graph_fingerprint"]
+        assert summary["solver_settings"] == {
+            "max_iter": 20,
+            "tolerance": 1e-4,
+            "chunk_size": None,
+            "record_history": False,
+        }
+        assert result["diagnostics_errors"] == []
+        assert result["scenario_value_stats"] is not None
+
+    def test_ratebook_frontier_points_are_typed_ratebook_rows(self, client, tmp_path):
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
+        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
+
+        status = run_frontier_and_wait(
+            client,
+            {"job_id": job_id, "threshold_ranges": {"volume": [4.0, 6.0]}, "n_points_per_dim": 2},
+        )
+
+        assert status["status"] == "completed", status.get("message", "")
+        for point in status["result"]["points"]:
+            assert point["mode"] == "ratebook"
+            assert set(point["totals"]) == {"volume"}
+            assert 0.0 <= point["clamp_rate"] <= 1.0
+            assert not any(key.startswith("sv_") for key in point)
+        solved = _poll_until_done(client, job_id)["result"]
+        assert solved["input_summary"]["solver_settings"]["max_cd_iterations"] == 3
+        assert solved["diagnostics_errors"] == []
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -835,16 +929,11 @@ _TWO_CONSTRAINTS = {"volume": {"min": 5.5}, "margin": {"max": 400.0}}
 
 def _assert_every_constraint_summarised(summary: dict, point: dict) -> None:
     """A point summary carries the unswept ``margin`` like the swept ``volume``."""
-    assert summary["constraints"] == {
-        "volume": point["total_volume"],
-        "margin": point["total_margin"],
-    }
-    assert summary["lambdas"] == {
-        "volume": point["lambda_volume"],
-        "margin": point["lambda_margin"],
-    }
+    assert summary["constraints"] == point["totals"]
+    assert set(point["totals"]) == {"volume", "margin"}
+    assert summary["lambdas"] == point["lambdas"]
     assert summary["effective_bounds"] == {
-        "volume": {"kind": "min", "bound": point["threshold_volume"]},
+        "volume": {"kind": "min", "bound": point["thresholds"]["volume"]},
         "margin": {"kind": "max", "bound": 400.0},
     }
 
@@ -893,7 +982,7 @@ class TestEffectiveBoundsContract:
         assert result["frontier_generation"] == frontier["frontier_generation"] == 0
         assert frontier["constraint_names"] == ["volume", "margin"]
         assert frontier["swept_axes"] == ["volume"]
-        assert [point["threshold_volume"] for point in frontier["points"]] == [5.0, 5.5, 6.0]
+        assert [point["thresholds"]["volume"] for point in frontier["points"]] == [5.0, 5.5, 6.0]
         for index, point in enumerate(frontier["points"]):
             _assert_every_constraint_summarised(frontier["point_summaries"][index], point)
             response = client.post(
@@ -958,13 +1047,13 @@ class TestEffectiveBoundsContract:
         )
         assert status["status"] == "completed", status.get("message", "")
         frontier = status["result"]
-        thresholds = [point["threshold_volume"] for point in frontier["points"]]
+        thresholds = [point["thresholds"]["volume"] for point in frontier["points"]]
         assert thresholds == pytest.approx([0.9, 0.95, 1.0])
         for index, point in enumerate(frontier["points"]):
             expected = {
                 "volume": {
                     "kind": "min",
-                    "bound": pytest.approx(point["threshold_volume"] * baseline, rel=1e-12),
+                    "bound": pytest.approx(point["thresholds"]["volume"] * baseline, rel=1e-12),
                 }
             }
             assert frontier["point_summaries"][index]["effective_bounds"] == expected

@@ -139,7 +139,7 @@ function HeaderPointStepper({
 export default function OptimiserPreview({ data, nodeId, allNodes, edges, submodels, onRefresh }: OptimiserPreviewProps) {
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
-  const { result, solvedResult, jobId, constraints } = displayData
+  const { result, solvedResult, jobId } = displayData
 
   // The tab and X axis belong to one review: one node's one solve job. Stepping
   // through points builds a new result each press, so they must not follow
@@ -167,7 +167,6 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const rememberHeight = useUIStore((s) => s.setOptimiserPreviewHeight)
 
   // X-axis constraint picker for multi-constraint frontiers
-  const constraintNames = useMemo(() => Object.keys(constraints), [constraints])
 
   // Store actions
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
@@ -415,7 +414,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           )}
         </>
       )}
-      provenance={provenance && (
+      provenance={(
         <p data-testid="optimiser-provenance" className="m-0">
           {provenance.join(" · ")}
         </p>
@@ -427,7 +426,6 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           frontier={frontierWithPoints}
           result={result}
           solvedResult={solvedResult}
-          constraintNames={constraintNames}
           selectedIdx={selectedIdx}
           xConstraintIdx={xConstraintIdx}
           onXConstraintChange={setXConstraintIdx}
@@ -479,33 +477,16 @@ interface FrontierTabProps {
   result: OptimiserSolveResult
   /** The as-solved result, which anchors the chart's as-solved marker. */
   solvedResult: OptimiserSolveResult
-  constraintNames: string[]
   selectedIdx: number | null
   xConstraintIdx: number
   onXConstraintChange: (idx: number) => void
   onPointClick: (index: number) => void
 }
 
-function finitePointNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null
-}
-
-function frontierConstraintPointValue(point: Record<string, unknown>, name: string): number | null {
-  const totalValue = finitePointNumber(point[`total_${name}`])
-  if (totalValue !== null) return totalValue
-  const nested = point.constraints
-  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-    const nestedValue = finitePointNumber((nested as Record<string, unknown>)[name])
-    if (nestedValue !== null) return nestedValue
-  }
-  return finitePointNumber(point[name])
-}
-
 function FrontierTab({
   frontier,
   result,
   solvedResult,
-  constraintNames,
   selectedIdx,
   xConstraintIdx,
   onXConstraintChange,
@@ -513,26 +494,21 @@ function FrontierTab({
 }: FrontierTabProps) {
   const xPickerId = useId()
   const points = frontier.points
+  // The frontier's own constraints: the guard checked every point names each one.
+  const constraintNames = frontier.constraint_names
   const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
-  const xKey = xConstraintName ? `total_${xConstraintName}` : null
-  const yKey = "total_objective"
-  const chartPoints = useMemo(() => {
-    if (!xKey || !xConstraintName) return points
-    return points.map((point) => {
-      if (finitePointNumber(point[xKey]) !== null) return point
-      const value = frontierConstraintPointValue(point, xConstraintName)
-      return value === null ? point : { ...point, [xKey]: value }
-    })
-  }, [points, xConstraintName, xKey])
+  // Each typed point holds every constraint's total, so the x value is read by name.
+  const chartPoints = useMemo(
+    () => (xConstraintName
+      ? points.map((point) => ({ x: point.totals[xConstraintName], y: point.total_objective }))
+      : []),
+    [points, xConstraintName],
+  )
 
   const shownPointCount = frontier.points_returned || points.length
   const totalPointCount = frontier.n_points || points.length
 
-  // Build scales
-  const xVals = xKey ? chartPoints.map(p => p[xKey] as number).filter(v => typeof v === "number" && Number.isFinite(v)) : []
-  const yVals = chartPoints.map(p => p[yKey] as number).filter(v => typeof v === "number" && Number.isFinite(v))
-
-  const hasChartData = xKey && xVals.length >= 2 && yVals.length >= 2
+  const hasChartData = chartPoints.length >= 2
 
   // The as-solved marker stays where the solve is whichever point is selected.
   const currentX = xConstraintName ? solvedResult.constraints[xConstraintName] : null
@@ -560,8 +536,8 @@ function FrontierTab({
         {hasChartData ? (
           <FrontierChart
             points={chartPoints}
-            xKey={xKey!}
-            yKey={yKey}
+            xKey="x"
+            yKey="y"
             xLabel={xConstraintName ?? "constraint"}
             selectedIdx={selectedIdx}
             currentX={currentX}
