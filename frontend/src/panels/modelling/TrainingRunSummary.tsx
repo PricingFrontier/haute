@@ -1,5 +1,6 @@
 import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
+import { isStringOrCategoricalDtype } from "../../utils/polarsDtypes"
 import { algorithmCapability, trainsOnGpu } from "./algorithmCapabilities"
 import { roleColumnReasons, type ModellingColumn } from "./featureSelection"
 import {
@@ -12,6 +13,29 @@ import {
 import { glmCrossValidates } from "./glmFamilies"
 import { trainingFitBudget } from "./trainingFitBudget"
 import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
+
+/**
+ * How CatBoost encodes the model's categorical features. CatBoost's own
+ * default level count differs between CPU and GPU training, so the default is
+ * named rather than counted.
+ */
+function catboostCategoricalEncoding(
+  params: Record<string, unknown>,
+  tuning: Record<string, unknown> | null,
+): string {
+  const searchSpace = tuning?.search_space
+  if (
+    typeof searchSpace === "object"
+    && searchSpace !== null
+    && Object.hasOwn(searchSpace, "one_hot_max_size")
+  ) {
+    return "Tuned (one_hot_max_size is in the search space)"
+  }
+  // CatBoost reads a null parameter as unset.
+  const maxSize = params.one_hot_max_size
+  if (maxSize === undefined || maxSize === null) return "CatBoost's default (target statistics)"
+  return `One-hot up to ${String(maxSize)} levels, target statistics above`
+}
 
 export function TrainingRunSummary({
   config,
@@ -70,6 +94,11 @@ export function TrainingRunSummary({
       ? "1 final fit"
       : `${budget.total} total fits: ${budget.selection} ${tuning ? "tuning" : "validation"} ${budget.selection === 1 ? "fit" : "fits"} + 1 final fit`
   const params = configField<Record<string, unknown>>(config, "params", {})
+  const hasCategoricalFeatures =
+    config.algorithm === "catboost"
+    && eligible.some(
+      (column) => !excluded.includes(column.name) && isStringOrCategoricalDtype(column.dtype),
+    )
   const method =
     validation.method === "cross_validation"
       ? `${validation.fold_count}-fold cross-validation`
@@ -127,6 +156,12 @@ export function TrainingRunSummary({
             ? `${featureCount} features`
             : "Waiting for columns"}
         </dd>
+        {hasCategoricalFeatures && (
+          <>
+            <dt style={{ color: "var(--text-muted)" }}>Categorical encoding</dt>
+            <dd>{catboostCategoricalEncoding(params, tuning)}</dd>
+          </>
+        )}
         <dt style={{ color: "var(--text-muted)" }}>Evaluation</dt>
         <dd>
           {method}

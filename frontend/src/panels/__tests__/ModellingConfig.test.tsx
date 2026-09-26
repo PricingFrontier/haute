@@ -225,6 +225,7 @@ beforeEach(() => {
   useNodeResultsStore.setState({
     trainJobs: {},
     trainResults: {},
+    expiredTrainJobs: {},
   })
   mockGetTrainStatus.mockReset().mockReturnValue(new Promise(() => {}))
   mockFetchModellingGpuStatus.mockReset().mockReturnValue(new Promise(() => {}))
@@ -319,6 +320,17 @@ describe("Training configuration readiness", () => {
 
     expect(screen.queryByText(/Parameters JSON/)).toBeNull()
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+  })
+  it("names one_hot_max_size beneath CatBoost's Parameters JSON only", () => {
+    const note = /one_hot_max_size.*one-hot encoded.*target statistics, which are much slower to train/
+    renderConfig({ activePane: "params" })
+    expect(screen.getByText(note)).toBeInTheDocument()
+    cleanup()
+    renderConfig({
+      activePane: "params",
+      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
+    })
+    expect(screen.queryByText(note)).toBeNull()
   })
   it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
     const { props } = renderConfig({
@@ -517,7 +529,16 @@ describe("ModellingConfig", () => {
       fireEvent.click(screen.getByText("CatBoost"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "catboost",
-        params: { iterations: 1000, learning_rate: 0.05, depth: 6, l2_leaf_reg: 3, early_stopping_rounds: 50 },
+        // one_hot_max_size is a visible starter value: small categorical columns
+        // are one-hot encoded instead of CatBoost's much slower target statistics.
+        params: {
+          iterations: 1000,
+          learning_rate: 0.05,
+          depth: 6,
+          l2_leaf_reg: 3,
+          early_stopping_rounds: 50,
+          one_hot_max_size: 10,
+        },
         evaluation: expect.objectContaining({
           schema_version: 1,
           strategy: "random",
@@ -1394,6 +1415,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 700,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1415,8 +1437,8 @@ describe("ModellingConfig", () => {
         training_mb: 10000,
         available_mb: 8192,
         bytes_per_row: 500,
-        unbounded_join_node_ids: [],
         was_downsampled: true,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1482,7 +1504,6 @@ describe("ModellingConfig", () => {
         expect(toasts.some((t) => t.text.includes("Training estimate failed"))).toBe(true)
       })
       // Inline warning is shown
-        unbounded_join_node_ids: [],
       expect(screen.getByText("Memory estimate failed")).toBeTruthy()
       // Verify toast content
       const toasts = useToastStore.getState().toasts
@@ -1500,6 +1521,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 700,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1534,28 +1556,6 @@ describe("ModellingConfig", () => {
       expect(await screen.findByText(/The row count at "Explode items" can't be proven/)).toBeTruthy()
       expect(screen.queryByText("Dataset fits in memory")).toBeNull()
     })
-  })
-
-  // ═════════════════════════════════════════════════════════════════
-  // Collapsible sections
-  // ═════════════════════════════════════════════════════════════════
-
-  // ═════════════════════════════════════════════════════════════════
-  // Edge cases
-  // ═════════════════════════════════════════════════════════════════
-        unbounded_join_node_ids: [],
-
-  describe("Edge cases", () => {
-    beforeEach(() => { defaultPane = "features" })
-    it("renders without upstream columns", () => {
-      renderConfig({ upstreamColumns: undefined })
-      // Should not crash, feature count section still renders
-      expect(screen.getByText(/Features/)).toBeTruthy()
-    })
-
-    it("renders with empty columns array", () => {
-      renderConfig({ upstreamColumns: [] })
-      expect(screen.getByText(/Features/)).toBeTruthy()
 
     it("opens a named join on the canvas from its unproven row bound", async () => {
       mockEstimateTrainingRam.mockResolvedValue({
@@ -1583,6 +1583,27 @@ describe("ModellingConfig", () => {
       expect(openNode).toHaveBeenCalledWith("join")
       expect(screen.getAllByRole("button", { name: /^Open "/ })).toHaveLength(1)
     })
+  })
+
+  // ═════════════════════════════════════════════════════════════════
+  // Collapsible sections
+  // ═════════════════════════════════════════════════════════════════
+
+  // ═════════════════════════════════════════════════════════════════
+  // Edge cases
+  // ═════════════════════════════════════════════════════════════════
+
+  describe("Edge cases", () => {
+    beforeEach(() => { defaultPane = "features" })
+    it("renders without upstream columns", () => {
+      renderConfig({ upstreamColumns: undefined })
+      // Should not crash, feature count section still renders
+      expect(screen.getByText(/Features/)).toBeTruthy()
+    })
+
+    it("renders with empty columns array", () => {
+      renderConfig({ upstreamColumns: [] })
+      expect(screen.getByText(/Features/)).toBeTruthy()
     })
 
     it("GPU toggle enables GPU training", () => {

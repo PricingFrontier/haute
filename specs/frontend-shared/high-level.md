@@ -385,7 +385,14 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - `ErrorBoundary` is the last line of defence for render-time exceptions:
   it logs via `console.error` and shows a "Try again" fallback scoped to
   the boundary it wraps, so one panel's crash is visible and recoverable
-  without reloading the whole app.
+  without reloading the whole app. The exception is a lazily loaded chunk
+  that fails to load: a page names the chunk files of the build it was
+  served from, a rebuild replaces them, and retrying in that page cannot
+  succeed, so the fallback says "Haute has been updated" and offers a Reload
+  that reloads the page. A reload loses unsaved canvas changes and the app has
+  no unload guard, so while the graph has unsaved changes the fallback asks for
+  a save first (Ctrl+S) and its button reads "Reload without saving". Vite's `vite:preloadError` failures are recorded at
+  start-up and surface through that same fallback.
 
 ## Pipeline editor document trust boundary
 

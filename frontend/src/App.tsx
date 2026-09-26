@@ -25,6 +25,7 @@ import { GraphProvider } from "./panels/GraphContext"
 import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
+import { ModellingResultExpired } from "./panels/modelling/ModellingResultExpired"
 
 import TracePanel, { TraceStatePanel } from "./panels/TracePanel"
 import ToastContainer from "./components/Toast"
@@ -239,6 +240,10 @@ function ActiveNodePreviewBody({
   onRefresh,
   onImported,
 }: Omit<ActiveNodePreviewProps, "run">) {
+  // A Model Training node whose remembered result the server no longer holds.
+  const modellingResultExpired = useNodeResultsStore(
+    (state) => activeNodeId !== null && Object.hasOwn(state.expiredTrainJobs, activeNodeId),
+  )
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = activeNode
     && activeNodeType !== NODE_TYPES.SUBMODEL
@@ -273,6 +278,9 @@ function ActiveNodePreviewBody({
         <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} onRefresh={refreshAction} />
       </Suspense>
     )
+  }
+  if (documentCanExecute && activeNode && modellingResultExpired) {
+    return <ModellingResultExpired nodeLabel={String(nodeData(activeNode).label)} />
   }
   const optimiserPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
   if (documentCanExecute && optimiserPreview) {
@@ -512,6 +520,8 @@ type NodePropertiesPanelProps = {
   previewBusy: boolean
   onClosePanel: () => void
   onRemoveUnavailableNode: NonNullable<ComponentProps<typeof NodePanel>["onRemoveUnavailableNode"]>
+  /** Opens another canvas node in the panel, as clicking it does. */
+  onOpenNode: (nodeId: string) => void
 }
 
 function NodePropertiesPanel({
@@ -520,8 +530,6 @@ function NodePropertiesPanel({
   importsOpen,
   assistantOpen,
   onCloseGit,
-  /** Opens another canvas node in the panel, as clicking it does. */
-  onOpenNode: (nodeId: string) => void
   onCloseUtility,
   onCloseImports,
   onSave,
@@ -554,6 +562,7 @@ function NodePropertiesPanel({
   previewBusy,
   onClosePanel,
   onRemoveUnavailableNode,
+  onOpenNode,
 }: NodePropertiesPanelProps) {
   const visibleTraceState = traceState.status === "error"
     || (traceState.status === "loading" && traceState.progressVisible)
@@ -562,7 +571,6 @@ function NodePropertiesPanel({
   let content: ReactNode
   if (gitOpen) {
     content = (
-  onOpenNode,
       <Suspense fallback={null}>
         <GitPanel onClose={onCloseGit} onSave={onSave} />
       </Suspense>
@@ -611,6 +619,7 @@ function NodePropertiesPanel({
         edges={panelGraph.edges}
         submodels={submodels}
         preamble={preamble}
+        openNode={onOpenNode}
       >
         <NodePanel
           node={panelNode}
@@ -619,7 +628,6 @@ function NodePropertiesPanel({
           onRenameNode={onRenameNode}
           onDeleteEdge={onDeleteEdge}
           onDeleteSubmodelInputPort={onDeleteSubmodelInputPort}
-        openNode={onOpenNode}
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
           documentReadOnly={documentEditingReadOnly}
@@ -1363,14 +1371,6 @@ function FlowEditor() {
     deleteBoundaryEdge,
   })
 
-  const presentedEdgeJoinCandidateEdgeId = useMemo(
-    () => (
-      !editingReadOnly && edgeJoinCandidateEdgeId
-        && edgesWithTrace.some((edge) => edge.id === edgeJoinCandidateEdgeId)
-        ? edgeJoinCandidateEdgeId
-        : null
-    ),
-    [editingReadOnly, edgeJoinCandidateEdgeId, edgesWithTrace],
   // A panel names a node on this canvas (a join its estimate depends on); a
   // missing one is a caller bug, not something to open silently.
   const openCanvasNode = useCallback((nodeId: string) => {
@@ -1379,6 +1379,14 @@ function FlowEditor() {
     openNode(node)
   }, [openNode])
 
+  const presentedEdgeJoinCandidateEdgeId = useMemo(
+    () => (
+      !editingReadOnly && edgeJoinCandidateEdgeId
+        && edgesWithTrace.some((edge) => edge.id === edgeJoinCandidateEdgeId)
+        ? edgeJoinCandidateEdgeId
+        : null
+    ),
+    [editingReadOnly, edgeJoinCandidateEdgeId, edgesWithTrace],
   )
   const edgesWithEdgeJoinCandidate = useMemo(
     () => withEdgeJoinInsertionCandidate(edgesWithTrace, presentedEdgeJoinCandidateEdgeId),
@@ -1777,6 +1785,7 @@ function FlowEditor() {
           previewBusy={previewBusy}
           onClosePanel={closePanel}
           onRemoveUnavailableNode={setPipelineRepairTarget}
+          onOpenNode={openCanvasNode}
         />
       </div>
       )}
@@ -1785,7 +1794,6 @@ function FlowEditor() {
         editingReadOnly={editingReadOnly}
         contextMenu={contextMenu}
         setContextMenu={setContextMenu}
-          onOpenNode={openCanvasNode}
         onDeleteNode={handleDeleteNode}
         onDuplicateNode={handleDuplicateNode}
         onRenameNodeMenu={handleRenameNode}

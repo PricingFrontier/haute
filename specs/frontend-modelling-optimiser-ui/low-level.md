@@ -17,8 +17,9 @@ Only a current, accepted save response may acknowledge this revision transition.
 | --- | --- |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the `ModalShell` Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title, description}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
-| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
-| `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
+| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. Its collapsed bar summarises the first two of the metrics the result leads with (`headlineMetrics`). |
+| `frontend/src/panels/modelling/ModellingResultExpired.tsx` | `ModellingResultExpired`: the results panel of a Model Training node whose remembered result is gone from the server. The app shows it in place of the data preview when the active node has no result and the results store records its result as expired: a preview frame with the node's label and the remembered modelling panel height, saying the last training result is no longer available (the server restarted or it expired), that training results are not kept across a server restart, and to train the model again or open its MLflow run if it was logged. |
+| `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab; `validationMetricsLead` (a validation fit ran and the diagnostics are in-sample) and `headlineMetrics` (test metrics, else the validation selection means when they lead, else the diagnostics), shared by the Summary's first card and the collapsed bar. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
 | `frontend/src/panels/optimiser/OptimiserAnalysisColumns.tsx` | The Data pane's Analysis columns section: the Analysis input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), the capped column multi-select from the chosen frame's schema, the switch-time removal of columns the new frame lacks, and the missing-input and missing-column flags. |
@@ -46,21 +47,21 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/algorithmCapabilities.ts`, `frontend/src/panels/modelling/algorithmCapabilities.json` | The backend-generated family capability table (`ALGORITHM_CAPABILITIES`, `algorithmCapability`, `supportedLosses`) that the gateway, target pane and tuning readiness read. |
 | `frontend/src/panels/modelling/modelColumns.ts`, `frontend/src/panels/modelling/WeightOffsetFields.tsx` | What the GLM and tree-family target configurations share: the columns each role may take (the target is never the weight or offset; weight and offset are numeric) and the optional weight and offset pickers. |
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | Tree-family target/loss/metric controls with loss-derived task compatibility and the positive-class field, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
-| `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded tuning/search-space editing from each family's starter space, and pure parameter/feature transitions. |
+| `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing with an optional one-line note beneath it (`parametersNote`; the modelling editor passes CatBoost's one_hot_max_size note), optional bounded tuning/search-space editing from each family's starter space, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/EBMInteractionsConfig.tsx`, `frontend/src/panels/modelling/EBMTermsTab.tsx` | The EBM Features-pane pairwise-interaction control (a count EBM chooses from, or explicit feature pairs written to `params.interactions`), and the EBM Terms result tab: importance-ranked terms, main-effect shapes with the missing bin, and interaction score tables, labelled as additive link-scale term scores. |
 | `frontend/src/panels/modelling/GpuTrainingToggle.tsx` | `XGBoostGpuToggle`, the Train-pane GPU checkbox for a GPU-capable family (XGBoost): fetches `GET /api/modelling/gpu` once per mount, enables the box only when the server can train on a CUDA GPU (otherwise shows the server's reason), and always allows switching an existing GPU node back to CPU. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/glmFamilies.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/link/dispersion, feature rows with indented inline term cards, labelled interaction/slot controls, pure editor transitions mirroring the backend term contract, the family/link and solver constants shared with the backend, and regularisation, cross-validation, and solver controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
-| `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
+| `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute, and for a CatBoost model with String or Categorical features the categorical encoding: one-hot up to `one_hot_max_size` levels with target statistics above, tuned when the search space holds it, or CatBoost's default) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
 | `frontend/src/panels/modelling/EvaluationAllocation.tsx`, `frontend/src/panels/modelling/evaluationPreview.ts` | The Split pane's training/validation/test allocation bar and per-fit row ranges, showing exact rows only from an evaluation preview whose strategy and validation method match the current editor (`compatibleEvaluationPreview`), and target fractions otherwise. |
 | `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but other evaluation previews as the in-flight holders (`refusedByEvaluationPreviews`); every other failure, including a running training job, is returned at once. |
 | `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice. |
 | `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE, PDP and the optimiser Rates tab share (`FeatureDiagnosticLayout`: a ranked browser beside the selected item's chart, with empty states for no rows and for a selection without a row; `FeatureDiagnosticTab` ranks model features by importance through it); and the results workspace's container-query layout styles, imported by `frontend/src/panels/ResultsWorkspace.tsx` so the optimiser is styled even when no model result has been opened. Accent-coloured rules read `--results-accent`/`--results-accent-soft`, which the shell sets per workspace; the optimiser Frontier tab's stacking rules live here too. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
-| `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
+| `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or record it as expired in the results store with `markTrainResultExpired`). |
 | `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling and optimiser export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`, `OPTIMISER_EXPORT_CONFIG_KEYS`, `exportConfigKeysFor`) and `trainingIdentityConfig` / `solveIdentityConfig`, which omit them. |
 | `frontend/src/panels/modelling/modelExport.ts`, `frontend/src/panels/modelling/FieldHelpIcon.tsx` | The model file extension per algorithm and the shared hover-only field help icon. |
-| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence and warnings. |
+| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics (the validation fit's selection metrics lead when the diagnostics are in-sample after a validation fit and no test set was reserved), tuning baseline/winner evidence and warnings. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables, including invalid-inference reasons and robust standard errors. |
 | `frontend/src/panels/RelativityBars.tsx` | The diverging-around-1.0 bar list GLM relativities and the optimiser Rates tab share: one row per item in the caller's order, `--chart-above`/`--chart-below` bars scaled to the largest deviation (confidence whiskers included), theme-token baseline and whiskers, optional focusable rows with an active row, an optional aligned side strip, and, from a caller threshold, compact rows whose labels are thinned with `chartLabelIndices`. A `null` value is unavailable: the row draws no bar, shows "—" and does not set the scale (the Segments tab's zero-weight level); a non-finite value throws. |
 | `frontend/src/panels/modelling/NumberField.tsx` | Numeric input that keeps a draft until a valid, in-range value commits on blur or Enter. |
@@ -81,7 +82,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
 | `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers, including `frontierGenerationMismatch`, the message for a point reply the server answered for another frontier generation than the result shows. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
-| `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
+| `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, `isStringOrCategoricalDtype` (the String and Categorical dtypes CatBoost trains as categorical features, as the backend detects them; Enum is not one), and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
 
 ## Key types and data structures
 
@@ -204,7 +205,16 @@ Only a current, accepted save response may acknowledge this revision transition.
    those, and resets the active tab when a new result arrives. `SummaryTab` separates selection
    estimates from final-test metrics, renders ordered validation fits and tuning
    baseline/winner/improvement evidence, and exposes diagnostics rather than suppressing a
-   partially successful training result.
+   partially successful training result. When `diagnostics_set` is `"development"` and
+   `evaluation.validation_method` is not `"none"`, its first metric card is the validation
+   fit's `evaluation.selection_metrics` (each metric's `mean`), titled "Validation, N rows"
+   for holdout or "Validation (K-fold mean), N rows" for cross-validation, N being the
+   summaries' `validation_rows` and K `validation_fit_count`, and described as the
+   out-of-sample performance used to select the model; the in-sample diagnostics card
+   follows. A `"final_test"` result keeps its test metrics first, and a run without
+   validation is unchanged. When the active node has no result and the results store
+   records its remembered result as expired, the app shows `ModellingResultExpired` in place
+   of the data preview.
 5. `parseTrainStatusResponse` preserves explicit `null` values in categorical PDP grids;
    missing value fields, non-scalar values and null numeric grid values remain invalid.
    `PdpTab` displays the null level as `(missing)` without changing its prediction or
@@ -510,7 +520,8 @@ without broadening the exactly-one-direct fallback.
   starts at the top. View availability continues to follow actual result data.
 - `modelling/SummaryTab` groups results into bordered, elevated cards using the
   existing theme tokens and model accent. Performance cards precede model metadata;
-  final-test metrics and diagnostic metrics retain separate names and descriptions.
+  final-test metrics and diagnostic metrics retain separate names and descriptions, and
+  the validation card that leads in-sample diagnostics carries its own row-count title.
   Responsive grids follow the panel's available width. Values use tabular numerals,
   long labels/paths wrap, and detailed tables scroll within their cards. Evaluation,
   tuning ranking, parameter application and MLflow payloads are unchanged.
@@ -608,7 +619,13 @@ feasible-only line and the as-solved anchor;
 `frontend/src/panels/optimiser/__tests__/DetailCard.test.tsx` the reasons, λ sign and trade-off
 row; and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching,
 global-index selection and the in-slice stepper. Modelling subcomponents have suites
-under `frontend/src/panels/modelling/__tests__/`; optimiser helper/frontier coverage is under
+under `frontend/src/panels/modelling/__tests__/`:
+`frontend/src/panels/modelling/__tests__/SummaryTab.test.tsx` proves the validation card leads a holdout-validated refit's in-sample diagnostics with its row count
+while test metrics still lead a test-set run, and
+`frontend/src/panels/modelling/__tests__/TrainingRunSummary.test.tsx` the CatBoost
+categorical encoding. `frontend/src/__tests__/App.integration.test.tsx` proves the results
+panel of a Model Training node says why an expired result is gone, and says nothing of it
+when a result is present or no training was remembered; optimiser helper/frontier coverage is under
 `frontend/src/panels/optimiser/__tests__/`. `frontend/src/__tests__/utils/banding.test.ts` covers
 the factor-level and optimiser-source utility. Smaller visual summaries/charts are also exercised
 through their parent preview tests; not every helper has a dedicated test file.
@@ -695,7 +712,12 @@ The behavioural contract is defined in
   dedicated parameter fields. For CatBoost, a Target-style **Fixed parameters** /
   **Tune parameters** radio group is the first control below the heading. Fixed mode renders only
   Parameters JSON; Tune mode renders only trial count, seed, configured selection metric and
-  Search space JSON.
+  Search space JSON. For CatBoost, `ModellingConfig` passes a one-line note rendered beneath
+  Parameters JSON: `one_hot_max_size` one-hot encodes categorical columns with up to that many
+  levels, and above it CatBoost uses target statistics, which are much slower to train. The
+  gateway's CatBoost starter parameters are `iterations: 1000`, `learning_rate: 0.05`,
+  `depth: 6`, `l2_leaf_reg: 3`, `early_stopping_rounds: 50` and `one_hot_max_size: 10`; the
+  backend applies no default of its own, so a node without the key trains with CatBoost's.
   Each JSON draft autosaves when its frontend parser accepts the top-level object, without
   Apply/Revert controls; invalid syntax, a non-object top level, or a reserved fixed key stays in
   the corresponding per-node draft and contributes a click-time issue to the Train banner only
@@ -787,9 +809,17 @@ The behavioural contract is defined in
   stored config hash and source, with the current structural version when the `trainingLineage`
   of the payload the editor would submit now equals the stored one and `-1` (always stale)
   otherwise, so an upstream or submodel edit saved before the reload still shows the stale
-  warning; a missing job (`404`) or any other status forgets the handle and the
-  Export pane reports "The last training result for this node is no longer available (the server
-  restarted or it expired). Train this model again to export it." Storage failures are tolerated.
+  warning; a missing job (`404`) or any other status forgets the handle and records the node's
+  result as expired in the results store (`markTrainResultExpired`, keyed by node, holding the
+  job ID), unless the node has meanwhile gained a result or a running job. That one record is
+  what both surfaces read, and it lasts for the session until the node starts training or gets
+  a result. The Export pane reports "The last training result for this node is no longer
+  available (the server restarted or it expired). Train this model again to export it." The
+  results panel (`ModellingResultExpired`) reports "The last training result for this node is
+  no longer available (the server restarted or it expired). Training results are not kept
+  across a server restart: train this model again to see them, or open its MLflow run if it
+  was logged." A transient status failure keeps the handle and records nothing. Storage
+  failures are tolerated.
   `ModelFileExportSection` is headed "Model file" with an Info icon tooltip describing the
   action. It mounts the shared `PathPickerField` labelled "Filename or path *", bound to
   `model_export_path`, with manual entry and a browser filtered to the model extension.

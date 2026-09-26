@@ -22,7 +22,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
-| [Modelling issues](modelling-issues.md) | Memory estimate, live and final loss curves, axis labels, progress cadence, CatBoost encoding, Summary metrics, stale chunks, restart, palette text | `MDL-01` |
 | [Optimiser validation](optimiser-validation.md) | Deferred follow-up to the optimiser result workspace: an interruptible frontier-point apply in price_contour, plus the open robustness, CSV and inputs questions | — |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |

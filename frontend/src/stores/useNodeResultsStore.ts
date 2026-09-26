@@ -328,6 +328,11 @@ function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string
   return next
 }
 
+/** The expired-training record without *nodeId*, the same object when it has no entry. */
+function forgetExpiredTrainJob(expired: Record<string, string>, nodeId: string): Record<string, string> {
+  return Object.hasOwn(expired, nodeId) ? omitRecordKey(expired, nodeId) : expired
+}
+
 function jobFenceIsCurrent(job: { documentFence?: DocumentExecutionFence }): boolean {
   return job.documentFence === undefined ||
     isDocumentExecutionFenceCurrent(job.documentFence)
@@ -716,6 +721,13 @@ interface NodeResultsState {
   // Training
   trainResults: Record<string, CachedTrainResult>
   trainJobs: Record<string, ActiveTrainJob>
+  /**
+   * Nodes whose remembered completed training result the server no longer
+   * holds (it restarted, or the job expired), mapped to that job's id. The
+   * Export pane and the results panel both read it; it lasts until the node
+   * starts training or gets a result.
+   */
+  expiredTrainJobs: Record<string, string>
 
   // Explore pivots, keyed by explorePivotResultKey(nodeId, pivotId).
   pivotResults: Record<string, CachedExplorePivotResult>
@@ -784,6 +796,11 @@ interface NodeResultsState {
    * Never replaces a result or a running job the node already has.
    */
   restoreTrainResult: (nodeId: string, cached: CachedTrainResult) => void
+  /**
+   * Record that the server no longer holds the node's remembered completed
+   * job. Ignored when the node has meanwhile got a result or a running job.
+   */
+  markTrainResultExpired: (nodeId: string, jobId: string) => void
   failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
 
   startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataVersion?: string | null) => void
@@ -837,6 +854,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   optimiserApplyCache: [],
   trainResults: {},
   trainJobs: {},
+  expiredTrainJobs: {},
   pivotResults: {},
   pivotJobs: {},
   pivotStartClaims: {},
@@ -1225,6 +1243,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           ...s.trainJobs,
           [nodeId]: nextJob,
         },
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
       }
     }),
 
@@ -1283,10 +1302,17 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return {
         trainJobs: job ? remainingJobs : s.trainJobs,
         trainResults: bounded.records,
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
       }
     })
     if (fenceCurrent) rememberTrainOutcome(nodeId, completingJob, result)
   },
+
+  markTrainResultExpired: (nodeId, jobId) =>
+    set((s) => {
+      if (s.trainResults[nodeId] || s.trainJobs[nodeId]) return s
+      return { expiredTrainJobs: { ...s.expiredTrainJobs, [nodeId]: jobId } }
+    }),
 
   restoreTrainResult: (nodeId, cached) =>
     set((s) => {
@@ -1302,7 +1328,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         delete _modellingPreviewCache[evictedNodeId]
       }
       if (bounded.records[nodeId]) cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
-      return { trainResults: bounded.records }
+      return {
+        trainResults: bounded.records,
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
+      }
     }),
 
   failTrainJob: (nodeId, error, terminalStatus) => {
@@ -1566,6 +1595,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _rsj, ...solveJobs } = s.solveJobs; void _rsj
       const { [nodeId]: _rtr, ...trainResults } = s.trainResults; void _rtr
       const { [nodeId]: _rtj, ...trainJobs } = s.trainJobs; void _rtj
+      const expiredTrainJobs = forgetExpiredTrainJob(s.expiredTrainJobs, nodeId)
       const pivotResults = Object.fromEntries(
         Object.entries(s.pivotResults).filter(([, entry]) => entry.nodeId !== nodeId),
       )
@@ -1592,6 +1622,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         optimiserApplyCache: withoutApplyEntriesForNodes(s.optimiserApplyCache, [nodeId]),
         trainResults,
         trainJobs,
+        expiredTrainJobs,
         pivotResults,
         pivotJobs,
         pivotStartClaims,

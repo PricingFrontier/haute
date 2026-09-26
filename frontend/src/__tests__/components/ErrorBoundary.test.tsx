@@ -5,8 +5,11 @@
  * custom fallback prop, named boundary logging, and recovery after reset.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { lazy, Suspense } from "react"
 import { ErrorBoundary } from "../../components/ErrorBoundary"
+import { recordChunkLoadFailures } from "../../utils/chunkLoadError"
+import useGraphStore from "../../stores/useGraphStore"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -207,6 +210,91 @@ describe("ErrorBoundary", () => {
       // Default fallback should NOT be present
       expect(screen.queryByText("Something went wrong")).toBeNull()
       expect(screen.queryByText("Try again")).toBeNull()
+    })
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // A lazily loaded chunk the rebuilt server no longer has
+  // ────────────────────────────────────────────────────────────────
+
+  describe("chunk-load failure", () => {
+    const originalLocation = window.location
+    let reload: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+      reload = vi.fn()
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: { ...originalLocation, reload },
+      })
+    })
+
+    afterEach(() => {
+      Object.defineProperty(window, "location", { configurable: true, value: originalLocation })
+      useGraphStore.setState({ dirty: false })
+    })
+
+    /** The results workspace as the app loads it: a lazy chunk behind the preview's boundary. */
+    function renderResultsWorkspace(failure: Error) {
+      const ModellingPreview = lazy(() => Promise.reject(failure))
+      render(
+        <ErrorBoundary name="DataPreview">
+          <Suspense fallback={null}>
+            <ModellingPreview />
+          </Suspense>
+        </ErrorBoundary>,
+      )
+    }
+
+    it("offers a reload in place of a retry that cannot succeed", async () => {
+      renderResultsWorkspace(
+        new TypeError(
+          "Failed to fetch dynamically imported module: http://127.0.0.1:8200/assets/ModellingPreview-DMczYKmb.js",
+        ),
+      )
+
+      expect(await screen.findByText("Haute has been updated")).toBeTruthy()
+      expect(screen.queryByText("Something went wrong")).toBeNull()
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull()
+
+      fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+      expect(reload).toHaveBeenCalledTimes(1)
+    })
+
+    it("asks for unsaved canvas changes to be saved before a reload loses them", async () => {
+      useGraphStore.setState({ dirty: true })
+      renderResultsWorkspace(
+        new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1:8200/assets/x.js"),
+      )
+
+      expect(
+        await screen.findByText((text) => text.includes("You have unsaved changes: save them first (Ctrl+S)")),
+      ).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Reload without saving" })).toBeTruthy()
+
+      // Saved: the plain offer returns.
+      act(() => useGraphStore.setState({ dirty: false }))
+      expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy()
+      expect(screen.queryByText(/unsaved changes/)).toBeNull()
+    })
+
+    it("offers a reload for a chunk Vite reported through vite:preloadError", async () => {
+      recordChunkLoadFailures()
+      const failure = new Error("Unable to preload CSS for /assets/ModellingPreview-DMczYKmb.css")
+      window.dispatchEvent(Object.assign(new Event("vite:preloadError", { cancelable: true }), { payload: failure }))
+
+      renderResultsWorkspace(failure)
+
+      expect(await screen.findByText("Haute has been updated")).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy()
+    })
+
+    it("keeps Try again for an ordinary error that merely mentions a module", async () => {
+      renderResultsWorkspace(new Error("Failed to fetch dynamically imported module: not a browser failure"))
+
+      expect(await screen.findByText("Something went wrong")).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy()
+      expect(screen.queryByRole("button", { name: "Reload" })).toBeNull()
     })
   })
 

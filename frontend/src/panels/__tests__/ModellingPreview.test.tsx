@@ -156,6 +156,23 @@ describe("ModellingPreview", () => {
     expect(container.innerHTML).not.toBe("")
   })
 
+  it("summarises a refit run without a test set by its validation metrics when collapsed", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      final_test_metrics: {},
+      final_test_rows: 0,
+      diagnostics_set: "development",
+      // In-sample: the rows the final model was refit on.
+      diagnostic_metrics: { gini: 0.8963, rmse: 0.0586 },
+    })
+    render(<ModellingPreview data={makeData({ result: { ...result, evaluation: base.evaluation } })} nodeId="n1" />)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+
+    // The factory's holdout selection metrics: gini 0.45, rmse 0.12.
+    expect(screen.getByText("gini: 0.4500 | rmse: 0.1200")).toBeInTheDocument()
+    expect(screen.queryByText(/0.8963/)).toBeNull()
+  })
+
   it("clicking a tab switches active tab content", () => {
     const result = makeTrainResult({
       feature_importance: [

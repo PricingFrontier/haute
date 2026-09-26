@@ -178,7 +178,13 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   and consumed by `_save_artifacts` and `_log_to_mlflow`.
 - **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
   contents of top-level `params`, with CatBoost Tweedie power in top-level
-  `variance_power`. GLM configuration is exclusively top-level
+  `variance_power`. The editor's starter `params` for a new CatBoost node include
+  `one_hot_max_size: 10`; the backend adds no default, so a node without the key trains with
+  CatBoost's own encoding. Timing note: on the motor demo model (Tweedie, 80,000 training
+  and 20,000 evaluation rows, depth 6) 100 iterations took 12.7 s with CatBoost's defaults
+  and 0.9 s with `one_hot_max_size=10`; almost all of the default time went on target
+  statistics for its 2-, 3- and 7-level categorical columns, which one-hot encoding
+  replaces. GLM configuration is exclusively top-level
   (`terms`, `family`, `link`, `interactions`, `regularization`, `alpha`,
   `l1_ratio`, `intercept`, `var_power`, `theta`, `offset`); `build_train_params`
   projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
@@ -1695,12 +1701,6 @@ The implementation seams are:
   reject a memory figure beside a reason, a missing figure without one, a row total that
   disagrees with the reason, and a downsampling verdict, warning or VRAM field on an
   unavailable estimate.
-
-Focused evidence lives in `tests/test_evaluation.py`,
-`tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
-`tests/test_training_response_evaluation.py`, `tests/test_tuning.py`, and
-`tests/test_training_tuning.py`, with worker/route/export/publication integration in
-`tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
 - The row-cardinality proof carries, beside its bound, the ids of the joins without a key
   contract it depends on (`_ResolvedRowCardinality.many_to_many_join_node_ids`, inherited
   downstream: an Edge Join with `validate` `m:m` or absent, or a Polars node whose own join
@@ -1715,6 +1715,12 @@ Focused evidence lives in `tests/test_evaluation.py`,
   that many rows does the job record the downsampling warning, which names the joins for an
   unproven bound instead of claiming a source row count (a frame of exactly the limit's rows
   is indistinguishable and is reported as sampled).
+
+Focused evidence lives in `tests/test_evaluation.py`,
+`tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
+`tests/test_training_response_evaluation.py`, `tests/test_tuning.py`, and
+`tests/test_training_tuning.py`, with worker/route/export/publication integration in
+`tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
 

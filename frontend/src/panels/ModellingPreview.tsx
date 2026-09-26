@@ -22,7 +22,7 @@ import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
 import { ResidualsTab } from "./modelling/ResidualsTab"
 import { SummaryTab } from "./modelling/SummaryTab"
-import { diagnosticsRowCount, diagnosticsSetLabel } from "./modelling/diagnosticsSet"
+import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
 import ResultsWorkspace from "./ResultsWorkspace"
 
 export type ModellingPreviewData = {
@@ -183,11 +183,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
     }
   })
   const activeTab = availableTabs.includes(tab) ? tab : "summary"
-  const collapsedMetrics =
-    Object.keys(result.final_test_metrics).length > 0
-      ? result.final_test_metrics
-      : result.diagnostic_metrics
-  const metricsSummary = Object.entries(collapsedMetrics)
+  const metricsSummary = Object.entries(headlineMetrics(result))
     .slice(0, 2)
     .map(
       ([k, v]) => `${k}: ${typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : String(v)}`,

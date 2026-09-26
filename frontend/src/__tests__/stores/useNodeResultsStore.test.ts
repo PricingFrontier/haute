@@ -48,6 +48,7 @@ function resetStore() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    expiredTrainJobs: {},
     pivotResults: {},
     pivotJobs: {},
     optimiserApplyCache: [],
@@ -498,6 +499,49 @@ describe("useNodeResultsStore", () => {
     it("is a no-op for unknown node", () => {
       useNodeResultsStore.getState().failTrainJob("ghost", "oops")
       expect(useNodeResultsStore.getState().trainJobs["ghost"]).toBeUndefined()
+    })
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // A remembered training result the server no longer holds
+  // ────────────────────────────────────────────────────────────────
+
+  describe("expired training results", () => {
+    type State = ReturnType<typeof useNodeResultsStore.getState>
+
+    it("records the node and the job the server no longer holds", () => {
+      useNodeResultsStore.getState().markTrainResultExpired("t1", "tj-gone")
+      expect(useNodeResultsStore.getState().expiredTrainJobs).toEqual({ t1: "tj-gone" })
+    })
+
+    it("records nothing for a node that has since got a result or a running job", () => {
+      const s = useNodeResultsStore.getState()
+      s.completeTrainJob("t1", makeTrainResult())
+      s.startTrainJob("t2", "tj-2", "Train Node", "h", "live", 0)
+      s.markTrainResultExpired("t1", "tj-gone")
+      s.markTrainResultExpired("t2", "tj-gone")
+      expect(useNodeResultsStore.getState().expiredTrainJobs).toEqual({})
+    })
+
+    it.each<[string, (s: State) => void]>([
+      ["training starts", (s) => s.startTrainJob("t1", "tj-2", "Train Node", "h", "live", 0)],
+      ["a result arrives", (s) => s.completeTrainJob("t1", makeTrainResult())],
+      [
+        "a result is restored",
+        (s) => s.restoreTrainResult("t1", {
+          result: makeTrainResult(),
+          terminalStatus: null,
+          jobId: "tj-3",
+          configHash: "h",
+          source: "live",
+          structuralVersion: 0,
+        }),
+      ],
+      ["the node is cleared", (s) => s.clearNode("t1")],
+    ])("forgets the record once %s", (_event, change) => {
+      useNodeResultsStore.getState().markTrainResultExpired("t1", "tj-gone")
+      change(useNodeResultsStore.getState())
+      expect(useNodeResultsStore.getState().expiredTrainJobs).toEqual({})
     })
   })
 

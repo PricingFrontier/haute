@@ -29,7 +29,11 @@ results are supplied by API and result-store layers.
 - Modelling preview exposes summary unconditionally as the fallback tab whenever a result
   exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
   feature importance, AVE and PDP) only when backed by non-empty result data, and resets
-  selection to summary when the result changes.
+  selection to summary when the result changes. When a node has no result because the one the
+  browser remembered is gone from the server (it restarted, or the job expired), its results
+  panel says so in place of the data preview: training results are not kept across a server
+  restart, so train the model again, or open its MLflow run if it was logged. The Export pane
+  reports the same fact from the same record.
 - Completed training accepts missing categorical PDP levels as JSON `null` and labels
   them `(missing)` in the chart. Numeric PDP levels remain non-null. Invalid status
   responses stop polling with a visible response error for every background job type
@@ -41,7 +45,9 @@ results are supplied by API and result-store layers.
   Diagnostic views introduce their chart or table with a plain-language title and
   short explanation; AvE and PDP are expanded in those introductions.
 - The completed summary uses responsive, themed cards with final-test performance
-  first, separately labelled diagnostics, model information, and optional GLM fit
+  first (without a test set, when a validation fit ran and the reported diagnostics are
+  in-sample, the validation fit's selection metrics lead instead, labelled with their row
+  count), separately labelled diagnostics, model information, and optional GLM fit
   statistics, the regularisation actually applied, and smooth terms. When RustyStats marks a
   GLM's inference invalid (penalties, monotonicity, smoothing), coefficients show dashes and the
   reason instead of statistics. Metric values are prominent. No reserved final test is stated
@@ -203,7 +209,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
   shows only the algorithm-neutral **Parameters JSON** object editor; Tune parameters
   instead shows Trial count, Seed, Selection metric and **Search space JSON**. Neither
-  JSON editor has Apply/Revert controls or an inline explanatory block. A syntactically
+  JSON editor has Apply/Revert controls or an inline explanatory block; CatBoost's
+  Parameters JSON has only a one-line note beneath it naming `one_hot_max_size`: categorical
+  columns with up to that many levels are one-hot encoded, and above it CatBoost uses target
+  statistics, which are much slower to train. A new CatBoost node's starter parameters include
+  `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
+  nodes created earlier keep their parameters. A syntactically
   valid top-level object updates its corresponding config automatically, except that a
   fixed-parameter object containing the Train-owned `task_type` key is rejected. Invalid,
   non-object, or reserved-key drafts remain local for that node and contribute only to the
@@ -239,7 +250,11 @@ strip; it never falls through to CatBoost. Pane ownership:
   limit beside the RAM/VRAM estimate it modulates (an estimate the server cannot size
   shows its reason in place of the missing figures, never a memory verdict),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
-  badge and error card. Its checkbox and text/number controls use the same visible themed borders,
+  badge and error card. Its read-only run summary names, for a CatBoost model whose selected
+  features include String or Categorical columns, their encoding: "One-hot up to N levels,
+  target statistics above" when `one_hot_max_size` is set, "Tuned (one_hot_max_size is in the
+  search space)" when tuning varies it, and otherwise "CatBoost's default (target statistics)",
+  without claiming a level count that differs between CPU and GPU training. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse
   into input placeholders.
 - **Export** — everything that publishes the last trained model, in two sections. **MLflow
@@ -265,7 +280,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   never silently replaces a file: an existing destination shows the server's message with a
   **Replace existing file** confirmation that retries with overwrite. Success names both
   written project-relative paths; a failure shows the server's detail. Both actions act on the node's last completed training result. Without one they stay visible but
-  disabled without a train-first note; while a training job for the node runs they
+  disabled without a train-first note, except that a remembered result gone from the server is
+  reported with a note to train the model again; while a training job for the node runs they
   are disabled beneath a note that export resumes when it completes; and when the training
   configuration has changed since that result, a warning says exports use the last trained
   model. The export fields (`mlflow_destination`, `mlflow_experiment`,
@@ -295,8 +311,12 @@ active-job descriptor, and the Train tab shows that accessible indicator while a
 so progress is visible from any pane. Configuration completeness never changes a tab's visible
 or assistive label.
 
-**Completed results.** Summary shows final-test metrics first when present, then the
-selection score and variability, baseline improvement, winning/final parameters,
+**Completed results.** Summary shows final-test metrics first when present. Without a
+test set, when a validation fit ran and the final model was refit on all development rows,
+so the diagnostics are in-sample, the validation fit's selection metrics (the mean of each
+metric) lead instead, labelled "Validation, N rows" for holdout or "Validation (K-fold mean),
+N rows" for cross-validation, with the in-sample diagnostics beneath; a run without validation
+is unchanged. Then come the selection score and variability, baseline improvement, winning/final parameters,
 fit count/elapsed time and a bounded top-trial table. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
@@ -336,7 +356,8 @@ settings; inline arrow-based, role/final-selection-aware monotonic controls; the
 interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
-draft presentation, invalid/non-object/reserved-key draft persistence without Apply/Revert or
+draft presentation, CatBoost's starter `one_hot_max_size` and its Parameters note, the run
+summary's categorical encoding, invalid/non-object/reserved-key draft persistence without Apply/Revert or
 inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
 labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
 rendering including truncation; Export-pane ownership of the MLflow fields and both export
