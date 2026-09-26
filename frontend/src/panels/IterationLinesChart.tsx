@@ -139,7 +139,7 @@ export function IterationLinesChart({
     <div>
       <ChartSvg width={width} height={height} ariaLabel={ariaLabel}>
         <title>{title}</title>
-        <ChartValueGrid ticks={axis.ticks} left={MARGIN.left} right={MARGIN.left + plotWidth} y={axis.position} />
+        <ChartValueGrid ticks={axis.ticks} left={MARGIN.left} right={MARGIN.left + plotWidth} y={axis.position} scale={yScale} />
         {xTicks.map((index) => (
           <g key={index} data-testid="chart-x-tick">
             <line

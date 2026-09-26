@@ -1,16 +1,93 @@
 /**
  * The shared axis and scale helpers every SVG chart uses: compact axis numbers,
- * padded finite domains, evenly spaced ticks, exact log-axis decades, label
- * thinning and axis-label truncation.
+ * axis tick labels formatted together, padded finite domains, evenly spaced
+ * ticks, exact log-axis decades, label thinning and axis-label truncation.
  */
+
+const COMPACT_FROM = 10_000
+const EXPONENTIAL_BELOW = 0.0001
 
 /** Keep exact data in details; axes use a readable, consistent compact format. */
 export function formatChartNumber(value: number): string {
-  if (value !== 0 && Math.abs(value) < 0.0001) return value.toExponential(1)
+  if (value !== 0 && Math.abs(value) < EXPONENTIAL_BELOW) return value.toExponential(1)
   return new Intl.NumberFormat("en", {
     maximumSignificantDigits: 3,
-    notation: Math.abs(value) >= 10000 ? "compact" : "standard",
+    notation: Math.abs(value) >= COMPACT_FROM ? "compact" : "standard",
   }).format(value)
+}
+
+type TickNotation = "standard" | "compact" | "exponential"
+
+/** The power of ten of a non-zero value's leading digit. */
+function exponent(value: number): number {
+  return Math.floor(Math.log10(Math.abs(value)))
+}
+
+/** Rounded half away from zero to `decimals` places; negative rounds to tens, hundreds and so on. */
+function roundTo(value: number, decimals: number): number {
+  const magnitude = decimals >= 0
+    ? Math.round(Math.abs(value) * decade(decimals)) / decade(decimals)
+    : Math.round(Math.abs(value) / decade(-decimals)) * decade(-decimals)
+  return magnitude === 0 ? 0 : Math.sign(value) * magnitude
+}
+
+/** Whether `value` is a whole number of units in the `decimals` place. */
+function isRoundAt(value: number, decimals: number): boolean {
+  const units = value * decade(decimals)
+  return Math.abs(units - Math.round(units)) <= 1e-9 * Math.max(1, Math.abs(units))
+}
+
+function tickLabel(value: number, notation: TickNotation, decimals: number): string {
+  // A tick that rounds to zero is labelled 0, never "-0.00".
+  const shown = Math.abs(value) < decade(-decimals) / 2 ? 0 : value
+  if (notation === "standard") {
+    return new Intl.NumberFormat("en", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    }).format(shown)
+  }
+  if (shown === 0) return "0"
+  if (notation === "exponential") return shown.toExponential(Math.max(1, decimals + exponent(shown)))
+  // Compact units differ from label to label (250K beside 1M), so they share
+  // the rounding rather than a count of decimals.
+  const rounded = roundTo(shown, decimals)
+  return new Intl.NumberFormat("en", {
+    maximumSignificantDigits: Math.max(1, exponent(rounded) + decimals + 1),
+    notation: "compact",
+  }).format(rounded)
+}
+
+/**
+ * The labels of one linear axis's evenly spaced ticks, formatted together at
+ * one precision: the precision `formatChartNumber` gives the largest tick,
+ * raised until neighbouring labels differ. A standard-notation axis shows the
+ * same decimals on every label, less the trailing zeros every tick shares;
+ * from ten thousand the labels stay compact and below 0.0001 exponential, as
+ * `formatChartNumber` does. A log axis's decades are not evenly spaced and
+ * are labelled one by one with `formatChartNumber`.
+ */
+export function formatChartTicks(ticks: readonly number[]): string[] {
+  if (ticks.length < 2) return ticks.map(formatChartNumber)
+  const step = (ticks[ticks.length - 1] - ticks[0]) / (ticks.length - 1)
+  const uneven = ticks.some((tick, i) => i > 0 && Math.abs(tick - ticks[i - 1] - step) > Math.abs(step) * 1e-6)
+  if (!(Math.abs(step) > 0) || uneven) {
+    throw new Error(`Axis ticks must be distinct and evenly spaced to share one precision: ${ticks.join(", ")}`)
+  }
+  const largest = Math.max(...ticks.map(Math.abs))
+  const notation: TickNotation =
+    largest >= COMPACT_FROM ? "compact" : largest < EXPONENTIAL_BELOW ? "exponential" : "standard"
+  // Three significant figures, or two for the exponential mantissa, as formatChartNumber.
+  const initial = (notation === "exponential" ? 1 : 2) - exponent(largest)
+  let decimals = notation === "standard" ? Math.max(0, initial) : initial
+  const labelsAt = (places: number) => ticks.map((tick) => tickLabel(tick, notation, places))
+  let labels = labelsAt(decimals)
+  while (labels.some((label, i) => i > 0 && label === labels[i - 1])) {
+    decimals += 1
+    labels = labelsAt(decimals)
+  }
+  if (notation !== "standard") return labels
+  while (decimals > 0 && ticks.every((tick) => isRoundAt(tick, decimals - 1))) decimals -= 1
+  return labelsAt(decimals)
 }
 
 /** A padded domain also gives constant and single-point series a finite scale. */

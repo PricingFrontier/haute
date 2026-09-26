@@ -13,7 +13,7 @@ import {
   Search,
 } from "lucide-react"
 import { CHART_COLORS } from "../theme/colors"
-import { chartTicks, formatChartNumber } from "../utils/chartHelpers"
+import { chartTicks, formatChartTicks } from "../utils/chartHelpers"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type { PreviewData } from "./DataPreview"
 import { computeScenarioStatsBySeries, type ScenarioStats } from "./optimiserScenarioStats"
@@ -69,6 +69,8 @@ const MIN_CHART_W = 180
 interface SeriesScaleContext {
   yScale: (v: number) => number
   ticks: number[]
+  /** The ticks' labels, formatted together. */
+  labels: string[]
 }
 
 interface ScaleContext {
@@ -108,6 +110,7 @@ function buildSeriesScale(
   return {
     yScale: (v: number) => CHART_PY + chartH - ((v - adjMin) / adjRange) * chartH,
     ticks,
+    labels: formatChartTicks(ticks),
   }
 }
 
@@ -157,7 +160,7 @@ function ChartGrid({
   const plotRight = CHART_PX + ctx.chartW
   return (
     <>
-      {primaryScale?.ticks.map((t) => (
+      {primaryScale?.ticks.map((t, index) => (
         <g key={`${primaryColumn}-${t}`}>
           <line
             x1={CHART_PX}
@@ -174,7 +177,7 @@ function ChartGrid({
             fontSize={9}
             fill={SERIES_COLORS[allSeries.indexOf(primaryColumn) % SERIES_COLORS.length]}
           >
-            {formatChartNumber(t)}
+            {primaryScale.labels[index]}
           </text>
         </g>
       ))}
@@ -209,7 +212,7 @@ function ChartGrid({
               strokeWidth={0.8}
               opacity={0.7}
             />
-            {scale.ticks.map((t) => (
+            {scale.ticks.map((t, index) => (
               <g key={`${column}-${t}`}>
                 <line
                   x1={x - 3}
@@ -226,7 +229,7 @@ function ChartGrid({
                   fontSize={9}
                   fill={color}
                 >
-                  {formatChartNumber(t)}
+                  {scale.labels[index]}
                 </text>
               </g>
             ))}

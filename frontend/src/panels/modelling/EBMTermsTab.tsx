@@ -24,6 +24,7 @@ import {
   chartLabelIndices,
   chartTicks,
   formatChartNumber,
+  formatChartTicks,
 } from "../../utils/chartHelpers"
 import { FeatureBrowser } from "./FeatureBrowser"
 
@@ -153,11 +154,11 @@ function ContinuousShape({ term }: { term: EbmTerm }) {
           const indices = chartLabelIndices(scores.length, plotWidth, 120)
           return (
             <ChartSvg width={width} height={height} ariaLabel={`Shape function for ${term.term}`}>
-              {chartTicks(low, high).map((value) => (
+              {chartTicks(low, high).map((value, index, all) => (
                 <g key={value}>
                   <line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke={GRID} />
                   <text x={left - 8} y={y(value) + 4} textAnchor="end" fontSize={FONT} fill={TEXT}>
-                    {formatChartNumber(value)}
+                    {formatChartTicks(all)[index]}
                   </text>
                 </g>
               ))}

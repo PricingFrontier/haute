@@ -40,7 +40,6 @@ the demo pipeline has been rewritten in the declaration format.
 |---|---|---:|---|
 | MDL-01 | Planned | P2 | The memory estimate says how many rows training will really use, and never reports a join's worst case as the row count. |
 | MDL-03 | Planned | P2 | The Loss tab shows the whole fit and says which fit it is. |
-| MDL-04 | Planned | P2 | Chart value axes label a narrow range with distinct numbers. |
 | MDL-05 | Planned | P3 | Training progress refreshes about once a second while it changes. |
 | MDL-06 | Decision | P3 | A CatBoost model with small categorical columns does not train many times slower than it needs to. |
 | MDL-07 | Decision | P3 | The Summary tab leads with the out-of-sample metrics when a validation fit ran. |
@@ -141,32 +140,6 @@ best-iteration marker and the span note.
 **Evidence:** `src/haute/routes/_training_worker.py::_bounded_loss_history`;
 `src/haute/modelling/_training_job.py`;
 `frontend/src/panels/modelling/LossTab.tsx::LossTab`.
-
-### MDL-04 — Value axes label a narrow range with the same number
-**Why:** On that Loss tab every value-axis label read "107": the plotted range
-was about 107.0 to 107.3, the axis has five linear ticks, and
-`ChartValueGrid` labels every tick with `formatChartNumber`, which formats to
-three significant figures whatever the spacing between ticks. Any chart built
-on `ChartValueGrid` does the same whenever its range is narrow relative to
-its magnitude: loss curves near convergence, relativities near 1.0, premiums
-in the thousands with a small spread.
-
-**Plan:** Format an axis's ticks together: choose the number of decimals from
-the tick step (enough that neighbouring ticks differ), keep the compact
-notation for large magnitudes, and use one precision for every label on the
-axis. Keep `formatChartNumber` for single values.
-
-**Acceptance:** A unit test formats the ticks of 107.0 to 107.3 as five
-distinct labels, and of 0 to 1,250 and of 0.0001 to 0.0005 as they are
-today; the Loss tab and one other `ChartValueGrid` chart get a component
-test for distinct labels on a narrow range.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/chartHelpers.ts::formatChartNumber`;
-`frontend/src/utils/chartHelpers.ts::chartTicks`;
-`frontend/src/panels/modelling/ChartScaffold.tsx::ChartValueGrid`;
-`frontend/src/panels/IterationLinesChart.tsx::IterationLinesChart`.
 
 ### MDL-05 — Training progress refreshes only every five seconds
 **Why:** The status poller starts at 500 ms and doubles its interval after

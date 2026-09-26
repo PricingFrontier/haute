@@ -12,7 +12,7 @@ import {
   TwoChartLayout,
 } from "./ChartScaffold"
 import HistogramChart from "../HistogramChart"
-import { chartDomain, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
+import { chartDomain, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
 
 interface ResidualsTabProps {
   result: TrainResult
@@ -183,7 +183,7 @@ function ActualVsPredictedScatter({
               fontSize={axisFontSize}
               fill={axisTextColor}
             >
-              {formatChartNumber(value)}
+              {formatChartTicks(all)[index]}
             </text>
           </g>
         ))}
