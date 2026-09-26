@@ -37,6 +37,7 @@ _DEFAULT_MEMORY_LIMIT_BYTES: dict[ExecutionProfile, int] = {
     ExecutionProfile.LAZY_SINK: 4 * 1024 * _MIB,
     ExecutionProfile.TRAINING_PREP: 4 * 1024 * _MIB,
     ExecutionProfile.OPTIMISER_SETUP: 4 * 1024 * _MIB,
+    ExecutionProfile.OPTIMISER_SOLVE: 4 * 1024 * _MIB,
     ExecutionProfile.EXPLORE_ANALYSIS: 4 * 1024 * _MIB,
     ExecutionProfile.AUTO_RANGE: 2 * 1024 * _MIB,
     ExecutionProfile.DEPLOY_LIVE: 1024 * _MIB,
@@ -69,6 +70,12 @@ _ADAPTIVE_MEMORY_POLICY: dict[ExecutionProfile, _AdaptiveMemoryPolicy] = {
     ),
     ExecutionProfile.OPTIMISER_SETUP: _AdaptiveMemoryPolicy(
         available_ram_basis_points=7_500,
+        floor_bytes=4 * 1024 * _MIB,
+    ),
+    # The optimiser's solver session runs under a native cap that kills only
+    # itself, so it may take everything above the OS reserve (OPT-W01).
+    ExecutionProfile.OPTIMISER_SOLVE: _AdaptiveMemoryPolicy(
+        available_ram_basis_points=10_000,
         floor_bytes=4 * 1024 * _MIB,
     ),
     ExecutionProfile.EXPLORE_ANALYSIS: _AdaptiveMemoryPolicy(
@@ -104,6 +111,7 @@ _ADAPTIVE_LOCAL_PROFILES = frozenset(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.OPTIMISER_SOLVE,
         ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
@@ -128,6 +136,10 @@ _PROFILE_MEMORY_ENV: dict[ExecutionProfile, tuple[str, str]] = {
     ExecutionProfile.OPTIMISER_SETUP: (
         "HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES",
         "HAUTE_OPTIMISER_MEMORY_LIMIT_MB",
+    ),
+    ExecutionProfile.OPTIMISER_SOLVE: (
+        "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES",
+        "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB",
     ),
     ExecutionProfile.EXPLORE_ANALYSIS: (
         "HAUTE_EXPLORE_MEMORY_LIMIT_BYTES",
@@ -177,6 +189,10 @@ _PROFILE_PROCESS_RSS_ENV: dict[ExecutionProfile, tuple[str, str]] = {
         "HAUTE_OPTIMISER_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_OPTIMISER_PROCESS_RSS_LIMIT_MB",
     ),
+    ExecutionProfile.OPTIMISER_SOLVE: (
+        "HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES",
+        "HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_MB",
+    ),
     ExecutionProfile.EXPLORE_ANALYSIS: (
         "HAUTE_EXPLORE_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_EXPLORE_PROCESS_RSS_LIMIT_MB",
@@ -213,6 +229,7 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.OPTIMISER_SOLVE,
         ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
@@ -390,6 +407,8 @@ class ExecutionAdmissionError(MemoryError):
         in_flight_reserved_bytes: int | None = None,
         in_flight_limit_bytes: int | None = None,
         in_flight_operations: tuple[str, ...] = (),
+        estimated_bytes: int | None = None,
+        allowance_bytes: int | None = None,
     ) -> None:
         headroom_bytes = (
             None
@@ -410,6 +429,10 @@ class ExecutionAdmissionError(MemoryError):
         # ``profile:operation`` labels of the reservations that were already
         # held, so a refusal names the work it lost to instead of "other work".
         self.in_flight_operations = tuple(in_flight_operations)
+        # Set when the work's own estimate was refused: what it needed and what
+        # was left, so the user message can name both.
+        self.estimated_bytes = estimated_bytes
+        self.allowance_bytes = allowance_bytes
         self.reason = reason
 
     def to_payload(self) -> dict[str, object]:
@@ -430,6 +453,10 @@ class ExecutionAdmissionError(MemoryError):
             payload["in_flight_limit_bytes"] = self.in_flight_limit_bytes
         if self.in_flight_operations:
             payload["in_flight_operations"] = list(self.in_flight_operations)
+        if self.estimated_bytes is not None:
+            payload["estimated_bytes"] = self.estimated_bytes
+        if self.allowance_bytes is not None:
+            payload["allowance_bytes"] = self.allowance_bytes
         return payload
 
 
@@ -654,6 +681,8 @@ def _admit_once(
             rss_at_admission_bytes=rss_at_admission,
             rss_limit_bytes=rss_limit_bytes,
             process_rss_limit_bytes=budget.process_rss_limit_bytes,
+            estimated_bytes=estimate.estimated_bytes,
+            allowance_bytes=allowance_bytes,
             reason=(
                 f"{estimate.subject} needs an estimated {estimate.estimated_bytes} bytes; "
                 f"the {profile.value} allowance is {allowance_bytes} bytes. {estimate.remedy}"
@@ -700,6 +729,178 @@ def _admit_once(
             admission_release()
         raise
     return context
+
+
+def admit_growth_grant(
+    *,
+    operation: str,
+    profile: ExecutionProfile,
+    job_id: str | None = None,
+    cancellation_token: ExecutionCancellationToken | None = None,
+    memory_sampler: Callable[[], int | None] | None = None,
+    wait_out_holders: Collection[str] = (),
+    wait_seconds: float = 0.0,
+) -> ExecutionContext:
+    """Admit as much memory growth as the machine can give right now.
+
+    For work that runs under a native cap sized from this grant (the
+    optimiser's solver session, OPT-W01). The short-lived *wait_out_holders*
+    are waited out first; only then is memory sampled, so the grant sees what
+    they freed. The grant is the least of the profile's limit (recomputed from
+    that sample), what other in-flight reservations leave of it, and any
+    absolute process-RSS headroom. Competing work shrinks the grant instead of
+    refusing it, and any positive grant is admitted: whether it suffices is for
+    the capped execution to find out. Only a grant of nothing refuses, naming
+    the term that bound it.
+    """
+    if profile not in _IN_FLIGHT_PROFILE_SET:
+        raise ValueError(f"growth grants need an in-flight profile, not {profile.value!r}")
+    waitable = frozenset(wait_out_holders)
+    if waitable:
+        _wait_for_holders_to_release(
+            waitable,
+            time.monotonic() + max(wait_seconds, 0.0),
+            cancellation_token=cancellation_token,
+            operation=operation,
+            job_id=job_id,
+        )
+    sampler = current_rss_bytes if memory_sampler is None else memory_sampler
+    rss_at_admission = sampler()
+    process_rss_limit_bytes, _process_rss_limit_key = _resolve_optional_rss_limit(profile)
+    with _IN_FLIGHT_LOCK:
+        available = _host_memory.require_positive_available_ram(available_ram_bytes())
+        os_reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
+        usable_now = available - os_reserve
+        limit = _profile_limit_from_sample(profile, available=available, usable=usable_now)
+        if rss_at_admission is None:
+            raise ExecutionAdmissionError(
+                operation,
+                profile=profile,
+                memory_limit_bytes=limit.memory_limit_bytes,
+                rss_at_admission_bytes=None,
+                reason="memory_sampler_unavailable",
+            )
+        holders = list(_IN_FLIGHT_RESERVATIONS.values())
+        reserved = sum(amount for _profile, amount, _operation in holders)
+        in_flight_room = usable_now - reserved
+        rss_room = (
+            None if process_rss_limit_bytes is None else process_rss_limit_bytes - rss_at_admission
+        )
+        grant = min(limit.memory_limit_bytes, in_flight_room)
+        if rss_room is not None:
+            grant = min(grant, rss_room)
+        if grant <= 0:
+            if rss_room is not None and rss_room <= 0:
+                reason = "process_rss_limit_exceeded"
+            elif reserved > 0 and in_flight_room <= 0:
+                reason = "in_flight_memory_budget_exceeded"
+            else:
+                reason = "no_memory_available"
+            raise ExecutionAdmissionError(
+                operation,
+                profile=profile,
+                memory_limit_bytes=limit.memory_limit_bytes,
+                rss_at_admission_bytes=rss_at_admission,
+                reason=reason,
+                process_rss_limit_bytes=process_rss_limit_bytes,
+                in_flight_reserved_bytes=reserved,
+                in_flight_limit_bytes=usable_now,
+                in_flight_operations=tuple(
+                    sorted(
+                        {
+                            f"{held_profile.value}:{held_operation}"
+                            for held_profile, _amount, held_operation in holders
+                        }
+                    )
+                )[:_MAX_REPORTED_IN_FLIGHT_OPERATIONS],
+            )
+        reservation_id = next(_IN_FLIGHT_COUNTER)
+        _IN_FLIGHT_RESERVATIONS[reservation_id] = (profile, grant, operation)
+
+    admission_release = _reservation_release(reservation_id)
+    try:
+        rss_limit_bytes = rss_at_admission + grant
+        admission = ExecutionAdmission(
+            operation=operation,
+            profile=profile,
+            memory_limit_bytes=grant,
+            rss_at_admission_bytes=rss_at_admission,
+            rss_limit_bytes=rss_limit_bytes,
+            process_rss_limit_bytes=process_rss_limit_bytes,
+            headroom_bytes=grant,
+            config_key=limit.config_key,
+            budget_policy=limit.budget_policy,
+            available_ram_bytes=available,
+            os_reserve_bytes=os_reserve,
+        )
+        context = ExecutionContext(
+            operation=operation,
+            profile=profile,
+            job_id=job_id,
+            cancellation_token=cancellation_token or ExecutionCancellationToken(),
+            memory_limit_bytes=grant,
+            memory_baseline_bytes=rss_at_admission,
+            rss_limit_bytes=rss_limit_bytes,
+            admission=admission,
+            memory_sampler=sampler,
+            admission_release=admission_release,
+        )
+        weakref.finalize(context, admission_release)
+    except BaseException:
+        admission_release()
+        raise
+    return context
+
+
+def _profile_limit_from_sample(
+    profile: ExecutionProfile, *, available: int, usable: int
+) -> _ResolvedMemoryLimit:
+    """The profile's memory limit resolved against one fresh availability sample."""
+    for key, multiplier in _memory_env_candidates(profile):
+        value = optional_int_env(key)
+        if value is not None:
+            return _ResolvedMemoryLimit(
+                memory_limit_bytes=value * multiplier,
+                config_key=key,
+                budget_policy="explicit_env",
+            )
+    if (
+        _memory_policy_name() in {_FIXED_MEMORY_POLICY_NAME, _STRICT_SERVER_MEMORY_POLICY_NAME}
+        or profile not in _ADAPTIVE_LOCAL_PROFILES
+    ):
+        return _fixed_default_memory_limit(profile)
+    policy = _ADAPTIVE_MEMORY_POLICY[profile]
+    limit = max(usable * policy.available_ram_basis_points // 10_000, policy.floor_bytes)
+    if policy.ceiling_bytes is not None:
+        limit = min(limit, policy.ceiling_bytes)
+    return _ResolvedMemoryLimit(
+        memory_limit_bytes=min(limit, max(usable, 1)),
+        config_key=f"adaptive:{profile.value}",
+        budget_policy="adaptive_local",
+        available_ram_bytes=available,
+    )
+
+
+def _wait_for_holders_to_release(
+    waitable: frozenset[str],
+    deadline: float,
+    *,
+    cancellation_token: ExecutionCancellationToken | None,
+    operation: str,
+    job_id: str | None,
+) -> None:
+    """Wait until none of the *waitable* holders has a reservation, or the deadline passes."""
+    with _IN_FLIGHT_LOCK:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not any(
+                f"{held_profile.value}:{held_operation}" in waitable
+                for held_profile, _amount, held_operation in _IN_FLIGHT_RESERVATIONS.values()
+            ):
+                return
+            _IN_FLIGHT_RELEASED.wait(min(remaining, _IN_FLIGHT_WAIT_SLICE_SECONDS))
+            if cancellation_token is not None:
+                cancellation_token.throw_if_cancelled(operation, job_id=job_id)
 
 
 def _memory_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], ...]:
@@ -811,7 +1012,11 @@ def _reserve_in_flight_budget(
             reservation_bytes,
             operation,
         )
+    return _reservation_release(reservation_id)
 
+
+def _reservation_release(reservation_id: int) -> Callable[[], None]:
+    """Remove one in-flight reservation exactly once and wake waiting admissions."""
     released = False
     release_lock = threading.RLock()
 

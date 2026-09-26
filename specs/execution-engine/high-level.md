@@ -512,11 +512,13 @@ successful run does no extra work.
   unavailable static estimate is only `warned`. The static stack (column lineage,
   projection planning, cardinality bounds, the RAM estimator, the operator memory
   registry and estimate calibration) stays load-bearing only for surfaces that run
-  without a native cap: the in-process optimiser, Databricks serving, and macOS hosts,
-  which have no dependable per-process cap. A hard cap cannot serve them because they
-  do not run in a capped worker, or the host offers no cap. The stack is not extended
-  for capped surfaces, and once the optimiser runs in capped workers whether the
-  remaining uncapped surfaces still justify it is decided again.
+  without a native cap: the optimiser's `thread` compatibility mode, Databricks serving,
+  and macOS hosts, which have no dependable per-process cap. A hard cap cannot serve them
+  because they do not run in a capped worker, or the host offers no cap. The stack is not
+  extended for capped surfaces. The process-mode optimiser runs every native call in a
+  capped solver session (OPT-W01), so its resident-grid estimate is only a recorded
+  forecast there; whether the remaining uncapped surfaces still justify the stack is
+  decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
   (the graph walker's display walk) and lazy execution (its sink walk) both call
   `_build_funcs`, which asks each node's `NODE_REGISTRY` builder for the same

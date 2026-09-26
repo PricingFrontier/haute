@@ -710,7 +710,9 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
         },
     )
 
-    with patch.object(clean_job_store, "atomic_update", return_value=None):
+    # The recompute publishes through the heavy-guarded update (a session job's
+    # frontier needs its session still attached); losing that race is the 409.
+    with patch.object(clean_job_store, "atomic_update_if_heavy_present", return_value=None):
         status = run_frontier_and_wait(
             client,
             {"job_id": "frontier_race"},

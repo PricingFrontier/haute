@@ -24,7 +24,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast, runtime_checkable
 
 from fastapi import HTTPException
 
@@ -34,7 +34,12 @@ from haute.schemas import JobStatus
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
 _DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
-_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df", "ratebook_factor_contexts")
+_HEAVY_OBJECT_KEYS = (
+    *_DEFAULT_HEAVY_OBJECT_KEYS,
+    "factors_df",
+    "ratebook_factor_contexts",
+    "solver_session",
+)
 _HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
 
 logger = get_logger(component="server.job_store")
@@ -185,6 +190,8 @@ class _ArtifactCleanupState(threading.local):
     def __init__(self) -> None:
         self.depth = 0
         self.cleanups: list[_ArtifactCleanup] = []
+        # Heavy values detached under the lock, released once it is dropped.
+        self.heavy_releases: list[Any] = []
 
 
 _ARTIFACT_CLEANUP_STATE = _ArtifactCleanupState()
@@ -197,6 +204,34 @@ class ArtifactHandleUnavailableError(LookupError):
 def _artifact_lease_key(handle: Mapping[str, Any]) -> tuple[str, str]:
     """A handle's identity for lease counting: its kind and its path."""
     return str(handle["kind"]), str(handle.get("path"))
+
+
+@runtime_checkable
+class HeavyResource(Protocol):
+    """A heavy value that owns something beyond memory (a process), ended on removal."""
+
+    def release(self) -> None: ...
+
+
+def _detach_heavy_values(job: Mapping[str, Any], keys: tuple[str, ...]) -> None:
+    """Queue *job*'s resource-owning heavy values under *keys* for release after the lock."""
+    for key in keys:
+        value = job.get(key)
+        if isinstance(value, HeavyResource):
+            _ARTIFACT_CLEANUP_STATE.heavy_releases.append(value)
+
+
+def _release_heavy_values(values: list[Any]) -> None:
+    for value in values:
+        try:
+            value.release()
+        except Exception as exc:
+            logger.warning(
+                "job_heavy_resource_release_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
 
 
 def register_artifact_cleaner(kind: str, cleaner: ArtifactCleaner) -> None:
@@ -268,7 +303,10 @@ class JobStore:
             if state.depth == 0:  # pragma: no mutate
                 cleanups = state.cleanups
                 state.cleanups = []
+                heavy_releases = state.heavy_releases
+                state.heavy_releases = []
                 self._run_artifact_cleanups(cleanups)
+                _release_heavy_values(heavy_releases)
 
     def _evict_stale_locked(
         self,
@@ -302,6 +340,7 @@ class JobStore:
         if job is None:
             return
         handles = tuple(dict(handle) for handle in job.get("artifact_handles", {}).values())
+        _detach_heavy_values(job, _HEAVY_OBJECT_KEYS)
         self._jobs.pop(job_id)
         cleanups.append((job_id, handles))
         self._running_activity_at.pop(job_id, None)
@@ -379,7 +418,7 @@ class JobStore:
         timer: Any | None = None,  # pragma: no mutate
     ) -> None:
         """Timer entry point: slim heavy completed-job payloads if due."""
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             now = time.time()
             if job_id is not None:
                 job = self._jobs.get(job_id)
@@ -407,6 +446,7 @@ class JobStore:
         now: float,
     ) -> None:
         _validate_common_record(job)
+        _detach_heavy_values(job, _HEAVY_OBJECT_KEYS)
         cleaned = {k: v for k, v in job.items() if k not in _HEAVY_OBJECT_KEYS}
         cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)
         cleaned["heavy_objects_cleared_at"] = now
@@ -466,6 +506,19 @@ class JobStore:
     ) -> tuple[dict[str, Any], bool, float | None]:  # pragma: no mutate
         owned_fields = cast(dict[str, Any], _detach_builtin(fields))
         merged = {**old, **owned_fields}
+        # A value a merge replaces is detached like any other removal.
+        for key in _HEAVY_OBJECT_KEYS:
+            if key in owned_fields and key in old and old[key] is not owned_fields[key]:
+                _detach_heavy_values(old, (key,))
+        if merged.get("status") not in (RUNNING_STATUS, "completed"):
+            # A value that owns a process must not outlive a failed, stopped or
+            # corrected job; plain heavy values keep their existing lifetime.
+            owning = tuple(
+                key for key in _HEAVY_OBJECT_KEYS if isinstance(merged.get(key), HeavyResource)
+            )
+            if owning:
+                _detach_heavy_values(merged, owning)
+                merged = {k: v for k, v in merged.items() if k not in owning}
         schedule_cleanup = self._prepare_heavy_object_policy_locked(merged, now=now)
         _validate_common_record(merged)
         expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
@@ -608,7 +661,7 @@ class JobStore:
             fault_injector("terminal_transition_before_write")
         schedule_cleanup = False
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if old.get("status") == expected_status:
@@ -646,7 +699,7 @@ class JobStore:
             _validate_timestamp("now", now)
         schedule_cleanup = False
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if old.get("status") != RUNNING_STATUS:
@@ -772,7 +825,7 @@ class JobStore:
         self._validate_expected_status(expected_status)
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if expected_status is not None and old.get("status") != expected_status:
@@ -806,7 +859,7 @@ class JobStore:
         self._validate_expected_status(expected_status)
         schedule_cleanup = False  # pragma: no mutate
         expires_at: float | None = None
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             old = self._jobs[job_id]
             _validate_common_record(old)
             if expected_status is not None and old.get("status") != expected_status:
@@ -956,11 +1009,12 @@ class JobStore:
 
         No-op if *job_id* does not exist or keys are already absent.
         """
-        with self._write_lock:
+        with self._write_locked_with_artifact_cleanup():
             job = self._jobs.get(job_id)
             if job is None:
                 return
             _validate_common_record(job)
+            _detach_heavy_values(job, tuple(key for key in keys if key in _HEAVY_OBJECT_KEYS))
             cleaned = {k: v for k, v in job.items() if k not in keys}
             if not any(key in cleaned for key in _HEAVY_OBJECT_KEYS):
                 cleaned.pop(_HEAVY_OBJECT_EXPIRES_AT_KEY, None)

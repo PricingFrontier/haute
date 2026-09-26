@@ -15,6 +15,8 @@
 | `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
 | `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`), both handing each caller a `FlightSubscription`. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
+| `src/haute/routes/_optimiser_session.py` | The parent side of the solver session (OPT-W01): `SolverSession` (one dedicated worker per process-mode solve job, its command slot, pins, per-command growth grants, publication under the slot, and the death record written under `RUNTIME_UNAVAILABLE_KEY`), `SessionCommandError`, and `runtime_mode`, the one dispatch the frontier consumers make between the session and the in-process runtime. See "Solver sessions (OPT-W01)" below. |
+| `src/haute/routes/_optimiser_session_worker.py` | The child side of the solver session: the command functions (`build_and_solve`, `sweep`, `apply_point`), their plain-data requests and outcomes, and the child's session state (solver, quote grid, ratebook factor contexts). |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT` (the most rows one Quotes page returns, defined beside the request schema in `haute.schemas` and re-exported here), `QUOTE_PAGE_DEPTH_LIMIT` (the deepest row a Quotes page reaches), `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_frontier_payload`. |
 | `src/haute/routes/_optimiser_quotes.py` | The Quotes explorer (OPT-V12): the page reducers over the choice frame (`QuotePage`, and `AnalysisQuotePage` when the sort or a filter reads an analysis column: sort with the quote-id tie-break, the quote-id prefix search, the scenario-value range, at-range-edge, analysis-equality and deployed-factor filters, the offset and the depth guard), the typed column roles (`quote_columns`) and the route's service (`QuoteQueries.page`). See "Quotes explorer (OPT-V12)" below. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
@@ -249,9 +251,11 @@ The setup thread runs inside a `contextlib.ExitStack` on which `_execute_pipelin
 run's [seed plan](../caching/low-level.md#seed-plans); the plan's seed leases and capture staging
 are held until the grid is built and released on every exit. No checkpoint directory is written.
 
-1. Admits an `ExecutionContext` (profile `OPTIMISER_SETUP`) — an admission failure here is caught
-   by the setup worker and published as the solve job's `memory_limited` terminal status, not
-   returned as a synchronous HTTP 507 from the already-completed `/solve` submission.
+1. Admits an `ExecutionContext` (profile `OPTIMISER_SOLVE`, a growth grant waiting out the
+   panel's `optimiser_setup:optimiser_estimate`; see "Solver sessions (OPT-W01)") — an admission
+   failure here is caught by the setup worker and published as the solve job's `memory_limited`
+   terminal status, not returned as a synchronous HTTP 507 from the already-completed `/solve`
+   submission.
 2. Runs the pipeline up to the optimiser node via `_execute_pipeline` — see below.
 3. Resolves the configured exact `data_input` name to one incoming edge and selects that edge's
    source frame via `_resolve_data_input_frame`; node-id matching is not accepted.
@@ -311,8 +315,9 @@ replays the record (terminal reason, message, `error`/`error_code`/`error_detail
 `http_status_code`, and the child's metrics adopted as worker evidence) onto the real job.
 Worker-level failures map as training preparation's do: a stopped worker is the job's stop, a
 memory-shaped worker failure (`isolated_worker_failure_is_memory`) is a 507 `memory_limit` with
-`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then does the parent build
-the grid from the file (step 7). The explicit `thread` compatibility mode runs steps 2–7 on the
+`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
+the file, by the job's solver session (step 7 and step 8 in process mode are the session's
+`build_and_solve` command; see "Solver sessions (OPT-W01)"). The explicit `thread` compatibility mode runs steps 2–7 on the
 setup thread against the real job (`_prepare_solver_frame`, then `_build_grid`), with the same
 failure mapping.
 
@@ -348,6 +353,11 @@ transition rather than propagated — nothing in the setup thread's failure path
 caller except through the status-polling endpoint.
 
 ### Solver execution (`_launch_background` → `_optimiser_solver._solve_online` / `_solve_ratebook`)
+
+In process mode these functions run unchanged inside the solver session's `build_and_solve`
+command against a private job record, and the parent publishes the plain completion fields the
+command returns (see "Solver sessions (OPT-W01)"). The description below is of the functions
+themselves and of the thread compatibility mode's `_launch_background`.
 
 The spawned solver thread updates progress to "Solving", then — inside
 an execution-context stage — calls:
@@ -1525,9 +1535,13 @@ file because the installed solver interface accepts one file.
 
 Before constructing the resident grid, estimate numeric vectors, quote IDs,
 sorting/conversion overlap and one reader batch from row count and decoded
-sample widths. Refuse an estimate exceeding the current execution context's
-remaining allowance with the existing typed admission error. The estimate is
-conservative and does not replace runtime limits. The existing solver/frontier
+sample widths. In the thread compatibility mode, refuse an estimate exceeding the
+current execution context's remaining allowance with the existing typed
+admission error, which carries the estimate as `estimated_bytes` so its message
+names both sizes. In process mode the estimate is only recorded
+(`grid_forecast_bytes`): the solver session's native cap bounds the build, and a
+solve is never refused on it. The estimate is conservative and does not replace
+runtime limits. The existing solver/frontier
 work keeps sharing its prepared grid; this change adds no parallel grid copies.
 ## Analysis-column side table and scenario grid
 
@@ -2270,3 +2284,221 @@ table's recorded `column_stats`). The response is validated where it is built: `
 <= row_count`, `preview_row_count <= preview_row_limit`, and every row's keys are the column
 names.
 
+
+## Solver sessions (OPT-W01)
+
+In process mode (`HAUTE_INTERACTIVE_EXECUTION_MODE=process`, the default), one dedicated spawn
+worker per solve job, the *solver session*, runs every native price-contour call the solve
+makes and every computation over a per-quote solve frame. That covers:
+
+- the grid build and the ratebook factor contexts;
+- the solve, the inline frontier and the summary;
+- the as-solved adjustment report and the apply-artifact write;
+- frontier recompute and point apply/evaluate.
+
+The server makes no price-contour call and holds no native optimiser object. It receives
+bounded plain data, plus parquet artifacts the session wrote.
+
+The explicit `thread` compatibility mode keeps the in-process path described in the sections
+above (`runtime_mode: "in_process"`), including the resident-grid admission gate, because
+nothing else bounds memory there.
+
+### Modules
+
+- `src/haute/routes/_optimiser_session.py` is the parent side: `SolverSession` and
+  `runtime_mode`.
+- `src/haute/routes/_optimiser_session_worker.py` is the child side: the session commands and
+  the child's session state.
+
+The session is a
+[dedicated worker](../execution-engine/low-level.md#dedicated-workers).
+
+### Budget
+
+Every session admission uses `ExecutionProfile.OPTIMISER_SOLVE` through `admit_growth_grant`
+(see the execution-engine admission section) and waits out
+`optimiser_setup:optimiser_estimate`. The profile's settings:
+
+| Setting | Value |
+|---|---|
+| Adaptive share | 10,000 basis points of `usable` |
+| Floor | 4 GiB |
+| Ceiling | none |
+| Fixed default | 4 GiB |
+| Memory-limit env | `HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES` / `_MB` |
+| Process-RSS-limit env | `HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES` / `_MB` |
+
+The setup materialisation worker runs under its own `OPTIMISER_SOLVE` grant, which is released
+when that worker exits. Each session command is then admitted afresh.
+
+### Commands
+
+A command is one of `build_and_solve`, `sweep` or `apply_point`. `SolverSession.run_command`
+runs each command through this sequence:
+
+1. **Acquire the command slot.** The session runs one command at a time. The wait is bounded
+   by the caller's deadline and polls its stop signal, and nothing is reserved while waiting.
+2. **Admit a growth grant `G`.** The in-flight reservation is exactly `G`.
+3. **Send the command with `G`.** Before running it, the child re-applies its native cap as
+   its current backend charge plus `G`.
+4. **Run** the command.
+5. **Publish on the parent side** while the slot is still held: the solve's completion, the
+   sweep's new generation, or the point's handle. Otherwise the result is discarded.
+6. **Release** the reservation, then the slot.
+
+The cap installed for a command stays in place while the session is idle. It is never lifted.
+
+**`build_and_solve(SessionSolveRequest)`**:
+
+1. Builds the grid. It records `grid_forecast_bytes` (the resident-grid estimate) in the
+   command metrics but does not enforce it.
+2. Checks that the quote-analysis table has one row per grid quote.
+3. Runs the unchanged `_solve_online` / `_solve_ratebook` against a private record in the
+   `optimiser_worker` job store (private to the session process). The record is seeded with the parent job's `config`,
+   `input_provenance`, `node_label` and `setup_chunking`, and with the grid's `scenario_grid`.
+4. Returns a `SessionSolveOutcome`. It carries every plain completion field the in-process
+   finalize publishes (result, base result, publish summary, frontier data and factor tables,
+   artifact handles, ratebook level counts/dtypes/level order, setup chunking) and the
+   command's execution metrics.
+
+The child keeps the solver, quote grid and (ratebook) factor contexts in its session state,
+and drops the solve result.
+
+**`sweep(SessionSweepRequest)`** runs `_compute_frontier` against that state. It returns:
+
+- the capped frontier payload, built with generation `0`; the parent stamps the generation it
+  publishes under the parent lock;
+- the ratebook point factor tables.
+
+**`apply_point(SessionPointApplyRequest)`**:
+
+1. Runs `apply_from_grid` (online), or `solver.evaluate` plus the exact-totals check against
+   the point's frontier row (ratebook; `expected_totals` is passed in).
+2. Writes the point's apply artifact.
+3. Returns the artifact's handle.
+
+**Result size.** A returned envelope larger than `HAUTE_OPTIMISER_SESSION_RESULT_MAX_BYTES`
+(default 64 MiB) raises the dedicated worker's `WorkerResultTooLargeError` in the child. The command fails as an
+`error`; the result is never truncated.
+
+### Memory failures are fatal in every stage
+
+The solver, adjustment, inline-frontier and summary catches re-raise, in both modes, when
+`memory_error_in(exc)` finds a `MemoryError` behind the exception. Running out of memory is
+therefore never recorded as a diagnostic on a `completed` solve.
+
+### Job record
+
+| Field | Process mode | Thread mode |
+|---|---|---|
+| `runtime_mode` | `"session"` | `"in_process"` |
+| Heavy state | the `SolverSession`, under the heavy key `solver_session` | the native keys, as before |
+
+Consumers dispatch on `runtime_mode`, never on whether a key is present.
+
+When the session's runtime is gone, the job records `runtime_unavailable: {reason,
+memory_evidence, at}`. `reason` is one of `expired`, `solver_session_memory_limited` or
+`solver_session_crashed`.
+
+Every path that drops heavy state detaches the session and closes it outside the store lock
+(see the background-jobs heavy-object policy).
+
+A running command pins the session. If an expiry or clear happens while the session is pinned,
+it is detached and marked closing. It is terminated once the command returns, and the
+command's result is discarded.
+
+### Solve lifecycle
+
+The solve thread:
+
+1. admits;
+2. runs setup;
+3. starts the session, with a bounded start that polls the job's cancellation reason;
+4. runs `build_and_solve`;
+5. publishes the completion, with `solver_session` and `runtime_mode`, through the same
+   `publish_completion` claim the in-process finalize uses.
+
+**Cancellation and timeout** keep their existing immediate terminal transitions, which
+are the only claim needed against a concurrent completion:
+
+- a later `timed_out` outranks `cancelled` by the store's precedence;
+- a completion publishes only over `running`.
+
+The job's cancellation reason is the session's stop signal, so a cancelled or timed-out solve
+terminates the session at once, mid-native-call.
+
+**Solver input.** The session command owns the solver input. It is removed after
+`build_and_solve` returns, or once the session dies.
+
+**Graph/node single-flight** has two release paths:
+
+- after a successful publication, it is released while the session lives on;
+- after cancellation or failure, it is released only once the session has been terminated and
+  joined, and its inputs and orphan handles removed.
+
+### Frontier recompute and point apply
+
+**Frontier recompute** runs `sweep` as an admitted session command. (The in-process sweep
+stays unadmitted, as before.)
+
+Sweep cancellation stays cooperative:
+
+1. The sweep registry marks the sweep cancelled.
+2. The command runs to completion, holding its slot and reservation.
+3. The result is discarded.
+
+The session survives.
+
+**Point apply** runs `apply_point` inside the existing latest-wins flight. The flight counts as
+running while it waits for the session slot. The frontier generation is checked at three
+points:
+
+- after acquiring the slot;
+- before sending the command;
+- before publishing the handle.
+
+A change answers the existing 409 `_FRONTIER_CHANGED_DETAIL`.
+
+### Session death
+
+A session that dies during a command answers that command:
+
+| Death | Solve job | Request |
+|---|---|---|
+| Memory death | `memory_limited` | 507, with the memory detail below |
+| Any other death | `error` | 500 |
+
+The job then records `runtime_unavailable`.
+
+After that:
+
+- A later request for an unmaterialised frontier point answers 410
+  `frontier_point_unavailable` with `runtime_reason`; a recompute keeps its existing 400
+  ("Solver and quote grid are not available for this job").
+- Retained point artifacts, save and MLflow log keep working.
+
+A server restart loses the job itself, which answers 404.
+
+### Memory evidence
+
+Each memory death records `memory_evidence`:
+
+- **`cap_confirmed`** requires the memory limiter's own record from the command, one of:
+  - the private cgroup's `memory.events.local` `oom` rising since the cap was installed, read
+    before cgroup cleanup;
+  - a Windows `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` notification. The child's completion-port
+    watcher counts it into a parent-owned counter, and the parent reads that counter without
+    blocking. An unreadable counter counts as no record.
+- **`watchdog`**: RSS supervision stopped the process, either the parent watchdog or a sampled
+  `ExecutionMemoryLimitExceededError`.
+- **`suspected`**: a `MemoryError`, or the exit-code heuristic, with no limiter record. A
+  Windows fail-fast abort usually lands here.
+- **`none`**: anything else. An unavailable memory sampler keeps its own message and `error`
+  classification.
+
+Wording and payload:
+
+- The job message and the later 410 wording are definite only for `cap_confirmed`, and hedged
+  otherwise.
+- Near-cap charge is recorded as supporting data. It never promotes the evidence.
+- The 507 / `memory_limit` detail carries `memory_evidence` and `stage`.

@@ -328,6 +328,11 @@ _EXPECTED_DEBT_IDS = {
     # native memory cap (Linux cgroup/rlimit, Windows Job Object); macOS skips.
     # See tests/test_input_preparation.py.
     "989b2ba60fe375be",
+    # The optimiser's solver session and its dedicated worker (OPT-W01) exist to
+    # run under a native memory cap, so both suites need one; macOS skips. See
+    # tests/test_dedicated_workers.py and tests/test_optimiser_solver_session.py.
+    "feb425948a23b85f",
+    "2e1f146b53c9a4b1",
     # Hosted git-credential helper — the askpass helper is a `#!/bin/sh`
     # script installed only by the hosted container bootstrap
     # (databricks_app/bootstrap.py), so the two tests that execute it cannot

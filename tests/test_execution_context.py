@@ -581,6 +581,184 @@ def test_training_admission_waits_out_an_evaluation_preview(
     assert 0.15 <= waited < 5.0
 
 
+def test_auto_range_preparation_waits_out_the_panel_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-range started while the config panel's estimate runs waits, not refuses."""
+    from haute._execution_admission import create_admitted_execution_context
+    from haute.routes._optimiser_session import ESTIMATE_HOLDERS
+
+    _pin_ten_gib_host(monkeypatch)
+    # Admitted exactly as the estimate route admits it.
+    estimate = create_admitted_execution_context(
+        operation="optimiser_estimate",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_sampler=lambda: 100,
+    )
+    releaser = threading.Timer(0.2, estimate.release_admission)
+    started = time.monotonic()
+    releaser.start()
+    try:
+        admitted = create_admitted_execution_context(
+            operation="frontier_auto_range_preparation",
+            profile=ExecutionProfile.AUTO_RANGE,
+            memory_sampler=lambda: 100,
+            wait_out_holders=ESTIMATE_HOLDERS,
+            wait_seconds=10.0,
+        )
+    finally:
+        releaser.join()
+        estimate.release_admission()
+    waited = time.monotonic() - started
+    admitted.release_admission()
+    assert 0.15 <= waited < 5.0
+
+
+_GIB = 1024 * 1024 * 1024
+
+
+def _grant(**kwargs: Any) -> ExecutionContext:
+    from haute._execution_admission import admit_growth_grant
+
+    return admit_growth_grant(
+        operation=kwargs.pop("operation", "optimiser_solve"),
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
+        memory_sampler=kwargs.pop("memory_sampler", lambda: 100),
+        **kwargs,
+    )
+
+
+def test_a_growth_grant_waits_for_the_estimate_then_sees_what_it_freed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+    from haute.routes._optimiser_session import ESTIMATE_HOLDERS
+
+    _pin_ten_gib_host(monkeypatch)
+    estimate = create_admitted_execution_context(
+        operation="optimiser_estimate",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+        memory_sampler=lambda: 100,
+    )
+    releaser = threading.Timer(0.2, estimate.release_admission)
+    started = time.monotonic()
+    releaser.start()
+    try:
+        grant = _grant(wait_out_holders=ESTIMATE_HOLDERS, wait_seconds=10.0)
+    finally:
+        releaser.join()
+        estimate.release_admission()
+    try:
+        assert 0.15 <= time.monotonic() - started < 5.0
+        # Sampled after the estimate released: the whole usable machine, 10 GiB
+        # less the 2 GiB OS reserve.
+        assert grant.memory_limit_bytes == 8 * _GIB
+        assert grant.admission is not None
+        assert grant.admission.headroom_bytes == 8 * _GIB
+    finally:
+        grant.release_admission()
+
+
+def test_a_competing_reservation_shrinks_the_grant_instead_of_refusing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(3 * 1024))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        grant = _grant()
+        try:
+            assert grant.memory_limit_bytes == 5 * _GIB
+        finally:
+            grant.release_admission()
+    finally:
+        training.release_admission()
+
+
+def test_any_positive_grant_is_admitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """There is no minimum: whether a small grant suffices is for execution to find out."""
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_BYTES", str(8 * _GIB - 8 * 1024 * 1024))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        grant = _grant()
+        try:
+            assert grant.memory_limit_bytes == 8 * 1024 * 1024
+        finally:
+            grant.release_admission()
+    finally:
+        training.release_admission()
+
+
+def test_a_grant_of_nothing_refuses_with_the_in_flight_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_BYTES", str(8 * _GIB))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        with pytest.raises(ExecutionAdmissionError) as refused:
+            _grant()
+        assert refused.value.reason == "in_flight_memory_budget_exceeded"
+        assert refused.value.in_flight_operations == ("training_prep:training_pipeline",)
+    finally:
+        training.release_admission()
+
+
+def test_an_absolute_process_rss_limit_caps_the_grant_and_names_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES", str(1 * _GIB))
+    grant = _grant(memory_sampler=lambda: 256 * 1024 * 1024)
+    try:
+        assert grant.memory_limit_bytes == 768 * 1024 * 1024
+    finally:
+        grant.release_admission()
+    with pytest.raises(ExecutionAdmissionError) as refused:
+        _grant(memory_sampler=lambda: 2 * _GIB)
+    assert refused.value.reason == "process_rss_limit_exceeded"
+
+
+def test_the_solve_profile_takes_the_whole_usable_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_ten_gib_host(monkeypatch)
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SOLVE).memory_limit_bytes == (
+        8 * _GIB
+    )
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP).memory_limit_bytes == (
+        6 * _GIB
+    )
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SOLVE).memory_limit_bytes == (
+        512 * 1024 * 1024
+    )
+    monkeypatch.delenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB")
+    monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "fixed")
+    assert execution_budget_for_profile(ExecutionProfile.OPTIMISER_SOLVE).memory_limit_bytes == (
+        4 * _GIB
+    )
+
+
 def test_training_admission_keeps_waiting_when_a_preview_takes_the_gap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5090,7 +5268,7 @@ def test_optimiser_start_creates_admitted_setup_context(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "768")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "768")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 128 * 1024 * 1024,
@@ -5125,7 +5303,7 @@ def test_optimiser_start_creates_admitted_setup_context(
 
     assert response.status == "started"
     context = captured["execution_context"]
-    assert context.profile == ExecutionProfile.OPTIMISER_SETUP
+    assert context.profile == ExecutionProfile.OPTIMISER_SOLVE
     assert context.memory_limit_bytes == 768 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 128 * 1024 * 1024
@@ -5190,8 +5368,8 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
-    monkeypatch.setenv("HAUTE_OPTIMISER_PROCESS_RSS_LIMIT_MB", "64")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_MB", "64")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 65 * 1024 * 1024,
@@ -5212,7 +5390,7 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
     assert job["terminal_reason"] == "memory_limited"
     assert job["http_status_code"] == 507
     assert job["error_detail"]["error_code"] == "memory_limit"
-    assert job["error_detail"]["profile"] == "optimiser_setup"
+    assert job["error_detail"]["profile"] == "optimiser_solve"
     assert job["error_detail"]["reason"] == "process_rss_limit_exceeded"
     assert "process_rss_limit_exceeded" in job["message"]
 
@@ -5224,7 +5402,7 @@ def test_optimiser_start_maps_runtime_memory_failure_to_http_507(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES", "512")
     samples = iter([1, 1, 600])
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: next(samples))
     graph = _minimal_optimiser_setup_graph()
@@ -5260,7 +5438,7 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_BYTES", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES", "512")
     samples = iter([1, 1, 600])
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: next(samples))
     graph = _minimal_optimiser_setup_graph()
@@ -5301,7 +5479,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserSolveRequest
 
-    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     graph = _minimal_optimiser_setup_graph()
     scored_lf = pl.LazyFrame(
@@ -5337,7 +5515,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
     assert metrics["status"] == "memory_limited"
     assert metrics["terminal_reason"] == "memory_limited"
     assert metrics["memory_limit_bytes"] == 512 * 1024 * 1024
-    assert metrics["admission"]["profile"] == ExecutionProfile.OPTIMISER_SETUP.value
+    assert metrics["admission"]["profile"] == ExecutionProfile.OPTIMISER_SOLVE.value
 
 
 def test_optimiser_extract_factors_sinks_without_projected_frame_budget() -> None:

@@ -28,6 +28,7 @@ from haute._native_memory_limit import (
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
+from haute._parent_watch import exit_with_parent
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
@@ -213,6 +214,7 @@ def _interactive_worker_entrypoint(
     preload_modules: tuple[str, ...],
     progress_cell: ProgressCell | None = None,
 ) -> None:
+    exit_with_parent()
     lease = NativeMemoryLease()
     try:
         configure_process_high_qos()

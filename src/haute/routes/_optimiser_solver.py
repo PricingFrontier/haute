@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -33,6 +34,7 @@ from haute._execution_context import (
     ExecutionContext,
 )
 from haute._logging import get_logger
+from haute._memory_errors import memory_error_in
 from haute._polars_utils import (
     streaming_collect,
 )
@@ -891,6 +893,8 @@ def _publish_summary(
     try:
         summary = solver.summary(solve_result)
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         logger.warning("publish_summary_failed", error=str(exc), job_id=job_id, exc_info=True)
         return None
     if not isinstance(summary, dict):
@@ -920,6 +924,8 @@ def _finalize_solve_result(
     factor_columns: list[list[str]] | None = None,
     check_cancelled: Callable[[], None] | None = None,
     quote_analysis_handle: dict[str, Any] | None = None,
+    report_stage: Callable[[str, float], None] | None = None,
+    apply_artifact_dir: str | None = None,
 ) -> bool:
     """Build the result dict and update the job with the solve outcome.
 
@@ -964,6 +970,8 @@ def _finalize_solve_result(
             else _ratebook_adjustments(solve_result, job_snapshot)
         )
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         diagnostics_errors.append(_diagnostic_error("adjustments", exc, job_id=job_id))
 
     result_dict: dict[str, Any] = {
@@ -1028,6 +1036,8 @@ def _finalize_solve_result(
                     )
                     return False
                 job_snapshot = progress_job
+                if report_stage is not None:
+                    report_stage("Computing efficient frontier", 0.8)
                 frontier_result = _compute_frontier(
                     solver,
                     quote_grid,
@@ -1059,6 +1069,8 @@ def _finalize_solve_result(
         except (BackgroundJobStoppedError, ExecutionCancelledError):
             raise
         except Exception as exc:
+            if memory_error_in(exc) is not None:
+                raise
             frontier_error = f"Frontier unavailable: {exc}"
             diagnostics_errors.append(_diagnostic_error("frontier", exc, job_id=job_id))
 
@@ -1096,11 +1108,14 @@ def _finalize_solve_result(
         artifact_handles: dict[str, Any] = {}
         # The as-solved per-quote frame: the online apply frame, or price-contour's
         # canonical evaluation of the ratebook factor tables (OPT-V09C).
+        artifact_dir = None if apply_artifact_dir is None else Path(apply_artifact_dir)
         apply_result_handle = (
-            _optimiser_artifacts._persist_apply_result_artifact(solve_result)
+            _optimiser_artifacts._persist_apply_result_artifact(
+                solve_result, artifact_dir=artifact_dir
+            )
             if mode == "online"
             else _optimiser_artifacts._persist_apply_frame_artifact(
-                ratebook_quote_results(solve_result)
+                ratebook_quote_results(solve_result), artifact_dir=artifact_dir
             )
         )
         artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
@@ -1213,6 +1228,8 @@ def _solve_online(
     except (BackgroundJobStoppedError, ExecutionCancelledError):
         raise
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
@@ -1246,6 +1263,8 @@ def _solve_online(
         },
         check_cancelled=check_cancelled,
         quote_analysis_handle=quote_analysis_handle,
+        report_stage=ctx.report_stage,
+        apply_artifact_dir=ctx.apply_artifact_dir,
     )
 
 
@@ -1262,6 +1281,12 @@ class SolveContext:
     registration_already_active: bool = False
     start_time: float | None = None
     check_cancelled: Callable[[], None] | None = None
+    # Reports a stage label and progress to whoever supervises the solve (a
+    # solver session forwards it to the parent job).
+    report_stage: Callable[[str, float], None] | None = None
+    # A parent-owned directory the as-solved apply artifact is written into (a
+    # solver session); ``None`` creates one here.
+    apply_artifact_dir: str | None = None
 
 
 @require_solver_worker_context
@@ -1343,6 +1368,8 @@ def _solve_ratebook(
     except (BackgroundJobStoppedError, ExecutionCancelledError):
         raise
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
@@ -1408,4 +1435,6 @@ def _solve_ratebook(
         },
         check_cancelled=check_cancelled,
         quote_analysis_handle=quote_analysis_handle,
+        report_stage=ctx.report_stage,
+        apply_artifact_dir=ctx.apply_artifact_dir,
     )

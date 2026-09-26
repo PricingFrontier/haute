@@ -259,12 +259,43 @@ QUOTE_ANALYSIS_UNAVAILABLE_DETAIL = (
 )
 
 
-def _persist_apply_frame_artifact(frame: Any) -> dict[str, Any]:
+def _new_apply_artifact_directory() -> Path:
+    """Create the marked directory one apply artifact is written into.
+
+    A solver session's parent creates it before the command that writes the
+    artifact, and removes it when no job adopts the handle, so an artifact a
+    killed or discarded command wrote is never left without an owner.
+    """
+    return create_owned_artifact_directory(
+        _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER
+    )
+
+
+def _remove_apply_artifact_directory(directory: Path) -> None:
+    """Remove a parent-created apply directory no job adopted; a failure is logged."""
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        return
+    except OSError as cleanup_exc:
+        logger.warning(
+            "orphan_apply_artifact_directory_cleanup_failed",
+            path=str(directory),
+            error=str(cleanup_exc),
+        )
+
+
+def _persist_apply_frame_artifact(
+    frame: Any, *, artifact_dir: Path | None = None
+) -> dict[str, Any]:
     """Persist one per-quote apply frame behind an explicit handle.
 
     *frame* is an online apply frame (a solve's or a frontier point's
     ``dataframe``) or a ratebook evaluation's ``quote_results``; anything but a
     Polars ``DataFrame`` is a caller error, never a silent "nothing to persist".
+    *artifact_dir* is a directory the caller's parent created with
+    :func:`_new_apply_artifact_directory` and owns; without one, a new
+    directory is created here and removed if the write fails.
     """
     import polars as pl
 
@@ -273,15 +304,20 @@ def _persist_apply_frame_artifact(frame: Any) -> dict[str, Any]:
             f"An optimiser apply frame must be a Polars DataFrame to persist; got "
             f"{type(frame).__name__}"
         )
-    artifact_dir = create_owned_artifact_directory(
-        _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER
-    )
+    owns_directory = artifact_dir is None
+    if artifact_dir is None:
+        artifact_dir = _new_apply_artifact_directory()
+    elif artifact_dir.resolve().parent != _prepare_apply_artifact_root() or not (
+        artifact_dir.is_dir()
+    ):
+        raise ValueError(f"{artifact_dir} is not a directory under the apply artifact root")
     artifact_path = artifact_dir / _APPLY_RESULT_FILENAME
     try:
         frame.write_parquet(artifact_path)
         row_count = len(frame)
     except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
+        if owns_directory:
+            shutil.rmtree(artifact_dir, ignore_errors=True)
         raise
     return {
         "kind": _APPLY_RESULT_HANDLE_KIND,
@@ -293,7 +329,9 @@ def _persist_apply_frame_artifact(frame: Any) -> dict[str, Any]:
     }
 
 
-def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any]:
+def _persist_apply_result_artifact(
+    solve_result: SolveResultLike, *, artifact_dir: Path | None = None
+) -> dict[str, Any]:
     """Persist an online result's per-quote dataframe, then drop the result's reference.
 
     Only online solves and online apply results carry a ``dataframe``; a result
@@ -307,7 +345,7 @@ def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, A
             "An online optimiser result must carry a per-quote Polars DataFrame to "
             f"persist; {type(solve_result).__name__}.dataframe is {type(df).__name__}"
         )
-    handle = _persist_apply_frame_artifact(df)
+    handle = _persist_apply_frame_artifact(df, artifact_dir=artifact_dir)
     try:
         cast(Any, solve_result).dataframe = None
     except Exception:
@@ -611,13 +649,43 @@ def _range_parts_directory() -> Iterator[Path]:
         yield Path(raw_dir)
 
 
-def frontier_point_unavailable_detail(point_index: int, *, grid_expired: bool) -> dict[str, str]:
+def frontier_point_unavailable_detail(
+    point_index: int,
+    *,
+    grid_expired: bool,
+    runtime_unavailable: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
     """The named 410 for a frontier point with no retained result to read.
 
     *grid_expired*: the point has no retained artifact and the solve's quote
     grid has gone, so it cannot be materialised again. Otherwise its artifact
-    was evicted between the request and the read.
+    was evicted between the request and the read. *runtime_unavailable* is the
+    job's record of why its solver session's runtime is gone (OPT-W01); the
+    reason is named, definitely only when the memory limiter recorded it.
     """
+    if grid_expired and runtime_unavailable is not None:
+        reason = str(runtime_unavailable.get("reason", "expired"))
+        evidence = str(runtime_unavailable.get("memory_evidence", "none"))
+        prefix = (
+            f"Frontier point {point_index}'s per-quote result is no longer available: it is "
+            "not among the retained point results and"
+        )
+        if reason == "solver_session_memory_limited" and evidence == "cap_confirmed":
+            cause = " the solver process ran out of memory while computing another result."
+        elif reason == "solver_session_memory_limited":
+            cause = (
+                " the solver process stopped, most likely because it ran out of memory, while "
+                "computing another result."
+            )
+        elif reason == "solver_session_crashed":
+            cause = " the solver process stopped unexpectedly."
+        else:
+            cause = " the solve's quote grid has expired."
+        return {
+            "error_code": "frontier_point_unavailable",
+            "message": f"{prefix}{cause} Re-run the solve to inspect this point.",
+            "runtime_reason": reason,
+        }
     if grid_expired:
         message = (
             f"Frontier point {point_index}'s per-quote result is no longer available: it is "

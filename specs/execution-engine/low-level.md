@@ -37,6 +37,9 @@
 | `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
 | `src/haute/_step_progress.py` | A preview's step progress: `StepProgress(done, total, label)`, the `ProgressCell` a warm worker writes (shared memory under its own lock; the parent only ever tries the lock without blocking), and the job binding (`bind_job_progress`, `current_job_progress_reporter`). |
+| `src/haute/_dedicated_workers.py` | `DedicatedWorker`: one long-lived spawn worker pinned to a single owner (the optimiser's solver session), whose native cap is re-applied per command and never lifted, with parent-process death watching, shutdown fencing, never-replaced deaths (`WorkerDeath`) and limit evidence (`LimitEvidenceCounter`, `record_job_notification`, `read_limit_evidence`). See "Dedicated workers" below. |
+| `src/haute/_parent_watch.py` | Workers that end with their server: the worker-isolation spawn helper records the server's pid in the environment variable named by `PARENT_PID_ENV` for every spawn, and each worker entrypoint (one-shot isolated, job protocol, warm pool, dedicated) calls `exit_with_parent`, whose daemon thread waits on the parent *process* (Windows process handle, Linux pidfd, else a `getppid` poll) and exits the worker when it is gone. |
+| `src/haute/_memory_errors.py` | `memory_error_in`: the memory error behind any chain of translated exceptions, so running out of memory is never recorded as something else. |
 | `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution (and the optimiser input estimate): validates process/thread mode, resolves the per-worker Polars thread cap (`resolve_interactive_polars_threads()`), runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
 | `src/haute/_process_memory.py` | The one process-memory probe, read through psutil on every platform: this process's resident, private (Windows commit) and virtual bytes and thread count, another process's resident bytes, and liveness. A figure the operating system will not give is unobservable (no value), never zero. The execution context, worker supervision, the native caps' baselines and the modelling memory log all read it. |
 
@@ -905,7 +908,28 @@ remedy)`: admission refuses it when the estimate exceeds the allowance (the budg
 any process-RSS cap, less the sampled RSS), with a reason naming the subject, the estimate, the
 allowance and the remedy, and reserves the estimate rather than the whole `memory_limit_bytes`
 in flight, so several small bounded operations fit side by side; the context's RSS limit is the
-budget's as before. The optimiser's choice queries and frontier point applies (OPT-V09B) use it.
+budget's as before. The optimiser's choice queries and in-process frontier point applies
+(OPT-V09B) use it.
+
+**Growth grants (`_execution_admission.admit_growth_grant`).** The optimiser's solver session
+(OPT-W01, profile `OPTIMISER_SOLVE`) admits each command with a grant instead of a whole budget,
+so a command gets as much of the machine as is free when it starts. The grant waits out its
+`wait_out_holders` first and only then, under `_IN_FLIGHT_LOCK`, samples a fresh
+`available_ram_bytes()`, computes `usable_now = available - min(os_reserve, available/2)` and
+grants `G = min(profile_limit(usable_now), usable_now - Σ other reservations, process-RSS
+headroom when an absolute process-RSS limit is configured)`, where `profile_limit` is the
+adaptive, fixed or env-resolved limit recomputed from `usable_now`. Any positive `G` is reserved
+exactly and becomes the context's `headroom_bytes` (and its RSS limit is `rss_at_admission +
+G`); there is no minimum grant — execution decides whether it suffices. Competing reservations
+shrink the grant rather than refuse it. `G <= 0` refuses with the binding cause:
+`process_rss_limit_exceeded` when the process-RSS term binds, `in_flight_memory_budget_exceeded`
+when other reservations take all of `usable_now`, otherwise `no_memory_available` ("the machine
+has no free memory beyond the OS reserve"). `OPTIMISER_SOLVE` is an adaptive, in-flight profile:
+10,000 basis points, floor 4 GiB, no ceiling, fixed default 4 GiB, env
+`HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_*` and `HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_*`.
+`ExecutionAdmissionError` carries `estimated_bytes` when a `WorkEstimate` (or the optimiser's
+thread-mode resident-grid gate) refused, and the shared user message names the estimate and the
+allowance.
 
 **Chunked map-reduce (`chunking.chunk_plan` → `iter_chunked_frames`).** `chunk_plan()`
 prepares the graph the same way as the other two paths, identifies the chunk-start
@@ -1115,6 +1139,53 @@ once). It reports `done=0` with that total, then each step's start ("Caching X",
 "Computing X") and completion. A failed capture or skipped collection simply never
 completes, so progress stops short and the response carries the error; a walk without
 a reporter reports nothing.
+
+### Dedicated workers
+
+`DedicatedWorker` (`src/haute/_dedicated_workers.py`) is one long-lived `spawn` worker pinned
+to a single owner — the optimiser's solver session (OPT-W01) — that keeps state between
+requests. It reuses the warm pool's error family (`InteractiveWorker*Error`), exit-code
+memory heuristic, `ProgressCell` and termination helpers, and differs from a pool slot in four
+ways:
+
+- **The cap is re-applied per command and never lifted.** Each `run` request carries the
+  command's admitted growth; before calling the command the child calls
+  `NativeMemoryLease.apply(growth)` again, which re-measures the backend baseline and replaces
+  the ceiling on the same Job Object or private cgroup (or `RLIMIT_AS` soft limit). The child
+  never calls `restore()`, so between commands the last ceiling stays installed, and never
+  calls `close()`: the process holds its cap until it dies, a Windows job ends with its last
+  process, and the parent removes a private cgroup after joining. The result envelope carries
+  `{backend, baseline_bytes, ceiling_bytes, oom_events}` for the command (`oom_events` is the
+  cgroup's `memory.events.local` `oom` count when the cap was installed). There is no
+  acknowledgement/release round trip.
+- **Failures are not replaced.** A crash, stop, timeout or protocol failure marks the worker
+  dead with a structured `death` (`kind`, `exit_code`, `memory_evidence`) and raises the
+  existing error; the owner decides what the death means. `terminate(reason)` bypasses any
+  caller-side slot, sets the stop flag, then terminates → kills → joins and removes the
+  worker's private cgroups; it is idempotent.
+- **The child exits when the server does**, as every haute worker does (`_parent_watch`): the
+  parent passes its pid and the child's watcher thread follows the parent *process* (Windows
+  `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`, Linux ≥ 5.3 `pidfd_open` + `poll`,
+  otherwise a one-second `getppid()` poll) and `os._exit`s when it is gone. `PR_SET_PDEATHSIG` is
+  not used: it follows the spawning thread, and sessions are spawned from short-lived job
+  threads. The module
+  registry holds every live worker; the server lifespan and `atexit` set shutdown fencing
+  (new starts refused) and terminate them.
+- **Limit evidence is collected.** On Windows the child associates an I/O completion port with
+  its Job Object and a watcher thread counts `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` notifications
+  (`record_job_notification`) into a parent-owned `multiprocessing.Value`; the parent reads it
+  with a bounded lock acquire (`read_limit_evidence`), treating an unreadable counter as no
+  record. On Linux cgroup hosts the parent reads the dead child's private group's
+  `memory.events.local` before removing it. The owner turns these into the optimiser's
+  `memory_evidence` levels.
+
+`start(start_timeout_seconds, stop_reason)` registers the worker before spawning, waits for
+`ready` bounded by the timeout and polling `stop_reason`, and fails with the pool's start,
+timeout or stopped errors. `run(fn, *args, growth_bytes, required, allowance_bytes, deadline,
+stop_reason, on_progress)` applies the RSS watchdog as the pool does (baseline + growth), forwards
+the `ProgressCell` to `on_progress` each poll, terminates on the stop signal or deadline, and
+returns the value or raises; a remote exception with a `to_payload()` carries it as
+`public_payload`.
 
 The supervisor starts a request deadline only after its affinity slot is acquired. It
 polls the result channel, worker liveness, parent cancellation/supersession, and child
