@@ -61,6 +61,7 @@ from haute._native_memory_limit import (
     private_cgroup_oom_events_for_pid,
     watch_windows_job_messages,
 )
+from haute._parent_watch import exit_with_parent
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
@@ -79,10 +80,7 @@ DeathKind = Literal["crashed", "stopped", "timed_out", "watchdog", "remote_memor
 
 _POLL_INTERVAL_SECONDS = 0.05
 _EVIDENCE_READ_TIMEOUT_SECONDS = 0.1
-_PARENT_POLL_SECONDS = 1.0
 _REQUEST_POLL_SECONDS = 1.0
-# ``SYNCHRONIZE``: the one right waiting on a process handle needs.
-_SYNCHRONIZE = 0x00100000
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,50 +169,6 @@ def read_limit_evidence(counter: LimitEvidenceCounter, baseline: int | None) -> 
     return current > baseline
 
 
-def _wait_for_process_exit(pid: int) -> None:
-    """Block until process *pid* has exited (or cannot be watched because it already has)."""
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-        kernel32.WaitForSingleObject.restype = wintypes.DWORD
-        handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
-        if not handle:
-            return
-        kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
-        return
-    if os.getppid() != pid:
-        return
-    pidfd_open = getattr(os, "pidfd_open", None)
-    if pidfd_open is not None:
-        import select
-
-        try:
-            fd = pidfd_open(pid)
-        except OSError:
-            fd = None
-        if fd is not None:
-            poller = select.poll()
-            poller.register(fd, select.POLLIN)
-            poller.poll()
-            return
-    while os.getppid() == pid:
-        time.sleep(_PARENT_POLL_SECONDS)
-
-
-def _start_parent_watcher(parent_pid: int) -> None:
-    def _watch() -> None:
-        _wait_for_process_exit(parent_pid)
-        # The server is gone: nothing can use this worker's state any more.
-        os._exit(0)
-
-    threading.Thread(target=_watch, name="haute-parent-watcher", daemon=True).start()
-
-
 def _error_envelope(command_id: str, exc: BaseException, cap: CommandCap | None) -> tuple[Any, ...]:
     return (
         "result",
@@ -253,7 +207,7 @@ def _dedicated_worker_entrypoint(
 ) -> None:
     global _child_evidence_counter
     _child_evidence_counter = evidence_counter
-    _start_parent_watcher(parent_pid)
+    exit_with_parent(parent_pid)
     lease = NativeMemoryLease()
     watching_job = False
     configure_process_high_qos()

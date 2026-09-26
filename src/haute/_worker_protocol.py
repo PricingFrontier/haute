@@ -28,6 +28,7 @@ from haute._native_memory_limit import (
     memory_error_for_thread_start_failure,
     native_memory_backend_scope,
 )
+from haute._parent_watch import exit_with_parent
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -555,6 +556,7 @@ def _protocol_entrypoint(
     require_memory_limit: bool = False,
     address_space_allowance_bytes: int = 0,
 ) -> None:
+    exit_with_parent()
     runtime = WorkerRuntime(progress_queue, artifact_root)
     lease = NativeMemoryLease()
     applied = False

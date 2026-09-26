@@ -61,7 +61,6 @@ def block_until_released(_request: Any) -> Any:
     reporter = current_job_progress_reporter()
     if reporter is not None:
         reporter(StepProgress(done=1, total=1000, label="entered"))
-    (_signal_dir() / "entered").write_text("1")
     while not (_signal_dir() / "release").exists():
         time.sleep(0.05)
     raise RuntimeError("released without a result")
@@ -341,7 +340,7 @@ class TestSessionLifecycle:
         monkeypatch.setattr(_optimiser_service, "build_and_solve", block_until_released)
         job_id = _start(client, _online_graph(_scored_parquet(project)))
         deadline = time.monotonic() + 60
-        while not (signals / "entered").exists():
+        while _job(job_id).get("message") != "entered":
             assert time.monotonic() < deadline, "the session never entered its command"
             time.sleep(0.05)
         pid = _session_of(job_id).pid
@@ -512,10 +511,11 @@ class TestStageMemoryFailures:
         assert "ran out of memory" in status["message"]
 
 
-def _wait_for(path: Path, seconds: float = 60.0) -> None:
+def _wait_for_entry(session: SolverSession, seconds: float = 60.0) -> None:
+    """Wait until the session's running command has reported that it entered."""
     deadline = time.monotonic() + seconds
-    while not path.exists():
-        assert time.monotonic() < deadline, f"{path.name} never appeared"
+    while session.stage != "entered":
+        assert time.monotonic() < deadline, "the session never entered its command"
         time.sleep(0.05)
 
 
@@ -539,14 +539,23 @@ class TestSessionCommandLifetime:
         from haute.routes import _optimiser_artifacts
 
         job_id = _solved_session_job(client, project)
-        pid = _session_of(job_id).pid
-        apply_root = _optimiser_artifacts._prepare_apply_artifact_root()
-        before = set(apply_root.iterdir())
+        session = _session_of(job_id)
+        pid = session.pid
+        created: list[Path] = []
+        real_new_directory = _optimiser_artifacts._new_apply_artifact_directory
+
+        def recording_new_directory() -> Path:
+            created.append(real_new_directory())
+            return created[-1]
+
+        monkeypatch.setattr(
+            _optimiser_frontier, "_new_apply_artifact_directory", recording_new_directory
+        )
         monkeypatch.setattr(_optimiser_frontier, "apply_point", block_then_return)
         answers: list[Any] = []
         requester = threading.Thread(target=lambda: answers.append(_apply_point(client, job_id, 1)))
         requester.start()
-        _wait_for(signals / "entered")
+        _wait_for_entry(session)
         _optimiser_service_store().clear_result_data(job_id, keys=(SESSION_KEY,))
         # Pinned by its running command: detached, but alive until the command returns.
         time.sleep(0.5)
@@ -556,7 +565,8 @@ class TestSessionCommandLifetime:
         # Its result is discarded: the runtime it would publish into is gone.
         assert answers and answers[0].status_code == 410, answers[0].text
         # The discarded apply's artifact directory went with it.
-        assert set(apply_root.iterdir()) - before == set()
+        assert len(created) == 1
+        assert not created[0].exists()
         assert _gone(pid)
         assert _job(job_id)[RUNTIME_UNAVAILABLE_KEY]["reason"] == "expired"
 
@@ -578,7 +588,7 @@ class TestSessionCommandLifetime:
         )
         assert started.status_code == 200, started.text
         sweep_id = started.json()["job_id"]
-        _wait_for(signals / "entered")
+        _wait_for_entry(session)
         cancelled = client.post(f"/api/optimiser/frontier/cancel/{sweep_id}")
         assert cancelled.status_code == 200, cancelled.text
         time.sleep(0.5)

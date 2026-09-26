@@ -38,6 +38,7 @@
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
 | `src/haute/_step_progress.py` | A preview's step progress: `StepProgress(done, total, label)`, the `ProgressCell` a warm worker writes (shared memory under its own lock; the parent only ever tries the lock without blocking), and the job binding (`bind_job_progress`, `current_job_progress_reporter`). |
 | `src/haute/_dedicated_workers.py` | `DedicatedWorker`: one long-lived spawn worker pinned to a single owner (the optimiser's solver session), whose native cap is re-applied per command and never lifted, with parent-process death watching, shutdown fencing, never-replaced deaths (`WorkerDeath`) and limit evidence (`LimitEvidenceCounter`, `record_job_notification`, `read_limit_evidence`). See "Dedicated workers" below. |
+| `src/haute/_parent_watch.py` | Workers that end with their server: the worker-isolation spawn helper records the server's pid in the environment variable named by `PARENT_PID_ENV` for every spawn, and each worker entrypoint (one-shot isolated, job protocol, warm pool, dedicated) calls `exit_with_parent`, whose daemon thread waits on the parent *process* (Windows process handle, Linux pidfd, else a `getppid` poll) and exits the worker when it is gone. |
 | `src/haute/_memory_errors.py` | `memory_error_in`: the memory error behind any chain of translated exceptions, so running out of memory is never recorded as something else. |
 | `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution (and the optimiser input estimate): validates process/thread mode, resolves the per-worker Polars thread cap (`resolve_interactive_polars_threads()`), runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
 | `src/haute/_process_memory.py` | The one process-memory probe, read through psutil on every platform: this process's resident, private (Windows commit) and virtual bytes and thread count, another process's resident bytes, and liveness. A figure the operating system will not give is unobservable (no value), never zero. The execution context, worker supervision, the native caps' baselines and the modelling memory log all read it. |
@@ -1153,11 +1154,12 @@ ways:
   existing error; the owner decides what the death means. `terminate(reason)` bypasses any
   caller-side slot, sets the stop flag, then terminates → kills → joins and removes the
   worker's private cgroups; it is idempotent.
-- **The child exits when the server does.** The parent passes its pid; the child's watcher
-  thread follows the parent *process* (Windows `OpenProcess(SYNCHRONIZE)` +
-  `WaitForSingleObject`, Linux ≥ 5.3 `pidfd_open` + `poll`, otherwise a one-second
-  `getppid()` poll) and `os._exit`s when it is gone. `PR_SET_PDEATHSIG` is not used: it follows
-  the spawning thread, and sessions are spawned from short-lived job threads. The module
+- **The child exits when the server does**, as every haute worker does (`_parent_watch`): the
+  parent passes its pid and the child's watcher thread follows the parent *process* (Windows
+  `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject`, Linux ≥ 5.3 `pidfd_open` + `poll`,
+  otherwise a one-second `getppid()` poll) and `os._exit`s when it is gone. `PR_SET_PDEATHSIG` is
+  not used: it follows the spawning thread, and sessions are spawned from short-lived job
+  threads. The module
   registry holds every live worker; the server lifespan and `atexit` set shutdown fencing
   (new starts refused) and terminate them.
 - **Limit evidence is collected.** On Windows the child associates an I/O completion port with

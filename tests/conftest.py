@@ -176,6 +176,20 @@ def _restore_streaming_chunk_size() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _open_dedicated_workers() -> Iterator[None]:
+    """Start every test with the dedicated-worker registry open, as a fresh server is.
+
+    A test that runs the server lifespan fences the process-wide registry at
+    shutdown (a real server exits then); without this, every later test in the
+    same process would find new solver sessions refused.
+    """
+    from haute._dedicated_workers import open_dedicated_workers
+
+    open_dedicated_workers()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wait longer for a preparation thread than a production shutdown does.
 

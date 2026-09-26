@@ -24,6 +24,7 @@ from haute._native_memory_limit import (
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
+from haute._parent_watch import PARENT_PID_ENV, exit_with_parent
 from haute._process_memory import (
     current_process_rss_bytes,
     current_process_thread_count,
@@ -651,6 +652,9 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
     Callers with nothing to override pass an empty mapping so that every spawn
     takes the same serialised path.
     """
+    # Every worker learns its server's pid, so it can end when the server does
+    # (see ``haute._parent_watch``).
+    environment = {**environment, PARENT_PID_ENV: str(os.getpid())}
     with _SPAWN_ENVIRONMENT_LOCK:
         previous: dict[str, str | None] = {name: os.environ.get(name) for name in environment}
         try:
@@ -830,6 +834,7 @@ def _isolated_worker_entrypoint(
     memory_limit_bytes: int | None,
     require_memory_limit: bool = False,
 ) -> None:
+    exit_with_parent()
     lease = NativeMemoryLease()
     applied = False
     try:
