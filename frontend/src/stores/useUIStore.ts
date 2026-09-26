@@ -55,6 +55,8 @@ interface UIState {
   setNodePanelWidth: (width: number) => void
   modellingPreviewHeight: number
   setModellingPreviewHeight: (height: number) => void
+  optimiserPreviewHeight: number
+  setOptimiserPreviewHeight: (height: number) => void
 
   // Rating step editor section (remembered across node panel remounts)
   ratingStepEditorSections: Record<string, RatingStepEditorSection>
@@ -124,6 +126,8 @@ const useUIStore = create<UIState>()((set) => ({
   setNodePanelWidth: (width) => set({ nodePanelWidth: width }),
   modellingPreviewHeight: 420,
   setModellingPreviewHeight: (height) => set({ modellingPreviewHeight: height }),
+  optimiserPreviewHeight: 420,
+  setOptimiserPreviewHeight: (height) => set({ optimiserPreviewHeight: height }),
 
   // Per-node UI selections (remembered across node panel remounts)
   ratingStepEditorSections: {},

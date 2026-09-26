@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from haute._sandbox import contained_path, validate_project_path
 from haute.errors import InvalidPathError, PathOutsideProjectError
 from tests.job_store_support import seed_job
+from tests.optimiser_fixtures import make_solved_result
 
 
 def _require_links(project: Path) -> None:
@@ -118,15 +119,12 @@ def _optimiser_job() -> dict:
     return {
         "status": "completed",
         # Save publishes from the completion summary.
-        "result": {
-            "lambdas": {"lambda_1": 0.5},
-            "total_objective": 100.0,
-            "constraints": {"volume": 0.9},
-            "converged": True,
-            "baseline_objective": 90.0,
-            "baseline_constraints": {"volume": 0.85},
-            "iterations": 10,
-        },
+        "result": make_solved_result(
+            total_objective=100.0,
+            baseline_objective=90.0,
+            constraints={"volume": 0.9},
+            iterations=10,
+        ),
         "config": {},
         "node_label": "test_opt",
         "created_at": time.time(),

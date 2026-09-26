@@ -28,7 +28,8 @@ In scope:
   estimation of viable efficient-frontier threshold ranges (`/frontier/auto-range/start`).
 - Computing an efficient frontier for a completed solve and letting a user select — or
   materialise, for ratebook — one of its points as the active result.
-- Producing a bounded, size-limited per-quote apply preview for online results.
+- Serving bounded, sortable and filterable pages of the per-quote chosen scenarios (the Quotes
+  explorer) for online and ratebook results.
 - Persisting a solved result as a JSON artifact on disk, or logging it (plus a frontier CSV
   and MLflow metrics/params) to MLflow.
 - Loading a previously saved optimiser artifact — from a local file or from MLflow — for the
@@ -110,8 +111,16 @@ ratebook) factor tables are available as a job summary. From there a user can:
   be stopped through `POST /frontier/cancel/{job_id}`; timeout polling requests the same
   cooperative stop before publishing `timed_out`. A stopped sweep may never publish frontier data
   to the parent solve job, even if the underlying solver call returns later.
-- Preview the online result as a capped table of per-quote selected scenarios (ratebook has no
-  such per-quote view — see Failure model).
+- Explore the per-quote chosen scenarios of the as-solved result or any frontier point, in both
+  modes, one bounded page at a time: each quote's chosen scenario value, its objective and
+  constraint values at that scenario, its analysis columns and, for a ratebook result,
+  price-contour's canonical evaluation (the factor product and whether the deployed factor
+  differs from the evaluated step). Sorting, a quote-id prefix search and filters (a scenario
+  value range, "at the edge of the scenario range" judged from the recorded grid, an analysis
+  column equal to a value, and for ratebook "deployed factor differs") run on the server over
+  every quote, never over the first page, with ties broken by quote id so pages are stable. A
+  page states how many quotes match and how many the target has; pages reach at most 10,000
+  rows deep, beyond which the request is refused with a message asking to narrow the filter.
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
   and the same artifact. Publishing names its target explicitly: no point index means the job's
   own solve (the anchor), a point index means that frontier point, and the server's currently
@@ -127,6 +136,18 @@ ratebook) factor tables are available as a job summary. From there a user can:
   used, the constraints in force for the published target (a frontier point's own thresholds),
   cheap input provenance, and whether the node configuration had changed since the solve
   (`stale_at_publish`, reported by the caller).
+
+A solve can also keep **analysis columns**: up to twelve per-quote columns, such as a region
+or a channel, that exist only to break the result down by segment. The user picks the connected
+frame they come from (`analysis_input`: any frame connected to the optimiser node, the data
+input when unset) and the columns (`analysis_columns`). The solver never sees them. Setup
+reduces them to one row per solved quote and keeps that side table, `quote_analysis.parquet`,
+for the job's whole 24-hour lifetime; a quote the chosen frame has no row for is marked as
+missing rather than dropped. Every solve, with or without analysis columns, also records its
+complete **scenario grid** — each step index with the scenario value the solver scored there —
+from the solver input at setup, and returns it on the solve result. The grid is the only source
+for which adjustments were possible, whether the grid contains 1.0 and where its edges are;
+nothing is inferred from the scenarios the quotes happened to choose.
 
 A saved artifact is later loaded by an `OPTIMISER_APPLY` pipeline node to price new data:
 either a local file (content-hash cached so an on-disk edit is always picked up, even a
@@ -169,17 +190,85 @@ Invariants:
 - Ratebook apply verifies each saved factor name and dtype descriptor against the apply-frame
   schema before constructing a lookup. A legacy artifact without dtype metadata or any mismatch
   fails as a typed 422/background contract error; it never becomes a neutral rating miss.
-- Ratebook solves have no per-quote result dataframe; the apply-preview and per-quote trace
-  affordances are only ever meaningful for online mode.
-- Every capped/paginated response (apply preview, frontier points) states its true total count
+- A ratebook solve's per-quote choices are price-contour's canonical evaluation of its factor
+  tables (`RatebookResult.quote_results`, and `RatebookOptimiser.evaluate` of a frontier point's
+  kept tables), persisted at completion like an online apply frame; haute never reconstructs a
+  ratebook quote's step. The views describe the step the solver evaluated, because its objective
+  and constraint values are the only ones the solve vouches for. The deployed factor (the
+  unsnapped product of the rates, collared to the scenario range) differs from it only by the
+  rounding to the nearest step inside the range, so each quote carries a "deployed factor
+  differs from evaluated step" flag (its factor product is not its evaluated value and it was not
+  clamped to a grid end) and the adjustment report counts them; a product past a grid edge
+  deploys at that edge and is not flagged.
+- Every capped/paginated response (the quotes page, frontier points) states its true total count
   and whether it was truncated; nothing is silently dropped without saying so.
 - A completed solve retains at most eight per-frontier-point apply artifacts. Materialising a
-  ninth point evicts and deletes the oldest point artifact; returning to that point recomputes it.
-  Concurrent point materialisations merge handles under the frontier-state lock, so one handle
-  cannot overwrite and orphan another.
-- Crash-surviving apply-result and ratebook-factor directories carry distinct versioned Haute
-  ownership markers. Startup cleanup can remove only stale marked direct children of those two
-  dedicated roots; unmarked or foreign temporary data is never swept.
+  ninth point evicts and deletes the oldest point artifact (after any reader still holding it
+  finishes); returning to that point recomputes it while the quote grid is alive, and is a named
+  410 once the grid has gone. At most one point materialisation runs per job, because the
+  library's point apply cannot be interrupted: a newer request for another point waits in a
+  single slot and replaces (409) an older waiter, so rapid stepping through points never queues
+  more than one pending apply. Callers asking for the same point share one materialisation, and
+  a caller that disconnects leaves only itself. Handles merge under the frontier-state lock, so
+  one handle cannot overwrite and orphan another.
+- Per-quote questions about the chosen scenarios (how many quotes chose each grid step, the
+  adjustments by analysis segment, the extreme quotes, a page of quotes) are answered by bounded
+  queries that run in the lazy plan and return a small result: no route returns the whole
+  per-quote frame. Each query is admitted against the analysis memory budget with its own
+  estimate and refused (507, naming the remedy) when it would not fit; identical concurrent
+  queries share one run. They cover both modes; a ratebook result can also be broken down by
+  rating factor (a composite factor by all its columns, each level labelled as the Rates tab
+  labels it), with no analysis columns configured.
+- The adjustments the optimiser chose are described exactly, for the as-solved result and for
+  any frontier point: one bar per step of the recorded scenario grid (steps nobody chose
+  included), against 1.0 as the unadjusted base price, over every quote. A quote is adjusted
+  up above 1.0, down below it and unadjusted at 1.0; a grid without 1.0 has no unadjusted
+  category, and says so, rather than reporting 0. Counts weigh each quote by 1; optionally the
+  objective or a constraint, evaluated at the chosen scenario, weighs them instead, but only
+  when no quote's value is negative and the total is positive: otherwise that weighting is
+  refused by name in the report's diagnostics, never computed. The report gives the weighted
+  and unweighted mean, the 5th, 25th, 50th, 75th and 95th percentiles as grid values (the lower
+  quantile of the inverted CDF), the shares adjusted up, down and unadjusted, and the shares at
+  the grid's minimum and maximum ("at the edge of the scenario range"). The as-solved report is
+  built when the solve completes; a point's is built on request from that point's per-quote
+  choices and kept for the job's lifetime (at most 64 per job), so it is still served after the
+  grid is gone, until a frontier recompute replaces the points. It describes the solution only;
+  it never compares with current or deployed pricing. Online and ratebook results both carry it.
+- Where the optimiser adjusted is described by segment, for the as-solved result and any frontier
+  point: per level of one key (an analysis column, or a ratebook result's rating factor labelled as
+  the Rates tab labels it), the quotes, the mean chosen scenario value against 1.0 (weighted and
+  unweighted), the shares adjusted up and down and the share at the edge of the scenario range.
+  A numeric key is cut into at most 20 quantile bins (tied edges collapse into one bin); a
+  categorical key lists its 15 largest levels and sums the rest into Other; a quote with no value,
+  or absent from the analysis frame, is Missing. Every quote is in exactly one level. The weighting
+  rules are the Adjustments tab's; a level whose weight totals 0 has no weighted figures, and says
+  so, while its count and unweighted figures remain. Keys are ranked by how differently the
+  optimiser adjusted their levels (the quote-weighted standard deviation of the levels' mean
+  scenario values). A key with too many levels to break down (an estimated 1,800 distinct values,
+  exactly 2,000, or a value over 256 bytes; at most 30 rating factors) is listed as unavailable
+  with its reason, never truncated silently.
+- Crash-surviving apply-result, ratebook-factor and quote-analysis directories carry distinct
+  versioned Haute ownership markers. Startup cleanup can remove only stale marked direct
+  children of those three dedicated roots; unmarked or foreign temporary data is never swept.
+- Analysis columns never reach the solver. The quote grid is built from the solver columns
+  only, so a solve with analysis columns has exactly the grid, totals and choices of the same
+  solve without them.
+- Each analysis column holds one value per quote. A quote with two different values of an
+  analysis column (in the data input across its scenario rows, or across its rows in a separate
+  analysis frame) fails setup with a named error; the first value is never picked silently.
+- The quote-analysis side table is owned by solve setup until the completed job adopts it, and
+  then by the job. It is deleted when setup or the solve fails, is cancelled, superseded or
+  times out, when the job expires (24 hours after creation), or by startup reaping. Heavy-state
+  slimming, the slimming after a user action, and frontier recompute never touch it. A reader
+  holding a lease on it defers its deletion until the lease is released.
+- The scenario grid recorded at setup is immutable for the job's lifetime and is never
+  re-derived from chosen rows. Two grids such as `[0.8, 1.0, 1.2, 1.4]` and
+  `[0.8, 0.95, 1.2, 1.4]` can produce identical per-quote choices, so the chosen rows cannot
+  recover it.
+- Precision: the solver ingests objective, constraint and scenario values as Float32; every
+  total, reconciliation and breakdown haute reports accumulates those Float32 values in
+  Float64, as price-contour does, so per-quote values summed over a breakdown equal the solved
+  totals.
 - Trace reconciliation either matches the real output exactly (within floating-point tolerance)
   or the trace request fails with a specific error — it never returns an approximate or
   partially-reconstructed explanation.
@@ -217,6 +306,17 @@ without Parquet's column-level compression, whereas Parquet is already the stand
 format used elsewhere. The upstream lazy plan also projects down to only solver-relevant columns
 before the sink, so the temporary Parquet file stays narrow regardless of how many columns the
 pipeline produces upstream.
+
+Analysis columns live in a haute-owned side table rather than travelling with the solve,
+because price-contour's solve and `apply_from_grid` outputs carry no passthrough columns: the
+solver's inputs stay exactly the solver columns, and a breakdown joins the side table to the
+per-quote result on `quote_id`. The side table is written by streaming — a projected scan
+reduced per quote and sunk to Parquet, never collected — in the same hard-capped setup worker
+that writes the solver input, so the reduction's memory is bounded, typed as `memory_limited`
+when it does not fit, and never added to the server process that holds the grid. Its
+lifetime is the job's (24 hours), not the heavy state's (15 minutes idle), because a breakdown must still be possible after the solver
+objects have been released. Readers take a lease instead of copying the file, so a job expiring
+under a reader cannot delete the file mid-read.
 
 Frontier auto-range and frontier compute share the same schema validation and column-projection
 logic as the main solve. One auto-range job produces the estimate. When the upstream pipeline
@@ -305,8 +405,14 @@ missing objective/mode/ratebook `factor_columns`, missing required columns in th
 a non-string/categorical quote-id column, null quote ids, non-finite (NaN/Infinity) values in
 any numeric solver column, a null value in any objective/constraint/scenario column (any dtype,
 not just numeric — the solver's external aggregation has undefined behaviour on a null input), an
-unresolvable or disconnected `data_input`, or (ratebook) an empty or missing banding source. A
-second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
+unresolvable or disconnected `data_input`, or (ratebook) an empty or missing banding source.
+Analysis-column problems are 400s of the same kind: more than twelve analysis columns, a
+duplicate or blank name, the quote-id column or a reserved `__haute_` name used as an analysis
+column, an `analysis_input` that is not one exact connected input name, an analysis frame
+without the configured quote-id column (or with one of an unsupported dtype), an analysis
+column the chosen frame does not have, and an analysis column that varies within a quote
+(`AnalysisColumnNotConstantError`, naming each column, how many quotes vary and one example
+quote). A second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
 solve setup conflicts with a running background auto-range setup; a repeated background
 auto-range start for the same graph fingerprint/node returns the existing job id instead of
 creating, queuing, or superseding work.
@@ -337,16 +443,18 @@ an algorithm `error`, and an untyped orchestration/post-processing exception is
 an unexpected `error`; a bare `ValueError` is never treated as user data solely
 because of its Python type.
 
-Ratebook mode has no per-quote result dataframe, so the apply-preview and apply-trace
-affordances return an explicit 422 contract error naming the correct alternative (the factor
-tables on the result, or re-applying a saved artifact through an `OPTIMISER_APPLY` node) rather
-than either crashing on a missing attribute or silently returning a misleading result computed
-some other way.
+A ratebook result's per-quote frame is always price-contour's canonical evaluation: a result
+without one fails the solve's completion, a frame whose schema is not the mode's fails the query
+(500), and a frontier point whose evaluation does not reproduce its frontier row exactly fails
+rather than describing a different point.
 
 An optimiser artifact is never written with a non-finite value or (for ratebook) a missing
 factor-table/dtype-contract section or combined-factor collar; the save/log request is rejected before the write, listing
 every offending path in the payload. A valid server-owned handle whose artifact has been
-removed or expired returns 410 with a stable re-run message. An invalid server-owned handle or
+removed or expired returns 410 with a stable re-run message. A frontier point with neither a
+retained artifact nor a live quote grid is the named 410 `frontier_point_unavailable`, and a
+point request replaced by a newer one while it waited is the named 409
+`frontier_point_apply_replaced`. An invalid server-owned handle or
 a present-but-corrupt artifact returns a sanitized 500; filesystem and parquet details remain
 server-side. Applying a structurally valid legacy ratebook
 artifact without `factor_dtypes`, or applying one to a changed factor dtype, raises

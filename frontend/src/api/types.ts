@@ -1236,11 +1236,22 @@ export interface SaveModelRequest {
 // Optimiser types
 // ---------------------------------------------------------------------------
 
-// The optimiser responses are generated. A frontier keeps the UI's typed view of
-// its open point objects, and the status responses parse execution metrics with
-// the shared parser.
+// The optimiser responses are generated, frontier points and factor-table rows
+// included; the status responses parse execution metrics with the shared parser.
 export type {
   OptimiserApplyResponse as ApplyOptimiserResponse,
+  OptimiserAdjustmentBar,
+  OptimiserAdjustmentReport,
+  OptimiserAdjustmentWeighting,
+  OptimiserDiagnosticError,
+  OptimiserEffectiveBound,
+  OptimiserFactorTableRow,
+  OptimiserInputSummary,
+  OptimiserOnlineFrontierPoint,
+  OptimiserQuoteColumn,
+  OptimiserRatebookCdTrace,
+  OptimiserRatebookCdTraceRecord,
+  OptimiserRatebookFrontierPoint,
   OptimiserEstimateResponse as OptimiserEstimate,
   OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,
   OptimiserFrontierAutoRangeStartResponse as FrontierAutoRangeStartResponse,
@@ -1250,14 +1261,40 @@ export type {
   OptimiserHistoryEntry,
   OptimiserMlflowLogResponse as MlflowLogResponse,
   OptimiserSaveResponse as SaveOptimiserResponse,
-  OptimiserScenarioValueHistogram,
-  OptimiserScenarioValueStats,
+  OptimiserSegmentFigures,
+  OptimiserSegmentIndexKey,
+  OptimiserSegmentIndexResponse,
+  OptimiserSegmentKey,
+  OptimiserSegmentRow,
+  OptimiserSegmentsResponse,
   OptimiserSolveResponse,
 } from "../generated/api-contracts.generated"
 
 export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
-export interface ApplyOptimiserRequest {
+/** The Quotes explorer's filters (OPT-V12), combined with AND; unset ones are null, false or `{}`. */
+export interface OptimiserQuoteFilters {
+  scenario_value_min: number | null
+  scenario_value_max: number | null
+  at_range_edge: boolean
+  /** `{analysis column: value}`; `null` matches a missing value. */
+  analysis_equals: Record<string, string | number | boolean | null>
+  deployed_factor_differs: boolean
+}
+
+/** A Quotes page's query beyond its target, always fully specified so one query has one cache key. */
+export interface OptimiserApplyQuery {
+  /** `null` keeps the apply frame's quote order; ties always break by quote id. */
+  sort_by: string | null
+  descending: boolean
+  quote_id_prefix: string | null
+  filters: OptimiserQuoteFilters
+  offset: number
+  limit: number
+}
+
+/** Omitting `point_index` pages the job's own solve; a number, that frontier point. */
+export interface ApplyOptimiserRequest extends OptimiserApplyQuery {
   job_id: string
   point_index?: number
 }
@@ -1285,19 +1322,16 @@ export interface LogOptimiserToMlflowRequest {
   stale?: boolean
 }
 
-export type FrontierPoint = Record<string, unknown> & {
-  index?: number
-  total_objective?: number
-  constraints?: Record<string, number>
-  lambdas?: Record<string, number>
-}
+/** A typed frontier row: price-contour's point, per-constraint columns as maps. */
+export type FrontierPoint = GeneratedOptimiserFrontierResponse["points"][number]
 
-export type FrontierResponse = Omit<GeneratedOptimiserFrontierResponse, "points"> & {
-  points: FrontierPoint[]
-}
+export type FrontierResponse = GeneratedOptimiserFrontierResponse
 
-/** A solve's frontier as the results store keeps it. */
-export type FrontierData = Omit<FrontierResponse, "status" | "job_id">
+/** A solve's frontier as the results store keeps it: always a computed
+ *  frontier, so it always has its generation. */
+export type FrontierData = Omit<FrontierResponse, "status" | "job_id" | "frontier_generation"> & {
+  frontier_generation: number
+}
 
 export const JOB_STATUS_VALUES = [
   "running",

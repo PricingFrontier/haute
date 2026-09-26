@@ -1365,13 +1365,13 @@ describe("OptimiserConfig", () => {
       expect(screen.getByRole("heading", { name: "Solver settings" })).toBeInTheDocument()
       expect(screen.queryByText("Advanced")).not.toBeInTheDocument()
       expect(screen.getByText("Chunk size")).toBeInTheDocument()
-      expect(screen.getByText("Record history")).toBeInTheDocument()
     })
 
-    it("shows chunk_size and record_history values", () => {
+    it("offers no history toggle: every solve records its history", () => {
       renderConfig(makeProps())
       expect(screen.getByDisplayValue("500000")).toBeInTheDocument()
-      expect(screen.getByText("Off")).toBeInTheDocument()
+      expect(screen.queryByText("Record history")).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /^(On|Off)$/ })).not.toBeInTheDocument()
     })
 
     it("ratebook mode shows CD iterations and CD tolerance", () => {
@@ -1678,13 +1678,6 @@ describe("OptimiserConfig", () => {
       fireEvent.blur(input)
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
     })
-
-    it("toggling record_history calls onUpdate", () => {
-      const props = makeProps()
-      renderConfig(props)
-      fireEvent.click(screen.getByText("Off"))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("record_history", true)
-    })
   })
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1930,10 +1923,12 @@ describe("OptimiserConfig", () => {
       expect(screen.queryByText("10,000,000")).not.toBeInTheDocument()
     })
 
-    it("shows non-convergence warning when solveResult.converged is false", () => {
+    it("shows non-convergence warning when the solve did not converge", () => {
+      const notConverged = { ...convergedResult.originalResult, converged: false }
       const nonConverged = {
         ...convergedResult,
-        result: { ...convergedResult.result, converged: false },
+        result: notConverged,
+        originalResult: notConverged,
       }
       useNodeResultsStore.setState({ solveResults: { opt_1: nonConverged } })
       renderConfig(makeProps({
@@ -1941,6 +1936,35 @@ describe("OptimiserConfig", () => {
           }))
       expect(screen.getByText(/Solver did not converge/)).toBeInTheDocument()
       expect(screen.getByText(/Did not converge/)).toBeInTheDocument()
+    })
+
+    it("describes the solve, not the frontier point the preview selected", () => {
+      // A frontier solve opens on point 1, whose own bisection converged; the
+      // solve itself ran out of iterations short of its bound.
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            ...convergedResult,
+            result: makeSolveResult({ ...convergedResult.result, converged: true, iterations: 33 }),
+            originalResult: makeSolveResult({
+              ...convergedResult.originalResult,
+              converged: false,
+              iterations: 20,
+              warning: "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+            }),
+            selectedPointIndex: 0,
+          },
+        },
+      })
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+      }))
+
+      expect(screen.getByText("Solver did not converge")).toBeInTheDocument()
+      expect(screen.getByText("Solver did not converge. Consider increasing max_iter or relaxing tolerance."))
+        .toBeInTheDocument()
+      expect(screen.getByText(/Did not converge in 20 iterations/)).toBeInTheDocument()
+      expect(screen.queryByText(/Converged in 33 iterations/)).not.toBeInTheDocument()
     })
 
     it("shows error when solveError exists in job", () => {
@@ -2817,8 +2841,8 @@ describe("OptimiserConfig", () => {
       const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
-        cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
-        scenario_value_histogram: null, factor_tables: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null,
+        factor_tables: null, diagnostics_errors: [],
       })
       const config = seedSolve({
         result: ratebook,
@@ -2838,9 +2862,10 @@ describe("OptimiserConfig", () => {
         ...summary(10),
         status: "ok",
         point_index: 0,
+        frontier_generation: 0,
         baseline_objective: 0,
         baseline_constraints: {},
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         error: null,
       })
       renderConfig(makeProps({ config }))
@@ -2859,8 +2884,8 @@ describe("OptimiserConfig", () => {
       const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
-        cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
-        scenario_value_histogram: null, factor_tables: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null,
+        factor_tables: null, diagnostics_errors: [],
       })
       const config = seedSolve({
         result: ratebook,
@@ -2880,9 +2905,10 @@ describe("OptimiserConfig", () => {
         ...summary(10),
         status: "ok",
         point_index: 0,
+        frontier_generation: 0,
         baseline_objective: 0,
         baseline_constraints: {},
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         error: null,
       }
       let resolveReply: (value: unknown) => void = () => {}
@@ -2900,7 +2926,7 @@ describe("OptimiserConfig", () => {
       const cached = useNodeResultsStore.getState().solveResults.opt_1
       expect(cached?.selectedPointIndex).toBeNull()
       expect(cached?.frontier?.point_summaries[0].factor_tables).toEqual({
-        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }],
+        age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }],
       })
     })
 
@@ -2909,7 +2935,8 @@ describe("OptimiserConfig", () => {
       renderConfig(makeProps({ config }))
       fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
       act(() => {
-        const previous = useNodeResultsStore.getState().solveResults.opt_1!
+        const previous = useNodeResultsStore.getState().solveResults.opt_1
+        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
         useNodeResultsStore.setState({
           solveResults: { opt_1: { ...previous, jobId: "job_newer", selectedPointIndex: 0 } },
         })
@@ -2919,7 +2946,58 @@ describe("OptimiserConfig", () => {
       const cached = useNodeResultsStore.getState().solveResults.opt_1
       expect(cached?.jobId).toBe("job_newer")
       expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
-      expect(cached?.result.factor_tables).toEqual({})
+      expect(cached?.result?.factor_tables).toEqual({})
+    })
+
+    it("drops a factor-table reply from a frontier generation the node has recomputed past", async () => {
+      const { config, deliver } = seedRatebookFrontier()
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      // The recompute keeps the job and point 0 is a different point now.
+      act(() => {
+        const previous = useNodeResultsStore.getState().solveResults.opt_1
+        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
+        const recomputed = { ...previous.originalResult, frontier_generation: 1 }
+        useNodeResultsStore.setState({
+          solveResults: {
+            opt_1: {
+              ...previous,
+              result: recomputed,
+              originalResult: recomputed,
+              frontier: previous.frontier && { ...previous.frontier, frontier_generation: 1 },
+            },
+          },
+        })
+      })
+
+      await deliver()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.originalResult?.frontier_generation).toBe(1)
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+      expect(cached?.result?.factor_tables).toEqual({})
+    })
+
+    it("reports a factor-table reply from a generation the result does not show", async () => {
+      const { config } = seedRatebookFrontier()
+      mockSelectFrontierPoint.mockResolvedValue({
+        total_objective: 10, constraints: {}, lambdas: {}, converged: true, iterations: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null, diagnostics_errors: [],
+        status: "ok",
+        point_index: 0,
+        frontier_generation: 3,
+        baseline_objective: 0,
+        baseline_constraints: {},
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        error: null,
+      })
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      expect(await screen.findByText(
+        /The server answered for frontier generation 3, but this result shows generation 0\./,
+      )).toBeInTheDocument()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
     })
 
     it("publishes the chosen frontier point, the same selection the preview shows", async () => {
@@ -2935,8 +3013,7 @@ describe("OptimiserConfig", () => {
             cd_iterations: null,
             clamp_rate: null,
             history: null,
-            scenario_value_stats: null,
-            scenario_value_histogram: null,
+            adjustments: null,
             factor_tables: null,
           })),
           n_points: 2,
@@ -3043,7 +3120,7 @@ describe("OptimiserConfig", () => {
     it("offers the factor tables as CSV for a ratebook result and states its collar", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         combined_factor_bounds: { min: 0.8999999761581421, max: 1.100000023841858 },
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })
@@ -3057,7 +3134,7 @@ describe("OptimiserConfig", () => {
     it("refuses to offer a ratebook CSV without the solve's collar", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
-        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
         combined_factor_bounds: null,
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })
@@ -3173,5 +3250,163 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
       expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "server")
     })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// Analysis columns (OPT-V09A)
+// ═══════════════════════════════════════════════════════════════════
+
+describe("OptimiserConfig analysis columns", () => {
+  const DATA_COLUMNS = [
+    { name: "premium", dtype: "Float64" },
+    { name: "volume", dtype: "Float64" },
+    { name: "quote_id", dtype: "String" },
+    { name: "scenario_index", dtype: "Int64" },
+    { name: "scenario_value", dtype: "Float64" },
+    { name: "region", dtype: "String" },
+  ]
+  const REGION_COLUMNS = [
+    { name: "quote_id", dtype: "String" },
+    { name: "region", dtype: "String" },
+    { name: "channel", dtype: "String" },
+  ]
+  const NODES: SimpleNode[] = [
+    { id: "scored_node", data: { label: "scored", description: "", nodeType: "dataInput", config: {} } },
+    { id: "regions_node", data: { label: "regions", description: "", nodeType: "dataInput", config: {} } },
+    { id: "stray_node", data: { label: "stray", description: "", nodeType: "dataInput", config: {} } },
+  ]
+  const EDGES: SimpleEdge[] = [
+    { id: "e-scored", source: "scored_node", target: "opt_1" },
+    { id: "e-regions", source: "regions_node", target: "opt_1" },
+  ]
+
+  function analysisProps(config: Record<string, unknown> = {}) {
+    return makeProps({
+      config: {
+        _nodeId: "opt_1",
+        mode: "online",
+        objective: "premium",
+        constraints: {},
+        data_input: "scored",
+        ...config,
+      },
+      allNodes: NODES,
+      edges: EDGES,
+    })
+  }
+
+  function columnChoices(): string[] {
+    const group = screen.getByRole("group", { name: "Analysis columns" })
+    return within(group).getAllByRole("checkbox").map((box) => box.getAttribute("name") ?? "")
+  }
+
+  beforeEach(() => {
+    mockUseDataInputColumns.mockImplementation((nodeId: string) =>
+      nodeId === "regions_node" ? REGION_COLUMNS : DATA_COLUMNS,
+    )
+  })
+
+  it("lists only the connected inputs, the data input first", () => {
+    renderConfig(analysisProps())
+
+    const select = screen.getByRole("combobox", { name: "Analysis input" }) as HTMLSelectElement
+    expect(select).toHaveValue("")
+    expect(Array.from(select.options).map((option) => [option.value, option.text])).toEqual([
+      ["", "scored (Objectives & Constraints input)"],
+      ["regions", "regions"],
+    ])
+    expect(screen.getByText(/used only to break results down/i)).toBeInTheDocument()
+  })
+
+  it("offers the chosen frame's columns, never the quote id", () => {
+    const { unmount } = renderConfig(analysisProps())
+    expect(columnChoices()).toEqual(["premium", "volume", "scenario_index", "scenario_value", "region"])
+    unmount()
+
+    renderConfig(analysisProps({ analysis_input: "regions" }))
+    expect(columnChoices()).toEqual(["region", "channel"])
+    expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+      "regions_node", expect.anything(), expect.anything(), undefined, undefined, expect.anything(),
+    )
+  })
+
+  it("toggles a column into and out of the configuration", () => {
+    const props = analysisProps({ analysis_columns: ["region"] })
+    renderConfig(props)
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "volume" }))
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", ["region", "volume"])
+    fireEvent.click(screen.getByRole("checkbox", { name: "region" }))
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", [])
+  })
+
+  it("switching the frame removes the columns the new frame does not have", async () => {
+    const onUpdate = vi.fn()
+    renderStatefulConfig(analysisProps({ analysis_columns: ["region", "premium"] }), onUpdate)
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Analysis input" }), {
+      target: { value: "regions" },
+    })
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith("analysis_columns", ["region"])
+    })
+    expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
+    expect(screen.getByRole("checkbox", { name: "region" })).toBeChecked()
+  })
+
+  it("flags a configured column the frame lacks without rewriting the configuration", () => {
+    const props = analysisProps({ analysis_input: "regions", analysis_columns: ["region", "segment"] })
+    renderConfig(props)
+
+    expect(screen.getByText(/“segment” is not a column of the analysis input/)).toBeInTheDocument()
+    expect(props.componentProps.onUpdate).not.toHaveBeenCalledWith("analysis_columns", expect.anything())
+    showPane("solve")
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Analysis column “segment” is not a column of the analysis input.",
+    )
+  })
+
+  it("flags an analysis input that is no longer connected", () => {
+    renderConfig(analysisProps({ analysis_input: "stray", analysis_columns: ["region"] }))
+
+    expect(screen.getByRole("combobox", { name: "Analysis input" })).toHaveValue("stray")
+    expect(screen.getByText("The configured analysis input is not connected.")).toBeInTheDocument()
+    showPane("solve")
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected analysis input is not connected.")
+  })
+
+  it("disables further choices at twelve columns", () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({ name: `c${index}`, dtype: "String" }))
+    mockUseDataInputColumns.mockImplementation(() => [...many, { name: "c12", dtype: "String" }])
+    renderConfig(analysisProps({ analysis_columns: many.map((column) => column.name) }))
+
+    expect(screen.getByRole("checkbox", { name: "c12" })).toBeDisabled()
+    expect(screen.getByRole("checkbox", { name: "c0" })).toBeEnabled()
+    expect(screen.getByText("12 of 12 chosen")).toBeInTheDocument()
+  })
+
+  it("marks the solve stale when the analysis columns change", () => {
+    const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, data_input: "scored" }
+    useNodeResultsStore.setState({
+      solveResults: {
+        opt_1: {
+          result: makeSolveResult(),
+          originalResult: makeSolveResult(),
+          jobId: "job_1",
+          configHash: hashConfig(config),
+          source: "live",
+          structuralVersion: useGraphStore.getState().structuralVersion,
+          constraints: {},
+          nodeLabel: "Opt",
+          frontier: null,
+          selectedPointIndex: null,
+        },
+      },
+    })
+    renderConfig(analysisProps({ analysis_columns: ["region"] }))
+    showPane("solve")
+    expect(screen.getByText("Config changed since last solve")).toBeInTheDocument()
   })
 })

@@ -20,7 +20,7 @@ from haute._mlflow_errors import (
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.schemas import TrainResponse
 from tests.job_store_support import seed_job
-from tests.optimiser_fixtures import use_local_mlflow_store
+from tests.optimiser_fixtures import make_solved_result, use_local_mlflow_store
 from tests.training_artifacts_support import publish_trained_job
 
 
@@ -287,14 +287,9 @@ class TestOptimiserLogRoute:
             "opt_job",
             {
                 "status": "completed",
-                "result": {
-                    "lambdas": {},
-                    "total_objective": 1.0,
-                    "baseline_objective": 1.0,
-                    "constraints": {},
-                    "baseline_constraints": {},
-                    "converged": True,
-                },
+                "result": make_solved_result(
+                    total_objective=1.0, baseline_objective=1.0, constraint_names=[]
+                ),
                 "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {"mode": "online", "mlflow_experiment": "/snapshot/at/solve"},
                 "node_label": "opt",

@@ -18,7 +18,7 @@ import functools
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -190,6 +190,15 @@ class _ArtifactCleanupState(threading.local):
 _ARTIFACT_CLEANUP_STATE = _ArtifactCleanupState()
 
 
+class ArtifactHandleUnavailableError(LookupError):
+    """The job, or its artifact handle under the requested key, no longer exists."""
+
+
+def _artifact_lease_key(handle: Mapping[str, Any]) -> tuple[str, str]:
+    """A handle's identity for lease counting: its kind and its path."""
+    return str(handle["kind"]), str(handle.get("path"))
+
+
 def register_artifact_cleaner(kind: str, cleaner: ArtifactCleaner) -> None:
     """Register a typed cleanup hook for server-owned artifact handles."""
     if not kind:
@@ -237,6 +246,9 @@ class JobStore:
         self._heavy_object_timer_factory = heavy_object_timer_factory
         self._heavy_object_timers: dict[str, Any] = {}
         self._write_lock = threading.RLock()
+        # Readers holding an artifact, and the cleanups deferred until they finish.
+        self._artifact_leases: dict[tuple[str, str], int] = {}
+        self._deferred_artifact_cleanups: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -295,12 +307,31 @@ class JobStore:
         self._running_activity_at.pop(job_id, None)
         self._cancel_heavy_object_timer_locked(job_id)
 
-    @staticmethod
     def _cleanup_artifact_handles(
+        self,
         job_id: str,
         handles: tuple[dict[str, Any], ...],
     ) -> None:
-        """Remove persisted artifact files when the owning job expires."""
+        """Remove persisted artifact files when the owning job expires.
+
+        A handle a reader holds a lease on is deferred: its lease's last release
+        cleans it.
+        """
+        with self._write_lock:
+            unleased = []
+            for handle in handles:
+                key = _artifact_lease_key(handle)
+                if self._artifact_leases.get(key, 0) > 0:
+                    self._deferred_artifact_cleanups[key] = (job_id, handle)
+                else:
+                    unleased.append(handle)
+        self._run_artifact_cleaners(job_id, tuple(unleased))
+
+    @staticmethod
+    def _run_artifact_cleaners(
+        job_id: str,
+        handles: tuple[dict[str, Any], ...],
+    ) -> None:
         for handle in handles:
             kind = handle["kind"]
             cleaner = _ARTIFACT_CLEANERS.get(kind)
@@ -820,6 +851,54 @@ class JobStore:
             self._jobs[job_id] = {**old, "artifact_handles": handles}
             artifact_cleanups.append((job_id, (dict(handle),)))
             return True
+
+    def release_detached_artifact_handles(
+        self, job_id: str, handles: Iterable[Mapping[str, Any]]
+    ) -> None:
+        """Clean up handles the caller already removed from the job in its own update.
+
+        An unleased handle is cleaned at once; a leased one when its last lease
+        is released, as for every other cleanup.
+        """
+        self._cleanup_artifact_handles(job_id, tuple(dict(handle) for handle in handles))
+
+    @contextmanager
+    def lease(self, job_id: str, key: str) -> Iterator[dict[str, Any]]:
+        """Hold the job's artifact under *key* for reading; yield a copy of its handle.
+
+        While any lease on a handle is held, its cleanup (job expiry,
+        ``delete_job``, ``detach_artifact_handle``, ``clear_all``) still detaches
+        it from the job but is deferred until the last lease is released.
+
+        Raises:
+            ArtifactHandleUnavailableError: the job, or its handle under *key*,
+                is gone.
+        """
+        with self._write_locked_with_artifact_cleanup() as artifact_cleanups:
+            self._evict_stale_locked(time.time(), artifact_cleanups)
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise ArtifactHandleUnavailableError(f"Job {job_id!r} no longer exists.")
+            handle = (job.get("artifact_handles") or {}).get(key)
+            if not isinstance(handle, dict):
+                raise ArtifactHandleUnavailableError(f"Job {job_id!r} holds no {key!r} artifact.")
+            leased = dict(handle)
+            lease_key = _artifact_lease_key(leased)
+            self._artifact_leases[lease_key] = self._artifact_leases.get(lease_key, 0) + 1
+        try:
+            yield dict(leased)
+        finally:
+            with self._write_lock:
+                remaining = self._artifact_leases[lease_key] - 1
+                if remaining:
+                    self._artifact_leases[lease_key] = remaining
+                    deferred = None
+                else:
+                    del self._artifact_leases[lease_key]
+                    deferred = self._deferred_artifact_cleanups.pop(lease_key, None)
+            if deferred is not None:
+                deferred_job_id, deferred_handle = deferred
+                self._run_artifact_cleaners(deferred_job_id, (deferred_handle,))
 
     def delete_job(self, job_id: str) -> None:
         """Remove a job and clean up any owned artifacts."""

@@ -2284,3 +2284,53 @@ def estimate_optimiser_grid_peak_bytes(
     resident = row_count * (numeric_width + 32 + max(8, quote_id_width_bytes))
     reader = min(row_count, chunk_rows) * input_row_width_bytes
     return math.ceil(2 * resident + 2 * reader + 64 * 1024 * 1024)
+
+
+_CHOICE_QUERY_BASE_BYTES = 64 * 1024 * 1024
+_CHOICE_SCAN_FACTOR = 4.0
+_CHOICE_JOIN_FACTOR = 5.0
+
+
+def estimate_choice_query_peak_bytes(
+    *,
+    row_count: int,
+    choice_row_width_bytes: float,
+    side_row_width_bytes: float | None,
+    scans_every_quote: bool,
+    joins_every_quote: bool,
+    result_rows: int,
+) -> int:
+    """Peak of one OPT-V09B choice query over *row_count* chosen rows.
+
+    Each term is one pass the query makes; the passes run one after another,
+    so the peak is the largest of them. A streamed scan of every chosen row
+    decodes whole row groups on every Polars thread at once; a side table's
+    key fingerprint scans it the same way (*side_row_width_bytes*, the summed
+    decoded width of the side tables the query leases -- the analysis table and,
+    for a factor breakdown, the ratebook factor rows -- ``None`` without one); a
+    whole-table join (*joins_every_quote*) holds its hash table and both sides'
+    in-flight rows; the reducer keeps *result_rows*. The multipliers are
+    calibrated against measured peaks ("Measured choice-query memory" in the
+    optimiser low-level specification).
+    """
+    full_width = choice_row_width_bytes + (side_row_width_bytes or 0.0)
+    passes = [
+        _CHOICE_SCAN_FACTOR * row_count * choice_row_width_bytes if scans_every_quote else 0.0,
+        0.0
+        if side_row_width_bytes is None
+        else _CHOICE_SCAN_FACTOR * row_count * side_row_width_bytes,
+        _CHOICE_JOIN_FACTOR * row_count * full_width if joins_every_quote else 0.0,
+    ]
+    kept = 2 * result_rows * full_width
+    return math.ceil(_CHOICE_QUERY_BASE_BYTES + max(passes) + kept)
+
+
+def estimate_point_apply_peak_bytes(*, row_count: int, row_width_bytes: float) -> int:
+    """Peak of materialising one frontier point's apply frame and writing its parquet.
+
+    price-contour returns the whole per-quote frame, and writing the parquet
+    holds encoded pages beside it: two frames of the as-solved apply frame's
+    decoded width, which a point's frame shares exactly (measured growth at 1M
+    quotes: about one frame).
+    """
+    return math.ceil(_CHOICE_QUERY_BASE_BYTES + 2 * row_count * row_width_bytes)

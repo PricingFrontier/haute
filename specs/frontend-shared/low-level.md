@@ -14,7 +14,7 @@
 | `frontend/src/types/node.ts` | Canonical persisted `PIPELINE_NODE_TYPES` vocabulary and `NodeTypeValue`; `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, and the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
 | `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
-| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. A converted response module group has no parser here; the Explore pivot responses keep only their UI rules (`explorePivotRunFromContract`, `explorePivotStatusFromContract`, `explorePivotMembersFromContract`): each member key narrowed to the value its kind carries, in its canonical string form, and every cell inside the declared matrix naming a declared value. The optimiser status, frontier status and auto-range status responses keep theirs (`optimiserStatusFromContract`, `frontierStatusFromContract`, `frontierAutoRangeStatusFromContract`): one frontier point summary per point, the typed fields the UI reads from each open frontier point object, and execution metrics parsed by the shared parser. Execution-strategy parsing delegates matching-version structural assertions to its generated standalone validator, then applies explicit compatibility, relationship, ordering, and calibration semantics. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
+| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. A converted response module group has no parser here; the Explore pivot responses keep only their UI rules (`explorePivotRunFromContract`, `explorePivotStatusFromContract`, `explorePivotMembersFromContract`): each member key narrowed to the value its kind carries, in its canonical string form, and every cell inside the declared matrix naming a declared value. The optimiser status, frontier status and auto-range status responses keep theirs (`optimiserStatusFromContract`, `frontierStatusFromContract`, `frontierAutoRangeStatusFromContract`): the generated validators own every frontier point's typed shape, and the one frontier guard (`frontierFromContract`) adds what JSON Schema cannot say: one point summary per point, every point of one mode, and every point's `thresholds`/`bounds`/`totals`/`lambdas` and every summary's `constraints`/`effective_bounds`/`lambdas` holding exactly the frontier's `constraint_names`. Execution metrics are parsed by the shared parser. A malformed frontier fails the response parse, which the client reports as a read error, never a render crash. Execution-strategy parsing delegates matching-version structural assertions to its generated standalone validator, then applies explicit compatibility, relationship, ordering, and calibration semantics. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
 | `frontend/src/types/generatedContractValidation.ts` | Adapter for generated-validator errors: constructs stable instance paths (including missing required properties), formats contract failures, and locates matching keyword/path errors without coupling callers to Ajv internals. `expectGeneratedContract(contract, validate, value)` returns the payload typed by its generated validator or throws `<contract>: invalid contract at <path>: <keyword>`; `api/client.ts` uses it for every converted response. It holds no contract data, so importing it eagerly hoists nothing Explore-only. |
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses, outside the initial JavaScript graph. `parseTrainResponse` and `parseTrainStatusResponse` take the whole structure, including the evaluation and tuning reports and the fit evidence, from the generated `training` validators, and shape by hand only what the server model leaves open: the diagnostic row lists, loss history, GLM inference and regularisation, EBM terms and the feature-selection report. The evaluation and tuning invariants are checked once on the server, where their artifacts are produced, so the browser does not re-check them. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
@@ -27,7 +27,7 @@
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, and the preamble. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the server's streaming chunk size (loaded from and written to `/api/execution-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
-| `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
+| `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, the modelling and optimiser results workspaces' docked heights (`modellingPreviewHeight`, `optimiserPreviewHeight`; session-only, 420px initially), per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
 | `frontend/src/components/MlflowDestinationSelector.tsx` | The per-node MLflow destination control mounted by the modelling Export pane, the optimiser config section and both MLflow-sourced read-node editors: a labelled radio group of the three destinations in fixed order, the selected option following the node's effective destination (the remote it names, else Local folder; there is no automatic choice and no "Use auto" control), a connection light and tooltip per remote from the inventory, greyed unconfigured remotes that open the settings modal instead of being selected, the resolved-destination line, and re-check and settings buttons. It only reads and reports the node value through `value`/`onChange`; its store mutations are limited to the inventory fetch and invalidation. |
 | `frontend/src/utils/mlflowDestinations.ts` | Pure MLflow destination helpers shared by every node surface: the ordered destination keys and labels, `effectiveMlflowDestination` (`databricks` or `server` when stored, else `local`), `mlflowDestinationConfigValue` (the stored value for a choice: the remote's key, or `undefined` for Local folder so the key is removed), `mlflowDestinationEntry`, `mlflowLight` (green/amber/grey/pending; local has no light), `mlflowLogAvailability` (loading, package missing, or the node's own key unconfigured make logging unavailable; a failed probe does not), and `defaultExperimentName` (`/Shared/haute/<label>` for Databricks, else the label). No store imports, so panels and editors can derive state from an inventory snapshot. |
@@ -124,7 +124,11 @@
   current or whose renderable graph is no longer synchronised.
   `CachedSolveResult` additionally carries both `result` (current,
   possibly a frontier point's server summary applied) and `originalResult`
-  (the as-solved baseline), so switching frontier points never loses the original. A
+  (the as-solved baseline), so switching frontier points never loses the original.
+  A failed solve with no earlier result is cached with `result` and
+  `originalResult` `null` and its `error`; no result is fabricated for it (no zero
+  objective or baseline), `getOptimiserPreview` returns `null` for it, and the
+  point-selection actions ignore it. A
   direct `complete*Job` call with no active job recorded (no in-flight
   `ActiveSolveJob`/`ActiveTrainJob` to read `source`/`structuralVersion`
   from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
@@ -286,14 +290,46 @@ for it (`frontier.point_summaries[i]`, derived by the optimiser's
 `frontier_point_summary`) to `originalResult` — no network call, and nothing
 is derived from the frontier row; a `null` summary field clears that field.
 A completed solve with frontier points selects point 0.
-`updateFrontierAfterSelect` is the network-driven counterpart used after an
-explicit backend `/optimiser/frontier/select` (ratebook materialisation); it
-validates the echoed `point_index` matches the request, stores the response
+`updateFrontierAfterSelect(nodeId, jobId, pointIndex, response)` is the
+network-driven counterpart used after an explicit backend
+`/optimiser/frontier/select` (ratebook materialisation); it validates the
+echoed `point_index` matches the request, drops the response unless its job
+and `frontier_generation` are the node's installed ones (`jobId`,
+`originalResult.frontier_generation`: a recompute keeps the job and reuses
+point indices for other points, so a late reply from an earlier generation,
+or one from a generation not yet installed, describes another point), stores the response
 as that point's summary (so later re-selecting that point doesn't need
 another round trip), and — critically — if the user has since selected a
 *different* point while the request was in flight, it keeps the stored
 summary but does not regress the displayed `result`/`selectedPointIndex` to
 the stale response's point (the "stale-response guard").
+`recordFrontierPointSummary(nodeId, jobId, pointIndex, response)` (Export's
+factor-table load) applies the same job and generation fence, stores the
+point's summary and never changes the selection.
+
+**Optimiser apply cache** (`optimiserApplyCache`, `recordOptimiserApply`,
+`touchOptimiserApply`, `optimiserApplyIdentityFor`, `optimiserApplyKey`): the
+`/apply` per-quote responses, at most `MAX_CACHED_OPTIMISER_APPLY` (16)
+entries in least-recently-used order, each keyed by the full request identity
+`(jobId, frontierGeneration, target: "solved" | pointIndex, canonical query)`
+and owned by one node. `optimiserApplyIdentityFor(cached, query)` derives a
+node's current identity from its cached solve (`jobId`,
+`originalResult.frontier_generation`, `selectedPointIndex`).
+`recordOptimiserApply` stores a response only when that identity is still the
+node's current one and returns whether it did; otherwise the response is late
+and dropped. `completeSolveJob` keeps only the node's entries for the
+installed `(jobId, frontierGeneration)` (so a new job or a recomputed frontier
+refetches), and `failSolveJob`, clearing the node's results and solve-cache
+eviction drop all the node's entries. `touchOptimiserApply` marks a hit most
+recently used. See the
+[optimiser UI spec](../frontend-modelling-optimiser-ui/low-level.md#edge-cases-and-invariants).
+
+**Constraint bounds** (`effectiveConstraintBounds`): the one selector the
+optimiser Summary and frontier detail card read a result's constraint bounds
+from. It returns the displayed result's backend `effective_bounds` (the
+selected point's, else the solve's) and throws when an entry is missing,
+malformed or does not match the result's constraints; it never falls back to
+the node's configured constraints.
 
 **Background job polling** (`JobPollingController` + `useJobPolling` +
 `useBackgroundJobs`): `useBackgroundJobs` mounts four `useJobPolling`

@@ -32,6 +32,9 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
             "vehicle_age": [2, 9],
         }
     ).write_parquet(data_dir / "sample.parquet")
+    pl.DataFrame({"quote_id": ["q_001", "q_002"], "region": ["South", "East"]}).write_parquet(
+        data_dir / "optimiser_quotes.parquet"
+    )
     monkeypatch.setattr(run_frontend_e2e_server, "E2E_PROJECT_DIR", tmp_path)
     monkeypatch.chdir(tmp_path)
 
@@ -64,10 +67,32 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
         "browser_optimiser_rows",
         "browser_optimiser",
         "browser_apply",
+        "browser_ratebook_quotes",
+        "browser_ratebook_banding",
+        "browser_ratebook",
         "quotes",
     }
+    ratebook = next(node for node in graph.nodes if node.id == "browser_ratebook")
+    assert ratebook.data.config["mode"] == "ratebook"
+    assert ratebook.data.config["banding_source"] == "browser_ratebook_banding"
+    assert ratebook.data.config["factor_columns"] == [["region_band"]]
+    assert {(edge.source, edge.target) for edge in graph.edges} >= {
+        ("browser_optimiser_rows", "browser_ratebook"),
+        ("browser_ratebook_banding", "browser_ratebook"),
+    }
+    online = next(node for node in graph.nodes if node.id == "browser_optimiser")
+    assert online.data.config["analysis_columns"] == ["region"]
 
     results = execute_graph(graph, target_node_id="browser_mixed_banding")
     assert results["raw_rows"].status == "ok", results["raw_rows"].error
     assert results["enriched"].status == "ok", results["enriched"].error
     assert results["browser_mixed_banding"].status == "ok", results["browser_mixed_banding"].error
+
+    banding = execute_graph(graph, target_node_id="browser_ratebook_banding")[
+        "browser_ratebook_banding"
+    ]
+    assert banding.status == "ok", banding.error
+    assert [(row["quote_id"], row["region_band"]) for row in banding.preview] == [
+        ("q_001", "South"),
+        ("q_002", "East"),
+    ]

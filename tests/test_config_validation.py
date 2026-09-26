@@ -165,6 +165,12 @@ class TestUnrecognizedConfigKeys:
             == []
         )
 
+    def test_the_removed_record_history_flag_is_undeclared(self):
+        """Q5: every online solve records its history, so the flag is gone."""
+        assert unrecognized_config_keys(
+            NodeType.OPTIMISER, {"mode": "online", "record_history": True}
+        ) == ["record_history"]
+
     def test_a_node_type_without_a_typed_dict_has_no_key_check(self):
         assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"anything": 1}) == []
 
@@ -786,3 +792,69 @@ class TestParserSourceTypeMapping:
         assert bad == [], f"Unrecognized keys: {bad}"
         assert config["data_input"] == "node_1"
         assert config["banding_source"] == "node_2"
+
+    def test_optimiser_keeps_its_analysis_keys(self):
+        """analysis_input and analysis_columns survive the parser (OPT-V09A)."""
+        from haute._config_builder import _build_node_config
+
+        config = _build_node_config(
+            NodeType.OPTIMISER,
+            {
+                "optimiser": True,
+                "data_input": "scored",
+                "analysis_input": "regions",
+                "analysis_columns": ["region", "channel"],
+            },
+            "",
+            ["df"],
+        )
+        assert unrecognized_config_keys(NodeType.OPTIMISER, config) == []
+        assert config["analysis_input"] == "regions"
+        assert config["analysis_columns"] == ["region", "channel"]
+
+
+class TestOptimiserAnalysisConfig:
+    """The analysis-column shape rules, shared by save and solve start."""
+
+    @staticmethod
+    def _validate(config: dict[str, Any]) -> None:
+        from haute._config_validation import validate_node_config
+
+        validate_node_config(NodeType.OPTIMISER, {"objective": "income", **config})
+
+    def test_up_to_twelve_distinct_columns_are_accepted(self):
+        self._validate(
+            {"analysis_input": "regions", "analysis_columns": [f"c{i}" for i in range(12)]}
+        )
+        self._validate({"analysis_columns": []})
+        self._validate({})
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            ({"analysis_columns": [f"c{i}" for i in range(13)]}, "at most 12"),
+            ({"analysis_columns": ["region", "region"]}, "duplicate"),
+            ({"analysis_columns": ["region", ""]}, "non-empty"),
+            ({"analysis_columns": "region"}, "list of column names"),
+            ({"analysis_columns": [3]}, "non-empty"),
+            ({"analysis_columns": ["quote_id"]}, "quote-id column"),
+            ({"quote_id": "policy", "analysis_columns": ["policy"]}, "quote-id column"),
+            ({"analysis_columns": ["__haute_x"]}, "reserved"),
+            ({"analysis_input": 3}, "analysis_input"),
+        ],
+    )
+    def test_invalid_shapes_are_refused(self, config: dict[str, Any], message: str):
+        with pytest.raises(ConfigError, match=message):
+            self._validate(config)
+
+    def test_analysis_input_must_name_a_connected_input(self):
+        from haute._config_validation import validate_optimiser_input_selectors
+
+        config = {"data_input": "scored", "analysis_input": "regions"}
+        validate_optimiser_input_selectors(
+            NodeType.OPTIMISER, config, ["scored", "regions"], node_label="opt"
+        )
+        with pytest.raises(ConfigError, match="analysis_input"):
+            validate_optimiser_input_selectors(
+                NodeType.OPTIMISER, config, ["scored", "other"], node_label="opt"
+            )

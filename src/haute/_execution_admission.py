@@ -232,6 +232,25 @@ _IN_FLIGHT_RESERVATIONS: dict[int, tuple[ExecutionProfile, int, str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
+class WorkEstimate:
+    """Bounded work's own peak estimate, admitted and reserved in place of a whole budget."""
+
+    estimated_bytes: int
+    subject: str
+    """What the work is, for the refusal: "The optimiser choice query (TopK)"."""
+    remedy: str
+    """What the user can do when it does not fit."""
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.estimated_bytes, bool)
+            or not isinstance(self.estimated_bytes, int)
+            or self.estimated_bytes <= 0
+        ):
+            raise ValueError("estimated_bytes must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionBudget:
     """Resolved per-profile execution budget."""
 
@@ -529,8 +548,14 @@ def create_admitted_execution_context(
     wait_out_holders: Collection[str] = (),
     wait_seconds: float = 0.0,
     budget_profile: ExecutionProfile | None = None,
+    estimate: WorkEstimate | None = None,
 ) -> ExecutionContext:
     """Construct an ``ExecutionContext`` after a small memory admission check.
+
+    ``estimate`` is the work's own peak estimate: admission refuses work whose
+    estimate exceeds the profile's budget, naming the estimate and its remedy,
+    and reserves the estimate rather than the whole budget in flight, so
+    several small bounded operations can run side by side.
 
     ``budget_profile`` sizes the memory budget from another profile's policy
     while admission and in-flight reservation still follow ``profile``: a
@@ -545,12 +570,14 @@ def create_admitted_execution_context(
     between sends admission back to waiting until the same deadline.
     """
     budget = execution_budget_for_profile(budget_profile or profile)
+    reservation_bytes = budget.memory_limit_bytes if estimate is None else estimate.estimated_bytes
     waitable = frozenset(wait_out_holders) if profile in _IN_FLIGHT_PROFILE_SET else frozenset()
     deadline = time.monotonic() + max(wait_seconds, 0.0)
     while True:
         if waitable:
             _wait_out_in_flight_holders(
                 budget,
+                reservation_bytes,
                 waitable,
                 deadline,
                 cancellation_token=cancellation_token,
@@ -562,6 +589,8 @@ def create_admitted_execution_context(
                 operation=operation,
                 profile=profile,
                 budget=budget,
+                estimate=estimate,
+                reservation_bytes=reservation_bytes,
                 job_id=job_id,
                 cancellation_token=cancellation_token,
                 memory_sampler=memory_sampler,
@@ -572,7 +601,7 @@ def create_admitted_execution_context(
                 not waitable
                 or exc.reason != "in_flight_memory_budget_exceeded"
                 or time.monotonic() >= deadline
-                or not _refusal_is_transient(budget, waitable)
+                or not _refusal_is_transient(budget, reservation_bytes, waitable)
             ):
                 raise
 
@@ -582,6 +611,8 @@ def _admit_once(
     operation: str,
     profile: ExecutionProfile,
     budget: ExecutionBudget,
+    estimate: WorkEstimate | None,
+    reservation_bytes: int,
     job_id: str | None,
     cancellation_token: ExecutionCancellationToken | None,
     memory_sampler: Callable[[], int | None] | None,
@@ -614,10 +645,25 @@ def _admit_once(
     rss_limit_bytes = rss_at_admission + budget.memory_limit_bytes
     if budget.process_rss_limit_bytes is not None:
         rss_limit_bytes = min(rss_limit_bytes, budget.process_rss_limit_bytes)
+    allowance_bytes = rss_limit_bytes - rss_at_admission
+    if estimate is not None and estimate.estimated_bytes > allowance_bytes:
+        raise ExecutionAdmissionError(
+            operation,
+            profile=profile,
+            memory_limit_bytes=budget.memory_limit_bytes,
+            rss_at_admission_bytes=rss_at_admission,
+            rss_limit_bytes=rss_limit_bytes,
+            process_rss_limit_bytes=budget.process_rss_limit_bytes,
+            reason=(
+                f"{estimate.subject} needs an estimated {estimate.estimated_bytes} bytes; "
+                f"the {profile.value} allowance is {allowance_bytes} bytes. {estimate.remedy}"
+            ),
+        )
     admission_release = _reserve_in_flight_budget(
         operation=operation,
         profile=profile,
         budget=budget,
+        reservation_bytes=reservation_bytes,
         rss_at_admission_bytes=rss_at_admission,
     )
     try:
@@ -667,7 +713,9 @@ def _memory_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], 
     )
 
 
-def _refusal_is_transient(budget: ExecutionBudget, waitable: frozenset[str]) -> bool:
+def _refusal_is_transient(
+    budget: ExecutionBudget, reservation_bytes: int, waitable: frozenset[str]
+) -> bool:
     """Whether an in-flight refusal can clear by waiting.
 
     True while every current holder is *waitable*, including when they have all
@@ -677,7 +725,7 @@ def _refusal_is_transient(budget: ExecutionBudget, waitable: frozenset[str]) -> 
     with _IN_FLIGHT_LOCK:
         holders = list(_IN_FLIGHT_RESERVATIONS.values())
     if not holders:
-        return budget.memory_limit_bytes <= _in_flight_limit_bytes(budget)
+        return reservation_bytes <= _in_flight_limit_bytes(budget)
     return all(
         f"{held_profile.value}:{held_operation}" in waitable
         for held_profile, _amount, held_operation in holders
@@ -686,6 +734,7 @@ def _refusal_is_transient(budget: ExecutionBudget, waitable: frozenset[str]) -> 
 
 def _wait_out_in_flight_holders(
     budget: ExecutionBudget,
+    reservation_bytes: int,
     waitable: frozenset[str],
     deadline: float,
     *,
@@ -707,7 +756,7 @@ def _wait_out_in_flight_holders(
             remaining = deadline - time.monotonic()
             if (
                 not holders
-                or reserved + budget.memory_limit_bytes <= limit_bytes
+                or reserved + reservation_bytes <= limit_bytes
                 or remaining <= 0
                 or any(
                     f"{held_profile.value}:{held_operation}" not in waitable
@@ -725,13 +774,13 @@ def _reserve_in_flight_budget(
     operation: str,
     profile: ExecutionProfile,
     budget: ExecutionBudget,
+    reservation_bytes: int,
     rss_at_admission_bytes: int | None,
 ) -> Callable[[], None] | None:
     """Reserve a share of process-wide in-flight memory for heavy work."""
     if profile not in _IN_FLIGHT_PROFILE_SET:
         return None
     limit_bytes = _in_flight_limit_bytes(budget)
-    reservation_bytes = budget.memory_limit_bytes
     with _IN_FLIGHT_LOCK:
         reserved = sum(amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values())
         if reserved + reservation_bytes > limit_bytes:

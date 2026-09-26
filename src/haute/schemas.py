@@ -7,6 +7,7 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 
 from __future__ import annotations
 
+import itertools
 import keyword
 import math
 from collections.abc import Mapping
@@ -20,6 +21,9 @@ from pydantic import (
     Field,
     RootModel,
     StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -3121,16 +3125,53 @@ class OptimiserFrontierRequest(BaseModel):
 
 class OptimiserFrontierResponse(BaseModel):
     status: str
-    points: list[dict[str, Any]] = Field(default_factory=list)
+    points: list[OptimiserFrontierPoint] = Field(default_factory=list)
+    """price-contour's frontier rows, typed (``OptimiserFrontierPoint``), in sweep order."""
     point_summaries: list[OptimiserFrontierPointSummary] = Field(default_factory=list)
     """The server's summary of each returned point, in point order."""
     n_points: int = 0
     points_returned: int = 0
     constraint_names: list[str] = Field(default_factory=list)
+    """Every configured constraint, swept or not, in configured order."""
+    swept_axes: list[str] = Field(default_factory=list)
+    """The constraints the sweep varied (a subset of ``constraint_names``)."""
     points_limit: int | None = None
     points_truncated: bool = False
+    frontier_generation: int | None = Field(default=None, ge=0)
+    """The solve job's frontier generation this frontier belongs to: ``0`` for the
+    solve-time frontier, incremented by every recompute. Every computed frontier
+    carries it; only the ``status == "started"`` handle has none."""
     job_id: str | None = None
     """Pollable frontier job handle when ``status == "started"``."""
+
+    @model_validator(mode="after")
+    def _generation_iff_computed(self) -> OptimiserFrontierResponse:
+        started = self.status == "started"
+        if started and self.frontier_generation is not None:
+            raise ValueError("A started frontier handle has no frontier_generation")
+        if not started and self.frontier_generation is None:
+            raise ValueError("A computed frontier requires frontier_generation")
+        return self
+
+    @model_validator(mode="after")
+    def _points_cover_the_constraints(self) -> OptimiserFrontierResponse:
+        """Every point and summary names exactly ``constraint_names``."""
+        names = self.constraint_names
+        unknown_axes = [name for name in self.swept_axes if name not in names]
+        if unknown_axes:
+            raise ValueError(f"swept_axes {unknown_axes} are not in constraint_names {names}")
+        if len({point.mode for point in self.points}) > 1:
+            raise ValueError("Frontier points must all be of one mode")
+        if self.status != "started" and len(self.point_summaries) != len(self.points):
+            raise ValueError(
+                f"A computed frontier needs one summary per point: {len(self.point_summaries)} "
+                f"summaries for {len(self.points)} points"
+            )
+        for index, point in enumerate(self.points):
+            _require_constraint_names(point.totals, names, field=f"points[{index}]")
+        for index, summary in enumerate(self.point_summaries):
+            _require_constraint_names(summary.constraints, names, field=f"point_summaries[{index}]")
+        return self
 
 
 class OptimiserFrontierStatusResponse(BaseModel):
@@ -3146,6 +3187,160 @@ class OptimiserFrontierStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+def _require_constraint_names(keys: Mapping[str, Any], names: list[str], *, field: str) -> None:
+    """Fail unless *keys* are exactly the constraint *names*."""
+    if set(keys) != set(names):
+        missing = [name for name in names if name not in keys]
+        unexpected = [name for name in keys if name not in names]
+        raise ValueError(
+            f"{field} does not hold exactly the constraint names {names}: "
+            f"missing {missing}, unexpected {unexpected}"
+        )
+
+
+def _require_same_constraint_names(maps: Mapping[str, Mapping[str, Any]]) -> None:
+    """Fail unless every constraint-keyed map in *maps* holds the same names."""
+    fields = list(maps)
+    names = list(maps[fields[0]])
+    for field in fields[1:]:
+        _require_constraint_names(maps[field], names, field=f"{field} (vs {fields[0]})")
+
+
+# A frontier row's values, typed: strict so a malformed library row can never
+# be coerced or pass NaN/Infinity through to a client.
+_STRICT_ROW = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class _OptimiserFrontierPointBase(BaseModel):
+    """The columns every price-contour frontier row has, per-constraint ones as maps.
+
+    ``thresholds`` (``threshold_<c>``, the user's units: a fraction for a pct
+    constraint), ``bounds`` (``bound_<c>``, the absolute bound), ``totals``
+    (``total_<c>``) and ``lambdas`` (``lambda_<c>``) each hold every configured
+    constraint, swept or not.
+    """
+
+    model_config = _STRICT_ROW
+
+    total_objective: float
+    thresholds: dict[str, float]
+    bounds: dict[str, float]
+    totals: dict[str, float]
+    lambdas: dict[str, float]
+    iterations: int = Field(ge=0)
+    converged: bool
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> _OptimiserFrontierPointBase:
+        _require_same_constraint_names(
+            {
+                "totals": self.totals,
+                "thresholds": self.thresholds,
+                "bounds": self.bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
+
+
+class OptimiserOnlineFrontierPoint(_OptimiserFrontierPointBase):
+    """An online frontier row (``frontier_points_schema("online", ...)``)."""
+
+    mode: Literal["online"]
+    solver_path: Literal["bisection", "subgradient"]
+    non_convergence_reason: (
+        Literal["above_envelope", "bracket_exhausted", "iteration_budget_exhausted"] | None
+    )
+    sv_mean: float
+    sv_std: float
+    sv_min: float
+    sv_p5: float
+    sv_p25: float
+    sv_median: float
+    sv_p75: float
+    sv_p95: float
+    sv_max: float
+    sv_pct_increase: float
+    sv_pct_decrease: float
+
+
+class OptimiserRatebookFrontierPoint(_OptimiserFrontierPointBase):
+    """A ratebook frontier row (``frontier_points_schema("ratebook", ...)``).
+
+    ``iterations`` is the point's coordinate-descent pass count.
+    """
+
+    mode: Literal["ratebook"]
+    clamp_rate: float
+    n_quotes_clamped_low: int = Field(ge=0)
+    n_quotes_clamped_high: int = Field(ge=0)
+
+
+OptimiserFrontierPoint = OptimiserOnlineFrontierPoint | OptimiserRatebookFrontierPoint
+
+
+class OptimiserFactorTableRow(BaseModel):
+    """One level of a solved ratebook factor table.
+
+    The wire keys are the solver's (``__factor_group__``), which the saved
+    artifact and every apply path read, so the row always serialises by alias.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", strict=True, allow_inf_nan=False, serialize_by_alias=True
+    )
+
+    level: str = Field(alias="__factor_group__")
+    """The canonical, apply-joinable level key."""
+    optimal_scenario_value: float
+    """The level's solved rate."""
+    quote_count: int = Field(ge=0)
+    """How many solve quotes fall in the level."""
+
+
+class OptimiserDiagnosticError(BaseModel):
+    """A result diagnostic that could not be produced, and why."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    diagnostic: Literal["adjustments", "adjustment_weight", "frontier", "segment_weight"]
+    error_type: str
+    message: str
+
+
+class OptimiserSolverSettings(BaseModel):
+    """The solver settings a solve ran with, the solver defaults applied."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    max_iter: int
+    tolerance: float
+    chunk_size: int | None
+    # Ratebook only.
+    max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Only when the solve requested a frontier.
+    frontier_enabled: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    frontier_steps: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    frontier_ranges: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
+class OptimiserInputSummary(BaseModel):
+    """What a solve ran on: the job's input provenance and its solver settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    data_source: str
+    """The batch scenario the pipeline executed against."""
+    source_file: str | None
+    """The pipeline file, when the graph came from one."""
+    graph_fingerprint: str
+    solver_settings: OptimiserSolverSettings
+
+
 class OptimiserHistoryEntry(BaseModel):
     iteration: int
     total_objective: float
@@ -3155,23 +3350,313 @@ class OptimiserHistoryEntry(BaseModel):
     total_constraints: dict[str, float] = Field(default_factory=dict)
 
 
-class OptimiserScenarioValueStats(BaseModel):
-    mean: float
-    std: float
-    min: float
-    max: float
+class OptimiserRatebookCdTraceRecord(BaseModel):
+    """One inner grouped solve of a ratebook coordinate descent (price-contour's
+    ``PerFactorRecord``): the totals and λ after updating ``factor`` in pass
+    ``cd_iteration``, on the search's working multiplier."""
+
+    model_config = _STRICT_ROW
+
+    cd_iteration: int = Field(ge=1)
+    """The 1-based coordinate-descent pass."""
+    factor: str
+    factor_index: int = Field(ge=0)
+    total_objective: float
+    total_constraints: dict[str, float]
+    lambdas: dict[str, float]
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserRatebookCdTraceRecord:
+        _require_same_constraint_names(
+            {"total_constraints": self.total_constraints, "lambdas": self.lambdas}
+        )
+        return self
+
+
+class OptimiserRatebookCdTrace(BaseModel):
+    """A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.
+
+    Holds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``
+    says earlier ones were dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[OptimiserRatebookCdTraceRecord] = Field(min_length=1)
+    truncated: bool
+
+    def constraint_names(self) -> list[str]:
+        """The constraint names every record holds (the first record's)."""
+        names = list(self.records[0].total_constraints)
+        for index, record in enumerate(self.records[1:], start=1):
+            _require_constraint_names(
+                record.total_constraints, names, field=f"ratebook_cd_trace record {index}"
+            )
+        return names
+
+
+class OptimiserAdjustmentBar(BaseModel):
+    """One step of the scenario grid in an adjustment report, chosen or not."""
+
+    model_config = _STRICT_ROW
+
+    optimal_step: int = Field(ge=0)
+    scenario_value: float
+    quotes: int = Field(ge=0)
+    # Per computed weighting other than quote count, the Float64 sum at this step.
+    weights: dict[str, float]
+
+
+class OptimiserAdjustmentQuantiles(BaseModel):
+    """Inverted-CDF (lower) quantiles of the chosen scenario values: always grid values."""
+
+    model_config = _STRICT_ROW
+
     p5: float
     p25: float
     p50: float
     p75: float
     p95: float
-    pct_increase: float
-    pct_decrease: float
 
 
-class OptimiserScenarioValueHistogram(BaseModel):
-    counts: list[int] = Field(default_factory=list)
-    edges: list[float] = Field(default_factory=list)
+class OptimiserAdjustmentWeighting(BaseModel):
+    """The summary figures of the chosen scenario values under one weighting.
+
+    ``key`` is ``"quotes"`` (each quote weighs 1) or the choice-frame column
+    that weighs them (``optimal_objective``, ``optimal_<constraint>``),
+    evaluated at the chosen scenario.
+    """
+
+    model_config = _STRICT_ROW
+
+    key: str
+    label: str
+    total: float = Field(gt=0)
+    mean: float
+    quantiles: OptimiserAdjustmentQuantiles
+    share_up: float = Field(ge=0, le=1)
+    share_down: float = Field(ge=0, le=1)
+    # ``None`` exactly when the grid has no 1.0 step: not a category, never 0.
+    share_unadjusted: float | None = Field(ge=0, le=1)
+    share_at_min: float = Field(ge=0, le=1)
+    share_at_max: float = Field(ge=0, le=1)
+
+
+class OptimiserAdjustmentReport(BaseModel):
+    """The distribution of one target's chosen scenario values against the 1.0 base price.
+
+    One bar per step of the solve's scenario grid (steps nobody chose included)
+    and, per computed weighting (quote count first), the summary figures. A
+    refused weighting (a negative value or a zero total) is named in
+    ``diagnostics_errors`` and appears nowhere else.
+
+    ``deployed_factor_differs`` is, for a ratebook target, how many quotes'
+    deployed factor (the unsnapped product of the rates, collared to the
+    scenario range) differs from the grid step the solver evaluated; ``None``
+    for an online target, whose deployed scenario is the chosen step.
+    """
+
+    model_config = _STRICT_ROW
+
+    n_quotes: int = Field(gt=0)
+    has_unadjusted: bool
+    bars: list[OptimiserAdjustmentBar] = Field(min_length=1)
+    weightings: list[OptimiserAdjustmentWeighting] = Field(min_length=1)
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    deployed_factor_differs: int | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _bars_and_weightings_agree(self) -> OptimiserAdjustmentReport:
+        steps = [bar.optimal_step for bar in self.bars]
+        if steps != list(range(len(steps))):
+            raise ValueError(f"adjustment bars must list steps 0..n-1 in order, got {steps}")
+        values = [bar.scenario_value for bar in self.bars]
+        if any(later <= earlier for earlier, later in itertools.pairwise(values)):
+            raise ValueError(f"adjustment bar values must be strictly increasing, got {values}")
+        if self.has_unadjusted != (1.0 in values):
+            raise ValueError("has_unadjusted must say whether the grid has a 1.0 step")
+        if sum(bar.quotes for bar in self.bars) != self.n_quotes:
+            raise ValueError("adjustment bars must count every quote exactly once")
+        keys = [weighting.key for weighting in self.weightings]
+        if keys[0] != "quotes" or len(set(keys)) != len(keys):
+            raise ValueError(f"weightings must start with 'quotes' and be unique, got {keys}")
+        for bar in self.bars:
+            if set(bar.weights) != set(keys[1:]):
+                raise ValueError(
+                    f"bar {bar.optimal_step} weights {sorted(bar.weights)} must be the computed "
+                    f"weightings {keys[1:]}"
+                )
+        for weighting in self.weightings:
+            if (weighting.share_unadjusted is None) == self.has_unadjusted:
+                raise ValueError(
+                    f"weighting {weighting.key!r}: share_unadjusted is null exactly when the "
+                    "grid has no 1.0 step"
+                )
+        differs = self.deployed_factor_differs
+        if differs is not None and differs > self.n_quotes:
+            raise ValueError(
+                f"deployed_factor_differs ({self.deployed_factor_differs}) cannot exceed "
+                f"n_quotes ({self.n_quotes})"
+            )
+        return self
+
+
+class OptimiserSegmentKey(BaseModel):
+    """One key a result can be broken down by (OPT-V11), and whether it can be.
+
+    ``source`` is an analysis column or a ratebook rating factor (named as the
+    Rates tab names it); ``binning`` says whether its levels are quantile bins
+    or distinct values. The cardinality gate decides ``available``;
+    ``unavailable_reason`` says why not, and is ``None`` exactly when it is.
+    """
+
+    model_config = _STRICT_ROW
+
+    key: str = Field(min_length=1)
+    source: Literal["analysis", "factor"]
+    binning: Literal["numeric", "categorical"]
+    available: bool
+    unavailable_reason: str | None
+
+    @model_validator(mode="after")
+    def _reason_exactly_when_unavailable(self) -> OptimiserSegmentKey:
+        if (self.unavailable_reason is None) != self.available:
+            raise ValueError(
+                f"segment key {self.key!r}: unavailable_reason is set exactly when it is "
+                "unavailable"
+            )
+        return self
+
+
+class OptimiserSegmentFigures(BaseModel):
+    """A level's chosen scenario values against the 1.0 base price, under one weighting."""
+
+    model_config = _STRICT_ROW
+
+    mean_scenario_value: float
+    share_up: float = Field(ge=0, le=1)
+    share_down: float = Field(ge=0, le=1)
+    # At the scenario grid's first or last step.
+    share_at_edge: float = Field(ge=0, le=1)
+
+
+class OptimiserSegmentRow(BaseModel):
+    """One level of a segment breakdown.
+
+    ``weighted`` is ``None`` when the weighting was refused for the target, or
+    when this level's weight totals 0 (a diagnostics entry names it); the quote
+    count and the unweighted figures always remain.
+    """
+
+    model_config = _STRICT_ROW
+
+    label: str
+    kind: Literal["bin", "value", "other", "missing"]
+    # A bin's bounds: ``[lower, upper)``, the last bin ``[lower, upper]``.
+    lower: float | None
+    upper: float | None
+    # How many distinct values the Other level merges: every level beyond the top
+    # 15, so one when there are exactly 16.
+    merged_levels: int | None = Field(ge=1)
+    quotes: int = Field(gt=0)
+    weight_total: float | None = Field(ge=0)
+    unweighted: OptimiserSegmentFigures
+    weighted: OptimiserSegmentFigures | None
+    # A ratebook target's count of quotes whose deployed factor differs from the
+    # evaluated step; ``None`` online.
+    deployed_factor_differs: int | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _fields_of_its_kind(self) -> OptimiserSegmentRow:
+        if (self.lower is not None and self.upper is not None) != (self.kind == "bin"):
+            raise ValueError(f"segment level {self.label!r}: only a bin has bounds")
+        if (self.merged_levels is not None) != (self.kind == "other"):
+            raise ValueError(f"segment level {self.label!r}: only Other merges levels")
+        if self.weight_total is None and self.weighted is not None:
+            raise ValueError(f"segment level {self.label!r}: weighted figures need a weight")
+        return self
+
+
+class OptimiserSegmentsRequest(BaseModel):
+    job_id: str
+    # ``None`` is the as-solved result; an integer, that frontier point.
+    point_index: int | None = Field(default=None, ge=0)
+    key: str = Field(min_length=1)
+    # ``"quotes"`` or a choice-frame value column at the chosen scenario.
+    weight: str = "quotes"
+
+
+class OptimiserSegmentsResponse(BaseModel):
+    """The chosen scenario values of one target, per level of one key (OPT-V11)."""
+
+    model_config = _STRICT_ROW
+
+    key: str
+    source: Literal["analysis", "factor"]
+    binning: Literal["numeric", "categorical"]
+    weight: str
+    weight_label: str
+    point_index: int | None = Field(ge=0)
+    # The frontier generation the point index refers to.
+    frontier_generation: int = Field(ge=0)
+    n_quotes: int = Field(gt=0)
+    # Bins, or the distinct non-missing values before truncation to the top 15.
+    n_levels: int = Field(ge=0)
+    mean_scenario_value: float
+    # ``None`` when the weighting was refused.
+    weighted_mean_scenario_value: float | None
+    rows: list[OptimiserSegmentRow] = Field(min_length=1)
+    diagnostics_errors: list[OptimiserDiagnosticError]
+
+    @model_validator(mode="after")
+    def _levels_count_every_quote(self) -> OptimiserSegmentsResponse:
+        if sum(row.quotes for row in self.rows) != self.n_quotes:
+            raise ValueError("segment levels must count every quote exactly once")
+        return self
+
+
+class OptimiserSegmentIndexStatistic(BaseModel):
+    """What ranks the segment keys, named for the browser's header."""
+
+    model_config = _STRICT_ROW
+
+    label: str
+    description: str
+
+
+class OptimiserSegmentIndexKey(OptimiserSegmentKey):
+    """A segment key with its ranking statistic (``None`` when it is unavailable)."""
+
+    spread: float | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _spread_exactly_when_available(self) -> OptimiserSegmentIndexKey:
+        if (self.spread is None) == self.available:
+            raise ValueError(f"segment key {self.key!r}: spread is set exactly when available")
+        return self
+
+
+class OptimiserSegmentIndexResponse(BaseModel):
+    """The keys of one target ranked by their adjustment spread (OPT-V11)."""
+
+    model_config = _STRICT_ROW
+
+    point_index: int | None = Field(ge=0)
+    frontier_generation: int = Field(ge=0)
+    statistic: OptimiserSegmentIndexStatistic
+    keys: list[OptimiserSegmentIndexKey]
+
+
+class OptimiserEffectiveBound(BaseModel):
+    """The absolute bound a result was solved at for one constraint.
+
+    ``bound`` is price-contour's (``constraint_bounds`` or a frontier row's
+    ``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the
+    fraction times the constraint's baseline total, never the fraction.
+    """
+
+    kind: Literal["min", "max"]
+    bound: float
 
 
 class OptimiserFrontierPointSummary(BaseModel):
@@ -3181,19 +3666,56 @@ class OptimiserFrontierPointSummary(BaseModel):
     solve's result removes it.
     """
 
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
     total_objective: float
     constraints: dict[str, float]
+    effective_bounds: dict[str, OptimiserEffectiveBound]
     lambdas: dict[str, float]
     converged: bool
     iterations: int | None
     cd_iterations: int | None
     clamp_rate: float | None
     history: list[OptimiserHistoryEntry] | None
-    scenario_value_stats: OptimiserScenarioValueStats | None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None
-    factor_tables: dict[str, list[dict[str, Any]]] | None
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None
+    # Always ``None``: a point's report is loaded on request (frontier select
+    # with ``include_adjustments``), so applying the summary removes the solve's.
+    adjustments: None
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] | None
     warning: str | None
     frontier_error: str | None
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    """Always empty: a point's figures come from its own frontier row."""
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserFrontierPointSummary:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        return self
+
+
+def _require_convergence_record_of_its_mode(
+    mode: str,
+    history: list[OptimiserHistoryEntry] | None,
+    trace: OptimiserRatebookCdTrace | None,
+    constraint_names: list[str],
+) -> None:
+    """Fail unless only an online result has history and only a ratebook result a
+    CD trace, whose records hold exactly the result's constraint names."""
+    if history is not None and mode != "online":
+        raise ValueError(f"history is online-only; a {mode} result has none")
+    if trace is None:
+        return
+    if mode != "ratebook":
+        raise ValueError(f"ratebook_cd_trace is ratebook-only; a {mode} result has none")
+    _require_constraint_names(
+        dict.fromkeys(trace.constraint_names()), constraint_names, field="ratebook_cd_trace"
+    )
 
 
 class OptimiserCombinedFactorBounds(BaseModel):
@@ -3207,29 +3729,83 @@ class OptimiserCombinedFactorBounds(BaseModel):
     max: float
 
 
+class OptimiserScenarioGridStep(BaseModel):
+    """One step of the solve's scenario grid: its index and the value the solver scored."""
+
+    model_config = _STRICT_ROW
+
+    optimal_step: int = Field(ge=0)
+    scenario_value: float
+
+
 class OptimiserSolveResult(BaseModel):
-    mode: str | None = None
+    mode: Literal["online", "ratebook"]
     total_objective: float
     baseline_objective: float
     constraints: dict[str, float] = Field(default_factory=dict)
     baseline_constraints: dict[str, float] = Field(default_factory=dict)
+    # Every configured constraint's absolute bound this result was solved at.
+    effective_bounds: dict[str, OptimiserEffectiveBound]
     lambdas: dict[str, float] = Field(default_factory=dict)
     converged: bool
     iterations: int | None = None
     n_quotes: int | None = None
     n_steps: int | None = None
     cd_iterations: int | None = None
-    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
+    # Online only: every online solve records its per-iteration history.
     history: list[OptimiserHistoryEntry] | None = None
+    # Ratebook only: the live solve's coordinate-descent trace.
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
-    scenario_value_stats: OptimiserScenarioValueStats | None = None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    # The as-solved adjustment report (OPT-V10): online only until OPT-V09C; ``None``
+    # for a selected frontier point, whose report is loaded on request.
+    adjustments: OptimiserAdjustmentReport | None = None
     clamp_rate: float | None = None
     # Ratebook only; ``None`` for online solves.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
+    # The job's frontier generation (0 until a recompute); see OptimiserFrontierResponse.
+    frontier_generation: int = Field(ge=0)
+    # What the solve ran on: the job's input provenance and solver settings.
+    input_summary: OptimiserInputSummary
+    # Diagnostics that could not be produced (the frontier's failure among them).
+    diagnostics_errors: list[OptimiserDiagnosticError]
+    # The solver input's complete grid, recorded at setup: the only source for
+    # which adjustments were possible (OPT-V09A).
+    scenario_grid: list[OptimiserScenarioGridStep] = Field(min_length=1)
+    # What the result can be broken down by (OPT-V11): its analysis columns and,
+    # for ratebook, its rating factors, each with the cardinality gate's verdict.
+    segment_keys: list[OptimiserSegmentKey]
+
+    @model_validator(mode="after")
+    def _scenario_grid_is_complete_and_ordered(self) -> OptimiserSolveResult:
+        steps = [step.optimal_step for step in self.scenario_grid]
+        if steps != list(range(len(steps))):
+            raise ValueError(f"scenario_grid must list steps 0..n-1 in order, got {steps}")
+        values = [step.scenario_value for step in self.scenario_grid]
+        if any(later <= earlier for earlier, later in itertools.pairwise(values)):
+            raise ValueError(f"scenario_grid values must be strictly increasing, got {values}")
+        if self.n_steps is not None and self.n_steps != len(steps):
+            raise ValueError(f"n_steps is {self.n_steps} but scenario_grid has {len(steps)} steps")
+        return self
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserSolveResult:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "baseline_constraints": self.baseline_constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        _require_convergence_record_of_its_mode(
+            self.mode, self.history, self.ratebook_cd_trace, list(self.constraints)
+        )
+        return self
 
 
 class OptimiserStatusResponse(BaseModel):
@@ -3243,50 +3819,152 @@ class OptimiserStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+APPLY_PREVIEW_ROW_LIMIT = 100
+"""The most rows one Quotes page (``POST /apply``) returns."""
+
+OptimiserQuoteEqualityValue = StrictStr | StrictInt | StrictFloat | StrictBool | None
+
+
+class OptimiserQuoteFilters(BaseModel):
+    """The Quotes explorer's filters (OPT-V12), combined with AND; each is optional."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    # An inclusive range of the chosen scenario value, compared in Float64.
+    scenario_value_min: float | None = None
+    scenario_value_max: float | None = None
+    # Quotes at the first or last step of the recorded scenario grid.
+    at_range_edge: bool = False
+    # ``{analysis column: value}``; ``None`` matches a missing value.
+    analysis_equals: dict[str, OptimiserQuoteEqualityValue] = Field(default_factory=dict)
+    # Ratebook only: the deployed factor differs from the evaluated step.
+    deployed_factor_differs: bool = False
+
+
 class OptimiserApplyRequest(BaseModel):
+    """One page of the target's chosen scenarios (the Quotes explorer, OPT-V12)."""
+
+    model_config = ConfigDict(extra="forbid")
+
     job_id: str
     point_index: int | None = Field(default=None, ge=0)
+    # ``None`` keeps the apply frame's quote order; ties always break by quote id.
+    sort_by: str | None = Field(default=None, min_length=1)
+    descending: bool = False
+    quote_id_prefix: str | None = Field(default=None, min_length=1)
+    filters: OptimiserQuoteFilters = Field(default_factory=OptimiserQuoteFilters)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=APPLY_PREVIEW_ROW_LIMIT, ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
+
+
+class OptimiserQuoteColumn(BaseModel):
+    """One column of a Quotes page and its role (OPT-V12)."""
+
+    model_config = _STRICT_ROW
+
+    name: str
+    role: Literal["id", "scenario", "objective", "constraint", "factor", "flag", "analysis"]
+    # Whether ``sort_by`` accepts it.
+    sortable: bool
+    # Whether ``filters.analysis_equals`` accepts it.
+    filterable: bool
 
 
 class OptimiserApplyResponse(BaseModel):
+    """One Quotes page: the target's totals, typed columns, rows and counts."""
+
     status: str
-    total_objective: float = 0.0
-    constraints: dict[str, float] = Field(default_factory=dict)
-    from_artifact: bool = False
-    preview: list[dict[str, Any]] = Field(default_factory=list)
-    row_count: int = 0
-    preview_row_count: int = 0
-    preview_row_limit: int | None = None
-    preview_truncated: bool = False
+    total_objective: float
+    constraints: dict[str, float]
+    from_artifact: bool
+    columns: list[OptimiserQuoteColumn]
+    preview: list[dict[str, Any]]
+    # The target's quotes, and those matching the search and filters.
+    row_count: int = Field(ge=0)
+    matched_row_count: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    preview_row_count: int = Field(ge=0)
+    preview_row_limit: int = Field(ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
+    # The frontier generation the page was answered for, so a client can refuse
+    # a page from a frontier recomputed after its request.
+    frontier_generation: int = Field(ge=0)
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _page_agrees_with_its_counts(self) -> OptimiserApplyResponse:
+        if self.matched_row_count > self.row_count:
+            raise ValueError(
+                f"matched_row_count {self.matched_row_count} exceeds row_count {self.row_count}"
+            )
+        if self.preview_row_count != len(self.preview):
+            raise ValueError(
+                f"preview_row_count {self.preview_row_count} but {len(self.preview)} rows"
+            )
+        if self.preview_row_count > self.preview_row_limit:
+            raise ValueError(
+                f"{self.preview_row_count} rows exceed the page limit {self.preview_row_limit}"
+            )
+        names = [column.name for column in self.columns]
+        for row in self.preview:
+            if list(row) != names:
+                raise ValueError(f"a Quotes row has keys {list(row)}, expected {names}")
+        return self
 
 
 class OptimiserFrontierSelectRequest(BaseModel):
     job_id: str
     point_index: int | None = Field(..., ge=0)
     include_ratebook_tables: bool = False
+    # Also answer the point's adjustment report (OPT-V10), materialising its choices.
+    include_adjustments: bool = False
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
     status: str
     point_index: int | None = None
-    total_objective: float = 0.0
-    constraints: dict[str, float] = Field(default_factory=dict)
-    baseline_objective: float = 0.0
-    baseline_constraints: dict[str, float] = Field(default_factory=dict)
-    lambdas: dict[str, float] = Field(default_factory=dict)
-    converged: bool = True
+    total_objective: float
+    constraints: dict[str, float]
+    baseline_objective: float
+    baseline_constraints: dict[str, float]
+    # The selected point's (or, with no point, the solve's) absolute bounds.
+    effective_bounds: dict[str, OptimiserEffectiveBound]
+    lambdas: dict[str, float]
+    converged: bool
     iterations: int | None = None
     cd_iterations: int | None = None
-    factor_tables: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
     history: list[OptimiserHistoryEntry] | None = None
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
-    scenario_value_stats: OptimiserScenarioValueStats | None = None
-    scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
+    # Without a point, the as-solved report; with one, its report when
+    # ``include_adjustments`` was requested, else ``None``.
+    adjustments: OptimiserAdjustmentReport | None = None
     clamp_rate: float | None = None
     # Ratebook only: the solve's collar, shared by every frontier point.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
+    # The frontier generation the point index refers to.
+    frontier_generation: int = Field(ge=0)
+    # The selected point's (always empty) or, with no point, the solve's.
+    diagnostics_errors: list[OptimiserDiagnosticError]
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserFrontierSelectResponse:
+        _require_same_constraint_names(
+            {
+                "constraints": self.constraints,
+                "baseline_constraints": self.baseline_constraints,
+                "effective_bounds": self.effective_bounds,
+                "lambdas": self.lambdas,
+            }
+        )
+        if self.ratebook_cd_trace is not None:
+            _require_constraint_names(
+                dict.fromkeys(self.ratebook_cd_trace.constraint_names()),
+                list(self.constraints),
+                field="ratebook_cd_trace",
+            )
+        return self
 
 
 class OptimiserSaveRequest(BaseModel):

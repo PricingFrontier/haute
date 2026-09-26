@@ -153,7 +153,7 @@ describe("useBackgroundJobs", () => {
       // Job should now be completed and moved to results
       const state = useNodeResultsStore.getState()
       expect(state.solveResults["n1"]).toBeDefined()
-      expect(state.solveResults["n1"].result.converged).toBe(true)
+      expect(state.solveResults["n1"].result?.converged).toBe(true)
       expect(state.solveJobs["n1"]).toBeUndefined()
     })
 

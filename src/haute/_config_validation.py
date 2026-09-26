@@ -273,6 +273,13 @@ def validate_optimiser_input_selectors(
             node_label=node_label,
             field_name="banding_source",
         )
+        validate_exact_input_selector(
+            config.get("analysis_input"),
+            source_names,
+            required=False,
+            node_label=node_label,
+            field_name="analysis_input",
+        )
         return data_input
 
     if nt is NodeType.OPTIMISER_APPLY:
@@ -339,6 +346,65 @@ def reject_unrecognized_config_keys(
         )
 
 
+MAX_ANALYSIS_COLUMNS = 12
+"""The most analysis columns an optimiser keeps for result breakdowns (OPT-V09A)."""
+RESERVED_ANALYSIS_COLUMN_PREFIX = "__haute_"
+
+
+def validate_optimiser_analysis_config(config: Mapping[str, Any]) -> None:
+    """The optimiser's analysis-column shape rules, shared by save and solve start.
+
+    ``analysis_input`` is an optional input name; ``analysis_columns`` an optional
+    list of at most ``MAX_ANALYSIS_COLUMNS`` distinct, non-empty column names,
+    none of them the configured quote-id column or a reserved ``__haute_`` name.
+    Whether the input is connected and has the columns is checked where the
+    graph and the data are known.
+    """
+    analysis_input = config.get("analysis_input")
+    if analysis_input is not None and not isinstance(analysis_input, str):
+        raise ConfigError(
+            "Optimiser analysis_input must be an input name.",
+            analysis_input=type(analysis_input).__name__,
+        )
+    columns = config.get("analysis_columns")
+    if columns is None:
+        return
+    if not isinstance(columns, list):
+        raise ConfigError(
+            "Optimiser analysis_columns must be a list of column names.",
+            analysis_columns=type(columns).__name__,
+        )
+    if len(columns) > MAX_ANALYSIS_COLUMNS:
+        raise ConfigError(
+            f"Optimiser analysis_columns can hold at most {MAX_ANALYSIS_COLUMNS} columns; "
+            f"{len(columns)} are configured. Remove some to keep the breakdowns bounded.",
+            analysis_column_count=len(columns),
+        )
+    if any(not isinstance(column, str) or not column for column in columns):
+        raise ConfigError("Optimiser analysis_columns must be non-empty column names.")
+    duplicates = sorted({column for column in columns if columns.count(column) > 1})
+    if duplicates:
+        raise ConfigError(
+            f"Optimiser analysis_columns lists a duplicate column: {duplicates}.",
+            duplicate_analysis_columns=duplicates,
+        )
+    quote_id = str(config.get("quote_id") or "quote_id")
+    if quote_id in columns:
+        raise ConfigError(
+            f"Optimiser analysis_columns cannot include the quote-id column {quote_id!r}: "
+            "the analysis table is keyed by it already."
+        )
+    reserved = sorted(
+        column for column in columns if column.startswith(RESERVED_ANALYSIS_COLUMN_PREFIX)
+    )
+    if reserved:
+        raise ConfigError(
+            f"Optimiser analysis_columns {reserved} use the reserved "
+            f"{RESERVED_ANALYSIS_COLUMN_PREFIX!r} prefix. Rename the columns upstream.",
+            reserved_analysis_columns=reserved,
+        )
+
+
 _MLFLOW_DESTINATION_NODE_TYPES = frozenset(
     {
         NodeType.MODELLING,
@@ -401,6 +467,8 @@ def validate_node_config(
         validate_mlflow_destination(nt, config)
     if nt in (NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY):
         validate_registered_model_alias(nt, config)
+    if nt == NodeType.OPTIMISER:
+        validate_optimiser_analysis_config(config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 

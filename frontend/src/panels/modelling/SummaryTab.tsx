@@ -16,6 +16,8 @@ import {
 import type { EvaluationMetricSummary, GlmRegularization, TuningReport } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
+import { diagnosticsSetLabel } from "./diagnosticsSet"
+import DiagnosticsIssues from "../DiagnosticsIssues"
 
 interface SummaryTabProps {
   result: TrainResult
@@ -224,9 +226,7 @@ function SelectionMetricsTable({ metrics }: { metrics: Record<string, Evaluation
 export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: SummaryTabProps) {
   const featuresCount = result.features?.length ?? result.feature_importance.length
   const catFeaturesCount = result.cat_features?.length ?? 0
-  const diagnosticsLabel = result.diagnostics_set === "final_test"
-    ? "Test"
-    : result.diagnostics_set === "validation" ? "Validation" : "Training"
+  const diagnosticsLabel = diagnosticsSetLabel(result.diagnostics_set)
   const diagnosticsErrors = result.diagnostics_errors ?? []
   const evaluation = result.evaluation
   const tuning = result.tuning
@@ -253,60 +253,14 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
         </div>
       )}
 
-      {diagnosticsErrors.length > 0 && (
-        <div
-          role="alert"
-          aria-label="Diagnostic issues"
-          className="w-full px-3 py-2 rounded-lg text-xs"
-          style={{
-            background: "var(--warning-soft-subtle)",
-            border: "1px solid var(--warning-border)",
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <span className="shrink-0" style={{ color: "var(--warning-strong)" }}>
-              &#9888;
-            </span>
-            <span className="font-semibold" style={{ color: "var(--warning)" }}>
-              Diagnostics Issues
-            </span>
-          </div>
-          <div className="mt-2 space-y-2">
-            {diagnosticsErrors.map((diagnosticError, index) => (
-              <div
-                key={`${diagnosticError.diagnostic}-${index}`}
-                className="grid gap-1"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
-                    {formatDiagnosticLabel(diagnosticError.diagnostic)}
-                  </span>
-                  <span className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
-                    {diagnosticError.diagnostic}
-                  </span>
-                  <span
-                    className="font-mono text-[10px] px-1.5 py-0.5 rounded"
-                    style={{
-                      color: "var(--warning)",
-                      background: "var(--bg-input)",
-                      border: "1px solid var(--warning-border)",
-                    }}
-                  >
-                    {diagnosticError.error_type}
-                  </span>
-                </div>
-                <div
-                  className="break-words whitespace-pre-wrap"
-                  style={{ color: "var(--warning)" }}
-                >
-                  {diagnosticError.error}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <DiagnosticsIssues
+        issues={diagnosticsErrors.map((diagnosticError) => ({
+          diagnostic: diagnosticError.diagnostic,
+          errorType: diagnosticError.error_type,
+          message: diagnosticError.error,
+        }))}
+        formatLabel={formatDiagnosticLabel}
+      />
 
       {result.final_test_rows === 0 && (
         <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>

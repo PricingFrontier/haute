@@ -1,8 +1,11 @@
 /**
- * Shared feature browser sidebar for AvE and PDP tabs.
+ * Shared browser sidebar for the per-feature diagnostic tabs (AvE, PDP and
+ * the optimiser's Rates tab).
  *
- * Displays a searchable, scrollable list of features sorted by importance,
- * with small importance bars. Click to select a feature.
+ * Displays a searchable, scrollable list of items in the caller's ranking,
+ * with small bars for the ranking measure, which `rankedBy` names so a
+ * ranking that is not importance never reads as one. An item whose measure is
+ * `null` is unranked and draws no bar. Click to select.
  */
 import { useState, useMemo } from "react"
 import { Search } from "lucide-react"
@@ -10,7 +13,16 @@ import { MODEL_COLORS } from "../../theme/colors"
 
 export type FeatureItem = {
   feature: string
-  importance: number
+  /** The ranking measure the bars draw; `rankedBy` names it when it is not importance.
+   *  `null` is unranked (not yet measured, or not measurable): no bar. */
+  importance: number | null
+}
+
+export type FeatureRanking = {
+  /** The measure's name, shown above the list ("Rate spread"). */
+  label: string
+  /** One line on what the measure means. */
+  description: string
 }
 
 export interface FeatureBrowserProps {
@@ -20,6 +32,9 @@ export interface FeatureBrowserProps {
   width?: number
   search?: string
   onSearch?: (search: string) => void
+  /** What the list holds, singular ("feature", "factor"). */
+  itemNoun?: string
+  rankedBy?: FeatureRanking
 }
 
 export function FeatureBrowser({
@@ -29,7 +44,11 @@ export function FeatureBrowser({
   width,
   search: controlledSearch,
   onSearch,
+  itemNoun = "feature",
+  rankedBy,
 }: FeatureBrowserProps) {
+  const plural = `${itemNoun}s`
+  const Plural = `${plural[0].toUpperCase()}${plural.slice(1)}`
   const [localSearch, setLocalSearch] = useState("")
   const search = controlledSearch ?? localSearch
   const setSearch = onSearch ?? setLocalSearch
@@ -40,10 +59,10 @@ export function FeatureBrowser({
     return features.filter((f) => f.feature.toLowerCase().includes(q))
   }, [features, search])
 
-  const maxImportance =
-    features.length > 0
-      ? features.map((f) => Math.abs(f.importance)).reduce((a, b) => Math.max(a, b), -Infinity)
-      : 1
+  const maxImportance = features.reduce(
+    (largest, f) => (f.importance === null ? largest : Math.max(largest, Math.abs(f.importance))),
+    0,
+  )
 
   return (
     <div className="validation-feature-browser" style={width === undefined ? undefined : { width }}>
@@ -58,24 +77,41 @@ export function FeatureBrowser({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search features..."
-            aria-label="Search features"
+            placeholder={`Search ${plural}...`}
+            aria-label={`Search ${plural}`}
             className="bg-transparent border-none focus-ring text-[13px] min-w-0 w-full"
             style={{ color: "var(--text-primary)" }}
           />
         </div>
       </div>
 
-      {/* Feature list */}
-      <div className="validation-feature-list">
+      {rankedBy && (
+        <div className="mb-2 px-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
+            {rankedBy.label}
+          </div>
+          <p className="m-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
+            {rankedBy.description}
+          </p>
+        </div>
+      )}
+
+      {/* Item list */}
+      <div
+        className="validation-feature-list"
+        role="group"
+        aria-label={rankedBy ? `${Plural} ranked by ${rankedBy.label.toLowerCase()}` : Plural}
+      >
         {filtered.length === 0 && (
           <div className="px-2 py-3 text-xs text-center" style={{ color: "var(--text-muted)" }}>
-            No features found
+            No {plural} found
           </div>
         )}
         {filtered.map((f) => {
           const isSelected = f.feature === selected
-          const barWidth = maxImportance > 0 ? (Math.abs(f.importance) / maxImportance) * 100 : 0
+          const barWidth = f.importance !== null && maxImportance > 0
+            ? (Math.abs(f.importance) / maxImportance) * 100
+            : 0
           return (
             <button
               key={f.feature}
@@ -92,15 +128,18 @@ export function FeatureBrowser({
                 >
                   {f.feature}
                 </div>
-                <div
-                  className="w-full h-1 rounded-full overflow-hidden mt-0.5"
-                  style={{ background: "var(--chrome-hover)" }}
-                >
+                {f.importance !== null && (
                   <div
-                    className="h-full rounded-full"
-                    style={{ width: `${barWidth}%`, background: MODEL_COLORS.accent, opacity: 0.6 }}
-                  />
-                </div>
+                    className="w-full h-1 rounded-full overflow-hidden mt-0.5"
+                    style={{ background: "var(--chrome-hover)" }}
+                  >
+                    <div
+                      data-testid="feature-browser-bar"
+                      className="h-full rounded-full"
+                      style={{ width: `${barWidth}%`, background: MODEL_COLORS.accent, opacity: 0.6 }}
+                    />
+                  </div>
+                )}
               </div>
             </button>
           )

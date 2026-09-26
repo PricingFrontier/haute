@@ -30,12 +30,12 @@ from haute.routes._optimiser_artifacts import (
     _cleanup_apply_result_artifact,
     _cleanup_orphan_apply_result_artifact,
     _cleanup_ratebook_factors_artifact,
-    _load_apply_result_artifact,
     _load_ratebook_factors_artifact,
     _persist_apply_result_artifact,
     _persist_ratebook_factors_artifact,
     _persist_ratebook_factors_lazy_artifact,
     _ratebook_factors_artifact_root,
+    _scan_apply_result_artifact,
     _scan_ratebook_factors_artifact,
     _validate_apply_result_artifact_handle,
     _validate_ratebook_factors_artifact_handle,
@@ -177,7 +177,7 @@ def test_persist_cleans_up_dir_when_write_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _load_apply_result_artifact — corrupt-parquet arm
+# _scan_apply_result_artifact — corrupt-parquet arm
 # ---------------------------------------------------------------------------
 
 
@@ -191,7 +191,7 @@ def test_load_rejects_corrupt_parquet() -> None:
         # validation passes and the read_parquet failure arm is exercised.
         Path(str(handle["path"])).write_bytes(b"not a parquet file")
         with pytest.raises(HTTPException) as exc_info:
-            _load_apply_result_artifact(handle)
+            _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 500
         assert "corrupt" in str(exc_info.value.detail)
     finally:
@@ -206,7 +206,7 @@ def test_load_reports_missing_artifact() -> None:
     try:
         Path(str(handle["path"])).unlink()
         with pytest.raises(HTTPException) as exc_info:
-            _load_apply_result_artifact(handle)
+            _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 410
         assert exc_info.value.detail == (
             "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."

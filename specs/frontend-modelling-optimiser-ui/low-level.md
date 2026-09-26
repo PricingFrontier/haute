@@ -16,20 +16,26 @@ Only a current, accepted save response may acknowledge this revision transition.
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
-| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
+| `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the `ModalShell` Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title, description}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
+| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
+| `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
+| `frontend/src/panels/optimiser/OptimiserAnalysisColumns.tsx` | The Data pane's Analysis columns section: the Analysis input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), the capped column multi-select from the chosen frame's schema, the switch-time removal of columns the new frame lacks, and the missing-input and missing-column flags. |
 | `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list per mode (Factors only in ratebook) and resolution of a remembered pane the mode lacks to Data. |
 | `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: result-type choice, one card per constraint holding its column, remove action and either its bound or its frontier range, then auto range and steps. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
-| `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. |
+| `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. Its convergence result is the as-solved result (`originalResult`), never the frontier point the preview shows. |
 | `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. |
-| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, the stale-result strip with Re-run and ratebook detail materialisation; it has no publish actions. |
+| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), the provenance strip, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
+| `frontend/src/panels/optimiser/resultViews.ts`, `frontend/src/panels/optimiser/resultProvenance.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`); and `optimiserResultProvenance`: the provenance strip's segments (mode, grid shape, the data source from the result's `input_summary`, as solved or frontier point i of N, and the expected-values statement). An unknown mode or a selected point outside the points returned throws. A failed solve with no earlier result has no result, so no preview and no strip. |
+| `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
 | `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
-| `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
+| `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) and the analysis frame's columns (the data-input columns when the analysis input is the data input, else a preview of the selected analysis input's source node), so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
 | `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node, the ratebook factor-table CSV and the combined-factor collar statement (read from the solve's `originalResult.combined_factor_bounds`). |
 | `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
-| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The online per-quote detail view for the publish target, and the shared λ label and explanation. |
+| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity) with Retry on failure; and the shared λ label and explanation. |
+| `frontend/src/panels/SortableValuesTable.tsx`, `frontend/src/panels/valuesSort.ts` | The shared sortable values table (extracted from the GLM coefficients): column headers as sort buttons with `aria-sort` and a ▲/▼ indicator on the sorted column (a disabled button for a column that cannot be sorted now, plain text for one that never can), the caller's cells and an empty-state `role="status"` message; `ValuesTableSearch`, its labelled search input; and `nextSort` (`valuesSort.ts`, with `SortState`), the one sort cycle (a new column sorts ascending, the sorted column reverses). Sorting itself is the caller's: GLM sorts in the browser, Quotes asks the server. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
@@ -49,23 +55,31 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/EvaluationAllocation.tsx`, `frontend/src/panels/modelling/evaluationPreview.ts` | The Split pane's training/validation/test allocation bar and per-fit row ranges, showing exact rows only from an evaluation preview whose strategy and validation method match the current editor (`compatibleEvaluationPreview`), and target fractions otherwise. |
 | `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but other evaluation previews as the in-flight holders (`refusedByEvaluationPreviews`); every other failure, including a running training job, is returned at once. |
 | `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice. |
-| `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE and PDP share (importance-ranked browser beside the selected feature's chart, with empty states for no rows and for a selection without a row); and the workspace's container-query layout styles, imported by `frontend/src/panels/ModellingPreview.tsx`. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
+| `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE, PDP and the optimiser Rates tab share (`FeatureDiagnosticLayout`: a ranked browser beside the selected item's chart, with empty states for no rows and for a selection without a row; `FeatureDiagnosticTab` ranks model features by importance through it); and the results workspace's container-query layout styles, imported by `frontend/src/panels/ResultsWorkspace.tsx` so the optimiser is styled even when no model result has been opened. Accent-coloured rules read `--results-accent`/`--results-accent-soft`, which the shell sets per workspace; the optimiser Frontier tab's stacking rules live here too. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
 | `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling and optimiser export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`, `OPTIMISER_EXPORT_CONFIG_KEYS`, `exportConfigKeysFor`) and `trainingIdentityConfig` / `solveIdentityConfig`, which omit them. |
 | `frontend/src/panels/modelling/modelExport.ts`, `frontend/src/panels/modelling/FieldHelpIcon.tsx` | The model file extension per algorithm and the shared hover-only field help icon. |
 | `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence and warnings. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables, including invalid-inference reasons and robust standard errors. |
+| `frontend/src/panels/RelativityBars.tsx` | The diverging-around-1.0 bar list GLM relativities and the optimiser Rates tab share: one row per item in the caller's order, `--chart-above`/`--chart-below` bars scaled to the largest deviation (confidence whiskers included), theme-token baseline and whiskers, optional focusable rows with an active row, an optional aligned side strip, and, from a caller threshold, compact rows whose labels are thinned with `chartLabelIndices`. A `null` value is unavailable: the row draws no bar, shows "—" and does not set the scale (the Segments tab's zero-weight level); a non-finite value throws. |
 | `frontend/src/panels/modelling/NumberField.tsx` | Numeric input that keeps a draft until a valid, in-range value commits on blur or Enter. |
 | `frontend/src/panels/modelling/modellingPanes.ts` | `modellingPanesFor(algorithm)` and `resolveModellingPane`, the one pane list behind the modelling tabs and pane bodies. |
-| `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. |
-| `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives (responsive width, SVG surface, legend, empty state, `ChartValueGrid`, the value axis of gridlines with compact labels that every validation chart draws, `ChartValuesTable`, a chart's raw values behind a native disclosure in the shared `validation-value-table` (the first column is each row's header), which the Lift, AvE and PDP tabs use, and `TwoChartLayout`, the two-chart result layout: side by side with a 24 px gap from a caller breakpoint when both charts exist, each chart at least a caller minimum wide, otherwise full width one under the other, with an optional header above) and loss visualisation. Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
+| `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. The browser names what it ranks by ("Ranked by importance", "Ranked by rate spread") and what it lists (features or factors), so a non-importance ranking is never presented as importance. An item whose measure is `null` is unranked and draws no bar (the Segments keys while their index loads). |
+| `frontend/src/panels/IterationLinesChart.tsx` | The shared by-iteration line chart: aligned series (a `null` value is a gap the line bridges; a non-finite value throws), a linear or log value axis (a log axis throws on a value at or below 0, so its caller decides how to show zeros), optional horizontal reference lines (dashed, inside the value domain) and an optional dashed vertical marker at an index, optional point markers, the x-axis labelled with each index's iteration value, and a legend built from the series, reference lines and marker. It draws on `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the width it is given; the modelling Loss tab and the optimiser Convergence tab are its adapters. |
+| `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives (responsive width, SVG surface, legend (line, dashed and bar swatches, and dot, ring, hollow and cross point markers), empty state, `ChartValueGrid`, the value axis of gridlines with compact labels that every validation chart draws, `ChartValuesTable`, a chart's raw values behind a native disclosure in the shared `validation-value-table` (the first column is each row's header), which the Lift, AvE, PDP and Convergence tabs use, and `TwoChartLayout`, the two-chart result layout: side by side with a 24 px gap from a caller breakpoint when both charts exist, each chart at least a caller minimum wide, otherwise full width one under the other, with an optional header above) and loss visualisation (`LossTab` adapts the training loss history to `IterationLinesChart`; `LossChart` is the compact inline curve). Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
 | `frontend/src/panels/modelling/LiftTab.tsx`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/modelling/AveTab.tsx`, `frontend/src/panels/modelling/PdpTab.tsx` | Lift, residual, actual-versus-estimated and partial-dependence result views. Lift and Residuals lay their two charts out with `TwoChartLayout`: Lift side by side from 900 px (charts at least 260 px, a Double lift / Lorenz curve switch in the header when narrower), Residuals from 760 px (at least 280 px, stacked when narrower). |
 | `frontend/src/panels/modelling/FailoverHelp.tsx`, `frontend/src/panels/modelling/OffsetFieldLabel.tsx`, `frontend/src/panels/modelling/styles.ts` | Algorithm help, offset label and modelling visual helpers, including the shared modelling input surface. |
-| `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective/constraint/lambda summary, ratebook-impact state and scenario histogram. |
-| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence, selectable frontier and strict frontier-point detail display. Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
-| `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook tables, impact chart and factor-table normalisation/order; `factorTablesCsv(factorTables, collar)` appends `combined_factor_min`/`combined_factor_max` to every row. |
-| `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save/constraint helpers. |
+| `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective, the constraint-attainment table (with λ, for both modes), ratebook-impact state and a compact adjustments summary (up / down / unadjusted / at the range edge) linking to the Adjustments tab. |
+| `frontend/src/panels/HistogramChart.tsx` | The shared histogram (extracted from Residuals): a titled `ChartSvg` with value gridlines, x ticks, axis labels, a dashed reference line and a legend. Bars are placed on a numeric axis (Residuals' bins, by centre) or as evenly spaced categories (the Adjustments grid values), and may be focusable (`role="button"`, a described `aria-label`, activated by hover, focus, click, Enter or Space) with the active bar highlighted. A non-finite bar value or an empty bar list throws. |
+| `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares, and `rangeEdgeShare`, the union of the minimum and maximum edge shares, counted once on a one-step grid). |
+| `frontend/src/panels/optimiser/SegmentsTab.tsx` | The Segments view (see Control flow): the result's segment keys in the per-feature diagnostic layout, ranked by the index's adjustment spread (unranked while it loads), the selected key's per-level mean scenario value as `RelativityBars` around 1.0 with an aligned quote strip, a `ChartFocusDetail` line, a values table, the Weight by switch, and the review-owned caches of loaded breakdowns and indexes. |
+| `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
+| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and strict frontier-point detail display. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and reports the hovered or focused point through `ChartFocusDetail`. `DetailCard` shows the displayed result's objective and attainment table, the point's feasibility with its reason, `converged` and iterations, each λ exactly as reported with the sign it enters each quote's choice with, and the discrete trade-off row. Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
+| `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), and `discreteTradeOff` (Δobjective / Δrelaxation to the next point in the relaxing direction of the same slice, `bound_next − bound` for max and `bound − bound_next` for min, only between two feasible points with different bounds). |
+| `frontend/src/panels/ChartFocusDetail.tsx` | The polite `role="status"` line under a chart that states the hovered or focused item's exact values, or a placeholder; AvE bins and frontier points use it. |
+| `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
+| `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers, including `frontierGenerationMismatch`, the message for a point reply the server answered for another frontier generation than the result shows. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
 | `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
 
@@ -226,15 +240,121 @@ Only a current, accepted save response may acknowledge this revision transition.
 4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and the selected
    frontier point, which is also the publish target (`selectedPointIndex`, `null` = the solved
    result). In ratebook mode a selected point without tables is materialised only on Rates/Summary;
-   request sequence bookkeeping drops stale replies and persists accepted tables in the result
-   store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
+   a request's identity is `(jobId, frontier_generation, point)` (a recompute keeps the job and
+   reuses point indices for other points, so a new generation re-requests the same index), request
+   sequence bookkeeping drops stale replies, a reply the server answered for another
+   `frontier_generation` than the result shows (it recomputed first) is reported as a Rates error
+   and never stored, and accepted tables persist in the result store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
    solved result) and never consume the server-side result, so they and the Quotes view may run
-   in any order. The MLflow log request carries the node's current `mlflow_destination` (found
+   in any order. `OptimiserPreviewData` carries `solvedResult` (the store's as-solved
+   `originalResult`) beside the displayed `result`: Convergence (offered for every result) draws
+   the history or CD trace of `solvedResult`, and the Frontier tab's as-solved marker reads it,
+   so selecting or stepping a point never changes Convergence or moves the marker. With a point selected, Convergence adds "History
+   is recorded for the solved result; frontier point N: converged|not converged, K iterations"
+   (K from `formatOptimiserIterationSummary` of the displayed result; omitted when the point
+   reports none). The tab is owned by the `(nodeId, jobId)` pair and resets to its default
+   (Frontier when the frontier has points, else Summary) when either changes, adjusted during
+   render so a stale tab never paints; it does not reset when only `result` changes, because
+   every stepper press builds a new displayed result. The X-axis constraint and slice choices
+   reset with it. `result.warning` renders as an amber `role="status"` strip in the workspace notices slot.
+   Rates, Quotes and Adjustments error states offer **Retry**, which reissues the failed
+   request. Summary shows the displayed result's adjustments compactly ("Adjusted up", "Adjusted
+   down", "Unadjusted" only when the grid has 1.0, and "At the range edge", by quote count; the
+   edge share is the union of the minimum and maximum steps, so on a one-step grid, whose only
+   step is both, it is that step's share, never their sum) with
+   a **View adjustments** button that opens the Adjustments tab; with a frontier point selected
+   (whose summary carries no report) it says the point's adjustments load in the Adjustments tab,
+   with the same button.
+   **Adjustments** (every result, online and ratebook; a ratebook report describes the step
+   price-contour evaluated for each quote) shows the as-solved report
+   (`solvedResult.adjustments`) when no point is selected. With a point selected it loads that
+   point's report through `POST /frontier/select` with `include_adjustments: true`, only while
+   the tab is open, in the Rates flow's pattern: one `AbortController` per request and a
+   request sequence, so a reply for a point, job or generation the tab has moved past is
+   dropped, and a reply the server answered for another `frontier_generation` than the tab shows
+   is reported (with **Retry**) and never kept; a browser abort (a new point, closing the tab) only discards the reply; a 409 whose
+   `error_code` is `frontier_point_apply_replaced` is not an error, and the tab reissues the
+   request while it still shows that point; a 410 shows the server's message with no Retry
+   (only a new solve helps); any other failure shows the message with **Retry**. A loaded point
+   report is kept for the tab's review (node, job, frontier generation, point), so stepping
+   back to a point already loaded makes no request. An as-solved result without a report
+   shows the result's `"adjustments"` diagnostic message; one with neither throws. A ratebook
+   report (`deployed_factor_differs` not null) adds, under the shares, "Deployed factor differs
+   from evaluated step: N quotes (x%)" with the note that inside the scenario range the Optimiser
+   Apply node deploys the unsnapped product of the rates while the solve evaluated the nearest
+   step, and that a product past a grid edge deploys at the edge; Summary's compact summary adds
+   the same count as "Deployed ≠ evaluated step". An online report (`null`) shows neither. The chart is
+   a categorical `HistogramChart`: one bar per grid value (empty bars included), labelled by the
+   grid value, x axis "Scenario value (1.0 = base price)", y axis the chosen weighting ("Quotes"
+   or its label), and a dashed "1.0 = base price (no adjustment)" line at the 1.0 bar or
+   interpolated between its neighbours (none when 1.0 is outside the grid, which a note states).
+   **Weight by** (`aria-pressed` buttons) offers Quotes and each weighting the report computed;
+   a refused weighting is named with its reason. Under the chart: a quantile row (P5, P25,
+   median, P75, P95, mean), the shares (at range minimum and at range maximum, each labelled with
+   its grid value, or on a one-step grid a single "At the range edge (v)" row, since its only step
+   is both; a one-step report whose two edge shares differ throws), a `ChartFocusDetail` line for the active bar, the note
+   "The scenario grid has no 1.0 step, so no quote is unadjusted." when `has_unadjusted` is
+   false, and a closed values table (Step | Scenario value | Quotes | Share of quotes, plus the
+   weighting and its share when one is chosen).
+   **Segments** (every result) breaks the chosen scenarios down by the result's
+   `segment_keys` (analysis columns, and a ratebook result's rating factors). With no key it
+   shows "Add analysis columns in the optimiser config". Otherwise it uses
+   `FeatureDiagnosticLayout`: the keys in a searchable browser ranked by the index statistic,
+   named in the browser's header ("Adjustment spread", the quote-weighted standard deviation of
+   the levels' mean scenario values), from `GET /segments/index` for the target; until the index
+   arrives the keys are listed unranked, in catalogue order with no bars, and an index failure
+   leaves them unranked with the message and **Retry**. The selected key and the search are the
+   Rates tab's (`OptimiserPreview`'s review state), so choosing a factor in one selects it in the
+   other; a selection that is not a key here shows the first ranked key. An unavailable key shows
+   its reason and makes no request. An available key loads `POST /segments` for the target (the
+   selected point, else the solved result) and the chosen weighting, with one `AbortController`
+   per request: switching key, weighting or point aborts the request in flight, and a reply for a
+   key, weighting, point, job or generation the view has moved past is dropped; a breakdown or
+   index the server answered for another `frontier_generation` than the view shows is reported
+   (with **Retry**) and never kept. A 409
+   `frontier_point_apply_replaced` is reissued, a 410 shows the message with no Retry, anything
+   else offers **Retry**. Loaded breakdowns and indexes are kept for the review, by
+   `(job, generation, target, key, weight)` and `(job, generation, target)`, so returning to one
+   makes no request. The chart is `RelativityBars` of each level's mean chosen scenario value
+   under the weighting (the unweighted mean for Quotes) around the 1.0 base line, in the
+   response's level order, with an aligned quote strip (0 to the largest level's quotes); a level
+   whose weighted mean is unavailable draws no bar and shows "—". Hovering or focusing a level
+   fills the `ChartFocusDetail` line (level, quotes and share, the mean against 1.0, the shares
+   adjusted up and down and at the range edge, and for a ratebook result the deployed-factor
+   count). **Weight by** offers Quotes, the objective and each constraint at the chosen scenario;
+   the response's diagnostics (a refused weighting, a zero-weight level) are listed under it. A
+   closed values table lists Level | Quotes | Mean (unweighted) | Mean (the weighting) | Adjusted
+   up | Adjusted down | At range edge (and Deployed ≠ evaluated step for a ratebook result), with
+   "—" for an unavailable weighted figure.
+   **Quotes** (every result, online and ratebook) explores the target's chosen scenarios one
+   server page at a time (`POST /apply` with the query; the selected point, else the solved
+   result). The table (`SortableValuesTable`, labelled "Per-quote detail") shows the response's
+   `columns` in order: Quote ID, "Scenario value" with a text glyph against 1.0 ("▲" above,
+   "▼" below, "=" at 1.0, and an accessible "adjusted up/down/unadjusted" label, so the
+   direction never rests on colour), "Objective", each constraint by name, for ratebook "Factor
+   product" and "Deployed ≠ evaluated" ("Yes"/"No"), and each analysis column; numbers through
+   `formatValue` (grouped, at most four decimals), a missing analysis value as "—". A sortable header (`sortable`) is a sort button
+   with `aria-sort`: the first click sorts ascending, the next descending, alternating; sorting
+   resets the offset. **Presets** (`aria-pressed` buttons): "Highest adjustment" (scenario value
+   descending), "Lowest adjustment" (ascending), "At range edge" (the `at_range_edge` filter, no
+   sort) and, for a ratebook result, "Deployed ≠ evaluated" (the `deployed_factor_differs`
+   filter); a preset replaces the sort and filters and resets the offset, and it is pressed
+   while the query is exactly its own. A filterable analysis cell is a button that adds
+   `analysis_equals` for that value ("Show only quotes with region = North"); each active
+   filter is listed as a removable chip. **Search** ("Search quote IDs", a `ValuesTableSearch`)
+   sends `quote_id_prefix` 300 ms after typing stops (an empty box sends none) and resets the
+   offset. The **pager** states "Showing a–b of M matching (of N)" (or "No quotes match (of
+   N)"), with Previous and Next moving by the limit; Next is disabled at the last matching row
+   and at the depth limit (10,000 rows), where a note asks to narrow the filter or search. A
+   refusal (400, 422, 507) shows the server's message with **Retry**; a 410 shows it without.
+   Quotes reads `/apply` through the result store's apply cache (see Edge cases). The MLflow log request carries the node's current `mlflow_destination` (found
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
    one solve job. Export's factor-table load stores its
-   reply through `recordFrontierPointSummary`, which drops a reply for a job the node has moved past
-   and never changes the selection.
+   reply through `recordFrontierPointSummary`, which drops a reply for a job or frontier generation
+   the node does not hold and never changes the selection; its load is identified by
+   `(jobId, frontier_generation, target)`, and a reply the server answered for another generation
+   than the result shows is reported as the load's error.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
@@ -285,7 +405,105 @@ without broadening the exactly-one-direct fallback.
   connecting each tab to its `tabpanel`. The strip has a 112px minimum per view
   inside a horizontal scroll container. Summary is selected initially and when
   node/result identity changes; collapse/expand retains the selected view.
-- Each non-summary view has a heading and explanatory sentence above its existing
+- `ModellingPreview` and `OptimiserPreview` render through `ResultsWorkspace`. Each
+  tab's `aria-controls` names its pane and the pane's `aria-labelledby` names its tab
+  (`<idPrefix>-<tab>-tab` / `<idPrefix>-<tab>-pane`). Focus view keeps the active tab,
+  closes on Escape and restores focus to its toggle; each workspace remembers its
+  own docked height in `useUIStore` (`modellingPreviewHeight`,
+  `optimiserPreviewHeight`, both 420px initially) for the session.
+- The optimiser accent is its own token pair (`--optimiser-accent`,
+  `--optimiser-accent-soft`), never a warning colour: the stale strip and breached
+  statuses use the warning palette, and a warning accent would make the whole pane
+  read as a warning.
+- Every optimiser tab, Summary included, has an intro from
+  `OPTIMISER_VIEW_INTRODUCTIONS`. The Rates intro states clamp rate as the
+  price-contour search-space diagnostic: the mean, over every grouped solve, of the
+  fraction of (quote, candidate) targets strictly outside the scenario range; quotes
+  at a grid edge are not counted in it.
+- The Rates tab uses the per-feature diagnostic layout: a browser of factors ranked by
+  rate spread (quote-weighted mean |ln rate|, how far the factor's rates move from 1.0),
+  with search, beside the selected factor's `RelativityBars` in banding order and an
+  aligned quote-count strip (muted bars scaled 0 to the factor's largest level count,
+  the active level emphasised, as AvE's exposure strip). Every level row is focusable;
+  hover, focus or click fills the detail line (level, rate, % vs neutral 1.0, quotes,
+  share of the factor's quotes). From 25 levels the rows compact and level labels thin
+  with `chartLabelIndices`, always keeping the first and last. A closed "View rate
+  values" table lists Level | Rate | vs neutral 1.0 (%) | Quotes | Share in banding
+  order; "vs neutral 1.0" is the rate against the unadjusted base price, and the shares
+  sum to 100.0%. The selected factor and the search (shared with the Segments tab) live in `OptimiserPreview`'s review
+  state, so they survive tab switches and frontier-point steps and reset with the tab on
+  a new job or node.
+- The Summary beeswarm ("Mechanical Price Effect") draws on `ResponsiveChart` at the
+  pane's pixel width, with no viewBox scaling and no minimum width; label and colour-bar
+  margins shrink with the width. It shows the eight factors with the largest rate spread
+  and says "Showing top 8 of N factors" with a Top 8 / All toggle whenever there are
+  more. Dots are coloured by the level's numeric value where the label has one; levels
+  without one (categorical factors, or labels such as "missing") use the neutral colour,
+  which a legend note names, and the focus detail says "no value order (categorical
+  level)" in words. Every dot is focusable and fills the detail line; a closed values
+  table lists Factor | Level | Rate | vs neutral 1.0 (%) | Quotes for the factors shown.
+- The optimiser provenance strip shows on every tab: "Online|Ratebook · N quotes × M
+  scenario steps · Data: <data_source> scenario of <source_file> · As solved|Frontier
+  point i of N · Expected values from the scoring models on the solve quotes; not
+  observed outcomes." The source segment reads the result's `input_summary`, and says
+  "Data: <data_source> scenario" when the graph has no source file. N of the frontier
+  point is the number of points returned, the same count the header stepper uses.
+  A result that does not report its grid shape says so in the strip instead of
+  omitting it.
+- The optimiser Summary shows the result's `diagnostics_errors` in the shared
+  `DiagnosticsIssues` alert above its columns ("Scenario-value statistics",
+  "Efficient frontier"), so a degraded result says what is missing and why. A
+  selected frontier point's summary carries none.
+- The Frontier tab plots each typed point's `totals[x constraint]` against its
+  `total_objective`, one **slice** at a time. The x constraint is one of the
+  frontier's `swept_axes` (the "X axis" picker appears when there are two or
+  more); a slice is the points whose other constraints' `thresholds` are equal,
+  drawn as a line in ascending x bound. With another swept axis a "Holding
+  <other> at" select picks the slice (one select naming every other swept axis;
+  its options are the slices, so a truncated grid never offers a missing
+  combination). The footnote states the slice size and, when the payload is
+  capped at `FRONTIER_POINT_LIMIT`, the truncation. **Global identity:** every
+  point keeps its global index through slicing, overlap grouping, the stepper,
+  the values table and `/frontier/select`; nothing uses a slice-local index. The
+  displayed slice is the one the user chose, until the selection changes; then
+  it is the selected point's slice (so a point selected from Summary or the
+  stepper brings its slice into view); with no selection and no choice it is
+  point 1's slice. The choice belongs to the review (reset with the tab) and to
+  the x constraint and frontier generation it was made under. The header stepper
+  steps to the selected point's bound-order neighbours within its slice and is
+  disabled at the slice's ends; its label keeps the global "Point i of N".
+  **Feasibility** is haute's own judgement in both modes, since online
+  `converged` includes a tolerance check and ratebook `converged` only says the
+  factor values stopped moving: a point is feasible when `converged` and every
+  constraint's total meets its absolute bound (`bounds`, never the pct
+  `thresholds` fraction), judged by `constraintAttainment` with the kind from the
+  solve's `effective_bounds`. The as-solved anchor comes from `solvedResult` and
+  always renders; it is on the slice when every other swept axis's solve bound
+  equals the slice's bound exactly, and otherwise is drawn hollow with the legend
+  entry "As solved (different slice)". The y axis is named by the node's
+  objective column while the result is not stale, else "Objective". A
+  `ChartValuesTable` ("View slice values") lists the slice's points: Point,
+  <x> bound, <x> achieved, Objective, Converged, Iterations, Status.
+- `/apply` responses are cached in `useNodeResultsStore` under their full request identity
+  `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
+  index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
+  the canonical (key-sorted) request query beyond the target: `sort_by`, `descending`,
+  `quote_id_prefix`, `filters` and `offset`/`limit`, always fully specified (`null` and `false`
+  for what is unset, an empty `analysis_equals`), so one query has one key, and the request body
+  is exactly the query plus the job and point. At most 16 entries are kept,
+  least recently used evicted first. Installing a solve result for a node (a new job, or the same
+  job with another frontier generation, i.e. a recompute) drops that node's entries for any
+  other `(jobId, frontierGeneration)`; a failed solve or clearing or evicting the node's result
+  drops all of the node's entries. `recordOptimiserApply` accepts a response only when its
+  identity's job, generation and target are the node's current ones, so a late response from an
+  earlier job, generation or target is discarded and never displayed; QuotesTab additionally
+  drops a response whose query is no longer its current query. A cache hit makes no request and
+  marks the entry most recently used. `completeSolveJob` throws when the result's frontier
+  carries a different `frontier_generation` from the result itself.
+- The Frontier tab lays the chart beside the detail card and stacks the chart above
+  it when the workspace container is at most 640px wide. Its labels and footnote use
+  the workspace type scale (12-13px, sentence case), not 9-11px uppercase labels.
+- Each non-summary modelling view has a heading and explanatory sentence above its existing
   diagnostic component. The scrollable body remounts on view changes so a new view
   starts at the top. View availability continues to follow actual result data.
 - `modelling/SummaryTab` groups results into bordered, elevated cards using the
@@ -334,15 +552,72 @@ helpers are intentionally not coerced.
 
 Top-level coverage lives in `frontend/src/panels/__tests__/ModellingConfig.test.tsx`,
 `frontend/src/panels/__tests__/ModellingPreview.test.tsx`,
+`frontend/src/panels/__tests__/ValidationWorkspace.test.tsx` (the modelling workspace: Focus
+view, remembered height, diagnostics strip; unchanged by the shell extraction, so it guards it),
+`frontend/src/panels/__tests__/OptimiserWorkspace.test.tsx` (the optimiser workspace on the same
+shell: tab/pane ARIA wiring, Focus view Escape keeping the tab, remembered height, the provenance
+strip on every tab, per-tab intros, and the Frontier tab's narrow-width stacking rule),
 `frontend/src/panels/__tests__/OptimiserConfig.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`, and
 `frontend/src/panels/__tests__/OptimiserDataPreview.test.tsx`, and
-`frontend/src/panels/__tests__/optimiserScenarioStats.test.ts`. Modelling subcomponents have suites
+`frontend/src/panels/__tests__/optimiserScenarioStats.test.ts`. The optimiser preview suites
+build results from the shared fixtures in `frontend/src/panels/optimiser/__tests__/fixtures.ts`
+(an online solve with its as-solved adjustment report and history carrying λ and constraint
+totals; typed online frontier points with `thresholds`, `bounds`, `totals` and `lambdas` maps,
+`converged`, `iterations`, `solver_path` and the `sv_*` statistics, and matching point summaries; a ratebook solve with factor tables carrying
+`quote_count`), so selected-point views are exercised with real-shaped data rather than nulls.
+`frontend/src/panels/optimiser/__tests__/QuotesTab.test.tsx` covers the Quotes explorer: the
+formatted columns and the up/down glyph with its label, `aria-sort` cycling ascending and
+descending with the matching request, each preset's request and pressed state (ratebook's
+only for ratebook), the analysis-value filter and its chip, the debounced search, the pager text
+and Previous/Next offsets, the depth note, a response for an earlier query dropped, Retry, and
+a ratebook page's factor product and flag. `frontend/src/panels/__tests__/GLMComponents.test.tsx` stays green over the
+extracted `SortableValuesTable`.
+Store-integration tests cover the apply cache (no second request on reopening Quotes, a refetch
+after a frontier recompute, late responses from an earlier job or generation discarded, the
+16-entry bound), Rates across a same-job recompute (the reused point index re-requested and the
+earlier generation's late reply never installed; a reply from a generation the result does not
+show reported, not stored), the tab kept across stepper presses and reset on a new job or node, Convergence
+kept after point select, the fixed as-solved marker, the warning strip and
+Retry. `frontend/src/panels/__tests__/IterationLinesChart.test.tsx` covers the shared chart's
+real tick values, log axis, reference lines, marker, gaps and loud failures, and
+`frontend/src/panels/optimiser/__tests__/AdjustmentsTab.test.tsx` covers the Adjustments view:
+the axis labels, one bar per grid value with empty bars, the base-price line, the Weight by
+switch, the quantile row and shares, the no-1.0 note, focusable bars with the detail line, the
+lazy point load only while the tab is open, a fast stepper whose earlier replies are discarded,
+a replaced 409 reissued without an error, Retry, and the 410 state;
+`frontend/src/panels/optimiser/__tests__/SegmentsTab.test.tsx` covers the Segments view: the
+empty state, the keys unranked while the index loads and then ranked with the statistic named,
+search and select, the shared selection, an unavailable key's reason with no request, the chart
+and detail line, the values table with "—" for a zero-weight level, the Weight by switch, abort
+on key switch, a point target and Retry;
+`frontend/src/panels/modelling/__tests__/ValidationDistributionTabs.test.tsx` keeps Residuals on
+the extracted `HistogramChart` unchanged, and
+`frontend/src/panels/optimiser/__tests__/ConvergenceChart.test.tsx` the online small multiples
+(bound lines, first-feasible marker, a zero λ change on the log axis), the ratebook trace view,
+its truncation note, the values table and the "live solves only" state.
+`frontend/src/panels/optimiser/__tests__/frontierSlices.test.ts` covers slicing a 2×3 grid,
+the single-constraint identity, feasibility (non-converged, converged-but-breached including
+an unswept breach) and the hand-calculated trade-off sign for min and max constraints;
+`frontend/src/panels/optimiser/__tests__/FrontierChart.test.tsx` the axes, legend, markers, the
+feasible-only line and the as-solved anchor;
+`frontend/src/panels/optimiser/__tests__/DetailCard.test.tsx` the reasons, λ sign and trade-off
+row; and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching,
+global-index selection and the in-slice stepper. Modelling subcomponents have suites
 under `frontend/src/panels/modelling/__tests__/`; optimiser helper/frontier coverage is under
 `frontend/src/panels/optimiser/__tests__/`. `frontend/src/__tests__/utils/banding.test.ts` covers
 the factor-level and optimiser-source utility. Smaller visual summaries/charts are also exercised
 through their parent preview tests; not every helper has a dedicated test file.
+`frontend/src/panels/__tests__/RelativityBars.test.tsx` covers the shared bar list (caller order,
+token colours, whiskers kept inside the track, loud non-finite values, focusable rows, the aligned
+side strip, compact label thinning), `frontend/src/panels/__tests__/GLMComponents.test.tsx` the GLM
+relativities built on it, `frontend/src/panels/optimiser/__tests__/RatebookRatesTab.test.tsx` the
+Rates tab (rate-spread ranking and search, banding order, the values table and shares summing to
+100, the quote strip, keyboard detail, high-cardinality thinning, the lifted selection), and
+`frontend/src/panels/optimiser/__tests__/RatebookImpactBeeswarm.test.tsx` the beeswarm (dot
+labels and value colours, weighted ordering, pixel-width geometry with no viewBox or minimum
+width, the top-8 notice and toggle, the categorical note and focus detail, the values table).
 
 Performance regression coverage for background progress rendering is in
 `frontend/e2e/job-progress-render.benchmark.spec.ts`.
@@ -356,6 +631,17 @@ explicit sources and mixed healthy/zero-level outputs. The deterministic
 `frontend/e2e/canvas-assurance.spec.ts` journey persists constraint/range
 fields, selects and applies the backend `point_index`, and intercepts the
 MLflow API to assert request/result identity without contacting a live service.
+After its solve it walks every online pane: the Solve pane's status against the
+as-solved result, the tablist and provenance strip, the Summary attainment row
+(Bound, Slack, Status consistent with each other), frontier point 2's attainment
+identical in the detail card and Summary, the Adjustments bars and base-price
+line, a Segments level of the fixture's `region` analysis column, the Quotes
+"Highest adjustment" preset's descending order, the Convergence axes, and the
+Focus view closing on Escape with its tab kept. A second journey solves the
+fixture's small ratebook (`browser_ratebook`: one banded three-level factor, no
+frontier) and reads its Rates chart. `frontend/e2e/core-flows.spec.ts` reads a
+trained model's Lift and AvE panes. The screenshot baselines are regenerated only
+through `.github/workflows/e2e-snapshots.yml`.
 Hook/component tests also inspect atomic constraint-range rename/removal and
 prove no global frontier bounds are read or written.
 
@@ -606,12 +892,21 @@ The behavioural contract is defined in
   from every other node, the edges and submodels, so the node's own edits (which move the global
   structural version) never re-request it.
 - `OptimiserSolveStatus.tsx` renders the issue alert directly beneath the Optimise button.
+- `resolveOptimiserInputs` also resolves `analysis_input` (`analysisInput`,
+  `selectedAnalysisInput`, `missingExplicitAnalysisInput`, `malformedAnalysisInput`, and
+  `analysisUsesDataInput` when it is unset or names the data input), and
+  `optimiserSolveReadiness` adds the Data-pane issues for a disconnected or malformed analysis
+  input, more than `MAX_ANALYSIS_COLUMNS` (12) columns, and a column the analysis frame's known
+  columns lack. `OptimiserAnalysisColumns` prunes columns only in response to a user switch of
+  the analysis input (a pending prune applied once the new frame's columns arrive), never on
+  load, so a temporarily unavailable schema never rewrites the configuration.
 - `useUIStore.ts` remembers `optimiserPanes` per node. `NodePanel.tsx` selects only the Boolean
   presence of `solveJobs[node.id]` for the Solve tab's active indicator and derives no
   configuration warning descriptors.
 
 Verification: `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` covers each pane's
 content, Factors gating by mode, the constraint cards for both result types, the solve-blocking
-alert and its navigation; `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
+alert and its navigation, and the Analysis columns section (only connected inputs listed, the
+column choices following the chosen frame's schema, switch-time pruning, the cap); `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
 the pane list and resolution; `NodePanel.test.tsx` and `useUIStore.test.ts` cover strip gating,
 per-node memory and the active-solve indicator.

@@ -28,6 +28,7 @@ import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
 import OptimiserPublishSection from "./optimiser/OptimiserPublishSection"
+import OptimiserAnalysisColumns from "./optimiser/OptimiserAnalysisColumns"
 import { startOptimiserSolve, stopOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { resolveOptimiserPane } from "./optimiser/optimiserPanes"
@@ -85,7 +86,9 @@ export default function OptimiserConfig({
   const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
   const solveTerminalStatus = solveJob?.progress ?? cachedResult?.terminalStatus ?? null
   const solveTerminalMetrics = solveTerminalStatus?.execution_metrics ?? null
-  const solveResult: OptimiserSolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
+  // The Solve pane reports the solve itself: the as-solved result, never the
+  // frontier point the preview happens to show (a frontier solve opens on point 1).
+  const solveResult: OptimiserSolveResult | null = cachedResult?.error ? null : (cachedResult?.originalResult ?? null)
   const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
 
@@ -108,7 +111,6 @@ export default function OptimiserConfig({
   const maxIter = configField(config, "max_iter", 50)
   const tolerance = configField(config, "tolerance", 1e-6)
   const chunkSize = configField(config, "chunk_size", 500_000)
-  const recordHistory = configField(config, "record_history", false)
   const maxCdIterations = configField(config, "max_cd_iterations", 10)
   const cdTolerance = configField(config, "cd_tolerance", 1e-3)
   const frontierSteps = configField(config, "frontier_steps", 15)
@@ -117,9 +119,11 @@ export default function OptimiserConfig({
 
   // Selectors, data-input columns and every reason the solve cannot start,
   // resolved by the same hook the result preview's Re-run uses.
+  const analysisColumns = configField<string[]>(config, "analysis_columns", [])
   const {
     inputs: resolvedInputs,
     dataInputColumns,
+    analysisFrameColumns,
     issues: solveIssues,
     canSolve,
     canAutoRange,
@@ -480,6 +484,16 @@ export default function OptimiserConfig({
             ))}
           </div>
         </div>
+
+        <OptimiserAnalysisColumns
+          inputs={resolvedInputs}
+          frameColumns={analysisFrameColumns}
+          quoteIdColumn={quoteId}
+          analysisColumns={analysisColumns}
+          onUpdate={onUpdate}
+          labelClassName={SECTION_LABEL_CLASS}
+          inputStyle={inputStyle}
+        />
       </>
     )
   } else if (pane === "factors") {
@@ -689,20 +703,6 @@ export default function OptimiserConfig({
               className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
               style={inputStyle}
             />
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Record history</label>
-            <button
-              onClick={() => onUpdate("record_history", !recordHistory)}
-              className="px-2 py-0.5 rounded text-[11px] font-mono"
-              style={{
-                background: recordHistory ? withAlpha(accentColor, 0.15) : "var(--chrome-hover)",
-                color: recordHistory ? accentColor : "var(--text-muted)",
-                border: `1px solid ${recordHistory ? withAlpha(accentColor, 0.3) : "transparent"}`,
-              }}
-            >
-              {recordHistory ? "On" : "Off"}
-            </button>
           </div>
         </section>
       </>

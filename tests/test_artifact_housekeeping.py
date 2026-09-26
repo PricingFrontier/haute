@@ -400,19 +400,27 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
 
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
+    analysis_root = tmp_path / "analysis"
     apply_root.mkdir()
     factors_root.mkdir()
+    analysis_root.mkdir()
     _marker(apply_root / "stale", owner="optimiser_apply")
     _marker(factors_root / "stale", owner="optimiser_ratebook_factors")
+    _marker(analysis_root / "stale", owner="optimiser_quote_analysis")
+    # A marker owned by another family is not this root's to reap.
+    _marker(analysis_root / "foreign", owner="optimiser_apply")
     unrelated = apply_root / "unrelated"
     unrelated.mkdir()
     monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: apply_root)
     monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: factors_root)
+    monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: analysis_root)
     reports = artifacts.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
+    assert reports["quote_analysis"]["removed"] == 1
     assert unrelated.exists()
+    assert (analysis_root / "foreign").exists()
 
 
 def test_optimiser_reaper_rejects_invalid_stale_configuration(

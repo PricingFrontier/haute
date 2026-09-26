@@ -173,7 +173,7 @@ describe("useSubmodelBoundaryEditing", () => {
       ...(logicalName !== beforeName ? { inputMapping: { [logicalName]: beforeName } } : {}),
     }
     fixture.parentNodes.find((node) => node.id === "consumer_b")!.data.config = {
-      data_input: beforeName, banding_source: beforeName, ratebook_input: beforeName,
+      data_input: beforeName, banding_source: beforeName, analysis_input: beforeName, ratebook_input: beforeName,
     }
     for (const target of ["consumer_a", "consumer_b"]) fixture.parentEdges.push({
       id: `consume-${target}`, source: PLACEHOLDER_ID, target, sourceHandle: "out__child_a", data: { _inputName: beforeName },
@@ -232,7 +232,7 @@ describe("useSubmodelBoundaryEditing", () => {
       code, ...(logicalName !== afterName ? { inputMapping: { [logicalName]: afterName } } : {}),
     })
     expect(consumerConfig("consumer_b")).toEqual({
-      data_input: afterName, banding_source: afterName, ratebook_input: afterName,
+      data_input: afterName, banding_source: afterName, analysis_input: afterName, ratebook_input: afterName,
     })
     expect(consumerConfig("copy_consumer")).toEqual({
       code: copyCode, inputMapping: { [copyBefore]: copyAfter },

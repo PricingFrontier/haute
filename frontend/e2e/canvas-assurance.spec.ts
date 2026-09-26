@@ -97,6 +97,49 @@ async function openNodeProperties(page: Page, accessibleName: string): Promise<L
   return panel
 }
 
+async function openResultPane(page: Page, name: string): Promise<void> {
+  const tab = page.getByRole("tablist", { name: "Optimiser result panes" })
+    .getByRole("tab", { name, exact: true })
+  await tab.click()
+  await expect(tab).toHaveAttribute("aria-selected", "true")
+}
+
+type AttainmentRow = Record<string, string>
+
+/** The one "Constraint attainment" table inside *scope*, keyed by its headers. */
+async function attainmentRows(scope: Locator): Promise<{ headers: string[]; rows: AttainmentRow[] }> {
+  const table = scope.getByRole("table", { name: "Constraint attainment" })
+  await expect(table).toBeVisible()
+  // Text content, not inner text: the headers are upper-cased by CSS only.
+  const headers = (await table.locator("thead th").allTextContents()).map((text) => text.trim())
+  const rows = await table.locator("tbody tr").evaluateAll((elements) => elements.map((row) => (
+    Array.from(row.children).map((cell) => (cell.textContent ?? "").trim())
+  )))
+  return {
+    headers,
+    rows: rows.map((cells) => Object.fromEntries(headers.map((header, index) => [header, cells[index]]))),
+  }
+}
+
+function parseDisplayed(text: string): number {
+  const value = Number(text.replace(/,/g, ""))
+  expect(Number.isFinite(value), `"${text}" is a displayed number`).toBe(true)
+  return value
+}
+
+/** Bound, achieved, signed slack and status of one row tell one story. */
+function expectAttainmentRowConsistent(row: AttainmentRow): void {
+  const bound = parseDisplayed(row.Bound)
+  const achieved = parseDisplayed(row.Achieved)
+  const slackMatch = /^([+-]?[\d,.]+) \(([+-]?[\d.]+)%\)$/.exec(row.Slack)
+  expect(slackMatch, `slack "${row.Slack}" reads "value (pct%)"`).not.toBeNull()
+  const slack = parseDisplayed(slackMatch![1])
+  // Values are shown to four decimals, so the difference carries their rounding.
+  expect(Math.abs(slack - (achieved - bound))).toBeLessThanOrEqual(2e-4)
+  expect(row.Status).toBe(slackMatch![1].startsWith("-") ? "Breached" : "Met")
+  parseDisplayed(row["λ (multiplier)"])
+}
+
 test.describe.configure({ mode: "serial" })
 
 test.describe("frontend canvas assurance", () => {
@@ -308,18 +351,18 @@ test.describe("frontend canvas assurance", () => {
     const constraintValue = optimiserPanel.getByRole("spinbutton", {
       name: "volume constraint value",
     })
-    await constraintValue.fill("0.91")
-    await expect(constraintValue).toHaveValue("0.91")
+    await constraintValue.fill("8.4")
+    await expect(constraintValue).toHaveValue("8.4")
     await optimiserPanel.getByRole("button", {
       name: "Efficient frontier",
       exact: true,
     }).click()
     const minRange = optimiserPanel.getByLabel("volume min value")
     const maxRange = optimiserPanel.getByLabel("volume max value")
-    await minRange.fill("0.88")
-    await maxRange.fill("0.97")
-    await expect(minRange).toHaveValue("0.88")
-    await expect(maxRange).toHaveValue("0.97")
+    await minRange.fill("7.8")
+    await maxRange.fill("9.2")
+    await expect(minRange).toHaveValue("7.8")
+    await expect(maxRange).toHaveValue("9.2")
 
     await page.keyboard.press(saveShortcut)
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
@@ -330,8 +373,8 @@ test.describe("frontend canvas assurance", () => {
         range: (config.frontier_ranges as JsonObject).volume,
       }
     }).toEqual({
-      constraint: { min: 0.91 },
-      range: { min: 0.88, max: 0.97 },
+      constraint: { min: 8.4 },
+      range: { min: 7.8, max: 9.2 },
     })
 
     await page.reload()
@@ -346,13 +389,13 @@ test.describe("frontend canvas assurance", () => {
     }).click()
     await expect(optimiserPanel.getByRole("spinbutton", {
       name: "volume constraint value",
-    })).toHaveValue("0.91")
+    })).toHaveValue("8.4")
     await optimiserPanel.getByRole("button", {
       name: "Efficient frontier",
       exact: true,
     }).click()
-    await expect(optimiserPanel.getByLabel("volume min value")).toHaveValue("0.88")
-    await expect(optimiserPanel.getByLabel("volume max value")).toHaveValue("0.97")
+    await expect(optimiserPanel.getByLabel("volume min value")).toHaveValue("7.8")
+    await expect(optimiserPanel.getByLabel("volume max value")).toHaveValue("9.2")
 
     const solveResponsePromise = page.waitForResponse(response => (
       response.url().endsWith("/api/optimiser/solve")
@@ -366,24 +409,76 @@ test.describe("frontend canvas assurance", () => {
     const solveResponse = await solveResponsePromise
     const solveBody = await solveResponse.json() as JsonObject
     expect(typeof solveBody.job_id).toBe("string")
+    const completedStatus = await page.waitForResponse(async (response) => {
+      if (!response.url().endsWith(`/api/optimiser/solve/status/${solveBody.job_id as string}`)) {
+        return false
+      }
+      return ((await response.json()) as JsonObject).status === "completed"
+    }, { timeout: 120_000 })
+    const solved = ((await completedStatus.json()) as JsonObject).result as JsonObject
     const resultTabs = page.getByRole("tablist", {
       name: "Optimiser result panes",
     })
     await expect(
       resultTabs.getByRole("tab", { name: "Frontier", exact: true }),
     ).toBeVisible({ timeout: 120_000 })
+    // The Solve pane reports the solve itself, not the frontier point the
+    // preview opens on.
+    await expect(optimiserPanel.getByText(
+      `${solved.converged ? "Converged" : "Did not converge"} in ${solved.iterations as number} iterations `
+      + "(8 quotes, 5 steps)",
+      { exact: true },
+    )).toBeVisible()
 
+    // The workspace offers every online pane (no Rates: that is ratebook's),
+    // and the provenance strip says what the figures are: a frontier solve
+    // opens on its first point.
+    const optimiserPreview = page.getByTestId("optimiser-preview-frame")
+    await expect(resultTabs.getByRole("tab")).toHaveText([
+      "Frontier",
+      "Summary",
+      "Adjustments",
+      "Segments",
+      "Quotes",
+      "Convergence",
+    ])
+    await expect(resultTabs.getByRole("tab", { name: "Frontier", exact: true }))
+      .toHaveAttribute("aria-selected", "true")
+    const provenance = optimiserPreview.getByTestId("optimiser-provenance")
+    await expect(provenance).toHaveText(new RegExp(
+      "^Online · 8 quotes × 5 scenario steps · Data: batch scenario of rating/main\\.py · "
+      + "Frontier point 1 of 5 · "
+      + "Expected values from the scoring models on the solve quotes; not observed outcomes\\.$",
+    ))
+
+    // Summary states each constraint's attainment in words.
+    await openResultPane(page, "Summary")
+    const solvedAttainment = await attainmentRows(optimiserPreview)
+    expect(solvedAttainment.headers).toEqual([
+      "Constraint", "Kind", "Bound", "Achieved", "Slack", "Status", "λ (multiplier)",
+    ])
+    expect(solvedAttainment.rows).toHaveLength(1)
+    expect(solvedAttainment.rows[0]).toMatchObject({
+      Constraint: "volume",
+      Kind: "min",
+      Status: expect.stringMatching(/^(Met|Breached)$/),
+    })
+    expectAttainmentRowConsistent(solvedAttainment.rows[0])
+
+    await openResultPane(page, "Frontier")
     const frontierPoint = page.getByRole("button", {
       name: /Select frontier point 2/i,
     })
     await frontierPoint.click()
-    await expect(page.getByText(/Point 2 of/i)).toBeVisible()
+    await expect(
+      page.getByTestId("optimiser-preview-frame-header").getByText("Point 2 of 5", { exact: true }),
+    ).toBeVisible()
+    await expect(provenance).toContainText("Frontier point 2 of 5")
     await expect(
       page.getByRole("alert").filter({ hasText: /Failed to select frontier point/i }),
     ).toHaveCount(0)
     await stabiliseCanvasScreenshot(page)
 
-    const optimiserPreview = page.getByTestId("optimiser-preview-frame")
     await expectCanvasScreenshot(
       optimiserPreview,
       selectedOptimiserDesktopSnapshot,
@@ -394,6 +489,124 @@ test.describe("frontend canvas assurance", () => {
       selectedOptimiserNarrowSnapshot,
     )
     await page.setViewportSize(desktopViewport)
+
+    // The frontier detail card and Summary judge the selected point alike.
+    const detailCard = optimiserPreview.locator(".optimiser-frontier-detail")
+    await expect(detailCard.getByText("Point details", { exact: true })).toBeVisible()
+    const detailAttainment = await attainmentRows(detailCard)
+    expect(detailAttainment.rows).toHaveLength(1)
+    expectAttainmentRowConsistent(detailAttainment.rows[0])
+    await openResultPane(page, "Summary")
+    await expect(
+      optimiserPreview.getByText("Frontier point 2's adjustments load in the Adjustments tab."),
+    ).toBeVisible()
+    const summaryAttainment = await attainmentRows(optimiserPreview)
+    expect(summaryAttainment.rows).toEqual(detailAttainment.rows)
+
+    // Adjustments: one bar per grid value and the base-price line at 1.0.
+    await openResultPane(page, "Adjustments")
+    const adjustmentsChart = optimiserPreview.getByRole("img", {
+      name: /Chosen scenario values histogram/,
+    })
+    await expect(adjustmentsChart).toBeVisible({ timeout: 60_000 })
+    await expect(adjustmentsChart.getByTestId("adjustment-bar")).toHaveCount(5)
+    for (const value of ["0.8", "0.9", "1", "1.1", "1.2"]) {
+      await expect(
+        adjustmentsChart.getByRole("button", { name: new RegExp(`^Scenario value ${value.replace(".", "\\.")}: `) }),
+      ).toHaveCount(1)
+    }
+    // The dashed line is vertical, so it has no width to be "visible" by;
+    // it must sit over the 1.0 bar instead.
+    const basePriceLine = adjustmentsChart.getByTestId("base-price-line")
+    await expect(basePriceLine).toBeAttached()
+    const lineX = await basePriceLine.evaluate((line) => line.getBoundingClientRect().x)
+    const unadjustedBar = await adjustmentsChart
+      .getByRole("button", { name: /^Scenario value 1: / })
+      .evaluate((bar) => {
+        const box = bar.getBoundingClientRect()
+        return { left: box.left, right: box.right }
+      })
+    expect(lineX).toBeGreaterThanOrEqual(unadjustedBar.left)
+    expect(lineX).toBeLessThanOrEqual(unadjustedBar.right)
+    await expect(
+      optimiserPreview.getByText("1.0 = base price (no adjustment)", { exact: true }),
+    ).toBeVisible()
+    await expect(
+      adjustmentsChart.getByText("Scenario value (1.0 = base price)", { exact: true }),
+    ).toBeVisible()
+
+    // Segments: the analysis column's levels around the 1.0 base line.
+    await openResultPane(page, "Segments")
+    await expect(
+      optimiserPreview.getByRole("group", { name: "Keys ranked by adjustment spread" })
+        .getByRole("button", { name: "region" }),
+    ).toHaveAttribute("aria-pressed", "true", { timeout: 60_000 })
+    const regionSegments = optimiserPreview.getByRole("group", {
+      name: "Mean chosen scenario value for region",
+    })
+    await expect(regionSegments).toBeVisible({ timeout: 60_000 })
+    const segmentLevels = regionSegments.getByTestId("relativity-row")
+    await expect(segmentLevels).toHaveCount(3)
+    expect((await segmentLevels.getByTestId("relativity-label").allTextContents()).sort())
+      .toEqual(["East", "North", "South"])
+    // Quotes 3 and 6 are the fixture's North quotes.
+    await regionSegments.getByRole("button", { name: /^North\. / }).focus()
+    await expect(
+      optimiserPreview.getByRole("status").filter({ hasText: /^North/ }),
+    ).toContainText("Quotes: 2 (25.0%)")
+
+    // Quotes: the "Highest adjustment" preset sorts every quote by scenario value, descending.
+    await openResultPane(page, "Quotes")
+    const presets = optimiserPreview.getByRole("group", { name: "Presets" })
+    const highest = presets.getByRole("button", { name: "Highest adjustment", exact: true })
+    await expect(highest).toHaveAttribute("aria-pressed", "false", { timeout: 60_000 })
+    await highest.click()
+    await expect(highest).toHaveAttribute("aria-pressed", "true")
+    const quotesTable = optimiserPreview.getByRole("table", { name: "Per-quote detail" })
+    await expect(
+      quotesTable.getByRole("columnheader", { name: /Scenario value/ }),
+    ).toHaveAttribute("aria-sort", "descending")
+    await expect(optimiserPreview.getByText("Showing 1–8 of 8 matching (of 8)", { exact: true }))
+      .toBeVisible()
+    const scenarioColumn = await quotesTable.getByRole("columnheader").allInnerTexts()
+    const scenarioIndex = scenarioColumn.findIndex((text) => text.startsWith("Scenario value"))
+    expect(scenarioIndex).toBeGreaterThan(0)
+    const chosenValues = await quotesTable.locator("tbody tr").evaluateAll(
+      (rows, index) => rows.map((row) => Number.parseFloat(
+        (row.children[index] as HTMLElement).innerText.replace(/[^0-9.]/g, ""),
+      )),
+      scenarioIndex,
+    )
+    expect(chosenValues).toHaveLength(8)
+    expect(chosenValues).toEqual([...chosenValues].sort((a, b) => b - a))
+
+    // Convergence: every online solve records its history, drawn on real axes.
+    await openResultPane(page, "Convergence")
+    const objectiveHistory = optimiserPreview.getByRole("img", { name: "Objective by iteration" })
+    await expect(objectiveHistory).toBeVisible()
+    await expect(objectiveHistory.getByText("Iteration", { exact: true })).toBeVisible()
+    await expect(objectiveHistory.getByText("Objective", { exact: true })).toBeVisible()
+    expect(await objectiveHistory.getByTestId("chart-x-tick").count()).toBeGreaterThan(0)
+    expect(await objectiveHistory.getByTestId("chart-value-tick").count()).toBeGreaterThan(1)
+    await expect(
+      optimiserPreview.getByRole("img", { name: "volume total by iteration" }),
+    ).toBeVisible()
+    await expect(optimiserPreview.getByText(
+      /^History is recorded for the solved result; frontier point 2: /,
+    )).toBeVisible()
+
+    // Focus view keeps the pane and closes on Escape.
+    await optimiserPreview.getByRole("button", { name: "Focus view", exact: true }).click()
+    const focusDialog = page.getByRole("dialog", { name: "Optimiser validation" })
+    await expect(focusDialog).toBeVisible()
+    await expect(focusDialog.getByRole("tab", { name: "Convergence", exact: true }))
+      .toHaveAttribute("aria-selected", "true")
+    await page.keyboard.press("Escape")
+    await expect(focusDialog).toHaveCount(0)
+    await expect(optimiserPreview.getByRole("button", { name: "Focus view", exact: true }))
+      .toBeFocused()
+    await expect(resultTabs.getByRole("tab", { name: "Convergence", exact: true }))
+      .toHaveAttribute("aria-selected", "true")
 
     // Publishing lives in the node's Export pane; its target is the point the
     // preview selected.
@@ -444,5 +657,57 @@ test.describe("frontend canvas assurance", () => {
     await expect(
       previewTable.getByText("__optimiser_version__", { exact: true }),
     ).toBeVisible()
+  })
+
+  test("solves a ratebook and draws each rating factor's rates", async ({ page }) => {
+    test.slow()
+    await page.setViewportSize(desktopViewport)
+    await page.goto("/")
+    const ratebookPanel = await openNodeProperties(
+      page,
+      "Optimisation node: browser_ratebook",
+    )
+    const solveResponsePromise = page.waitForResponse(response => (
+      response.url().endsWith("/api/optimiser/solve")
+      && response.request().method() === "POST"
+    ))
+    await ratebookPanel.getByRole("tab", { name: "Solve", exact: true }).click()
+    await ratebookPanel.getByRole("button", { name: "Optimise", exact: true }).click()
+    expect((await solveResponsePromise).ok()).toBe(true)
+
+    const resultTabs = page.getByRole("tablist", { name: "Optimiser result panes" })
+    // No frontier, so the workspace opens on Summary; a ratebook result offers Rates.
+    await expect(resultTabs.getByRole("tab", { name: "Summary", exact: true }))
+      .toHaveAttribute("aria-selected", "true", { timeout: 120_000 })
+    await expect(resultTabs.getByRole("tab")).toHaveText([
+      "Summary",
+      "Rates",
+      "Adjustments",
+      "Segments",
+      "Quotes",
+      "Convergence",
+    ])
+    const ratebookPreview = page.getByTestId("optimiser-preview-frame")
+    await expect(ratebookPreview.getByTestId("optimiser-provenance")).toHaveText(new RegExp(
+      "^Ratebook · 8 quotes × 5 scenario steps · Data: .+ · As solved · ",
+    ))
+
+    await openResultPane(page, "Rates")
+    await expect(ratebookPreview.getByRole("heading", { name: "region_band", exact: true })).toBeVisible()
+    await expect(
+      ratebookPreview.getByRole("button", { name: "region_band", pressed: true }),
+    ).toBeVisible()
+    // Quotes 3 and 6 are North; 1, 4 and 7 South; 2, 5 and 8 East.
+    await expect(ratebookPreview.getByText(/^3 levels · 8 quotes · rates \d\.\d{4} to \d\.\d{4}$/))
+      .toBeVisible()
+    const rates = ratebookPreview.getByRole("group", { name: "Rates for region_band" })
+    const levels = rates.getByTestId("relativity-row")
+    await expect(levels).toHaveCount(3)
+    expect((await levels.getByTestId("relativity-label").allTextContents()).sort())
+      .toEqual(["East", "North", "South"])
+    await expect(levels.getByTestId("quote-strip-bar")).toHaveCount(3)
+    await rates.getByRole("button", { name: /^North\. Rate / }).focus()
+    await expect(ratebookPreview.getByRole("status").filter({ hasText: /^North/ }))
+      .toContainText("Quotes: 2")
   })
 })

@@ -10,9 +10,9 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, Literal, cast
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from haute._env import float_env
 from haute._execution_admission import (
@@ -20,6 +20,7 @@ from haute._execution_admission import (
     isolated_execution_budget,
 )
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionContext,
     ExecutionProfile,
 )
@@ -48,23 +49,24 @@ from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import resolve_worker_memory_enforcement
+from haute.routes._frontier_point_summary import frontier_point_library_row
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
-from haute.routes._optimiser_artifacts import (
-    _APPLY_RESULT_HANDLE_KEY,
-    _load_apply_result_artifact,
+from haute.routes._optimiser_adjustments import (
+    ADJUSTMENT_REPORTS_KEY,
+    adjustment_report,
+    cache_point_report,
 )
 from haute.routes._optimiser_frontier import (
     _CONSTRAINT_THRESHOLD_KEYS,
+    _FRONTIER_CHANGED_DETAIL,
     OptimiserFrontierService,
-    _artifact_handles_or_raise,
     _base_result_for_frontier,
-    _dataframe_or_raise,
+    _frontier_generation_or_raise,
     _frontier_point_constraints_override,
     _frontier_point_mlflow_summary,
     _job_has_frontier_points,
-    _reject_ratebook_apply_detail,
     _summary_solve_result,
 )
 from haute.routes._optimiser_input import (
@@ -73,19 +75,18 @@ from haute.routes._optimiser_input import (
     _find_optimiser_node,
     estimate_failure_http_exception,
 )
-from haute.routes._optimiser_limits import (
-    limited_apply_preview_payload,
+from haute.routes._optimiser_outcomes import (
+    ChoiceQueryService,
+    ChoiceTarget,
+    ScenarioHistogram,
+    _choice_spec,
 )
+from haute.routes._optimiser_quotes import QuoteQueries
+from haute.routes._optimiser_segments import SegmentQueries
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
-from haute.routes._optimiser_solver import (
-    _DEFAULT_CD_TOLERANCE,
-    _DEFAULT_FRONTIER_STEPS,
-    _DEFAULT_MAX_CD_ITERATIONS,
-    _DEFAULT_MAX_ITER,
-    _DEFAULT_TOLERANCE,
-    _job_elapsed_seconds,
-)
+from haute.routes._optimiser_solver import _job_elapsed_seconds
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
+from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.pipeline import (
     _interactive_affinity_key,
     _prepare_runtime_graph,
@@ -93,6 +94,7 @@ from haute.routes.pipeline import (
     _raise_interactive_worker_crash_http_error,
 )
 from haute.schemas import (
+    OptimiserAdjustmentReport,
     OptimiserApplyRequest,
     OptimiserApplyResponse,
     OptimiserEstimateRequest,
@@ -109,6 +111,9 @@ from haute.schemas import (
     OptimiserMlflowLogResponse,
     OptimiserSaveRequest,
     OptimiserSaveResponse,
+    OptimiserSegmentIndexResponse,
+    OptimiserSegmentsRequest,
+    OptimiserSegmentsResponse,
     OptimiserSolveRequest,
     OptimiserSolveResponse,
     OptimiserStatusResponse,
@@ -124,6 +129,17 @@ router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 _store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 _frontier_service = OptimiserFrontierService(_store)
+_choice_service = ChoiceQueryService(_store, _frontier_service)
+_segment_queries = SegmentQueries(_store, _choice_service, _frontier_service)
+_quote_queries = QuoteQueries(_store, _choice_service, _frontier_service)
+
+OPTIMISER_SEGMENTS_ROUTE: Final[Literal["/api/optimiser/segments"]] = "/api/optimiser/segments"
+"""A result's chosen scenarios broken down by one segment key (OPT-V11)."""
+
+OPTIMISER_SEGMENT_INDEX_ROUTE: Final[Literal["/api/optimiser/segments/index"]] = (
+    "/api/optimiser/segments/index"
+)
+"""A result's segment keys ranked by adjustment spread (OPT-V11)."""
 
 
 def _prepare_optimiser_execution_request(
@@ -205,7 +221,9 @@ def _optimiser_input_metrics_in_worker(
     return outcome.metrics
 
 
-def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelectResponse:
+def _frontier_select_response(
+    result: dict[str, Any], adjustments: Mapping[str, Any] | None
+) -> OptimiserFrontierSelectResponse:
     return OptimiserFrontierSelectResponse(
         status="ok",
         point_index=result.get("selected_frontier_point"),
@@ -213,17 +231,22 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         constraints=result["constraints"],
         baseline_objective=result["baseline_objective"],
         baseline_constraints=result["baseline_constraints"],
+        effective_bounds=result["effective_bounds"],
         lambdas=result["lambdas"],
         converged=result["converged"],
         iterations=result.get("iterations"),
         cd_iterations=result.get("cd_iterations"),
         factor_tables=result.get("factor_tables", {}),
         history=result.get("history"),
+        ratebook_cd_trace=result.get("ratebook_cd_trace"),
         warning=result.get("warning"),
-        scenario_value_stats=result.get("scenario_value_stats"),
-        scenario_value_histogram=result.get("scenario_value_histogram"),
+        adjustments=(
+            None if adjustments is None else OptimiserAdjustmentReport.model_validate(adjustments)
+        ),
         clamp_rate=result.get("clamp_rate"),
         combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
+        frontier_generation=result["frontier_generation"],
+        diagnostics_errors=result["diagnostics_errors"],
     )
 
 
@@ -315,6 +338,63 @@ def cancel_frontier_auto_range(job_id: str) -> OptimiserFrontierAutoRangeStatusR
     return _solve_service.cancel_frontier_auto_range(job_id)
 
 
+_FINITE_VALIDATED_KEY = "_result_finite_validated_for"
+
+
+def _finite_validated_job(job_id: str, job: Mapping[str, Any]) -> Mapping[str, Any]:
+    """A completed job whose ``result`` and ``frontier_data`` hold no NaN or Infinity.
+
+    Mirrors the modelling status route's finite-JSON check: a non-finite value
+    corrects the job from ``completed`` to ``error``. A clean walk is cached as
+    the ``(frontier_generation, selected_frontier_point)`` it was made for,
+    since a recompute or a selection rewrites the result. The flag is private
+    and never part of a response.
+    """
+    result = job.get("result")
+    if job.get("status") != "completed" or result is None:
+        return job
+    validated_for = [result["frontier_generation"], job.get("selected_frontier_point")]
+    if job.get(_FINITE_VALIDATED_KEY) == validated_for:
+        return job
+    bad_paths = _non_finite_paths({"result": result, "frontier": job.get("frontier_data")})
+    if bad_paths:
+        shown = ", ".join(bad_paths[:5])
+        if len(bad_paths) > 5:
+            shown += f", … ({len(bad_paths)} in total)"
+        message = f"Optimiser result cannot be published: non-finite values at {shown}"
+        logger.error("optimiser_result_not_json_finite", paths=bad_paths[:5], job_id=job_id)
+        return _solve_service.reject_completed_result(job_id, message=message)
+    # ``None`` means the job changed concurrently; the next poll walks it again.
+    updated = _store.atomic_update(
+        job_id,
+        {_FINITE_VALIDATED_KEY: validated_for},
+        expected_status="completed",
+    )
+    return updated if updated is not None else _store.require_job(job_id)
+
+
+def _solve_status_response(
+    job: Mapping[str, Any],
+    *,
+    elapsed_seconds: float,
+) -> OptimiserStatusResponse:
+    frontier_resp = None
+    if job.get("status") == "completed":
+        fd = job.get("frontier_data")
+        if fd:
+            frontier_resp = OptimiserFrontierResponse(**fd)
+    return OptimiserStatusResponse(
+        status=require_job_status(job),
+        progress=job.get("progress", 0.0),
+        message=job.get("message", ""),
+        elapsed_seconds=elapsed_seconds,
+        result=job.get("result"),
+        frontier=frontier_resp,
+        terminal_reason=job.get("terminal_reason"),
+        execution_metrics=job.get("execution_metrics"),
+    )
+
+
 @router.get("/solve/status/{job_id}", response_model=OptimiserStatusResponse)
 async def solve_status(job_id: str) -> OptimiserStatusResponse:
     """Poll optimisation job progress."""
@@ -336,116 +416,37 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
             # completed result with a timeout error).
             job = _solve_service.timeout_solve(job_id, timeout=timeout, start_time=start)
 
-    frontier_resp = None
-    if job.get("status") == "completed":
-        fd = job.get("frontier_data")
-        if fd:
-            frontier_resp = OptimiserFrontierResponse(**fd)
+    job = _finite_validated_job(job_id, job)
     elapsed_seconds = job.get("elapsed_seconds", 0.0)
     if job.get("status") == "running":
         elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
-
-    return OptimiserStatusResponse(
-        status=require_job_status(job),
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        elapsed_seconds=elapsed_seconds,
-        result=job.get("result"),
-        frontier=frontier_resp,
-        terminal_reason=job.get("terminal_reason"),
-        execution_metrics=job.get("execution_metrics"),
-    )
+    return _solve_status_response(job, elapsed_seconds=elapsed_seconds)
 
 
 @router.post("/solve/cancel/{job_id}", response_model=OptimiserStatusResponse)
 async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
     """Cancel an in-progress optimisation solve."""
-    job = _solve_service.cancel_solve(job_id)
-    frontier_resp = None
-    if job.get("status") == "completed":
-        fd = job.get("frontier_data")
-        if fd:
-            frontier_resp = OptimiserFrontierResponse(**fd)
-
-    return OptimiserStatusResponse(
-        status=require_job_status(job),
-        progress=job.get("progress", 0.0),
-        message=job.get("message", ""),
-        elapsed_seconds=job.get("elapsed_seconds", 0.0),
-        result=job.get("result"),
-        frontier=frontier_resp,
-        terminal_reason=job.get("terminal_reason"),
-        execution_metrics=job.get("execution_metrics"),
-    )
+    job = _finite_validated_job(job_id, _solve_service.cancel_solve(job_id))
+    return _solve_status_response(job, elapsed_seconds=job.get("elapsed_seconds", 0.0))
 
 
 @router.post("/apply", response_model=OptimiserApplyResponse)
-def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
-    """Apply solved lambdas and return the per-quote detail preview.
+async def apply_lambdas(body: OptimiserApplyRequest, request: Request) -> OptimiserApplyResponse:
+    """Return one Quotes page of the solve's or one frontier point's chosen scenarios.
 
-    Online mode only: the real ``RatebookResult`` carries factor tables,
-    not per-quote scenario selections, so ratebook jobs are rejected with
-    an explicit 422 contract error before any solver or artifact work.
+    Both modes: a ratebook page holds price-contour's canonical per-quote
+    evaluation. Sorting, search and filters run over every quote (OPT-V12). A
+    client that leaves stops waiting for a point's apply without stopping it.
     """
-    logger.info("apply_requested", job_id=body.job_id)
-    job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
-    _reject_ratebook_apply_detail(job)
+    return await run_until_disconnected(request, lambda token: _apply_preview(body, token))
 
-    # ``point_index`` names the target: a frontier point, or (``None``) the
-    # job's own solve — never the server-side selected point.
-    if body.point_index is not None:
-        df, result, from_artifact = _frontier_service.materialise_point_apply(
-            body.job_id,
-            body.point_index,
-        )
-        response = OptimiserApplyResponse(
-            status="ok",
-            total_objective=result["total_objective"],
-            constraints=result["constraints"],
-            from_artifact=from_artifact,
-            **limited_apply_preview_payload(df),
-        )
-        # Keep the solver and quote grid so the other points stay inspectable.
-        _clear_result_data_after_user_action(body.job_id)
-        return response
 
-    solve_result = job.get("solve_result")
-    from_artifact = False
-    if solve_result is not None and not hasattr(solve_result, "dataframe"):
-        _dataframe_or_raise(solve_result, context="Job solve_result")
-    if solve_result is not None and getattr(solve_result, "dataframe", None) is not None:
-        typed_solve_result = cast(SolveResultLike, solve_result)
-        df = _dataframe_or_raise(solve_result, context="Job solve_result")
-        total_objective = typed_solve_result.total_objective
-        constraints = typed_solve_result.total_constraints
-    else:
-        from_artifact = True
-        artifact_handles = _artifact_handles_or_raise(job)
-        apply_handle = artifact_handles.get(_APPLY_RESULT_HANDLE_KEY)
-        if not isinstance(apply_handle, dict):
-            raise HTTPException(
-                status_code=400,
-                detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
-            )
-        df = _load_apply_result_artifact(apply_handle)
-        job_result = _base_result_for_frontier(job)
-        raw_total_objective = job_result.get("total_objective")
-        raw_constraints = job_result.get("constraints", {})
-        if not isinstance(raw_total_objective, (int, float)) or not isinstance(
-            raw_constraints,
-            dict,
-        ):
-            raise HTTPException(status_code=500, detail="Job summary is incomplete")
-        total_objective = float(raw_total_objective)
-        constraints = cast(dict[str, float], raw_constraints)
-
-    response = OptimiserApplyResponse(
-        status="ok",
-        total_objective=total_objective,
-        constraints=constraints,
-        from_artifact=from_artifact,
-        **limited_apply_preview_payload(df),
-    )
+def _apply_preview(
+    body: OptimiserApplyRequest, token: ExecutionCancellationToken
+) -> OptimiserApplyResponse:
+    logger.info("apply_requested", job_id=body.job_id, point_index=body.point_index)
+    response = _quote_queries.page(body, token)
+    # A point request keeps the solver and quote grid so the other points stay inspectable.
     _clear_result_data_after_user_action(body.job_id)
     return response
 
@@ -502,48 +503,118 @@ def cancel_frontier(job_id: str) -> OptimiserFrontierStatusResponse:
 
 
 @router.post("/frontier/select", response_model=OptimiserFrontierSelectResponse)
-def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFrontierSelectResponse:
-    """Select a frontier summary point without re-solving the optimiser."""
-    return _frontier_select_response(_frontier_service.select_point(body))
+async def select_frontier_point(
+    body: OptimiserFrontierSelectRequest, request: Request
+) -> OptimiserFrontierSelectResponse:
+    """Select a frontier summary point without re-solving the optimiser.
+
+    With ``include_adjustments`` a point's adjustment report is answered too,
+    which may wait for the point's choices to materialise; a client that
+    leaves stops waiting without stopping that work for others.
+    """
+    return await run_until_disconnected(request, lambda token: _select_point(body, token))
 
 
-def _solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
-    """The solver settings a solve ran with, from its solve-time config snapshot."""
-    settings: dict[str, Any] = {
-        "max_iter": job_config.get("max_iter", _DEFAULT_MAX_ITER),
-        "tolerance": job_config.get("tolerance", _DEFAULT_TOLERANCE),
-        "chunk_size": job_config.get("chunk_size"),
-    }
-    if job_config.get("mode") == "ratebook":
-        settings["max_cd_iterations"] = job_config.get(
-            "max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS
+def _select_point(
+    body: OptimiserFrontierSelectRequest, token: ExecutionCancellationToken
+) -> OptimiserFrontierSelectResponse:
+    result = _frontier_service.select_point(body)
+    if body.point_index is None:
+        # Without a point the result is the solve's, which carries its own report.
+        return _frontier_select_response(result, result.get("adjustments"))
+    adjustments = (
+        _point_adjustments(body.job_id, body.point_index, result["frontier_generation"], token)
+        if body.include_adjustments
+        else None
+    )
+    return _frontier_select_response(result, adjustments)
+
+
+def _point_adjustments(
+    job_id: str, point_index: int, generation: int, token: ExecutionCancellationToken
+) -> dict[str, Any]:
+    """The adjustment report for *point_index* of frontier *generation*: cached, else computed.
+
+    *generation* is the selected summary's, so the response never pairs one
+    frontier's totals with another's distribution: the job must still be at it
+    when the report is read (cached or not) and when it is stored; a recompute
+    in between is the frontier-changed 409.
+    """
+    job = _store.require_completed_job(job_id)
+    if _frontier_generation_or_raise(job) != generation:
+        raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+    key = (generation, point_index)
+    cached = (job.get(ADJUSTMENT_REPORTS_KEY) or {}).get(key)
+    if cached is not None:
+        return cast(dict[str, Any], cached)
+    histogram = _choice_service.choice_query(
+        job_id, ChoiceTarget(point_index), ScenarioHistogram(), cancellation_token=token
+    )
+    report = adjustment_report(histogram, _choice_spec(job)).model_dump()
+    with _frontier_service.parent_lock(job_id):
+        latest = _store.require_completed_job(job_id)
+        if _frontier_generation_or_raise(latest) != generation:
+            raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+        _store.atomic_update(
+            job_id,
+            {
+                ADJUSTMENT_REPORTS_KEY: cache_point_report(
+                    latest.get(ADJUSTMENT_REPORTS_KEY) or {}, key, report
+                )
+            },
+            expected_status="completed",
         )
-        settings["cd_tolerance"] = job_config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE)
-    else:
-        # The ratebook solver records no history, so the flag is online-only.
-        settings["record_history"] = bool(job_config.get("record_history", False))
-    if job_config.get("frontier_enabled") is True:
-        settings["frontier_enabled"] = True
-        settings["frontier_steps"] = job_config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
-        settings["frontier_ranges"] = job_config.get("frontier_ranges")
-    return settings
+    return report
 
 
-def _input_summary(job: Mapping[str, Any]) -> dict[str, Any]:
-    """Cheap provenance of the data a solve ran on; nothing is read or hashed."""
-    summary = job.get("base_result")
-    if not isinstance(summary, dict):
-        summary = job.get("result")
-    counts = summary if isinstance(summary, dict) else {}
-    provenance = job.get("input_provenance")
-    known = provenance if isinstance(provenance, dict) else {}
+@router.post(
+    OPTIMISER_SEGMENTS_ROUTE.removeprefix(router.prefix),
+    response_model=OptimiserSegmentsResponse,
+)
+async def segments(body: OptimiserSegmentsRequest, request: Request) -> OptimiserSegmentsResponse:
+    """Break the target's chosen scenarios down by one segment key.
+
+    It may wait for a frontier point's choices to materialise; a client that
+    leaves stops waiting without stopping that work for others.
+    """
+    return await run_until_disconnected(
+        request,
+        lambda token: _segment_queries.segments(
+            body.job_id, body.point_index, body.key, body.weight, token
+        ),
+    )
+
+
+@router.get(
+    OPTIMISER_SEGMENT_INDEX_ROUTE.removeprefix(router.prefix),
+    response_model=OptimiserSegmentIndexResponse,
+)
+async def segment_index(
+    request: Request,
+    job_id: str,
+    point_index: int | None = Query(default=None, ge=0),
+) -> OptimiserSegmentIndexResponse:
+    """Rank the target's segment keys by adjustment spread (cached per target)."""
+    return await run_until_disconnected(
+        request, lambda token: _segment_queries.index(job_id, point_index, token)
+    )
+
+
+def _input_summary(solve_summary: Mapping[str, Any]) -> dict[str, Any]:
+    """The artifact's ``input_summary``: the solve result's own provenance plus its grid shape.
+
+    Read from the result's ``input_summary`` (built once when the solve
+    completed), never rebuilt from the job; nothing is read or hashed.
+    """
+    provenance = {
+        key: value
+        for key, value in solve_summary["input_summary"].items()
+        if key != "solver_settings"
+    }
     return {
-        "n_quotes": counts.get("n_quotes"),
-        "n_steps": counts.get("n_steps"),
-        "node_id": known.get("node_id"),
-        "data_source": known.get("data_source"),
-        "source_file": known.get("source_file"),
-        "graph_fingerprint": known.get("graph_fingerprint"),
+        "n_quotes": solve_summary.get("n_quotes"),
+        "n_steps": solve_summary.get("n_steps"),
+        **provenance,
     }
 
 
@@ -621,13 +692,14 @@ def _build_artifact_payload(
     # Audit trail. ``constraints`` above stays the configured specs, which
     # OPTIMISER_APPLY reads; ``effective_constraints`` records the thresholds
     # in force for this target.
-    payload["solver_settings"] = _solver_settings(job_config)
+    solve_summary = _base_result_for_frontier(job)
+    payload["solver_settings"] = solve_summary["input_summary"]["solver_settings"]
     payload["effective_constraints"] = (
         _frontier_point_constraints_override(job, point_index)
         if point_index is not None
         else job_config.get("constraints")
     )
-    payload["input_summary"] = _input_summary(job)
+    payload["input_summary"] = _input_summary(solve_summary)
     payload["stale_at_publish"] = stale_at_publish
     return payload
 
@@ -989,11 +1061,17 @@ def _log_optimiser_run(
             # The frontier CSV and its provenance tags.
             frontier_data = job.get("frontier_data")
             if frontier_data and frontier_data.get("points"):
-                points = frontier_data["points"]
+                # price-contour's points table: each typed point written back
+                # as the library's flat row, in its schema's column order.
+                constraint_names = frontier_data["constraint_names"]
+                rows = [
+                    frontier_point_library_row(point, constraint_names)
+                    for point in frontier_data["points"]
+                ]
                 buffer = io.StringIO()
-                writer = csv.DictWriter(buffer, fieldnames=points[0].keys())
+                writer = csv.DictWriter(buffer, fieldnames=list(rows[0]))
                 writer.writeheader()
-                writer.writerows(points)
+                writer.writerows(rows)
                 frontier_path = Path(tmpdir) / "frontier.csv"
                 frontier_path.write_text(buffer.getvalue())
                 client.log_artifact(run_id, str(frontier_path))

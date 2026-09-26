@@ -15,6 +15,9 @@ import type { SolveIssue } from "./OptimiserSolveStatus"
 /** The solver's frontier workload cap: steps ** constraints solves (mirrors the backend). */
 export const FRONTIER_COMPUTE_LIMIT = 10_000
 
+/** The most analysis columns a solve keeps for result breakdowns (mirrors the backend). */
+export const MAX_ANALYSIS_COLUMNS = 12
+
 export const COLUMN_MAPPINGS = [
   { key: "quote_id", label: "Quote ID" },
   { key: "scenario_index", label: "Scenario Index" },
@@ -56,6 +59,16 @@ export type OptimiserInputs = {
   missingExplicitBandingSource: boolean
   /** The explicit source, else the sole direct Banding input when none is set. */
   effectiveBandingNode: InputNodeInfo | undefined
+  /** The configured analysis input name; empty means the data input. */
+  analysisInput: string
+  malformedAnalysisInput: boolean
+  missingExplicitAnalysisInput: boolean
+  /** The connected analysis input, when one other than the data input is chosen. */
+  selectedAnalysisInput: InputNodeInfo | undefined
+  /** The analysis columns come from the data input (unset, or naming it). */
+  analysisUsesDataInput: boolean
+  /** The resolved data input's name, for labelling the analysis default. */
+  resolvedDataInputName: string
 }
 
 export function resolveOptimiserInputs(
@@ -86,6 +99,17 @@ export function resolveOptimiserInputs(
   const effectiveBandingNode = selectedBandingNode
     ?? (!malformedBandingSource && !bandingSource && bandingNodes.length === 1 ? bandingNodes[0] : undefined)
 
+  const resolvedDataInputName = selectedDataInput?.name
+    ?? (!malformedDataInput && !dataInput && inputNodes.length === 1 ? inputNodes[0].name : "")
+  const rawAnalysisInput = config.analysis_input
+  const malformedAnalysisInput = rawAnalysisInput !== undefined && rawAnalysisInput !== null && typeof rawAnalysisInput !== "string"
+  const analysisInput = typeof rawAnalysisInput === "string" ? rawAnalysisInput : ""
+  const namedAnalysisInput = inputNodes.find((input) => input.name === analysisInput)
+  const missingExplicitAnalysisInput = malformedAnalysisInput || (!!analysisInput && !namedAnalysisInput)
+  const analysisUsesDataInput = !malformedAnalysisInput
+    && (!analysisInput || (!!resolvedDataInputName && analysisInput === resolvedDataInputName))
+  const selectedAnalysisInput = analysisUsesDataInput ? undefined : namedAnalysisInput
+
   return {
     inputNodes,
     bandingNodes,
@@ -98,6 +122,12 @@ export function resolveOptimiserInputs(
     selectedBandingNode,
     missingExplicitBandingSource,
     effectiveBandingNode,
+    analysisInput,
+    malformedAnalysisInput,
+    missingExplicitAnalysisInput,
+    selectedAnalysisInput,
+    analysisUsesDataInput,
+    resolvedDataInputName,
   }
 }
 
@@ -110,12 +140,14 @@ export type SolveReadiness = {
 
 /**
  * Every reason the node cannot be solved. Mapped columns are checked only once
- * the input's columns are known (`dataInputColumns` non-empty).
+ * the input's columns are known (`dataInputColumns` non-empty), and analysis
+ * columns once the analysis frame's are (`analysisFrameColumns` non-empty).
  */
 export function optimiserSolveReadiness(
   config: Record<string, unknown>,
   inputs: OptimiserInputs,
   dataInputColumns: readonly { name: string }[],
+  analysisFrameColumns: readonly { name: string }[],
 ): SolveReadiness {
   const mode = configField(config, "mode", "online")
   const objective = configField(config, "objective", "")
@@ -168,6 +200,33 @@ export function optimiserSolveReadiness(
           pane: "data",
           label: "Data",
           message: `${mapping.label} uses "${column}", which the input does not have.`,
+        })
+      }
+    }
+  }
+  const analysisColumns = configField<string[]>(config, "analysis_columns", [])
+  if (inputs.missingExplicitAnalysisInput) {
+    issues.push({
+      pane: "data",
+      label: "Data",
+      message: inputs.malformedAnalysisInput
+        ? "The analysis input must be an input name."
+        : "The selected analysis input is not connected.",
+    })
+  } else if (analysisColumns.length > MAX_ANALYSIS_COLUMNS) {
+    issues.push({
+      pane: "data",
+      label: "Data",
+      message: `Choose at most ${MAX_ANALYSIS_COLUMNS} analysis columns; ${analysisColumns.length} are chosen.`,
+    })
+  } else if (analysisFrameColumns.length > 0) {
+    const frameColumnNames = new Set(analysisFrameColumns.map((column) => column.name))
+    for (const column of analysisColumns) {
+      if (!frameColumnNames.has(column)) {
+        issues.push({
+          pane: "data",
+          label: "Data",
+          message: `Analysis column “${column}” is not a column of the analysis input.`,
         })
       }
     }

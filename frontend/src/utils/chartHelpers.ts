@@ -1,7 +1,7 @@
 /**
  * The shared axis and scale helpers every SVG chart uses: compact axis numbers,
- * padded finite domains, evenly spaced ticks, label thinning and axis-label
- * truncation.
+ * padded finite domains, evenly spaced ticks, exact log-axis decades, label
+ * thinning and axis-label truncation.
  */
 
 /** Keep exact data in details; axes use a readable, consistent compact format. */
@@ -25,6 +25,11 @@ export function chartDomain(values: number[], includeZero = false): [number, num
 export function chartTicks(low: number, high: number, count = 4): number[] {
   if (low === high) return [low]
   return Array.from({ length: count }, (_, i) => low + ((high - low) * i) / (count - 1))
+}
+
+/** 10 to the power `exponent`, exactly as its decimal literal (`10 ** -4` is not 0.0001). */
+export function decade(exponent: number): number {
+  return Number(`1e${exponent}`)
 }
 
 /** Evenly spaced label indices, including endpoints without adjacent end labels. */

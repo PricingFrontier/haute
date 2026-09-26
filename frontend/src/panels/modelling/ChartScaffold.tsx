@@ -189,12 +189,44 @@ export function ChartEmptyState({ children }: { children: ReactNode }) {
   )
 }
 
+/** A point marker as a chart draws it: filled, a ring, hollow or a cross. */
+export type ChartLegendMarker = "dot" | "ring" | "hollow" | "cross"
+
 export type ChartLegendItem = {
   label: ReactNode
   color: string
   swatch?: "line" | "bar" | "dashed"
+  /** Draws the swatch as this point marker instead of a line or bar. */
+  marker?: ChartLegendMarker
   dashed?: boolean
   opacity?: number
+}
+
+function LegendMarker({ marker, color, opacity }: { marker: ChartLegendMarker; color: string; opacity?: number }) {
+  return (
+    <svg
+      width={10}
+      height={10}
+      viewBox="0 0 10 10"
+      aria-hidden="true"
+      data-testid="chart-legend-swatch"
+      data-marker={marker}
+      style={{ opacity, flexShrink: 0 }}
+    >
+      {marker === "cross" ? (
+        <path d="M2 2 L8 8 M8 2 L2 8" stroke={color} strokeWidth={2} strokeLinecap="round" />
+      ) : (
+        <circle
+          cx={5}
+          cy={5}
+          r={marker === "dot" ? 4 : 3.5}
+          fill={marker === "dot" ? color : "none"}
+          stroke={marker === "dot" ? "none" : color}
+          strokeWidth={marker === "ring" ? 2 : 1.5}
+        />
+      )}
+    </svg>
+  )
 }
 
 type ChartLegendProps = {
@@ -212,19 +244,23 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
         const isDashed = item.swatch === "dashed" || item.dashed
         return (
           <span key={index} className="flex items-center gap-1.5">
-            <span
-              className={
-                item.swatch === "bar"
-                  ? "inline-block h-2 w-3 rounded-sm"
-                  : "inline-block h-0.5 w-3 rounded"
-              }
-              data-testid="chart-legend-swatch"
-              style={{
-                background: isDashed ? undefined : item.color,
-                borderTop: isDashed ? `1px dashed ${item.color}` : undefined,
-                opacity: item.opacity,
-              }}
-            />
+            {item.marker ? (
+              <LegendMarker marker={item.marker} color={item.color} opacity={item.opacity} />
+            ) : (
+              <span
+                className={
+                  item.swatch === "bar"
+                    ? "inline-block h-2 w-3 rounded-sm"
+                    : "inline-block h-0.5 w-3 rounded"
+                }
+                data-testid="chart-legend-swatch"
+                style={{
+                  background: isDashed ? undefined : item.color,
+                  borderTop: isDashed ? `1px dashed ${item.color}` : undefined,
+                  opacity: item.opacity,
+                }}
+              />
+            )}
             {item.label}
           </span>
         )

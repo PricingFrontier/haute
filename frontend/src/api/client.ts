@@ -29,6 +29,8 @@ import type {
   FrontierAutoRangeStatusResponse,
   FrontierSelectResponse,
   FrontierStatusResponse,
+  OptimiserSegmentIndexResponse,
+  OptimiserSegmentsResponse,
   GitArchiveResponse,
   GitDeleteBranchResponse,
   GitCommitResponse,
@@ -1654,10 +1656,42 @@ export function cancelOptimiserFrontierAutoRange(
 }
 
 export function selectFrontierPoint(
-  payload: { job_id: string; point_index: number; include_ratebook_tables?: boolean },
+  payload: {
+    job_id: string
+    point_index: number
+    include_ratebook_tables?: boolean
+    /** Also answer the point's adjustment report, materialising its choices (online). */
+    include_adjustments?: boolean
+  },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierSelectResponse> {
   return post<unknown>("/api/optimiser/frontier/select", payload, options).then(async (data) => expectGeneratedContract("OptimiserFrontierSelectResponse", (await optimiserValidators()).validateOptimiserFrontierSelectResponse, data))
+}
+
+/** One segment key's breakdown of the target's chosen scenarios (the solved result, or a point). */
+export function getOptimiserSegments(
+  payload: {
+    job_id: string
+    /** `null` for the solved result. */
+    point_index: number | null
+    key: string
+    /** `"quotes"`, or a value column (`optimal_objective`, `optimal_<constraint>`). */
+    weight: string
+  },
+  options?: { signal?: AbortSignal },
+): Promise<OptimiserSegmentsResponse> {
+  return post<unknown>("/api/optimiser/segments", payload, { timeout: 120_000, ...options }).then(async (data) => expectGeneratedContract("OptimiserSegmentsResponse", (await optimiserValidators()).validateOptimiserSegmentsResponse, data))
+}
+
+/** The target's segment keys ranked by adjustment spread. */
+export function getOptimiserSegmentIndex(
+  params: { job_id: string; point_index: number | null },
+  options?: { signal?: AbortSignal },
+): Promise<OptimiserSegmentIndexResponse> {
+  const query = new URLSearchParams({ job_id: params.job_id })
+  if (params.point_index !== null) query.set("point_index", String(params.point_index))
+  // One query per key: a heavy request, never retried behind the caller's back.
+  return request<unknown>(`/api/optimiser/segments/index?${query}`, { timeout: 300_000, retry: { maxRetries: 0 }, ...options }).then(async (data) => expectGeneratedContract("OptimiserSegmentIndexResponse", (await optimiserValidators()).validateOptimiserSegmentIndexResponse, data))
 }
 
 // ---------------------------------------------------------------------------
