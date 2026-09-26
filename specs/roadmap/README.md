@@ -20,7 +20,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation | `ENGQ-R01` |
-| [Execution bug](execution-bug.md) | A node's own column selection or renames failing its own output contract | `EXB-01` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [Modelling issues](modelling-issues.md) | Memory estimate, live and final loss curves, axis labels, progress cadence, CatBoost encoding, Summary metrics, stale chunks, restart, palette text | `MDL-01` |
