@@ -44,7 +44,6 @@ the demo pipeline has been rewritten in the declaration format.
 | MDL-07 | Decision | P3 | The Summary tab leads with the out-of-sample metrics when a validation fit ran. |
 | MDL-08 | Planned | P3 | An open page recovers when the frontend it was served from has been rebuilt. |
 | MDL-09 | Decision | P3 | A trained model's results survive a server restart, or the panel says why they are gone. |
-| MDL-10 | Planned | P3 | The Model Training palette entry names the model families it trains. |
 
 ## Planned improvements
 
@@ -253,20 +252,3 @@ the Summary and Lift results, or a component test for the message.
 
 **Evidence:** `src/haute/routes/_job_store.py::JobStore`;
 `frontend/src/panels/modelling/useTrainedJobRestore.ts`.
-
-### MDL-10 — The palette names two of the five model families
-**Why:** The Model Training palette entry reads "Train a CatBoost or GLM
-model". The node trains CatBoost, XGBoost, LightGBM, EBM, and GLMs through
-RustyStats when it is installed, and tunes all but the GLM with Optuna.
-
-**Plan:** Describe the node by what it does rather than listing engines, for
-example "Train a model: gradient boosting, EBM or GLM", and keep the engine
-list in the node's own Target tab where the algorithm is chosen.
-
-**Acceptance:** The palette description no longer names only CatBoost and
-GLM; a test holds the description to the families in the algorithm registry.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/utils/nodeTypes.ts::NODE_TYPE_META`;
-`src/haute/modelling/_algorithms.py::ALGORITHM_REGISTRY`.

@@ -540,6 +540,11 @@ this discrete solve a positive λ can sit beside positive slack.
   for families that support it.
 - The model type is chosen once, when the node is created, and cannot be changed afterwards;
   a different family is a new node.
+- The palette describes the Model Training node by what it trains rather than by engine: "Train
+  a model: gradient boosting, EBM or GLM", where CatBoost, XGBoost and LightGBM are its gradient
+  boosting; the engines are named where the family is chosen. A test maps every family in the
+  capability table to its word in that description, so a new family fails it until the
+  description names it.
 - A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
   field. It is required for a text target and optional for an integer target, whose value is
   saved as a number. Predictions above 0.5 are labelled with the positive class.

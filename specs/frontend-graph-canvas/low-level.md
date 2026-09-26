@@ -1635,7 +1635,8 @@ again through the editor and save paths.
     normalised handle fields; non-mutating deselect/select-only-node
     helpers.
   - `frontend/src/utils/__tests__/nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
-    `NODE_TYPE_META` completeness and 1:1 coverage; Explore's one-input
+    `NODE_TYPE_META` completeness and 1:1 coverage; the Model Training description naming
+    the family word of every algorithm in `algorithmCapabilities.json`; Explore's one-input
     sink shape; Data Input/Data Output source/sink and non-singleton
     membership with strict branch-shaped defaults; Edge Join's compact
     centre-origin shape; label/name casing

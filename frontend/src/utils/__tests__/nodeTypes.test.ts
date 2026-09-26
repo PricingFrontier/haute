@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINK_ONLY_TYPES, SOURCE_ONLY_TYPES, isSingletonType } from "../nodeTypes"
+import { ALGORITHM_CAPABILITIES } from "../../panels/modelling/algorithmCapabilities"
 
 describe("canonical data IO node types", () => {
   it("exposes dataInput and dataOutput", () => {
@@ -25,5 +26,23 @@ describe("canonical data IO node types", () => {
     expect(isSingletonType("output")).toBe(true)
     expect(isSingletonType("liveSwitch")).toBe(true)
     expect(isSingletonType("dataInput")).toBe(false)
+  })
+})
+
+describe("Model Training palette entry", () => {
+  // Every family in the backend algorithm registry, and the word the palette names it by.
+  const PALETTE_FAMILY_WORDS: Record<string, string> = {
+    catboost: "gradient boosting",
+    lightgbm: "gradient boosting",
+    xgboost: "gradient boosting",
+    ebm: "EBM",
+    glm: "GLM",
+  }
+
+  it("names every model family in the algorithm registry", () => {
+    // A new registry family fails here until it is mapped and the description names it.
+    expect(Object.keys(PALETTE_FAMILY_WORDS).sort()).toEqual(Object.keys(ALGORITHM_CAPABILITIES).sort())
+    const description = NODE_TYPE_META[NODE_TYPES.MODELLING].description
+    for (const word of new Set(Object.values(PALETTE_FAMILY_WORDS))) expect(description).toContain(word)
   })
 })
