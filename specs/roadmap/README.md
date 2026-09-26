@@ -23,6 +23,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
+| [Polars node clarity](polars-node-clarity.md) | Step editor completion, keyboard, error placement, cards and summaries, forms, formula box, step menu, generated code | `PNC-01` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |

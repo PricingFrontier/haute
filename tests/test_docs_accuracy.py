@@ -145,6 +145,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "explore-eda",
     "frontend-shared",
     "pipeline-config",
+    "polars-node-clarity",
     "sandbox-security",
     "server-api",
     "submodels",
