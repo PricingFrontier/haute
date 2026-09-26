@@ -86,8 +86,14 @@ cap, as training preparation does: the worker writes the projected, validated so
 setup-owned Parquet file (or returns the auto-range totals), and the server process builds the
 quote grid from that file. A setup whose pipeline exceeds its memory budget therefore ends as a
 typed `memory_limited` job instead of growing the server, and cancelling setup terminates the
-worker. The solver itself still runs on a server thread against the grid. The explicit `thread`
-compatibility mode runs the same steps on the job's thread. The input estimate runs on the warm
+worker. The grid build, the solve, the inline frontier, later frontier recomputes and frontier
+point applies then run in the job's *solver session*: one dedicated spawn worker per solve that
+holds the solver and quote grid for as long as the result keeps them, under a native memory cap
+re-sized before every command to what the machine can give at that moment and never lifted
+(OPT-W01). Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
+that exceeds the cap stops, as `memory_limited`, with the server and other jobs unaffected;
+cancelling a solve terminates its session at once. The explicit `thread` compatibility mode runs
+the same steps on the job's thread and keeps the resident-grid estimate as its gate. The input estimate runs on the warm
 interactive worker pool that preview and trace use, under the estimate's admitted memory caps,
 and a memory-limited estimate answers the typed 507. Auto-range's byte-budgeted chunk sizing,
 which samples rows, also runs in the auto-range worker; the server process decides only from the
@@ -280,8 +286,12 @@ request, matching the pattern used by [modelling](../modelling/high-level.md) tr
 solves and ratebook coordinate descent can run long enough that holding an HTTP connection open
 is impractical, and polling lets the UI show live progress.
 
-Heavy runtime objects a solve produces (the solver instance, the built `QuoteGrid`, the raw
-solve result with its dataframe) are kept in the job store only for a short retention window,
+In process mode those heavy objects live only in the job's solver session process, never in
+the server: a native optimiser call cannot be stopped by the server's RSS supervision, so the
+only safe place for one is a process whose kernel cap kills it alone. The job store keeps the
+session handle under the same retention window, and dropping it ends the process. Heavy
+runtime objects a solve produces (the solver instance, the built `QuoteGrid`, the raw
+solve result with its dataframe) are kept only for a short retention window,
 then the job is slimmed to its API-facing summary. Anything a later request might need past
 that window — the per-quote apply dataframe, the ratebook factor source — is persisted to a
 parquet file under a dedicated temp-directory root instead of being kept in memory, and the
@@ -452,7 +462,9 @@ An optimiser artifact is never written with a non-finite value or (for ratebook)
 factor-table/dtype-contract section or combined-factor collar; the save/log request is rejected before the write, listing
 every offending path in the payload. A valid server-owned handle whose artifact has been
 removed or expired returns 410 with a stable re-run message. A frontier point with neither a
-retained artifact nor a live quote grid is the named 410 `frontier_point_unavailable`, and a
+retained artifact nor a live quote grid is the named 410 `frontier_point_unavailable` (its
+`runtime_reason` says whether the runtime expired, or its solver session ran out of memory —
+worded definitely only when the memory limiter recorded it — or stopped unexpectedly), and a
 point request replaced by a newer one while it waited is the named 409
 `frontier_point_apply_replaced`. An invalid server-owned handle or
 a present-but-corrupt artifact returns a sanitized 500; filesystem and parquet details remain

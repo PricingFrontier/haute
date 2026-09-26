@@ -205,6 +205,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         "lazy_sink",
         "training_prep",
         "optimiser_setup",
+        "optimiser_solve",
         "explore_analysis",
         "auto_range",
         "deploy_live",

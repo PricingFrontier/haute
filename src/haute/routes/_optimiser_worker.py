@@ -50,6 +50,7 @@ from haute._execution_admission import (
 )
 from haute._execution_context import ExecutionContext, ExecutionMemoryLimitExceededError
 from haute._logging import get_logger
+from haute._memory_errors import memory_error_in
 from haute._seed_plans import SeedPlanHandoff
 from haute.routes._job_lifecycle import TERMINAL_REASONS, TerminalReason
 from haute.routes._job_store import get_job_store
@@ -208,18 +209,6 @@ def _temporary_files_in(scratch_dir: str) -> Iterator[None]:
         tempfile.tempdir = previous
 
 
-def _memory_error_in(exc: BaseException) -> MemoryError | None:
-    """Return a ``MemoryError`` behind *exc*, however many translations wrap it."""
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        if isinstance(current, MemoryError):
-            return current
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return None
-
-
 def _private_solve_job(store: JobStore, request: SolveInputWorkerRequest) -> str:
     from haute.routes._optimiser_service import _OptimiserSolveRunningJob
 
@@ -345,7 +334,7 @@ def materialise_solve_input_worker(
             execution_metrics=context.metrics_payload(),
         )
     except Exception as exc:
-        memory_error = _memory_error_in(exc)
+        memory_error = memory_error_in(exc)
         if memory_error is not None:
             raise memory_error from None
         return SolveInputWorkerOutcome(
@@ -405,7 +394,7 @@ def frontier_auto_range_worker(
             execution_metrics=context.metrics_payload(status="completed"),
         )
     except Exception as exc:
-        memory_error = _memory_error_in(exc)
+        memory_error = memory_error_in(exc)
         if memory_error is not None:
             raise memory_error from None
         return FrontierAutoRangeWorkerOutcome(
@@ -449,7 +438,7 @@ def optimiser_estimate_worker(
     except Exception as exc:
         # A MemoryError behind any translation (setup maps it to a 500) leaves
         # the worker as itself, so the pool answers the typed 507.
-        memory_error = _memory_error_in(exc)
+        memory_error = memory_error_in(exc)
         if memory_error is not None:
             raise memory_error from None
         if isinstance(exc, HTTPException):

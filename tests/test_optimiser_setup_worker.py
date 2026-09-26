@@ -34,6 +34,7 @@ from haute.routes import _optimiser_artifacts, _optimiser_service, _optimiser_wo
 from haute.routes._background_jobs import BackgroundJobStoppedError
 from haute.routes._job_store import JobStore, get_job_store
 from haute.routes._optimiser_service import OptimiserSolveService
+from haute.routes._optimiser_session import SolverSession
 from haute.routes._optimiser_worker import (
     FrontierAutoRangeWorkerOutcome,
     FrontierAutoRangeWorkerRequest,
@@ -444,13 +445,14 @@ class TestRealWorker:
         _process_mode(monkeypatch)
         calls = _record_real_worker(monkeypatch)
         grid_inputs: list[str] = []
-        real_build = OptimiserSolveService._build_grid_from_parquet
+        real_run = SolverSession.run_command
 
-        def recording_build(self, input_path: str, *args: Any, **kwargs: Any) -> Any:
-            grid_inputs.append(input_path)
-            return real_build(self, input_path, *args, **kwargs)
+        def recording_run(self, command: Any, request: Any, **kwargs: Any) -> Any:
+            # The solver session builds the grid from the file its request names.
+            grid_inputs.append(request.input_path)
+            return real_run(self, command, request, **kwargs)
 
-        monkeypatch.setattr(OptimiserSolveService, "_build_grid_from_parquet", recording_build)
+        monkeypatch.setattr(SolverSession, "run_command", recording_run)
         process_status = _solve(client, graph)
 
         assert process_status["status"] == "completed", process_status.get("message")

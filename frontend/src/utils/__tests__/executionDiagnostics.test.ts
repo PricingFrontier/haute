@@ -241,6 +241,16 @@ describe("executionDiagnostics", () => {
     )
   })
 
+  it("labels the solver session's profile as the optimiser", () => {
+    const message = buildExecutionFailureMessage(
+      "Stopped",
+      makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: null }),
+      { prefix: "Optimisation failed", status: "memory_limited" },
+    )
+
+    expect(message).toContain("Optimisation failed: optimiser reached")
+  })
+
   it("normalises admission memory_limit details to memory_limited terminal state", () => {
     const error = {
       rawDetail: {

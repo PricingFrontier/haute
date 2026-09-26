@@ -30,6 +30,7 @@ from haute._contracts import Contract, get_column_contract
 from haute._env import int_env, optional_int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
+    admit_growth_grant,
     create_admitted_execution_context,
     execution_budget_for_profile,
     isolated_execution_budget,
@@ -45,14 +46,20 @@ from haute._graph_utils import (
     _sanitize_func_name,
     upstream_node_ids,
 )
-from haute._interactive_workers import resolve_interactive_execution_mode
+from haute._interactive_workers import (
+    InteractiveWorkerError,
+    InteractiveWorkerStoppedError,
+    resolve_interactive_execution_mode,
+)
 from haute._logging import get_logger
+from haute._memory_errors import memory_error_in
 from haute._polars_utils import (
     bounded_collect_batches,
     streaming_collect,
 )
 from haute._sandbox import _get_project_root
 from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
+from haute._step_progress import StepProgress
 from haute._types import (
     GraphNode,
     PipelineGraph,
@@ -134,6 +141,20 @@ from haute.routes._optimiser_outcomes import (
     require_one_row_per_solved_quote,
     scenario_grid_from_values,
     write_quote_analysis,
+)
+from haute.routes._optimiser_session import (
+    ESTIMATE_HOLDERS,
+    ESTIMATE_WAIT_SECONDS,
+    RUNTIME_MODE_KEY,
+    SESSION_KEY,
+    SESSION_RUNTIME,
+    SessionCommandError,
+    SolverSession,
+)
+from haute.routes._optimiser_session_worker import (
+    SessionSolveOutcome,
+    SessionSolveRequest,
+    build_and_solve,
 )
 from haute.routes._optimiser_solver import (
     SolveContext,
@@ -401,6 +422,64 @@ def _coerce_stopped_terminal_reason(reason: str) -> TerminalReason:
     if reason in TERMINAL_REASONS:
         return cast(TerminalReason, reason)
     return "superseded"
+
+
+_SOLVE_MEMORY_MESSAGE = (
+    "The optimisation ran out of memory while solving. Reduce the number of quotes or "
+    "scenario steps, or close other applications, then try again."
+)
+
+
+def solve_failure_transition(
+    exc: Exception,
+    *,
+    node_id: str,
+    elapsed_seconds: float,
+) -> tuple[TerminalReason, str, dict[str, Any]]:
+    """Classify one solve failure into its terminal reason, message and job fields.
+
+    Shared by the thread-mode solver thread and the solver session's child, so
+    both modes publish the same outcome for the same failure. A ``MemoryError``
+    behind any translation is ``memory_limited``, never an algorithm error.
+    """
+    if isinstance(exc, ExecutionCancelledError):
+        return "cancelled", "Cancelled", {}
+    if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+        return contract_error_terminal_reason(exc), str(exc), contract_error_job_fields(exc)
+    if memory_error_in(exc) is not None:
+        logger.error("solve_failed", error=str(exc), node_id=node_id, category="memory")
+        return (
+            "memory_limited",
+            _SOLVE_MEMORY_MESSAGE,
+            {
+                "error_code": "memory_limit",
+                "http_status_code": 507,
+                "error_detail": {
+                    "error_code": "memory_limit",
+                    "operation": "optimiser_solve",
+                    "reason": "solver_memory_error",
+                    "message": _SOLVE_MEMORY_MESSAGE,
+                },
+            },
+        )
+    if isinstance(exc, _OptimiserSolveInputError):
+        category, error_msg, reason = "data", f"Data error: {exc}", "contract_error"
+    elif isinstance(exc, _OptimiserSolverExecutionError):
+        category, error_msg, reason = "algorithm", f"Algorithm error: {exc}", "error"
+    else:
+        category, error_msg, reason = "unexpected", f"Unexpected error: {exc}", "error"
+    logger.error(
+        "solve_failed",
+        error=str(exc),
+        node_id=node_id,
+        category=category,
+        exc_info=True,
+    )
+    return (
+        cast(TerminalReason, reason),
+        error_msg,
+        {"message": error_msg, "elapsed_seconds": elapsed_seconds},
+    )
 
 
 _STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES = frozenset(
@@ -1361,11 +1440,13 @@ class OptimiserSolveService:
         # every frame it needs, and releases on any exit.
         with contextlib.ExitStack() as resources:
             try:
-                execution_context = create_admitted_execution_context(
+                execution_context = admit_growth_grant(
                     operation="optimiser_solve",
-                    profile=ExecutionProfile.OPTIMISER_SETUP,
+                    profile=ExecutionProfile.OPTIMISER_SOLVE,
                     job_id=job_id,
                     cancellation_token=execution_token,
+                    wait_out_holders=ESTIMATE_HOLDERS,
+                    wait_seconds=ESTIMATE_WAIT_SECONDS,
                 )
                 bind_running_execution_metrics_publisher(
                     self._store,
@@ -1401,16 +1482,25 @@ class OptimiserSolveService:
                     ratebook_factors_handle = solve_input.ratebook_factors_handle
                     quote_analysis_handle = solve_input.quote_analysis_handle
                     self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                    quote_grid = self._build_grid_from_parquet(
-                        solve_input.path,
-                        solve_input.constraint_cols,
-                        config,
-                        body.node_id,
+                    # Setup's grant and its seed plan end with its worker: the
+                    # input is written, and the session admits afresh, sized from
+                    # what setup has given back.
+                    execution_context.release_admission()
+                    resources.close()
+                    launch_started = True
+                    self._solve_in_session(
+                        body,
                         job_id,
+                        config,
+                        mode,
+                        solve_input=solve_input,
+                        factor_level_order=factor_level_order,
+                        setup_job_key=setup_job_key,
+                        execution_token=execution_token,
                         execution_context=execution_context,
+                        start_time=start_time,
                     )
-                    if quote_analysis_handle is not None:
-                        require_one_row_per_solved_quote(quote_analysis_handle, quote_grid.n_quotes)
+                    return
                 else:
                     constraint_cols, scored_lf, ratebook_factors_handle, analysis = (
                         self._prepare_solver_frame(
@@ -1494,6 +1584,176 @@ class OptimiserSolveService:
                         _optimiser_artifacts._remove_ratebook_factors_directory(
                             ratebook_factors_dir
                         )
+
+    def _solve_in_session(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        config: dict[str, Any],
+        mode: str,
+        *,
+        solve_input: SolveInput,
+        factor_level_order: dict[str, list[str]],
+        setup_job_key: tuple[str, str, str],
+        execution_token: ExecutionCancellationToken,
+        execution_context: ExecutionContext,
+        start_time: float,
+    ) -> None:
+        """Build the grid, solve and publish in the job's solver session (process mode).
+
+        The session is on the job before it is spawned, so cancelling finds it;
+        the job's cancellation reason is its stop signal, so a cancelled or
+        timed-out solve ends the process mid-call. A published solve keeps its
+        session; any other outcome terminates it and removes what setup handed
+        over, and only then releases the graph/node ownership.
+        """
+        session = SolverSession(job_id=job_id, store=self._store)
+        adopted = False
+        outcome_handles: list[dict[str, Any]] = []
+        # The session writes the as-solved apply artifact here; removed unless adopted.
+        apply_artifact_dir: Path | None = None
+
+        def stop_reason() -> Any:
+            return self._jobs.cancellation_reason(job_id)
+
+        def on_progress(update: StepProgress) -> None:
+            fraction = update.done / update.total if update.total else 0.0
+            self._store.atomic_update(
+                job_id,
+                {
+                    "message": update.label,
+                    "progress": 0.05 + 0.9 * fraction,
+                    "elapsed_seconds": time.monotonic() - start_time,
+                },
+                expected_status="running",
+            )
+
+        def publish(outcome: SessionSolveOutcome) -> bool:
+            if outcome.grid_forecast_bytes is not None:
+                self._store.atomic_update(
+                    job_id,
+                    {"grid_forecast_bytes": outcome.grid_forecast_bytes},
+                    expected_status="running",
+                )
+            if outcome.failure is not None:
+                raise OptimiserWorkerFailureError(outcome.failure)
+            fields = dict(outcome.completion_fields or {})
+            handles = fields.get("artifact_handles") or {}
+            outcome_handles.extend(dict(handle) for handle in handles.values())
+            _optimiser_artifacts._validate_apply_result_artifact_handle(
+                handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY]
+            )
+            fields[SESSION_KEY] = session
+            fields[RUNTIME_MODE_KEY] = SESSION_RUNTIME
+            published = self._lifecycle.publish_completion(
+                job_id,
+                publish=lambda: fields,
+                message="Completed",
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+            return published is not None
+
+        try:
+            apply_artifact_dir = _optimiser_artifacts._new_apply_artifact_directory()
+            if (
+                self._store.atomic_update(
+                    job_id,
+                    {SESSION_KEY: session, "message": "Starting the solver", "progress": 0.04},
+                    expected_status="running",
+                )
+                is None
+            ):
+                return
+            session.start(stop_reason=stop_reason)
+            job = self._store.require_job(job_id)
+            adopted = session.run_command(
+                build_and_solve,
+                SessionSolveRequest(
+                    session_id=job_id,
+                    project_root=str(_get_project_root()),
+                    node_id=body.node_id,
+                    mode=mode,
+                    config=dict(config),
+                    node_label=str(job.get("node_label", body.node_id)),
+                    input_provenance=dict(job["input_provenance"]),
+                    setup_chunking=dict(job.get("setup_chunking") or {}),
+                    input_path=solve_input.path,
+                    constraint_cols=list(solve_input.constraint_cols),
+                    ratebook_factors_handle=solve_input.ratebook_factors_handle,
+                    quote_analysis_handle=solve_input.quote_analysis_handle,
+                    factor_level_order=factor_level_order,
+                    apply_artifact_dir=str(apply_artifact_dir),
+                ),
+                operation="optimiser_solve",
+                stage="building the quote grid",
+                publish=publish,
+                stop_reason=stop_reason,
+                on_progress=on_progress,
+                cancellation_token=execution_token,
+            )
+        except InteractiveWorkerStoppedError:
+            # Cancel and timeout transition the job themselves.
+            logger.info("solve_session_stopped", job_id=job_id)
+        except SessionCommandError as exc:
+            self._lifecycle.transition(
+                job_id,
+                to=exc.terminal_reason,
+                message=exc.message,
+                fields={
+                    "http_status_code": exc.http_status_code,
+                    "error_detail": exc.detail,
+                    **(
+                        {"error_code": "memory_limit"}
+                        if exc.terminal_reason == "memory_limited"
+                        else {}
+                    ),
+                },
+                elapsed_seconds=time.monotonic() - start_time,
+            )
+        except InteractiveWorkerError as exc:
+            self._record_solve_setup_failure(
+                job_id,
+                HTTPException(
+                    status_code=500,
+                    detail=f"The optimiser's solver process could not run: {exc}",
+                ),
+                node_id=body.node_id,
+                execution_context=execution_context,
+                start_time=start_time,
+            )
+        except Exception as exc:
+            self._record_solve_setup_failure(
+                job_id,
+                exc,
+                node_id=body.node_id,
+                execution_context=execution_context,
+                start_time=start_time,
+            )
+        finally:
+            if not adopted:
+                session.terminate("error")
+                self._store.clear_result_data(job_id, keys=(SESSION_KEY,))
+                for handle in (
+                    *outcome_handles,
+                    solve_input.quote_analysis_handle,
+                    solve_input.ratebook_factors_handle,
+                ):
+                    if handle is not None:
+                        _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
+                            handle,
+                            job_id=job_id,
+                            event="solve_session_orphan_artifact_cleanup_failed",
+                        )
+                if apply_artifact_dir is not None:
+                    _optimiser_artifacts._remove_apply_artifact_directory(apply_artifact_dir)
+            # The session command's own admission and cap describe the solve, not setup's.
+            command_context = session.last_context
+            self._record_execution_metrics(
+                job_id, command_context if command_context is not None else execution_context
+            )
+            if session.last_command is not None:
+                self._store.update_job(job_id, solver_session_command=dict(session.last_command))
+            self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
 
     def _prepare_solver_frame(
         self,
@@ -1857,7 +2117,7 @@ class OptimiserSolveService:
                 elapsed_seconds=elapsed_seconds,
             )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
+            http_exc = memory_limit_http_exception(exc, operation_noun="Optimisation")
             if execution_context is not None:
                 memory_error_update = _memory_limit_job_update(
                     detail=http_exc.detail,
@@ -2442,6 +2702,8 @@ class OptimiserSolveService:
             execution_context = create_admitted_execution_context(
                 operation="frontier_auto_range_preparation",
                 profile=ExecutionProfile.AUTO_RANGE,
+                wait_out_holders=ESTIMATE_HOLDERS,
+                wait_seconds=ESTIMATE_WAIT_SECONDS,
             )
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise memory_limit_http_exception(exc, operation_noun="Auto-range") from None
@@ -3960,75 +4222,18 @@ class OptimiserSolveService:
                         )
             except BackgroundJobStoppedError:
                 logger.info("solve_worker_stopped", job_id=job_id)
-            except ExecutionCancelledError as exc:
-                self._lifecycle.transition(
-                    job_id,
-                    to="cancelled",
-                    message="Cancelled",
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-                logger.info("solve_worker_cancelled", job_id=job_id, error=str(exc))
-            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-                self._lifecycle.transition(
-                    job_id,
-                    to=contract_error_terminal_reason(exc),
-                    message=str(exc),
-                    fields=contract_error_job_fields(exc),
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except _OptimiserSolveInputError as exc:
-                error_msg = f"Data error: {exc}"
-                logger.error(
-                    "solve_failed",
-                    error=str(exc),
-                    node_id=node_id,
-                    category="data",
-                    exc_info=True,
-                )
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=error_msg,
-                    fields={
-                        "message": error_msg,
-                        "elapsed_seconds": time.monotonic() - start_time,
-                    },
-                )
-            except _OptimiserSolverExecutionError as exc:
-                error_msg = f"Algorithm error: {exc}"
-                logger.error(
-                    "solve_failed",
-                    error=str(exc),
-                    node_id=node_id,
-                    category="algorithm",
-                    exc_info=True,
-                )
-                self._lifecycle.transition(
-                    job_id,
-                    to="error",
-                    message=error_msg,
-                    fields={
-                        "message": error_msg,
-                        "elapsed_seconds": time.monotonic() - start_time,
-                    },
-                )
             except Exception as exc:
-                error_msg = f"Unexpected error: {exc}"
-                logger.error(
-                    "solve_failed",
-                    error=str(exc),
+                reason, message, fields = solve_failure_transition(
+                    exc,
                     node_id=node_id,
-                    category="unexpected",
-                    exc_info=True,
+                    elapsed_seconds=time.monotonic() - start_time,
                 )
                 error_job = self._lifecycle.transition(
                     job_id,
-                    to="error",
-                    message=error_msg,
-                    fields={
-                        "message": error_msg,
-                        "elapsed_seconds": time.monotonic() - start_time,
-                    },
+                    to=reason,
+                    message=message,
+                    fields=fields,
+                    elapsed_seconds=time.monotonic() - start_time,
                 )
                 if error_job is None:
                     logger.info("solve_error_update_skipped", job_id=job_id)

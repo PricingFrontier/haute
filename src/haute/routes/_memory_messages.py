@@ -52,6 +52,19 @@ def memory_limit_user_message(
                 "measure its memory use. Try again; if this keeps happening, "
                 "restart the app."
             )
+        if exc.estimated_bytes is not None and exc.allowance_bytes is not None:
+            return (
+                f"{operation_noun} was not started: it needs an estimated "
+                f"{format_byte_size(exc.estimated_bytes)}, and "
+                f"{format_byte_size(max(exc.allowance_bytes, 0))} is available. Reduce the "
+                "data size, or run on a server with more memory, then try again."
+            )
+        if exc.reason == "no_memory_available":
+            return (
+                f"{operation_noun} was not started because the machine has no free memory "
+                "beyond what is kept for the operating system. Close other applications, then "
+                "try again."
+            )
         if exc.reason == "in_flight_memory_budget_exceeded":
             reserved = exc.in_flight_reserved_bytes
             allowed = exc.in_flight_limit_bytes
@@ -113,4 +126,39 @@ def memory_limit_user_message(
         f"{_sizes_detail(used, allowed)}. "
         "Reduce the data size or the number of features, or run on a server "
         "with more memory, then try again."
+    )
+
+
+_SESSION_REMEDY = (
+    "Reduce the number of quotes or scenario steps, or close other applications, then try again."
+)
+
+
+def solver_session_memory_message(
+    evidence: str,
+    *,
+    cap_bytes: int | None,
+    stage: str,
+    subject: str = "The optimisation",
+) -> str:
+    """The user message for a solver session that ran out of memory (OPT-W01).
+
+    Definite only when the memory limiter itself recorded a refusal
+    (``cap_confirmed``) or RSS supervision measured the breach (``watchdog``);
+    a ``MemoryError`` or a memory-shaped exit without a limiter record is
+    worded as the likely cause it is.
+    """
+    cap = "the memory" if cap_bytes is None else f"the {format_byte_size(cap_bytes)} of memory"
+    if evidence == "cap_confirmed":
+        return (
+            f"{subject} needed more than {cap} this machine could give it while {stage}, and "
+            f"was stopped. {_SESSION_REMEDY}"
+        )
+    if evidence == "watchdog":
+        return f"{subject} used more than {cap} it was given while {stage}, and was stopped. " + (
+            _SESSION_REMEDY
+        )
+    return (
+        f"{subject} stopped unexpectedly while {stage}, most likely because it ran out of "
+        f"{cap} this machine could give it. {_SESSION_REMEDY}"
     )
