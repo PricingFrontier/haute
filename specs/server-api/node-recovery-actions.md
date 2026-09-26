@@ -72,7 +72,10 @@ carries as its remediation. The author rewrites it, or removes the node.
   recovered settings and reports the dropped body as a `/code` field change with outcome
   `removed`, its lines visible in the source diff; the author re-adds any custom code
   in the node's editor. Such a body is never moved into a hook, where its old calls would
-  name inputs the hook does not bind. The `contract=` annotation is generated
+  name inputs the hook does not bind. It is never compared with a stepped node's
+  `steps` either: a step list the parser can use (a list, and no `inputMapping` beside an
+  edges surface) is kept as settings and regenerates the hook that performs it. The
+  `contract=` annotation is generated
   scaffolding: recover derives it from the recovered settings exactly as the parse-time check does (never loading an
   external model artifact), and a declared contract supplies only the sides that
   derivation leaves opaque, so an annotation left stale by a settings edit is replaced
@@ -164,6 +167,7 @@ identities, rollback, strict transport parsing, a banding node whose saved annot
 promises an output its draft factor no longer creates (recover loads it with a
 regenerated annotation and a sidecar without the stale `contract` copy), a function body
 in the pre-declaration generated form on a type without code and on a hook type (recover
-keeps the settings, regenerates the declaration and reports the body removed), a reset
-below an unavailable upstream, and the UI's
+keeps the settings, regenerates the declaration and reports the body removed), the same
+on a stepped node (its steps survive and regenerate the hook), a reset below an
+unavailable upstream, and the UI's
 action-specific confirmation/apply and failure behaviour.

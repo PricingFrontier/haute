@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import pickle
+import re
 import subprocess
 import sys
 import textwrap
@@ -4960,6 +4961,63 @@ def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, su
     raw, _changes = _recovered_settings(project_root, node_id)
     assert raw["steps"] == steps, surface
     assert "_steps_discarded" not in raw, surface
+
+
+@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
+    project_root: Path, surface: str
+) -> None:
+    """A function that is not a hook loses its body, never its steps.
+
+    Every generated body before node declarations took this form. The steps
+    are the node's settings, so the regenerated hook still performs them.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    quotes, _rates = _frames(project_root)
+    steps = [step("l", "limit", n=2)]
+    if surface == "explore":
+        node, node_id, old_signature = _explore(steps), "report", "def report(quotes)"
+        graph = PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", "report")])
+    else:
+        node, node_id, old_signature = _stepped_input(quotes, steps), "quotes", "def quotes()"
+        graph = PipelineGraph(nodes=[node], edges=[])
+    code = graph_to_code(graph, pipeline_name="main")
+    old_form, replaced = re.subn(rf"def {node_id}\(df[^)]*\)", old_signature, code)
+    assert replaced == 1, code
+    _write_sidecars(project_root, graph)
+    (project_root / "main.py").write_text(old_form, encoding="utf-8", newline="\n")
+
+    raw, changes = _recovered_settings(project_root, node_id)
+    assert raw["steps"] == steps, surface
+    assert "_steps_discarded" not in raw, surface
+    reported = [(c.path, c.outcome) for c in changes if c.path in {"/code", "/steps"}]
+    assert reported == [("/code", "removed")], surface
+    recovered = GraphNode(
+        id=node_id,
+        data=NodeData(label=node_id, nodeType=node.data.nodeType, config=raw),
+    )
+    assert recovered.data.config["code"] == "df = df.head(2)", surface
+
+    document = load_pipeline_editor_document(project_root / "main.py", project_root=project_root)
+    target = next(item for item in document.nodes if item.authored_id == node_id)
+    plan = build_recover_unavailable_node_plan(
+        project_root=project_root,
+        request=PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+    source = next(edit for edit in plan.edits if edit.path.name == "main.py")
+    assert source.after is not None
+    regenerated = source.after.decode("utf-8")
+    assert f"def {node_id}(df" in regenerated, surface
+    assert "    df = df.head(2)\n    return df\n" in regenerated, surface
 
 
 def test_recovery_plans_a_malformed_step_container_without_raising(project_root: Path) -> None:

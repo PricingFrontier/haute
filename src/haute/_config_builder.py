@@ -501,6 +501,35 @@ def _same_program(rendered: str, body: str) -> bool:
         return False
 
 
+def validate_step_container(
+    config: dict[str, Any],
+    node_type: NodeType,
+    config_ref: str | None,
+    func_name: str,
+) -> None:
+    """Refuse a ``steps`` value no stepped node can use, whatever its body.
+
+    It must be a list, and an edges surface takes its inputs from the edges,
+    so it cannot sit beside an ``inputMapping``.
+    """
+    if not isinstance(config["steps"], list):
+        raise ConfigError(
+            f"{node_type.value} 'steps' must be a list.",
+            func_name=func_name,
+            config_path=config_ref,
+        )
+    if (
+        stepped_surface_for(node_type).inputs == "edges"
+        and config.get("inputMapping") is not None
+        and not config.get("instanceOf")
+    ):
+        raise ConfigError(
+            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+            func_name=func_name,
+            config_path=config_ref,
+        )
+
+
 def _reconcile_steps(
     config: dict[str, Any],
     node_type: NodeType,
@@ -527,24 +556,9 @@ def _reconcile_steps(
     """
     if "steps" not in config:
         return config
+    validate_step_container(config, node_type, config_ref, func_name)
     surface = stepped_surface_for(node_type)
     steps = config["steps"]
-    if not isinstance(steps, list):
-        raise ConfigError(
-            f"{node_type.value} 'steps' must be a list.",
-            func_name=func_name,
-            config_path=config_ref,
-        )
-    if (
-        surface.inputs == "edges"
-        and config.get("inputMapping") is not None
-        and not config.get("instanceOf")
-    ):
-        raise ConfigError(
-            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-            func_name=func_name,
-            config_path=config_ref,
-        )
     body_code = str(config.get("code") or "")
     try:
         rendered = render_polars_steps(

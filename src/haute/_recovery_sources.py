@@ -13,6 +13,7 @@ from haute._config_builder import (
     _attach_code_from_body,
     _reconcile_steps,
     uncalled_function_body,
+    validate_step_container,
 )
 from haute._config_io import (
     _normalise_loaded_config,
@@ -105,7 +106,8 @@ def read_raw_node_settings(
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
     body = _extract_function_bodies(source, tree=tree)[function.name]
     keyword_only = [arg.arg for arg in function.args.kwonlyargs]
-    if uncalled_function_body(node_type, body, [*params, *keyword_only], params):
+    body_dropped = uncalled_function_body(node_type, body, [*params, *keyword_only], params)
+    if body_dropped:
         # The body has no place under the current contract; moved into a hook,
         # its old calls would name inputs the hook never binds.
         changes.append(
@@ -117,7 +119,9 @@ def read_raw_node_settings(
         # The ``.py`` body is the runtime truth here as it is in ordinary
         # parsing: without this, a hand-edited body would be silently
         # regenerated from stale steps when ``NodeData`` materialises the
-        # recovered candidate, losing the authored edit.
+        # recovered candidate, losing the authored edit. A dropped body was
+        # never run, so nothing competes with the steps: they are settings,
+        # kept to regenerate the hook.
         #
         # Recovery never raises on a bad field, so a step list the parser
         # rejects outright (a malformed container, or a list beside an
@@ -126,7 +130,11 @@ def read_raw_node_settings(
         # key is removed, never defaulted to ``[]``, because an empty list
         # would materialise as empty code and discard that body.
         try:
-            reconciled = _reconcile_steps(raw, node_type, params, reference, function.name)
+            if body_dropped:
+                validate_step_container(raw, node_type, reference, function.name)
+                reconciled = raw
+            else:
+                reconciled = _reconcile_steps(raw, node_type, params, reference, function.name)
             reason = str(reconciled.get("_steps_discarded", ""))
         except ConfigError as exc:
             reconciled = {key: value for key, value in raw.items() if key != "steps"}
