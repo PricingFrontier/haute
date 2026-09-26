@@ -7,39 +7,119 @@
  * groups, direction and quantile controls live here too so every form lays
  * out its repeated rows the same way.
  */
-import { Plus, X } from "lucide-react"
+import {
+  AlertTriangle,
+  Ban,
+  Calendar,
+  Check,
+  ChevronRight,
+  Columns2,
+  Hash,
+  Plus,
+  Quote,
+  SquareFunction,
+  ToggleRight,
+  Variable as VariableIcon,
+  X,
+  type LucideIcon,
+} from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
 import { CommittedTextField } from "../../../components/form"
+import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal } from "./catalogue"
 import { completionMatches } from "./completion"
-import { useCompletionList } from "./useCompletionList"
+import { useStepSchema } from "./stepSchema"
+import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
 import type { Condition, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
 const CHIP_STYLE = { background: "var(--chrome-hover)", color: "var(--text-primary)", border: "1px solid var(--border)" }
 const ADD_BUTTON_STYLE = { color: "var(--text-secondary)", border: "1px solid var(--border)" }
 
-export function FieldLabel({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
+/**
+ * A field's label: short and in sentence case, with any note beside it in
+ * normal weight ("Group by · empty = summarise the whole frame"), so a card
+ * has a hierarchy under its title rather than stacked capitals.
+ */
+export function FieldLabel({ children, htmlFor, note }: { children: ReactNode; htmlFor?: string; note?: string }) {
   return (
-    <label
-      htmlFor={htmlFor}
-      className="block text-[10px] font-bold uppercase tracking-[0.08em] mb-1"
-      style={{ color: "var(--text-muted)" }}
-    >
-      {children}
+    <label htmlFor={htmlFor} className="mb-1 flex flex-wrap items-baseline gap-x-1.5 text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+      <span>{children}</span>
+      {note && (
+        <span className="font-normal" style={{ color: "var(--text-muted)" }}>
+          {note}
+        </span>
+      )}
     </label>
   )
 }
 
-/** A stacked label + control block; the single-column grid unit of every form. */
-export function Field({ label, children, htmlFor }: { label?: ReactNode; children: ReactNode; htmlFor?: string }) {
+/** A stacked label + control block, for fields a sentence cannot carry. */
+export function Field({ label, note, children, htmlFor }: { label?: ReactNode; note?: string; children: ReactNode; htmlFor?: string }) {
   return (
     <div className="min-w-0">
-      {label !== undefined && <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>}
+      {label !== undefined && <FieldLabel htmlFor={htmlFor} note={note}>{label}</FieldLabel>}
       {children}
     </div>
+  )
+}
+
+/**
+ * A form line that reads as a sentence: muted linking words (`Words`) and
+ * controls, wrapping at narrow widths (`Keep the first [100] rows`). The
+ * controls carry their own accessible names.
+ */
+export function Sentence({ children, label }: { children: ReactNode; label?: string }) {
+  return (
+    <div
+      className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs"
+      style={{ color: "var(--text-secondary)" }}
+      role={label ? "group" : undefined}
+      aria-label={label}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** Linking words inside a `Sentence`. */
+export function Words({ children }: { children: ReactNode }) {
+  return <span className="shrink-0 whitespace-nowrap">{children}</span>
+}
+
+/**
+ * Options the simple case never needs, behind a quiet disclosure that opens
+ * by itself when the saved step already uses one of them.
+ */
+export function MoreOptions({ used, children, label = "More options" }: { used: boolean; children: ReactNode; label?: string }) {
+  const [open, setOpen] = useState(used)
+  const id = useId()
+  return (
+    <div className="grid gap-2">
+      <DisclosureButton open={open} onToggle={() => setOpen((v) => !v)} label={label} controls={id} />
+      <div id={id} hidden={!open} className="grid gap-2.5">
+        {open && children}
+      </div>
+    </div>
+  )
+}
+
+/** The quiet chevron toggle of a disclosure ("› More options"). */
+export function DisclosureButton({ open, onToggle, label, controls }: { open: boolean; onToggle: () => void; label: string; controls?: string }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-controls={controls}
+      onClick={onToggle}
+      className="focus-ring inline-flex items-center gap-1 justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
+      style={{ color: "var(--text-secondary)" }}
+    >
+      <ChevronRight size={11} aria-hidden="true" className="transition-transform" style={{ transform: open ? "rotate(90deg)" : undefined }} />
+      {label}
+    </button>
   )
 }
 
@@ -223,16 +303,15 @@ export function QuantileField({ value, onChange, ariaLabel }: { value: number | 
   )
 }
 
-/** The full-width "add a row" action under a list. */
+/** The quiet "+ Add …" text action under a list. */
 export function AddRow({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="add-row-btn focus-ring flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg justify-center"
-      style={ADD_BUTTON_STYLE}
+      className="quiet-action focus-ring inline-flex items-center gap-1 justify-self-start rounded px-1 py-0.5 -ml-1 text-[11px] font-medium"
     >
-      <Plus size={12} aria-hidden="true" />
+      <Plus size={11} aria-hidden="true" />
       {label}
     </button>
   )
@@ -298,57 +377,139 @@ export function RowList<T>({
   )
 }
 
-/** The dropdown of completions under a text box; the box owns the keyboard. */
+/** A name with the part matching `prefix` in bold. */
+function PrefixLabel({ label, prefix }: { label: string; prefix: string }) {
+  if (!prefix || !label.toLowerCase().startsWith(prefix.toLowerCase())) return <>{label}</>
+  return (
+    <>
+      <strong className="font-semibold" style={{ color: "var(--text-primary)" }}>{label.slice(0, prefix.length)}</strong>
+      {label.slice(prefix.length)}
+    </>
+  )
+}
+
+/** The colour of a completion's note: a column type in its type colour, anything else muted. */
+function noteClass(note: string): string {
+  return note === "new" || note === "variable" ? "" : getDtypeColor(note)
+}
+
+/**
+ * The dropdown of completions under a text box; the box owns the keyboard.
+ * The active entry is tinted with an accent bar at its left; `matched` names
+ * text that is already an exact name, shown ticked so Tab visibly keeps it.
+ */
 export function CompletionList({
   id,
   matches,
   activeIndex,
+  matched = null,
+  prefix = "",
   onPick,
   onHover,
   label = "Matching columns",
 }: {
   id: string
-  matches: string[]
-  activeIndex: number
-  onPick: (name: string) => void
+  matches: Completion[]
+  activeIndex: number | null
+  matched?: string | null
+  prefix?: string
+  onPick: (entry: Completion) => void
   onHover: (index: number) => void
   label?: string
 }) {
-  if (matches.length === 0) return null
+  if (matches.length === 0 && matched === null) return null
   return (
     <ul
       id={id}
       role="listbox"
       aria-label={label}
-      className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md p-1 shadow-lg"
+      className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-y-auto rounded-md p-1 shadow-lg"
       style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
     >
-      {matches.map((name, index) => (
-        <li
-          key={name}
-          id={`${id}-${index}`}
-          role="option"
-          aria-selected={index === activeIndex}
-          onMouseDown={(event) => {
-            event.preventDefault()
-            onPick(name)
-          }}
-          onMouseEnter={() => onHover(index)}
-          className="cursor-pointer rounded px-2 py-1 text-xs font-mono"
-          style={{ color: "var(--text-primary)", background: index === activeIndex ? "var(--chrome-hover)" : "transparent" }}
-        >
-          {name}
+      {matched !== null && (
+        <li role="none" className="flex items-center gap-1.5 rounded px-2 py-1 text-xs font-mono" style={{ color: "var(--text-secondary)" }}>
+          <Check size={11} aria-hidden="true" style={{ color: "var(--success)" }} />
+          <span className="truncate">{matched}</span>
+          <span className="ml-auto text-[10px] font-sans">matched</span>
         </li>
-      ))}
+      )}
+      {matches.map((entry, index) => {
+        const active = index === activeIndex
+        return (
+          <li
+            key={entry.value}
+            id={`${id}-${index}`}
+            role="option"
+            aria-selected={active}
+            onMouseDown={(event) => {
+              event.preventDefault()
+              onPick(entry)
+            }}
+            onMouseEnter={() => onHover(index)}
+            className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs font-mono"
+            style={{
+              color: active ? "var(--text-primary)" : "var(--text-secondary)",
+              background: active ? "var(--accent-soft)" : "transparent",
+              boxShadow: active ? "inset 2px 0 0 var(--accent)" : undefined,
+            }}
+          >
+            {entry.mark && (
+              <span className="w-3 shrink-0 text-center" style={{ color: "var(--syntax-function)" }} aria-hidden="true">
+                {entry.mark}
+              </span>
+            )}
+            <span className="truncate">
+              <PrefixLabel label={entry.label} prefix={prefix} />
+            </span>
+            {entry.note && (
+              <span aria-hidden="true" className={`ml-auto shrink-0 pl-2 text-[10px] font-sans ${noteClass(entry.note)}`} style={noteClass(entry.note) ? undefined : { color: "var(--text-muted)" }}>
+                {entry.note}
+              </span>
+            )}
+          </li>
+        )
+      })}
     </ul>
   )
 }
 
 /**
+ * The note under a column field whose name is not in the data at its step,
+ * offering the closest known name. Amber, not red: a step being built is not
+ * an error yet, and a name an unsaved upstream step will create is legitimate.
+ */
+export function UnknownColumnNote({ name, suggestion, onUse, id }: { name: string; suggestion: string | null; onUse: (name: string) => void; id?: string }) {
+  return (
+    <p id={id} role="status" className="m-0 flex flex-wrap items-center gap-x-1 text-[11px] leading-snug" style={{ color: "var(--warning)" }}>
+      <AlertTriangle size={11} aria-hidden="true" className="shrink-0" />
+      <span>
+        <code className="font-mono">{name}</code> isn&apos;t in the data at this step.
+      </span>
+      {suggestion !== null && (
+        <>
+          {" "}
+          <span>
+            Did you mean <code className="font-mono">{suggestion}</code>?
+          </span>{" "}
+          <button type="button" onClick={() => onUse(suggestion)} className="focus-ring rounded px-0.5 underline">
+            Use {suggestion}
+          </button>
+        </>
+      )}
+    </p>
+  )
+}
+
+/** Border for a column field or chip holding a name the step does not have. */
+const UNKNOWN_BORDER = "1px dashed var(--warning)"
+
+/**
  * A text box that completes column names: the names starting with what is
- * typed are listed beneath (every name while the box is empty), Up/Down move
- * through them, Tab or a click completes the name, Escape closes the list,
- * and Enter or leaving the box commits what was typed.
+ * typed are listed beneath (every name while the box is empty, none active),
+ * typing makes the first match active, Up/Down move, Tab, Enter or a click
+ * takes the active name, Escape closes the list, and with nothing active
+ * Enter or leaving the box commits what was typed. Each name shows its type
+ * from the step's schema.
  */
 function CompletingInput({
   draft,
@@ -362,6 +523,9 @@ function CompletingInput({
   id,
   autoFocus,
   className = "",
+  unknown = false,
+  describedBy,
+  extras = [],
 }: {
   draft: string
   onDraftChange: (next: string) => void
@@ -374,11 +538,20 @@ function CompletingInput({
   id?: string
   autoFocus?: boolean
   className?: string
+  /** Mark the box as holding a name the step does not have. */
+  unknown?: boolean
+  describedBy?: string
+  /** Entries listed after the matching names (a type-wide choice), matched on their label. */
+  extras?: Completion[]
 }) {
-  const completion = useCompletionList(completionMatches(suggestions, draft.trim(), exclude))
-  const accept = (name: string) => {
+  const schema = useStepSchema()
+  const typed = draft.trim()
+  const exact = typed.length > 0 && suggestions.includes(typed) && !exclude.includes(typed) ? typed : null
+  const extraMatches = extras.filter((entry) => entry.label.toLowerCase().includes(typed.toLowerCase()))
+  const completion = useCompletionList([...namesAsCompletions(completionMatches(suggestions, typed, exclude), schema.describe), ...extraMatches], exact)
+  const accept = (entry: Completion) => {
     completion.hide()
-    onAccept(name)
+    onAccept(entry.value)
   }
   return (
     <div className={`relative ${className}`}>
@@ -386,13 +559,14 @@ function CompletingInput({
         id={id}
         type="text"
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
         value={draft}
         placeholder={placeholder}
         autoFocus={autoFocus}
         {...completion.inputProps}
         onChange={(event) => {
           onDraftChange(event.target.value)
-          completion.show()
+          completion.typed()
         }}
         onFocus={completion.show}
         onBlur={() => {
@@ -408,9 +582,9 @@ function CompletingInput({
           }
         }}
         className={`${CONTROL_CLASS} font-mono`}
-        style={INPUT_STYLE}
+        style={unknown ? { ...INPUT_STYLE, border: UNKNOWN_BORDER } : INPUT_STYLE}
       />
-      <CompletionList {...completion.listProps} onPick={accept} />
+      <CompletionList {...completion.listProps} prefix={typed} onPick={accept} />
     </div>
   )
 }
@@ -428,6 +602,8 @@ export function ColumnPicker({
   placeholder = "column",
   id,
   autoFocus,
+  extras,
+  onExtra,
 }: {
   value: string
   onCommit: (next: string) => void
@@ -436,6 +612,9 @@ export function ColumnPicker({
   placeholder?: string
   id?: string
   autoFocus?: boolean
+  /** Entries after the column names that are not columns; choosing one calls `onExtra` with its value. */
+  extras?: Completion[]
+  onExtra?: (value: string) => void
 }) {
   const [draft, setDraft] = useState(value)
   const [seen, setSeen] = useState(value)
@@ -443,31 +622,52 @@ export function ColumnPicker({
     setSeen(value)
     setDraft(value)
   }
+  const schema = useStepSchema()
+  const noteId = useId()
   const commit = (next: string) => {
     const trimmed = next.trim()
     if (trimmed !== value) onCommit(trimmed)
   }
+  const unknown = value !== "" && schema.isKnown !== null && !schema.isKnown(value)
   return (
-    <CompletingInput
-      draft={draft}
-      onDraftChange={setDraft}
-      onCommit={commit}
-      onAccept={(name) => {
+    <div className="grid gap-1 min-w-0">
+      <CompletingInput
+        draft={draft}
+        onDraftChange={setDraft}
+        onCommit={commit}
+        onAccept={(name) => {
+          if (extras?.some((entry) => entry.value === name)) {
+            setDraft(value)
+            onExtra?.(name)
+            return
+          }
+          setDraft(name)
+          commit(name)
+        }}
+        suggestions={suggestions}
+        extras={extras}
+        ariaLabel={ariaLabel}
+        placeholder={placeholder}
+        id={id}
+        autoFocus={autoFocus}
+        unknown={unknown}
+        describedBy={unknown ? noteId : undefined}
+      />
+      {unknown && <UnknownColumnNote id={noteId} name={value} suggestion={schema.closest(value)} onUse={(name) => {
         setDraft(name)
-        commit(name)
-      }}
-      suggestions={suggestions}
-      ariaLabel={ariaLabel}
-      placeholder={placeholder}
-      id={id}
-      autoFocus={autoFocus}
-    />
+        onCommit(name)
+      }} />}
+    </div>
   )
 }
 
-function Chip({ label, onRemove, removeLabel }: { label: string; onRemove: () => void; removeLabel: string }) {
+function Chip({ label, onRemove, removeLabel, unknown = false }: { label: string; onRemove: () => void; removeLabel: string; unknown?: boolean }) {
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono" style={CHIP_STYLE}>
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono"
+      style={unknown ? { ...CHIP_STYLE, border: UNKNOWN_BORDER, color: "var(--warning)" } : CHIP_STYLE}
+      title={unknown ? "Not in the data at this step" : undefined}
+    >
       {label}
       <button type="button" onClick={onRemove} aria-label={removeLabel} className="icon-danger-btn focus-ring rounded">
         <X size={10} aria-hidden="true" />
@@ -483,40 +683,60 @@ export function ColumnListField({
   suggestions,
   ariaLabel,
   placeholder = "add column",
+  id,
 }: {
   columns: string[]
   onChange: (next: string[]) => void
   suggestions: string[]
   ariaLabel: string
   placeholder?: string
+  /** Id for the add box, when it is the first field of its card. */
+  id?: string
 }) {
+  const schema = useStepSchema()
   const [draft, setDraft] = useState("")
   const add = (raw: string) => {
     const name = raw.trim()
     if (name && !columns.includes(name)) onChange([...columns, name])
     setDraft("")
   }
+  const isUnknown = (name: string) => schema.isKnown !== null && !schema.isKnown(name)
+  const unknown = columns.filter(isUnknown)
   return (
-    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={ariaLabel}>
-      {columns.map((name) => (
-        <Chip
+    <div className="grid gap-1 min-w-0">
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={ariaLabel}>
+        {columns.map((name) => (
+          <Chip
+            key={name}
+            label={name}
+            removeLabel={`Remove ${name}`}
+            onRemove={() => onChange(columns.filter((c) => c !== name))}
+            unknown={isUnknown(name)}
+          />
+        ))}
+        <CompletingInput
+          draft={draft}
+          onDraftChange={setDraft}
+          onCommit={add}
+          onAccept={add}
+          suggestions={suggestions}
+          exclude={columns}
+          ariaLabel={`${ariaLabel}: add`}
+          placeholder={placeholder}
+          id={id}
+          className="flex-1 basis-28 min-w-0"
+        />
+      </div>
+      {unknown.map((name) => (
+        <UnknownColumnNote
           key={name}
-          label={name}
-          removeLabel={`Remove ${name}`}
-          onRemove={() => onChange(columns.filter((c) => c !== name))}
+          name={name}
+          suggestion={schema.closest(name)}
+          onUse={(replacement) =>
+            onChange(columns.includes(replacement) ? columns.filter((c) => c !== name) : columns.map((c) => (c === name ? replacement : c)))
+          }
         />
       ))}
-      <CompletingInput
-        draft={draft}
-        onDraftChange={setDraft}
-        onCommit={add}
-        onAccept={add}
-        suggestions={suggestions}
-        exclude={columns}
-        ariaLabel={`${ariaLabel}: add`}
-        placeholder={placeholder}
-        className="flex-1 basis-28 min-w-0"
-      />
     </div>
   )
 }
@@ -590,16 +810,73 @@ export function LiteralValueInput({
 }
 
 export type OperandSource = "literal" | "column" | "variable" | "expr"
-const SOURCE_LABELS: Record<OperandSource, string> = { literal: "Value", column: "Column", variable: "Variable", expr: "Expression" }
+
+/** What a value is: one of the literal types, or a column, a variable or an expression. */
+type OperandKind = LiteralType | Exclude<OperandSource, "literal">
+
+const KIND_LABELS: Record<OperandKind, string> = {
+  number: "Number",
+  text: "Text",
+  boolean: "True/false",
+  date: "Date",
+  null: "Missing (null)",
+  column: "Column",
+  variable: "Variable",
+  expr: "Expression",
+}
+
+const KIND_ICONS: Record<OperandKind, LucideIcon> = {
+  number: Hash,
+  text: Quote,
+  boolean: ToggleRight,
+  date: Calendar,
+  null: Ban,
+  column: Columns2,
+  variable: VariableIcon,
+  expr: SquareFunction,
+}
+
+const operandKind = (operand: Operand): OperandKind => (operand.kind === "literal" ? operand.type : operand.kind)
+
+/**
+ * The marker at the start of a value: an icon for what the value is, over an
+ * invisible native select of the kinds allowed there, so a click (or Alt+Down)
+ * opens the choice and the select keeps its keyboard and screen-reader
+ * behaviour.
+ */
+function KindMarker({ kind, kinds, onChange, ariaLabel }: { kind: OperandKind; kinds: OperandKind[]; onChange: (kind: OperandKind) => void; ariaLabel: string }) {
+  const Icon = KIND_ICONS[kind]
+  return (
+    <span
+      className="relative flex w-7 shrink-0 self-stretch items-center justify-center rounded-md focus-within:ring-2 focus-within:ring-[var(--accent-ring)]"
+      style={{ background: "var(--chrome-hover)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+      title={`${KIND_LABELS[kind]} (change what this value is)`}
+    >
+      <Icon size={12} aria-hidden="true" />
+      <select
+        aria-label={ariaLabel}
+        value={kind}
+        onChange={(event) => onChange(event.target.value as OperandKind)}
+        className="absolute inset-0 w-full cursor-pointer opacity-0"
+      >
+        {kinds.map((k) => (
+          <option key={k} value={k}>
+            {KIND_LABELS[k]}
+          </option>
+        ))}
+      </select>
+    </span>
+  )
+}
 
 /** Renders a nested expression editor for an operand; supplied by the forms so fields need not import them. */
 export type RenderExpression = (expr: Expr, onChange: (next: Expr) => void, ariaLabel: string) => ReactNode
 
 /**
- * One operand: a source select (only the allowed sources, Variable only when a
- * variable exists, Expression only when `renderExpression` is given), then
- * the matching input. Literal types are limited to `literalTypes`; the type
- * select appears only when more than one is allowed.
+ * One operand as one control: a kind marker (only the allowed literal types
+ * and sources; Variable only when a variable exists, Expression only when
+ * `renderExpression` is given) at the start of the matching input. The
+ * marker is left out when only one kind is allowed.
  */
 export function OperandField({
   value,
@@ -620,38 +897,22 @@ export function OperandField({
   ariaLabel: string
   renderExpression?: RenderExpression
 }) {
-  const allowedSources: OperandSource[] = [
-    ...sources.filter((s) => s !== "variable" || variables.length > 0),
+  const kinds: OperandKind[] = [
+    ...(sources.includes("literal") ? LITERAL_TYPES.map((t) => t.value).filter((t) => literalTypes.includes(t)) : []),
+    ...sources.filter((s): s is "column" | "variable" => s === "column" || (s === "variable" && (variables.length > 0 || value.kind === "variable"))),
     ...(renderExpression ? (["expr"] as const) : []),
   ]
-  const source: OperandSource = value.kind
-  const setSource = (next: OperandSource) => {
-    if (next === source) return
-    if (next === "literal") onChange(defaultLiteral(literalTypes[0] ?? "number"))
-    else if (next === "column") onChange({ kind: "column", name: "" })
+  const kind = operandKind(value)
+  const setKind = (next: OperandKind) => {
+    if (next === kind) return
+    if (next === "column") onChange({ kind: "column", name: "" })
     else if (next === "expr") onChange({ kind: "expr", expr: defaultExpr("binary") })
-    else onChange({ kind: "variable", name: variables[0] ?? "" })
+    else if (next === "variable") onChange({ kind: "variable", name: variables[0] ?? "" })
+    else onChange(defaultLiteral(next))
   }
   return (
-    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={ariaLabel}>
-      {allowedSources.length > 1 && (
-        <SelectField
-          value={source}
-          options={allowedSources.map((s) => ({ value: s, label: SOURCE_LABELS[s] }))}
-          onChange={setSource}
-          ariaLabel={`${ariaLabel} source`}
-          className="basis-24 grow-0"
-        />
-      )}
-      {value.kind === "literal" && literalTypes.length > 1 && (
-        <SelectField
-          value={value.type}
-          options={LITERAL_TYPES.filter((t) => literalTypes.includes(t.value))}
-          onChange={(type) => onChange(defaultLiteral(type))}
-          ariaLabel={`${ariaLabel} type`}
-          className="basis-24 grow-0"
-        />
-      )}
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={ariaLabel}>
+      {kinds.length > 1 && <KindMarker kind={kind} kinds={kinds} onChange={setKind} ariaLabel={`${ariaLabel} kind`} />}
       <div className="flex-1 basis-28 min-w-0">
         {value.kind === "literal" && (
           <LiteralValueInput value={value} onChange={onChange} ariaLabel={`${ariaLabel} value`} />
@@ -742,6 +1003,25 @@ const OPERATOR_OPTIONS = CONDITION_OPERATORS.map((o) => ({ value: o.value, label
 const STRING_OPERATORS = new Set<Condition["operator"]>(["contains", "starts_with", "ends_with", "matches"])
 const isStringOperator = (operator: Condition["operator"]) => STRING_OPERATORS.has(operator)
 
+/** The value a condition on a column of `dtype` starts from; null leaves the value as it is. */
+function valueForType(dtype: string | null): LiteralOperand | null {
+  if (dtype === null) return null
+  if (/^(String|Utf8|Categorical|Enum)/.test(dtype)) return defaultLiteral("text")
+  if (/^(Date|Datetime)/.test(dtype)) return defaultLiteral("date")
+  if (dtype === "Boolean") return defaultLiteral("boolean")
+  return null
+}
+
+/** A condition value nobody has touched: the number 0 a new condition starts with. */
+function isUntouchedValue(value: Operand | undefined): boolean {
+  return value !== undefined && value.kind === "literal" && value.type === "number" && value.value === 0
+}
+
+/** Rows without their own border when a list has one row, so the simple case stays calm. */
+function Row({ label, boxed, children }: { label: string; boxed: boolean; children: ReactNode }) {
+  return boxed ? <RowGroup label={label}>{children}</RowGroup> : <div className="grid gap-1.5" role="group" aria-label={label}>{children}</div>
+}
+
 export function ConditionRow({
   condition,
   onChange,
@@ -750,6 +1030,8 @@ export function ConditionRow({
   variables,
   ariaLabel,
   renderExpression,
+  columnId,
+  boxed = true,
 }: {
   condition: Condition
   onChange: (next: Condition) => void
@@ -758,9 +1040,19 @@ export function ConditionRow({
   variables: string[]
   ariaLabel: string
   renderExpression?: RenderExpression
+  /** Id for the column box, when it is the first field of its card. */
+  columnId?: string
+  boxed?: boolean
 }) {
+  const schema = useStepSchema()
   const takes = CONDITION_OPERATORS.find((o) => o.value === condition.operator)?.takes ?? "value"
   const textOnly = isStringOperator(condition.operator)
+  // A fresh condition's value follows the chosen column's type; a value the
+  // analyst has edited, or a text operator's value, is left alone.
+  const setColumn = (column: string) => {
+    const typed = takes === "value" && !textOnly && isUntouchedValue(condition.value) ? valueForType(schema.typeOf(column)) : null
+    onChange(typed ? { ...condition, column, value: typed } : { ...condition, column })
+  }
   const setOperator = (operator: Condition["operator"]) => {
     const nextTakes = CONDITION_OPERATORS.find((o) => o.value === operator)?.takes ?? "value"
     const next: Condition = { column: condition.column, operator }
@@ -773,14 +1065,15 @@ export function ConditionRow({
     onChange(next)
   }
   return (
-    <RowGroup label={ariaLabel}>
+    <Row label={ariaLabel} boxed={boxed}>
       <div className="flex flex-wrap items-center gap-1.5">
         <div className="flex-1 basis-28 min-w-0">
           <ColumnPicker
             value={condition.column}
-            onCommit={(column) => onChange({ ...condition, column })}
+            onCommit={setColumn}
             suggestions={columns}
             ariaLabel={`${ariaLabel} column`}
+            id={columnId}
           />
         </div>
         <div className="flex-1 basis-32 min-w-0">
@@ -807,11 +1100,17 @@ export function ConditionRow({
           ariaLabel={`${ariaLabel} values`}
         />
       )}
-    </RowGroup>
+    </Row>
   )
 }
 
-/** Conditions joined by all/any, each row reading `[column] [operator] [value]`. */
+/**
+ * Conditions joined by all/any, each row reading `[column] [operator]
+ * [value]`, under a lead that says what they do: a filter keeps rows ("Keep
+ * rows where [all] of these are true"); an if-then or an aggregation's row
+ * filter tests them ("When [all] of these are true"). The match select sits in
+ * the sentence, so it reads "any" when chosen.
+ */
 export function ConditionList({
   conditions,
   match,
@@ -820,6 +1119,8 @@ export function ConditionList({
   variables,
   ariaLabel,
   renderExpression,
+  lead,
+  firstId,
 }: {
   conditions: Condition[]
   match: MatchMode
@@ -828,23 +1129,33 @@ export function ConditionList({
   variables: string[]
   ariaLabel: string
   renderExpression?: RenderExpression
+  lead: "keep" | "when"
+  /** Id for the first condition's column box, when it is the first field of its card. */
+  firstId?: string
 }) {
+  const opening = lead === "keep" ? "Keep rows where" : "When"
   return (
     <div className="grid gap-1.5">
-      {conditions.length > 1 && (
-        <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          <span>Keep rows matching</span>
-          <SelectField
-            value={match}
-            options={[
-              { value: "all", label: "all conditions" },
-              { value: "any", label: "any condition" },
-            ]}
-            onChange={(next) => onChange(conditions, next)}
-            ariaLabel={`${ariaLabel} match`}
-            className="basis-32 grow-0"
-          />
-        </div>
+      {conditions.length > 1 ? (
+        <Sentence>
+          <Words>{opening}</Words>
+          <span className="w-16">
+            <SelectField
+              value={match}
+              options={[
+                { value: "all", label: "all" },
+                { value: "any", label: "any" },
+              ]}
+              onChange={(next) => onChange(conditions, next)}
+              ariaLabel={`${ariaLabel} match`}
+            />
+          </span>
+          <Words>of these are true</Words>
+        </Sentence>
+      ) : (
+        <Sentence>
+          <Words>{opening}</Words>
+        </Sentence>
       )}
       {conditions.map((condition, index) => (
         <ConditionRow
@@ -854,6 +1165,8 @@ export function ConditionList({
           variables={variables}
           ariaLabel={`${ariaLabel} condition ${index + 1}`}
           renderExpression={renderExpression}
+          columnId={index === 0 ? firstId : undefined}
+          boxed={conditions.length > 1}
           onChange={(next) => onChange(conditions.map((c, i) => (i === index ? next : c)), match)}
           onRemove={conditions.length > 1 ? () => onChange(conditions.filter((_, i) => i !== index), match) : undefined}
         />

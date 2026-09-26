@@ -566,12 +566,14 @@ function inputSourceForEdge(
       || edge.sourceHandle === undefined
       || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
 
+  const columns = edgeSourceColumns(edge, nodeMap)
   return {
     sourceNodeId: edge.source,
     name,
     sourceLabel,
     edgeId: edge.id,
     ...(frameUnresolved ? { frameUnresolved: true } : {}),
+    ...(columns ? { columns } : {}),
   }
 }
 
@@ -590,6 +592,7 @@ function upstreamInputSourceSignature(
         edge.sourceHandle === undefined ? "<undefined>" : edge.sourceHandle,
         source.name,
         source.frameUnresolved === true,
+        columnsSignature(source.columns),
       ]
     }),
   )

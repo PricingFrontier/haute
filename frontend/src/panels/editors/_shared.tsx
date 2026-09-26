@@ -40,6 +40,8 @@ export type InputSource = {
   sourceLabel: string
   edgeId: string
   frameUnresolved?: boolean
+  /** The columns this input carries, as the last preview recorded them. */
+  columns?: { name: string; dtype: string }[]
 }
 
 // Shared by editor components; this intentional non-component export is the

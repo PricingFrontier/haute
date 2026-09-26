@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
+import { render, renderHook, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
+import type { Edge, Node } from "@xyflow/react"
+import { readFileSync } from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { useState } from "react"
 
 vi.mock("../../../../api/client", () => ({
@@ -13,7 +17,12 @@ vi.mock("../../CodeEditor", () => ({
 }))
 
 import { renderPolarsSteps } from "../../../../api/client"
+import GeneratedCodePanel, { PENDING_FADE_MS } from "../GeneratedCodePanel"
 import PolarsStepsEditor from "../PolarsStepsEditor"
+import useKeyboardShortcuts from "../../../../hooks/useKeyboardShortcuts"
+import useToastStore from "../../../../stores/useToastStore"
+import useUIStore from "../../../../stores/useUIStore"
+import type { NodeTypeValue } from "../../../../utils/nodeTypes"
 import type { Step } from "../types"
 import type { InputSource } from "../../_shared"
 import useGraphStore, { resetGraphStoreForTests } from "../../../../stores/useGraphStore"
@@ -279,7 +288,7 @@ describe("PolarsStepsEditor", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Start from: Unknown input 'policies'"), { timeout: 5000 })
   })
 
-  it("keeps a half-built step quiet until the pipeline has run", async () => {
+  it("says what a half-built step needs, neutrally, until the pipeline has run", async () => {
     mockRender.mockImplementation(async () => ({
       ok: false,
       code: "",
@@ -288,13 +297,14 @@ describe("PolarsStepsEditor", () => {
       message: "Column name must be a non-empty string.",
     }))
     const { rerender } = render(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} />)
-    await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
-    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("polars-code-note")).toHaveTextContent("Step 1 isn't finished: it needs a name for the new column."), { timeout: 5000 })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    expect(screen.queryByText("Column name must be a non-empty string.")).not.toBeInTheDocument()
+    const card = screen.getByRole("button", { name: "Step 1: Add column" }).closest("[data-testid='polars-step-card']")
+    expect(card).toHaveTextContent("Needs a name for the new column.")
     expect(screen.getByRole("button", { name: "Switch to code" })).toBeDisabled()
     rerender(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} runError="Step 1: Column name must be a non-empty string." />)
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Column name must be a non-empty string."), { timeout: 5000 })
+    expect(screen.queryByTestId("polars-code-note")).not.toBeInTheDocument()
   })
 
   it("maps a preview execution line to its single-line step", async () => {
@@ -546,7 +556,7 @@ describe("PolarsStepsEditor in frame mode", () => {
     render(<Harness initial={{ steps: [filter, limit] }} inputSources={[]} start="frame" spy={spy} />)
     expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Step 2: Limit rows" })).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Move Step 1: Filter rows up" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Move Step 1: Filter rows up" })).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "Move Step 2: Limit rows up" }))
     await waitFor(() => expect(lastSteps(spy)).toEqual([limit, filter]), { timeout: 5000 })
     expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toBeInTheDocument()
@@ -580,5 +590,290 @@ describe("PolarsStepsEditor in frame mode", () => {
     expect(onReplace).toHaveBeenCalledWith({ path: "quotes.parquet", code: "" })
     expect(mockRender).not.toHaveBeenCalled()
     confirm.mockRestore()
+  })
+})
+
+/* The step editor's experience: keys, focus, notes, linked code, first steps. */
+
+const quotesTyped: InputSource = { ...quotes, columns: COLUMNS }
+const cardOf = (name: string) => screen.getByRole("button", { name }).closest("[data-testid='polars-step-card']") as HTMLElement
+const lineOf = (n: number) => document.querySelector(`[data-line="${n}"]`) as HTMLElement
+const addGross: Step = {
+  id: "w",
+  kind: "with_column",
+  name: "gross",
+  expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 2 }, text: "premium * 2" },
+}
+
+function mountCanvasShortcuts(nodes: Node[]) {
+  const params = {
+    handleSave: vi.fn(),
+    setNodes: vi.fn(),
+    setEdges: vi.fn(),
+    setNodesAndEdges: vi.fn(),
+    undo: vi.fn(),
+    redo: vi.fn(),
+    fitView: vi.fn(),
+    graphRef: { current: { nodes, edges: [] as Edge[] } },
+    clipboard: { current: { nodes: [{ id: "copied", position: { x: 0, y: 0 }, data: { label: "Copied" } } as Node], edges: [] as Edge[] } },
+    nodeIdCounter: { current: 0 },
+    setSelectedNode: vi.fn(),
+    setPreviewData: vi.fn(),
+    clearTrace: vi.fn(),
+    closePanel: vi.fn(),
+    isInsideSubmodel: false,
+    readOnly: false,
+    existingSingletonTypes: new Set<NodeTypeValue>(),
+    resolveGraphIdentities: vi.fn(async (n: readonly Node[], e: readonly Edge[]) => ({ nodes: [...n], edges: [...e] })),
+  }
+  renderHook(() => useKeyboardShortcuts(params))
+  return params
+}
+
+describe("PolarsStepsEditor keys and focus", () => {
+  beforeEach(() => {
+    resetGraphStoreForTests()
+    mockRender.mockReset()
+    mockRender.mockImplementation(async ({ steps }) => okFor(steps))
+    useUIStore.setState({ shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false })
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+  afterEach(cleanup)
+
+  it("keeps the canvas's graph shortcuts from acting while a step card's control has focus", () => {
+    const selected = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "Claims" }, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: { label: "Quotes" }, selected: true } as Node,
+    ]
+    const params = mountCanvasShortcuts(selected)
+    render(<Harness initial={{ steps: [source, filter] }} inputSources={[quotes]} />)
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Filter rows" }))
+    const select = screen.getByLabelText("Filter condition 1 operator")
+    select.focus()
+    const clipboard = params.clipboard.current
+    fireEvent.keyDown(select, { key: "Delete" })
+    fireEvent.keyDown(select, { key: "Backspace" })
+    fireEvent.keyDown(select, { key: "a", ctrlKey: true })
+    fireEvent.keyDown(select, { key: "c", ctrlKey: true })
+    fireEvent.keyDown(select, { key: "v", ctrlKey: true })
+    fireEvent.keyDown(select, { key: "g", ctrlKey: true })
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.clipboard.current).toBe(clipboard)
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+    // Document and window shortcuts stay global.
+    fireEvent.keyDown(select, { key: "s", ctrlKey: true })
+    expect(params.handleSave).toHaveBeenCalledOnce()
+    fireEvent.keyDown(select, { key: "z", ctrlKey: true })
+    expect(params.undo).toHaveBeenCalledOnce()
+    // Outside the editor the same key still deletes the selection: the handler is live.
+    fireEvent.keyDown(document.body, { key: "Delete" })
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+  })
+
+  it("moves focus into a new step's first field, and Alt+arrows move a card keeping its focus", async () => {
+    render(<Harness initial={{ steps: [source, limit] }} inputSources={[quotes]} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Filter rows" }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Filter condition 1 column" })), { timeout: 5000 })
+    const header = screen.getByRole("button", { name: "Step 1: Limit rows" })
+    header.focus()
+    fireEvent.keyDown(header, { key: "ArrowDown", altKey: true })
+    await waitFor(() => expect(screen.getByRole("button", { name: "Step 2: Limit rows" })).toBe(document.activeElement), { timeout: 5000 })
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowUp", altKey: true })
+    await waitFor(() => expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toBe(document.activeElement), { timeout: 5000 })
+  })
+
+  it("opens a new Add column step on its name, with the formula box showing its example", async () => {
+    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add column" }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Column name")), { timeout: 5000 })
+    expect(screen.getByLabelText("Expression type")).toHaveValue("binary")
+    expect(screen.getByRole("combobox", { name: "Formula" })).toHaveAttribute("placeholder", "e.g. (premium + commission) * tax / 12")
+  })
+
+  it("offers three first steps while a connected node has only its start step, and the hint goes once a card exists", async () => {
+    render(<Harness initial={{ steps: [source] }} inputSources={[quotes]} />)
+    const hint = screen.getByTestId("polars-steps-first-run")
+    expect(hint).toHaveTextContent("Steps run top to bottom on quotes")
+    expect(within(hint).getAllByRole("button").map((b) => b.textContent)).toEqual(["Filter rows", "Add column", "Group and aggregate"])
+    fireEvent.click(within(hint).getByRole("button", { name: "Filter rows" }))
+    await waitFor(() => expect(screen.queryByTestId("polars-steps-first-run")).not.toBeInTheDocument(), { timeout: 5000 })
+    expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toHaveAttribute("aria-expanded", "true")
+  })
+
+  it("offers the first steps on the node's own data in frame mode", () => {
+    render(<Harness initial={{ steps: [] }} inputSources={[]} start="frame" />)
+    expect(screen.getByTestId("polars-steps-first-run")).toHaveTextContent("Steps run top to bottom on this node's data")
+  })
+})
+
+describe("PolarsStepsEditor notes and linked code", () => {
+  beforeEach(() => {
+    resetGraphStoreForTests()
+    mockRender.mockReset()
+    mockRender.mockImplementation(async ({ steps }) => okFor(steps))
+  })
+  afterEach(cleanup)
+
+  it("dims code the steps no longer produce, names what is unfinished, and blames no card when the render itself failed", async () => {
+    render(<Harness initial={{ steps: [source, limit] }} inputSources={[quotes]} />)
+    const code = () => screen.getByTestId("polars-generated-code")
+    await waitFor(() => expect(code()).toHaveTextContent("df = df.step_1()"), { timeout: 5000 })
+    expect(code()).not.toHaveAttribute("data-stale")
+    mockRender.mockImplementation(async () => ({ ok: false, code: "", step_lines: [], step_index: 1, message: "Row limit must be at least 1." }))
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Limit rows" }))
+    const input = screen.getByLabelText("Row limit")
+    fireEvent.change(input, { target: { value: "7" } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(code()).toHaveAttribute("data-stale", "true"), { timeout: 5000 })
+    expect(code()).toHaveTextContent("df = df.step_1()")
+    expect(screen.getByTestId("polars-code-note")).toHaveTextContent("Step 1 isn't finished: Row limit must be at least 1.")
+    expect(cardOf("Step 1: Limit rows")).toHaveTextContent("Needs: Row limit must be at least 1.")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+
+    mockRender.mockImplementation(async () => {
+      throw new Error("Failed to fetch")
+    })
+    fireEvent.change(input, { target: { value: "8" } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(screen.getByTestId("polars-code-note")).toHaveTextContent("Could not render steps: Failed to fetch"), { timeout: 5000 })
+    expect(screen.queryByText(/^Needs:/)).not.toBeInTheDocument()
+    expect(code()).toHaveTextContent("df = df.step_1()")
+
+    mockRender.mockImplementation(async ({ steps }) => okFor(steps))
+    fireEvent.change(input, { target: { value: "9" } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(screen.queryByTestId("polars-code-note")).not.toBeInTheDocument(), { timeout: 5000 })
+    expect(code()).not.toHaveAttribute("data-stale")
+  })
+
+  it("puts a failed run's message on the card whose lines failed, with Go to error", async () => {
+    const message = 'unable to find column "quot_id"; valid columns: ["premium"]\n\nResolved plan until failure: ...'
+    render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} errorLine={2} runError={message} />)
+    await waitFor(() => expect(cardOf("Step 1: Filter rows")).toHaveTextContent('unable to find column "quot_id"; valid columns: ["premium"]'), { timeout: 5000 })
+    expect(cardOf("Step 1: Filter rows")).not.toHaveTextContent("Resolved plan")
+    expect(screen.getByRole("alert")).toHaveTextContent('Step 1: unable to find column "quot_id"')
+    fireEvent.click(screen.getByRole("button", { name: "Go to error" }))
+    expect(screen.getByRole("button", { name: "Step 1: Filter rows" })).toHaveAttribute("aria-expanded", "true")
+  })
+
+  it("marks a collapsed card naming a column the data does not have at its step, including after a reorder", async () => {
+    const typo: Step = { id: "t", kind: "filter", match: "all", conditions: [{ column: "premum", operator: "is_null" }] }
+    const usesGross: Step = { id: "u", kind: "filter", match: "all", conditions: [{ column: "gross", operator: "is_null" }] }
+    render(<Harness initial={{ steps: [source, typo, addGross, usesGross] }} inputSources={[quotesTyped]} />)
+    expect(cardOf("Step 1: Filter rows")).toHaveTextContent("Not in the data at this step: premum")
+    expect(cardOf("Step 3: Filter rows")).not.toHaveTextContent("Not in the data")
+    fireEvent.click(screen.getByRole("button", { name: "Move Step 3: Filter rows up" }))
+    await waitFor(() => expect(cardOf("Step 2: Filter rows")).toHaveTextContent("Not in the data at this step: gross"), { timeout: 5000 })
+  })
+
+  it("summarises collapsed cards in parts, with the change each step makes to the columns", () => {
+    const dropRegion: Step = { id: "d", kind: "drop", columns: ["region"] }
+    const total: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "premium", agg: "sum", name: "total" }] }
+    const fresh: Step = { id: "f2", kind: "filter", match: "all", conditions: [{ column: "", operator: "eq", value: { kind: "literal", type: "number", value: 0 } }] }
+    render(<Harness initial={{ steps: [source, addGross, dropRegion, total, fresh] }} inputSources={[quotesTyped]} />)
+    expect(cardOf("Step 1: Add column")).toHaveTextContent("+gross")
+    expect(within(cardOf("Step 1: Add column")).getByText("gross").tagName).toBe("CODE")
+    expect(cardOf("Step 2: Drop columns")).toHaveTextContent("−region")
+    expect(cardOf("Step 3: Group and aggregate")).toHaveTextContent("total = sum of premium")
+    expect(cardOf("Step 3: Group and aggregate")).toHaveTextContent("→ 1 column")
+    expect(cardOf("Step 4: Filter rows")).toHaveTextContent("Choose a column…")
+  })
+
+  it("states no column change where the columns are not exactly known", () => {
+    const keepByType: Step = { id: "k", kind: "select", columns: ["premium"], dtypes: ["String"] }
+    render(<Harness initial={{ steps: [source, freeCode, { ...addGross, id: "w1" }, keepByType, { ...addGross, id: "w2", name: "net" }] }} inputSources={[quotesTyped]} />)
+    expect(cardOf("Step 2: Add column")).not.toHaveTextContent("+gross")
+    expect(cardOf("Step 3: Keep columns")).not.toHaveTextContent("−")
+    expect(cardOf("Step 4: Add column")).not.toHaveTextContent("+net")
+  })
+
+  it("keeps three action slots on every card and lines the summary up with the label", () => {
+    render(<Harness initial={{ steps: [source, filter, limit, { ...limit, id: "l2", n: 9 }] }} inputSources={[quotes]} />)
+    expect(screen.getByRole("button", { name: "Move Step 1: Filter rows up" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Move Step 1: Filter rows down" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Move Step 2: Limit rows up" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Move Step 3: Limit rows down" })).toBeDisabled()
+    for (const n of [1, 2, 3]) expect(screen.getByRole("button", { name: new RegExp(`^Delete Step ${n}:`) })).toBeInTheDocument()
+    const number = screen.getAllByTestId("step-number")[0]
+    expect(number).toHaveTextContent("1")
+    expect(number.style.background).toBe("")
+    expect(screen.getAllByTestId("step-summary")[0].parentElement).toBe(screen.getAllByTestId("step-label")[0].parentElement)
+  })
+
+  it("links cards and their code lines both ways, and colours the code like code mode", async () => {
+    render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} />)
+    await waitFor(() => expect(lineOf(3)).toBeInTheDocument(), { timeout: 5000 })
+    fireEvent.mouseEnter(cardOf("Step 1: Filter rows"))
+    expect(lineOf(2)).toHaveAttribute("data-active", "true")
+    expect(lineOf(1)).not.toHaveAttribute("data-active")
+    expect(lineOf(3)).not.toHaveAttribute("data-active")
+    fireEvent.mouseLeave(cardOf("Step 1: Filter rows"))
+    fireEvent.mouseEnter(lineOf(3))
+    expect(cardOf("Step 2: Limit rows")).toHaveAttribute("data-highlighted", "true")
+    fireEvent.click(lineOf(3))
+    expect(screen.getByRole("button", { name: "Step 2: Limit rows" })).toHaveAttribute("aria-expanded", "true")
+    expect(lineOf(1).querySelector("span[style*='--syntax']")).not.toBeNull()
+  })
+
+  it("tints every line of a step that spans several", async () => {
+    mockRender.mockImplementation(async () => ({ ok: true, code: 'df = quotes\ndf = df.group_by(\n    ["region"],\n)', step_lines: [[1, 1], [2, 4]], step_index: null, message: "" }))
+    render(<Harness initial={{ steps: [source, limit] }} inputSources={[quotes]} />)
+    await waitFor(() => expect(lineOf(4)).toBeInTheDocument(), { timeout: 5000 })
+    fireEvent.mouseEnter(cardOf("Step 1: Limit rows"))
+    for (const n of [2, 3, 4]) expect(lineOf(n)).toHaveAttribute("data-active", "true")
+    expect(lineOf(1)).not.toHaveAttribute("data-active")
+  })
+
+  it("draws the step number, label and summary in colours that reach 4.5:1 on the card", () => {
+    const css = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../index.css"), "utf8")
+    const token = (name: string) => {
+      const match = new RegExp(`^\\s*--${name}:\\s*(#[0-9a-fA-F]{6})\\s*;`, "m").exec(css)
+      if (!match) throw new Error(`no hex token --${name}`)
+      return match[1]
+    }
+    const luminance = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    const contrast = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+      return (hi + 0.05) / (lo + 0.05)
+    }
+    const card = token("bg-elevated")
+    // The number and muted words, the label, and the summary text.
+    for (const name of ["text-muted", "text-primary", "text-secondary"]) expect(contrast(token(name), card)).toBeGreaterThanOrEqual(4.5)
+  })
+})
+
+describe("GeneratedCodePanel", () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it("fades the code only when a render is still pending after 400 ms", () => {
+    vi.useFakeTimers()
+    const props = { start: "input" as const, code: "df = quotes", error: null, switchEnabled: false, onSwitchToCode: vi.fn() }
+    const { rerender } = render(<GeneratedCodePanel {...props} pending />)
+    const pre = () => screen.getByTestId("polars-generated-code")
+    expect(pre().style.opacity).toBe("1")
+    act(() => vi.advanceTimersByTime(PENDING_FADE_MS - 1))
+    expect(pre().style.opacity).toBe("1")
+    act(() => vi.advanceTimersByTime(1))
+    expect(pre().style.opacity).toBe("0.5")
+    expect(screen.getByText("rendering…")).toBeInTheDocument()
+    rerender(<GeneratedCodePanel {...props} pending={false} />)
+    expect(pre().style.opacity).toBe("1")
+    rerender(<GeneratedCodePanel {...props} pending />)
+    act(() => vi.advanceTimersByTime(200))
+    rerender(<GeneratedCodePanel {...props} pending={false} />)
+    act(() => vi.advanceTimersByTime(PENDING_FADE_MS))
+    expect(pre().style.opacity).toBe("1")
+    expect(screen.queryByText("rendering…")).not.toBeInTheDocument()
   })
 })
