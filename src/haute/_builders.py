@@ -649,22 +649,16 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if not code:
         return ctx.func_name, _explore_fn, False
 
-    _src_names = list(ctx.source_names)
-    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
-    _in_map = dict(ctx.config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def explore_with_code(df: _Frame) -> _Frame:
-        # Explore's code box operates on the single implicit frame ``df``;
-        # keep that binding explicitly now that _exec_user_code no longer
-        # seeds it for named-input node kinds.
+        # Explore's code runs on its input as ``df`` and sees nothing else by
+        # name, exactly as the saved file's hook does.
         return _exec_user_code(
             code,
-            _src_names,
+            ["df"],
             (df,),
             extra_ns=_preamble,
-            orig_source_names=_orig_src,
-            input_mapping=_in_map,
             alias_first_input_as_df=True,
         )
 

@@ -241,7 +241,9 @@ The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in one four-field
 `(source, target, source_port, target_port)` form,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no
-wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced GUI positions) to
+wiring parses as a disconnected graph; a hook's leading `df` on a code-accepting type other
+than External File names the frame its decorator produced, not an input, so it never matches
+a node called `df` — on a code-less type `df` is an input name like any other) and `_build_rf_nodes` (assigns x-spaced GUI positions) to
 produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.

@@ -94,6 +94,27 @@ def replace_source_nodes(source: str, replacements: Sequence[SourceNodeReplaceme
     return result.code
 
 
+def insert_import_after(source: str, statement: str, *, after_module: str) -> str:
+    """Insert the import *statement* directly below the top-level ``import <after_module>``.
+
+    The rest of the source, its trivia and its line endings are untouched.
+    """
+    try:
+        module = cst.parse_module(source)
+    except cst.ParserSyntaxError as exc:
+        raise _syntax_error("source_syntax_invalid", exc) from exc
+    body = list(module.body)
+    for index, line in enumerate(body):
+        if isinstance(line, cst.SimpleStatementLine) and any(
+            isinstance(small, cst.Import)
+            and any(alias.evaluated_name == after_module for alias in small.names)
+            for small in line.body
+        ):
+            body.insert(index + 1, cst.parse_statement(statement))
+            return module.with_changes(body=body).code
+    raise StructuredSyntaxError("import_anchor_missing")
+
+
 class StructuredSyntaxError(HauteError):
     """A value-free failure from the valid-Python structured syntax boundary."""
 

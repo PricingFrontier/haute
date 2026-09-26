@@ -73,7 +73,12 @@ code (API Input, Data Output, Edge Join, Banding, Output, Live Switch, Modelling
 Optimiser Apply, Constant) every function is a declaration, and a parameter named `df` is
 just an input. Registration fails loudly for a declaration with a body (the code would never
 run; on a type that accepts no code the message says so) and for a hook without one. The
-static parser enforces the same shapes. The decorator returns a callable that runs the node:
+static parser enforces the same shapes. Canvas execution gives a hook's code the same names
+the saved function has: `df` and the node's other inputs (an External File's inputs and
+`obj`), never the first input under its own name. One difference remains: a Model Score's
+code on the canvas can also use `model`, which a standalone run does not provide. Node code
+leaves its result in `df`; a closing `return <expr>` reads as `df = <expr>`, and an earlier
+return is a parse error rather than an assignment that would fall through. The decorator returns a callable that runs the node:
 calling a configured node's function directly — `quotes()` in a notebook — performs the same
 work, and hands it to the same hook, as a run does, while a transform's decorator returns the
 function itself. A sidecar-typed node registered without `config=` has no settings for its

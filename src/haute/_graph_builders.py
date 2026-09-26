@@ -20,6 +20,7 @@ from haute._ast_helpers import (
 )
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
+from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
 
@@ -145,16 +146,21 @@ def _resolve_node_skeleton(
             line=skeleton.start_line,
         )
     decorator_kwargs = _get_decorator_kwargs(skeleton.decorator)
-    node_type, config = _resolve_node_config(
-        decorator_kwargs,
-        skeleton.body,
-        list(skeleton.param_names),
-        len(skeleton.param_names),
-        base_dir,
-        func_name=skeleton.authored_id,
-        explicit_node_type=skeleton.explicit_node_type,
-        edge_param_names=list(skeleton.edge_param_names),
-    )
+    try:
+        node_type, config = _resolve_node_config(
+            decorator_kwargs,
+            skeleton.body,
+            list(skeleton.param_names),
+            len(skeleton.param_names),
+            base_dir,
+            func_name=skeleton.authored_id,
+            explicit_node_type=skeleton.explicit_node_type,
+            edge_param_names=list(skeleton.edge_param_names),
+        )
+    except ParseError as exc:
+        # Code extraction reports lines within the node's code; name the node.
+        exc.context.setdefault("node_id", skeleton.authored_id)
+        raise
     return {
         "func_name": skeleton.authored_id,
         "node_type": node_type,
@@ -239,6 +245,14 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     already physical and ``inputMapping`` describes the referenced original.
     """
     logical_params = list(node_info["edge_param_names"])
+    node_type = node_info.get("node_type")
+    if (
+        node_type in CODE_NODE_TYPES
+        and node_type != NodeType.EXTERNAL_FILE
+        and logical_params[:1] == ["df"]
+    ):
+        # A hook's df is the frame its decorator produced, not an input named df.
+        return logical_params[1:]
     config = node_info.get("config", {})
     input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
     if (

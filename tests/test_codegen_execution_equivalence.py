@@ -655,6 +655,65 @@ def test_model_score_run_matches_executor_batch(tmp_path, code):
 
 
 # ---------------------------------------------------------------------------
+# explore / modelScore hooks — code sees its input only as df, on both surfaces
+# ---------------------------------------------------------------------------
+
+
+def _explore_graph(code: str) -> PipelineGraph:
+    rows = _const("c", "rows", [{"name": "premium", "value": 100}])
+    explore = _node("ex", "inspect", NodeType.EXPLORE, {"code": code})
+    return PipelineGraph(nodes=[rows, explore], edges=[_edge("c", "ex")])
+
+
+def test_explore_hook_run_matches_executor_batch(tmp_path):
+    graph = _explore_graph("df = df.with_columns(doubled=pl.col('premium') * 2)")
+
+    module = _write_and_import(graph, tmp_path)
+    standalone = _collect(module.pipeline.run())
+    reference = _executor_frame(graph, "ex", source="batch")
+
+    assert standalone["doubled"].to_list() == [200.0]
+    assert_frame_equal(standalone, reference)
+
+
+def test_explore_code_naming_its_input_fails_on_both_surfaces(tmp_path):
+    """The hook receives its input as df; the input's own name is bound nowhere."""
+    graph = _explore_graph("df = rows.head(1)")
+
+    module = _write_and_import(graph, tmp_path)
+    with pytest.raises(AttributeError):
+        module.pipeline.run()
+    with pytest.raises(NameError, match="rows"):
+        _executor_frame(graph, "ex", source="batch")
+
+
+def test_model_score_code_naming_its_input_fails_on_both_surfaces(tmp_path):
+    """The scored frame is df; the canvas no longer also binds it under the input's name."""
+    src = _const("c", "features", [{"name": "a", "value": 1.0}, {"name": "b", "value": 2.0}])
+    score = _node(
+        "score",
+        "score",
+        NodeType.MODEL_SCORE,
+        {
+            "sourceType": "run",
+            "run_id": "run123",
+            "artifact_path": "model.cbm",
+            "task": "regression",
+            "output_column": "prediction",
+            "code": "df = features.with_columns(doubled=pl.col('prediction') * 2)",
+        },
+    )
+    graph = PipelineGraph(nodes=[src, score], edges=[_edge("c", "score")])
+
+    module = _write_and_import(graph, tmp_path)
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()):
+        with pytest.raises(AttributeError):
+            module.pipeline.run()
+        with pytest.raises(NameError, match="features"):
+            _executor_frame(graph, "score", source="batch")
+
+
+# ---------------------------------------------------------------------------
 # Hooks — a Data Input's code runs on its loaded data, an External File's on
 # its inputs with the loaded object.
 # ---------------------------------------------------------------------------

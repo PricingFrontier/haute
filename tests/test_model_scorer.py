@@ -1301,8 +1301,8 @@ class TestRunScorePipeline:
 
     @patch("haute._user_exec._exec_user_code")
     @patch("haute._mlflow_io._score_eager")
-    def test_source_names_none_becomes_empty_list_in_code(self, mock_eager, mock_exec):
-        """source_names=None is converted to [] when passed to user code."""
+    def test_source_names_none_binds_only_df_in_code(self, mock_eager, mock_exec):
+        """With no named inputs, the code sees only the scored frame, as ``df``."""
         sm = _make_scoring_model(feature_names=["a", "b"])
         mock_eager.return_value = pl.DataFrame({"a": [1]}).lazy()
         mock_exec.return_value = pl.DataFrame({"r": [1]}).lazy()
@@ -1317,9 +1317,9 @@ class TestRunScorePipeline:
             code="x=1",
             source_names=None,
         )
-        # The second positional arg to _exec_user_code should be []
+        # The second positional arg to _exec_user_code names the bound frames.
         call_args = mock_exec.call_args[0]
-        assert call_args[1] == []
+        assert call_args[1] == ["df"]
 
     def test_batched_failure_removes_input_temp_file(self, tmp_path, monkeypatch):
         """A failed batch score should not leak the already-sunk input parquet."""

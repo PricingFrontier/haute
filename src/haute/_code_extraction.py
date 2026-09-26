@@ -596,9 +596,34 @@ def _finalise_polars(code: str) -> str:
     if chain is not None:
         return chain
 
-    # Pattern 2: hand-written "return <expr>" at the OUTER scope only.
+    # Pattern 2: a hand-written closing "return <expr>" at the OUTER scope only.
+    _reject_early_returns(code)
     rewritten = _rewrite_outer_returns_as_assignment(code, target="df")
     return _dedent(rewritten).strip()
+
+
+def _reject_early_returns(code: str) -> None:
+    """Fail on an outer-scope ``return`` that is not the code's last statement.
+
+    Node code is a sequence of statements that leaves its result in ``df``; a
+    closing ``return <expr>`` reads as ``df = <expr>``. An earlier return (one
+    inside an ``if`` or loop, or followed by more statements) cannot be
+    written that way without changing which result the node produces, so it
+    is refused rather than flattened into an assignment that falls through.
+    """
+    statements = _parse_user_code(code).body
+    if not statements:
+        return
+    last = statements[-1]
+    closing = (last.lineno, last.col_offset) if isinstance(last, ast.Return) else None
+    early = [node for node in _outermost_returns(code) if (node.lineno, node.col_offset) != closing]
+    if early:
+        raise ParseError(
+            f"Node code returns early at line {early[0].lineno} of its code: a node's code ends by "
+            "leaving its result in df, so only a closing return is allowed. Assign df "
+            "in each branch instead of returning from it.",
+            line=early[0].lineno,
+        )
 
 
 def extract_user_code(

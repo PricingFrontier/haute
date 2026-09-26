@@ -1138,3 +1138,100 @@ class TestConfiguredNodeFunctionShapes:
         graph = _parse_configured_node(tmp_path, node_type, function)
         func_name = function.split("def ", 1)[1].split("(", 1)[0]
         assert graph.node_map[func_name].data.config["code"] == code
+
+
+class TestNodeCodeReturns:
+    """Node code leaves its result in ``df``; only a closing ``return`` reads as that."""
+
+    _EARLY = (
+        "def picked(rows: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    if "preferred" in rows.collect_schema():\n'
+        "        return rows.head(1)\n"
+        "    return rows\n"
+    )
+
+    def test_an_early_return_in_a_transform_fails_naming_the_node(self) -> None:
+        """Flattened into assignments, both branches would fall through to the last."""
+        source = (
+            "import polars as pl\nimport haute\n\n"
+            'pipeline = haute.Pipeline("returns")\n\n\n'
+            "@pipeline.polars\n"
+            "def rows() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"a": [1, 2]})\n\n\n'
+            "@pipeline.polars\n" + self._EARLY
+        )
+
+        with pytest.raises(ParseError, match="returns early at line 2 of its code") as exc_info:
+            parse_pipeline_source(source, source_file="main.py")
+        assert exc_info.value.context["node_id"] == "picked"
+
+    def test_an_early_return_in_a_hook_fails(self, tmp_path: Path) -> None:
+        function = (
+            "def rate(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    if "preferred" in df.collect_schema():\n'
+            "        return df.with_columns(premium=pl.lit(10))\n"
+            "    return df.with_columns(premium=pl.lit(20))\n"
+        )
+
+        with pytest.raises(ParseError, match="returns early") as exc_info:
+            _parse_configured_node(tmp_path, NodeType.RATING_STEP, function)
+        assert exc_info.value.context["node_id"] == "rate"
+
+    def test_a_closing_return_reads_as_the_result_in_df(self, tmp_path: Path) -> None:
+        function = (
+            "def rate(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    df = df.head(3)\n"
+            "    return df.with_columns(premium=pl.lit(20))\n"
+        )
+
+        graph = _parse_configured_node(tmp_path, NodeType.RATING_STEP, function)
+
+        rate = next(node for node in graph.nodes if node.id == "rate")
+        assert rate.data.config["code"] == (
+            "df = df.head(3)\ndf = df.with_columns(premium=pl.lit(20))"
+        )
+
+
+class TestHookMarkerIsNotAnInput:
+    """A hook's ``df`` is the frame its decorator produced, never a node named ``df``."""
+
+    def _graph(self, tmp_path: Path, consumer: str, connect: str) -> PipelineGraph:
+        write_node_config(
+            tmp_path,
+            NodeType.DATA_INPUT,
+            "df",
+            {"inputType": "file", "format": "parquet", "path": "df.parquet"},
+        )
+        rate = write_node_config(
+            tmp_path, NodeType.RATING_STEP, "rate", {"tables": [], "combinedOutputs": []}
+        )
+        band = write_node_config(tmp_path, NodeType.BANDING, "band", {"factors": []})
+        consumers = {
+            "hook": (
+                f'@pipeline.rating_step(config="{rate}")\n'
+                "def rate(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+                "    df = df.head(1)\n"
+                "    return df\n"
+            ),
+            "declaration": f'@pipeline.banding(config="{band}")\ndef band(df): ...\n',
+        }
+        source = (
+            "import polars as pl\nimport haute\n\n"
+            'pipeline = haute.Pipeline("markers")\n\n\n'
+            '@pipeline.data_input(config="config/data_input/df.json")\n'
+            "def df(): ...\n\n\n"
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"premium": [1.0]})\n\n\n' + consumers[consumer] + connect
+        )
+        return parse_pipeline_source(source, source_file="main.py", _base_dir=tmp_path)
+
+    def test_a_hook_takes_only_its_connected_input(self, tmp_path: Path) -> None:
+        graph = self._graph(tmp_path, "hook", '\npipeline.connect("quotes", "rate")\n')
+
+        assert [(edge.source, edge.target) for edge in graph.edges] == [("quotes", "rate")]
+
+    def test_a_declaration_reads_df_as_an_input_name(self, tmp_path: Path) -> None:
+        graph = self._graph(tmp_path, "declaration", "")
+
+        assert [(edge.source, edge.target) for edge in graph.edges] == [("df", "band")]

@@ -45,7 +45,7 @@
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); instance-node handling (`_instance_to_code`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); the final parse gate (`_assert_emitted_files_parse`). |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`; each returns a `NodeSource` rather than text. Shared helpers build a configured node's declaration or hook (`_configured_node`), the config-backed decorator keywords (`_config_keywords`), parameters (`_params` — the per-edge input names supplied by the orchestrator; duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`) and the transform body (`_transform_body`, which adds the output declaration only when the code binds `df` nowhere). `render_node_source` prints a `NodeSource` through the shared document printer; `_sanitize_description` and `_docstring_lines` prepare docstring text. |
 | `src/haute/_source_layout.py` | The document printer both codegen and the Polars step layout use: the Wadler/Prettier document (`Group`, `Indent`, `Line`, `IfBreak`), `print_doc`, string quoting as ruff writes it (`quote_string`), collections laid out one entry per line when broken (`bracketed`), call and signature arguments laid out as ruff lays them out (`arguments`: flat, then on one indented line, then one per line with a trailing comma; a broken signature's lone parameter also takes the comma, a lone call argument never), and the literal printer (`literal`) for decorator values. |
-| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery and exact expression/function replacement, with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
+| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
 | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
@@ -242,7 +242,11 @@ and hooks honest, belong to [pipeline-config](../pipeline-config/low-level.md).
    (AST-based — `_strip_outer_trailing_return` only removes the return if it
    is the literal last OUTER-scope statement).
 5. Finalise through `_finalise_polars`, with the parameter names for `polars`
-   and none for the other kinds.
+   and none for the other kinds. A closing outer-scope `return <expr>` becomes
+   `df = <expr>`; any other outer-scope `return` (inside an `if` or loop, or
+   followed by more statements) raises `ParseError` naming its line within the
+   code (`_reject_early_returns`), because an early return cannot become an
+   assignment without changing the node's result.
 
 `normalise_user_code(code, kind=...)` applies only step 5, so the parser can
 compare a step rendering with an extracted body on equal terms.
@@ -444,6 +448,7 @@ empty code.
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
 | Extraction engine given an unknown `kind` | `KeyError` | `_code_extraction.extract_user_code` |
 | User code text fails to parse during extraction | `_UserCodeParseError` (`ParseError` + `ValueError`, chains original `SyntaxError`) | `_code_extraction._parse_user_code` |
+| Node code returns early: an outer-scope `return` that is not the code's last statement | `ParseError` naming the line within the code; the parser adds the node as `node_id` | `_code_extraction._reject_early_returns`, `_graph_builders._resolve_node_skeleton` |
 | `_rewrite_outer_returns_as_assignment` hits a `return` fragment matching neither `return <expr>` nor bare `return` | `AssertionError` (`# pragma: no cover`, defensive) | `_code_extraction._rewrite_outer_returns_as_assignment` |
 
 All of the `ParseError`/`ConfigError`/`HauteError` types are Haute's

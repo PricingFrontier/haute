@@ -64,7 +64,10 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
 from haute._code_extraction import extract_user_code
+from haute.errors import ParseError
 
 # ---------------------------------------------------------------------------
 # Helpers — build function bodies as the extractors expect them
@@ -322,16 +325,11 @@ class TestLineHeuristicMisfires:
         assert "class Helper" in result
         assert "df = source" in result
 
-    def test_multiple_returns_early_exit_all_converted(self) -> None:
-        """Both branches of an early-exit must flip to ``df = …``.
+    def test_an_early_exit_is_refused_rather_than_flattened(self) -> None:
+        """An early ``return`` cannot become ``df = …`` without changing the result.
 
-        The current implementation uses an ``in_return=True`` latch that
-        converts *only the first* top-level ``return`` and leaves any
-        later returns textually intact — so the extracted user code has a
-        stray ``return late`` that, once re-wrapped by codegen with its
-        own ``return df``, yields a function body with two mismatched
-        returns.  An AST pass will see both ``Return`` nodes at the outer
-        scope and rewrite both.
+        Flipping both branches to assignments would let the early branch fall
+        through to the late one, so the node would always return ``late``.
         """
         body = _body(
             "if condition:",
@@ -340,18 +338,8 @@ class TestLineHeuristicMisfires:
             docstring="early-exit",
         )
 
-        result = _extract_transform_code(body, ["condition", "early", "late"])
-
-        _assert_is_valid_python(result, context="early-exit")
-        # No top-level `return …` should survive:
-        for line in result.splitlines():
-            stripped = line.lstrip()
-            assert not stripped.startswith("return ") or stripped.startswith("return_"), (
-                f"early-exit branch still has `return` at outer scope:\n{result}"
-            )
-        # Both branches produce a `df = …` assignment:
-        assert "df = early" in result, f"early-exit branch not flipped to `df = early`:\n{result}"
-        assert "df = late" in result, f"late-exit branch not flipped to `df = late`:\n{result}"
+        with pytest.raises(ParseError, match="returns early at line 2 of its code"):
+            _extract_transform_code(body, ["condition", "early", "late"])
 
     def test_source_node_nested_fn_return_df_preserved(self) -> None:
         """Data Input hook: inner helper's terminal ``return df`` must NOT be eaten.

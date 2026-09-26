@@ -28,6 +28,7 @@ from haute._pipeline_repair import (
 )
 from haute._python_syntax import (
     SourceNodeReplacement,
+    insert_import_after,
     replace_source_nodes,
 )
 from haute._source_layout import quote_string
@@ -74,6 +75,27 @@ def _replace_spans(
             )
         )
     return prefix + replace_source_nodes(text, replacements).encode("utf-8")
+
+
+def _with_polars_import(source: bytes) -> bytes:
+    """Add ``import polars as pl`` below ``import haute`` when *source* uses ``pl`` unimported.
+
+    A regenerated function can gain annotations (a hook's ``pl.LazyFrame``) that
+    a module of declarations never needed to import.
+    """
+    prefix, text, _body = _decode_utf8_artifact(source, artifact="Repair source")
+    tree = ast.parse(text)
+    imported = {
+        alias.asname or alias.name.split(".")[0]
+        for statement in tree.body
+        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        for alias in statement.names
+    }
+    uses_pl = any(isinstance(node, ast.Name) and node.id == "pl" for node in ast.walk(tree))
+    if not uses_pl or "pl" in imported:
+        return source
+    added = insert_import_after(text, "import polars as pl", after_module="haute")
+    return prefix + added.encode("utf-8")
 
 
 def _parse(raw: bytes) -> ast.Module:
@@ -321,7 +343,7 @@ def _reset_node(
             generated.encode("utf-8"), [(name, "submodel") for name in receiver_names]
         ).decode("utf-8")
     # LibCST matches the function's definition span and replaces its decorators too.
-    updated = _replace_spans(before, [(function, generated.rstrip("\n"))])
+    updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(
         0,
         _edit(
