@@ -218,7 +218,9 @@ def _finite_numbers(values: Mapping[str, Any]) -> bool:
 
 def _parquet_rows(path: str) -> int:
     """The row count of a prepared training Parquet file, from its metadata."""
-    return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+    from haute._polars_utils import read_parquet_metadata
+
+    return int(read_parquet_metadata(Path(path))["row_count"])
 
 
 def _downsampling_warning(
