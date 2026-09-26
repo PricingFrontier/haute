@@ -166,16 +166,20 @@ def _validate_ratebook_factors_artifact_handle(handle: dict[str, Any]) -> tuple[
     )
 
 
-def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any] | None:
-    """Persist the large apply/detail dataframe behind an explicit handle."""
-    if not hasattr(solve_result, "dataframe"):
-        return None
+def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any]:
+    """Persist an online result's per-quote dataframe behind an explicit handle.
 
+    Only online solves and online apply results carry a per-quote frame; a
+    result without one is a caller error, never a silent "nothing to persist".
+    """
     import polars as pl
 
-    df = solve_result.dataframe
+    df = getattr(solve_result, "dataframe", None)
     if not isinstance(df, pl.DataFrame):
-        return None
+        raise TypeError(
+            "An online optimiser result must carry a per-quote Polars DataFrame to "
+            f"persist; {type(solve_result).__name__}.dataframe is {type(df).__name__}"
+        )
 
     artifact_dir = create_owned_artifact_directory(
         _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER

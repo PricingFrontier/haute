@@ -15,6 +15,8 @@ from pathlib import Path
 
 from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
+from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
+from haute._price_contour import PriceContourCompatibilityError, price_contour_install
 from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._mlflow import DeployResult
@@ -49,7 +51,9 @@ _SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("orjson", "orjson"),
     ("msgspec", "msgspec"),
     ("joblib", "joblib"),
-    ("price-contour", "price-contour"),
+    # The price-contour compatibility guard checks the installed version with it.
+    ("packaging", "packaging"),
+    (PRICE_CONTOUR_DISTRIBUTION, PRICE_CONTOUR_DISTRIBUTION),
 )
 # The XGBoost distribution haute depends on, by the same platform marker as
 # its package metadata: the CPU-only build except on macOS.
@@ -934,7 +938,9 @@ def _pinned_dockerfile_deps(
     return [
         haute,
         *(
-            _pinned_dockerfile_dependency(distribution_name, install_name)
+            _pinned_price_contour_dependency()
+            if distribution_name == PRICE_CONTOUR_DISTRIBUTION
+            else _pinned_dockerfile_dependency(distribution_name, install_name)
             for distribution_name, install_name in _SCORING_RUNTIME_DEPENDENCIES
         ),
         *_pinned_graph_dockerfile_deps(resolved),
@@ -985,6 +991,29 @@ def _pinned_dockerfile_dependency(
             f"environment, so install {distribution_name!r} here and re-run."
         ) from exc
     return f"{install_name}=={package_version}"
+
+
+def _pinned_price_contour_dependency() -> str:
+    """Pin the verified price-contour; refuse a build the container cannot reproduce.
+
+    The container installs ``price-contour==<version>`` from the package index,
+    so the deploying environment must run a released build: an editable
+    checkout or a direct-URL install of the same version number may hold
+    different solver code, and the deployed prices would silently differ from
+    the ones reviewed here.
+    """
+    try:
+        install = price_contour_install()
+    except PriceContourCompatibilityError as exc:
+        raise DeployError(f"Cannot pin price-contour for the scoring container.\n{exc}") from exc
+    if install.kind != "wheel":
+        raise DeployError(
+            f"Cannot pin price-contour for the scoring container: version {install.version} "
+            f"is installed from {install.description}, which the container cannot "
+            "reproduce from the package index. Install the released build with "
+            "`uv sync --locked` and deploy again."
+        )
+    return f"{PRICE_CONTOUR_DISTRIBUTION}=={install.version}"
 
 
 # A pickle or joblib artifact may hold an object of any third-party package

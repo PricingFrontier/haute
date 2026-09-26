@@ -16,6 +16,9 @@ from haute.deploy._container import build_and_push_image, prepare_build_director
 from haute.errors import DeployError
 from scripts.container_smoke import run_smoke
 
+# Container builds pin price-contour from the package index; see the fixture.
+pytestmark = pytest.mark.usefixtures("released_price_contour")
+
 
 def _resolve_minimal_live_quote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)

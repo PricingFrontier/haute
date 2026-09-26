@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, cast
 
 import numpy as np
 from fastapi import HTTPException
@@ -203,8 +203,30 @@ class _OptimiserSolveRunningJob(RunningJobFields):
     progress: float
     config: dict[str, Any]
     node_label: str
+    # Absent on the worker process's private setup job, which never publishes.
+    input_provenance: NotRequired[dict[str, str | None]]
     start_time: float
     timeout: int | None
+
+
+def _solve_input_provenance(
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    graph_fingerprint: str,
+) -> dict[str, str | None]:
+    """Cheap provenance for a solve's published artifacts, recorded at job creation.
+
+    Every value is already at hand when the solve starts; nothing is hashed or read.
+    """
+    from haute.executor import _resolve_batch_scenario
+
+    return {
+        "node_id": node_id,
+        "data_source": _resolve_batch_scenario(graph) or "batch",
+        "source_file": graph.source_file,
+        "graph_fingerprint": graph_fingerprint,
+    }
 
 
 class _OptimiserEstimateRunningJob(RunningJobFields):
@@ -1126,6 +1148,12 @@ def _reduce_frontier_range_batches(
     # API-facing summaries/metadata while preserving the 24h status record.
 
 
+# price-contour names each constraint's outputs ``total_<name>``, ``lambda_<name>``
+# and ``optimal_<name>``; these names collide with its own ``total_objective``,
+# ``optimal_step`` and ``optimal_scenario_value`` columns.
+RESERVED_OPTIMISER_CONSTRAINT_NAMES = frozenset({"objective", "step", "scenario_value"})
+
+
 class OptimiserSolveService:
     """Orchestrates the full optimisation solve lifecycle.
 
@@ -1184,6 +1212,11 @@ class OptimiserSolveService:
                 "message": "Preparing optimiser input",
                 "config": dict(config),
                 "node_label": node.data.label,
+                "input_provenance": _solve_input_provenance(
+                    body.graph,
+                    body.node_id,
+                    graph_fingerprint=setup_job_key[2],
+                ),
                 "start_time": start_time,
                 "timeout": _solve_timeout_from_config(config),
             }
@@ -3116,6 +3149,21 @@ class OptimiserSolveService:
                 status_code=400,
                 detail=f"Unsupported optimiser mode '{mode}'."
                 " Currently supported: online, ratebook.",
+            )
+
+        constraints = config.get("constraints") or {}
+        reserved = sorted(
+            name for name in constraints if name in RESERVED_OPTIMISER_CONSTRAINT_NAMES
+        )
+        if reserved:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Constraint name(s) {reserved} are reserved: price-contour already names "
+                    "its outputs total_objective, optimal_step and optimal_scenario_value, so "
+                    "a constraint called objective, step or scenario_value would overwrite "
+                    "one of them. Rename the constraint."
+                ),
             )
 
         if mode == "ratebook":

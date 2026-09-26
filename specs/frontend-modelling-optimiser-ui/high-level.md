@@ -62,20 +62,20 @@ results are supplied by API and result-store layers.
   PowerShell and bash/zsh commands with appropriate quoting; copying includes
   both the opt-in and launch command. Remote successes never offer either.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
-  options and frontier ranges; it can auto-range constraints and submit solves. Starting another
-  auto-range request or unmounting best-effort cancels that auto-range job; this panel has no
-  solve-cancel control.
+  options and frontier ranges across the panes defined in
+  [Optimiser config panes](#optimiser-config-panes); it can auto-range constraints and submit
+  solves. Starting another
+  auto-range request or unmounting best-effort cancels that auto-range job; a running solve is
+  stopped from the Solve pane.
 - Ratebook source and inferred factor columns change in one atomic config update. Constraint
   renames/removals migrate or remove their matching canonical `frontier_ranges` entry in the
   same update; range fields never inherit the removed global frontier bounds.
-- Optimiser preview renders summary, convergence, detail, frontier, ratebook/rates and export
-  flows. Selecting another frontier point clears stale materialised detail before enabling Save
-  or MLflow actions, and structured API details are preferred on failures. The Export tab's
-  "Log to MLflow" action stays visible in every backend state — disabled with the off-reason
-  and a "Configure MLflow" link when tracking is unavailable — and the frontier detail card
-  keeps its log button visible but disabled with an explanatory tooltip. The optimiser
-  config's collapsible MLflow section opens with the same manual-logging explainer the
-  modelling Export pane uses. The data preview
+- Optimiser preview renders summary, convergence, detail, frontier, ratebook/rates and quotes
+  views (see [Optimiser config panes](#optimiser-config-panes)); structured API details are
+  preferred on failures. The Export pane's "Log to MLflow" action stays visible in every backend
+  state — disabled with the off-reason and a "Configure MLflow" link when tracking is unavailable.
+  The optimiser Export pane opens its MLflow section with the same manual-logging
+  explainer the modelling Export pane uses. The data preview
   groups and charts bounded scenario samples and can calculate statistics.
 - Modelling and optimiser action areas render actionable memory-pressure and
   rejected-strategy diagnostics with profile, blocking node/operator, cost,
@@ -349,6 +349,102 @@ new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` prove strip gating, per-node memory,
 active-indicator accessibility, and unchanged roving-keyboard behaviour. Runtime/store suites prove
 strict live-history parsing, latest-status retention, and per-job estimator reset.
+
+## Optimiser config panes
+
+The optimiser node panel presents **Data**, **Factors**, **Constraints**, **Solve**, and
+**Export** panes in the same shared equal-width pane-tab strip the modelling and Explore editors
+use, hosted by the node panel
+([frontend-node-editors](../frontend-node-editors/low-level.md#optimiser-config-panes)).
+**Factors** exists only in ratebook mode. The optimiser is sink-only and emits no output frame,
+so like modelling it has no Columns tab: the node panel shows no Config/Columns strip and the pane
+strip sits directly beneath the header. One `optimiserPanesFor(mode)` list drives both the tabs
+and the pane bodies. The active pane is remembered per node in the UI store; a remembered pane
+the current mode lacks (Factors after switching to online) opens Data without discarding the
+stored ratebook source or factor columns, which reappear when ratebook mode is chosen again.
+Pane ownership:
+
+- **Data** — the Online/Ratebook mode choice, the Objectives & Constraints input selector with
+  its missing/malformed-input alert, the objective ("Column to maximise"), and the Quote ID,
+  Scenario Index and Scenario Value column mappings. The objective is chosen here because it
+  is a column of the input selected directly above it.
+- **Factors** — the Rating Factor Source selector, its combined disconnected-source and
+  zero-level warning, and the rating-factor toggles with their level counts.
+- **Constraints** — the constraint count heading with **Add**, then the **Individual point** /
+  **Efficient frontier** result-type choice, then one bordered card per constraint. Each card
+  carries the constraint column selector and remove action, and beneath them the fields for the
+  selected result type: the Minimum/Maximum bound and value for an individual point, or that
+  constraint's required min and max frontier range for an efficient frontier. The frontier's
+  **Auto range** action, **Steps per constraint** field (with the total number of solves it
+  implies) and auto-range error follow the cards, shown only for an efficient frontier. The
+  frontier is a sweep over the constraint bounds, so its settings live with the constraints
+  rather than in a pane of their own; a bound and its range are never listed in separate
+  per-constraint lists. Bound values and frontier range fields commit on blur or Enter, not per
+  keystroke. Clearing a bound value restores its stored value on commit, so a constraint is never
+  silently relaxed to 0; clearing a frontier range field removes that end of the range, which
+  the field and the Solve issue list then flag as missing.
+- **Solve** — the stale-result banner, source-size estimate, **Optimise** action, progress with a
+  **Stop** action, failure card and convergence result, followed by a **Solver settings** section
+  holding maximum iterations and tolerance, chunk size, record history and, in ratebook mode, the
+  coordinate-descent iterations and tolerance. **Stop** cancels the running solve job (including
+  its efficient-frontier phase) through the existing cancel route and records the returned
+  terminal state the way modelling's Cancel does. The size estimate is requested only when an
+  input that changes it changes (the Objectives & Constraints input, mode, the Quote ID / Scenario
+  Index / Scenario Value mappings, the Rating Factor Source and factors, the active source or the
+  graph structure), never on objective, constraint, solver or export edits; an estimate the server
+  cannot size reads "Size unknown". While the configuration cannot be solved the Optimise action
+  stays disabled and one alert beneath it lists every blocking issue, each with a **Go to** link
+  that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective; a
+  mapped Quote ID, Scenario Index or Scenario Value column that the input does not have (checked
+  once the input's columns are known); in ratebook mode no connected Rating Factor Source or no
+  selected factor; and for an efficient frontier a constraint whose range is missing an end or
+  whose minimum is not below its maximum, or more than 10,000 frontier solves in total. Warnings
+  that do not block — one scenario per quote, or quotes with differing scenario counts — appear
+  under the estimate. Ctrl+Enter inside the optimiser editor starts the solve, or re-runs it when
+  the result is stale, whenever the configuration can be solved.
+- **Export** — two sections. **Publish** acts on the node's last solve: a target choice between
+  the solved result and each frontier point (the same selection the result preview's frontier
+  chart shows, so choosing a point on either surface changes both), an output path field
+  persisted as `result_export_path` whose placeholder is the derived default
+  (`output/optimiser_<label>_<id>.json`), an optional version label, **Save to file** and **Log
+  to MLflow**. Saving never silently replaces a file: an existing destination shows the server's
+  message with a **Replace existing file** confirmation that retries exactly the refused request with overwrite; the confirmation is withdrawn while the path or target no longer match it. A successful
+  save shows the written project-relative path and a **Use in Apply node** choice listing the
+  graph's Apply Optimisation nodes, which points the chosen node's file source at that path. A
+  successful log shows the run id and link, as modelling's Export pane does. A ratebook result
+  also offers **Download factor tables (CSV)** and states its combined-factor collar,
+  "Combined factor collar [min, max] — apply it in your rating engine", from the solve's
+  `combined_factor_bounds` (every frontier point shares its solve's collar). The CSV repeats the
+  collar on every row as `combined_factor_min` and `combined_factor_max`, so the file stays one
+  rectangular table. A ratebook result without a collar shows an alert asking for a re-run and
+  offers no CSV. Before any solve the section explains that there
+  is nothing to publish yet; while a solve runs the actions are disabled. When the configuration
+  has changed since the solve, a warning says so, the actions read **Save outdated result** and
+  **Log outdated result**, and the request records that the result was stale when published.
+  Publishing never consumes the result: saving, logging and viewing Quotes can be repeated in
+  any order. **MLflow logging** holds the manual-logging explainer, the shared destination
+  selector and the experiment path field. The export fields (`mlflow_destination`,
+  `mlflow_experiment`, `result_export_path`) are not part of the solve identity: editing them
+  never marks the solve stale, re-requests the size estimate, or changes the graph's structural
+  fingerprint.
+
+The optimiser config has no collapsible sections: the panes replace the former Advanced and MLflow
+disclosures. The Solve tab shows the accessible active indicator while a solve job runs. Unlike
+modelling, a pane with a blocking Solve issue shows a compact warning indicator on its tab ("Data
+needs attention"), so the reason Optimise is disabled is visible from every pane.
+
+**Result preview.** The optimiser result preview offers Frontier (when the solve produced one),
+Summary, Rates (ratebook), Quotes (online) and Convergence (when history was recorded); it has no
+Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
+detail card says so. Clicking a frontier point selects it
+as the publish target; clicking the selected point again keeps it selected (the Export pane's
+target choice returns to the solved result). The detail card judges each constraint against the
+point's own swept threshold, not the solved result's bound. Quotes loads the per-quote detail of
+the publish target on demand (bounded rows, with the total and cap stated) and names columns in
+neutral scenario terms. When the node configuration has changed since the result was produced,
+the preview shows a strip saying so with a **Re-run** action that starts the solve directly. Re-run applies the Solve pane's blocking rules: while any issue blocks the solve it is disabled and the strip names the first issue. λ is
+labelled "λ (shadow price)", explained as the objective gained per unit the bound is relaxed, with
+0 meaning the constraint is not binding.
 
 ## Model family capabilities
 

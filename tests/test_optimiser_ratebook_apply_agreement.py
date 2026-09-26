@@ -66,6 +66,7 @@ def _artifact(
         "version": "rb_v1",
         "mode": "ratebook",
         "factor_tables": factor_tables,
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": factor_dtypes,
     }
 
@@ -300,6 +301,7 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
     `_build_artifact_payload`) so a drift in the saved format fails here, not
     in a hand-rolled fixture.
     """
+    from haute.routes._optimiser_frontier import _summary_solve_result
     from haute.routes._optimiser_solver import (
         _ratebook_factor_dtypes,
         _ratebook_factor_level_counts,
@@ -332,11 +334,26 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
             "scenario_value": "scenario_value",
         },
         "result": {
+            "mode": "ratebook",
+            "lambdas": solve_result.lambdas,
+            "total_objective": solve_result.total_objective,
+            "constraints": solve_result.total_constraints,
+            "baseline_objective": solve_result.baseline_objective,
+            "baseline_constraints": solve_result.baseline_constraints,
+            "converged": solve_result.converged,
+            "cd_iterations": solve_result.cd_iterations,
+            "clamp_rate": solve_result.clamp_rate,
             "factor_tables": serialised,
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": factor_dtypes,
         },
     }
-    return _build_artifact_payload(job, solve_result, version_override="rb_e2e_v1")
+    # The save route publishes the anchor from its completion summary.
+    return _build_artifact_payload(
+        job,
+        _summary_solve_result(job["result"]),
+        version_override="rb_e2e_v1",
+    )
 
 
 class TestRealSolverEndToEnd:

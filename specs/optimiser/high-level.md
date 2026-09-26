@@ -113,7 +113,20 @@ ratebook) factor tables are available as a job summary. From there a user can:
 - Preview the online result as a capped table of per-quote selected scenarios (ratebook has no
   such per-quote view — see Failure model).
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
-  and the same artifact.
+  and the same artifact. Publishing names its target explicitly: no point index means the job's
+  own solve (the anchor), a point index means that frontier point, and the server's currently
+  selected frontier point is never an implicit target. Publishing never needs, holds or releases
+  the solve's heavy in-memory state: the anchor publishes from its lightweight result summary and
+  an MLflow summary computed once at solve completion, so Save, Log and Save again all succeed,
+  in any order, including after the heavy-state retention window has expired. (A ratebook
+  frontier point that was never materialised still needs the retained runtime to derive its
+  factor tables.) A relative save path resolves against the project root, an existing file is
+  only replaced when the request says so (otherwise a 409 conflict and nothing is written), and
+  the response gives the project-relative POSIX path an `OPTIMISER_APPLY` node's
+  `artifact_path` accepts. Every artifact records an audit trail: the solver settings the solve
+  used, the constraints in force for the published target (a frontier point's own thresholds),
+  cheap input provenance, and whether the node configuration had changed since the solve
+  (`stale_at_publish`, reported by the caller).
 
 A saved artifact is later loaded by an `OPTIMISER_APPLY` pipeline node to price new data:
 either a local file (content-hash cached so an on-disk edit is always picked up, even a
@@ -144,8 +157,15 @@ Invariants:
   when only one edge is connected; an empty selector never means "first edge". Online apply
   remains a single-primary-input operation and does not interpret `ratebook_input`.
 - A completed solve is never persisted as an artifact if it contains a NaN or Infinity value
-  anywhere in the payload, or (for ratebook) if it is missing its factor tables or the ordered
-  `factor_dtypes` descriptor for any table — an artifact is what production pricing reads from.
+  anywhere in the payload, or (for ratebook) if it is missing its factor tables, the ordered
+  `factor_dtypes` descriptor for any table, or the solve's `combined_factor_bounds` — an
+  artifact is what production pricing reads from.
+- A deployed ratebook never prices outside the range the solve scored. The solver priced each
+  quote at the scenario-grid step nearest its factor product, clamped to the grid ends, so the
+  artifact carries that grid's `[min, max]` as `combined_factor_bounds` and every apply path
+  (preview, generated code, deploy scorer, trace) clamps the combined `optimised_factor` to it.
+  The per-factor columns stay unclamped, and the factor-table CSV download states the collar
+  for a rating engine to apply.
 - Ratebook apply verifies each saved factor name and dtype descriptor against the apply-frame
   schema before constructing a lookup. A legacy artifact without dtype metadata or any mismatch
   fails as a typed 422/background contract error; it never becomes a neutral rating miss.
@@ -324,7 +344,7 @@ than either crashing on a missing attribute or silently returning a misleading r
 some other way.
 
 An optimiser artifact is never written with a non-finite value or (for ratebook) a missing
-factor-table/dtype-contract section; the save/log request is rejected before the write, listing
+factor-table/dtype-contract section or combined-factor collar; the save/log request is rejected before the write, listing
 every offending path in the payload. A valid server-owned handle whose artifact has been
 removed or expired returns 410 with a stable re-run message. An invalid server-owned handle or
 a present-but-corrupt artifact returns a sanitized 500; filesystem and parquet details remain

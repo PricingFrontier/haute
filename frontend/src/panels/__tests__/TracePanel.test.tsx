@@ -565,6 +565,7 @@ describe("TracePanel", () => {
                 output_value: 0.58,
                 base_value: 1,
                 final_value: 0.58,
+                collar: { min: 0.5, max: 1.5, before: 0.58, after: 0.58, applied: false },
                 factors: [
                   {
                     name: "proposer_age_band",
@@ -739,6 +740,7 @@ describe("TracePanel", () => {
                 output_value: 0.58,
                 base_value: 1,
                 final_value: 0.58,
+                collar: { min: 0.5, max: 1.5, before: 0.58, after: 0.58, applied: false },
                 factors: [
                   {
                     name: "proposer_age_band",
@@ -1082,6 +1084,7 @@ describe("TracePanel", () => {
                 output_value: 132,
                 base_value: 100,
                 final_value: 132,
+                collar: { min: 0.5, max: 1.5, before: 132, after: 132, applied: false },
                 factors: [
                   {
                     name: "age_factor",
@@ -1191,6 +1194,7 @@ describe("TracePanel", () => {
                 base_value: 1,
                 factors: [],
                 final_value: null,
+                collar: { min: 0.5, max: 1.5, before: 1, after: 1, applied: false },
                 message: "No ratebook factor tables were available in the optimiser artifact.",
               },
             }),
@@ -1203,6 +1207,54 @@ describe("TracePanel", () => {
     expect(screen.getByText("Selected ratebook")).toBeInTheDocument()
     expect(screen.getByText("No ratebook factor tables were available in the optimiser artifact.")).toBeInTheDocument()
     expect(screen.queryByLabelText("Optimiser ratebook ladder")).not.toBeInTheDocument()
+  })
+
+  it("ends the ratebook ladder with the combined factor collar", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "ratebook",
+          column: "optimised_factor",
+          output_value: 1.1,
+          steps: [
+            makeStep({
+              node_id: "ratebook",
+              node_name: "Ratebook apply",
+              node_type: "optimiserApply",
+              schema_diff: {
+                columns_added: ["optimised_factor"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              expression: null,
+              calculation: null,
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "ratebook",
+                status: "ok",
+                output_column: "optimised_factor",
+                output_value: 1.1,
+                base_value: 1,
+                final_value: 1.1,
+                collar: { min: 0.9, max: 1.1, before: 1.155, after: 1.1, applied: true },
+                factors: [
+                  { name: "region", input_value: "London", factor_value: 1.05, running_total: 1.05, status: "matched" },
+                  { name: "age_band", input_value: "young", factor_value: 1.1, running_total: 1.155, status: "matched" },
+                ],
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Optimiser ratebook ladder")
+    const rows = within(ladder).getAllByText(/region|age_band|Combined factor collar/)
+    expect(rows.map((row) => row.textContent)).toEqual(["region", "age_band", "Combined factor collarclipped"])
+    expect(within(ladder).getByText("[0.9, 1.1]")).toBeInTheDocument()
+    expect(within(ladder).getByText("clipped")).toBeInTheDocument()
   })
 
   it("target step card starts expanded to show column details", () => {

@@ -140,12 +140,19 @@ def test_validate_accepts_well_formed_handle() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_persist_returns_none_without_dataframe_attr() -> None:
-    assert _persist_apply_result_artifact(SimpleNamespace()) is None
-
-
-def test_persist_returns_none_for_non_dataframe() -> None:
-    assert _persist_apply_result_artifact(SimpleNamespace(dataframe=[1, 2, 3])) is None
+@pytest.mark.parametrize(
+    ("solve_result", "found"),
+    [
+        (SimpleNamespace(), "NoneType"),
+        (SimpleNamespace(dataframe=None), "NoneType"),
+        (SimpleNamespace(dataframe=[1, 2, 3]), "list"),
+    ],
+)
+def test_persist_refuses_a_result_without_a_per_quote_frame(solve_result: Any, found: str) -> None:
+    """Persisting is only called for results that must carry a per-quote frame;
+    anything else is a defect to surface, not a silent ``None`` handle."""
+    with pytest.raises(TypeError, match=f"per-quote Polars DataFrame.*is {found}"):
+        _persist_apply_result_artifact(solve_result)
 
 
 def test_persist_cleans_up_dir_when_write_fails() -> None:

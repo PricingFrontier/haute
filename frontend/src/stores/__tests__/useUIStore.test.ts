@@ -18,6 +18,7 @@ function reset() {
     exploreConfiguredChartIds: {},
     exploreConfiguredPivotIds: {},
     modellingPanes: {},
+    optimiserPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -282,6 +283,23 @@ describe("useUIStore", () => {
       expect(useUIStore.getState().modellingPanes).toEqual({
         model_1: "params",
         model_2: "train",
+      })
+    })
+  })
+
+  describe("optimiserPanes", () => {
+    it("defaults to an empty lookup", () => {
+      expect(useUIStore.getState().optimiserPanes).toEqual({})
+    })
+
+    it("remembers panes independently by optimiser node", () => {
+      useUIStore.getState().setOptimiserPane("opt_1", "constraints")
+      useUIStore.getState().setOptimiserPane("opt_2", "solve")
+      useUIStore.getState().setOptimiserPane("opt_1", "export")
+
+      expect(useUIStore.getState().optimiserPanes).toEqual({
+        opt_1: "export",
+        opt_2: "solve",
       })
     })
   })

@@ -848,6 +848,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "objective",
                 "quote_id",
                 "record_history",
+                "result_export_path",
                 "scenario_index",
                 "scenario_value",
                 "structure_mode",

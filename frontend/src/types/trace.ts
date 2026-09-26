@@ -227,6 +227,18 @@ export interface OptimiserApplyOnlineNodeDetail {
   baseline?: OptimiserApplyOnlineCandidateDetail | null
 }
 
+/** The combined-factor collar step: the product of factors clipped to the scored grid range. */
+export interface OptimiserApplyRatebookCollarDetail {
+  min: number
+  max: number
+  /** The product of the factors, before the collar. */
+  before: number
+  /** The deployed value, after the collar. */
+  after: number
+  /** True when the product lay outside the collar and was clipped. */
+  applied: boolean
+}
+
 export interface OptimiserApplyRatebookNodeDetail {
   detail_type: "optimiser_apply"
   mode: "ratebook"
@@ -235,6 +247,7 @@ export interface OptimiserApplyRatebookNodeDetail {
   output_value: unknown
   base_value: number
   factors: OptimiserApplyRatebookFactorDetail[]
+  collar: OptimiserApplyRatebookCollarDetail
   final_value: unknown
   message?: string
 }

@@ -20,6 +20,18 @@ export interface UseStaleConfigEstimateOptions {
   toastLabel?: string
   estimateKey?: string | number
   enabled?: boolean
+  /**
+   * The config fields the estimate actually depends on. When given, the
+   * estimate is re-requested only when these (or the source/structure) change,
+   * not on every config edit; staleness still follows the whole config.
+   */
+  estimateInputs?: Record<string, unknown>
+  /**
+   * The graph structure the estimate depends on, when it is narrower than the
+   * global structural version (which also moves on edits to the node itself).
+   * Staleness still follows the structural version.
+   */
+  estimateStructureKey?: string
 }
 
 /**
@@ -76,8 +88,13 @@ export function useStaleConfigEstimate<TEstimate>(
   context: StaleEstimateContext,
   options: UseStaleConfigEstimateOptions = {},
 ): UseStaleConfigEstimateResult<TEstimate> {
-  const { toastLabel = "Estimate failed", estimateKey = "", enabled = true } = options
+  const { toastLabel = "Estimate failed", estimateKey = "", enabled = true, estimateInputs, estimateStructureKey } = options
+  const structureKey = estimateStructureKey ?? context.structuralVersion
   const configHash = useMemo(() => hashConfig(config), [config])
+  const estimateInputsHash = useMemo(
+    () => (estimateInputs === undefined ? configHash : hashConfig(estimateInputs)),
+    [configHash, estimateInputs],
+  )
   const isStale =
     !!cachedResult &&
     (cachedResult.configHash !== configHash ||
@@ -123,7 +140,7 @@ export function useStaleConfigEstimate<TEstimate>(
       })
 
     return () => controller.abort()
-  }, [nodeId, configHash, context.source, context.structuralVersion, estimateKey, enabled])
+  }, [nodeId, estimateInputsHash, context.source, structureKey, estimateKey, enabled])
 
   return { ...state, configHash, isStale }
 }

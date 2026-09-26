@@ -15,6 +15,12 @@ from haute._builders import (
 )
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
+from haute._price_contour import price_contour
+from haute._ratebook_collar import (
+    COMBINED_FACTOR_BOUNDS_KEY,
+    CombinedFactorBoundsError,
+    parse_combined_factor_bounds,
+)
 from haute._rating import (
     is_rating_dtype_descriptor,
     normalise_rating_key,
@@ -64,28 +70,6 @@ def explain_optimiser_apply_from_config(
         if mode == "ratebook":
             return _explain_ratebook(config, artifact, parent_frame, input_row, output_row)
         return _explain_online(config, artifact, parent_frame, output_row)
-    except ImportError as exc:
-        # The price_contour package is a hard runtime dep for online apply
-        # tracing.  When the env is misconfigured we want the user to see
-        # which library is missing, not a raw "No module named ..." string,
-        # so deploy operators can fix the environment without grepping the
-        # traceback.
-        #
-        # CPython sets ``exc.name`` automatically for ``import x``
-        # / ``from x import y`` failures, but a re-raised or chained
-        # ImportError can have ``name=None``.  Fall back to a generic phrasing
-        # in that case rather than exposing the literal ``None`` to the user.
-        if exc.name:
-            wrapped = OptimiserApplyTraceError(
-                f"optimiserApply trace requires the {exc.name!r} library to be installed; "
-                f"install it (e.g. `uv add {exc.name}`) and retry. Original error: {exc}"
-            )
-        else:
-            wrapped = OptimiserApplyTraceError(
-                f"optimiserApply trace failed to import a required library; "
-                f"check the deploy environment. Original error: {exc}"
-            )
-        return _error_detail(config, artifact, wrapped)
     except Exception as exc:
         return _error_detail(config, artifact, exc)
 
@@ -152,8 +136,6 @@ def _explain_online(
     parent_frame: pl.LazyFrame,
     output_row: dict[str, Any],
 ) -> dict[str, Any]:
-    from price_contour import ApplyOptimiser
-
     # Use plain ``.get(name, default)`` rather than ``.get(name, default) or default``:
     # the previous pattern silently rewrote a deliberate empty string to the
     # default, which hid configuration bugs.  An explicit empty value is a
@@ -191,7 +173,7 @@ def _explain_online(
         raise OptimiserApplyTraceError(
             f"no optimiser candidates found for quote_id={quote_id_value!r}"
         )
-    applier = ApplyOptimiser(
+    applier = price_contour().ApplyOptimiser(
         lambdas=lambdas,
         objective=objective_col,
         constraints=constraints,
@@ -239,7 +221,7 @@ def _explain_online(
             f"output={output_value!r}"
         )
 
-    return {
+    detail: dict[str, Any] = {
         "detail_type": "optimiser_apply",
         "mode": "online",
         "status": "ok",
@@ -272,6 +254,8 @@ def _explain_online(
         "selected": selected_row,
         "baseline": baseline[0],
     }
+    _add_effective_constraints(detail, artifact)
+    return detail
 
 
 def _online_candidate_payload(
@@ -314,6 +298,12 @@ def _explain_ratebook(
     input_row: dict[str, Any],  # noqa: ARG001 - retained for public signature parity.
     output_row: dict[str, Any],
 ) -> dict[str, Any]:
+    try:
+        collar_min, collar_max = parse_combined_factor_bounds(
+            artifact.get(COMBINED_FACTOR_BOUNDS_KEY)
+        )
+    except CombinedFactorBoundsError as exc:
+        raise OptimiserApplyTraceError(f"ratebook artifact {exc}") from exc
     matched_input = _match_ratebook_input_row(parent_frame, output_row)
     factor_tables = artifact.get("factor_tables", {}) or {}
     factor_dtypes = artifact.get("factor_dtypes")
@@ -454,11 +444,22 @@ def _explain_ratebook(
         raise OptimiserApplyTraceError(
             f"clicked optimiserApply output row is missing output column {output_col!r}"
         )
+    # The collar, exactly as ``_apply_ratebook`` applies it: the product is
+    # clipped to the scenario range the solve scored.
+    collared = min(max(running_product, collar_min), collar_max)
+    collar = {
+        "min": to_json_safe(collar_min),
+        "max": to_json_safe(collar_max),
+        "before": to_json_safe(running_product),
+        "after": to_json_safe(collared),
+        "applied": collared != running_product,
+    }
     final_value = output_row.get(output_col)
-    if not _values_match(final_value, running_product):
+    if not _values_match(final_value, collared):
         raise OptimiserApplyTraceError(
             "optimiserApply ratebook trace factors do not reconcile with output "
-            f"{output_col}: factors={running_product!r}, output={final_value!r}"
+            f"{output_col}: factors={running_product!r}, collared={collared!r} "
+            f"(collar [{collar_min!r}, {collar_max!r}]), output={final_value!r}"
         )
 
     detail: dict[str, Any] = {
@@ -472,12 +473,21 @@ def _explain_ratebook(
         "base_value": 1.0,
         "factor_ladder": factor_ladder,
         "factors": factor_ladder,
+        "collar": collar,
         "final_value": to_json_safe(final_value),
         "lambdas": dict(artifact.get("lambdas") or {}),
         "constraints": dict(artifact.get("constraints") or {}),
         "input_row": to_json_safe(matched_input),
     }
+    _add_effective_constraints(detail, artifact)
     return detail
+
+
+def _add_effective_constraints(detail: dict[str, Any], artifact: dict[str, Any]) -> None:
+    """Show the thresholds the published target was solved under, when recorded."""
+    effective = artifact.get("effective_constraints")
+    if isinstance(effective, dict):
+        detail["effective_constraints"] = to_json_safe(effective)
 
 
 def _required_artifact_column(

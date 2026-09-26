@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2, RefreshCw, Target } from "lucide-react"
+import { AlertTriangle, Loader2, RefreshCw, Square, Target } from "lucide-react"
 import type {
   ExecutionMetrics,
   OptimiserEstimate,
@@ -6,15 +6,26 @@ import type {
 } from "../../api/types"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import type { SolveProgress } from "../../stores/useNodeResultsStore"
+import type { OptimiserPane } from "../../stores/useUIStore"
 import { withAlpha } from "../../utils/color"
 import { formatDuration } from "../../utils/formatValue"
 import type { IterationSummary } from "./iterationSummary"
 
+/** One reason the solve cannot start, and the pane (with its tab label) that resolves it. */
+export type SolveIssue = { message: string; pane: OptimiserPane; label: string }
+
 type OptimiserSolveStatusProps = {
   isStale: boolean
   onSolve: () => void
+  /** Stops the running solve job; absent until the job is registered. */
+  onStop?: () => void
+  stopping?: boolean
   solving: boolean
   canSolve: boolean
+  issues: readonly SolveIssue[]
+  /** Non-blocking signals, e.g. a scenario mapping that looks wrong. */
+  warnings?: readonly string[]
+  onReviewPane: (pane: OptimiserPane) => void
   accentColor: string
   estimate: OptimiserEstimate | null
   progress: SolveProgress | null
@@ -46,8 +57,13 @@ function formatScenariosPerQuote(
 export default function OptimiserSolveStatus({
   isStale,
   onSolve,
+  onStop,
+  stopping = false,
   solving,
   canSolve,
+  issues,
+  warnings = [],
+  onReviewPane,
   accentColor,
   estimate,
   progress,
@@ -87,38 +103,53 @@ export default function OptimiserSolveStatus({
         </div>
       )}
 
-      {/* Source size preview (hidden when unreadable — metadata isn't available for live data) */}
-      {estimate && estimate.quote_count != null && estimate.expanded_row_count != null && (
-        <div
-          className="grid grid-cols-3 gap-2 px-3 py-2 rounded-lg text-[11px]"
-          style={{
-            background: "var(--bg-panel)",
-            border: "1px solid var(--border)",
-          }}
+      {/* Source size preview; a size the server cannot count says so */}
+      {estimate && (
+        estimate.quote_count != null && estimate.expanded_row_count != null ? (
+          <div
+            className="grid grid-cols-3 gap-2 px-3 py-2 rounded-lg text-[11px]"
+            style={{
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <div className="min-w-0">
+              <div style={{ color: "var(--text-muted)" }}>Quotes</div>
+              <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+                {estimate.quote_count.toLocaleString()}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div style={{ color: "var(--text-muted)" }}>Scenarios / quote</div>
+              <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+                {formatScenariosPerQuote(
+                  estimate.scenarios_per_quote_min,
+                  estimate.scenarios_per_quote_max,
+                  estimate.scenarios_per_quote_mean,
+                )}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div style={{ color: "var(--text-muted)" }}>Total rows</div>
+              <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+                {estimate.expanded_row_count.toLocaleString()}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="px-3 py-2 rounded-lg text-[11px]" style={{ color: "var(--text-muted)", background: "var(--bg-panel)", border: "1px solid var(--border)" }}>
+            Size unknown: the input size could not be counted before solving.
+          </div>
+        )
+      )}
+      {warnings.length > 0 && (
+        <ul
+          aria-label="Input warnings"
+          className="space-y-1 px-3 py-2 rounded-lg text-[11px] list-none"
+          style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
         >
-          <div className="min-w-0">
-            <div style={{ color: "var(--text-muted)" }}>Quotes</div>
-            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
-              {estimate.quote_count.toLocaleString()}
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div style={{ color: "var(--text-muted)" }}>Scenarios / quote</div>
-            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
-              {formatScenariosPerQuote(
-                estimate.scenarios_per_quote_min,
-                estimate.scenarios_per_quote_max,
-                estimate.scenarios_per_quote_mean,
-              )}
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div style={{ color: "var(--text-muted)" }}>Total rows</div>
-            <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
-              {estimate.expanded_row_count.toLocaleString()}
-            </div>
-          </div>
-        </div>
+          {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
       )}
 
       {/* Actions */}
@@ -167,6 +198,18 @@ export default function OptimiserSolveStatus({
                 <span style={{ color: accentColor }}>Executing pipeline...</span>
               </div>
             )}
+            {onStop && (
+              <button
+                type="button"
+                onClick={onStop}
+                disabled={stopping}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium disabled:opacity-60"
+                style={{ background: "var(--danger-soft)", color: "var(--danger)", border: "1px solid var(--danger-border)" }}
+              >
+                {stopping ? <Loader2 size={11} className="animate-spin" /> : <Square size={11} />}
+                {stopping ? "Stopping" : "Stop"}
+              </button>
+            )}
           </div>
         ) : (
           <button
@@ -178,6 +221,32 @@ export default function OptimiserSolveStatus({
             <Target size={14} />
             Optimise
           </button>
+        )}
+        {!solving && issues.length > 0 && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+            style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
+          >
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" style={{ color: "var(--warning-strong)" }} />
+            <div className="min-w-0" style={{ color: "var(--warning)" }}>
+              <div className="font-medium">Complete before optimising</div>
+              <ul className="mt-1 list-disc space-y-1 pl-4">
+                {issues.map((issue) => (
+                  <li key={issue.message}>
+                    {issue.message}
+                    <button
+                      type="button"
+                      className="ml-2 font-medium underline underline-offset-2"
+                      onClick={() => onReviewPane(issue.pane)}
+                    >
+                      Go to {issue.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
         )}
       </div>
 

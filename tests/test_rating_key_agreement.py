@@ -609,6 +609,7 @@ class TestRatebookSchemaCollection:
                 "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.2}],
                 "channel": [{"__factor_group__": "online", "optimal_scenario_value": 1.3}],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "age": [{"column": "age", "dtype": {"kind": "Float64"}}],
                 "region": [{"column": "region", "dtype": {"kind": "String"}}],

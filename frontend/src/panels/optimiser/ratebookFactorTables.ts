@@ -1,3 +1,5 @@
+import { buildCsv } from "../editors/shared/tableClipboard"
+
 export type FactorTableRow = Record<string, unknown>
 export type FactorTables = Record<string, FactorTableRow[]>
 export type FactorLevelOrder = Record<string, readonly string[]>
@@ -81,4 +83,37 @@ export function orderedFactorTableEntries(
     }))
     .sort(byOrderIndex)
     .map(({ factorName, rows }) => [factorName, rows] as [string, FactorTableRow[]])
+}
+
+/** The scenario range a ratebook solve scored; the deployed combined factor is clipped to it. */
+export type CombinedFactorCollar = { min: number; max: number }
+
+export const COLLAR_MIN_COLUMN = "combined_factor_min"
+export const COLLAR_MAX_COLUMN = "combined_factor_max"
+
+/**
+ * One CSV of every factor table: the table name, then each row's own columns,
+ * then the combined-factor collar on every row. The collar applies to the
+ * product of a quote's rates, not to any one table, and repeats per row so the
+ * file stays one rectangular table a rating engine can load as it is.
+ */
+export function factorTablesCsv(factorTables: FactorTables, collar: CombinedFactorCollar): string {
+  const columns: string[] = []
+  for (const rows of Object.values(factorTables)) {
+    for (const row of rows) {
+      for (const key of Object.keys(row)) if (!columns.includes(key)) columns.push(key)
+    }
+  }
+  const lines: string[][] = [["factor", ...columns, COLLAR_MIN_COLUMN, COLLAR_MAX_COLUMN]]
+  for (const [factor, rows] of Object.entries(factorTables)) {
+    for (const row of rows) {
+      lines.push([
+        factor,
+        ...columns.map((column) => (row[column] == null ? "" : String(row[column]))),
+        String(collar.min),
+        String(collar.max),
+      ])
+    }
+  }
+  return buildCsv(lines)
 }

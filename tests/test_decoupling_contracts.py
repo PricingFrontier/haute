@@ -720,3 +720,117 @@ class TestLoggingConvention:
             "server uses structlog, CLI uses click.echo.  The words 'server' "
             "and 'CLI' should both appear."
         )
+
+
+# ---------------------------------------------------------------------------
+# price_contour: one guarded runtime import point
+# ---------------------------------------------------------------------------
+
+
+def _is_type_checking_guard(node: ast.If) -> bool:
+    test = node.test
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _runtime_price_contour_imports(tree: ast.Module) -> list[int]:
+    """Line numbers of ``price_contour`` imports that run at runtime.
+
+    Imports nested in ``if TYPE_CHECKING:`` (the body, not an ``else``) are
+    typing-only and allowed.
+    """
+    lines: list[int] = []
+
+    def visit(node: ast.AST, *, typing_only: bool) -> None:
+        if isinstance(node, ast.If) and _is_type_checking_guard(node):
+            for child in node.body:
+                visit(child, typing_only=True)
+            for child in node.orelse:
+                visit(child, typing_only=typing_only)
+            return
+        if not typing_only:
+            if isinstance(node, ast.Import) and any(
+                alias.name.split(".")[0] == "price_contour" for alias in node.names
+            ):
+                lines.append(node.lineno)
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and (node.module or "").split(".")[0] == "price_contour"
+            ):
+                lines.append(node.lineno)
+        for child in ast.iter_child_nodes(node):
+            visit(child, typing_only=typing_only)
+
+    visit(tree, typing_only=False)
+    return lines
+
+
+def _guarded_attribute_reads(tree: ast.Module) -> set[str]:
+    """Attributes read off ``price_contour()`` directly or through a bound name."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "price_contour"
+        ):
+            bound.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    reads: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "price_contour"
+        ) or (isinstance(value, ast.Name) and value.id in bound):
+            reads.add(node.attr)
+    return reads
+
+
+class TestPriceContourBoundary:
+    """``haute._price_contour`` is the only runtime import point for the library."""
+
+    def test_no_runtime_price_contour_import_outside_the_guard(self) -> None:
+        guard = SRC_ROOT / "_price_contour.py"
+        offenders = [
+            f"{path.relative_to(SRC_ROOT)}:{line}"
+            for path in _iter_py_files(SRC_ROOT)
+            if path.resolve() != guard.resolve()
+            for line in _runtime_price_contour_imports(_parse_tree(path))
+        ]
+
+        assert offenders == [], (
+            "Import price_contour only through haute._price_contour.price_contour() "
+            f"(TYPE_CHECKING-only imports are allowed): {offenders}"
+        )
+
+    def test_the_boundary_check_sees_runtime_and_typing_imports_apart(self) -> None:
+        tree = ast.parse(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from price_contour import QuoteGrid\n"
+            "else:\n"
+            "    import price_contour\n"
+            "def f():\n"
+            "    from price_contour.apply import ApplyOptimiser\n"
+        )
+
+        assert _runtime_price_contour_imports(tree) == [5, 7]
+
+    def test_every_symbol_haute_reads_is_verified_by_the_guard(self) -> None:
+        from haute._price_contour import REQUIRED_SYMBOLS
+
+        verified = {symbol.split(".")[0] for symbol in REQUIRED_SYMBOLS}
+        reads = {
+            f"{path.relative_to(SRC_ROOT)}: {attr}"
+            for path in _iter_py_files(SRC_ROOT)
+            for attr in _guarded_attribute_reads(_parse_tree(path))
+            if attr not in verified
+        }
+
+        assert reads == set(), f"Add these price_contour symbols to REQUIRED_SYMBOLS: {reads}"

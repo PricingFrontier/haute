@@ -722,6 +722,23 @@ class TestParserSourceTypeMapping:
         assert "sourceType" not in config
         assert "source_type" not in config
 
+    def test_optimiser_keeps_its_publish_only_keys(self):
+        """The Export pane's save path and MLflow choices survive the parser."""
+        from haute._config_builder import _build_node_config
+
+        publish_keys = {
+            "result_export_path": "rating/optimiser_result.json",
+            "mlflow_experiment": "Optimisation",
+            "mlflow_destination": "server",
+        }
+        config = _build_node_config(
+            NodeType.OPTIMISER,
+            {"optimiser": True, "objective": "income", **publish_keys},
+            "",
+            ["df"],
+        )
+        assert {key: config[key] for key in publish_keys} == publish_keys
+
     def test_optimiser_apply_copies_all_keys(self):
         """All keys from OPTIMISER_APPLY_CONFIG_KEYS should be copied when present."""
         from haute._config_builder import _build_node_config

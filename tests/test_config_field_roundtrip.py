@@ -103,6 +103,7 @@ def _examples():
             "data_input": _sanitize_func_name(scenario.data.label),
             "banding_source": _sanitize_func_name(band.data.label),
             "mlflow_experiment": "Optimisation",
+            "result_export_path": "rating/optimiser_result.json",
         }
     )
     graph.edges.append(GraphEdge(id="banding_to_optimiser", source=band.id, target=optimiser.id))

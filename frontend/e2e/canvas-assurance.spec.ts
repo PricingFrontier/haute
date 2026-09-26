@@ -18,11 +18,8 @@ const optimiserConfigPath = resolve(
   "optimisation",
   "browser_optimiser.json",
 )
-const optimiserArtifactPath = resolve(
-  ratingDir,
-  "output",
-  "optimiser_browser_optimiser_browser_optimiser.json",
-)
+const optimiserArtifactApplyPath = "output/optimiser_browser_optimiser_browser_optimiser.json"
+const optimiserArtifactPath = resolve(e2eProjectRoot, optimiserArtifactApplyPath)
 const desktopViewport = { width: 1440, height: 900 }
 const narrowViewport = { width: 1024, height: 768 }
 const mixedBandingDesktopSnapshot = process.platform === "linux"
@@ -303,6 +300,7 @@ test.describe("frontend canvas assurance", () => {
       page,
       "Optimisation node: browser_optimiser",
     )
+    await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
     await optimiserPanel.getByRole("button", {
       name: "Individual point",
       exact: true,
@@ -341,6 +339,7 @@ test.describe("frontend canvas assurance", () => {
       page,
       "Optimisation node: browser_optimiser",
     )
+    await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
     await optimiserPanel.getByRole("button", {
       name: "Individual point",
       exact: true,
@@ -359,6 +358,7 @@ test.describe("frontend canvas assurance", () => {
       response.url().endsWith("/api/optimiser/solve")
       && response.request().method() === "POST"
     ))
+    await optimiserPanel.getByRole("tab", { name: "Solve", exact: true }).click()
     await optimiserPanel.getByRole("button", {
       name: "Optimise",
       exact: true,
@@ -395,26 +395,28 @@ test.describe("frontend canvas assurance", () => {
     )
     await page.setViewportSize(desktopViewport)
 
-    await resultTabs.getByRole("tab", { name: "Export", exact: true }).click()
-    await page.getByRole("button", {
+    // Publishing lives in the node's Export pane; its target is the point the
+    // preview selected.
+    await optimiserPanel.getByRole("tab", { name: "Export", exact: true }).click()
+    await expect(
+      optimiserPanel.getByRole("combobox", { name: "Result to publish" }),
+    ).toHaveValue("1")
+    await optimiserPanel.getByRole("button", {
       name: "Log to MLflow",
       exact: true,
     }).click()
-    await expect(
-      page.getByText(
-        "Logged to canvas-e2e: https://mlflow.invalid/runs/run-frontier-point-2",
-        { exact: true },
-      ),
-    ).toBeVisible()
+    await expect(optimiserPanel.getByTestId("optimiser-log-receipt")).toContainText(
+      "Logged frontier point 2 to canvas-e2e: run run-frontier-point-2",
+    )
     expect(mlflowLogRequest).toMatchObject({
       job_id: solveBody.job_id,
       point_index: 1,
     })
 
-    await page.getByRole("button", { name: "Save result", exact: true }).click()
-    await expect(
-      page.getByText(/optimiser_browser_optimiser_browser_optimiser\.json/i),
-    ).toBeVisible({ timeout: 120_000 })
+    // Logging never consumes the result, so the save still works afterwards.
+    await optimiserPanel.getByRole("button", { name: "Save to file", exact: true }).click()
+    const saveReceipt = optimiserPanel.getByTestId("optimiser-save-receipt")
+    await expect(saveReceipt).toContainText(optimiserArtifactApplyPath, { timeout: 120_000 })
     await expect.poll(() => existsSync(optimiserArtifactPath)).toBe(true)
     expect(readJson(optimiserArtifactPath)).toMatchObject({
       frontier_selection: {
@@ -422,6 +424,9 @@ test.describe("frontend canvas assurance", () => {
         point_index: 1,
       },
     })
+    await saveReceipt.getByRole("combobox", { name: "Apply Optimisation node" }).selectOption({ label: "browser_apply" })
+    await saveReceipt.getByRole("button", { name: "Use in Apply node" }).click()
+    await expect(saveReceipt).toContainText(`browser_apply now loads ${optimiserArtifactApplyPath}.`)
 
     const applyPanel = await openNodeProperties(
       page,
@@ -429,9 +434,7 @@ test.describe("frontend canvas assurance", () => {
     )
     await expect(
       applyPanel.getByPlaceholder("artifacts/optimiser_v1.json"),
-    ).toHaveValue(
-      "rating/output/optimiser_browser_optimiser_browser_optimiser.json",
-    )
+    ).toHaveValue(optimiserArtifactApplyPath)
     await expect(applyPanel.getByText("Loaded Artifact")).toBeVisible()
     await expect(applyPanel.getByText("online", { exact: true })).toBeVisible()
     const previewTable = page.getByRole("table").first()

@@ -2418,6 +2418,8 @@ class TestScoreGraphOptimiserApplyRemap:
                             },
                         ]
                     },
+                    # North's 1.10 lies past the collar; the scorer must clip it.
+                    "combined_factor_bounds": {"min": 0.9, "max": 1.05},
                     "factor_dtypes": {
                         "region_band": [
                             {
@@ -2523,9 +2525,9 @@ class TestScoreGraphOptimiserApplyRemap:
         assert result["region_band"].to_list() == ["South", "North"]
 
     def test_ratebook_apply_file_remap_renames_to_configured_value_column(self, tmp_path):
-        """The optimised value lands in the user-configured column name."""
+        """The collared optimised value lands in the user-configured column name."""
         result = self._ratebook_apply_remap_score(tmp_path)
-        assert result["selected_factor"].to_list() == pytest.approx([0.95, 1.10])
+        assert result["selected_factor"].to_list() == [0.95, 1.05]
 
     def test_ratebook_apply_file_remap_emits_artifact_version_column(self, tmp_path):
         """The configured version column carries the artifact version per quote."""

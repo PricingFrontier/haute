@@ -60,6 +60,36 @@ def _keep_package_bytecode() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _verified_price_contour() -> None:
+    """Verify the real ``price_contour`` once, before any test patches it.
+
+    The guard caches its verdict per process. Warming it here means a test
+    that patches ``price_contour.X`` with a stub never becomes the build the
+    guard inspects, and an incompatible install fails the session up front.
+    """
+    from haute._price_contour import price_contour
+
+    price_contour()
+
+
+@pytest.fixture
+def released_price_contour(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present the verified price-contour to the container build as a released wheel.
+
+    A container build refuses an editable or direct-URL price-contour, the
+    usual developer install. Tests of everything else a build does opt into
+    this fixture so they do not depend on how the developer installed it;
+    ``tests/test_price_contour_guard.py`` covers the refusal itself.
+    """
+    from importlib.metadata import version
+
+    from haute._price_contour import PriceContourInstall
+
+    released = PriceContourInstall(version("price-contour"), "wheel", None)
+    monkeypatch.setattr("haute.deploy._container.price_contour_install", lambda: released)
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolate_repository_source_cache(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[None]:

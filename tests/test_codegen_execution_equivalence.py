@@ -353,6 +353,8 @@ def _write_ratebook_artifact(tmp_path: Path) -> str:
                 {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
             ],
         },
+        # London's 1.05 lies past the collar, so both paths must clip it.
+        "combined_factor_bounds": {"min": 0.99, "max": 1.02},
         "factor_dtypes": {
             "region": [{"column": "region", "dtype": {"kind": "String"}}],
         },
@@ -384,7 +386,8 @@ def test_optimiser_apply_run_matches_executor_batch(tmp_path, _widen_sandbox_roo
 
     # The generated body genuinely applied the artifact (not a passthrough).
     assert "__optimiser_version__" in standalone.columns
-    assert "optimised_factor" in standalone.columns
+    assert standalone["region_optimised_factor"].to_list() == [1.05]
+    assert standalone["optimised_factor"].to_list() == [1.02]
     assert_frame_equal(standalone, reference)
 
 

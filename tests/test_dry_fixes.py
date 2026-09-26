@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import polars as pl
 import pytest
 
 from haute.routes._job_store import JobStore
@@ -38,6 +39,8 @@ class _FakeSolveResult:
         self.total_constraints = total_constraints or {"loss": 1.0}
         self.baseline_constraints = baseline_constraints or {"loss": 0.9}
         self.lambdas = lambdas or {"loss": 0.5}
+        # Every online result carries its per-quote frame.
+        self.dataframe = pl.DataFrame({"optimal_scenario_value": [1.0]})
 
 
 class TestFinalizeOnline:
@@ -140,39 +143,28 @@ class TestFinalizeOnline:
     def test_scenario_value_stats_populated_when_dataframe_present(self) -> None:
         """When solve_result has a dataframe with optimal_scenario_value,
         stats and histogram should be populated."""
-        import numpy as np
 
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         class ResultWithDF(_FakeSolveResult):
             def __init__(self, **kw: Any) -> None:
                 super().__init__(**kw)
-                # Minimal duck-type of a column
-                self.dataframe = type(
-                    "DF",
-                    (),
+                self.dataframe = pl.DataFrame(
                     {
-                        "columns": ["optimal_scenario_value"],
-                        "__getitem__": lambda self, key: type(
-                            "Col",
-                            (),
-                            {
-                                "mean": lambda s: 1.05,
-                                "std": lambda s: 0.1,
-                                "min": lambda s: 0.9,
-                                "max": lambda s: 1.2,
-                                "quantile": lambda s, q: 1.0 + q * 0.1,
-                                "sum": lambda s: 5,
-                                "__gt__": lambda s, v: type("Mask", (), {"sum": lambda s: 3})(),
-                                "__lt__": lambda s, v: type("Mask", (), {"sum": lambda s: 2})(),
-                                "__len__": lambda s: 10,
-                                "to_numpy": lambda s: np.array(
-                                    [1.0, 1.05, 0.95, 1.1, 0.98, 1.02, 1.03, 0.97, 1.01, 1.04]
-                                ),
-                            },
-                        )(),
-                    },
-                )()
+                        "optimal_scenario_value": [
+                            1.0,
+                            1.05,
+                            0.95,
+                            1.1,
+                            0.98,
+                            1.02,
+                            1.03,
+                            0.97,
+                            1.01,
+                            1.04,
+                        ]
+                    }
+                )
 
         result = ResultWithDF()
         store = JobStore()
@@ -237,6 +229,7 @@ class TestFinalizeRatebook:
                 "factor_tables": {
                     "age": [{"__factor_group__": "young", "optimal_scenario_value": 1.1}]
                 },
+                "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                 "factor_dtypes": {"age": [{"column": "age", "dtype": {"kind": "String"}}]},
                 "clamp_rate": 0.05,
                 "history": None,

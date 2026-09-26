@@ -899,3 +899,37 @@ def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None
     assert job["status"] == "contract_error"
     assert job["http_status_code"] == 400
     assert job["error_detail"] == missing.value.detail
+
+
+@pytest.mark.parametrize("reserved", ["objective", "step", "scenario_value"])
+def test_constraint_names_that_collide_with_library_outputs_are_rejected(reserved: str) -> None:
+    config = {
+        "objective": "income",
+        "constraints": {"volume": {"min": 1.0}, reserved: {"max": 2.0}},
+    }
+
+    with pytest.raises(HTTPException) as caught:
+        OptimiserSolveService._validate_config(config)
+
+    assert caught.value.status_code == 400
+    assert f"Constraint name(s) ['{reserved}'] are reserved" in caught.value.detail
+    assert "Rename the constraint" in caught.value.detail
+
+
+def test_every_reserved_constraint_name_is_listed_together() -> None:
+    config = {
+        "objective": "income",
+        "constraints": {"step": {"max": 1.0}, "objective": {"min": 0.0}},
+    }
+
+    with pytest.raises(HTTPException) as caught:
+        OptimiserSolveService._validate_config(config)
+
+    assert "['objective', 'step'] are reserved" in caught.value.detail
+
+
+@pytest.mark.parametrize("allowed", ["objective_share", "steps", "volume"])
+def test_constraint_names_near_the_reserved_ones_are_accepted(allowed: str) -> None:
+    config = {"objective": "income", "constraints": {allowed: {"min": 1.0}}}
+
+    assert OptimiserSolveService._validate_config(config) == "online"
