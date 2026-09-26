@@ -19,6 +19,8 @@ import sys
 import threading
 import time
 
+from haute._env import optional_int_env
+
 PARENT_PID_ENV = "HAUTE_WORKER_PARENT_PID"
 _POLL_SECONDS = 1.0
 # ``SYNCHRONIZE``: the one right waiting on a process handle needs.
@@ -67,10 +69,9 @@ def exit_with_parent(parent_pid: int | None = None) -> None:
     a process started without one (not a haute worker) is left alone.
     """
     if parent_pid is None:
-        raw = os.environ.get(PARENT_PID_ENV)
-        if not raw:
+        parent_pid = optional_int_env(PARENT_PID_ENV)
+        if parent_pid is None:
             return
-        parent_pid = int(raw)
     watched = parent_pid
 
     def _watch() -> None:

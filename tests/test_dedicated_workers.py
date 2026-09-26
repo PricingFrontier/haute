@@ -144,7 +144,9 @@ def test_an_allocation_over_the_cap_fails_only_the_worker(worker: DedicatedWorke
 
 
 def test_a_command_that_fits_its_grant_runs(worker: DedicatedWorker) -> None:
-    assert _run(worker, allocate, 1 * _MIB, growth=8 * _MIB) == 1 * _MIB
+    # Small, but above what installing an RLIMIT_AS cap itself costs (it starts
+    # the Polars pools inside the command on Linux).
+    assert _run(worker, allocate, 1 * _MIB, growth=64 * _MIB) == 1 * _MIB
 
 
 def test_a_non_memory_failure_leaves_the_worker_running(worker: DedicatedWorker) -> None:
