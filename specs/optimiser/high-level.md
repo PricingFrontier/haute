@@ -233,7 +233,7 @@ Invariants:
   built when the solve completes; a point's is built on request from that point's per-quote
   choices and kept for the job's lifetime (at most 64 per job), so it is still served after the
   grid is gone, until a frontier recompute replaces the points. It describes the solution only;
-  it never compares with current or deployed pricing. Ratebook results gain it with OPT-V09C.
+  it never compares with current or deployed pricing. Online and ratebook results both carry it.
 - Where the optimiser adjusted is described by segment, for the as-solved result and any frontier
   point: per level of one key (an analysis column, or a ratebook result's rating factor labelled as
   the Rates tab labels it), the quotes, the mean chosen scenario value against 1.0 (weighted and

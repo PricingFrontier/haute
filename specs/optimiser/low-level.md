@@ -401,13 +401,15 @@ names must all agree, see Constraint bounds) the result carries:
   published artifact's `input_summary` and `solver_settings` are read from it (see Save and
   MLflow log), so there is one summary.
 - `diagnostics_errors: [{diagnostic, error_type, message}]` (`OptimiserDiagnosticError`,
-  `diagnostic` is `"adjustments"`, `"adjustment_weight"` or `"frontier"`): a diagnostic that
-  could not be produced is recorded here instead of silently becoming `null`. An online solve
-  whose adjustment report cannot be built keeps `adjustments` `null` and records an
-  `"adjustments"` entry (see "Adjustment reports (OPT-V10)"); a ratebook solve has no report
-  until OPT-V09C and records nothing. `"adjustment_weight"` entries appear only inside a
+  `diagnostic` is `"adjustments"`, `"adjustment_weight"`, `"segment_weight"` or `"frontier"`): a
+  diagnostic that
+  could not be produced is recorded here instead of silently becoming `null`. A solve (online
+  or ratebook) whose adjustment report cannot be built keeps `adjustments` `null` and records
+  an `"adjustments"` entry (see "Adjustment reports (OPT-V10)"). `"adjustment_weight"` entries
+  appear only inside a
   report's own `diagnostics_errors`, one per weighting refused for a negative value or a zero
-  total.
+  total; `"segment_weight"` entries appear only in a segment breakdown's `diagnostics_errors`
+  (see "Segment breakdowns (OPT-V11)").
 - `adjustments` (`OptimiserAdjustmentReport | null`): the as-solved adjustment report (see
   "Adjustment reports (OPT-V10)"). A failed inline frontier keeps
   `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
