@@ -161,7 +161,14 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // preview frame's focus and remembered-height options, and the results tab
 // appearance. The modelling panes themselves stay lazy. The merged initial
 // bundle is 292.3 KiB; 294 KiB restores ~1.7 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 294
+// The modelling-issues fixes add eager code that cannot wait for a lazy chunk:
+// axis ticks formatted together (formatChartTicks, used by the initial
+// histogram's value grid), chunk-load recovery in the root error boundary
+// (it handles a lazy chunk that failed to load), the expired training-result
+// record in the results store, the training poller's progress key and the
+// panel's openNode wiring. The expired-result panel itself stays lazy. The
+// merged initial bundle is 294.2 KiB; 296 KiB restores ~1.8 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 296
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
