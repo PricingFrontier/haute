@@ -226,7 +226,8 @@ body that a code-less transform emits; the save warning for incomplete transform
 names the failing step. A stepped original that also carries `inputMapping` is rejected
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
 the rendered code exactly, which is what lets the parser tell a hand-edited body from a
-rendered one.
+rendered one; the parser compares the two as programs (the same syntax tree and
+comments), so a body in an earlier layout or quoting of the same steps is not an edit.
 
 **Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score,
 Scenario Expander or Explore config carries `steps`, its generator renders them in frame mode

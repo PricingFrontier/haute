@@ -1006,19 +1006,15 @@ class _Renderer:
         selectors = self._dtype_selectors(step, columns)
         if not columns and not selectors:
             raise self.fail("Name at least one column or column type to keep.")
-        if not selectors:
-            return f"df = df.select({columns!r})"
         parts = [repr(c) for c in columns] + selectors
-        return f"df = df.select([{', '.join(parts)}])"
+        return f"df = df.select({', '.join(parts)})"
 
     def _render_drop(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
         selectors = self._dtype_selectors(step, columns)
         if not columns and not selectors:
             raise self.fail("Name at least one column or column type to drop.")
-        if not selectors:
-            return f"df = df.drop({columns!r})"
-        parts = ([repr(columns)] if columns else []) + selectors
+        parts = [repr(c) for c in columns] + selectors
         return f"df = df.drop({', '.join(parts)})"
 
     def _render_rename(self, step: Mapping[str, Any]) -> str:
@@ -1065,13 +1061,19 @@ class _Renderer:
             columns.append(sort_column)
             descending.append(self._bool(entry.get("descending"), f"Sort key {i + 1} descending"))
         nulls_last = self._bool(step["nullsLast"], "Nulls last")
-        return f"df = df.sort({columns!r}, descending={descending!r}, nulls_last={nulls_last!r})"
+        # Polars' defaults (ascending, nulls first) are left unsaid.
+        options = ""
+        if any(descending):
+            options += f", descending={descending[0] if len(descending) == 1 else descending!r}"
+        if nulls_last:
+            options += ", nulls_last=True"
+        return f"df = df.sort({', '.join(repr(c) for c in columns)}{options})"
 
     def _render_unique(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
         keep = self._choice(step["keep"], ("first", "last", "any", "none"), "Keep")
-        subset = repr(columns) if columns else "None"
-        return f"df = df.unique(subset={subset}, keep={keep!r}, maintain_order=True)"
+        subset = f"subset={columns!r}, " if columns else ""
+        return f"df = df.unique({subset}keep={keep!r}, maintain_order=True)"
 
     def _render_group_by(self, step: Mapping[str, Any]) -> str:
         keys = self._str_list(step["keys"], "Group keys", allow_empty=True)
@@ -1105,8 +1107,9 @@ class _Renderer:
             rendered.append(f"{aggregate}.alias({name!r})")
         if not keys:
             # A whole-frame summary: one row of aggregates.
-            return f"df = df.select([{', '.join(rendered)}])"
-        return f"df = df.group_by({keys!r}, maintain_order=True).agg([{', '.join(rendered)}])"
+            return f"df = df.select({', '.join(rendered)})"
+        by = ", ".join(repr(k) for k in keys)
+        return f"df = df.group_by({by}, maintain_order=True).agg({', '.join(rendered)})"
 
     def _dtype_aggregate(self, entry: Mapping[str, Any], label: str) -> str:
         """Aggregate every column of one dtype, naming outputs by suffix."""
@@ -1165,7 +1168,8 @@ class _Renderer:
             rendered.append(f"{cell}{call}.alias({name!r})")
         if len(types) != 1:
             raise self.fail("Pivot column values must all be the same type.")
-        return f"df = df.group_by({index!r}, maintain_order=True).agg([{', '.join(rendered)}])"
+        by = ", ".join(repr(k) for k in index)
+        return f"df = df.group_by({by}, maintain_order=True).agg({', '.join(rendered)})"
 
     def _render_unpivot(self, step: Mapping[str, Any]) -> str:
         on = self._str_list(step["on"], "Unpivot columns", allow_empty=False)
@@ -1223,7 +1227,7 @@ class _Renderer:
 
     def _render_fill_null(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
-        target = f"pl.col({columns!r})" if columns else "pl.all()"
+        target = f"pl.col({', '.join(repr(c) for c in columns)})" if columns else "pl.all()"
         fill = self._object(step["fill"], "Fill")
         kind = fill.get("kind")
         if kind == "value":

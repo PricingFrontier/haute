@@ -8,7 +8,10 @@ files via ``config="path/to/file.json"``.
 
 from __future__ import annotations
 
+import ast
+import io
 import json
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -399,6 +402,31 @@ _EXTRACTION_KIND_BY_STEPPED_TYPE: dict[NodeType, str] = {
 }
 
 
+def _comments(code: str) -> list[str]:
+    return [
+        token.string
+        for token in tokenize.generate_tokens(io.StringIO(code).readline)
+        if token.type == tokenize.COMMENT
+    ]
+
+
+def _same_program(rendered: str, body: str) -> bool:
+    """Whether a body is the rendering of the steps, whatever its layout.
+
+    The same syntax tree and the same comments make the same program: a body
+    saved under an earlier layout or quoting of the same steps, or reformatted
+    by ``ruff format``, still describes them, while any other change, a
+    comment in authored free code included, is a hand edit.
+    """
+    if rendered == body:
+        return True
+    try:
+        same_tree = ast.dump(ast.parse(rendered)) == ast.dump(ast.parse(body))
+        return same_tree and _comments(rendered) == _comments(body)
+    except (SyntaxError, tokenize.TokenError):
+        return False
+
+
 def _reconcile_steps(
     config: dict[str, Any],
     node_type: NodeType,
@@ -419,7 +447,9 @@ def _reconcile_steps(
     The comparison is made on equal terms: the rendering is passed through
     the same extraction the body received (``normalise_user_code``), because
     a finaliser may normalise a rendering (a lone ``df = (df.head(2))``
-    free-code step loses its brackets) without anyone having edited it.
+    free-code step loses its brackets) without anyone having edited it; and
+    it compares programs, not text (``_same_program``), so a body saved in an
+    earlier layout or quoting of the same steps keeps them.
     """
     if "steps" not in config:
         return config
@@ -452,7 +482,9 @@ def _reconcile_steps(
         reason = f"the steps cannot be rendered ({exc})"
     else:
         kind = _EXTRACTION_KIND_BY_STEPPED_TYPE[node_type]
-        if normalise_user_code(rendered, kind=kind, param_names=param_names) == body_code:
+        if _same_program(
+            normalise_user_code(rendered, kind=kind, param_names=param_names), body_code
+        ):
             return config
         reason = "the function body no longer matches the rendered steps"
     reconciled = {k: v for k, v in config.items() if k != "steps"}

@@ -10,9 +10,11 @@ literal after ``=`` is parenthesised only when that makes it fit. Doubled
 parentheses collapse to one pair, as ruff prints them. One choice is ours: a
 broken call always puts one argument per line with a trailing comma, where
 ruff would keep arguments that fit on one indented line together; ruff reads
-that trailing comma as a magic trailing comma and keeps the layout. The result
-is a fixed point of ``ruff format`` at line length 88 with quotes preserved;
-the renderer writes quotes with ``repr``.
+that trailing comma as a magic trailing comma and keeps the layout. Before any
+of this the statement is restyled on one line (:func:`restyle_statement`):
+brackets the precedence does not need are dropped and strings take double
+quotes, as ruff and the Polars documentation write them. The result is a fixed
+point of ``ruff format`` at line length 88 with its default quote style.
 
 This is not a general formatter. It reads only the renderer's own
 closed-vocabulary statements (names, numbers, strings, attribute and call
@@ -23,6 +25,7 @@ it.
 
 from __future__ import annotations
 
+import ast
 import io
 import tokenize
 import unicodedata
@@ -30,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeAlias
 
-__all__ = ["LINE_WIDTH", "layout_statement"]
+__all__ = ["LINE_WIDTH", "layout_statement", "restyle_statement"]
 
 #: ruff format's default line length.
 LINE_WIDTH = 88
@@ -446,12 +449,62 @@ def _expression(node: _Node) -> _Doc:
     return _Group(_binary_slice(items))
 
 
-def layout_statement(statement: str) -> str:
-    """Lay out one rendered single-line statement as ``ruff format`` would.
+def _quote(value: str) -> str:
+    """A string literal as ruff writes it: double quotes unless single ones need fewer escapes."""
+    quote = "'" if value.count('"') > value.count("'") else '"'
+    body = "".join(
+        f"\\{char}" if char == quote else char if char in "'\"" else repr(char)[1:-1]
+        for char in value
+    )
+    return f"{quote}{body}{quote}"
 
-    The statement's text is unchanged apart from line breaks, indentation,
-    trailing commas in broken sequences and collapsed doubled parentheses.
+
+def restyle_statement(statement: str) -> str:
+    """One rendered statement in common Python style, still on one line.
+
+    Brackets the operator precedence does not need are dropped (``ast.unparse``
+    keeps exactly the ones it needs, so ``df.filter((pl.col('a') == 0))``
+    becomes ``df.filter(pl.col('a') == 0)``) and every string takes double
+    quotes unless single ones need fewer escapes. The rewrite is checked to
+    leave the program unchanged: it must parse to the same syntax tree, or it
+    is refused loudly.
     """
+    try:
+        tree = ast.parse(statement)
+    except SyntaxError as exc:
+        raise ValueError(
+            f"Cannot restyle the rendered statement {statement!r}: {exc.msg}."
+        ) from None
+    unparsed = ast.unparse(tree)
+    line_starts = [0]
+    for line in unparsed.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    strings = [
+        token
+        for token in tokenize.generate_tokens(io.StringIO(unparsed).readline)
+        if token.type == tokenize.STRING
+    ]
+    restyled = unparsed
+    for token in reversed(strings):
+        start = line_starts[token.start[0] - 1] + token.start[1]
+        end = line_starts[token.end[0] - 1] + token.end[1]
+        value = ast.literal_eval(token.string)
+        if not isinstance(value, str):
+            raise ValueError(f"Cannot restyle the rendered statement {statement!r}: bytes literal.")
+        restyled = f"{restyled[:start]}{_quote(value)}{restyled[end:]}"
+    if ast.dump(ast.parse(restyled)) != ast.dump(tree):
+        raise ValueError(f"Restyling changed the rendered statement {statement!r}.")
+    return restyled
+
+
+def layout_statement(statement: str) -> str:
+    """Restyle one rendered single-line statement and lay it out as ``ruff format`` would.
+
+    After :func:`restyle_statement`, the text is unchanged apart from line
+    breaks, indentation, trailing commas in broken sequences and collapsed
+    doubled parentheses.
+    """
+    statement = restyle_statement(statement)
     target, value = _Parser(statement).statement_parts()
     head = f"{target} = "
     if isinstance(value, (_Attr, _Call)):
