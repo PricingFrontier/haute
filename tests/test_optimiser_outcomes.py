@@ -749,6 +749,30 @@ class _RecordSolverInput:
         monkeypatch.setattr(
             _optimiser_input.price_contour(), "build_grid_from_parquet_chunked", recording
         )
+        # In process mode the solver session builds the grid in its own process, from
+        # the file and the columns its request names.
+        from haute.routes._optimiser_session import SolverSession
+        from haute.routes._optimiser_session_worker import SessionSolveRequest
+
+        real_run = SolverSession.run_command
+
+        def recording_run(session: Any, command: Any, request: Any, **kwargs: Any) -> Any:
+            if isinstance(request, SessionSolveRequest):
+                schema = pl.read_parquet_schema(request.input_path)
+                self.schemas.append({column: schema[column] for column in solver_columns})
+                config = request.config
+                self.calls.append(
+                    {
+                        "constraints": list(request.constraint_cols),
+                        "quote_id": config.get("quote_id", "quote_id"),
+                        "scenario_index": config.get("scenario_index", "scenario_index"),
+                        "scenario_value": config.get("scenario_value", "scenario_value"),
+                        "objective": config["objective"],
+                    }
+                )
+            return real_run(session, command, request, **kwargs)
+
+        monkeypatch.setattr(SolverSession, "run_command", recording_run)
 
 
 _KEY_COLUMNS = ("quote_id", "scenario_index", "scenario_value", "volume")

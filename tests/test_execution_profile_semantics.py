@@ -38,6 +38,7 @@ from tests.conftest import make_edge, make_graph
 BOUNDED_PROFILES: tuple[ExecutionProfile, ...] = (
     ExecutionProfile.TRAINING_PREP,
     ExecutionProfile.OPTIMISER_SETUP,
+    ExecutionProfile.OPTIMISER_SOLVE,
     ExecutionProfile.EXPLORE_ANALYSIS,
     ExecutionProfile.AUTO_RANGE,
     ExecutionProfile.LAZY_SINK,

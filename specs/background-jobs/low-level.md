@@ -46,7 +46,16 @@
   see `TestJobStoreTTL::test_distinct_equal_artifact_cleaners_are_rejected`).
 - **Heavy-object keys** — `_DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result",
   "quote_grid")` and `_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df",
-  "ratebook_factor_contexts")`. Only jobs with `status == "completed"` are ever
+  "ratebook_factor_contexts", "solver_session")`. A heavy value may own a process (the
+  optimiser's `SolverSession`); such a value implements `HeavyResource.release()`. Every
+  path that removes a heavy value — the heavy TTL timer and lazy sweep,
+  `clear_result_data`, `delete_job`, eviction, `clear_all`, and any merge that leaves a job in
+  a terminal status other than `completed` (for example a completed-to-`error` correction,
+  which strips the resource-owning heavy keys while plain heavy values keep their
+  existing lifetime) — detaches it under the lock and calls `release()` after the
+  lock is dropped, exactly as detached artifact cleanups run; a `release()` failure is logged,
+  never raised over the store operation. `release()` itself must not block on a running
+  command (the session defers its termination until the command returns). Only jobs with `status == "completed"` are ever
   eligible to have these keys stripped; `_DEFAULT_HEAVY_OBJECT_KEYS` is the default
   for `touch_heavy_objects`. `_HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"`
   is the stamped field that pins when stripping becomes due; once set it is not

@@ -13,6 +13,7 @@ import json
 import types
 from collections.abc import Iterator
 from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -45,6 +46,10 @@ def _real_module() -> types.ModuleType:
     import price_contour as real
 
     return real
+
+
+# The guard reports the module's directory in the platform's own form.
+_FAKE_MODULE_DIR = str(Path("/site-packages/price_contour"))
 
 
 def _fake_package(version: str = "0.5.0", *, drop: tuple[str, ...] = ()) -> types.ModuleType:
@@ -140,7 +145,7 @@ def test_a_verified_install_logs_one_info_line(mp: pytest.MonkeyPatch) -> None:
     assert events == [
         (
             "price_contour_verified",
-            {"version": "0.5.0", "source": "wheel", "path": "/site-packages/price_contour"},
+            {"version": "0.5.0", "source": "wheel", "path": _FAKE_MODULE_DIR},
         )
     ]
 
@@ -159,7 +164,7 @@ def test_an_old_version_names_version_specifier_path_source_and_remedy(
     assert "version 0.2.7 does not satisfy >=0.5.0,<0.6" in message
     assert "Installed version: 0.2.7" in message
     assert f"Required: price-contour{REQUIRED_SPECIFIER}" in message
-    assert "Module path: /site-packages/price_contour" in message
+    assert f"Module path: {_FAKE_MODULE_DIR}" in message
     assert f"Installed from: editable checkout {CHECKOUT}" in message
     assert "uv sync --locked" in message
     assert "uv run maturin develop --release" in message

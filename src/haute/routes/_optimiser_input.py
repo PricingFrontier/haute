@@ -259,16 +259,15 @@ def _positive_int(value: object, *, field: str) -> int:
     return int(value)
 
 
-def _admit_resident_grid(
+def forecast_resident_grid_bytes(
     path: Path,
     columns: list[str],
     quote_id: str,
     constraint_count: int,
     chunk_rows: int,
-    execution_context: ExecutionContext | None,
-) -> None:
-    if execution_context is None or execution_context.remaining_memory_bytes() is None:
-        return
+    execution_context: ExecutionContext | None = None,
+) -> int:
+    """The resident grid's conservative peak, from row count and a decoded sample."""
     import polars as pl
 
     from haute._polars_utils import cancellable_streaming_collect
@@ -278,11 +277,13 @@ def _admit_resident_grid(
     )
 
     row_count = int(read_parquet_metadata(path)["row_count"])
-    sample = cancellable_streaming_collect(
-        pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512),
-        execution_context=execution_context,
+    sample_lf = pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512)
+    sample = (
+        sample_lf.collect()
+        if execution_context is None
+        else cancellable_streaming_collect(sample_lf, execution_context=execution_context)
     )
-    peak_bytes = estimate_optimiser_grid_peak_bytes(
+    return estimate_optimiser_grid_peak_bytes(
         row_count=row_count,
         constraint_count=constraint_count,
         quote_id_width_bytes=decoded_frame_row_width_bytes(
@@ -291,7 +292,22 @@ def _admit_resident_grid(
         input_row_width_bytes=decoded_frame_row_width_bytes(sample),
         chunk_rows=chunk_rows,
     )
-    del sample
+
+
+def _admit_resident_grid(
+    path: Path,
+    columns: list[str],
+    quote_id: str,
+    constraint_count: int,
+    chunk_rows: int,
+    execution_context: ExecutionContext | None,
+) -> None:
+    """Refuse a grid whose forecast exceeds the allowance (thread mode, which has no cap)."""
+    if execution_context is None or execution_context.remaining_memory_bytes() is None:
+        return
+    peak_bytes = forecast_resident_grid_bytes(
+        path, columns, quote_id, constraint_count, chunk_rows, execution_context
+    )
     remaining = execution_context.remaining_memory_bytes()
     assert remaining is not None
     if peak_bytes > remaining:
@@ -301,6 +317,8 @@ def _admit_resident_grid(
             memory_limit_bytes=execution_context.memory_limit_bytes or remaining,
             rss_at_admission_bytes=execution_context.memory_sampler(),
             rss_limit_bytes=execution_context.rss_limit_bytes,
+            estimated_bytes=peak_bytes,
+            allowance_bytes=remaining,
             reason=f"resident optimiser grid needs an estimated {peak_bytes} bytes; "
             f"{remaining} bytes remain in the execution allowance",
         )

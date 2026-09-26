@@ -31,6 +31,7 @@ const PROFILE_LABELS: Record<string, string> = {
   preview_eager: "preview",
   training_prep: "training",
   optimiser_setup: "optimiser",
+  optimiser_solve: "optimiser",
   optimiser_solve_worker: "optimiser",
   auto_range: "auto-range",
   lazy_sink: "sink",
