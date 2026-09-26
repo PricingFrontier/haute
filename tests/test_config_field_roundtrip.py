@@ -458,9 +458,17 @@ def test_every_declared_field_has_a_roundtrip_example_or_structural_policy():
 def _assert_authored_values(original, parsed):
     # This oracle deliberately does not call production normalizers: applying
     # the same lossy normalizer to both sides could conceal a persistence bug.
+    # The one equivalence it encodes is the contract rule itself: an absent
+    # contract and "opaque" mean the same, so codegen omits an opaque contract
+    # and a node whose settings live in its decorator parses back without one.
     for node in original.nodes:
         restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
         for key, value in node.data.config.items():
+            if key == "contract" and value == "opaque":
+                assert restored.get(key, "opaque") == "opaque", (
+                    f"{node.data.nodeType}.{key} changed"
+                )
+                continue
             assert key in restored, f"{node.data.nodeType}.{key} disappeared"
             assert restored[key] == value, f"{node.data.nodeType}.{key} changed"
 

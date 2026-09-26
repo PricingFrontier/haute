@@ -75,29 +75,22 @@ Teams looking to keep in line with data science and engineering best practices a
 
 ## :material-cog: How it works
 
-A pricing pipeline is a Python file. Each step is a function - load data, join sources, score a model, calculate a premium. Haute connects them into a graph.
+A pricing pipeline is a Python file. Each step is a function - load data, join sources, score a model, calculate a premium. Haute connects them into a graph. A step Haute configures for you is a one-line declaration whose decorator names its settings file; a step you write is ordinary Polars.
 
 ```python
-from pathlib import Path
-
 import haute
 import polars as pl
 
 pipeline = haute.Pipeline("motor_pricing")
 
-@pipeline.data_input(config="config/data_input/policies.json")
-def policies() -> pl.LazyFrame:
-    from haute.graph_utils import resolve_data_input_from_config
 
-    return resolve_data_input_from_config(
-        "config/data_input/policies.json",
-        base_dir=Path(__file__).parent,
-    )
+@pipeline.data_input(config="config/data_input/policies.json")
+def policies(): ...
+
 
 @pipeline.model_score(config="config/model_scoring/frequency.json")
-def frequency(policies: pl.LazyFrame) -> pl.LazyFrame:
-    from haute.graph_utils import score_from_config
-    return score_from_config(policies, config="config/model_scoring/frequency.json")
+def frequency(policies): ...
+
 
 @pipeline.polars
 def premium(frequency: pl.LazyFrame) -> pl.LazyFrame:
@@ -105,6 +98,7 @@ def premium(frequency: pl.LazyFrame) -> pl.LazyFrame:
         premium=pl.col("pred_freq") * pl.col("pred_sev") * 1.15,
         margin=pl.col("premium") - pl.col("burn_cost"),
     )
+
 
 pipeline.connect("policies", "frequency")
 pipeline.connect("frequency", "premium")

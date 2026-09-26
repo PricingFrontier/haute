@@ -1,11 +1,8 @@
 """Derive one transparent value and retain a deterministic row-trace fixture."""
 
-from pathlib import Path
-
 import polars as pl
 
 import haute
-from haute.graph_utils import resolve_data_input_from_config
 
 pipeline = haute.Pipeline(
     "trace_audit",
@@ -14,8 +11,7 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/data.json")
-def source() -> pl.LazyFrame:
-    return resolve_data_input_from_config("config/data.json", base_dir=Path(__file__).parent)
+def source(): ...
 
 
 @pipeline.polars
@@ -24,5 +20,4 @@ def derived(source: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def response(derived: pl.LazyFrame) -> pl.LazyFrame:
-    return derived
+def response(derived): ...

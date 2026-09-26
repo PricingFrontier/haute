@@ -239,7 +239,13 @@ def test_optimiser_requires_exact_data_input_when_multiple_frames_are_connected(
         _build_node_fn(node, source_names=["quotes_frame", "drivers_frame"])
 
 
-def test_optimiser_codegen_returns_the_exact_selected_api_frame() -> None:
+def test_optimiser_codegen_returns_the_exact_selected_api_frame(tmp_path: Path) -> None:
+    """The optimiser is a declaration naming both API frames; its decorator
+    selects the configured frame when the saved file runs on its own."""
+    import runpy
+
+    from haute._config_io import collect_node_configs
+
     graph = make_graph(
         {
             "nodes": [
@@ -279,8 +285,19 @@ def test_optimiser_codegen_returns_the_exact_selected_api_frame() -> None:
 
     code = graph_to_code(graph, pipeline_name="optimiser_identity")
 
-    assert "def Optimiser(driver_info: pl.LazyFrame, quote_info: pl.LazyFrame)" in code
-    assert "    return quote_info" in code
+    assert (
+        '@pipeline.optimiser(config="config/optimisation/Optimiser.json")\n'
+        "def Optimiser(driver_info, quote_info): ...\n"
+    ) in code
+    (tmp_path / "main.py").write_text(code, encoding="utf-8")
+    for rel_path, content in collect_node_configs(graph).items():
+        sidecar = tmp_path / rel_path
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(content, encoding="utf-8")
+    namespace = runpy.run_path(str(tmp_path / "main.py"))
+    drivers = pl.DataFrame({"driver_id": [1]})
+    quotes = pl.DataFrame({"quote_id": [2]})
+    assert namespace["Optimiser"](drivers, quotes) is quotes
 
 
 def test_optimiser_codegen_rejects_node_id_selector_for_multi_frame_api_input() -> None:

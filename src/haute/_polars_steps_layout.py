@@ -1,7 +1,8 @@
 """Layout of the step renderer's statements as ``ruff format`` lays them out.
 
-Each structured step renders one statement. A statement that does not fit in
-:data:`LINE_WIDTH` columns is split the way ``ruff format`` splits it: the last
+Each structured step renders one statement, which lands in a node function's
+body, four columns in. A statement that does not fit there in :data:`LINE_WIDTH`
+columns is split the way ``ruff format`` splits it: the last
 call's brackets break first, a list or dict that still does not fit puts one
 entry per line with a trailing comma, a call chain with two or more links after
 a call or parentheses breaks before each such link (ruff's fluent layout), a
@@ -13,8 +14,10 @@ ruff would keep arguments that fit on one indented line together; ruff reads
 that trailing comma as a magic trailing comma and keeps the layout. Before any
 of this the statement is restyled on one line (:func:`restyle_statement`):
 brackets the precedence does not need are dropped and strings take double
-quotes, as ruff and the Polars documentation write them. The result is a fixed
-point of ``ruff format`` at line length 88 with its default quote style.
+quotes, as ruff and the Polars documentation write them. Placed in the function
+body, the result is a fixed point of ``ruff format`` at line length 88 with its
+default quote style. The printing itself is the document printer codegen shares
+(:mod:`haute._source_layout`).
 
 This is not a general formatter. It reads only the renderer's own
 closed-vocabulary statements (names, numbers, strings, attribute and call
@@ -28,16 +31,25 @@ from __future__ import annotations
 import ast
 import io
 import tokenize
-import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeAlias
 
-__all__ = ["LINE_WIDTH", "layout_statement", "restyle_statement"]
+from haute._source_layout import (
+    INDENT,
+    LINE_WIDTH,
+    SOFT,
+    SPACE,
+    Doc,
+    Group,
+    Indent,
+    bracketed,
+    print_doc,
+    quote_string,
+    width,
+)
 
-#: ruff format's default line length.
-LINE_WIDTH = 88
-_INDENT = "    "
+__all__ = ["LINE_WIDTH", "layout_statement", "restyle_statement"]
 
 # ---------------------------------------------------------------------------
 # Expression tree
@@ -241,133 +253,17 @@ class _Parser:
 
 
 # ---------------------------------------------------------------------------
-# Document and printer (the Wadler/Prettier algorithm ruff's printer follows)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _Group:
-    """Printed flat when it fits on the line up to the next possible break."""
-
-    contents: _Doc
-
-
-@dataclass(frozen=True, slots=True)
-class _Indent:
-    contents: _Doc
-
-
-@dataclass(frozen=True, slots=True)
-class _Line:
-    """A line break in a broken group; flat, a space (or nothing when soft)."""
-
-    soft: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _IfBreak:
-    """Text printed only when the enclosing group breaks (a trailing comma)."""
-
-    text: str
-
-
-_Doc: TypeAlias = "str | _Group | _Indent | _Line | _IfBreak | list[_Doc]"
-_SOFT = _Line(soft=True)
-_SPACE = _Line(soft=False)
-
-
-def _width(text: str) -> int:
-    """Display columns, as ruff measures them: wide characters take two, marks none."""
-    if text.isascii():
-        return len(text)
-    return sum(
-        0
-        if unicodedata.combining(char)
-        else 2
-        if unicodedata.east_asian_width(char) in ("W", "F")
-        else 1
-        for char in text
-    )
-
-
-def _fits(contents: _Doc, rest: list[tuple[int, bool, _Doc]], width: int) -> bool:
-    """Whether *contents*, printed flat, and the rest up to its next break fit."""
-    pending: list[tuple[bool, _Doc]] = [(False, contents)]
-    rest_index = len(rest)
-    while width >= 0:
-        if not pending:
-            if rest_index == 0:
-                return True
-            rest_index -= 1
-            _indent, broken, item = rest[rest_index]
-            pending.append((broken, item))
-            continue
-        broken, item = pending.pop()
-        if isinstance(item, str):
-            width -= _width(item)
-        elif isinstance(item, list):
-            pending.extend((broken, part) for part in reversed(item))
-        elif isinstance(item, (_Group, _Indent)):
-            pending.append((broken, item.contents))
-        elif isinstance(item, _Line):
-            if broken:
-                return True
-            width -= 0 if item.soft else 1
-        elif broken:
-            width -= _width(item.text)
-    return False
-
-
-def _print(doc: _Doc) -> str:
-    out: list[str] = []
-    column = 0
-    stack: list[tuple[int, bool, _Doc]] = [(0, True, doc)]
-    while stack:
-        indent, broken, item = stack.pop()
-        if isinstance(item, str):
-            out.append(item)
-            column += _width(item)
-        elif isinstance(item, list):
-            stack.extend((indent, broken, part) for part in reversed(item))
-        elif isinstance(item, _Indent):
-            stack.append((indent + 1, broken, item.contents))
-        elif isinstance(item, _Group):
-            breaks = broken and not _fits(item.contents, stack, LINE_WIDTH - column)
-            stack.append((indent, breaks, item.contents))
-        elif isinstance(item, _Line):
-            if broken:
-                out.append("\n" + _INDENT * indent)
-                column = len(_INDENT) * indent
-            elif not item.soft:
-                out.append(" ")
-                column += 1
-        elif broken:
-            out.append(item.text)
-            column += _width(item.text)
-    return "".join(out)
-
-
-# ---------------------------------------------------------------------------
 # Tree to document, following ruff's rules for each expression
 # ---------------------------------------------------------------------------
 
 
-def _bracketed(open_: str, entries: tuple[_Node, ...], close: str) -> _Doc:
+def _bracketed(open_: str, entries: tuple[_Node, ...], close: str) -> Doc:
     """A bracketed, comma-separated sequence: flat, or one entry per line.
 
     A broken sequence of two or more entries ends with a trailing comma, which
     ruff reads as a magic trailing comma and keeps expanded.
     """
-    if not entries:
-        return open_ + close
-    body: list[_Doc] = []
-    for index, entry in enumerate(entries):
-        if index:
-            body.extend([",", _SPACE])
-        body.append(_expression(entry))
-    if len(entries) > 1:
-        body.append(_IfBreak(","))
-    return _Group([open_, _Indent([_SOFT, body]), _SOFT, close])
+    return bracketed(open_, [_expression(entry) for entry in entries], close)
 
 
 def _fluent_links(node: _Node) -> int:
@@ -386,7 +282,7 @@ def _fluent_links(node: _Node) -> int:
             return links
 
 
-def _chain(node: _Attr | _Call, fluent: bool) -> _Doc:
+def _chain(node: _Attr | _Call, fluent: bool) -> Doc:
     """A call chain; fluent, each link after a call or parentheses may break."""
     if isinstance(node, _Call):
         func = node.func
@@ -394,7 +290,7 @@ def _chain(node: _Attr | _Call, fluent: bool) -> _Doc:
         return [head, _bracketed("(", node.args, ")")]
     value = node.value
     head = _chain(value, fluent) if isinstance(value, (_Attr, _Call)) else _expression(value)
-    breaks = [_SOFT] if fluent and isinstance(value, (_Call, _Paren)) else []
+    breaks = [SOFT] if fluent and isinstance(value, (_Call, _Paren)) else []
     return [head, *breaks, f".{node.name}"]
 
 
@@ -407,31 +303,31 @@ def _binary_operands(node: _Node, items: list[_Node | str]) -> None:
         items.append(node)
 
 
-def _binary_slice(items: list[_Node | str]) -> _Doc:
+def _binary_slice(items: list[_Node | str]) -> Doc:
     """Operands split before the slice's weakest operators, each part grouped."""
     if len(items) == 1:
         only = items[0]
         assert not isinstance(only, str)
         return _expression(only)
     weakest = min(_PRECEDENCE[op] for op in items[1::2] if isinstance(op, str))
-    parts: list[_Doc] = []
+    parts: list[Doc] = []
     start = 0
     for index in range(1, len(items), 2):
         op = items[index]
         assert isinstance(op, str)
         if _PRECEDENCE[op] == weakest:
-            parts.extend([_Group(_binary_slice(items[start:index])), _SPACE, f"{op} "])
+            parts.extend([Group(_binary_slice(items[start:index])), SPACE, f"{op} "])
             start = index + 1
-    parts.append(_Group(_binary_slice(items[start:])))
+    parts.append(Group(_binary_slice(items[start:])))
     return parts
 
 
-def _expression(node: _Node) -> _Doc:
+def _expression(node: _Node) -> Doc:
     """An expression inside brackets, where ruff may break it."""
     if isinstance(node, _Atom):
         return node.text
     if isinstance(node, _Paren):
-        return _Group(["(", _Indent([_SOFT, _expression(node.inner)]), _SOFT, ")"])
+        return Group(["(", Indent([SOFT, _expression(node.inner)]), SOFT, ")"])
     if isinstance(node, _Collection):
         return _bracketed(node.open, node.entries, node.close)
     if isinstance(node, _Pair):
@@ -441,22 +337,12 @@ def _expression(node: _Node) -> _Doc:
     if isinstance(node, (_Attr, _Call)):
         fluent = _fluent_links(node) >= 2
         chain = _chain(node, fluent)
-        return _Group(chain) if fluent else chain
+        return Group(chain) if fluent else chain
     if isinstance(node, _Unary):
         return [node.op, _expression(node.operand)]
     items: list[_Node | str] = []
     _binary_operands(node, items)
-    return _Group(_binary_slice(items))
-
-
-def _quote(value: str) -> str:
-    """A string literal as ruff writes it: double quotes unless single ones need fewer escapes."""
-    quote = "'" if value.count('"') > value.count("'") else '"'
-    body = "".join(
-        f"\\{char}" if char == quote else char if char in "'\"" else repr(char)[1:-1]
-        for char in value
-    )
-    return f"{quote}{body}{quote}"
+    return Group(_binary_slice(items))
 
 
 def restyle_statement(statement: str) -> str:
@@ -491,18 +377,26 @@ def restyle_statement(statement: str) -> str:
         value = ast.literal_eval(token.string)
         if not isinstance(value, str):
             raise ValueError(f"Cannot restyle the rendered statement {statement!r}: bytes literal.")
-        restyled = f"{restyled[:start]}{_quote(value)}{restyled[end:]}"
+        restyled = f"{restyled[:start]}{quote_string(value)}{restyled[end:]}"
     if ast.dump(ast.parse(restyled)) != ast.dump(tree):
         raise ValueError(f"Restyling changed the rendered statement {statement!r}.")
     return restyled
 
 
+def _body_text(printed: str) -> str:
+    """Printed text laid out one level in, as the column-0 text the body re-indents."""
+    first, *rest = printed.split("\n")
+    return "\n".join([first, *(line.removeprefix(INDENT) for line in rest)])
+
+
 def layout_statement(statement: str) -> str:
     """Restyle one rendered single-line statement and lay it out as ``ruff format`` would.
 
-    After :func:`restyle_statement`, the text is unchanged apart from line
-    breaks, indentation, trailing commas in broken sequences and collapsed
-    doubled parentheses.
+    The statement is laid out where it lands, one level into a node function's
+    body, and returned at column 0 for the body to indent. After
+    :func:`restyle_statement`, the text is unchanged apart from line breaks,
+    indentation, trailing commas in broken sequences and collapsed doubled
+    parentheses.
     """
     statement = restyle_statement(statement)
     target, value = _Parser(statement).statement_parts()
@@ -510,11 +404,12 @@ def layout_statement(statement: str) -> str:
     if isinstance(value, (_Attr, _Call)):
         # Outside brackets ruff never lays a chain out fluently and adds no
         # parentheses around a call: the last call's brackets break first.
-        return _print([head, _chain(value, fluent=False)])
+        return _body_text(print_doc([head, _chain(value, fluent=False)], indent=1))
     if isinstance(value, _Atom) or (isinstance(value, _Unary) and isinstance(value.operand, _Atom)):
-        text = _print(_expression(value))
-        if _width(head + text) <= LINE_WIDTH or len(_INDENT) + _width(text) > LINE_WIDTH:
+        text = _body_text(print_doc(_expression(value), indent=1))
+        body = len(INDENT)
+        if body + width(head + text) <= LINE_WIDTH or body + len(INDENT) + width(text) > LINE_WIDTH:
             return head + text
         # ruff's best fit: parentheses only when they make the value fit.
-        return f"{head}(\n{_INDENT}{text}\n)"
+        return f"{head}(\n{INDENT}{text}\n)"
     raise ValueError(f"Cannot lay out the rendered statement {statement!r}: unexpected value.")

@@ -126,7 +126,9 @@ keys in `unrecognized_config_keys`) before any other check or write, requires th
 candidate to remain loadable (completeness gaps allowed), rewrites only that node's settings and code through the
 existing LibCST and staged-write boundaries (regenerating the `contract=` annotation and
 omitting a sidecar `contract` copy exactly as Recover settings does, so a settings edit
-cannot leave a stale annotation), verifies conservation of every other node,
+cannot leave a stale annotation, and adding `import polars as pl` below `import haute`
+when the rewritten function needs `pl` and the module does not import it), verifies
+conservation of every other node,
 edge, and artifact byte, rejects stale revisions with HTTP 409, and returns the
 authoritative document. Shared or ambiguous artifacts, and edits that would change
 unresolved structural bindings, fail with actionable diagnostics instead of widening the

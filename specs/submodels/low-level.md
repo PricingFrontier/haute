@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening. |
-| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base. |
+| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `definition_pipeline_dir` turns a registration path into a definition file's `pipeline_dir` and `is_pipeline_dir` validates one. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
@@ -16,7 +16,9 @@ Related but external to this component:
   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
   canonical reusable-instance helpers to build the hierarchical view at parse
   time. Parsed child graphs retain their declared description,
-  preamble, and column-zero preserved blocks. It rejects nested references
+  preamble, and column-zero preserved blocks. It checks the constructor's
+  `pipeline_dir` against the file's folder below the registering pipeline (a
+  missing keyword means the file sits beside it). It rejects nested references
   and duplicate declared submodel names before invoking the graph helpers, so
   this component never receives a deliberately truncated hierarchy.
 - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —

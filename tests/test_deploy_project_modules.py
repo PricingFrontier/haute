@@ -43,12 +43,7 @@ pipeline = haute.Pipeline("utility_quote", description="Scales the quote by a ut
 
 
 @pipeline.api_input(config="config/request.json")
-def quote() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_api_input_from_config
-
-    return resolve_api_input_from_config("config/request.json", base_dir=Path(__file__).parent)
+def quote(): ...
 
 
 @pipeline.polars
@@ -57,8 +52,7 @@ def scaled(quote: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def response(scaled: pl.LazyFrame) -> pl.LazyFrame:
-    return scaled
+def response(scaled): ...
 
 
 pipeline.connect("quote", "scaled", source_port="quote")

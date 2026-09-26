@@ -791,6 +791,9 @@ def save_sidecar(
         )
 
     positions = {_sidecar_position_key(node): node.position for node in graph.nodes}
+    # Written in key order, so the file depends on where nodes sit, never on
+    # the order the graph lists them (a reloaded graph follows the source file).
+    positions = dict(sorted(positions.items()))
 
     # Build the on-disk payload via ``SidecarModel`` so the schema is
     # typed and validated.  We still omit default source state so a

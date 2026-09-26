@@ -4,7 +4,8 @@ These tests are the **specification** for extending the column-contract
 system so that:
 
 - Every ``NodeType`` declares a contract (concrete or ``OPAQUE``).
-- Codegen emits the contract into the generated pipeline source.
+- Codegen emits a contract into the generated pipeline source where it adds
+  information the parser cannot derive from the node's settings.
 - The parser validates user-supplied contracts against builder-declared
   ones at parse time.
 - The executor asserts input/output column contracts at each node
@@ -241,17 +242,19 @@ class TestModelScoreContractIsPartiallyAllowed:
 
 
 class TestCodegenEmitsContractMetadata:
-    """``graph_to_code`` must include the contract in decorator kwargs.
+    """``graph_to_code`` emits a contract only where it adds information.
 
-    Today codegen ignores the contract entirely — the generated
-    pipeline source has no way to communicate the expected column
-    shape to a reviewer or to the parser.  After adoption, every
-    generated decorator carries a ``contract=...`` kwarg.
+    A contract the parser derives from the node's own settings, or an
+    opaque one, is left out of the decorator; the parsed node still carries
+    the same effective contract (``test_codegen_contract_keyword.py`` pins
+    the kept cases).
     """
 
-    def test_banding_codegen_includes_contract_kwarg(self):
-        """A banding node with a concrete contract emits ``contract=...``."""
+    def test_banding_contract_implied_by_its_settings_is_not_emitted(self, tmp_path: Path):
+        """A banding node's age -> age_band contract comes from its factors, not the file."""
+        from haute._config_io import collect_node_configs
         from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
 
         graph = PipelineGraph(
             nodes=[
@@ -272,17 +275,21 @@ class TestCodegenEmitsContractMetadata:
             edges=[_e("src", "band")],
         )
         code = graph_to_code(graph, pipeline_name="t")
-        assert "contract=" in code, (
-            "Generated code does not mention 'contract=' on any decorator. "
-            "After adoption, every @pipeline.<type>(...) call must declare "
-            "its expected input/output columns so a human reviewer (and "
-            "the parser) can cross-check without running the pipeline."
-        )
-        # The specific banding contract must round-trip: age -> age_band
-        assert "age" in code and "age_band" in code
+        assert "contract=" not in code
+        assert "age_band" not in code, "the factor lives in the sidecar, not the source"
 
-    def test_opaque_node_emits_opaque_sentinel(self):
-        """A polars node codegens ``contract=\"opaque\"`` (or equivalent)."""
+        for rel, content in collect_node_configs(graph).items():
+            sidecar = tmp_path / rel
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(content, encoding="utf-8")
+        parsed = parse_pipeline_source(code, source_file=str(tmp_path / "p.py"), _base_dir=tmp_path)
+        band = next(n for n in parsed.nodes if n.data.label == "band")
+        produced, referenced = get_column_contract(band.data.nodeType, band.data.config)
+        assert produced == {"age_band"}
+        assert referenced == {"age"}
+
+    def test_opaque_contract_is_not_emitted(self):
+        """An opaque contract says nothing, so the decorator stays bare."""
         from haute.codegen import graph_to_code
 
         graph = PipelineGraph(
@@ -293,12 +300,8 @@ class TestCodegenEmitsContractMetadata:
             edges=[_e("src", "t")],
         )
         code = graph_to_code(graph, pipeline_name="t")
-        assert OPAQUE_SENTINEL in code, (
-            f'Opaque contract must be emitted as ``contract="{OPAQUE_SENTINEL}"`` '
-            "(or a Contract.OPAQUE equivalent) so round-trip parsing "
-            "preserves the distinction between 'declared opaque' and "
-            "'forgot to declare'."
-        )
+        assert "@pipeline.polars\ndef t(src: pl.LazyFrame) -> pl.LazyFrame:" in code
+        assert OPAQUE_SENTINEL not in code
 
     def test_codegen_parse_roundtrip_preserves_contract(self, tmp_path: Path):
         """parse → codegen → parse produces the same contract annotation.
@@ -341,15 +344,13 @@ pipeline = haute.Pipeline("roundtrip")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
+def src():
     """Source."""
-    return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(config="{band_config}")
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
+def band(src):
     """Band age."""
-    return src
 
 
 pipeline.connect("src", "band")
@@ -456,18 +457,16 @@ pipeline = haute.Pipeline("bad")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
+def src():
     """Source."""
-    return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(
     config="{band_config}",
     contract={{"inputs": ["height"], "outputs": ["height_band"]}},
 )
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
+def band(src):
     """Band age but declare height."""
-    return src
 
 
 pipeline.connect("src", "band")
@@ -513,18 +512,16 @@ pipeline = haute.Pipeline("good")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
+def src():
     """Source."""
-    return pl.scan_parquet("x.parquet")
 
 
 @pipeline.banding(
     config="{band_config}",
     contract={{"inputs": ["age"], "outputs": ["age_band"]}},
 )
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
+def band(src):
     """Band age."""
-    return src
 
 
 pipeline.connect("src", "band")
@@ -569,16 +566,14 @@ pipeline = haute.Pipeline("contract_ctor")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
-    return pl.scan_parquet("x.parquet")
+def src(): ...
 
 
 @pipeline.banding(
     config="{band_config}",
     contract=Contract(inputs=["age"], outputs=["age_band"]),
 )
-def band(src: pl.LazyFrame) -> pl.LazyFrame:
-    return src
+def band(src): ...
 
 
 pipeline.connect("src", "band")
@@ -635,16 +630,14 @@ pipeline = haute.Pipeline("model_score_contract")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.LazyFrame:
-    return pl.scan_parquet("x.parquet")
+def src(): ...
 
 
 @pipeline.model_score(
     config="{score_config}",
     contract={{"inputs": ["feature_a"], "outputs": ["prediction"]}},
 )
-def score(src: pl.LazyFrame) -> pl.LazyFrame:
-    return src
+def score(src): ...
 
 
 pipeline.connect("src", "score")

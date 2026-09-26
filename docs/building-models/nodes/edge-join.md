@@ -109,19 +109,11 @@ normal [Polars](polars.md) node before or after the Edge Join.
 
 ## Source code
 
-An Edge Join is still a regular Python node. When saved from the UI, Haute emits an `@pipeline.edge_join` decorator and ordinary `pipeline.connect(...)` calls with role handles:
+An Edge Join is still a regular Python node. When saved from the UI, Haute emits an `@pipeline.edge_join` decorator carrying the join settings on a one-line declaration, and ordinary `pipeline.connect(...)` calls with role handles. The decorator performs the join when the file runs on its own:
 
 ```python
-@pipeline.edge_join(
-    how="left",
-    on=["quote_id"],
-    suffix="_right",
-)
-def join_scores(
-    policies: pl.LazyFrame,
-    competitor_scores: pl.LazyFrame,
-) -> pl.LazyFrame:
-    return pipeline._apply_edge_join("join_scores", policies, competitor_scores)
+@pipeline.edge_join(how="left", on=["quote_id"], suffix="_right")
+def join_scores(policies, competitor_scores): ...
 
 
 pipeline.connect("policies", "join_scores", target_port="base")

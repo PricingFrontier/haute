@@ -16,7 +16,7 @@ import pytest
 from haute._builders import _apply_online, _apply_ratebook, _build_node_fn
 from haute._config_builder import _build_node_config
 from haute._types import GraphNode, NodeData, NodeType
-from haute.codegen import _generate_node_code, _node_to_code
+from haute.codegen import _node_to_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 
 # ---------------------------------------------------------------------------
@@ -303,11 +303,10 @@ class TestCodegen:
         )
         code = _node_to_code(node, source_names=["score_models"])
         assert 'config="config/apply_optimisation/apply_optimised_price.json"' in code
-        assert "def apply_optimised_price(" in code
-        # Body applies the artifact via the shared helper (not a no-op
-        # passthrough) so a standalone pipeline.run() actually optimises.
-        assert "apply_optimiser_apply_from_config(" in code
-        assert "source_names=['score_models']" in code
+        # A declaration: the decorator applies the artifact through the shared
+        # helper when the file runs, reading the input names off the signature.
+        assert "def apply_optimised_price(score_models): ..." in code
+        assert "apply_optimiser_apply_from_config" not in code
         assert "source_ids=" not in code
 
     def test_codegen_empty_config(self):
@@ -351,12 +350,11 @@ class TestCodegen:
                 "optimised_value_column": "selected_price_factor",
             },
         )
-        code = _generate_node_code(node, source_names=["df"])
-        # The column lives in the sidecar the decorator references, and the
-        # body's shared helper reads it from there.
+        code = _node_to_code(node, source_names=["quotes"])
+        # The column lives in the sidecar the decorator references and reads.
         assert code.startswith('@pipeline.optimiser_apply(config="config/apply_optimisation/')
         assert "selected_price_factor" not in code
-        assert "apply_optimiser_apply_from_config(" in code
+        assert "def apply_opt(quotes): ..." in code
 
     def test_codegen_ratebook_input(self):
         node = _make_node(
@@ -366,11 +364,11 @@ class TestCodegen:
                 "ratebook_input": "banded_quotes",
             },
         )
-        code = _generate_node_code(node, source_names=["scored_quotes", "banded_quotes"])
-        # The sidecar names the ratebook input; the body passes the exact
-        # source names so the shared helper can resolve it.
+        code = _node_to_code(node, source_names=["scored_quotes", "banded_quotes"])
+        # The sidecar names the ratebook input; the declaration's parameters are
+        # the exact source names the decorator resolves it against.
         assert "ratebook_input=" not in code
-        assert "source_names=['scored_quotes', 'banded_quotes']" in code
+        assert "def apply_opt(scored_quotes, banded_quotes): ..." in code
 
 
 # ---------------------------------------------------------------------------

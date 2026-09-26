@@ -1,12 +1,14 @@
 """Phase 5 Wave 9D #122 pathological docstring round-trip tests.
 
-Codegen builds function docstrings by interpolating a sanitized version of
-``node.data.description`` into a triple-quoted-docstring template (see
-``_codegen_builders._sanitize_description`` and the per-type templates
-that reference ``{description}`` between triple quotes).  The sanitiser
-makes a best-effort pass at triple-quote / trailing-backslash handling,
-but it modifies the description in place -- so the docstring as-observed
-via ``ast.get_docstring`` does NOT match the original description
+Codegen prints a function docstring from a sanitized version of
+``node.data.description`` placed between triple quotes (see
+``_codegen_builders._sanitize_description`` and ``render_node_source``).
+Continuation lines of a multi-line description are indented to the function
+body, as ``ruff format`` indents docstrings, and ``inspect.cleandoc`` (through
+``ast.get_docstring``) removes that common indentation again on read.  The
+sanitiser makes a best-effort pass at triple-quote / trailing-backslash
+handling, but it modifies the description in place -- so the docstring
+as-observed via ``ast.get_docstring`` does NOT match the original description
 bit-for-bit in general.
 
 This file exhaustively pins the behaviour of that pipeline against
@@ -260,6 +262,26 @@ class TestDocstringRoundTrip:
     def test_whitespace_only_description_roundtrips(self) -> None:
         desc = " "
         code = _generate_single_node_code(desc)
+        assert _extract_docstring(code, "Transform") == desc
+
+    def test_whitespace_only_lines_description_roundtrips(self) -> None:
+        """Every continuation line is whitespace: no line sets cleandoc's margin."""
+        desc = "   \n   "
+        code = _generate_single_node_code(desc)
+        assert _extract_docstring(code, "Transform") == desc
+
+    def test_whitespace_line_between_text_lines_roundtrips(self) -> None:
+        """A whitespace line keeps its own spaces beside indented text lines."""
+        desc = "a\n   \nb"
+        code = _generate_single_node_code(desc)
+        assert _extract_docstring(code, "Transform") == desc
+
+    def test_multiline_continuation_lines_are_indented_to_the_body(self) -> None:
+        """Continuation lines sit at the body's indentation, as ruff lays them out,
+        and cleandoc removes exactly that indentation again on read."""
+        desc = "line1\n  line2\n\nline4"
+        code = _generate_single_node_code(desc)
+        assert '    """\n    line1\n      line2\n\n    line4"""\n' in code
         assert _extract_docstring(code, "Transform") == desc
 
     # ----- Cases expected to currently pass --------------------------------

@@ -468,9 +468,8 @@ import haute
 pipeline = haute.Pipeline("test")
 
 @pipeline.banding(config="{band_config}")
-def band_age(df: pl.LazyFrame) -> pl.LazyFrame:
+def band_age(df):
     """Band age into age_band"""
-    return df
 '''
         graph = parse_pipeline_source(code, _base_dir=tmp_path)
         assert len(graph.nodes) == 1
@@ -509,9 +508,8 @@ import haute
 pipeline = haute.Pipeline("test")
 
 @pipeline.banding(config="{band_config}")
-def band_prop(df: pl.LazyFrame) -> pl.LazyFrame:
+def band_prop(df):
     """Band property type"""
-    return df
 '''
         graph = parse_pipeline_source(code, _base_dir=tmp_path)
         node = graph.nodes[0]
@@ -543,9 +541,8 @@ import haute
 pipeline = haute.Pipeline("test")
 
 @pipeline.banding(config="{band_config}")
-def band_fuel(df: pl.LazyFrame) -> pl.LazyFrame:
+def band_fuel(df):
     """Band fuel type"""
-    return df
 '''
         graph = parse_pipeline_source(code, _base_dir=tmp_path)
         factor = graph.nodes[0].data.config["factors"][0]
@@ -580,9 +577,8 @@ import haute
 pipeline = haute.Pipeline("test")
 
 @pipeline.banding(config="{band_config}")
-def band_age(df: pl.LazyFrame) -> pl.LazyFrame:
+def band_age(df):
     """Band age"""
-    return df
 '''
         graph = parse_pipeline_source(code, _base_dir=tmp_path)
         factor = graph.nodes[0].data.config["factors"][0]

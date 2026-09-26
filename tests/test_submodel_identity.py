@@ -38,6 +38,7 @@ submodel = haute.Submodel(
     output_ports=[
         {"name": "out_data", "source": {"nodeId": "child_node"}},
     ],
+    pipeline_dir="..",
 )
 
 

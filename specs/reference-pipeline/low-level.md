@@ -20,9 +20,10 @@ graph as the repository's default pipeline.
   project-root-relative `path`, and empty `arguments`.
 - **Output sidecar**: `outputMapping` entries (`source_port`, `source_column`,
   `output_path`, `enabled`) and `outputFormat` `json`.
-- **Generated pipeline**: the decorators carry their sidecar paths and generated
-  contracts; each body resolves its sidecar against the script directory
-  (`_HAUTE_CONFIG_BASE`) and the project root.
+- **Generated pipeline**: the decorators carry their sidecar paths (and a contract
+  only where it adds information); the Data Input and Output nodes are declarations
+  and the transform is plain Polars. When the file runs on its own, each decorator
+  resolves its sidecar against the script directory and the project root.
 
 ## Control flow
 

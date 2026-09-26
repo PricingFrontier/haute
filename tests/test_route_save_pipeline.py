@@ -755,7 +755,8 @@ class TestSaveSimpleGraph:
                 GraphEdge(id="lookup_input", source="lookup", target="result", targetHandle="join")
             )
         else:
-            config["code"] = "df = source"
+            # A transform names its input; Explore code sees its input as df.
+            config["code"] = "df = source" if node_type == "polars" else "df = df.select(pl.all())"
         # NodeData validates/copies config, so assign the completed settings.
         nodes[1].data.config = config
         graph = PipelineGraph(nodes=nodes, edges=edges)
@@ -885,7 +886,7 @@ class TestSaveSimpleGraph:
         assert "inputs_by_parent" not in content
         assert "join_policy_data" not in content
         # The declared inputs themselves are preserved.
-        assert "'inputs': ['premium', 'quote_id']" in content
+        assert '"inputs": ["premium", "quote_id"]' in content
         # The drop is surfaced, not silent.
         omitted = [log for log in logs if log["event"] == "contract_inputs_by_parent_omitted_stale"]
         assert len(omitted) == 1

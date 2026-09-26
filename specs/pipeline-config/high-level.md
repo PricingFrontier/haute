@@ -41,9 +41,10 @@ decorator per authorable node type — `api_input`, `polars`, `banding`, `rating
 `model_score`, `output`, `edge_join`, `live_switch`, `optimiser`, `optimiser_apply`,
 `scenario_expander`, `modelling`, `constant`, `data_input`, `data_output`,
 `explore`, `external_file`, `instance` — each a thin wrapper that tags the function with its
-`NodeType` and delegates to a shared registration path. A function with zero parameters is
-treated as a source node; duplicate function names are rejected the moment a second decorator
-tries to register them. `connect(source, target, source_port=, target_port=)` declares an
+`NodeType` and delegates to a shared registration path. Configured API Input, Data Input
+and Constant nodes are sources whatever their signature; any other function with zero
+positional parameters is treated as a source node; duplicate function names are rejected the
+moment a second decorator tries to register them. `connect(source, target, source_port=, target_port=)` declares an
 edge and is chainable; both endpoints must already be registered nodes, and port names, if
 given, must be non-empty strings.
 
@@ -53,8 +54,37 @@ decorator keywords — the folder convention is fixed per type. Parsing one of t
 `config=` is rejected with a message naming the exact folder and pointing at `haute init` for a
 starter sidecar. Every other type builds its config directly from decorator keywords and, for
 several types, from Python code extracted out of the function body. The live `Pipeline` decorator
-API does not load or validate a `config=` path; it records the keyword as ordinary node metadata,
-and generated function bodies/runtime graph builders own the corresponding executable behaviour.
+API records `config=` and the other keywords as node metadata at import time and reads a sidecar
+only when a standalone run executes the node (see Standalone execution).
+
+**Declarations and hooks.** A node with settings is a configured node: an Edge Join or
+Explore node (its settings are its decorator keywords), or a node of any other type except
+`polars` that names a `config=` sidecar. Its decorator performs the node's configured work —
+loading, scoring, rating, expanding, joining, switching, assembling — when the file runs on its
+own, and the function says only what the user added. On a type that accepts code (Data
+Input, External File, Rating Step, Model Score, Scenario Expander, Explore), a function whose
+first positional parameter is `df` (for an External File, a function with the keyword-only
+parameter `obj`) is a **hook**: the decorator calls it with the frame its work produced as
+`df` — for an External File, with the node's inputs by name, the loaded object as `obj`, and a
+body that binds `df` to the first input itself — and the hook returns the node's result. Any
+other function is a **declaration**: its body is `...`, `pass` or a docstring alone, it is
+never called, and its positional parameters name the node's inputs. On a type that accepts no
+code (API Input, Data Output, Edge Join, Banding, Output, Live Switch, Modelling, Optimiser,
+Optimiser Apply, Constant) every function is a declaration, and a parameter named `df` is
+just an input. Registration fails loudly for a declaration with a body (the code would never
+run; on a type that accepts no code the message says so) and for a hook without one. The
+static parser enforces the same shapes. Canvas execution gives a hook's code the same names
+the saved function has: `df` and the node's other inputs (an External File's inputs and
+`obj`), never the first input under its own name. One difference remains: a Model Score's
+code on the canvas can also use `model`, which a standalone run does not provide. Node code
+leaves its result in `df`; a closing `return <expr>` reads as `df = <expr>`, and an earlier
+return is a parse error rather than an assignment that would fall through. The decorator returns a callable that runs the node:
+calling a configured node's function directly — `quotes()` in a notebook — performs the same
+work, and hands it to the same hook, as a run does, while a transform's decorator returns the
+function itself. A sidecar-typed node registered without `config=` has no settings for its
+decorator to act on, so the live API treats it as a plain function and a standalone run calls
+its body as written; the static parser rejects that form, so it never appears in a saved
+pipeline file.
 
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
@@ -100,8 +130,9 @@ Keyword-only parameters are configuration and never become graph edges.
 **Standalone execution.** `Pipeline.run()` and `Pipeline.score(df)` are a self-contained
 executor over the live decorator graph (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
-instead). They topologically sort the registered nodes and edges, run each node's function
-with its wired-in DataFrame(s), and resolve which node's output to return: an explicit
+instead). They topologically sort the registered nodes and edges, run each node with its
+wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
+decorator and then its hook, if it has one — and resolve which node's output to return: an explicit
 `@pipeline.output` node wins if there is exactly one; otherwise the single node with no
 outgoing edge is used; anything more ambiguous than that raises, naming every candidate.
 `score(df)` additionally seeds a live input DataFrame into whichever source is marked as the
@@ -207,27 +238,26 @@ names a particular Data Output. Their only sidecar folders are
 active branch, format/group agreement, safe references, cache constraints, and
 the absence of output code.
 
-**Retained input sidecars are authoritative.** Generated `apiInput` and
-`externalFile` functions retain executable user code but do not embed a second
-copy of declarative paths, source types, schemas, file types, or model classes.
-At execution time shared helpers load the duplicate-key-rejecting sidecar,
-validate its active shape, resolve relative paths through the normal
-project/pipeline policy, and perform the same source/object load used by the
-executor. Editing a valid sidecar therefore changes the next parse and
-standalone execution without regenerating Python; a missing, malformed, or
-shape-incomplete sidecar fails before the data/object file is read.
+**Sidecars are authoritative.** No function body embeds a copy of a sidecar's
+paths, source types, schemas, file types, model classes, switch mappings or constant
+values. When a standalone run executes a configured node, the decorator's shared
+helpers load the duplicate-key-rejecting sidecar (resolving its `config=` path against
+the pipeline's directory: the directory of the file that defines the function, or, in a
+submodel definition file below its pipeline, the directory its constructor's `pipeline_dir`
+leads to), validate its active shape,
+resolve relative paths through the normal project/pipeline policy, and perform the
+same load, scoring or assembly the executor performs. Editing a valid sidecar therefore
+changes the next parse and standalone execution without regenerating Python; a
+missing, malformed, or shape-incomplete sidecar fails before the data/object file is
+read.
 
 For tabular Data Input values specifically, a relative `path` is interpreted
-from the Haute project root by both canvas execution and generated standalone
-functions. The generated helper receives the project root discovered from the
-pipeline file and uses the same canonical runtime resolver as the executor;
-the sidecar's own `config/data_input/...json` location remains pipeline-relative.
-When parsing a handwritten Data Input function, the canonical direct-return
-wrapper `return resolve_data_input_from_config(...)` is loading scaffold, not
-post-load transform code. It round-trips as an empty executable `code` field
-instead of being re-executed as a bare `return` statement.
-There is no generated-code-only rebasing of `data/foo.parquet` beneath the
-pipeline module directory.
+from the Haute project root by both canvas execution and standalone runs. The
+standalone runtime discovers the project root from the pipeline file and uses the
+same canonical runtime resolver as the executor; the sidecar's own
+`config/data_input/...json` location remains pipeline-relative. There is no
+standalone-only rebasing of `data/foo.parquet` beneath the pipeline module
+directory.
 
 **Stepped transforms.** A `polars` transform may be authored as an ordered list of
 low-code steps instead of hand-written code. The steps live in the node's optional
@@ -244,8 +274,9 @@ Each structured step renders one statement in common Python style, as ruff and t
 Polars documentation write it: brackets only where operator precedence needs them,
 double quotes unless single ones need fewer escapes, group-by keys, aggregations and
 selected, dropped or filled columns passed as separate arguments rather than lists,
-and a sort or unique that uses Polars' defaults leaves them unsaid. A statement longer
-than 88 columns is laid out over several lines the way `ruff format` lays it out,
+and a sort or unique that uses Polars' defaults leaves them unsaid. A statement that does
+not fit in 88 columns at the function body's indentation is laid out over several lines
+the way `ruff format` lays it out,
 except that a broken call always puts one argument per line with a trailing comma; a
 list that still does not fit is broken the same way. The body reads like a formatted
 pipeline file, and `ruff format` at its default line length and quote style leaves it
@@ -349,7 +380,7 @@ an input is renamed (a node rename, an Edge Join insertion, a submodel boundary)
 stepped `edges` original never carries `inputMapping`. A node
 type outside that table that carries a `steps` key is left alone. A Scenario
 Expander's grid size is its required `stepCount` (a whole number of at least 1, read
-by the executor builder, the generated module's helper, the chunk planner, the RAM
+by the executor builder, the standalone runtime's helper, the chunk planner, the RAM
 estimator and the trace enrichment through one `scenario_step_count` function with no
 absent-key default; a new node is created with an explicit 21), so `steps` on that
 type is free for its step list. A missing or malformed `stepCount` is a config defect the
@@ -366,7 +397,7 @@ rendering the extractor normalises (a lone `df = (df.head(2))` free-code step lo
 its brackets) still reloads in step mode; the `_discarded_sidecar` marker is set only
 for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
 is next written without `steps`. An unrenderable Data Input step list is saved
-behind the generated placeholder in the function body, so the module raises rather
+as a hook whose body is the generated placeholder, so a standalone run raises rather
 than silently reading the source unchanged, and reload keeps the steps behind empty
 code exactly as for a transform. A new Data Input starts in step mode with an
 empty list.

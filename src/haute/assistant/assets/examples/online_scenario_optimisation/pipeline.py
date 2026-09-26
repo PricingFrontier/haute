@@ -1,14 +1,8 @@
 """Expand quote scenarios, score each alternative, and optimise the portfolio online."""
 
-from pathlib import Path
-
 import polars as pl
 
 import haute
-from haute.graph_utils import (
-    expand_scenarios_from_config,
-    resolve_data_input_from_config,
-)
 
 pipeline = haute.Pipeline(
     "online_scenario_optimisation",
@@ -17,20 +11,11 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/quotes.json")
-def quotes() -> pl.LazyFrame:
-    return resolve_data_input_from_config(
-        "config/quotes.json",
-        base_dir=Path(__file__).parent,
-    )
+def quotes(): ...
 
 
 @pipeline.scenario_expander(config="config/scenarios.json")
-def scenarios(quotes: pl.LazyFrame) -> pl.LazyFrame:
-    return expand_scenarios_from_config(
-        quotes,
-        "config/scenarios.json",
-        base_dir=Path(__file__).parent,
-    )
+def scenarios(quotes): ...
 
 
 @pipeline.polars
@@ -44,10 +29,8 @@ def scored(scenarios: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.optimiser(config="config/optimiser.json")
-def optimise(scored: pl.LazyFrame) -> pl.LazyFrame:
-    return scored
+def optimise(scored): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(optimise: pl.LazyFrame) -> pl.LazyFrame:
-    return optimise
+def response(optimise): ...

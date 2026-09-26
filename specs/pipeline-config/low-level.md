@@ -4,12 +4,13 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
+| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. |
+| `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
-| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form is longer than 88 columns, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, and `rename_step_inputs` for boundary renames. Consumed by the node data model, the parser, the executor builder, codegen, the save service, the deploy interceptors, submodel flattening, and the render endpoint. |
-| `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement as `ruff format` lays it out at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, and `rename_step_inputs` for boundary renames. Consumed by the node data model, the parser, the executor builder, codegen, the save service, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
@@ -24,11 +25,14 @@
 ## Key types and data structures
 
 - **`Node`** (dataclass, `src/haute/pipeline.py`) — `name`, `description`, `fn`, `is_source`,
-  `config: dict`. Derived properties: `is_deploy_input` (config `_node_type == API_INPUT` or
+  `config: dict`, and `kind` (`"transform"`, `"declaration"` or `"hook"`, fixed at
+  registration). Derived properties: `is_deploy_input` (config `_node_type == API_INPUT` or
   `api_input=True`), `is_live_switch`, `n_inputs`, `input_arity` (an `_InputArity` computed by
   inspecting `fn`'s signature — keyword-only params are config, not edges; positional params
-  with defaults are optional edges). `__call__` validates the number of wired DataFrame
-  arguments against `input_arity` before invoking `fn`.
+  with defaults are optional edges; a hook's `df` stands for its first input, and a source's
+  arity is zero). `__call__` validates the number of wired DataFrame arguments against
+  `input_arity`, then calls a transform's `fn` directly; for a configured node it runs the
+  configured work and returns it for a declaration, or calls the hook with it.
 - **`_InputArity`** (frozen dataclass) — `min_inputs`, `max_inputs: int | None` (`None` means
   unbounded via `*args`). `accepts(received)` / `describe()`.
 - **`RegisteredEdge`** (frozen dataclass) — `source`, `target`, `source_port`, `target_port`:
@@ -142,7 +146,9 @@ decorator calls at import time. `Pipeline.run()`/`Pipeline.score(df)` topologica
 in-memory `_edges`/`_nodes` via `haute.graph_utils.topo_sort_ids` (raising `CycleError` on a
 cycle). With no edges, `_topo_order` returns registration order; it does not create a chain.
 Execution then fails at `_execute_transform` if a non-source node has no inbound edge, rather
-than inferring one from its parameter names. Otherwise it executes each `Node`'s `fn`, threading
+than inferring one from its parameter names. Otherwise it executes each `Node` — a transform's
+`fn`, or a configured node's work followed by its hook (see "Standalone configured nodes"),
+threading
 DataFrames along declared edges — each edge's frame resolved port-aware through the shared
 `_pick_source_frame` selection on `RegisteredEdge.source_port` — and resolves the return value
 through `_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
@@ -184,7 +190,12 @@ unrenderable list behind an empty body; `steps` plus `inputMapping` on an origin
 transform is a `ConfigError`); raises
 `_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or
 dispatches into `_build_node_config`'s per-`NodeType` branch to build the config purely from
-decorator kwargs + body. `_resolve_node_config` also pops a `contract=` kwarg before
+decorator kwargs + body. Before any of this, `_validate_node_function` enforces the
+declaration/hook shapes the standalone runtime relies on: for a configured node a body that
+is only `...` or `pass` (after an optional docstring, `is_declaration_body`) is a declaration
+and must not take `df` (for an External File, `obj`); any other body is a hook and must take
+it, on a type that accepts code; each violation is a `ParseError` naming the node and the
+shape expected. `_resolve_node_config` also pops a `contract=` kwarg before
 delegating (so per-type builders don't flag it as unrecognised), cross-checks it via
 `_validate_user_contract`, and re-attaches it to the config afterwards. For Data Input/Output
 nodes it then validates the resolved config through the io-layer contract in
@@ -230,7 +241,9 @@ The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in one four-field
 `(source, target, source_port, target_port)` form,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no
-wiring parses as a disconnected graph) and `_build_rf_nodes` (assigns x-spaced GUI positions) to
+wiring parses as a disconnected graph; a hook's leading `df` on a code-accepting type other
+than External File names the frame its decorator produced, not an input, so it never matches
+a node called `df` — on a code-less type `df` is an input name like any other) and `_build_rf_nodes` (assigns x-spaced GUI positions) to
 produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.
@@ -329,6 +342,55 @@ comparison helpers accept supplied text so negative tests can prove that a
 drifted tree, stale node count, phantom command, or nonexistent public import
 produces a violation.
 
+**Standalone configured nodes (`src/haute/pipeline.py`,
+`src/haute/_standalone_nodes.py`).** A node is configured when it has settings for its
+decorator to act on (`is_configured`): Edge Join and Explore always, every other type except
+`polars` when it names a `config=` sidecar. Anything else — a transform, or a sidecar-typed
+node registered without `config=` — is called as written. Registration classifies every
+configured node's function once. A function whose first positional parameter is `df` — or, for an External
+File, a function with the keyword-only parameter `obj` — is a hook; any other function is a
+declaration. `has_empty_body` reads the function's bytecode (`dis.get_instructions`, ignoring
+`RESUME`, `NOP` and `CACHE`): a body that only returns `None` — `...`, `pass` or a docstring
+alone — is empty, on every supported Python version. Only a type that accepts code
+(`CODE_NODE_TYPES`) has hooks; on API Input, Data Output, Edge Join, Banding, Output, Live
+Switch, Modelling, Optimiser, Optimiser Apply and Constant every function is a declaration and
+a `df` parameter is just an input. Registration raises `ConfigError` naming the node when a
+declaration's body is not empty (its code would never run; on a code-less type the message
+names the type) or when a hook's body is empty. Configured API Input, Data Input and Constant
+nodes are sources whatever their signature. `_register_node` returns the function itself for
+a transform and otherwise a `functools.wraps` wrapper that calls the `Node` with its
+positional frames, so calling a configured or instance node's name runs the node exactly as
+`run()` does (an instance therefore fails loudly there too); `Node.fn` stays the user's
+function. `NodeRegistry` gives every node its `pipeline_dir`: `.` for a `Pipeline`, the
+constructor's validated value for a `Submodel` (`is_pipeline_dir`: `.` or `..` segments).
+
+When `run()`/`score()` executes a configured node, `run_configured_node` performs its work
+from the wired frames, the node's input names (a declaration's positional parameter names; a
+hook's parameters after `df`) and the decorator's keywords. A `config=` path resolves against
+`pipeline_directory(fn, name, pipeline_dir)` — the directory of the `__file__` in the
+function's globals joined with the node's `pipeline_dir` — read when the node runs, not at
+import; a function defined without a file fails with `ConfigError` once it needs its sidecar.
+The work per type:
+
+| Node type | Work |
+|---|---|
+| API Input | `resolve_api_input_from_config(config, base_dir)` (a seeded `score()` source is not run) |
+| Data Input | `resolve_data_input_from_config(config, base_dir, project_root=get_project_root(base_dir))` |
+| Constant | `constant_frame(values)` from the sidecar — the conversion canvas execution uses |
+| Data Output, Explore, External File, Modelling | the first input |
+| Optimiser | the input named by `resolve_optimiser_data_input`, otherwise the first |
+| Edge Join | `execute_edge_join(base, join, keywords, collect_eager=True)` |
+| Live Switch | `select_live_switch_input(sidecar map, active scenario, frames by input name, input names, switch=name)` |
+| Banding / Rating Step / Scenario Expander | `apply_banding_from_config` / `apply_rating_step_from_config` / `expand_scenarios_from_config` on the first input |
+| Model Score | `score_from_config(first input, config=path, base_dir=base_dir)` |
+| Optimiser Apply | `apply_optimiser_apply_from_config(*frames, config=path, base_dir=base_dir, source_names=input names)` |
+| Output | `assemble_output_from_config(*frames, config=path, base_dir=base_dir, source_names=input names)` |
+
+A hook is then called with that result as `df` and the node's remaining inputs; an External
+File hook is called with every input and `obj=load_external_object_from_config(config,
+base_dir=base_dir)` instead. A hook that returns anything but a `LazyFrame` or `DataFrame`
+raises `ExecutionError` naming the node.
+
 **Live arity and switch dispatch (`src/haute/pipeline.py`,
 `src/haute/_builders.py`).** `Node`
 computes frozen `_InputArity` once from `inspect.signature(fn)` at
@@ -349,13 +411,13 @@ instances; `_resolve_output_node` still treats multiple terminal writers as
 ambiguous without an explicit `OUTPUT`. `_config_io.py` assigns only the
 `config/data_input/` and `config/data_output/` folders,
 `_config_validation.py` enforces their discriminated branches, and
-`_config_builder.py` extracts only Data Input's post-read Polars body into
+`_config_builder.py` extracts only a Data Input hook's post-read Polars body into
 `code`.
 
-**Retained input resolution.** Generated `apiInput` and `externalFile`
-decorators pass only their sidecar path and module directory to
+**Retained input resolution.** A standalone run of an `apiInput` or `externalFile`
+node passes only its sidecar path and pipeline directory to
 `resolve_api_input_from_config` or `load_external_object_from_config`;
-declarative fields are not interpolated into generated bodies. The helpers
+declarative fields are never interpolated into source. The helpers
 also accept the executor's already-resolved inline mapping. Path inputs go
 through `load_node_config` and shared project/pipeline resolution. API input
 validates non-empty paths and JSON `tables[]` before reading/shredding and
@@ -457,7 +519,13 @@ forwards projection/profile fields; external-file resolution validates
   columns are missing from, or extra in, the builder-derived side.
 - **`CycleError`** (`haute._topo`) — a cycle in the live `Pipeline` graph, propagated from
   `topo_sort_ids` through `Pipeline._topo_order` with the participating node names.
-- **`ExecutionError`** (`haute.errors`) — live node arity mismatch; multiple explicit output
+- **`ConfigError`** (`haute.errors`) — at registration: a configured node's declaration with
+  a body (on a code-less type, any body) or a hook without one; at run time: a configured
+  node that needs its sidecar but whose function was not defined in a file.
+- **`ValueError`** (builtin) — a `Submodel` constructed with a `pipeline_dir` other than `.`
+  or `..` segments.
+- **`ExecutionError`** (`haute.errors`) — a hook returning something other than a frame; a
+  source called with input frames; live node arity mismatch; multiple explicit output
   nodes; ambiguous terminal nodes; multiple or ambiguous `score()` seed sources; unresolved
   `@pipeline.instance` registrations in the standalone executor (identified by the decorator's
   internal marker even when `instanceOf`/`inputMapping` are empty); a bare-frame `score()`
@@ -496,7 +564,7 @@ forwards projection/profile fields; external-file resolution validates
 - `tests/test_column_contracts_adoption.py` verifies builder contract adoption, parser/executor boundary enforcement and the boundary checks' messages, a draft banding factor passing through without a contract error, codegen metadata, model-score exceptions, and overhead benchmark.
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
-- `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type (a statement longer than 88 columns read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column past 88 beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, instance execution with implicit mapping, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps, or main's earlier one-line rendering with list arguments, keeps them, the earlier spelling reproduces the renderer's previous output for each step kind, while a mixed list argument or a respelled free-code statement is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the explicit-instance mapping round trip, the render endpoint, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without `_discarded_sidecar`, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, and every corpus translation without inputs reloading unchanged on a Data Input.
+- `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type (a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, instance execution with implicit mapping, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps, or main's earlier one-line rendering with list arguments, keeps them, the earlier spelling reproduces the renderer's previous output for each step kind, while a mixed list argument or a respelled free-code statement is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the explicit-instance mapping round trip, the render endpoint, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without `_discarded_sidecar`, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, and every corpus translation without inputs reloading unchanged on a Data Input.
 - `tests/test_polars_steps_catalogue.py` reads the editor's `catalogue.ts` and holds its step kinds and required fields, operators, aggregates, join and fill vocabularies, cast types, function argument shapes and depth cap equal to the renderer's.
 - The free-code cases in `tests/test_polars_steps.py` cover multiline rendering and inclusive line ranges, syntax and control-flow validation without executing code, execution between structured steps, actual runtime error locations, helper-return and trailing-comment round trips, and render API responses.
 - `tests/test_polars_steps_corpus.py` executes the 45-snippet equivalence corpus in `tests/fixtures/polars_steps_corpus/` (hand-written Polars across 18 categories and each snippet's step translation, auxiliary upstream nodes included) on a normal and a hard synthetic dataset, comparing exact dtypes, null patterns and row order (order-free only where the snippet leaves it unspecified) and requiring the same exception class when the snippet raises; the two snippets the vocabulary does not express (Enum categories, `cut` banding) are listed with their reasons and the suite asserts those constructs are still absent from the vocabulary.
@@ -519,6 +587,20 @@ API and real JSON round-trips rather than mocks:
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
   for one- and many-frame apiInput sources. `test_run_raises_typed_rating_miss_from_a_lazy_output`
   and `test_lazy_output_is_collected_inside_the_scenario_context` pin lazy-output collection.
+- **`test_standalone_nodes.py`** — the standalone configured-node runtime: a sidecar-typed node without `config=` is
+  called as a plain function; every configured type run as a declaration returns what its work produces (a Data Input's loaded rows, a Model
+  Score's predictions, an Output's assembled document, a Live Switch's scenario-selected
+  frame, an Edge Join's joined rows, a Constant's frame from its sidecar); a Data Input, Model
+  Score, Rating Step, Scenario Expander and Explore hook receives the configured result as
+  `df` and an External File hook its inputs and `obj`; a sidecar edit changes the next run
+  without re-importing the module; `has_empty_body` accepts `...`, `pass` and a docstring and
+  rejects a body that does anything; registration rejects a declaration with a body, a hook without one
+  and any body on a code-less type, whose `df` parameter is just an input; a hook returning
+  `None` raises `ExecutionError`; a configured node defined without a file fails loudly when
+  it needs its sidecar; calling a configured node's decorated name runs the node while a
+  transform's decorator returns the function itself; and a submodel definition's
+  `pipeline_dir` resolves its sidecars from the owning pipeline's directory, with an invalid
+  value rejected at construction.
 - **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection

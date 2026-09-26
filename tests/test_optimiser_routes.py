@@ -584,7 +584,12 @@ class TestParserInference:
 
 
 class TestCodegen:
-    def test_codegen_optimiser(self):
+    def test_codegen_optimiser(self, tmp_path: Path):
+        """An optimiser is a declaration referencing its sidecar; when the saved
+        file runs on its own, its decorator passes the scored frame through."""
+        import runpy
+
+        from haute._config_io import collect_node_configs
         from haute.codegen import _node_to_code
         from haute.graph_utils import GraphNode, NodeData
 
@@ -601,10 +606,23 @@ class TestCodegen:
             ),
         )
         code = _node_to_code(node, source_names=["scored_data"])
-        assert 'config="config/optimisation/my_optimiser.json"' in code
-        assert "def my_optimiser(" in code
-        assert "scored_data: pl.LazyFrame" in code
-        assert "return scored_data" in code
+        assert code == (
+            '@pipeline.optimiser(config="config/optimisation/my_optimiser.json")\n'
+            "def my_optimiser(scored_data): ...\n"
+        )
+
+        module = tmp_path / "main.py"
+        module.write_text(
+            f'import haute\n\npipeline = haute.Pipeline("p")\n\n\n{code}', encoding="utf-8"
+        )
+        for rel_path, content in collect_node_configs(
+            PipelineGraph(nodes=[node], edges=[])
+        ).items():
+            sidecar = tmp_path / rel_path
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(content, encoding="utf-8")
+        scored = pl.DataFrame({"expected_income": [1.0]})
+        assert runpy.run_path(str(module))["my_optimiser"](scored) is scored
 
 
 # ---------------------------------------------------------------------------

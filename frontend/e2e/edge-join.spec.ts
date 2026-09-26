@@ -153,8 +153,6 @@ function seedPipeline(): void {
     [
       '"""Small deterministic pipeline for Edge Join browser coverage."""',
       "",
-      "from pathlib import Path",
-      "",
       "import polars as pl",
       "",
       "import haute",
@@ -162,26 +160,13 @@ function seedPipeline(): void {
       'pipeline = haute.Pipeline("edge_join_e2e")',
       "",
       '@pipeline.data_input(config="config/data_input/raw_rows.json")',
-      "def raw_rows() -> pl.LazyFrame:",
-      "    from haute.graph_utils import resolve_data_input_from_config",
-      "    df = resolve_data_input_from_config(",
-      '        "config/data_input/raw_rows.json",',
-      "        base_dir=Path(__file__).parent,",
-      "    )",
-      "    return df",
+      "def raw_rows(): ...",
       "",
       '@pipeline.data_input(config="config/data_input/lookup_rows.json")',
-      "def lookup_rows() -> pl.LazyFrame:",
-      "    from haute.graph_utils import resolve_data_input_from_config",
-      "    df = resolve_data_input_from_config(",
-      '        "config/data_input/lookup_rows.json",',
-      "        base_dir=Path(__file__).parent,",
-      "    )",
-      "    return df",
+      "def lookup_rows(): ...",
       "",
       '@pipeline.api_input(config="config/quote_input/quotes.json")',
-      "def quotes() -> pl.LazyFrame:",
-      "    return pl.LazyFrame()",
+      "def quotes(): ...",
       "",
       "@pipeline.polars",
       "def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
@@ -330,8 +315,7 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
   }), "utf8")
   const inputFunction = (name: string) => [
     `@pipeline.data_input(config="config/data_input/${name}.json")`,
-    `def ${name}() -> pl.LazyFrame:`,
-    `    return resolve_data_input_from_config("config/data_input/${name}.json", base_dir=Path(__file__).parent)`, "",
+    `def ${name}(): ...`, "",
   ]
   // Renames and category declarations are authored configuration without a
   // dedicated Columns-tab editor. Seed them, then verify real UI selection
@@ -339,16 +323,15 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
   const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, categorical_levels=${JSON.stringify(columnMetadata.categorical_levels)}, contract="opaque"`
   const subjectFunction = nodeType === "dataInput" ? inputFunction("subject") : nodeType === "edgeJoin" ? [
     `@pipeline.edge_join(how="left", on=["_id"], ${metadataArgs})`,
-    "def subject(raw_rows: pl.LazyFrame, lookup_rows: pl.LazyFrame) -> pl.LazyFrame:",
-    '    return pipeline._apply_edge_join("subject", raw_rows, lookup_rows)', "",
+    "def subject(raw_rows, lookup_rows): ...", "",
   ] : [
     `@pipeline.polars(${metadataArgs})`,
     "def subject(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
     "    return raw_rows", "",
   ]
   writeFileSync(pipelinePath, [
-    '"""Column persistence browser fixture."""', "from pathlib import Path", "import polars as pl", "import haute",
-    "from haute.graph_utils import resolve_data_input_from_config", 'pipeline = haute.Pipeline("columns_e2e")', "",
+    '"""Column persistence browser fixture."""', "import polars as pl", "import haute",
+    'pipeline = haute.Pipeline("columns_e2e")', "",
     ...inputFunction("raw_rows"), ...inputFunction("lookup_rows"), ...subjectFunction,
     ...(nodeType === "dataInput" ? [] : nodeType === "edgeJoin" ? [
       'pipeline.connect("raw_rows", "subject", target_port="base")',

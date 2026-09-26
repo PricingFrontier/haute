@@ -5,14 +5,14 @@ here as one ``apply_*_from_config`` / ``expand_*`` / ``select_*`` function so
 that BOTH sides of the system run identical logic:
 
 - the canvas graph executor (:mod:`haute._builders`) delegates to it, and
-- the standalone ``.py`` file emitted by :mod:`haute.codegen` imports and
-  calls it (via the :mod:`haute.graph_utils` facade).
+- a standalone ``pipeline.run()`` / ``pipeline.score()`` of a saved file runs
+  it from the node's decorator (:mod:`haute._standalone_nodes`).
 
-This makes the README "it is just Python" promise real: a saved pipeline's
-``pipeline.run()`` / ``pipeline.score()`` executes the SAME function the
-GUI executor calls, instead of a silent passthrough.  These are the
-optimiser / optimiserApply / scenarioExpander / liveSwitch twins that sit
-beside the banding / rating twins in :mod:`haute._rating`.
+This makes the README "it is just Python" promise real: a saved pipeline
+executes the SAME function the GUI executor calls, instead of a silent
+passthrough.  These are the constant / optimiser / optimiserApply /
+scenarioExpander / liveSwitch twins that sit beside the banding / rating
+twins in :mod:`haute._rating`.
 
 Module-level imports are deliberately minimal (polars + the frame alias);
 executor-side and I/O collaborators are imported lazily inside each
@@ -38,6 +38,28 @@ _EagerOrLazy = TypeVar("_EagerOrLazy", pl.LazyFrame, pl.DataFrame)
 # optimiser-service call sites that import them from there.
 _DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
 _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
+
+
+def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
+    """The one-row frame a Constant node's ``values`` describe.
+
+    Each named value becomes a column, as a number when it reads as one and as
+    the raw value otherwise; an entry without a name is skipped, and a node
+    with no named values yields the single column ``constant``.
+    """
+    data: dict[str, list[Any]] = {}
+    for entry in values:
+        name = entry.get("name", "")
+        if not name:
+            continue
+        value = entry.get("value", "")
+        try:
+            data[name] = [float(value)]
+        except (ValueError, TypeError):
+            data[name] = [value]
+    if not data:
+        data = {"constant": [0]}
+    return pl.LazyFrame(data)
 
 
 def scenario_step_count(config: Mapping[str, Any]) -> int:

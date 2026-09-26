@@ -46,6 +46,7 @@ submodel = haute.Submodel(
     output_ports=[
         {"name": "premium", "source": {"nodeId": "step_a", "handleId": None}},
     ],
+    pipeline_dir="..",
 )
 
 @submodel.polars
