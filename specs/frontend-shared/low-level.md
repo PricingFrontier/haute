@@ -340,7 +340,17 @@ authority for the running-poller map: a job not yet present gets a
 `setTimeout`-driven loop starting
 at `BASE_INTERVAL_MS` (500ms). After each non-terminal response or retryable
 poll error, the next interval doubles (`500ms → 1s → 2s → 4s → 5s`) and then
-holds at `MAX_INTERVAL_MS` (5s) for the rest of that job. Each request is
+holds at `MAX_INTERVAL_MS` (5s) for the rest of that job. A poller whose
+config supplies `progressKey` opts into progress-aware backoff instead: the key
+is the signature of the progress a status shows, and a response whose key
+differs from the previous response's (the first response always does) caps
+the next interval at `PROGRESS_INTERVAL_MS` (1s), dropping it to the base
+interval when it had backed off beyond that; an unchanged key and a retryable
+error back off as above. Only the training poller opts in, keyed on the
+status, phase, message, progress fraction, iteration, trial, fold and
+completed fits (not `elapsed_seconds`, which moves on every poll), so a
+training that is advancing refreshes about once a second and a quiet one
+backs off to 5s. Each request is
 capped by `POLL_TIMEOUT_MS` (30s) and the poller by
 `MAX_LIFETIME_MS` (24h) total. `CONSECUTIVE_FAILURES_FOR_TOAST` consecutive
 poll errors trigger a toast (poll errors are tolerated silently up to that
@@ -819,10 +829,12 @@ same Vitest config.
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants and
   `frontend/src/hooks/__tests__/jobPollingController.test.ts` (controller
-  mechanics and `waitForJob`: terminal resolution, abort in flight, deadline,
-  poll errors, `onStatus` retirement),
+  mechanics, progress-aware backoff: at most 1s while the key advances, 5s
+  while it holds, today's ramp without a key; and `waitForJob`: terminal
+  resolution, abort in flight, deadline, poll errors, `onStatus` retirement),
   `frontend/src/__tests__/hooks/useBackgroundJobs.test.ts` + `frontend/src/__tests__/hooks/useBackgroundJobs.gaps.test.ts` (root-level, orchestration
-  wiring), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
+  wiring, including an advancing training polled about once a second beside an
+  optimiser that keeps its backoff), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
   `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` (root-level — note
   `useWebSocketSync` itself is a graph-canvas hook, but its session-expiry
   interaction with `frontend/src/api/client.ts`'s

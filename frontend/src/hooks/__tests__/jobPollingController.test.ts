@@ -8,7 +8,7 @@ import {
 } from "../jobPollingController"
 
 interface Job { jobId: string; nodeLabel: string }
-interface Status { status: string; progress: number }
+interface Status { status: string; progress: number; iteration?: number }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void
@@ -96,6 +96,47 @@ describe("JobPollingController", () => {
     expect(signals).toHaveLength(2)
     expect(signals.every((signal) => signal.aborted)).toBe(true)
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe("JobPollingController backoff", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const running = (iteration: number): Status => ({ status: "running", progress: 0, iteration })
+  const byIteration = (status: Status) => String(status.iteration)
+
+  /** The delay before each of the first `statuses.length` polls; the last status repeats after that. */
+  async function pollGaps(statuses: readonly Status[], progressKey?: (status: Status) => string): Promise<number[]> {
+    const times: number[] = []
+    const pollFn = vi.fn(() => {
+      times.push(Date.now())
+      return Promise.resolve(statuses[Math.min(times.length, statuses.length) - 1])
+    })
+    const controller = new JobPollingController(config({ pollFn, progressKey }))
+    const startedAt = Date.now()
+    controller.reconcile()
+    await advance(30_000)
+    controller.dispose()
+    return times.slice(0, statuses.length).map((time, i) => time - (i === 0 ? startedAt : times[i - 1]))
+  }
+
+  it("polls at least once a second while the progress key advances on every poll", async () => {
+    const gaps = await pollGaps([1, 2, 3, 4, 5, 6, 7, 8].map(running), byIteration)
+
+    expect(gaps).toEqual([500, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000])
+  })
+
+  it("backs off to 5 s while the progress key holds, and returns to the base interval when it moves", async () => {
+    const gaps = await pollGaps([1, 1, 1, 1, 1, 2, 3, 4].map(running), byIteration)
+
+    expect(gaps).toEqual([500, 1_000, 2_000, 4_000, 5_000, 5_000, 500, 1_000])
+  })
+
+  it("backs off to 5 s without a progress key, even while progress advances", async () => {
+    const gaps = await pollGaps([1, 2, 3, 4, 5, 6].map(running))
+
+    expect(gaps).toEqual([500, 1_000, 2_000, 4_000, 5_000, 5_000])
   })
 })
 

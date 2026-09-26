@@ -40,7 +40,6 @@ the demo pipeline has been rewritten in the declaration format.
 |---|---|---:|---|
 | MDL-01 | Planned | P2 | The memory estimate says how many rows training will really use, and never reports a join's worst case as the row count. |
 | MDL-03 | Planned | P2 | The Loss tab shows the whole fit and says which fit it is. |
-| MDL-05 | Planned | P3 | Training progress refreshes about once a second while it changes. |
 | MDL-06 | Decision | P3 | A CatBoost model with small categorical columns does not train many times slower than it needs to. |
 | MDL-07 | Decision | P3 | The Summary tab leads with the out-of-sample metrics when a validation fit ran. |
 | MDL-08 | Planned | P3 | An open page recovers when the frontend it was served from has been rebuilt. |
@@ -140,29 +139,6 @@ best-iteration marker and the span note.
 **Evidence:** `src/haute/routes/_training_worker.py::_bounded_loss_history`;
 `src/haute/modelling/_training_job.py`;
 `frontend/src/panels/modelling/LossTab.tsx::LossTab`.
-
-### MDL-05 — Training progress refreshes only every five seconds
-**Why:** The status poller starts at 500 ms and doubles its interval after
-every successful poll, not only after failures, up to 5 s. After four polls a
-running training is checked every five seconds (the server log shows
-`/api/modelling/train/status` every 5.0 s), so the bar and iteration count
-jump: on film the count went from 9 to 63 in one step, and the estimated time
-remaining moves in the same steps. The backoff suits a job that is quietly
-running; it throws away progress that has changed.
-
-**Plan:** Back off only while a job's status is unchanged, or after errors,
-and return to the base interval when progress moves; cap a running job's
-interval at about one second while its iteration count is advancing. The
-optimiser and other callers of `JobPollingController` keep their behaviour
-unless they opt in.
-
-**Acceptance:** A controller test with a status whose iteration advances on
-every poll asserts the interval stays at or below one second, and with an
-unchanged status asserts it backs off to 5 s as today.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/jobPollingController.ts::JobPollingController`.
 
 ### MDL-06 — CatBoost's default encoding of small categorical columns is slow
 **Why:** The demo model takes minutes to train: 134 s from Train Model to

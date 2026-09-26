@@ -188,7 +188,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    includes development/final-test rows, validation-fit bounds and strategy-specific group/date
    summaries.
 3. Training records the `POST /api/modelling/train` job handle as soon as it is returned, after
-   which background polling owns preparation/fit progress. `TrainingActionsAndResults` keeps a
+   which background polling owns preparation/fit progress, polling about once a second while that
+   progress moves ([frontend-shared](../frontend-shared/low-level.md)'s progress-aware backoff).
+   `TrainingActionsAndResults` keeps a
    distinct Cancel control visible while that job is active; `ModellingConfig` posts its job ID to
    `/train/cancel`, then immediately stores a returned terminal failure/cancellation or completed
    race winner. Structured execution details and additive `error_code`/`http_status_code`/

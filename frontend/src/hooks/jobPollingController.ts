@@ -1,4 +1,5 @@
 const BASE_INTERVAL_MS = 500
+const PROGRESS_INTERVAL_MS = 1_000
 const MAX_INTERVAL_MS = 5_000
 const MAX_LIFETIME_MS = 24 * 60 * 60 * 1_000
 const POLL_TIMEOUT_MS = 30_000
@@ -9,6 +10,13 @@ export interface JobPollingConfig<TJob, TStatus> {
   pollFn: (jobId: string, signal: AbortSignal) => Promise<TStatus>
   onProgress: (nodeId: string, status: TStatus) => void
   progressThrottleMs?: number
+  /**
+   * Opts into progress-aware backoff: the signature of the progress a status
+   * shows. While it changes from one poll to the next the interval stays at
+   * or below `PROGRESS_INTERVAL_MS`; it backs off to `MAX_INTERVAL_MS` only
+   * while unchanged or after errors. Without it every poll backs off.
+   */
+  progressKey?: (status: TStatus) => string
   onComplete: (nodeId: string, result: TStatus) => void
   onFail: (nodeId: string, errorMsg: string, terminalStatus?: TStatus) => void
   labelFn: (job: TJob) => string
@@ -108,6 +116,8 @@ interface JobPollerState<TStatus> {
   jobId: string
   startedAt: number
   intervalMs: number
+  /** The previous status's `progressKey`; unset until the first status. */
+  lastProgressKey?: string
   consecutiveErrors: number
   toastedWarning: boolean
   lastProgressPublishedAt: number
@@ -253,9 +263,26 @@ export class JobPollingController<TJob, TStatus> {
       }
       return
     }
-    state.intervalMs = Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
+    state.intervalMs = this.nextStatusInterval(state, status)
     this.schedulePoll(nodeId, state)
     this.queueProgress(nodeId, state, status)
+  }
+
+  /**
+   * Every status doubles the interval up to `MAX_INTERVAL_MS`, unless the
+   * caller keys progress and it moved: then the interval doubles only up to
+   * `PROGRESS_INTERVAL_MS`, and one that had backed off beyond that returns to
+   * the base interval.
+   */
+  private nextStatusInterval(state: JobPollerState<TStatus>, status: TStatus): number {
+    const progressKey = this.config.progressKey
+    if (!progressKey) return Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
+    const key = progressKey(status)
+    const moved = key !== state.lastProgressKey
+    state.lastProgressKey = key
+    if (!moved) return Math.min(state.intervalMs * 2, MAX_INTERVAL_MS)
+    if (state.intervalMs > PROGRESS_INTERVAL_MS) return BASE_INTERVAL_MS
+    return Math.min(state.intervalMs * 2, PROGRESS_INTERVAL_MS)
   }
 
   private handlePollError(nodeId: string, state: JobPollerState<TStatus>, error: unknown): void {
