@@ -924,6 +924,7 @@ export type {
 type TrainResponseUiFields = {
   feature_importance: TrainFeatureImportanceRow[]
   loss_history: Array<{ iteration: number; [key: string]: number }>
+  validation_loss_history: Array<{ iteration: number; [key: string]: number }>
   double_lift: TrainDoubleLiftRow[]
   shap_summary: TrainShapSummaryRow[]
   feature_importance_loss: TrainFeatureImportanceRow[]

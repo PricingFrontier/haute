@@ -12,6 +12,7 @@ from haute._execution_context import ExecutionCancelledError
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.modelling._evaluation import EvaluationFitResult, EvaluationPlan
 from haute.modelling._training_job import (
+    SelectionFit,
     TrainingJob,
     TrainResult,
     _PreparedData,
@@ -109,25 +110,28 @@ def test_tuning_runs_baseline_and_seeded_trials_then_one_selected_final_fit(
             self.plan = plan
             self.params = params
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             assert self.fit_index is not None
             depth = int(self.params["depth"])
             trial_index = len(selection_calls) // 2
             selection_calls.append((trial_index, self.fit_index, dict(self.params)))
             fit = self.plan.validation_fits[self.fit_index]
-            return EvaluationFitResult(
-                schema_version=1,
-                fit_index=self.fit_index,
-                train_rows=fit.train_rows,
-                validation_rows=fit.validation_rows,
-                metrics={"gini": depth / 10, "rmse": float(10 - depth)},
-                best_iteration=9 + self.fit_index,
+            return SelectionFit(
+                EvaluationFitResult(
+                    schema_version=1,
+                    fit_index=self.fit_index,
+                    train_rows=fit.train_rows,
+                    validation_rows=fit.validation_rows,
+                    metrics={"gini": depth / 10, "rmse": float(10 - depth)},
+                    best_iteration=9 + self.fit_index,
+                ),
+                [],
             )
 
         def run(self, *, on_iteration=None, **_kwargs: Any) -> TrainResult:
             final_calls.append(dict(self.params))
             if on_iteration is not None:
-                on_iteration(1, 1, {"loss": 1.0})
+                on_iteration(1, 1, {"loss": 1.0}, None)
             return completed_final(
                 tmp_path,
                 development_rows=len(self.plan.development_positions),
@@ -215,18 +219,21 @@ def test_sampled_candidate_failure_aborts_with_trial_and_parameters_and_cleans_a
         def __init__(self, params: dict[str, Any]) -> None:
             self.params = params
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             nonlocal calls
             calls += 1
             if calls == 3:
                 raise ValueError("depth is unsupported")
-            return EvaluationFitResult(
-                1,
-                (calls - 1) % 2,
-                8,
-                8,
-                {"gini": 0.4, "rmse": 1.0},
-                9,
+            return SelectionFit(
+                EvaluationFitResult(
+                    1,
+                    (calls - 1) % 2,
+                    8,
+                    8,
+                    {"gini": 0.4, "rmse": 1.0},
+                    9,
+                ),
+                [],
             )
 
     monkeypatch.setattr(
@@ -273,7 +280,7 @@ def test_tuning_preserves_lifecycle_failure_identity_and_cleans_artifacts(
     monkeypatch.setattr(job, "_prepare_data", lambda *_args, **_kwargs: prepared)
 
     class CancelledCandidate:
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             raise failure
 
     monkeypatch.setattr(

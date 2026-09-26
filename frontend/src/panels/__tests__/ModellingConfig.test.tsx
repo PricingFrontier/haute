@@ -84,12 +84,13 @@ type ConfigOverrides = Partial<Parameters<typeof ModellingConfig>[0]> & {
   edges?: SimpleEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
+  openNode?: (nodeId: string) => void
 }
 
 function defaultProps(overrides: ConfigOverrides = {}) {
   // Strip graph-context keys — they flow via `<GraphProvider>` in tests, not props.
-  const { allNodes, edges, submodels, preamble, config, ...rest } = overrides
-  void allNodes; void edges; void submodels; void preamble
+  const { allNodes, edges, submodels, preamble, openNode, config, ...rest } = overrides
+  void allNodes; void edges; void submodels; void preamble; void openNode
   const evaluation = {
     schema_version: 1,
     strategy: "random",
@@ -144,10 +145,10 @@ function withPassThroughGraph() {
 }
 
 function renderConfig(overrides: ConfigOverrides = {}) {
-  const { allNodes = [], edges = [], submodels, preamble } = overrides
+  const { allNodes = [], edges = [], submodels, preamble, openNode } = overrides
   const props = defaultProps(overrides)
   const result = render(
-    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble}>
+    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble} openNode={openNode}>
       <ModellingConfig {...props} />
     </GraphProvider>,
   )
@@ -224,6 +225,7 @@ beforeEach(() => {
   useNodeResultsStore.setState({
     trainJobs: {},
     trainResults: {},
+    expiredTrainJobs: {},
   })
   mockGetTrainStatus.mockReset().mockReturnValue(new Promise(() => {}))
   mockFetchModellingGpuStatus.mockReset().mockReturnValue(new Promise(() => {}))
@@ -318,6 +320,17 @@ describe("Training configuration readiness", () => {
 
     expect(screen.queryByText(/Parameters JSON/)).toBeNull()
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
+  })
+  it("names one_hot_max_size beneath CatBoost's Parameters JSON only", () => {
+    const note = /one_hot_max_size.*one-hot encoded.*target statistics, which are much slower to train/
+    renderConfig({ activePane: "params" })
+    expect(screen.getByText(note)).toBeInTheDocument()
+    cleanup()
+    renderConfig({
+      activePane: "params",
+      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
+    })
+    expect(screen.queryByText(note)).toBeNull()
   })
   it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
     const { props } = renderConfig({
@@ -516,7 +529,16 @@ describe("ModellingConfig", () => {
       fireEvent.click(screen.getByText("CatBoost"))
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "catboost",
-        params: { iterations: 1000, learning_rate: 0.05, depth: 6, l2_leaf_reg: 3, early_stopping_rounds: 50 },
+        // one_hot_max_size is a visible starter value: small categorical columns
+        // are one-hot encoded instead of CatBoost's much slower target statistics.
+        params: {
+          iterations: 1000,
+          learning_rate: 0.05,
+          depth: 6,
+          l2_leaf_reg: 3,
+          early_stopping_rounds: 50,
+          one_hot_max_size: 10,
+        },
         evaluation: expect.objectContaining({
           schema_version: 1,
           strategy: "random",
@@ -1393,6 +1415,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 700,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1415,6 +1438,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 500,
         was_downsampled: true,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1436,6 +1460,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 500,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         gpu_vram_estimated_mb: 512,
         gpu_vram_available_mb: 8192,
         warning: null,
@@ -1457,6 +1482,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 500,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         gpu_vram_estimated_mb: 12000,
         gpu_vram_available_mb: 8192,
         warning: null,
@@ -1495,6 +1521,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 700,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1516,6 +1543,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: null,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1527,6 +1555,33 @@ describe("ModellingConfig", () => {
       renderConfig({ allNodes: [upstream] })
       expect(await screen.findByText(/The row count at "Explode items" can't be proven/)).toBeTruthy()
       expect(screen.queryByText("Dataset fits in memory")).toBeNull()
+    })
+
+    it("opens a named join on the canvas from its unproven row bound", async () => {
+      mockEstimateTrainingRam.mockResolvedValue({
+        total_rows: 10_000_000_000,
+        safe_row_limit: 149_958_852,
+        estimated_mb: 50_000,
+        training_mb: 50_000,
+        available_mb: 71_065,
+        bytes_per_row: 5_000,
+        was_downsampled: false,
+        // The second join is inside a submodel, not on this canvas.
+        unbounded_join_node_ids: ["join", "submodel__inner_join"],
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
+        unavailable: null,
+        evaluation_preview: null,
+      })
+      const join = { id: "join", data: { label: "competitor_join", description: "", nodeType: "edgeJoin" } }
+      const openNode = vi.fn()
+      renderConfig({ allNodes: [join], openNode })
+
+      fireEvent.click(await screen.findByRole("button", { name: 'Open "competitor_join"' }))
+      expect(openNode).toHaveBeenCalledWith("join")
+      expect(screen.getAllByRole("button", { name: /^Open "/ })).toHaveLength(1)
     })
   })
 

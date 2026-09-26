@@ -203,6 +203,8 @@ export function makeTrainResult(
     best_iteration: null,
     loss_history: [],
     loss_history_truncated: false,
+    validation_loss_history: [],
+    validation_loss_history_truncated: false,
     double_lift: [],
     shap_summary: [],
     feature_importance_loss: [],
@@ -317,6 +319,7 @@ export function makeTrainEstimate(
     gpu_vram_available_mb: null,
     gpu_warning: null,
     unavailable: null,
+    unbounded_join_node_ids: [],
     evaluation_preview: null,
     ...overrides,
   }

@@ -12,7 +12,7 @@ import {
   MODELLING_CHART_GRID_COLOR as gridColor,
   TwoChartLayout,
 } from "./ChartScaffold"
-import { chartLabelIndices, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
+import { chartLabelIndices, chartTicks, formatChartTicks } from "../../utils/chartHelpers"
 
 interface LiftTabProps {
   result: TrainResult
@@ -291,7 +291,7 @@ function LorenzChart({
       <ChartSvg width={width} height={height} ariaLabel="Lorenz curve">
         <title>Lorenz curve with Gini coefficient {gini.toFixed(4)}</title>
         <ChartValueGrid ticks={chartTicks(0, 1, 5)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
-        {chartTicks(0, 1, 5).map((value) => (
+        {chartTicks(0, 1, 5).map((value, index, all) => (
           <g key={value}>
             <line
               x1={xScale(value)}
@@ -307,7 +307,7 @@ function LorenzChart({
               fontSize={axisFontSize}
               fill={axisTextColor}
             >
-              {formatChartNumber(value)}
+              {formatChartTicks(all)[index]}
             </text>
           </g>
         ))}

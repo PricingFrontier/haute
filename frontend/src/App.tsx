@@ -114,6 +114,10 @@ const NodeSearch = lazy(() => import("./components/NodeSearch"))
 const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
   ({ ModellingPreview }) => ({ default: ModellingPreview }),
 ))
+// Shown only after a server restart dropped a remembered result.
+const ModellingResultExpired = lazy(() => import("./panels/modelling/ModellingResultExpired").then(
+  ({ ModellingResultExpired }) => ({ default: ModellingResultExpired }),
+))
 // Optimiser results are produced only after a user-triggered solve, so keep
 // the comparatively heavy charts out of the initial application bundle.
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
@@ -239,6 +243,10 @@ function ActiveNodePreviewBody({
   onRefresh,
   onImported,
 }: Omit<ActiveNodePreviewProps, "run">) {
+  // A Model Training node whose remembered result the server no longer holds.
+  const modellingResultExpired = useNodeResultsStore(
+    (state) => activeNodeId !== null && Object.hasOwn(state.expiredTrainJobs, activeNodeId),
+  )
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = activeNode
     && activeNodeType !== NODE_TYPES.SUBMODEL
@@ -271,6 +279,13 @@ function ActiveNodePreviewBody({
     return (
       <Suspense fallback={null}>
         <ModellingPreview data={modellingPreview} nodeId={activeNodeId!} onRefresh={refreshAction} />
+      </Suspense>
+    )
+  }
+  if (documentCanExecute && activeNode && modellingResultExpired) {
+    return (
+      <Suspense fallback={null}>
+        <ModellingResultExpired nodeLabel={String(nodeData(activeNode).label)} />
       </Suspense>
     )
   }
@@ -512,6 +527,8 @@ type NodePropertiesPanelProps = {
   previewBusy: boolean
   onClosePanel: () => void
   onRemoveUnavailableNode: NonNullable<ComponentProps<typeof NodePanel>["onRemoveUnavailableNode"]>
+  /** Opens another canvas node in the panel, as clicking it does. */
+  onOpenNode: (nodeId: string) => void
 }
 
 function NodePropertiesPanel({
@@ -552,6 +569,7 @@ function NodePropertiesPanel({
   previewBusy,
   onClosePanel,
   onRemoveUnavailableNode,
+  onOpenNode,
 }: NodePropertiesPanelProps) {
   const visibleTraceState = traceState.status === "error"
     || (traceState.status === "loading" && traceState.progressVisible)
@@ -608,6 +626,7 @@ function NodePropertiesPanel({
         edges={panelGraph.edges}
         submodels={submodels}
         preamble={preamble}
+        openNode={onOpenNode}
       >
         <NodePanel
           node={panelNode}
@@ -1337,7 +1356,7 @@ function FlowEditor() {
   }, [editingReadOnly, isBoundaryConnection, panelGraph])
 
   const {
-    onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
+    onConnect, onSelectionChange, openNode, onNodeClick, handleDeleteEdge,
     onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
@@ -1358,6 +1377,14 @@ function FlowEditor() {
     commitBoundaryConnection,
     deleteBoundaryEdge,
   })
+
+  // A panel names a node on this canvas (a join its estimate depends on); a
+  // missing one is a caller bug, not something to open silently.
+  const openCanvasNode = useCallback((nodeId: string) => {
+    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) throw new Error(`Node ${nodeId} is not on the canvas`)
+    openNode(node)
+  }, [openNode])
 
   const presentedEdgeJoinCandidateEdgeId = useMemo(
     () => (
@@ -1765,6 +1792,7 @@ function FlowEditor() {
           previewBusy={previewBusy}
           onClosePanel={closePanel}
           onRemoveUnavailableNode={setPipelineRepairTarget}
+          onOpenNode={openCanvasNode}
         />
       </div>
       )}

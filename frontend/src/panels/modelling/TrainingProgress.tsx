@@ -7,6 +7,7 @@ import { MODEL_COLORS } from "../../theme/colors"
 import { formatDuration } from "../../utils/formatValue"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import { LossChart } from "./LossChart"
+import { lossCurveKeys } from "./lossHistory"
 
 type TrainingProgressProps = {
   trainProgress: TrainProgress
@@ -14,6 +15,7 @@ type TrainingProgressProps = {
 }
 
 export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = null }: TrainingProgressProps) {
+  const lossHistory = trainProgress.train_loss_history
   const tuningParts: string[] = []
   if (trainProgress.phase) {
     if (trainProgress.trial_index != null && trainProgress.trial_count != null) {
@@ -72,10 +74,10 @@ export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = nu
       {estimatedRemainingSeconds != null && (
         <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>Estimated remaining: {formatDuration(estimatedRemainingSeconds)}</div>
       )}
-      {trainProgress.train_loss_history && (
+      {lossHistory && lossCurveKeys(lossHistory) && (
         <div>
           {trainProgress.train_loss_history_truncated && <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>Showing latest retained loss-history window.</p>}
-          <LossChart lossHistory={trainProgress.train_loss_history} />
+          <LossChart lossHistory={lossHistory} />
         </div>
       )}
 

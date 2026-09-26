@@ -16,7 +16,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-IterationCallback = Callable[[int, int, dict[str, float]], None]
+# (iteration, total, readout metrics, the loss-history row this iteration adds or None).
+IterationCallback = Callable[[int, int, dict[str, float], dict[str, float] | None], None]
 
 
 @dataclass

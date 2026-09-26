@@ -1250,7 +1250,7 @@ class _Walk:
     def _shape_output(
         self, boundary: NodeBoundary, result: Any, *, pass_through: bool = False
     ) -> _NodeFrame:
-        """Apply the node's own column selection and renames, then its output contract."""
+        """Check the node's output contract, then apply its own column selection and renames."""
         node_id = boundary.node_id
         frame = self._as_frame(node_id, result)
         if isinstance(frame, dict):
@@ -1260,14 +1260,15 @@ class _Walk:
                 for port, port_frame in frame.items():
                     self.column_cache[(node_id, port)] = _columns_of(port_frame)
             return _NodeFrame(frame=frame, boundary=boundary)
-        if _shapes_output(boundary.node) and not pass_through:
+        shapes = _shapes_output(boundary.node) and not pass_through
+        if shapes:
             # Its columns before its own selection and renames, which a
             # snapshot records so a seeded preview can still report them.
             self.unshaped_frames[node_id] = frame
         config = boundary.node.data.config
         shaped = _lazy(_apply_column_renames(_lazy(_apply_selected_columns(frame, config)), config))
         names = self._describe(node_id, boundary.node, frame, shaped) if self.display else None
-        self._check_output(boundary, shaped, names)
+        self._check_output(boundary, shaped, names, created=frame if shapes else None)
         return _NodeFrame(frame=shaped, boundary=boundary, output_names=names)
 
     def _as_frame(self, node_id: str, result: Any) -> Any:
@@ -1284,8 +1285,20 @@ class _Walk:
         )
 
     def _check_output(
-        self, boundary: NodeBoundary, shaped: pl.LazyFrame, names: list[str] | None
+        self,
+        boundary: NodeBoundary,
+        shaped: pl.LazyFrame,
+        names: list[str] | None,
+        *,
+        created: pl.LazyFrame | None,
     ) -> None:
+        """Assert the output contract; record the shaped columns a sink walk resolved.
+
+        The contract describes what the builder creates, so a node that
+        shapes its output is checked against *created*, its frame before its
+        own selection and renames: deselecting or renaming a column it
+        creates is the author's choice, not a missing output.
+        """
         contract = boundary.contract
         if (
             not boundary.check_contract
@@ -1303,6 +1316,8 @@ class _Walk:
                 self.context.record_column_widths(
                     node_id=boundary.node_id, output_width=len(columns)
                 )
+        if created is not None:
+            columns = _columns_of(created)
         self.boundaries.assert_outputs(boundary, columns)
 
     def _pass_through(self, node_id: str, edge: GraphEdge) -> _NodeFrame:

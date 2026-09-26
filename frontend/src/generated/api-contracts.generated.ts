@@ -1207,6 +1207,7 @@ export interface TrainEstimateResponse {
   total_rows: number | null;
   training_mb: number | null;
   unavailable: TrainEstimateUnavailable | null;
+  unbounded_join_node_ids: string[];
   warning: string | null;
   was_downsampled: boolean;
 }
@@ -1984,6 +1985,10 @@ export interface TrainResponse {
   status: 'started' | 'completed' | 'error';
   total_source_rows: number | null;
   tuning?: TuningReportPayload;
+  validation_loss_history: {
+    [k: string]: number;
+  }[];
+  validation_loss_history_truncated: boolean;
   warning: string | null;
 }
 /**

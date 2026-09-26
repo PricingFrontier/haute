@@ -258,7 +258,7 @@ describe("FrontierChart", () => {
     expect(Number(second.getAttribute("cy"))).toBeCloseTo(plotBottom - (10.8 / 11.6) * plotHeight, 6)
 
     const labels = Array.from(container.querySelectorAll("svg text")).map((text) => text.textContent)
-    expect(labels).toEqual(expect.arrayContaining(["10", "20", "0", "100"]))
+    expect(labels).toEqual(expect.arrayContaining(["10.0", "20.0", "0", "100"]))
   })
 
   it("gives a single repeated point a finite scale and one tick per axis", () => {

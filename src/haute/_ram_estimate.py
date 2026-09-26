@@ -256,12 +256,13 @@ class _ResolvedRowCardinality:
     has_cross_join: bool = False
     """Whether this node's own program contains an unmeasured cross join."""
 
-    depends_on_many_to_many_join: bool = False
-    """Whether this node or anything upstream joins without a bounding contract.
+    many_to_many_join_node_ids: tuple[str, ...] = ()
+    """The joins without a bounding contract this node or anything upstream has.
 
     Unlike the cross-join flag this one is inherited: a group-by downstream of
     an undeclared join materialises that join's row product, so the planner has
-    to know the product is the only bound there too.
+    to know the product is the only bound there too, and the training estimate
+    names these joins instead of presenting the product as a row count.
     """
 
     operand_reference_counts: Mapping[str, int] = field(default_factory=lambda: _NO_OPERANDS)
@@ -270,6 +271,11 @@ class _ResolvedRowCardinality:
     @property
     def available(self) -> bool:
         return self.output_rows is not None and self.peak_rows is not None
+
+    @property
+    def depends_on_many_to_many_join(self) -> bool:
+        """Whether the bound rests on any join without a bounding contract."""
+        return bool(self.many_to_many_join_node_ids)
 
     @classmethod
     def proven(
@@ -280,7 +286,7 @@ class _ResolvedRowCardinality:
         *,
         operand_peak_rows: int | None = None,
         has_cross_join: bool = False,
-        depends_on_many_to_many_join: bool = False,
+        many_to_many_join_node_ids: tuple[str, ...] = (),
         operand_reference_counts: Mapping[str, int] = _NO_OPERANDS,
     ) -> _ResolvedRowCardinality:
         if (
@@ -300,7 +306,7 @@ class _ResolvedRowCardinality:
             # emits, so its own peak is the operand it consumes.
             operand_peak_rows=peak_rows if operand_peak_rows is None else operand_peak_rows,
             has_cross_join=has_cross_join,
-            depends_on_many_to_many_join=depends_on_many_to_many_join,
+            many_to_many_join_node_ids=many_to_many_join_node_ids,
             operand_reference_counts=operand_reference_counts,
         )
 
@@ -783,10 +789,13 @@ def _feeding_ports(
     return tuple(sorted(ports))
 
 
-def _inherited_many_to_many(parents: Iterable[_ResolvedRowCardinality]) -> bool:
-    """Whether any already-proven input depends on an unbounded join."""
+def _inherited_many_to_many(
+    parents: Iterable[_ResolvedRowCardinality], *own: str
+) -> tuple[str, ...]:
+    """The unbounded joins already-proven inputs depend on, then *own*, each once."""
 
-    return any(parent.depends_on_many_to_many_join for parent in parents)
+    joins = (*(join for parent in parents for join in parent.many_to_many_join_node_ids), *own)
+    return tuple(dict.fromkeys(joins))
 
 
 def _cardinality_from_analysis(
@@ -819,8 +828,8 @@ def _cardinality_from_analysis(
         has_cross_join=analysis.has_cross_join,
         # This one *is* inherited: the row product an upstream join can emit is
         # exactly what this node materialises.
-        depends_on_many_to_many_join=(
-            analysis.depends_on_many_to_many_join or _inherited_many_to_many(parents)
+        many_to_many_join_node_ids=_inherited_many_to_many(
+            parents, *((node_id,) if analysis.depends_on_many_to_many_join else ())
         ),
         operand_reference_counts=analysis.operand_reference_counts,
     )
@@ -952,7 +961,7 @@ def _passthrough_cardinality(
             f"node={node_id}:{evidence}",
             f"node={node_id}:cardinality_output_upper_bound={selected.output_rows}",
         ),
-        depends_on_many_to_many_join=_inherited_many_to_many(parents),
+        many_to_many_join_node_ids=_inherited_many_to_many(parents),
     )
 
 
@@ -1075,7 +1084,9 @@ def _resolve_row_cardinality_from_index(
                 *(item for result in parents for item in result.evidence),
                 *(f"node={target_node_id}:{item}" for item in bound.evidence),
             ),
-            depends_on_many_to_many_join=many_to_many or _inherited_many_to_many(parents),
+            many_to_many_join_node_ids=_inherited_many_to_many(
+                parents, *((target_node_id,) if many_to_many else ())
+            ),
         )
 
     if node_type is NodeType.POLARS:
@@ -1118,7 +1129,7 @@ def _resolve_row_cardinality_from_index(
                 f"node={target_node_id}:scenario_steps={steps}",
                 f"node={target_node_id}:cardinality_output_upper_bound={expanded_rows}",
             ),
-            depends_on_many_to_many_join=parent.depends_on_many_to_many_join,
+            many_to_many_join_node_ids=parent.many_to_many_join_node_ids,
         )
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
@@ -1220,7 +1231,7 @@ def _resolve_row_cardinality_from_index(
                 f"node={target_node_id}:one_connected_input_selected",
                 f"node={target_node_id}:cardinality_output_upper_bound={output_rows}",
             ),
-            depends_on_many_to_many_join=_inherited_many_to_many(parents),
+            many_to_many_join_node_ids=_inherited_many_to_many(parents),
         )
 
     if node_type is NodeType.EXTERNAL_FILE:
@@ -1373,9 +1384,13 @@ class RamEstimate:
     """Why the estimate has no memory figure, or ``None`` when it has one."""
     blocking_node_id: str | None = None
     """The first node whose rows could not be bounded (``row_count_unprovable`` only)."""
+    unbounded_join_node_ids: tuple[str, ...] = ()
+    """The joins without a key contract ``total_rows`` depends on, which make it a worst case."""
 
     def __post_init__(self) -> None:
         reason = self.unavailable_reason
+        if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
+            raise ValueError("a worst-case row bound has no downsampling verdict or warning")
         if reason is None:
             if None in (self.total_rows, self.estimated_bytes, self.bytes_per_row):
                 raise ValueError(
@@ -1804,6 +1819,7 @@ def estimate_safe_training_rows(
         return RamEstimate.row_count_unprovable(cardinality.blocking_node_id, available)
     assert cardinality.output_rows is not None
     total_rows = cardinality.output_rows
+    unbounded_joins = cardinality.many_to_many_join_node_ids
 
     # ── 2. Column count at the training node ─────────────────────────
     # Walk backwards through the graph from the target and resolve the
@@ -1896,18 +1912,30 @@ def estimate_safe_training_rows(
             was_downsampled=False,
             warning=None,
             probe_columns=n_columns,
+            unbounded_join_node_ids=unbounded_joins,
         )
 
     peak_per_row = peak_bytes / total_rows
     safe_rows = int(usable_ram / peak_per_row)
     safe_rows = max(safe_rows, _MIN_SAFE_ROWS)
 
+    # A bound resting on an undeclared join is its row product, a worst case:
+    # only a proven count says the data will be downsampled.
     warning = (
-        f"Dataset downsampled to {safe_rows:,} of {total_rows:,} rows to fit in "
-        f"available RAM ({available / 1024**3:.1f} GB). "
-        f"Estimated peak training memory: {peak_bytes / 1024**3:.1f} GB."
+        None
+        if unbounded_joins
+        else (
+            f"Dataset downsampled to {safe_rows:,} of {total_rows:,} rows to fit in "
+            f"available RAM ({available / 1024**3:.1f} GB). "
+            f"Estimated peak training memory: {peak_bytes / 1024**3:.1f} GB."
+        )
     )
-    logger.warning("downsampling", safe_rows=safe_rows, total_rows=total_rows, warning=warning)
+    logger.info(
+        "training_row_limit",
+        safe_rows=safe_rows,
+        total_rows=total_rows,
+        unbounded_joins=list(unbounded_joins),
+    )
 
     return RamEstimate(
         safe_row_limit=safe_rows,
@@ -1915,9 +1943,10 @@ def estimate_safe_training_rows(
         estimated_bytes=peak_bytes,
         available_bytes=available,
         bytes_per_row=bytes_per_row,
-        was_downsampled=True,
+        was_downsampled=not unbounded_joins,
         warning=warning,
         probe_columns=n_columns,
+        unbounded_join_node_ids=unbounded_joins,
     )
 
 

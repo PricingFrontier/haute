@@ -78,13 +78,21 @@ type Props = {
   onPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
 }
 
+// one_hot_max_size is a visible starter value, not a hidden default: CatBoost's
+// own default encodes most categorical columns with target statistics, which
+// train many times slower than one-hot encoding on small categorical columns.
 const CATBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   iterations: 1000,
   learning_rate: 0.05,
   depth: 6,
   l2_leaf_reg: 3,
   early_stopping_rounds: 50,
+  one_hot_max_size: 10,
 }
+
+const CATBOOST_PARAMETERS_NOTE =
+  "one_hot_max_size: categorical columns with up to this many levels are one-hot encoded; "
+  + "above it CatBoost uses target statistics, which are much slower to train."
 
 const XGBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   num_boost_round: 1000,
@@ -232,6 +240,7 @@ type TrainPaneProps = {
   cachedResult: ReturnType<typeof useNodeResultsStore.getState>["trainResults"][string] | undefined
   estimate: UseStaleConfigEstimateResult<TrainEstimate>
   nodeLabel: (nodeId: string) => string
+  nodeOpener: (nodeId: string) => (() => void) | null
   submitting: boolean
   cancelling: boolean
   onTrain: () => void
@@ -251,6 +260,7 @@ function TrainPane({
   cachedResult,
   estimate,
   nodeLabel,
+  nodeOpener,
   submitting,
   cancelling,
   onTrain,
@@ -311,6 +321,7 @@ function TrainPane({
         ramEstimateError={estimate.error}
         rowLimit={rowLimit}
         nodeLabel={nodeLabel}
+        nodeOpener={nodeOpener}
         terminalMetrics={cachedResult?.terminalStatus?.execution_metrics ?? null}
         terminalStatus={cachedResult?.terminalStatus?.status ?? null}
         terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
@@ -331,7 +342,7 @@ export default function ModellingConfig({
   activePane = "target",
   onPaneIssuesChange,
 }: Props) {
-  const { allNodes, edges, submodels, preamble } = useGraph()
+  const { allNodes, edges, submodels, preamble, openNode } = useGraph()
   const nodeId = String(config._nodeId ?? "")
   const setModellingPane = useUIStore((state) => state.setModellingPane)
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
@@ -440,6 +451,10 @@ export default function ModellingConfig({
     (id: string) => allNodes.find((node) => node.id === id)?.data.label || id,
     [allNodes],
   )
+  const canvasNodeOpener = useCallback(
+    (id: string) => (openNode && allNodes.some((node) => node.id === id) ? () => openNode(id) : null),
+    [allNodes, openNode],
+  )
   const estimateEndpoint = useCallback(
     (_payload: void, context: { signal: AbortSignal }) => estimateAfterSupersededPreviews(
       () => estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context),
@@ -456,8 +471,12 @@ export default function ModellingConfig({
     { toastLabel: "Training estimate failed" },
   )
   // A completed result is remembered per document so a browser reload can put
-  // it back from the server; a result the server no longer holds is reported.
-  const trainedResultExpired = useTrainedJobRestore(nodeId, cachedResult, Boolean(trainJob), graph)
+  // it back from the server; a result the server no longer holds is recorded
+  // in the results store, which the results panel reads too.
+  useTrainedJobRestore(nodeId, cachedResult, Boolean(trainJob), graph)
+  const trainedResultExpired = useNodeResultsStore(
+    (state) => Object.hasOwn(state.expiredTrainJobs, nodeId),
+  )
   const onEvaluationChange = useCallback(
     (nextEvaluation: Record<string, unknown>) => {
       const method = (nextEvaluation.validation as Record<string, unknown> | undefined)?.method
@@ -528,6 +547,8 @@ export default function ModellingConfig({
           best_iteration: null,
           loss_history: [],
           loss_history_truncated: false,
+          validation_loss_history: [],
+          validation_loss_history_truncated: false,
           double_lift: [],
           shap_summary: [],
           feature_importance_loss: [],
@@ -608,6 +629,7 @@ export default function ModellingConfig({
       cachedResult={cachedResult}
       estimate={estimate}
       nodeLabel={canvasNodeLabel}
+      nodeOpener={canvasNodeOpener}
       submitting={submitting}
       cancelling={cancelling}
       onTrain={onTrain}
@@ -659,6 +681,7 @@ export default function ModellingConfig({
           onReviewSplit={() => reviewPane("split")}
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
+          parametersNote={algorithm === "catboost" ? CATBOOST_PARAMETERS_NOTE : undefined}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}

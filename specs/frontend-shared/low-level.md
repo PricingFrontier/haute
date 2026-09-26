@@ -6,7 +6,8 @@
 |---|---|
 | `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. |
-| `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
+| `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. Before anything loads lazily it calls `recordChunkLoadFailures`, so a chunk Vite fails to load surfaces through the error boundary that catches it, not a second UI. |
+| `frontend/src/utils/chunkLoadError.ts` | `isChunkLoadError`: true only for the `TypeError` a browser raises when a dynamic import cannot be fetched (Chromium's "Failed to fetch dynamically imported module", Firefox's "error loading dynamically imported module", Safari's "Importing a module script failed.") or for an error Vite's preload helper reported through `vite:preloadError`; every other error is false. `recordChunkLoadFailures` listens for that event and records its payload without cancelling it, so the import still rejects. |
 | `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. Likewise, a converted response module group's generated validator module is imported dynamically when its first response arrives and checked through `expectGeneratedContract`, so no generated response validator is in the initial bundle. |
 | `frontend/src/api/errors.ts` | Reads structured API error details: `apiErrorCode` returns a detail object's `error_code` so callers dispatch on the code rather than the HTTP status, and `apiErrorMessage` returns the user-facing text (a structured detail's `message`, else the string detail via `executionErrorDetailMessage`, else a non-HTTP error's message, else the caller's fallback) so no surface renders `ApiError: HTTP <status>`. It is the one error-text helper: without a fallback, an HTTP error with no detail gives its own message and a non-error value its string form. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post`; its two responses are checked by the generated `modelling` group validators (`DispersionEstimateResponse`, `DispersionEstimateStatusResponse`) rather than routing through `types/guards.ts`. |
@@ -19,7 +20,7 @@
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses, outside the initial JavaScript graph. `parseTrainResponse` and `parseTrainStatusResponse` take the whole structure, including the evaluation and tuning reports and the fit evidence, from the generated `training` validators, and shape by hand only what the server model leaves open: the diagnostic row lists, loss history, GLM inference and regularisation, EBM terms and the feature-selection report. The evaluation and tuning invariants are checked once on the server, where their artifacts are produced, so the browser does not re-check them. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
-| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
+| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job; `markTrainResultExpired` records, in `expiredTrainJobs`, a node whose remembered completed result the server no longer holds, unless the node has a result or running job, and starting a training job, a completed or restored result, or clearing the node drops that record), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
 | `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress, or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
@@ -38,7 +39,8 @@
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
 | `frontend/src/utils/dtypeColors.ts` | Dtype string → Tailwind text-colour class for column-type badges. |
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
-| `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
+| `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. For a chunk-load failure (`isChunkLoadError`), which no retry in the page can recover because the lazy import's rejection is cached and a rebuild has replaced the chunk it names, the fallback reads "Haute has been updated" and its Reload button reloads the page; while `useGraphStore`'s `dirty` is set it asks for a save first and the button reads "Reload without saving". |
+| `frontend/src/components/UpdatedNotice.tsx` | The chunk-load fallback's body for the error boundary: the reload explanation and a button that reloads the page, reading "Reload without saving" beside a save request while `useGraphStore`'s `dirty` is set, and the shared fallback button style. |
 | `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
 | `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount; the panel is centred, or top-aligned with `placement="top"` (the node-search palette). |
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
@@ -69,7 +71,7 @@
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
 | `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `frontend/src/__tests__/cssColorTokenization.test.ts`). Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
-| `frontend/src/utils/chartHelpers.ts` | The axis and scale helpers every SVG chart uses: `formatChartNumber` (three significant digits, compact from ten thousand, exponential below 0.0001), `chartDomain` (an 8% padded domain that gives constant series a finite scale), `chartTicks` (inclusive evenly spaced ticks; a degenerate range yields one tick), `chartLabelIndices` (label thinning that keeps both ends) and `chartAxisLabel` (truncation to the plot width). |
+| `frontend/src/utils/chartHelpers.ts` | The axis and scale helpers every SVG chart uses: `formatChartNumber` (one value: three significant digits, compact from ten thousand, exponential below 0.0001), `formatChartTicks` (one linear axis's labels formatted together: it starts from the precision `formatChartNumber` gives the largest tick and adds decimals until neighbouring labels differ; a standard-notation axis shows the same decimals on every label, dropping only trailing zeros every tick shares, while compact and exponential labels share the rounding; a lone tick is formatted as one value, and ticks that are not distinct and evenly spaced, such as a log axis's decades, throw; every linear axis labels its ticks through it: the modelling value grid, the Lorenz, actual-versus-predicted, histogram and frontier x-axes, the EBM shape axis and the optimiser data preview's value axes), `chartDomain` (an 8% padded domain that gives constant series a finite scale), `chartTicks` (inclusive evenly spaced ticks; a degenerate range yields one tick), `chartLabelIndices` (label thinning that keeps both ends) and `chartAxisLabel` (truncation to the plot width). |
 | `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
 | `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
 | `frontend/src/utils/mlflowModelMetadata.ts` | Pure MLflow model metadata helpers for Model Score: `resolveLoadedVersion` (the loaded version a stored choice resolves to; `latest` is the newest) and `recordedModelTask` (a run's recorded `task` param when it is `regression` or `classification`, else `null`). |
@@ -161,6 +163,7 @@
 - **`NodeResultsState`**: the store's full shape — five result and job
   record pairs (`previews`, `solveResults` + `solveJobs`, `trainResults` + `trainJobs`,
   `exploreResults` + `exploreJobs`, `pivotResults` + `pivotJobs`), `pivotStartClaims`,
+  `expiredTrainJobs` (node → the remembered training job the server no longer holds),
   a `columnCache` keyed `"nodeId"` or `"nodeId:source"`, and a `pinnedPreviewNodeId`
   that is exempted from LRU eviction in the four caches trimmed by
   `trimCacheByRecency` and whose pivot entries are likewise exempted by
@@ -340,7 +343,17 @@ authority for the running-poller map: a job not yet present gets a
 `setTimeout`-driven loop starting
 at `BASE_INTERVAL_MS` (500ms). After each non-terminal response or retryable
 poll error, the next interval doubles (`500ms → 1s → 2s → 4s → 5s`) and then
-holds at `MAX_INTERVAL_MS` (5s) for the rest of that job. Each request is
+holds at `MAX_INTERVAL_MS` (5s) for the rest of that job. A poller whose
+config supplies `progressKey` opts into progress-aware backoff instead: the key
+is the signature of the progress a status shows, and a response whose key
+differs from the previous response's (the first response always does) caps
+the next interval at `PROGRESS_INTERVAL_MS` (1s), dropping it to the base
+interval when it had backed off beyond that; an unchanged key and a retryable
+error back off as above. Only the training poller opts in, keyed on the
+status, phase, message, progress fraction, iteration, trial, fold and
+completed fits (not `elapsed_seconds`, which moves on every poll), so a
+training that is advancing refreshes about once a second and a quiet one
+backs off to 5s. Each request is
 capped by `POLL_TIMEOUT_MS` (30s) and the poller by
 `MAX_LIFETIME_MS` (24h) total. `CONSECUTIVE_FAILURES_FOR_TOAST` consecutive
 poll errors trigger a toast (poll errors are tolerated silently up to that
@@ -593,7 +606,9 @@ is already in flight still results in exactly one follow-up fetch.
 - `ErrorBoundary.componentDidCatch` logs to `console.error` and never
   rethrows; the boundary's `name` prop (e.g. `"Canvas"`, `"NodePanel"`,
   `"Toast"` — see `App.tsx`'s per-region wrapping) is included in the log
-  prefix so a crash's origin is identifiable from the console alone.
+  prefix so a crash's origin is identifiable from the console alone. A chunk-load
+  failure is recognised only by `isChunkLoadError`'s explicit browser messages and
+  Vite-reported errors; any other error keeps "Something went wrong" and "Try again".
 
 ### The shared data cache
 
@@ -771,7 +786,13 @@ same Vitest config.
   the dedup/queued-refetch guard. `frontend/src/components/__tests__/Toolbar.test.tsx`
   proves no MLflow chip renders and the modal still opens from the UI flag.
 - **Chrome components**: `frontend/src/__tests__/components/ErrorBoundary.test.tsx`
-  (root-level, under `frontend/src/__tests__/components/`),
+  (root-level, under `frontend/src/__tests__/components/`; a lazily loaded results panel
+  whose chunk fails to load offers "Haute has been updated" and a Reload that reloads the
+  page, or "Reload without saving" with a save request while the canvas has unsaved changes, a Vite-reported preload failure does too, and an ordinary error with a similar
+  message keeps "Try again"), `frontend/src/utils/__tests__/chunkLoadError.test.ts` (the
+  predicate and the preload-failure listener), `frontend/src/__tests__/main.test.tsx`
+  (Vite's preload failures are recorded at start), `frontend/e2e/rebuilt-frontend.spec.ts`
+  (an aborted lazily loaded chunk offers a reload that reloads the page),
   `frontend/src/components/__tests__/ModalShell.test.tsx` and
   `frontend/src/components/__tests__/ModalShell.focusTrap.test.tsx` (focus trap and
   restore-on-close in particular; centred or top placement),
@@ -819,10 +840,12 @@ same Vitest config.
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants and
   `frontend/src/hooks/__tests__/jobPollingController.test.ts` (controller
-  mechanics and `waitForJob`: terminal resolution, abort in flight, deadline,
-  poll errors, `onStatus` retirement),
+  mechanics, progress-aware backoff: at most 1s while the key advances, 5s
+  while it holds, today's ramp without a key; and `waitForJob`: terminal
+  resolution, abort in flight, deadline, poll errors, `onStatus` retirement),
   `frontend/src/__tests__/hooks/useBackgroundJobs.test.ts` + `frontend/src/__tests__/hooks/useBackgroundJobs.gaps.test.ts` (root-level, orchestration
-  wiring), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
+  wiring, including an advancing training polled about once a second beside an
+  optimiser that keeps its backoff), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
   `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` (root-level — note
   `useWebSocketSync` itself is a graph-canvas hook, but its session-expiry
   interaction with `frontend/src/api/client.ts`'s
@@ -854,7 +877,9 @@ no-op blur, external-value draft reset, `ValidatedTextField`'s refused candidate
 refusals, commit errors and warnings, and form-label/control semantics.
 `frontend/src/utils/__tests__/chartHelpers.test.ts` and
 `frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
-ticks/formatting and trace substitutions/non-finite display.
+ticks/formatting (including an axis's ticks formatted together: distinct labels
+on a narrow range, today's labels where three significant figures already
+differ) and trace substitutions/non-finite display.
 `frontend/src/components/NodeTypeIcon.tsx`,
 `frontend/src/components/form/index.ts`, and
 `frontend/src/utils/mlflowOptimiser.ts` currently have no dedicated test file; the
@@ -965,7 +990,8 @@ The following remain shared-infrastructure-owned:
   `frontend/src/stores/useNodeResultsStore.ts` share the backend's `train_loss_history` and
   `train_loss_history_truncated` status fields, which the server always sends.
   `parseTrainStatusResponse` requires both and parses every row through the same
-  finite-number/required-iteration contract as completed `loss_history`; malformed or missing
+  finite-number/required-iteration contract as completed `loss_history` and
+  `validation_loss_history`; malformed or missing
   history throws, and no latest-loss reconstruction is invented. The store's type keeps them
   optional for the entries it makes itself.
 - `frontend/src/stores/useNodeResultsStore.ts` keeps each active job's latest status/history

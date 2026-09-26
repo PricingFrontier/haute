@@ -24,6 +24,51 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
 }
 
 describe("TrainingActionsAndResults", () => {
+  it("presents a join's row product as an unproven bound, never a verdict (MDL-01)", () => {
+    const open = vi.fn()
+    const nodeOpener = vi.fn((nodeId: string) => (nodeId === "competitor_join" ? open : null))
+    render(
+      <TrainingActionsAndResults
+        {...makeProps({
+          nodeLabel: (nodeId: string) => nodeId,
+          nodeOpener,
+          ramEstimate: makeTrainEstimate({
+            total_rows: 10_000_000_000,
+            safe_row_limit: 149_958_852,
+            bytes_per_row: 5_000,
+            available_mb: 71_065,
+            was_downsampled: false,
+            warning: null,
+            unbounded_join_node_ids: ["competitor_join"],
+          }),
+        })}
+      />,
+    )
+
+    const box = screen.getByRole("status")
+    expect(box).toHaveTextContent("Row count not proven")
+    expect(box).toHaveTextContent('Up to 10,000,000,000 rows: "competitor_join" has no key contract.')
+    expect(box).toHaveTextContent("Training row limit149,958,852")
+    expect(screen.queryByText("Will downsample")).toBeNull()
+    expect(screen.queryByText("Dataset fits in memory")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: 'Open "competitor_join"' }))
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows a declared join's proven rows as fitting in memory", () => {
+    render(
+      <TrainingActionsAndResults
+        {...makeProps({
+          ramEstimate: makeTrainEstimate({ total_rows: 100_000, unbounded_join_node_ids: [] }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Dataset fits in memory")).toBeInTheDocument()
+    expect(screen.getByText("100,000")).toBeInTheDocument()
+    expect(screen.queryByText("Row count not proven")).toBeNull()
+  })
+
   it("renders Train Model button", () => {
     render(<TrainingActionsAndResults {...makeProps()} />)
     expect(screen.getByText("Train Model")).toBeInTheDocument()

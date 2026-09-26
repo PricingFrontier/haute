@@ -416,13 +416,13 @@ class EBMAlgorithm(BaseAlgorithm):
         # EBM's own ``callback`` starts a multiprocessing SharedMemoryManager
         # process, so progress is reported per fit, in rounds, around the call.
         if on_iteration is not None:
-            on_iteration(0, max_rounds, {})
+            on_iteration(0, max_rounds, {}, None)
         with warnings.catch_warnings():
             # InterpretML's own plots hide the missing bin; Haute's term views show it.
             warnings.filterwarnings("ignore", message="Missing values detected")
             estimator.fit(model.encoded(train_df), label, **fit_kwargs)
         if on_iteration is not None:
-            on_iteration(max_rounds, max_rounds, {})
+            on_iteration(max_rounds, max_rounds, {}, None)
         model.estimator = estimator
         return FitResult(
             model=model,

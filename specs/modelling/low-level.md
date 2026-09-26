@@ -108,6 +108,20 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `feature_importance_typed` (CatBoost only), `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
+- **`IterationCallback`** (`_algorithm_base.py`) — `(iteration, total, metrics,
+  history_row)`, called after each iteration. `metrics` is the progress readout: the
+  training metric under its native name and an evaluation set's as `<dataset>_<metric>`.
+  `history_row` is the row the adapter appends to `FitResult.loss_history` (`iteration` plus
+  `train_`/`eval_`-prefixed values), or `None` when the call adds no row: EBM's calls around
+  its fit, a GLM's first call (its second carries the one deviance row its history holds), and
+  CatBoost's GPU fit, which polls only the iteration. The training worker
+  forwards both in its `iteration` progress event, whose `history` field is that row or
+  `null`. The job's live `train_loss_history` appends each row, keeps the last
+  `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200, setting `train_loss_history_truncated`),
+  and the live chart finds its `train_` and `eval_` keys as the Loss tab does. Only the fit
+  whose model the job keeps sends iteration events: after a refit that is the final fit
+  (no evaluation set), while a validation fit that is refit reports only its progress
+  message.
 - **`ALGORITHM_REGISTRY`** (`_algorithms.py`) — `dict[str, type[BaseAlgorithm]]`,
   `{"catboost": CatBoostAlgorithm}` unconditionally; `"glm": GLMAlgorithm` is added only
   if `import rustystats` succeeds (lazy `try/except ImportError` at module import time),
@@ -165,7 +179,13 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   and consumed by `_save_artifacts` and `_log_to_mlflow`.
 - **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
   contents of top-level `params`, with CatBoost Tweedie power in top-level
-  `variance_power`. GLM configuration is exclusively top-level
+  `variance_power`. The editor's starter `params` for a new CatBoost node include
+  `one_hot_max_size: 10`; the backend adds no default, so a node without the key trains with
+  CatBoost's own encoding. Timing note: on the motor demo model (Tweedie, 80,000 training
+  and 20,000 evaluation rows, depth 6) 100 iterations took 12.7 s with CatBoost's defaults
+  and 0.9 s with `one_hot_max_size=10`; almost all of the default time went on target
+  statistics for its 2-, 3- and 7-level categorical columns, which one-hot encoding
+  replaces. GLM configuration is exclusively top-level
   (`terms`, `family`, `link`, `interactions`, `regularization`, `alpha`,
   `l1_ratio`, `intercept`, `var_power`, `theta`, `offset`); `build_train_params`
   projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
@@ -524,7 +544,18 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    clearly. The final parameters replace CatBoost iteration aliases and remove
    early-stopping controls; with no validation
    or with GLM, parameters remain unchanged. The completed result carries the derived
-   `final_tree_count` through the worker and response contract. On-demand MLflow export
+   `final_tree_count` through the worker and response contract. `run_evaluation_fit`
+   returns a `SelectionFit`: the persisted `EvaluationFitResult` and the fit's loss
+   history, which is never persisted. When the run had exactly one validation fit (holdout)
+   and a final refit, and no tuning, the completed result carries that fit's history as
+   `validation_loss_history`; the refit's own history, fitted without an evaluation set,
+   stays `loss_history`. The response bounds each history to
+   `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` rows (default 200) by thinning, never by keeping the
+   tail: it keeps the first and last rows, the row of the fit's best iteration (the row whose
+   `iteration` is `best_iteration + 1`, since `best_iteration` is zero-based and rows count
+   from one; the validation history uses the selection fit's) and an even stride between
+   them, and sets `loss_history_truncated` or `validation_loss_history_truncated` when it
+   dropped rows. On-demand MLflow export
    projects the recorded fixed parameters with that count; results without it
    retain their original parameters. A refit at a small derived count can predict a
    constant; CatBoost then reports NaN `PredictionValuesChange` importances (a
@@ -1671,6 +1702,20 @@ The implementation seams are:
   reject a memory figure beside a reason, a missing figure without one, a row total that
   disagrees with the reason, and a downsampling verdict, warning or VRAM field on an
   unavailable estimate.
+- The row-cardinality proof carries, beside its bound, the ids of the joins without a key
+  contract it depends on (`_ResolvedRowCardinality.many_to_many_join_node_ids`, inherited
+  downstream: an Edge Join with `validate` `m:m` or absent, or a Polars node whose own join
+  declares none). `RamEstimate.unbounded_join_node_ids` and
+  `TrainEstimateResponse.unbounded_join_node_ids` report them. With any, `total_rows` is the
+  worst case: `was_downsampled` is false and `warning` null even when the bound exceeds
+  RAM, and `safe_row_limit` is the RAM row limit training would apply. Declaring the join
+  many-to-one (`validate="m:1"`) turns the bound into the base frame's row count. Training
+  start (`_training_lifecycle`) records no warning from the estimate. It samples the
+  prepared input to the RAM row limit, as before, then reads the prepared Parquet file's row
+  count: only when the RAM limit, not the user's `row_limit`, was binding and the file holds
+  that many rows does the job record the downsampling warning, which names the joins for an
+  unproven bound instead of claiming a source row count (a frame of exactly the limit's rows
+  is indistinguishable and is reported as sampled).
 
 Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
@@ -1743,7 +1788,12 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   shows "Memory estimate unavailable" with its reason in place of the missing figures
   (naming the blocking node by its canvas label for `row_count_unprovable`), the source
   rows when known, and the available RAM. It never shows a fits-in-memory or downsample
-  verdict, or a memory figure. Split has no loading message beneath its settings;
+  verdict, or a memory figure. When the estimate names joins without a key contract, Train
+  shows "Row count not proven" in the neutral style instead of a verdict: "Up to N rows:
+  <join label> has no key contract", an Open button per named join on the canvas that opens
+  its settings (where declaring many-to-one bounds it), the upper bound, the RAM that bound
+  would need, the training row limit when one applies, and the available RAM. "Will
+  downsample" and "Dataset fits in memory" appear only for a proven row count. Split has no loading message beneath its settings;
   the allocation summary still updates when the exact preview arrives.
 
 ### Training allocation ordering (cache implementation correction)

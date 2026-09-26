@@ -11531,6 +11531,13 @@
             }
           ]
         },
+        "unbounded_join_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unbounded Join Node Ids",
+          "type": "array"
+        },
         "warning": {
           "anyOf": [
             {
@@ -11561,7 +11568,8 @@
         "gpu_vram_estimated_mb",
         "gpu_vram_available_mb",
         "gpu_warning",
-        "unavailable"
+        "unavailable",
+        "unbounded_join_node_ids"
       ],
       "title": "TrainEstimateResponse",
       "type": "object"
@@ -11961,6 +11969,21 @@
         "tuning": {
           "$ref": "#/$defs/TuningReportPayload"
         },
+        "validation_loss_history": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Validation Loss History",
+          "type": "array"
+        },
+        "validation_loss_history_truncated": {
+          "default": false,
+          "title": "Validation Loss History Truncated",
+          "type": "boolean"
+        },
         "warning": {
           "anyOf": [
             {
@@ -11992,6 +12015,8 @@
         "fit_evidence",
         "loss_history",
         "loss_history_truncated",
+        "validation_loss_history",
+        "validation_loss_history_truncated",
         "double_lift",
         "shap_summary",
         "feature_importance_loss",

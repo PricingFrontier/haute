@@ -20,6 +20,7 @@ from haute.modelling._evaluation import (
     load_evaluation_results,
 )
 from haute.modelling._training_job import (
+    SelectionFit,
     TrainingJob,
     TrainResult,
     _PreparedData,
@@ -125,23 +126,26 @@ def test_selection_fits_are_sequential_evaluation_only_and_final_fit_is_once(
             self.fit_index = fit_index
             self.plan = plan
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             assert self.fit_index is not None
             calls.append(("selection", self.fit_index))
             fit = self.plan.validation_fits[self.fit_index]
-            return EvaluationFitResult(
-                schema_version=1,
-                fit_index=self.fit_index,
-                train_rows=fit.train_rows,
-                validation_rows=fit.validation_rows,
-                metrics={"rmse": float(self.fit_index + 1)},
-                best_iteration=self.fit_index,
+            return SelectionFit(
+                EvaluationFitResult(
+                    schema_version=1,
+                    fit_index=self.fit_index,
+                    train_rows=fit.train_rows,
+                    validation_rows=fit.validation_rows,
+                    metrics={"rmse": float(self.fit_index + 1)},
+                    best_iteration=self.fit_index,
+                ),
+                [],
             )
 
         def run(self, *, on_iteration=None, **_kwargs: Any) -> TrainResult:
             calls.append(("final", None))
             if on_iteration is not None:
-                on_iteration(1, 1, {"loss": 1.0})
+                on_iteration(1, 1, {"loss": 1.0}, None)
             return final_result(
                 tmp_path,
                 development=len(self.plan.development_positions),
@@ -224,7 +228,7 @@ def test_no_validation_runs_only_one_final_fit_and_reports_no_selection_metrics(
             self.plan = plan
             self.params = params
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             raise AssertionError("no selection fit is allowed")
 
         def run(self, **_kwargs: Any) -> TrainResult:
@@ -295,16 +299,19 @@ def test_fixed_catboost_refit_uses_validation_best_iterations(
             self.fit_index = fit_index
             self.plan = plan
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             assert self.fit_index is not None
             fit = self.plan.validation_fits[self.fit_index]
-            return EvaluationFitResult(
-                schema_version=1,
-                fit_index=self.fit_index,
-                train_rows=fit.train_rows,
-                validation_rows=fit.validation_rows,
-                metrics={"rmse": 1.0},
-                best_iteration=best_iterations[self.fit_index],
+            return SelectionFit(
+                EvaluationFitResult(
+                    schema_version=1,
+                    fit_index=self.fit_index,
+                    train_rows=fit.train_rows,
+                    validation_rows=fit.validation_rows,
+                    metrics={"rmse": 1.0},
+                    best_iteration=best_iterations[self.fit_index],
+                ),
+                [],
             )
 
         def run(self, **_kwargs: Any) -> TrainResult:
@@ -367,7 +374,7 @@ def test_holdout_can_publish_validation_fit_without_refit(
             self.fit_index = fit_index
             self.plan = plan
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             raise AssertionError("selection fit should be saved in the same run")
 
         def run(self, **_kwargs: Any) -> TrainResult:
@@ -449,16 +456,19 @@ def test_temporal_cross_validation_runs_through_strict_plan_reload(
             self.fit_index = fit_index
             self.plan = plan
 
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             assert self.fit_index is not None
             fit = self.plan.validation_fits[self.fit_index]
-            return EvaluationFitResult(
-                schema_version=1,
-                fit_index=self.fit_index,
-                train_rows=fit.train_rows,
-                validation_rows=fit.validation_rows,
-                metrics={"rmse": float(self.fit_index + 1)},
-                best_iteration=self.fit_index,
+            return SelectionFit(
+                EvaluationFitResult(
+                    schema_version=1,
+                    fit_index=self.fit_index,
+                    train_rows=fit.train_rows,
+                    validation_rows=fit.validation_rows,
+                    metrics={"rmse": float(self.fit_index + 1)},
+                    best_iteration=self.fit_index,
+                ),
+                [],
             )
 
         def run(self, **_kwargs: Any) -> TrainResult:
@@ -524,7 +534,7 @@ def test_failure_cleans_all_staged_evaluation_artifacts(
     monkeypatch.setattr(job, "_prepare_data", lambda *_args, **_kwargs: prepared)
 
     class FailedFit:
-        def run_evaluation_fit(self, **_kwargs: Any) -> EvaluationFitResult:
+        def run_evaluation_fit(self, **_kwargs: Any) -> SelectionFit:
             raise RuntimeError("selection failed")
 
     monkeypatch.setattr(job, "_new_evaluation_job", lambda **_kwargs: FailedFit())

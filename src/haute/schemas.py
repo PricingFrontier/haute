@@ -2424,6 +2424,8 @@ class TrainResponse(BaseModel):
     fit_evidence: FitEvidencePayload | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
+    validation_loss_history: list[dict[str, float]] = Field(default_factory=list)
+    validation_loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
@@ -2744,6 +2746,8 @@ class TrainEstimateResponse(BaseModel):
     gpu_warning: str | None = None
     unavailable: TrainEstimateUnavailable | None
     """Set, with the memory figures null, when the estimate cannot size its input."""
+    unbounded_join_node_ids: list[str]
+    """Joins without a key contract that make ``total_rows`` a worst case, in graph order."""
     evaluation_preview: EvaluationPreviewPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -2752,6 +2756,8 @@ class TrainEstimateResponse(BaseModel):
     @model_validator(mode="after")
     def _figures_match_availability(self) -> TrainEstimateResponse:
         figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
+            raise ValueError("a worst-case row bound has no downsampling verdict or warning")
         if self.unavailable is None:
             if self.total_rows is None or any(value is None for value in figures):
                 raise ValueError("an available estimate requires a row total and memory figures")

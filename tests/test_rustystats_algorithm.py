@@ -503,9 +503,11 @@ class TestGLMFit:
 
     def test_fit_calls_on_iteration(self, algo, interaction_df):
         calls = []
+        rows = []
 
-        def callback(iteration, total, metrics):
+        def callback(iteration, total, metrics, row):
             calls.append((iteration, total))
+            rows.append(row)
 
         _fit(
             algo,
@@ -514,6 +516,9 @@ class TestGLMFit:
             on_iteration=callback,
         )
         assert calls == [(0, 1), (1, 1)]
+        # The start adds no loss-history row; the fit adds its one deviance row.
+        assert rows[0] is None
+        assert set(rows[1]) == {"iteration", "train_deviance"}
 
 
 # ---------------------------------------------------------------------------

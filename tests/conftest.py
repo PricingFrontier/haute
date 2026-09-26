@@ -19,6 +19,7 @@ from hypothesis import settings as hypothesis_settings
 
 from haute._config_io import config_path_for_node
 from haute._execution_context import ExecutionProfile
+from haute._ram_estimate import RamEstimate
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -786,6 +787,22 @@ def make_edge(
 def make_node(d: dict) -> GraphNode:
     """Build a GraphNode from a raw dict (model_validate shorthand)."""
     return GraphNode.model_validate(d)
+
+
+def make_ram_estimate(
+    *, total_rows: int = 100, probe_columns: int = 3, safe_row_limit: int | None = None
+) -> RamEstimate:
+    """A sized training RAM estimate, for tests that stub ``TrainService._estimate_ram``."""
+    return RamEstimate(
+        safe_row_limit=safe_row_limit,
+        total_rows=total_rows,
+        estimated_bytes=total_rows * 10,
+        available_bytes=10**12,
+        bytes_per_row=10.0,
+        was_downsampled=False,
+        warning=None,
+        probe_columns=probe_columns,
+    )
 
 
 def make_graph(d: dict) -> PipelineGraph:

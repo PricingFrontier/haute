@@ -467,8 +467,8 @@ export default function useEdgeHandlers({
     }
   }, [setSelectedNode, clearTrace, graphRefreshingRef])
 
-  /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
-  const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+  /** Opens a node's panel, refreshing its preview when it is a different node. */
+  const openNode = useCallback((node: Node) => {
     const previousNodeId = selectedNode?.id ?? lastSelectedNodeRef.current?.id
     const shouldRefreshPreview = previousNodeId !== node.id
     setSelectedNode(node)
@@ -496,6 +496,12 @@ export default function useEdgeHandlers({
     lastSelectedNodeRef,
     setLastSelectedId,
   ])
+
+  /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => openNode(node),
+    [openNode],
+  )
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
     if (deleteBoundaryEdge?.(edgeId)) return
@@ -607,6 +613,7 @@ export default function useEdgeHandlers({
     clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId,
     onSelectionChange,
+    openNode,
     onNodeClick,
     handleDeleteEdge,
     onNodeContextMenu,

@@ -19,7 +19,7 @@ import {
   chartAxisLabel,
   chartDomain,
   chartTicks,
-  formatChartNumber,
+  formatChartTicks,
 } from "../../utils/chartHelpers"
 import ChartFocusDetail from "../ChartFocusDetail"
 import {
@@ -249,6 +249,7 @@ export default function FrontierChart({
           const yScale = (v: number) => plotBottom - ((v - yLow) / (yHigh - yLow)) * (plotBottom - top)
           const xTickCount = Math.max(2, Math.min(5, Math.floor(plotWidth / 90)))
           const xTicks = chartTicks(Math.min(...xs), Math.max(...xs), xTickCount)
+          const xLabels = formatChartTicks(xTicks)
           const yTicks = chartTicks(Math.min(...ys), Math.max(...ys), 5)
           const line = feasibleLine(points, xScale, yScale)
           const solvedX = xScale(asSolved.x)
@@ -271,7 +272,7 @@ export default function FrontierChart({
                   fontSize={FONT}
                   fill={TEXT}
                 >
-                  {formatChartNumber(tick)}
+                  {xLabels[i]}
                 </text>
               ))}
               <AxisName x={left + plotWidth / 2} y={height - 6} label={xLabel} plotWidth={plotWidth} anchor="middle" />

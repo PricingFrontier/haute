@@ -350,6 +350,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
             round(ram_est.bytes_per_row, 1) if ram_est.bytes_per_row is not None else None
         ),
         unavailable=unavailable,
+        unbounded_join_node_ids=list(ram_est.unbounded_join_node_ids),
         was_downsampled=was_downsampled,
         warning=warning,
         gpu_vram_estimated_mb=vram_check.estimated_mb,

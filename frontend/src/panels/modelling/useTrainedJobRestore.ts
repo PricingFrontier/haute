@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 import { ApiError, getTrainStatus } from "../../api/client"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -19,15 +19,16 @@ import {
  * polled by useBackgroundJobs). The restored result is current only when the
  * training lineage of the graph the editor would submit now matches the one
  * recorded from the submitted request; otherwise it is restored as stale.
- * Returns true when a remembered result is no longer held by the server, so
- * the Export pane can say so instead of simply showing nothing to export.
+ * A remembered result the server no longer holds is recorded in the results
+ * store (`expiredTrainJobs`), so the Export pane and the results panel can say
+ * so instead of simply showing nothing.
  */
 export function useTrainedJobRestore(
   nodeId: string,
   cachedResult: CachedTrainResult | undefined,
   hasTrainJob: boolean,
   graph: () => TrainingLineageInput,
-): boolean {
+): void {
   // The status read is async; compare against the graph as it is when it returns.
   const graphRef = useRef(graph)
   useEffect(() => {
@@ -35,7 +36,7 @@ export function useTrainedJobRestore(
   }, [graph])
   const sourceFile = useDocumentStatusStore((state) => state.sourceFile)
   const restoreTrainResult = useNodeResultsStore((state) => state.restoreTrainResult)
-  const [expiredJobId, setExpiredJobId] = useState<string | null>(null)
+  const markTrainResultExpired = useNodeResultsStore((state) => state.markTrainResultExpired)
   const hasCachedResult = Boolean(cachedResult)
   useEffect(() => {
     if (!sourceFile || !nodeId || hasCachedResult || hasTrainJob) return
@@ -44,7 +45,7 @@ export function useTrainedJobRestore(
     const controller = new AbortController()
     const forget = () => {
       clearTrainedJobHandle(sourceFile, nodeId)
-      setExpiredJobId(handle.jobId)
+      markTrainResultExpired(nodeId, handle.jobId)
     }
     getTrainStatus(handle.jobId, { signal: controller.signal }).then(
       (status) => {
@@ -76,6 +77,5 @@ export function useTrainedJobRestore(
       },
     )
     return () => controller.abort()
-  }, [sourceFile, nodeId, hasCachedResult, hasTrainJob, restoreTrainResult])
-  return expiredJobId !== null && !cachedResult
+  }, [sourceFile, nodeId, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired])
 }

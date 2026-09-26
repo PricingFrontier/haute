@@ -204,8 +204,8 @@ class TestCatBoostProgressCallback:
         loss_history: list[dict[str, float]] = []
         calls: list[tuple] = []
 
-        def on_iter(iteration: int, total: int, metrics: dict) -> None:
-            calls.append((iteration, total, metrics))
+        def on_iter(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
+            calls.append((iteration, total, metrics, row))
 
         cb = _CatBoostProgressCallback(on_iter, 100, loss_history)
 
@@ -220,11 +220,14 @@ class TestCatBoostProgressCallback:
         result = cb.after_iteration(info)
         assert result is True
         assert len(calls) == 1
-        assert calls[0] == (1, 100, {"RMSE": 0.5, "validation_RMSE": 0.6})
-        assert len(loss_history) == 1
-        assert loss_history[0]["iteration"] == 1.0
-        assert loss_history[0]["train_RMSE"] == 0.5
-        assert loss_history[0]["eval_RMSE"] == 0.6
+        # The readout keeps CatBoost's names; the history row is the prefixed one.
+        assert calls[0] == (
+            1,
+            100,
+            {"RMSE": 0.5, "validation_RMSE": 0.6},
+            {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6},
+        )
+        assert loss_history == [calls[0][3]]
 
     def test_after_iteration_without_callback(self):
         from haute.modelling._algorithms import _CatBoostProgressCallback
@@ -1499,8 +1502,8 @@ class TestGPUOnIterationPath:
 
         on_iter_calls: list[tuple] = []
 
-        def on_iter(it: int, total: int, metrics: dict) -> None:
-            on_iter_calls.append((it, total))
+        def on_iter(it: int, total: int, metrics: dict, row: dict | None) -> None:
+            on_iter_calls.append((it, total, row))
 
         # When model.fit is called in the thread, create a fake metric file
 
@@ -1538,6 +1541,8 @@ class TestGPUOnIterationPath:
         assert result.model is mock_model
         # on_iteration should have been called for each data line
         assert len(on_iter_calls) >= 1
+        # The GPU fit polls only the iteration: it adds no loss-history row.
+        assert all(row is None for _it, _total, row in on_iter_calls)
 
     def test_gpu_fit_error_is_reraised(self):
         """When model.fit raises in the GPU thread, the error is re-raised."""
@@ -1569,7 +1574,7 @@ class TestGPUOnIterationPath:
                     weight=None,
                     params={"task_type": "GPU", "iterations": 2},
                     task="regression",
-                    on_iteration=lambda it, total, m: None,
+                    on_iteration=lambda it, total, m, row: None,
                     pool=MagicMock(),
                 )
 

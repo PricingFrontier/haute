@@ -49,6 +49,7 @@ from tests.conftest import (
     make_file_output_config,
     make_graph,
     make_output_config,
+    make_ram_estimate,
     make_source_node,
 )
 from tests.optimiser_fixtures import setup_grid_stub
@@ -5896,7 +5897,7 @@ def test_training_start_creates_admitted_training_context(
 
     with (
         patch.object(service, "_compile_preamble", return_value={}),
-        patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
+        patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=fake_execute_and_sink),
         patch.object(service, "_launch_background"),
@@ -5957,7 +5958,7 @@ def test_training_start_maps_admission_failure_to_http_507(
 
     with (
         patch.object(service, "_compile_preamble", return_value={}),
-        patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
+        patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink") as execute_and_sink,
     ):
@@ -6027,7 +6028,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
 
     with (
         patch.object(service, "_compile_preamble", return_value={}),
-        patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
+        patch.object(service, "_estimate_ram", return_value=make_ram_estimate()),
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=memory_error),
     ):

@@ -176,7 +176,11 @@
 - **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
   `total_rows`, `estimated_bytes`, `available_bytes`, `bytes_per_row`,
   `was_downsampled`, `warning`, `probe_columns`, `unavailable_reason`,
-  `blocking_node_id`. An unavailable estimate has one
+  `blocking_node_id`, `unbounded_join_node_ids`. `unbounded_join_node_ids` names, in graph
+  order, the joins without a key contract that the row total depends on (an Edge Join or a
+  Polars join declaring no `validate`, which carries the row product); the row total is then
+  a worst case, so the estimate has no downsampling verdict or warning, only the RAM row
+  limit (`safe_row_limit`) training applies if more rows arrive. An unavailable estimate has one
   `TrainingEstimateUnavailableReason` (`row_count_unprovable` with the blocking node and
   no row total, or `schema_unresolvable` with the row total) and `None` memory figures;
   construction rejects any other combination.
@@ -457,9 +461,8 @@ cache/checkpoint decisions, timings, or error adaptation.
 execution, computes a backward column-projection plan when required-column seeds are
 supplied, and builds per-node callables via `_build_funcs()`. It then walks `run_order`
 once: for each node, the shared runner checks input columns against the contract before
-calling the node function, calls it,
-applies `selected_columns`/`column_renames`, checks output columns against the
-contract, and either materialises the result (`streaming_collect`) or — when
+calling the node function, calls it, checks the columns of the frame it returned against the
+output contract, applies `selected_columns`/`column_renames`, and either materialises the result (`streaming_collect`) or — when
 the policy's `collect` restricts collection to a target-only preview — keeps it lazy
 and reports schema via `collect_schema()` without collecting. Sources and API-input ports
 are never capped. A materialised node collects its own plan limited to
@@ -503,7 +506,13 @@ every node's output in every execution profile. Source builders never push it in
 physical read and never validate it against the file schema, so a Data Input's post-load
 code may add or consume any column — a column the code creates can be selected — and a
 stale selection is simply absent from the output rather than fatal, identically in preview
-and bounded profiles. The physical scan projection comes from planner demand only, carried
+and bounded profiles. A node may deselect or rename a column it creates: its output contract
+describes what its builder creates, so every walk checks it against the frame the node
+returned, before the node's own selection and renames, while the node's reported, cached and
+downstream columns are the shaped ones. A builder that fails to create a promised column
+still fails with the output-side message, whether or not the node shapes its output; a
+consumer that needs a column its parent deselected or renamed fails with the input-side
+message, naming the consumer. The physical scan projection comes from planner demand only, carried
 back through the node's post-load code (see "Data Input post-load code participates in
 projection planning").
 A target-only preview therefore limits only the target with SQL `LIMIT` semantics — Polars
@@ -2613,6 +2622,11 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_execute_lazy_contracts.py`** / **`test_execute_lazy_contract_coverage.py`**
   — column-contract enforcement at node boundaries on both paths, including the
   contract-resolution-degradation behaviour.
+- **`test_graph_walker.py`** — the shared walker's policies, including a node's own
+  shaping against its output contract on display and lazy walks: a Scenario Expander
+  may deselect or rename the column it creates, a consumer of the deselected column
+  fails at its own input, and a shaping node whose builder omits a promised column
+  still fails at its output.
 - **`test_execute_lazy_paths.py`**, **`test_capture_projection.py`**,
   **`test_projection_planner.py`** — backward column-projection analysis and its
   effect on capture/eager collection width. `test_capture_projection.py`'s
