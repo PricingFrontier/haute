@@ -8437,7 +8437,8 @@
           "enum": [
             "adjustments",
             "adjustment_weight",
-            "frontier"
+            "frontier",
+            "segment_weight"
           ],
           "title": "Diagnostic",
           "type": "string"
@@ -9966,6 +9967,436 @@
       "title": "OptimiserScenarioGridStep",
       "type": "object"
     },
+    "OptimiserSegmentFigures": {
+      "additionalProperties": false,
+      "description": "A level's chosen scenario values against the 1.0 base price, under one weighting.",
+      "properties": {
+        "mean_scenario_value": {
+          "title": "Mean Scenario Value",
+          "type": "number"
+        },
+        "share_at_edge": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share At Edge",
+          "type": "number"
+        },
+        "share_down": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share Down",
+          "type": "number"
+        },
+        "share_up": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Share Up",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mean_scenario_value",
+        "share_up",
+        "share_down",
+        "share_at_edge"
+      ],
+      "title": "OptimiserSegmentFigures",
+      "type": "object"
+    },
+    "OptimiserSegmentIndexKey": {
+      "additionalProperties": false,
+      "description": "A segment key with its ranking statistic (``None`` when it is unavailable).",
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "binning": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Binning",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "analysis",
+            "factor"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "spread": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Spread"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unavailable Reason"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "binning",
+        "available",
+        "unavailable_reason",
+        "spread"
+      ],
+      "title": "OptimiserSegmentIndexKey",
+      "type": "object"
+    },
+    "OptimiserSegmentIndexResponse": {
+      "additionalProperties": false,
+      "description": "The keys of one target ranked by their adjustment spread (OPT-V11).",
+      "properties": {
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
+        "keys": {
+          "items": {
+            "$ref": "#/$defs/OptimiserSegmentIndexKey"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Point Index"
+        },
+        "statistic": {
+          "$ref": "#/$defs/OptimiserSegmentIndexStatistic"
+        }
+      },
+      "required": [
+        "point_index",
+        "frontier_generation",
+        "statistic",
+        "keys"
+      ],
+      "title": "OptimiserSegmentIndexResponse",
+      "type": "object"
+    },
+    "OptimiserSegmentIndexStatistic": {
+      "additionalProperties": false,
+      "description": "What ranks the segment keys, named for the browser's header.",
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description"
+      ],
+      "title": "OptimiserSegmentIndexStatistic",
+      "type": "object"
+    },
+    "OptimiserSegmentKey": {
+      "additionalProperties": false,
+      "description": "One key a result can be broken down by (OPT-V11), and whether it can be.\n\n``source`` is an analysis column or a ratebook rating factor (named as the\nRates tab names it); ``binning`` says whether its levels are quantile bins\nor distinct values. The cardinality gate decides ``available``;\n``unavailable_reason`` says why not, and is ``None`` exactly when it is.",
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "binning": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Binning",
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "analysis",
+            "factor"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unavailable Reason"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "binning",
+        "available",
+        "unavailable_reason"
+      ],
+      "title": "OptimiserSegmentKey",
+      "type": "object"
+    },
+    "OptimiserSegmentRow": {
+      "additionalProperties": false,
+      "description": "One level of a segment breakdown.\n\n``weighted`` is ``None`` when the weighting was refused for the target, or\nwhen this level's weight totals 0 (a diagnostics entry names it); the quote\ncount and the unweighted figures always remain.",
+      "properties": {
+        "deployed_factor_differs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deployed Factor Differs"
+        },
+        "kind": {
+          "enum": [
+            "bin",
+            "value",
+            "other",
+            "missing"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "lower": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lower"
+        },
+        "merged_levels": {
+          "anyOf": [
+            {
+              "minimum": 2,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Merged Levels"
+        },
+        "quotes": {
+          "exclusiveMinimum": 0,
+          "title": "Quotes",
+          "type": "integer"
+        },
+        "unweighted": {
+          "$ref": "#/$defs/OptimiserSegmentFigures"
+        },
+        "upper": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Upper"
+        },
+        "weight_total": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weight Total"
+        },
+        "weighted": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserSegmentFigures"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "kind",
+        "lower",
+        "upper",
+        "merged_levels",
+        "quotes",
+        "weight_total",
+        "unweighted",
+        "weighted",
+        "deployed_factor_differs"
+      ],
+      "title": "OptimiserSegmentRow",
+      "type": "object"
+    },
+    "OptimiserSegmentsResponse": {
+      "additionalProperties": false,
+      "description": "The chosen scenario values of one target, per level of one key (OPT-V11).",
+      "properties": {
+        "binning": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Binning",
+          "type": "string"
+        },
+        "diagnostics_errors": {
+          "items": {
+            "$ref": "#/$defs/OptimiserDiagnosticError"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "mean_scenario_value": {
+          "title": "Mean Scenario Value",
+          "type": "number"
+        },
+        "n_levels": {
+          "minimum": 0,
+          "title": "N Levels",
+          "type": "integer"
+        },
+        "n_quotes": {
+          "exclusiveMinimum": 0,
+          "title": "N Quotes",
+          "type": "integer"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Point Index"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/OptimiserSegmentRow"
+          },
+          "minItems": 1,
+          "title": "Rows",
+          "type": "array"
+        },
+        "source": {
+          "enum": [
+            "analysis",
+            "factor"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "weight": {
+          "title": "Weight",
+          "type": "string"
+        },
+        "weight_label": {
+          "title": "Weight Label",
+          "type": "string"
+        },
+        "weighted_mean_scenario_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weighted Mean Scenario Value"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "binning",
+        "weight",
+        "weight_label",
+        "point_index",
+        "frontier_generation",
+        "n_quotes",
+        "n_levels",
+        "mean_scenario_value",
+        "weighted_mean_scenario_value",
+        "rows",
+        "diagnostics_errors"
+      ],
+      "title": "OptimiserSegmentsResponse",
+      "type": "object"
+    },
     "OptimiserSolveResponse": {
       "properties": {
         "error": {
@@ -10219,6 +10650,13 @@
           "title": "Scenario Grid",
           "type": "array"
         },
+        "segment_keys": {
+          "items": {
+            "$ref": "#/$defs/OptimiserSegmentKey"
+          },
+          "title": "Segment Keys",
+          "type": "array"
+        },
         "selected_frontier_point": {
           "anyOf": [
             {
@@ -10274,7 +10712,8 @@
         "frontier_generation",
         "input_summary",
         "diagnostics_errors",
-        "scenario_grid"
+        "scenario_grid",
+        "segment_keys"
       ],
       "title": "OptimiserSolveResult",
       "type": "object"
@@ -12544,6 +12983,12 @@
     "OptimiserSaveResponse": {
       "$ref": "#/$defs/OptimiserSaveResponse"
     },
+    "OptimiserSegmentIndexResponse": {
+      "$ref": "#/$defs/OptimiserSegmentIndexResponse"
+    },
+    "OptimiserSegmentsResponse": {
+      "$ref": "#/$defs/OptimiserSegmentsResponse"
+    },
     "OptimiserSolveResponse": {
       "$ref": "#/$defs/OptimiserSolveResponse"
     },
@@ -12672,7 +13117,9 @@
     "OptimiserFrontierStatusResponse",
     "OptimiserFrontierAutoRangeStartResponse",
     "OptimiserFrontierAutoRangeStatusResponse",
-    "OptimiserFrontierSelectResponse"
+    "OptimiserFrontierSelectResponse",
+    "OptimiserSegmentsResponse",
+    "OptimiserSegmentIndexResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -12756,7 +13203,9 @@
       "OptimiserFrontierStatusResponse",
       "OptimiserFrontierAutoRangeStartResponse",
       "OptimiserFrontierAutoRangeStatusResponse",
-      "OptimiserFrontierSelectResponse"
+      "OptimiserFrontierSelectResponse",
+      "OptimiserSegmentsResponse",
+      "OptimiserSegmentIndexResponse"
     ],
     "session": [
       "SessionStatusResponse",

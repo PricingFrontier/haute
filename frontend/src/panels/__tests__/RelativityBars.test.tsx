@@ -58,6 +58,24 @@ describe("RelativityBars", () => {
     expect(left + width).toBeLessThanOrEqual(100)
   })
 
+  it("draws no bar and a dash for an unavailable value, which does not set the scale", () => {
+    render(
+      <RelativityBars
+        ariaLabel="Means"
+        bars={[
+          { key: "a", label: "Low", value: 0.8 },
+          { key: "z", label: "No weight", value: null },
+        ]}
+      />,
+    )
+
+    const rows = screen.getAllByTestId("relativity-row")
+    expect(barFill(rows[1])).toBeNull()
+    expect(rows[1].textContent).toContain("—")
+    // The only available deviation (0.2) fills half the track.
+    expect(barFill(rows[0]).style.width).toBe("50%")
+  })
+
   it("throws on a non-finite value instead of drawing a neutral bar", () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     expect(() =>

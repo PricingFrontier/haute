@@ -1299,6 +1299,7 @@ class TestStatusRoute:
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
                     "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -5328,6 +5329,12 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
         }
     )
     return graph.model_dump()
+
+
+# A ratebook result's serialised table for its one ``region`` factor spec.
+_REGION_FACTOR_TABLES = {
+    "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.0, "quote_count": 2}]
+}
 
 
 def _ratebook_solve_result_namespace(
@@ -10360,6 +10367,7 @@ class TestFinalizeSolveResult:
             elapsed=1.0,
             ratebook_factor_contexts=factor_contexts,
             factor_columns=[["region"]],
+            extra_fields={"factor_tables": _REGION_FACTOR_TABLES},
         )
 
         job = store.require_job(job_id)
@@ -10479,6 +10487,7 @@ class TestFinalizeSolveResult:
             elapsed=1.0,
             factors_df=factors_df,
             factor_columns=[["region"]],
+            extra_fields={"factor_tables": _REGION_FACTOR_TABLES},
         )
 
         job = store.require_job(job_id)
@@ -10592,6 +10601,7 @@ class TestSolveStatusEdgeCases:
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
                     "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "frontier_data": make_frontier_data([make_frontier_point()]),
                 "created_at": time.time(),
@@ -12821,6 +12831,7 @@ class TestSolveStatusTimeout:
                         "diagnostics_errors": [],
                         "input_summary": make_input_summary(),
                         "scenario_grid": SOLVE_SCENARIO_GRID,
+                        "segment_keys": [],
                     },
                     "created_at": time.time(),
                     "completed_at": time.time(),
@@ -12951,6 +12962,7 @@ class TestSolveStatusTimeout:
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
                     "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -12987,6 +12999,7 @@ class TestSolveStatusTimeout:
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
                     "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "segment_keys": [],
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -13990,7 +14003,7 @@ class TestSolveRatebookUnit:
             constraint_bounds={"volume": 0.9},
             lambdas={"volume": 0.5},
             cd_iterations=3,
-            factor_tables={},
+            factor_tables={"region": {"North": 1.0, "South": 1.0}},
         )
         frontier_points = library_frontier_frame(
             [
@@ -14088,7 +14101,7 @@ class TestSolveRatebookUnit:
             baseline_constraints={},
             lambdas={},
             cd_iterations=2,
-            factor_tables={},
+            factor_tables={"region": {"North": 1.0, "South": 1.0}},
         )
 
         config = {

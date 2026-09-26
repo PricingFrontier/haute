@@ -3,7 +3,7 @@
  *
  * Renders in the same slot as DataPreview when an optimiser solve has
  * completed.  Shows Frontier (default when data exists), Summary,
- * Rates (ratebook mode), Adjustments (both modes), Quotes (online mode) and
+ * Rates (ratebook mode), Adjustments and Segments (both modes), Quotes (online mode) and
  * Convergence tabs as available. Publishing lives only in the node's Export pane, whose target
  * is the frontier point selected here.
  */
@@ -23,6 +23,8 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import type {
   FrontierData,
   OptimiserAdjustmentReport,
+  OptimiserSegmentIndexResponse,
+  OptimiserSegmentsResponse,
   OptimiserSolveResult,
 } from "../api/types"
 import type { SimpleEdge, SimpleNode } from "./editors"
@@ -48,6 +50,7 @@ import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import QuotesTab from "./optimiser/QuotesTab"
 import AdjustmentsTab, { type PointAdjustmentReports } from "./optimiser/AdjustmentsTab"
+import SegmentsTab, { type SegmentResults } from "./optimiser/SegmentsTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { optimiserResultProvenance } from "./optimiser/resultProvenance"
@@ -97,10 +100,13 @@ type OptimiserReview = {
   xConstraintIdx: number
   /** The frontier slice the user picked, which holds while the selection stays put. */
   sliceChoice: FrontierSliceChoice | null
-  ratesFactor: string | null
-  ratesSearch: string
+  /** The key Rates and Segments share (a rating factor or segment key), and its search. */
+  featureKey: string | null
+  featureSearch: string
   /** Frontier point adjustment reports loaded in this review, by `pointAdjustmentKey`. */
   adjustmentReports: PointAdjustmentReports
+  /** Segment breakdowns and indexes loaded in this review. */
+  segmentResults: SegmentResults
 }
 
 const EMPTY_COLUMNS: { name: string; dtype: string }[] = []
@@ -186,22 +192,31 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const defaultTab: OptimiserResultView = (
     displayData.frontier && displayData.frontier.points.length > 0 ? "frontier" : "summary"
   )
-  // The Rates factor and its search belong to the review too, so they survive
-  // tab switches and point steps.
+  // The Rates factor (the Segments key too) and its search belong to the review,
+  // so they survive tab switches and point steps.
   const freshReview: OptimiserReview = {
     key: reviewKey,
     tab: defaultTab,
     xConstraintIdx: 0,
     sliceChoice: null,
-    ratesFactor: null,
-    ratesSearch: "",
+    featureKey: null,
+    featureSearch: "",
     adjustmentReports: {},
+    segmentResults: { breakdowns: {}, indexes: {} },
   }
   const [review, setReview] = useState(freshReview)
   if (review.key !== reviewKey) {
     setReview(freshReview)
   }
-  const { tab, xConstraintIdx, sliceChoice, ratesFactor, ratesSearch, adjustmentReports } = review.key === reviewKey ? review : freshReview
+  const {
+    tab,
+    xConstraintIdx,
+    sliceChoice,
+    featureKey,
+    featureSearch,
+    adjustmentReports,
+    segmentResults,
+  } = review.key === reviewKey ? review : freshReview
   const setTab = useCallback((next: OptimiserResultView) => {
     setReview((current) => ({ ...current, tab: next }))
   }, [])
@@ -211,11 +226,29 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const setSliceChoice = useCallback((next: FrontierSliceChoice) => {
     setReview((current) => ({ ...current, sliceChoice: next }))
   }, [])
-  const setRatesFactor = useCallback((next: string) => {
-    setReview((current) => ({ ...current, ratesFactor: next }))
+  const setFeatureKey = useCallback((next: string) => {
+    setReview((current) => ({ ...current, featureKey: next }))
   }, [])
-  const setRatesSearch = useCallback((next: string) => {
-    setReview((current) => ({ ...current, ratesSearch: next }))
+  const setFeatureSearch = useCallback((next: string) => {
+    setReview((current) => ({ ...current, featureSearch: next }))
+  }, [])
+  const recordSegmentBreakdown = useCallback((key: string, response: OptimiserSegmentsResponse) => {
+    setReview((current) => ({
+      ...current,
+      segmentResults: {
+        ...current.segmentResults,
+        breakdowns: { ...current.segmentResults.breakdowns, [key]: response },
+      },
+    }))
+  }, [])
+  const recordSegmentIndex = useCallback((key: string, response: OptimiserSegmentIndexResponse) => {
+    setReview((current) => ({
+      ...current,
+      segmentResults: {
+        ...current.segmentResults,
+        indexes: { ...current.segmentResults.indexes, [key]: response },
+      },
+    }))
   }, [])
   const recordAdjustmentReport = useCallback((key: string, report: OptimiserAdjustmentReport) => {
     setReview((current) => ({
@@ -419,6 +452,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   // Every result describes its adjustments: online choices, or the ratebook's evaluated steps.
   availableTabs.push("adjustments")
+  // Segments too: analysis columns, a ratebook result's factors, or the empty state.
+  availableTabs.push("segments")
   if (result.mode !== "ratebook") availableTabs.push("quotes")
   // Convergence draws the solve's history or CD trace, so every result offers it.
   availableTabs.push("convergence")
@@ -552,10 +587,10 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
             factorTables={ratebookFactorTables}
             factorLevelOrder={factorLevelOrder}
             selection={{
-              selected: ratesFactor,
-              onSelect: setRatesFactor,
-              search: ratesSearch,
-              onSearch: setRatesSearch,
+              selected: featureKey,
+              onSelect: setFeatureKey,
+              search: featureSearch,
+              onSearch: setFeatureSearch,
             }}
           />
         ) : (
@@ -571,6 +606,24 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           solvedResult={solvedResult}
           pointReports={adjustmentReports}
           onPointReport={recordAdjustmentReport}
+        />
+      )}
+
+      {activeTab === "segments" && (
+        <SegmentsTab
+          jobId={jobId}
+          frontierGeneration={solvedResult.frontier_generation}
+          pointIndex={selectedIdx}
+          solvedResult={solvedResult}
+          selection={{
+            selected: featureKey,
+            onSelect: setFeatureKey,
+            search: featureSearch,
+            onSearch: setFeatureSearch,
+          }}
+          results={segmentResults}
+          onBreakdown={recordSegmentBreakdown}
+          onIndex={recordSegmentIndex}
         />
       )}
 

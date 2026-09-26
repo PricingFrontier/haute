@@ -113,6 +113,7 @@ describe("Optimiser workspace", () => {
       "Frontier",
       "Summary",
       "Adjustments",
+      "Segments",
       "Quotes",
       "Convergence",
     ])
@@ -253,6 +254,7 @@ describe("Optimiser workspace", () => {
       Frontier: "Efficient frontier",
       Summary: "Solve summary",
       Adjustments: "Adjustments",
+      Segments: "Segments",
       Quotes: "Per-quote choices",
       Convergence: "Convergence",
     }

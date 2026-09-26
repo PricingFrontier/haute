@@ -80,6 +80,8 @@ from haute.schemas import (
     OptimiserFrontierStatusResponse,
     OptimiserMlflowLogResponse,
     OptimiserSaveResponse,
+    OptimiserSegmentIndexResponse,
+    OptimiserSegmentsResponse,
     OptimiserSolveResponse,
     OptimiserStatusResponse,
     PolarsStepsRenderResponse,
@@ -204,6 +206,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         OptimiserFrontierAutoRangeStartResponse,
         OptimiserFrontierAutoRangeStatusResponse,
         OptimiserFrontierSelectResponse,
+        OptimiserSegmentsResponse,
+        OptimiserSegmentIndexResponse,
     ),
 }
 

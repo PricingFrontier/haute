@@ -718,6 +718,16 @@ Agreement tests per quote and in aggregate for the objective and every constrain
 
 **Evidence:** Current code this package changes or relies on: `src/haute/routes/optimiser.py`, `src/haute/schemas.py`, `frontend/src/api/client.ts`, `frontend/src/panels/modelling/FeatureBrowser.tsx`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/OptimiserPreview.tsx`, `tests/test_api_contracts.py`.
 
+**Implemented (26 September 2026).** As specified in the optimiser low-level specification ("Segment breakdowns (OPT-V11)") and the frontend specification, with these choices the plan left open:
+
+- The keys and the cardinality gate's verdict are recorded on the result at finalize (`segment_keys`), from metadata already held (the side table's `column_stats`, the factor tables), so the tab lists the keys unranked before the index arrives and shows the empty state without a request. A rating factor named like an analysis column is listed once, as the factor, so its levels are the Rates tab's.
+- Numeric bins start at the lower quantiles at 0, 0.05, …, 0.95 and are closed on the left (`[e_i, e_(i+1))`, the last bin running to the maximum), rather than right-closed from the minimum: a key with a few frequent values (a flag, a tier) keeps them in separate bins, where right-closed bins merged the two smallest values. Tied quantiles still collapse into one bin.
+- Rating factors are categorical keys (the top 15 by quotes plus Other), grouped by a new reducer, `FactorLevelSegments`, over V09C's factor side table and labels; V09C's `FactorSegments` is unchanged. The exact 2,000-level check runs on every categorical grouping, factors included.
+- "The share at the range edge" is one figure: a quote at the grid's first or last step. The weighting candidates and their refusals are the Adjustments tab's (a negative value or a zero total refuses the weighting for every level); a level whose weight totals 0 is refused alone.
+- Refusals are 422s with an `error_code`: `segment_key_unknown`, `segment_key_unavailable` (the gate, or the exact check) and `segment_weight_unknown`. The index lists a key the exact check refuses during ranking as unavailable, with the reason.
+- The adjustment spread is taken over the levels a breakdown lists (bins, or the top 15 and Other, and Missing), unweighted. The index cache is `job["segment_indexes"]`, bounded at 64 through the adjustment report cache's `cache_point_report` (now taking a `limit`), and cleared by a recompute. Breakdowns are not cached server side; the frontend keeps them for the review.
+- The review's Rates selection became the shared `featureKey`/`featureSearch`. `RelativityBars` accepts a `null` value (no bar, "—") for a zero-weight level, and `FeatureBrowser` a `null` measure (unranked, no bar).
+
 ### OPT-V12 — Quotes explorer over the chosen scenarios
 
 **Why:** A reviewer can find a specific quote, or the quotes the optimiser pushed hardest, with each quote's chosen scenario and its objective and constraint values at that scenario. Sorting and search run **server-side over the full result**, not over the first 100 rows. Gaps closed: G11, G22.

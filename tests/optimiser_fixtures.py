@@ -308,6 +308,8 @@ def make_solved_result(
         "input_summary": make_input_summary(),
         "diagnostics_errors": [],
         "scenario_grid": make_scenario_grid(extra.get("n_steps") or 3),
+        # No analysis columns and (online) no rating factors: nothing to break down.
+        "segment_keys": [],
     }
     result.update(extra)
     return result

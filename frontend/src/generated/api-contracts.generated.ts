@@ -1350,7 +1350,7 @@ export interface OptimiserFrontierPointSummary {
  * A result diagnostic that could not be produced, and why.
  */
 export interface OptimiserDiagnosticError {
-  diagnostic: 'adjustments' | 'adjustment_weight' | 'frontier';
+  diagnostic: 'adjustments' | 'adjustment_weight' | 'frontier' | 'segment_weight';
   error_type: string;
   message: string;
 }
@@ -1515,6 +1515,7 @@ export interface OptimiserSolveResult {
    * @minItems 1
    */
   scenario_grid: OptimiserScenarioGridStep[];
+  segment_keys: OptimiserSegmentKey[];
   selected_frontier_point: number | null;
   total_objective: number;
   warning: string | null;
@@ -1627,6 +1628,21 @@ export interface OptimiserSolverSettings {
 export interface OptimiserScenarioGridStep {
   optimal_step: number;
   scenario_value: number;
+}
+/**
+ * One key a result can be broken down by (OPT-V11), and whether it can be.
+ *
+ * ``source`` is an analysis column or a ratebook rating factor (named as the
+ * Rates tab names it); ``binning`` says whether its levels are quantile bins
+ * or distinct values. The cardinality gate decides ``available``;
+ * ``unavailable_reason`` says why not, and is ``None`` exactly when it is.
+ */
+export interface OptimiserSegmentKey {
+  available: boolean;
+  binning: 'numeric' | 'categorical';
+  key: string;
+  source: 'analysis' | 'factor';
+  unavailable_reason: string | null;
 }
 export interface OptimiserApplyResponse {
   constraints: {
@@ -1777,6 +1793,82 @@ export interface OptimiserFrontierSelectResponse {
   status: string;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * The chosen scenario values of one target, per level of one key (OPT-V11).
+ */
+export interface OptimiserSegmentsResponse {
+  binning: 'numeric' | 'categorical';
+  diagnostics_errors: OptimiserDiagnosticError[];
+  frontier_generation: number;
+  key: string;
+  mean_scenario_value: number;
+  n_levels: number;
+  n_quotes: number;
+  point_index: number | null;
+  /**
+   * @minItems 1
+   */
+  rows: OptimiserSegmentRow[];
+  source: 'analysis' | 'factor';
+  weight: string;
+  weight_label: string;
+  weighted_mean_scenario_value: number | null;
+}
+/**
+ * One level of a segment breakdown.
+ *
+ * ``weighted`` is ``None`` when the weighting was refused for the target, or
+ * when this level's weight totals 0 (a diagnostics entry names it); the quote
+ * count and the unweighted figures always remain.
+ */
+export interface OptimiserSegmentRow {
+  deployed_factor_differs: number | null;
+  kind: 'bin' | 'value' | 'other' | 'missing';
+  label: string;
+  lower: number | null;
+  merged_levels: number | null;
+  quotes: number;
+  unweighted: OptimiserSegmentFigures;
+  upper: number | null;
+  weight_total: number | null;
+  weighted: OptimiserSegmentFigures | null;
+}
+/**
+ * A level's chosen scenario values against the 1.0 base price, under one weighting.
+ */
+export interface OptimiserSegmentFigures {
+  mean_scenario_value: number;
+  share_at_edge: number;
+  share_down: number;
+  share_up: number;
+}
+/**
+ * The keys of one target ranked by their adjustment spread (OPT-V11).
+ */
+export interface OptimiserSegmentIndexResponse {
+  frontier_generation: number;
+  keys: OptimiserSegmentIndexKey[];
+  point_index: number | null;
+  statistic: OptimiserSegmentIndexStatistic;
+}
+/**
+ * A segment key with its ranking statistic (``None`` when it is unavailable).
+ */
+export interface OptimiserSegmentIndexKey {
+  available: boolean;
+  binning: 'numeric' | 'categorical';
+  key: string;
+  source: 'analysis' | 'factor';
+  spread: number | null;
+  unavailable_reason: string | null;
+}
+/**
+ * What ranks the segment keys, named for the browser's header.
+ */
+export interface OptimiserSegmentIndexStatistic {
+  description: string;
+  label: string;
 }
 export interface SessionStatusResponse {
   ok: boolean;

@@ -1260,6 +1260,12 @@ export type {
   OptimiserHistoryEntry,
   OptimiserMlflowLogResponse as MlflowLogResponse,
   OptimiserSaveResponse as SaveOptimiserResponse,
+  OptimiserSegmentFigures,
+  OptimiserSegmentIndexKey,
+  OptimiserSegmentIndexResponse,
+  OptimiserSegmentKey,
+  OptimiserSegmentRow,
+  OptimiserSegmentsResponse,
   OptimiserSolveResponse,
 } from "../generated/api-contracts.generated"
 

@@ -241,6 +241,15 @@
         "optimal_step": 2,
         "scenario_value": 1.2
       }
+    ],
+    "segment_keys": [
+      {
+        "key": "region",
+        "source": "analysis",
+        "binning": "categorical",
+        "available": true,
+        "unavailable_reason": null
+      }
     ]
   },
   "frontier": {

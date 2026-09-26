@@ -615,6 +615,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/OptimiserSaveResponse"},
         },
     },
+    "/api/optimiser/segments": {
+        "POST": {
+            "request_ref": "#/components/schemas/OptimiserSegmentsRequest",
+            "success_schema": {"$ref": "#/components/schemas/OptimiserSegmentsResponse"},
+        },
+    },
+    "/api/optimiser/segments/index": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/OptimiserSegmentIndexResponse"},
+        },
+    },
     "/api/optimiser/solve": {
         "POST": {
             "request_ref": "#/components/schemas/OptimiserSolveRequest",

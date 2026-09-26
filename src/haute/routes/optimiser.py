@@ -10,9 +10,9 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from haute._env import float_env
 from haute._execution_admission import (
@@ -93,6 +93,7 @@ from haute.routes._optimiser_outcomes import (
     _choice_spec,
     lease_apply_frame,
 )
+from haute.routes._optimiser_segments import SegmentQueries
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
 from haute.routes._optimiser_solver import _job_elapsed_seconds
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
@@ -121,6 +122,9 @@ from haute.schemas import (
     OptimiserMlflowLogResponse,
     OptimiserSaveRequest,
     OptimiserSaveResponse,
+    OptimiserSegmentIndexResponse,
+    OptimiserSegmentsRequest,
+    OptimiserSegmentsResponse,
     OptimiserSolveRequest,
     OptimiserSolveResponse,
     OptimiserStatusResponse,
@@ -137,6 +141,15 @@ _store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 _frontier_service = OptimiserFrontierService(_store)
 _choice_service = ChoiceQueryService(_store, _frontier_service)
+_segment_queries = SegmentQueries(_store, _choice_service, _frontier_service)
+
+OPTIMISER_SEGMENTS_ROUTE: Final[Literal["/api/optimiser/segments"]] = "/api/optimiser/segments"
+"""A result's chosen scenarios broken down by one segment key (OPT-V11)."""
+
+OPTIMISER_SEGMENT_INDEX_ROUTE: Final[Literal["/api/optimiser/segments/index"]] = (
+    "/api/optimiser/segments/index"
+)
+"""A result's segment keys ranked by adjustment spread (OPT-V11)."""
 
 
 def _prepare_optimiser_execution_request(
@@ -631,6 +644,39 @@ def _point_adjustments(
             expected_status="completed",
         )
     return report
+
+
+@router.post(
+    OPTIMISER_SEGMENTS_ROUTE.removeprefix(router.prefix),
+    response_model=OptimiserSegmentsResponse,
+)
+async def segments(body: OptimiserSegmentsRequest, request: Request) -> OptimiserSegmentsResponse:
+    """Break the target's chosen scenarios down by one segment key.
+
+    It may wait for a frontier point's choices to materialise; a client that
+    leaves stops waiting without stopping that work for others.
+    """
+    return await run_until_disconnected(
+        request,
+        lambda token: _segment_queries.segments(
+            body.job_id, body.point_index, body.key, body.weight, token
+        ),
+    )
+
+
+@router.get(
+    OPTIMISER_SEGMENT_INDEX_ROUTE.removeprefix(router.prefix),
+    response_model=OptimiserSegmentIndexResponse,
+)
+async def segment_index(
+    request: Request,
+    job_id: str,
+    point_index: int | None = Query(default=None, ge=0),
+) -> OptimiserSegmentIndexResponse:
+    """Rank the target's segment keys by adjustment spread (cached per target)."""
+    return await run_until_disconnected(
+        request, lambda token: _segment_queries.index(job_id, point_index, token)
+    )
 
 
 def _input_summary(solve_summary: Mapping[str, Any]) -> dict[str, Any]:

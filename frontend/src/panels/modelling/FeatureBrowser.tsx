@@ -4,7 +4,8 @@
  *
  * Displays a searchable, scrollable list of items in the caller's ranking,
  * with small bars for the ranking measure, which `rankedBy` names so a
- * ranking that is not importance never reads as one. Click to select.
+ * ranking that is not importance never reads as one. An item whose measure is
+ * `null` is unranked and draws no bar. Click to select.
  */
 import { useState, useMemo } from "react"
 import { Search } from "lucide-react"
@@ -12,8 +13,9 @@ import { MODEL_COLORS } from "../../theme/colors"
 
 export type FeatureItem = {
   feature: string
-  /** The ranking measure the bars draw; `rankedBy` names it when it is not importance. */
-  importance: number
+  /** The ranking measure the bars draw; `rankedBy` names it when it is not importance.
+   *  `null` is unranked (not yet measured, or not measurable): no bar. */
+  importance: number | null
 }
 
 export type FeatureRanking = {
@@ -57,10 +59,10 @@ export function FeatureBrowser({
     return features.filter((f) => f.feature.toLowerCase().includes(q))
   }, [features, search])
 
-  const maxImportance =
-    features.length > 0
-      ? features.map((f) => Math.abs(f.importance)).reduce((a, b) => Math.max(a, b), -Infinity)
-      : 1
+  const maxImportance = features.reduce(
+    (largest, f) => (f.importance === null ? largest : Math.max(largest, Math.abs(f.importance))),
+    0,
+  )
 
   return (
     <div className="validation-feature-browser" style={width === undefined ? undefined : { width }}>
@@ -107,7 +109,9 @@ export function FeatureBrowser({
         )}
         {filtered.map((f) => {
           const isSelected = f.feature === selected
-          const barWidth = maxImportance > 0 ? (Math.abs(f.importance) / maxImportance) * 100 : 0
+          const barWidth = f.importance !== null && maxImportance > 0
+            ? (Math.abs(f.importance) / maxImportance) * 100
+            : 0
           return (
             <button
               key={f.feature}
@@ -124,15 +128,18 @@ export function FeatureBrowser({
                 >
                   {f.feature}
                 </div>
-                <div
-                  className="w-full h-1 rounded-full overflow-hidden mt-0.5"
-                  style={{ background: "var(--chrome-hover)" }}
-                >
+                {f.importance !== null && (
                   <div
-                    className="h-full rounded-full"
-                    style={{ width: `${barWidth}%`, background: MODEL_COLORS.accent, opacity: 0.6 }}
-                  />
-                </div>
+                    className="w-full h-1 rounded-full overflow-hidden mt-0.5"
+                    style={{ background: "var(--chrome-hover)" }}
+                  >
+                    <div
+                      data-testid="feature-browser-bar"
+                      className="h-full rounded-full"
+                      style={{ width: `${barWidth}%`, background: MODEL_COLORS.accent, opacity: 0.6 }}
+                    />
+                  </div>
+                )}
               </div>
             </button>
           )

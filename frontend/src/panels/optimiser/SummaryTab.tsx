@@ -115,6 +115,7 @@ const OPTIMISER_DIAGNOSTIC_LABELS: Record<OptimiserDiagnosticError["diagnostic"]
   adjustments: "Adjustment report",
   adjustment_weight: "Adjustment weighting",
   frontier: "Efficient frontier",
+  segment_weight: "Segment weighting",
 }
 
 function formatOptimiserDiagnostic(diagnostic: string): string {

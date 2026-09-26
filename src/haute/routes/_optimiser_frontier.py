@@ -69,6 +69,7 @@ from haute.routes._optimiser_limits import (
     limited_frontier_payload,
 )
 from haute.routes._optimiser_outcomes import lease_apply_frame
+from haute.routes._optimiser_segments import SEGMENT_INDEXES_KEY
 from haute.routes._optimiser_service import (
     _FRONTIER_RECOMPUTE_JOB_TYPE,
     _JOB_TYPE_KEY,
@@ -1363,8 +1364,10 @@ class OptimiserFrontierService:
                             points_returned=frontier_dict["points_returned"],
                         ),
                         _FRONTIER_GENERATION_KEY: next_frontier_generation,
-                        # The old points' reports describe points that no longer exist.
+                        # The old points' reports and indexes describe points that no
+                        # longer exist.
                         ADJUSTMENT_REPORTS_KEY: {},
+                        SEGMENT_INDEXES_KEY: {},
                         "selected_frontier_point": None,
                         "artifact_handles": retained_handles,
                     },

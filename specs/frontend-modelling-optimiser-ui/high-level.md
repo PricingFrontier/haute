@@ -456,7 +456,7 @@ each one and why, in the same form as model validation. A failed solve with no e
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
 never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
 side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Quotes (online), Adjustments (both modes) and Convergence; it has no
+Summary, Rates (ratebook), Adjustments and Segments (both modes), Quotes (online) and Convergence; it has no
 Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
 detail card says so. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
@@ -487,6 +487,15 @@ compared with current pricing. For a ratebook result it describes the grid step 
 evaluated for each quote, and states how many quotes' deployed factor differs from that step
 (the within-range rounding the deployed, unsnapped factor keeps). Summary shows the shares
 compactly, with that count for a ratebook result, and a link to the view.
+Segments shows where the optimiser adjusted, for the solved result or the selected point: its
+keys (the analysis columns, and a ratebook result's rating factors) in a searchable list ranked by
+how differently the optimiser adjusted each key's levels (named above the list, and listed unranked
+until the ranking arrives), beside the selected key's mean chosen scenario value per level against
+the 1.0 base line, with an aligned quote strip, a detail line for the hovered or focused level and a
+values table. A **Weight by** switch weighs the means and shares as Adjustments does; a level
+whose weight totals 0 shows "—" for its weighted figures and says why. The key chosen here and
+on Rates is the same choice. A key with too many levels says why it cannot be broken down; a
+result with no keys says "Add analysis columns in the optimiser config".
 Selecting a frontier point never removes a view: Convergence stays available and, for a selected point, says "History is recorded for the solved result; frontier point N: converged
 (or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
 position. The Frontier chart fits the pane, names its axes (the objective

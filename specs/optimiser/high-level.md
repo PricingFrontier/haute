@@ -227,6 +227,19 @@ Invariants:
   choices and kept for the job's lifetime (at most 64 per job), so it is still served after the
   grid is gone, until a frontier recompute replaces the points. It describes the solution only;
   it never compares with current or deployed pricing. Ratebook results gain it with OPT-V09C.
+- Where the optimiser adjusted is described by segment, for the as-solved result and any frontier
+  point: per level of one key (an analysis column, or a ratebook result's rating factor labelled as
+  the Rates tab labels it), the quotes, the mean chosen scenario value against 1.0 (weighted and
+  unweighted), the shares adjusted up and down and the share at the edge of the scenario range.
+  A numeric key is cut into at most 20 quantile bins (tied edges collapse into one bin); a
+  categorical key lists its 15 largest levels and sums the rest into Other; a quote with no value,
+  or absent from the analysis frame, is Missing. Every quote is in exactly one level. The weighting
+  rules are the Adjustments tab's; a level whose weight totals 0 has no weighted figures, and says
+  so, while its count and unweighted figures remain. Keys are ranked by how differently the
+  optimiser adjusted their levels (the quote-weighted standard deviation of the levels' mean
+  scenario values). A key with too many levels to break down (an estimated 1,800 distinct values,
+  exactly 2,000, or a value over 256 bytes; at most 30 rating factors) is listed as unavailable
+  with its reason, never truncated silently.
 - Crash-surviving apply-result, ratebook-factor and quote-analysis directories carry distinct
   versioned Haute ownership markers. Startup cleanup can remove only stale marked direct
   children of those three dedicated roots; unmarked or foreign temporary data is never swept.

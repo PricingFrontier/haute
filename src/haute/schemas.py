@@ -3300,7 +3300,7 @@ class OptimiserDiagnosticError(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    diagnostic: Literal["adjustments", "adjustment_weight", "frontier"]
+    diagnostic: Literal["adjustments", "adjustment_weight", "frontier", "segment_weight"]
     error_type: str
     message: str
 
@@ -3498,6 +3498,151 @@ class OptimiserAdjustmentReport(BaseModel):
         return self
 
 
+class OptimiserSegmentKey(BaseModel):
+    """One key a result can be broken down by (OPT-V11), and whether it can be.
+
+    ``source`` is an analysis column or a ratebook rating factor (named as the
+    Rates tab names it); ``binning`` says whether its levels are quantile bins
+    or distinct values. The cardinality gate decides ``available``;
+    ``unavailable_reason`` says why not, and is ``None`` exactly when it is.
+    """
+
+    model_config = _STRICT_ROW
+
+    key: str = Field(min_length=1)
+    source: Literal["analysis", "factor"]
+    binning: Literal["numeric", "categorical"]
+    available: bool
+    unavailable_reason: str | None
+
+    @model_validator(mode="after")
+    def _reason_exactly_when_unavailable(self) -> OptimiserSegmentKey:
+        if (self.unavailable_reason is None) != self.available:
+            raise ValueError(
+                f"segment key {self.key!r}: unavailable_reason is set exactly when it is "
+                "unavailable"
+            )
+        return self
+
+
+class OptimiserSegmentFigures(BaseModel):
+    """A level's chosen scenario values against the 1.0 base price, under one weighting."""
+
+    model_config = _STRICT_ROW
+
+    mean_scenario_value: float
+    share_up: float = Field(ge=0, le=1)
+    share_down: float = Field(ge=0, le=1)
+    # At the scenario grid's first or last step.
+    share_at_edge: float = Field(ge=0, le=1)
+
+
+class OptimiserSegmentRow(BaseModel):
+    """One level of a segment breakdown.
+
+    ``weighted`` is ``None`` when the weighting was refused for the target, or
+    when this level's weight totals 0 (a diagnostics entry names it); the quote
+    count and the unweighted figures always remain.
+    """
+
+    model_config = _STRICT_ROW
+
+    label: str
+    kind: Literal["bin", "value", "other", "missing"]
+    # A bin's bounds: ``[lower, upper)``, the last bin ``[lower, upper]``.
+    lower: float | None
+    upper: float | None
+    # How many distinct values the Other level merges.
+    merged_levels: int | None = Field(ge=2)
+    quotes: int = Field(gt=0)
+    weight_total: float | None = Field(ge=0)
+    unweighted: OptimiserSegmentFigures
+    weighted: OptimiserSegmentFigures | None
+    # A ratebook target's count of quotes whose deployed factor differs from the
+    # evaluated step; ``None`` online.
+    deployed_factor_differs: int | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _fields_of_its_kind(self) -> OptimiserSegmentRow:
+        if (self.lower is not None and self.upper is not None) != (self.kind == "bin"):
+            raise ValueError(f"segment level {self.label!r}: only a bin has bounds")
+        if (self.merged_levels is not None) != (self.kind == "other"):
+            raise ValueError(f"segment level {self.label!r}: only Other merges levels")
+        if self.weight_total is None and self.weighted is not None:
+            raise ValueError(f"segment level {self.label!r}: weighted figures need a weight")
+        return self
+
+
+class OptimiserSegmentsRequest(BaseModel):
+    job_id: str
+    # ``None`` is the as-solved result; an integer, that frontier point.
+    point_index: int | None = Field(default=None, ge=0)
+    key: str = Field(min_length=1)
+    # ``"quotes"`` or a choice-frame value column at the chosen scenario.
+    weight: str = "quotes"
+
+
+class OptimiserSegmentsResponse(BaseModel):
+    """The chosen scenario values of one target, per level of one key (OPT-V11)."""
+
+    model_config = _STRICT_ROW
+
+    key: str
+    source: Literal["analysis", "factor"]
+    binning: Literal["numeric", "categorical"]
+    weight: str
+    weight_label: str
+    point_index: int | None = Field(ge=0)
+    # The frontier generation the point index refers to.
+    frontier_generation: int = Field(ge=0)
+    n_quotes: int = Field(gt=0)
+    # Bins, or the distinct non-missing values before truncation to the top 15.
+    n_levels: int = Field(ge=0)
+    mean_scenario_value: float
+    # ``None`` when the weighting was refused.
+    weighted_mean_scenario_value: float | None
+    rows: list[OptimiserSegmentRow] = Field(min_length=1)
+    diagnostics_errors: list[OptimiserDiagnosticError]
+
+    @model_validator(mode="after")
+    def _levels_count_every_quote(self) -> OptimiserSegmentsResponse:
+        if sum(row.quotes for row in self.rows) != self.n_quotes:
+            raise ValueError("segment levels must count every quote exactly once")
+        return self
+
+
+class OptimiserSegmentIndexStatistic(BaseModel):
+    """What ranks the segment keys, named for the browser's header."""
+
+    model_config = _STRICT_ROW
+
+    label: str
+    description: str
+
+
+class OptimiserSegmentIndexKey(OptimiserSegmentKey):
+    """A segment key with its ranking statistic (``None`` when it is unavailable)."""
+
+    spread: float | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _spread_exactly_when_available(self) -> OptimiserSegmentIndexKey:
+        if (self.spread is None) == self.available:
+            raise ValueError(f"segment key {self.key!r}: spread is set exactly when available")
+        return self
+
+
+class OptimiserSegmentIndexResponse(BaseModel):
+    """The keys of one target ranked by their adjustment spread (OPT-V11)."""
+
+    model_config = _STRICT_ROW
+
+    point_index: int | None = Field(ge=0)
+    frontier_generation: int = Field(ge=0)
+    statistic: OptimiserSegmentIndexStatistic
+    keys: list[OptimiserSegmentIndexKey]
+
+
 class OptimiserEffectiveBound(BaseModel):
     """The absolute bound a result was solved at for one constraint.
 
@@ -3627,6 +3772,9 @@ class OptimiserSolveResult(BaseModel):
     # The solver input's complete grid, recorded at setup: the only source for
     # which adjustments were possible (OPT-V09A).
     scenario_grid: list[OptimiserScenarioGridStep] = Field(min_length=1)
+    # What the result can be broken down by (OPT-V11): its analysis columns and,
+    # for ratebook, its rating factors, each with the cardinality gate's verdict.
+    segment_keys: list[OptimiserSegmentKey]
 
     @model_validator(mode="after")
     def _scenario_grid_is_complete_and_ordered(self) -> OptimiserSolveResult:

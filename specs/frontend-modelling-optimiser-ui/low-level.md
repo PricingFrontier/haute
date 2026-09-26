@@ -61,10 +61,10 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/modelExport.ts`, `frontend/src/panels/modelling/FieldHelpIcon.tsx` | The model file extension per algorithm and the shared hover-only field help icon. |
 | `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence and warnings. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables, including invalid-inference reasons and robust standard errors. |
-| `frontend/src/panels/RelativityBars.tsx` | The diverging-around-1.0 bar list GLM relativities and the optimiser Rates tab share: one row per item in the caller's order, `--chart-above`/`--chart-below` bars scaled to the largest deviation (confidence whiskers included), theme-token baseline and whiskers, optional focusable rows with an active row, an optional aligned side strip, and, from a caller threshold, compact rows whose labels are thinned with `chartLabelIndices`. A non-finite value throws. |
+| `frontend/src/panels/RelativityBars.tsx` | The diverging-around-1.0 bar list GLM relativities and the optimiser Rates tab share: one row per item in the caller's order, `--chart-above`/`--chart-below` bars scaled to the largest deviation (confidence whiskers included), theme-token baseline and whiskers, optional focusable rows with an active row, an optional aligned side strip, and, from a caller threshold, compact rows whose labels are thinned with `chartLabelIndices`. A `null` value is unavailable: the row draws no bar, shows "—" and does not set the scale (the Segments tab's zero-weight level); a non-finite value throws. |
 | `frontend/src/panels/modelling/NumberField.tsx` | Numeric input that keeps a draft until a valid, in-range value commits on blur or Enter. |
 | `frontend/src/panels/modelling/modellingPanes.ts` | `modellingPanesFor(algorithm)` and `resolveModellingPane`, the one pane list behind the modelling tabs and pane bodies. |
-| `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. The browser names what it ranks by ("Ranked by importance", "Ranked by rate spread") and what it lists (features or factors), so a non-importance ranking is never presented as importance. |
+| `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. The browser names what it ranks by ("Ranked by importance", "Ranked by rate spread") and what it lists (features or factors), so a non-importance ranking is never presented as importance. An item whose measure is `null` is unranked and draws no bar (the Segments keys while their index loads). |
 | `frontend/src/panels/IterationLinesChart.tsx` | The shared by-iteration line chart: aligned series (a `null` value is a gap the line bridges; a non-finite value throws), a linear or log value axis (a log axis throws on a value at or below 0, so its caller decides how to show zeros), optional horizontal reference lines (dashed, inside the value domain) and an optional dashed vertical marker at an index, optional point markers, the x-axis labelled with each index's iteration value, and a legend built from the series, reference lines and marker. It draws on `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the width it is given; the modelling Loss tab and the optimiser Convergence tab are its adapters. |
 | `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives (responsive width, SVG surface, legend (line, dashed and bar swatches, and dot, ring, hollow and cross point markers), empty state, `ChartValueGrid`, the value axis of gridlines with compact labels that every validation chart draws, `ChartValuesTable`, a chart's raw values behind a native disclosure in the shared `validation-value-table` (the first column is each row's header), which the Lift, AvE, PDP and Convergence tabs use, and `TwoChartLayout`, the two-chart result layout: side by side with a 24 px gap from a caller breakpoint when both charts exist, each chart at least a caller minimum wide, otherwise full width one under the other, with an optional header above) and loss visualisation (`LossTab` adapts the training loss history to `IterationLinesChart`; `LossChart` is the compact inline curve). Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
 | `frontend/src/panels/modelling/LiftTab.tsx`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/modelling/AveTab.tsx`, `frontend/src/panels/modelling/PdpTab.tsx` | Lift, residual, actual-versus-estimated and partial-dependence result views. Lift and Residuals lay their two charts out with `TwoChartLayout`: Lift side by side from 900 px (charts at least 260 px, a Double lift / Lorenz curve switch in the header when narrower), Residuals from 760 px (at least 280 px, stacked when narrower). |
@@ -72,6 +72,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective, the constraint-attainment table (with λ, for both modes), ratebook-impact state and a compact adjustments summary (up / down / unadjusted / at the range edge) linking to the Adjustments tab. |
 | `frontend/src/panels/HistogramChart.tsx` | The shared histogram (extracted from Residuals): a titled `ChartSvg` with value gridlines, x ticks, axis labels, a dashed reference line and a legend. Bars are placed on a numeric axis (Residuals' bins, by centre) or as evenly spaced categories (the Adjustments grid values), and may be focusable (`role="button"`, a described `aria-label`, activated by hover, focus, click, Enter or Space) with the active bar highlighted. A non-finite bar value or an empty bar list throws. |
 | `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares). |
+| `frontend/src/panels/optimiser/SegmentsTab.tsx` | The Segments view (see Control flow): the result's segment keys in the per-feature diagnostic layout, ranked by the index's adjustment spread (unranked while it loads), the selected key's per-level mean scenario value as `RelativityBars` around 1.0 with an aligned quote strip, a `ChartFocusDetail` line, a values table, the Weight by switch, and the review-owned caches of loaded breakdowns and indexes. |
 | `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
 | `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and strict frontier-point detail display. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and reports the hovered or focused point through `ChartFocusDetail`. `DetailCard` shows the displayed result's objective and attainment table, the point's feasibility with its reason, `converged` and iterations, each λ exactly as reported with the sign it enters each quote's choice with, and the discrete trade-off row. Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
 | `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), and `discreteTradeOff` (Δobjective / Δrelaxation to the next point in the relaxing direction of the same slice, `bound_next − bound` for max and `bound − bound_next` for min, only between two feasible points with different bounds). |
@@ -286,6 +287,34 @@ Only a current, accepted save response may acknowledge this revision transition.
    "The scenario grid has no 1.0 step, so no quote is unadjusted." when `has_unadjusted` is
    false, and a closed values table (Step | Scenario value | Quotes | Share of quotes, plus the
    weighting and its share when one is chosen).
+   **Segments** (every result) breaks the chosen scenarios down by the result's
+   `segment_keys` (analysis columns, and a ratebook result's rating factors). With no key it
+   shows "Add analysis columns in the optimiser config". Otherwise it uses
+   `FeatureDiagnosticLayout`: the keys in a searchable browser ranked by the index statistic,
+   named in the browser's header ("Adjustment spread", the quote-weighted standard deviation of
+   the levels' mean scenario values), from `GET /segments/index` for the target; until the index
+   arrives the keys are listed unranked, in catalogue order with no bars, and an index failure
+   leaves them unranked with the message and **Retry**. The selected key and the search are the
+   Rates tab's (`OptimiserPreview`'s review state), so choosing a factor in one selects it in the
+   other; a selection that is not a key here shows the first ranked key. An unavailable key shows
+   its reason and makes no request. An available key loads `POST /segments` for the target (the
+   selected point, else the solved result) and the chosen weighting, with one `AbortController`
+   per request: switching key, weighting or point aborts the request in flight, and a reply for a
+   key, weighting, point, job or generation the view has moved past is dropped. A 409
+   `frontier_point_apply_replaced` is reissued, a 410 shows the message with no Retry, anything
+   else offers **Retry**. Loaded breakdowns and indexes are kept for the review, by
+   `(job, generation, target, key, weight)` and `(job, generation, target)`, so returning to one
+   makes no request. The chart is `RelativityBars` of each level's mean chosen scenario value
+   under the weighting (the unweighted mean for Quotes) around the 1.0 base line, in the
+   response's level order, with an aligned quote strip (0 to the largest level's quotes); a level
+   whose weighted mean is unavailable draws no bar and shows "—". Hovering or focusing a level
+   fills the `ChartFocusDetail` line (level, quotes and share, the mean against 1.0, the shares
+   adjusted up and down and at the range edge, and for a ratebook result the deployed-factor
+   count). **Weight by** offers Quotes, the objective and each constraint at the chosen scenario;
+   the response's diagnostics (a refused weighting, a zero-weight level) are listed under it. A
+   closed values table lists Level | Quotes | Mean (unweighted) | Mean (the weighting) | Adjusted
+   up | Adjusted down | At range edge (and Deployed ≠ evaluated step for a ratebook result), with
+   "—" for an unavailable weighted figure.
    Quotes reads `/apply` through the result store's apply cache (see Edge cases). The MLflow log request carries the node's current `mlflow_destination` (found
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
@@ -367,7 +396,7 @@ without broadening the exactly-one-direct fallback.
   with `chartLabelIndices`, always keeping the first and last. A closed "View rate
   values" table lists Level | Rate | vs neutral 1.0 (%) | Quotes | Share in banding
   order; "vs neutral 1.0" is the rate against the unadjusted base price, and the shares
-  sum to 100.0%. The selected factor and the search live in `OptimiserPreview`'s review
+  sum to 100.0%. The selected factor and the search (shared with the Segments tab) live in `OptimiserPreview`'s review
   state, so they survive tab switches and frontier-point steps and reset with the tab on
   a new job or node.
 - The Summary beeswarm ("Mechanical Price Effect") draws on `ResponsiveChart` at the
@@ -513,6 +542,11 @@ the axis labels, one bar per grid value with empty bars, the base-price line, th
 switch, the quantile row and shares, the no-1.0 note, focusable bars with the detail line, the
 lazy point load only while the tab is open, a fast stepper whose earlier replies are discarded,
 a replaced 409 reissued without an error, Retry, and the 410 state;
+`frontend/src/panels/optimiser/__tests__/SegmentsTab.test.tsx` covers the Segments view: the
+empty state, the keys unranked while the index loads and then ranked with the statistic named,
+search and select, the shared selection, an unavailable key's reason with no request, the chart
+and detail line, the values table with "—" for a zero-weight level, the Weight by switch, abort
+on key switch, a point target and Retry;
 `frontend/src/panels/modelling/__tests__/ValidationDistributionTabs.test.tsx` keeps Residuals on
 the extracted `HistogramChart` unchanged, and
 `frontend/src/panels/optimiser/__tests__/ConvergenceChart.test.tsx` the online small multiples

@@ -17,9 +17,9 @@ solver evaluated (OPT-V09C).
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from itertools import accumulate
-from typing import Any
+from typing import Any, TypeVar
 
 from haute.routes._optimiser_outcomes import (
     DEPLOYED_FACTOR_DIFFERS,
@@ -45,6 +45,8 @@ MAX_CACHED_ADJUSTMENT_REPORTS = 64
 
 PointReportKey = tuple[int, int]
 
+K = TypeVar("K", bound=Hashable)
+
 
 def adjustment_report(
     histogram: ChoiceQueryResult, spec: ChoiceFrameSpec
@@ -60,7 +62,7 @@ def adjustment_report(
     weights: dict[str, list[float]] = {QUOTES_WEIGHT: [float(count) for count in rows["quotes"]]}
     labels = {QUOTES_WEIGHT: "Quotes"}
     errors: list[dict[str, str]] = []
-    for column, label in _candidate_weightings(spec):
+    for column, label in candidate_weightings(spec):
         negative = int(rows[f"{NEGATIVE_PREFIX}{column}"].sum())
         per_step = [float(value) for value in rows[column]]
         if negative:
@@ -112,17 +114,24 @@ def adjustment_report(
 
 
 def cache_point_report(
-    reports: Mapping[PointReportKey, Any], key: PointReportKey, report: Any
-) -> dict[PointReportKey, Any]:
-    """*reports* with *report* stored as the newest under *key*, at most 64 kept."""
+    reports: Mapping[K, Any],
+    key: K,
+    report: Any,
+    *,
+    limit: int = MAX_CACHED_ADJUSTMENT_REPORTS,
+) -> dict[K, Any]:
+    """*reports* with *report* stored as the newest under *key*, at most *limit* kept.
+
+    The segment index cache (OPT-V11) is bounded the same way.
+    """
     cached = {existing: value for existing, value in reports.items() if existing != key}
     cached[key] = report
-    while len(cached) > MAX_CACHED_ADJUSTMENT_REPORTS:
+    while len(cached) > limit:
         del cached[next(iter(cached))]
     return cached
 
 
-def _candidate_weightings(spec: ChoiceFrameSpec) -> list[tuple[str, str]]:
+def candidate_weightings(spec: ChoiceFrameSpec) -> list[tuple[str, str]]:
     """Each value column that may weigh the report, with its label, in configured order."""
     names = ("Objective", *spec.constraint_names)
     return [

@@ -7,6 +7,7 @@ export type OptimiserResultView =
   | "summary"
   | "rates"
   | "adjustments"
+  | "segments"
   | "quotes"
   | "convergence"
 
@@ -15,6 +16,7 @@ export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
   summary: "Summary",
   rates: "Rates",
   adjustments: "Adjustments",
+  segments: "Segments",
   quotes: "Quotes",
   convergence: "Convergence",
 }
@@ -50,6 +52,14 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
       "How the optimiser adjusted the book relative to the base price: the quotes (or weight) "
       + "at each scenario value of the grid, where 1.0 is the base price with no adjustment. "
       + "A ratebook result is described at the grid step the solver evaluated for each quote. "
+      + "It describes the solution only; nothing is compared with current pricing.",
+  },
+  segments: {
+    title: "Segments",
+    description:
+      "Where the optimiser adjusted: for each level of an analysis column or rating factor, the "
+      + "quotes and their mean chosen scenario value against 1.0, the base price with no "
+      + "adjustment, with the shares adjusted up, down and at the edge of the scenario range. "
       + "It describes the solution only; nothing is compared with current pricing.",
   },
   quotes: {

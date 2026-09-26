@@ -429,6 +429,7 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
       { optimal_step: 1, scenario_value: 1.0 },
       { optimal_step: 2, scenario_value: 1.1 },
     ],
+    segment_keys: [],
     ...overrides,
   }
 }

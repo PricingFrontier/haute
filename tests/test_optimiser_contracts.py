@@ -1373,7 +1373,7 @@ class TestSolveResultContract:
             OptimiserSolveResult.model_validate(result)
 
     @pytest.mark.parametrize(
-        "missing", ["mode", "input_summary", "diagnostics_errors", "scenario_grid"]
+        "missing", ["mode", "input_summary", "diagnostics_errors", "scenario_grid", "segment_keys"]
     )
     def test_required_fields_have_no_silent_default(self, missing: str) -> None:
         result = make_solved_result()

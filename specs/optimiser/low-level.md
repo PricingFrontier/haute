@@ -12,6 +12,7 @@
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
+| `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
 | `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`), both handing each caller a `FlightSubscription`. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload` (a lazy count plus a bounded `head`, collected by the caller inside its lease), `limited_frontier_payload`. |
@@ -108,6 +109,8 @@ scenario grid"), and `artifact_handles["quote_analysis"]` when analysis columns 
 `artifact_handles["apply_result"]` is the as-solved per-quote frame in both modes (online:
 `SolveResult.dataframe`; ratebook: `RatebookResult.quote_results`, see "Ratebook per-quote
 choices (OPT-V09C)"), and `artifact_handles["ratebook_factors"]` the ratebook factor rows.
+`adjustment_reports` (OPT-V10's point report cache) and `segment_indexes` (OPT-V11's segment index
+cache, by `(frontier_generation, point_index)`) are cleared by a frontier recompute.
 `publish_summary`, `input_provenance` and `scenario_grid` are not heavy keys and survive every
 slimming.
 `_result_finite_validated_for` (private, never in a response) records the
@@ -1275,6 +1278,17 @@ whose message already names every problem and the remedy.
   at finalize, a point report equal to the report of that point's own apply frame, a cached
   report served after the grid and the point's artifact are gone, a recompute invalidating the
   cache, the 64-entry bound, the generation fence, and the report surviving grid eviction.
+- `tests/test_optimiser_segments.py` covers OPT-V11: a hand-calculated fixture with positive- and
+  zero-weight levels (weighted figures equal to hand values, the zero-weight level's weighted figures
+  `null` with a diagnostic naming it while its count and unweighted figures stay), counts summing to
+  `n_quotes`, weighted means reconciling to the portfolio mean, Missing (null and absent side-input
+  quotes) and Other, tied quantile edges collapsing into one bin, sparse levels, negative and zero
+  total weights refused, the key catalogue and its gate (numeric keys never refused, the 30-factor
+  cap, the composite width), an unknown key or weight as a 422, a frontier point target,
+  availability (the named 410), the adjustment spread against a hand calculation and its cache;
+  the admission refusal of `k0`…`k2000` (HyperLogLog estimate 1,980) by the margin, and, with an
+  admitted estimate injected, the exact check refusing 2,001 levels before truncation and
+  accepting 2,000.
 - `tests/test_optimiser_ratebook_choices.py` covers OPT-V09C against the real price-contour
   library: the "deployed factor differs from evaluated step" flag against a hand count on a frame
   the kernel evaluated from hand-chosen tables (products on a grid value and on an end value not
@@ -2038,4 +2052,116 @@ decoded width to the side-table width the estimate reads (`side_row_width_bytes`
 counts as a whole-table join. An analysis column or a factor column whose name is a choice-frame
 column is refused with a 400, as before.
 
-The Segments tab that reads these reducers is OPT-V11's.
+The Segments tab (OPT-V11) reads its own level reducers over the same factor side table and labels; see "Segment breakdowns (OPT-V11)".
+
+## Segment breakdowns (OPT-V11)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). A segment
+breakdown describes where the optimiser adjusted: for one key, per level, how many quotes there
+are and the chosen scenario values against 1.0, the unadjusted base price. It describes the
+solution only, never a comparison with current or deployed pricing.
+
+**Keys** (`src/haute/routes/_optimiser_segments.py`, `segment_keys`). A result's keys are its
+analysis columns (in configured order) and, for a ratebook result, its rating factors (in
+`factor_columns` order, each named `":".join(columns)` as the Rates tab names it). A rating
+factor whose name is also an analysis column is listed once, as the rating factor, so its levels
+are the Rates tab's. `_finalize_solve_result` records them on the result as `segment_keys`, one
+`{key, source, binning, available, unavailable_reason}` per key: `source` is `"analysis"` or
+`"factor"`; `binning` is `"numeric"` for an analysis column of an integer, float or decimal dtype
+(from the side table's `column_stats`) and `"categorical"` otherwise (every factor, and String,
+Categorical, Enum, Boolean or temporal analysis columns). `segment_keys` survives every slimming
+and is shared by every target: a frontier point has the same quotes and the same levels. The
+**cardinality gate** decides availability, before any query:
+
+- A categorical analysis column is unavailable when its `approx_n_unique` exceeds
+  `ADMITTED_APPROX_LEVELS = 1800` (a margin under the exact limit for the HyperLogLog estimate's
+  error) or its `max_string_bytes` exceeds `MAX_SEGMENT_KEY_BYTES = 256`. A numeric column is
+  binned, so its cardinality never refuses it.
+- A rating factor is unavailable when its factor table (the as-solved result's
+  `factor_tables[name]`, an exact count) has more than `MAX_SEGMENT_LEVELS = 2000` rows, or its
+  longest level label (the full composite `__factor_group__`, UTF-8 bytes) exceeds 256 bytes.
+  Only the first `MAX_FACTOR_SEGMENT_KEYS = 30` factors can be available; a later one is listed
+  as unavailable, saying so.
+- `unavailable_reason` states the measured value and the limit; it is `null` exactly when the
+  key is available.
+
+**Levels** (`AnalysisSegments(column, binning, weight)` and `FactorLevelSegments(factor,
+weight)`, V09B reducers over `ChoiceFrames.joined()` and `with_factors()`). Every quote of the
+target falls in exactly one level:
+
+- *Missing* (`kind: "missing"`, label "Missing", analysis keys only): a quote whose value is
+  null (or NaN, for a float column), or a side-input quote the analysis frame had no row for
+  (`__haute_analysis_row_present` false, OPT-V09A). It is listed last, and only when it has
+  quotes.
+- *Numeric keys*: quantile bins. The bins start at the lower (inverted-CDF) quantiles at 0,
+  0.05, …, 0.95 of the non-missing values (Polars `quantile(q, "lower")`, always observed
+  values), made unique, so tied quantiles collapse into one bin and there are at most
+  `MAX_NUMERIC_BINS = 20` bins; one one-row collection reads them with the maximum. With starts
+  `e0 < e1 < … < ek` and maximum `m`, bin `i < k` holds `e_i <= x < e_(i+1)` (label `[e_i,
+  e_(i+1))`) and the last bin `e_k <= x <= m` (label `[e_k, m]`, or just `e_k` when it is the
+  maximum), so a few frequent values (a flag, a tier) keep separate bins. `kind` is `"bin"`,
+  with `lower` and `upper` the bin's bounds. Bounds are formatted in the column's dtype (an
+  integer as an integer, a Float32 by its shortest Float32 form). Bins are listed in ascending
+  order. A column with no non-missing value has only the Missing level.
+- *Categorical keys*: every distinct non-missing value (as a String; a factor by all its
+  constituent columns) is grouped, ordered by quotes descending and then by value ascending. The
+  **exact post-group-by check** runs on that grouping before any truncation: more than
+  `MAX_SEGMENT_LEVELS = 2000` levels is refused (`SegmentKeyUnavailableError`, a 422) whatever
+  the estimate admitted. Then the first `MAX_CATEGORICAL_LEVELS = 15` are listed (`kind:
+  "value"`; a factor level labelled as the Rates tab labels it, `_ratebook_factor_level_key`)
+  and the rest are summed into one `"Other"` level (`kind: "other"`, `merged_levels` the number
+  it merges), listed after them. The re-aggregation is in the lazy plan: only at most 17 rows
+  are collected.
+- Level figures are additive Float64 sums of the Float32 choice columns: `quotes`, the sum of
+  the scenario value, the counts above and below 1.0, the count at the grid's first or last step
+  (`optimal_step` 0 or `n_steps - 1`), for a ratebook target the `deployed_factor_differs`
+  count, and, under a weighting, the weight's sum, its products with the scenario value and its
+  sums above, below and at the edge, and the count of negative weights. The counts over all
+  levels must equal the target's quote count (a `ChoiceJoinError` otherwise).
+
+**Weighting.** `weight` is `"quotes"` (each quote weighs 1, the default) or one per-quote value
+column of the choice frame, `optimal_objective` or `optimal_<c>`, evaluated **at the chosen
+scenario**, as the adjustment report's weightings are (OPT-V10, Q4). Any other name is a 422. A
+weighting is refused, never computed, when any quote's value is negative
+(`{diagnostic: "segment_weight", error_type: "NegativeWeight", message}` naming the column and
+the count) or the target's total is zero (`ZeroTotalWeight`); every level's `weighted` figures
+are then `null`. Otherwise a **level whose total weight is 0** has `weighted: null` and a
+`ZeroLevelWeight` entry naming the level, while its quote count and unweighted figures stay.
+
+**The response** (`OptimiserSegmentsResponse`, strict). `key`, `source`, `binning`, `weight`,
+`weight_label` ("Quotes", "Objective at the chosen scenario", "<c> at the chosen scenario"),
+`point_index`, `frontier_generation` (the generation the point index refers to), `n_quotes`,
+`n_levels` (bins, or distinct non-missing values before truncation), `mean_scenario_value` (the
+target's unweighted mean) and `weighted_mean_scenario_value` (`null` when the weighting was
+refused), `rows` and `diagnostics_errors`. Each row: `label`, `kind`, `lower`, `upper` (bins
+only), `merged_levels` (Other only), `quotes`, `weight_total` (the level's weight sum; `null`
+when the weighting was refused), `unweighted` and `weighted` figures (`mean_scenario_value`,
+`share_up`, `share_down`, `share_at_edge`; `weighted` `null` as above) and
+`deployed_factor_differs` (a ratebook target's count, `null` online). For `"quotes"` the
+weighted figures equal the unweighted ones. Quote counts sum to `n_quotes`, and the levels'
+weighted means, weighted by their `weight_total`, reconcile to the target's weighted mean.
+
+**`POST /api/optimiser/segments`** (`OPTIMISER_SEGMENTS_ROUTE`) takes
+`OptimiserSegmentsRequest {job_id, point_index (null for the as-solved result), key, weight}`.
+The key must be one of the result's `segment_keys` (else a 422 `{error_code:
+"segment_key_unknown", message}` listing them) and available (else a 422 `{error_code:
+"segment_key_unavailable", message}` with its reason); the exact check's refusal is the same
+422. It runs `ChoiceQueryService.choice_query` over `ChoiceTarget(point_index)`: admission,
+single-flight, point materialisation, the named 409 and 410 and availability all as OPT-V09B
+specifies. The route runs off the event loop and a client that disconnects detaches only itself
+(`run_until_disconnected`). Results are not cached server side.
+
+**`GET /api/optimiser/segments/index?job_id=…&point_index=…`** (`OPTIMISER_SEGMENT_INDEX_ROUTE`)
+ranks the keys by **adjustment spread**: the quote-weighted standard deviation of the levels'
+unweighted mean scenario values, `sqrt(Σ n_l (m_l − M)² / N)` over the levels a breakdown lists
+(bins or the top 15 and Other, and Missing), with `M = Σ n_l m_l / N`. Each available key is one
+query (one lazy pass over the target, weighted by quotes). `OptimiserSegmentIndexResponse` is
+`{point_index, frontier_generation, statistic: {label: "Adjustment spread", description}, keys}`,
+each key `{key, source, binning, available, unavailable_reason, spread}`: the available keys by
+`spread` descending (then key), then the unavailable ones in catalogue order with `spread`
+`null`; a key the exact check refuses during the ranking is listed as unavailable with its
+reason. The index is cached in `job["segment_indexes"]` by `(frontier_generation,
+point_index)`, stored under the parent's lock only when the generation is unchanged (a recompute
+in between is the frontier-changed 409), at most `MAX_CACHED_SEGMENT_INDEXES = 64` (the oldest
+dropped, through the adjustment report cache's `cache_point_report`), never slimmed, and cleared
+by a frontier recompute in the update that advances the generation.

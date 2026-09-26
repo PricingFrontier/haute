@@ -410,9 +410,21 @@ class TestFinalizeFrontier:
             elapsed=1.0,
             ratebook_factor_contexts=factor_contexts,
             factor_columns=[["region"]],
+            extra_fields={
+                "factor_tables": {
+                    "region": [
+                        {
+                            "__factor_group__": "North",
+                            "optimal_scenario_value": 1.0,
+                            "quote_count": 1,
+                        }
+                    ]
+                }
+            },
         )
 
         job = store.get_job(job_id)
+        assert [key["key"] for key in job["result"]["segment_keys"]] == ["region"]
         assert job["frontier_data"] is not None
         assert job["frontier_data"]["status"] == "ok"
         assert job["frontier_data"]["n_points"] == 2

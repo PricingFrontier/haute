@@ -1,7 +1,8 @@
 /**
  * A diverging-around-1.0 bar list: one row per item, in the caller's order,
  * with the bar running right of the centre line above 1.0 and left of it
- * below. GLM relativities and the optimiser's ratebook rates share it.
+ * below. GLM relativities, the optimiser's ratebook rates and its segments
+ * share it. A `null` value is unavailable: the row draws no bar and shows "—".
  */
 import type { KeyboardEvent, ReactNode } from "react"
 import { chartLabelIndices } from "../utils/chartHelpers"
@@ -22,7 +23,8 @@ const COMPACT_LABEL_SPACING = 18
 export type RelativityBar = {
   key: string
   label: string
-  value: number
+  /** `null` when the value is unavailable (a segment level whose weight totals 0). */
+  value: number | null
   ciLower?: number | null
   ciUpper?: number | null
 }
@@ -47,6 +49,7 @@ function hasInterval(bar: RelativityBar): bar is RelativityBar & { ciLower: numb
 function halfScale(bars: readonly RelativityBar[]): number {
   let largest = MIN_HALF_SCALE
   for (const bar of bars) {
+    if (bar.value === null) continue
     if (!Number.isFinite(bar.value)) throw new Error(`${bar.label} has a non-finite value ${bar.value}`)
     largest = Math.max(largest, Math.abs(bar.value - 1))
     if (hasInterval(bar)) {
@@ -97,7 +100,7 @@ export function RelativityBars({
       )}
       <div className={compact ? undefined : "space-y-0.5"}>
         {bars.map((bar, index) => {
-          const deviation = bar.value - 1
+          const deviation = bar.value === null ? 0 : bar.value - 1
           const isAbove = deviation >= 0
           const width = (Math.abs(deviation) / scale) * 50
           const color = isAbove ? RELATIVITY_ABOVE_COLOR : RELATIVITY_BELOW_COLOR
@@ -150,16 +153,18 @@ export function RelativityBars({
                   className="absolute top-0 bottom-0 w-px"
                   style={{ left: "50%", background: BASELINE_COLOR, opacity: 0.5 }}
                 />
-                <div
-                  data-relativity-bar
-                  className={`absolute rounded-sm ${compact ? "top-0 bottom-0" : "top-0.5 bottom-0.5"}`}
-                  style={{
-                    left: `${isAbove ? 50 : 50 - width}%`,
-                    width: `${width}%`,
-                    background: color,
-                    opacity: active ? 1 : 0.7,
-                  }}
-                />
+                {bar.value !== null && (
+                  <div
+                    data-relativity-bar
+                    className={`absolute rounded-sm ${compact ? "top-0 bottom-0" : "top-0.5 bottom-0.5"}`}
+                    style={{
+                      left: `${isAbove ? 50 : 50 - width}%`,
+                      width: `${width}%`,
+                      background: color,
+                      opacity: active ? 1 : 0.7,
+                    }}
+                  />
+                )}
                 {hasInterval(bar) && (
                   <div
                     data-relativity-whisker
@@ -175,8 +180,11 @@ export function RelativityBars({
                 )}
               </div>
 
-              <span className="w-14 text-right shrink-0 tabular-nums" style={{ color }}>
-                {showText ? formatValue(bar.value) : ""}
+              <span
+                className="w-14 text-right shrink-0 tabular-nums"
+                style={{ color: bar.value === null ? "var(--text-muted)" : color }}
+              >
+                {showText ? (bar.value === null ? "—" : formatValue(bar.value)) : ""}
               </span>
 
               {aside && (

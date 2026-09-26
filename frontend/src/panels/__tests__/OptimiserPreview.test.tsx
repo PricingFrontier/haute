@@ -23,8 +23,12 @@ const mockSaveOptimiser = vi.fn()
 const mockLogOptimiserToMlflow = vi.fn()
 const mockApplyOptimiser = vi.fn()
 const mockSolveOptimiser = vi.fn()
+const mockGetOptimiserSegments = vi.fn()
+const mockGetOptimiserSegmentIndex = vi.fn()
 
 vi.mock("../../api/client", () => ({
+  getOptimiserSegments: (...args: unknown[]) => mockGetOptimiserSegments(...args),
+  getOptimiserSegmentIndex: (...args: unknown[]) => mockGetOptimiserSegmentIndex(...args),
   solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
   cancelOptimiserSolve: vi.fn(),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPointAPI(...args),
@@ -401,6 +405,46 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Rates"))
 
       expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
+    })
+
+    it("shares the chosen key between Rates and Segments", async () => {
+      mockGetOptimiserSegmentIndex.mockReturnValue(new Promise(() => {}))
+      mockGetOptimiserSegments.mockReturnValue(new Promise(() => {}))
+      const factorKey = (key: string) => ({
+        key,
+        source: "factor" as const,
+        binning: "categorical" as const,
+        available: true,
+        unavailable_reason: null,
+      })
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+              ],
+            },
+            segment_keys: [factorKey("age_band"), factorKey("region")],
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
+      fireEvent.click(screen.getByText("Segments"))
+
+      expect(screen.getByRole("button", { name: "region" }).getAttribute("aria-pressed")).toBe("true")
+      await waitFor(() => expect(mockGetOptimiserSegments).toHaveBeenCalled())
+      expect(mockGetOptimiserSegments.mock.calls[0][0]).toMatchObject({ key: "region", weight: "quotes" })
+
+      fireEvent.click(screen.getByRole("button", { name: "age_band" }))
+      fireEvent.click(screen.getByText("Rates"))
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
     })
 
     it("orders Rates tab factors and levels by the configured banding source", () => {

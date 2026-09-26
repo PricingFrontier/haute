@@ -83,6 +83,7 @@ from haute.routes._optimiser_outcomes import (
     histogram_of_frame,
     require_scenario_grid,
 )
+from haute.routes._optimiser_segments import segment_keys
 from haute.schemas import (
     OptimiserRatebookCdTrace,
     _normalise_frontier_range_pair,
@@ -988,6 +989,15 @@ def _finalize_solve_result(
     result_dict["input_summary"] = solve_input_summary(job_snapshot)
     # The grid setup recorded from the solver input; never re-derived here.
     result_dict["scenario_grid"] = require_scenario_grid(job_snapshot)
+    # What the result can be broken down by, gated on metadata already held (OPT-V11).
+    result_dict["segment_keys"] = [
+        key.model_dump()
+        for key in segment_keys(
+            quote_analysis_handle,
+            factor_columns=(factor_columns or []) if mode == "ratebook" else [],
+            factor_tables=result_dict.get("factor_tables", {}),
+        )
+    ]
     constraints = config.get("constraints")
     kinds = constraint_kinds(constraints or {})
     # The absolute bounds the library solved at (pct constraints already scaled).
