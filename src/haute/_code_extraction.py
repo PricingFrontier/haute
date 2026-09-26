@@ -195,6 +195,11 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
     is_sentinel_return = isinstance(value, ast.Name) and value.id == return_var
     if not is_sentinel_return:
         return _rstrip_blank_lines(source)
+    # Only the code's own last statement is the closing return: one nested in a
+    # loop or branch stays, and the early-return check then refuses it.
+    closing = _parse_user_code(source, context="user code").body[-1]
+    if (closing.lineno, closing.col_offset) != (last.lineno, last.col_offset):
+        return _rstrip_blank_lines(source)
 
     # Confirm this Return is truly TRAILING — i.e. nothing non-blank
     # follows it at any scope in the source.  A Return is typically

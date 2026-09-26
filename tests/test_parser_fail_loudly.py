@@ -1177,6 +1177,18 @@ class TestNodeCodeReturns:
             _parse_configured_node(tmp_path, NodeType.RATING_STEP, function)
         assert exc_info.value.context["node_id"] == "rate"
 
+    def test_a_return_df_ending_a_loop_is_not_the_closing_return(self, tmp_path: Path) -> None:
+        """Stripped as the generated ``return df``, the loop would run twice on the canvas."""
+        function = (
+            "def rate(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    for _ in range(2):\n"
+            '        df = df.with_columns(premium=pl.col("premium") + 1)\n'
+            "        return df\n"
+        )
+
+        with pytest.raises(ParseError, match="returns early at line 3 of its code"):
+            _parse_configured_node(tmp_path, NodeType.RATING_STEP, function)
+
     def test_a_closing_return_reads_as_the_result_in_df(self, tmp_path: Path) -> None:
         function = (
             "def rate(df: pl.LazyFrame) -> pl.LazyFrame:\n"
