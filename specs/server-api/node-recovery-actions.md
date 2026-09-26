@@ -30,8 +30,10 @@ naming the removed form and the current one, which the unavailable node's diagno
 carries as its remediation. The author rewrites it, or removes the node.
 
 - **Reset node** supports known ordinary node types with an unambiguous function span
-  and resolvable incoming connections. It uses the same default configuration as adding
-  that type from the palette and the current single-node code generator. It preserves
+  and resolvable incoming connections. It never requires healthy upstream nodes: a
+  damaged chain resets in any order, binding inputs from authored identities. It uses
+  the same default configuration as adding that type from the palette and the current
+  single-node code generator. It preserves
   identity, description, position and authored connections, but replaces that node's
   settings and function body. Existing config references are preserved and their content
   replaced only when exclusively owned by this node. Unknown types, node instances,
@@ -61,18 +63,28 @@ carries as its remediation. The author rewrites it, or removes the node.
   error-level engine issue that survives the recover, for any node type, is reported
   as a completeness entry on the target with the engine's own message, so nothing
   unresolved reads as fixed. Authored
-  code bytes in declared code slots are retained; only recognised generated scaffolding
-  is regenerated. The `contract=` annotation is generated scaffolding: recover derives
-  it from the recovered settings exactly as the parse-time check does (never loading an
+  code in a declared code slot is retained when the function has its node type's current
+  form: a declaration, or a hook (first parameter `df`; an External File's keyword-only
+  `obj`). A body the decorator never calls — code on a type that carries none, or code
+  outside a hook, which is how every generated body was written before node
+  declarations — has no place under the current contract, and the parser rejects it by
+  the same rule. Recover replaces that function with the declaration generated from the
+  recovered settings and reports the dropped body as a `/code` field change with outcome
+  `removed`, its lines visible in the source diff; the author re-adds any custom code
+  in the node's editor. Such a body is never moved into a hook, where its old calls would
+  name inputs the hook does not bind. It is never compared with a stepped node's
+  `steps` either: a step list the parser can use (a list, and no `inputMapping` beside an
+  edges surface) is kept as settings and regenerates the hook that performs it. The
+  `contract=` annotation is generated
+  scaffolding: recover derives it from the recovered settings exactly as the parse-time check does (never loading an
   external model artifact), and a declared contract supplies only the sides that
   derivation leaves opaque, so an annotation left stale by a settings edit is replaced
   rather than carried forward. The recovered sidecar holds no `contract` key; the
   annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
   Identity, description, position, connections, and exclusively owned config references
-  follow the Reset rules, except that recover never requires healthy upstream nodes: a
-  damaged chain recovers in any order, binding inputs from authored identities, and the
-  applied node may remain blocked solely by an unrepaired upstream. An unreadable
+  follow the Reset rules, so a damaged chain recovers in any order and the applied node
+  may remain blocked solely by an unrepaired upstream. An unreadable
   configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
   action with a manual-repair error and changes no bytes — there is no draft archive,
   and Reset is the explicit destructive replacement. Unknown types, node instances,
@@ -153,5 +165,9 @@ its current connected input and returns a ready but deliberately incomplete Pola
 Also cover stale child/config revisions, shared/path-escaping artifacts, duplicate
 identities, rollback, strict transport parsing, a banding node whose saved annotation
 promises an output its draft factor no longer creates (recover loads it with a
-regenerated annotation and a sidecar without the stale `contract` copy), and the UI's
+regenerated annotation and a sidecar without the stale `contract` copy), a function body
+in the pre-declaration generated form on a type without code and on a hook type (recover
+keeps the settings, regenerates the declaration and reports the body removed), the same
+on a stepped node (its steps survive and regenerate the hook), a reset below an
+unavailable upstream, and the UI's
 action-specific confirmation/apply and failure behaviour.

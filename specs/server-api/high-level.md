@@ -592,7 +592,8 @@ retained unless the request explicitly asks for its deletion. A
 shared config, config path overlapping a pipeline source/position artifact,
 duplicate authored identity, ambiguous span, mixed connection chain, authored
 content sharing a connection's removal line, or downstream function parameter
-naming the node rejects the repair without a write. Post-write
+naming the node rejects the repair without a write; a parameter refusal names each
+consumer function and parameter, so the author removes those consumers first. Post-write
 recovery/conservation verification must succeed;
 strict parsing transitions the document to ready when no independent problem
 remains, while an unrelated diagnosed failure may leave it degraded.

@@ -389,6 +389,33 @@ _EXTRACTION_KIND_BY_CODE_TYPE: dict[NodeType, str] = {
 }
 
 
+def _is_hook(node_type: NodeType, param_names: list[str], edge_param_names: list[str]) -> bool:
+    """Whether a code-carrying node's signature marks a hook its decorator calls."""
+    if node_type == NodeType.EXTERNAL_FILE:
+        return "obj" in param_names[len(edge_param_names) :]
+    return edge_param_names[:1] == ["df"]
+
+
+def uncalled_function_body(
+    node_type: NodeType,
+    body: str,
+    param_names: list[str],
+    edge_param_names: list[str],
+) -> bool:
+    """Whether a node's function carries code its decorator never calls.
+
+    That is code on a type that carries none, or code on a code-carrying type
+    whose function is not a hook: every generated body before node
+    declarations took one of these forms. The parser rejects such a function
+    (:func:`_validate_node_function`); recovery replaces it.
+    """
+    if node_type == NodeType.POLARS or is_declaration_body(body):
+        return False
+    return node_type not in CODE_NODE_TYPES or not _is_hook(
+        node_type, param_names, edge_param_names
+    )
+
+
 def _validate_node_function(
     node_type: NodeType,
     body: str,
@@ -420,17 +447,15 @@ def _validate_node_function(
                 node_type=node_type.value,
             )
         return
-    keyword_only = param_names[len(edge_param_names) :]
+    is_hook = _is_hook(node_type, param_names, edge_param_names)
     if node_type == NodeType.EXTERNAL_FILE:
         marker = "obj"
-        is_hook = "obj" in keyword_only
         advice = (
             "To add code, keep the inputs as parameters, add the keyword-only parameter "
             "obj and start from df = <first input>."
         )
     else:
         marker = "df"
-        is_hook = edge_param_names[:1] == ["df"]
         advice = (
             "To add code, make the first parameter df (the frame this node produced) and "
             "return the result."
@@ -476,6 +501,35 @@ def _same_program(rendered: str, body: str) -> bool:
         return False
 
 
+def validate_step_container(
+    config: dict[str, Any],
+    node_type: NodeType,
+    config_ref: str | None,
+    func_name: str,
+) -> None:
+    """Refuse a ``steps`` value no stepped node can use, whatever its body.
+
+    It must be a list, and an edges surface takes its inputs from the edges,
+    so it cannot sit beside an ``inputMapping``.
+    """
+    if not isinstance(config["steps"], list):
+        raise ConfigError(
+            f"{node_type.value} 'steps' must be a list.",
+            func_name=func_name,
+            config_path=config_ref,
+        )
+    if (
+        stepped_surface_for(node_type).inputs == "edges"
+        and config.get("inputMapping") is not None
+        and not config.get("instanceOf")
+    ):
+        raise ConfigError(
+            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
+            func_name=func_name,
+            config_path=config_ref,
+        )
+
+
 def _reconcile_steps(
     config: dict[str, Any],
     node_type: NodeType,
@@ -502,24 +556,9 @@ def _reconcile_steps(
     """
     if "steps" not in config:
         return config
+    validate_step_container(config, node_type, config_ref, func_name)
     surface = stepped_surface_for(node_type)
     steps = config["steps"]
-    if not isinstance(steps, list):
-        raise ConfigError(
-            f"{node_type.value} 'steps' must be a list.",
-            func_name=func_name,
-            config_path=config_ref,
-        )
-    if (
-        surface.inputs == "edges"
-        and config.get("inputMapping") is not None
-        and not config.get("instanceOf")
-    ):
-        raise ConfigError(
-            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-            func_name=func_name,
-            config_path=config_ref,
-        )
     body_code = str(config.get("code") or "")
     try:
         rendered = render_polars_steps(

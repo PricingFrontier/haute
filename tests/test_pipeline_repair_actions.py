@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 
@@ -617,15 +616,32 @@ def test_recover_refuses_unreadable_config_sidecars(tmp_path):
     assert {p: p.read_bytes() for p in before} == before
 
 
-def test_recover_rejects_custom_body_for_non_code_types(tmp_path):
-    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+_OUTPUT_CONFIG = {
+    "outputType": "file",
+    "format": "parquet",
+    "mode": "sink",
+    "path": "out.parquet",
+    "arguments": {},
+}
 
+
+def _removed_code_change(result):
+    changes = [change for change in result.field_changes if change.path == "/code"]
+    assert [change.outcome for change in changes] == ["removed"]
+    return changes[0]
+
+
+def test_recover_replaces_a_body_a_type_without_code_never_runs(tmp_path):
+    # The generated form before node declarations: a Data Output that returns
+    # its input. The type carries no code, so the body has no place to go;
+    # recover keeps the settings, regenerates the declaration and says so.
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
         '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
-        '@pipeline.data_output(config="out.json")\ndef sink(source_a):\n'
-        "    surprise = 1\n    return surprise\n"
+        '@pipeline.data_output(config="out.json", contract="opaque")\n'
+        "def sink(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    """"""\n    surprise = source_a.head()\n    return surprise\n'
     )
     (tmp_path / "a.json").write_text(
         json.dumps(
@@ -635,80 +651,79 @@ def test_recover_rejects_custom_body_for_non_code_types(tmp_path):
                 "mode": "scan",
                 "path": "quotes.parquet",
                 "arguments": {},
-                "code": "",
             }
         )
     )
-    (tmp_path / "out.json").write_text(
-        json.dumps(
-            {
-                "outputType": "file",
-                "format": "parquet",
-                "mode": "sink",
-                "path": "out.parquet",
-                "arguments": {},
-                "cacheMode": "snapshot",
-            }
-        )
+    (tmp_path / "out.json").write_text(json.dumps(_OUTPUT_CONFIG))
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert next(n for n in document.nodes if n.authored_id == "sink").availability == (
+        "unavailable"
     )
     request = _request(tmp_path, "sink", "recover")
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    with pytest.raises(PipelineRepairError, match="not a declaration.*manual source edit"):
-        build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    assert {p: p.read_bytes() for p in before} == before
+
+    result = _apply(tmp_path, request)
+
+    assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text()
+    assert "def sink(source_a): ..." in source
+    assert "surprise" not in source
+    assert json.loads((tmp_path / "out.json").read_text())["path"] == "out.parquet"
+    removed = _removed_code_change(result)
+    assert "carries no code" in removed.reason
+    main_diff = next(change.diff for change in result.changes if change.path == "main.py")
+    assert "-    surprise = source_a.head()" in main_diff
 
 
-@pytest.mark.parametrize(
-    ("function", "is_declaration"),
-    [
-        pytest.param("def sink(quotes): ...", True, id="ellipsis"),
-        pytest.param("def sink(quotes):\n    pass", True, id="pass"),
-        pytest.param('def sink(quotes):\n    """Writes."""', True, id="docstring"),
-        pytest.param('def sink(quotes):\n    """Writes."""\n    ...', True, id="doc-ellipsis"),
-        pytest.param("def sink(df): ...", True, id="input-named-df"),
-        pytest.param("def sink(quotes):\n    return quotes", False, id="body"),
-        pytest.param("def sink(quotes):\n    ...\n    ...", False, id="two-statements"),
-        pytest.param("def sink(quotes=None): ...", False, id="default"),
-        pytest.param("def sink(quotes, *, obj): ...", False, id="keyword-only"),
-        pytest.param("def sink(*quotes): ...", False, id="varargs"),
-        pytest.param("def sink(**quotes): ...", False, id="kwargs"),
-    ],
-)
-def test_recover_regenerates_only_a_declaration_of_a_type_without_code(
-    function: str, is_declaration: bool
-) -> None:
-    """Regeneration replaces a code-less node's function only when it is a
-    declaration: its inputs as plain parameters and a ``...``, ``pass`` or
-    docstring body. Anything else is authored and must not be overwritten."""
-    from haute._pipeline_repair import PipelineRepairError
-    from haute._recovery_sources import require_generated_body
-    from haute._types import NodeType
+def test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook(tmp_path):
+    # A Data Input in the generated form before node declarations loads its
+    # own frame and names no df. Moving that body into a df hook would load
+    # the data twice (or, below an input, name a frame the hook never binds),
+    # so recover drops it with the settings kept, and reports it.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="in.json", contract="opaque")\n'
+        "def source() -> pl.LazyFrame:\n"
+        '    """"""\n'
+        "    from haute.graph_utils import resolve_data_input_from_config\n\n"
+        '    df = resolve_data_input_from_config("in.json", base_dir=".")\n'
+        '    df = df.with_columns(pl.lit(1).alias("SaleFlag"))\n'
+        "    return df\n"
+    )
+    (tmp_path / "in.json").write_text(
+        json.dumps(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "quotes.parquet",
+                "arguments": {},
+                "contract": "opaque",
+            }
+        )
+    )
+    request = _request(tmp_path, "source", "recover")
 
-    parsed = ast.parse(function).body[0]
-    assert isinstance(parsed, ast.FunctionDef)
-    if is_declaration:
-        require_generated_body(NodeType.DATA_OUTPUT, parsed)
-    else:
-        with pytest.raises(PipelineRepairError, match="not a declaration") as raised:
-            require_generated_body(NodeType.DATA_OUTPUT, parsed)
-        assert raised.value.code == "recovery_conflict"
+    result = _apply(tmp_path, request)
 
-
-def test_recover_leaves_a_code_accepting_body_to_extraction() -> None:
-    """A type that carries code keeps its hook: the body is read as user code
-    and regenerated from it, so the declaration guard does not apply."""
-    from haute._recovery_sources import require_generated_body
-    from haute._types import NodeType
-
-    parsed = ast.parse("def source(df):\n    df = df.head()\n    return df").body[0]
-    assert isinstance(parsed, ast.FunctionDef)
-    require_generated_body(NodeType.DATA_INPUT, parsed)
+    assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text()
+    assert "def source(): ..." in source
+    assert "resolve_data_input_from_config" not in source
+    node = next(item for item in result.document.nodes if item.authored_id == "source")
+    assert not (node.config or {}).get("code")
+    assert json.loads((tmp_path / "in.json").read_text())["path"] == "quotes.parquet"
+    removed = _removed_code_change(result)
+    assert "first parameter df" in removed.reason
+    main_diff = next(change.diff for change in result.changes if change.path == "main.py")
+    assert "SaleFlag" in main_diff
 
 
-def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
-    # Recovering a damaged downstream node must not require healthy upstreams:
-    # its authored bindings stay trustworthy, and the applied node may remain
-    # blocked solely by the still-broken upstream.
+@pytest.mark.parametrize(("action", "sink_path"), [("recover", "out.parquet"), ("reset", "")])
+def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, action, sink_path):
+    # Recovering or resetting a damaged downstream node must not require
+    # healthy upstreams: its authored bindings stay trustworthy, and the
+    # applied node may remain blocked solely by the still-broken upstream.
     from haute._config_io import config_path_for_node
     from haute._types import GraphNode, NodeData, NodeType
     from haute.codegen import _node_to_code
@@ -752,12 +767,12 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
     assert by_id["sink"].availability == "unavailable"
     upstream_bytes = (tmp_path / "a.json").read_bytes()
 
-    request = _request(tmp_path, "sink", "recover")
+    request = _request(tmp_path, "sink", action)
     result = _apply(tmp_path, request)
     node = next(item for item in result.document.nodes if item.authored_id == "sink")
     assert node.availability == "blocked"
     written = json.loads(sink_reference.read_text())
-    assert written["path"] == "out.parquet"
+    assert written["path"] == sink_path
     assert "cacheMode" not in written
     assert (tmp_path / "a.json").read_bytes() == upstream_bytes
     sibling = next(item for item in result.document.nodes if item.authored_id == "source_a")

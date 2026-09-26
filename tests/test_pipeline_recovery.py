@@ -2353,6 +2353,11 @@ def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(
     assert detail["consumers"] == [
         {"function": "downstream", "parameter": "obsolete"},
     ]
+    # The refusal names the blocker, so the author knows what to remove first.
+    assert detail["message"] == (
+        "'obsolete' is an input parameter of 'downstream'. Remove those nodes first, "
+        "or recover 'obsolete' instead."
+    )
     assert pipeline_file.read_bytes() == before
 
 

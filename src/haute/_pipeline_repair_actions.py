@@ -150,7 +150,6 @@ def _reset_node(
     replacement_config: dict[str, Any] | None = None,
     shared_config_confirmed: bool = False,
     recover: bool = False,
-    allow_blocked_sources: bool = False,
 ) -> list[RepairArtifactEdit]:
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
@@ -205,25 +204,22 @@ def _reset_node(
     source_names: list[str] = []
     for edge in incoming:
         source = nodes[edge.source_recovery_id]
-        if source.availability != "ready" and not allow_blocked_sources:
-            raise _unsupported("Repair the upstream nodes before resetting this node.")
         if edge.input_name is not None:
             source_names.append(edge.input_name)
             continue
-        if allow_blocked_sources:
-            # A blocked or unavailable upstream still has authored identity;
-            # a scoped save must not depend on it being repaired first.
-            fallback = (
-                source.source_handle_input_names.get(edge.source_handle or "")
-                or source.default_input_name
+        # A blocked or unavailable upstream still has authored identity: a damaged
+        # chain resets, recovers and saves in any order, never upstream first.
+        fallback = (
+            source.source_handle_input_names.get(edge.source_handle or "")
+            or source.default_input_name
+        )
+        if fallback:
+            source_names.append(fallback)
+            continue
+        if source.node_type is None:
+            raise _unsupported(
+                "The upstream node's identity is unknown; repair it before changing this node."
             )
-            if fallback:
-                source_names.append(fallback)
-                continue
-            if source.node_type is None:
-                raise _unsupported(
-                    "The upstream node's identity is unknown; repair it before saving this node."
-                )
         source_names.append(
             executable_input_name(
                 node_type=source.node_type,
@@ -259,7 +255,7 @@ def _reset_node(
         )
     except (HauteError, ValueError) as exc:
         raise _unsupported(
-            f"The current node template cannot use these connections: {exc}"
+            f"This node cannot be generated from these settings and connections: {exc}"
         ) from exc
     edits: list[RepairArtifactEdit] = []
     # A stepped transform owns an optional sidecar; a code-only one owns none.
@@ -373,18 +369,13 @@ def _recover_node(
 ]:
     """Rebuild one node's settings with the recovery engine and regenerate its source."""
     from haute._node_config_recovery import reconcile_config
-    from haute._recovery_sources import read_raw_node_settings, require_generated_body
+    from haute._recovery_sources import read_raw_node_settings
 
     if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
         raise _unsupported("Only supported ordinary nodes can be recovered.")
-    node_type, raw, raw_changes, function, params, reference = read_raw_node_settings(
-        root, document, target
-    )
+    node_type, raw, raw_changes = read_raw_node_settings(root, document, target)
+    # Engine issues are completeness for a direct recover, never a plan gate.
     result = reconcile_config(node_type, raw)
-    # The guard only decides whether the body is recognised generated
-    # scaffolding; engine issues are completeness for a direct recover, never
-    # a plan gate.
-    require_generated_body(node_type, function)
     edits = _reset_node(
         root,
         root_path,
@@ -393,14 +384,15 @@ def _recover_node(
         document,
         replacement_config=result.config,
         recover=True,
-        # A damaged chain recovers bottom-up or top-down: upstream identities
-        # stay trustworthy through their authored bindings, and the applied
-        # node may legitimately remain blocked by an unrepaired upstream.
-        allow_blocked_sources=True,
     )
+    # A dropped body's report replaces the engine's view of the empty code slot it left.
+    body_dropped = any(change.path == "/code" for change in raw_changes)
+    engine_changes = [
+        change for change in result.changes if not (body_dropped and change.path == "/code")
+    ]
     field_changes = [
         PipelineRepairFieldChange(path=change.path, outcome=change.outcome, reason=change.reason)
-        for change in (*raw_changes, *result.changes)
+        for change in (*raw_changes, *engine_changes)
     ]
     return (
         edits,
@@ -642,7 +634,6 @@ def apply_scoped_node_save(
         document,
         replacement_config=config,
         recover=True,
-        allow_blocked_sources=True,
     )
     if all(edit.before == edit.after for edit in edits):
         return document
