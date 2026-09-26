@@ -94,7 +94,7 @@ function PipelineRepairDialogContent({
           {action === "reset"
             ? "Replace this node's settings and code while preserving its identity and connections. Configuration may be needed before running."
             : isRecover
-              ? `Rebuild ${target.recoveryId} against the current definitions. Valid settings and code are retained; anything missing stays highlighted in the normal editor afterwards.`
+              ? `Rebuild ${target.recoveryId} against the current definitions. Valid settings and code are retained; a function body the node never runs, such as one written before node declarations, is replaced and listed in the summary. Anything missing stays highlighted in the normal editor afterwards.`
               : `Remove ${target.recoveryId} and its connection declarations.`}
         </p>
       </div>

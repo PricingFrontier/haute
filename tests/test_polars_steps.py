@@ -4901,9 +4901,7 @@ def _recovered_settings(root: Path, authored_id: str) -> tuple[dict[str, Any], l
 
     document = load_pipeline_editor_document(root / "main.py", project_root=root)
     target = next(node for node in document.nodes if node.authored_id == authored_id)
-    _node_type, raw, changes, _function, _params, _reference = read_raw_node_settings(
-        root, document, target
-    )
+    _node_type, raw, changes = read_raw_node_settings(root, document, target)
     return raw, changes
 
 

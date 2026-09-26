@@ -1,4 +1,4 @@
-"""Raw authored settings/code evidence and declaration matching for recovery (no execution)."""
+"""Raw authored settings/code evidence for recovery (no execution)."""
 
 from __future__ import annotations
 
@@ -9,15 +9,19 @@ from typing import Any
 
 from haute._artifact_paths import conflict, read_artifact, safe_path
 from haute._ast_helpers import _extract_function_bodies, _get_decorator_kwargs
-from haute._config_builder import _attach_code_from_body, _reconcile_steps
+from haute._config_builder import (
+    _attach_code_from_body,
+    _reconcile_steps,
+    uncalled_function_body,
+)
 from haute._config_io import (
     _normalise_loaded_config,
     reject_duplicate_keys_hook,
 )
-from haute._node_config_recovery import node_config_schema
 from haute._pipeline_repair import PipelineRepairError
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
+from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
@@ -38,9 +42,7 @@ def read_raw_node_settings(
     root: Path,
     document: PipelineEditorDocument,
     target: RecoveryPipelineNode,
-) -> tuple[
-    NodeType, dict[str, Any], list[RecoveryFieldChange], ast.FunctionDef, list[str], str | None
-]:
+) -> tuple[NodeType, dict[str, Any], list[RecoveryFieldChange]]:
     """Raw authored settings and code for one ordinary node, with provenance notes."""
     if target.node_type not in {kind.value for kind in NodeType}:
         raise conflict(
@@ -102,6 +104,14 @@ def read_raw_node_settings(
                 ) from exc
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
     body = _extract_function_bodies(source, tree=tree)[function.name]
+    keyword_only = [arg.arg for arg in function.args.kwonlyargs]
+    if uncalled_function_body(node_type, body, [*params, *keyword_only], params):
+        # The body has no place under the current contract; moved into a hook,
+        # its old calls would name inputs the hook never binds.
+        changes.append(
+            RecoveryFieldChange(path="/code", outcome="removed", reason=_uncalled_reason(node_type))
+        )
+        body = ""
     raw = _attach_code_from_body(raw, node_type, body, params)
     if node_type in STEPPED_NODE_TYPES and "steps" in raw:
         # The ``.py`` body is the runtime truth here as it is in ordinary
@@ -133,48 +143,19 @@ def read_raw_node_settings(
                 reason="Known decorator spelling: source_type maps to sourceType.",
             )
         )
-    return node_type, raw, changes, function, params, reference
+    return node_type, raw, changes
 
 
-def require_generated_body(node_type: NodeType, function: ast.FunctionDef) -> None:
-    """Only regenerate a code-less node whose function is a declaration.
-
-    A declaration is the node's inputs as plain parameters and a body of
-    ``...``, ``pass`` or a docstring; anything else is authored and must not
-    be overwritten by regeneration.
-    """
-    if "code" in node_config_schema(node_type)["properties"]:
-        return
-    problem = (
-        "This node's function is not a declaration (its inputs and a `...` body). "
-        "Preserve it through a manual source edit, or explicitly choose Reset all "
-        "settings and code."
+def _uncalled_reason(node_type: NodeType) -> str:
+    """Why recover dropped a function body the decorator never calls, and what to do."""
+    replaced = (
+        "so its decorator never runs this body. Recover replaced the function with the "
+        "node's declaration; the removed lines are in the source diff."
     )
-    if (
-        function.args.defaults
-        or function.args.kwonlyargs
-        or function.args.vararg
-        or function.args.kwarg
-    ):
-        raise conflict(problem)
-    statements = function.body
-    if (
-        statements
-        and isinstance(statements[0], ast.Expr)
-        and isinstance(statements[0].value, ast.Constant)
-        and isinstance(statements[0].value.value, str)
-    ):
-        statements = statements[1:]
-    is_declaration = not statements or (
-        len(statements) == 1
-        and (
-            isinstance(statements[0], ast.Pass)
-            or (
-                isinstance(statements[0], ast.Expr)
-                and isinstance(statements[0].value, ast.Constant)
-                and statements[0].value.value is Ellipsis
-            )
-        )
+    if node_type not in CODE_NODE_TYPES:
+        return f"This node type ({node_type.value}) carries no code, {replaced}"
+    marker = "keyword-only obj" if node_type == NodeType.EXTERNAL_FILE else "first parameter df"
+    return (
+        f"The function is not a hook ({marker}), {replaced} "
+        "Add any custom code back in the node's editor."
     )
-    if not is_declaration:
-        raise conflict(problem)
