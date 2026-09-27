@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useContext, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { TraceColumnDerivation } from "../types/trace"
 import { ExpressionChainRowContentView } from "./ExpressionChain"
 import { formatDisplayExpression } from "./traceFormatting"
 import { evaluatedValue, notComputableNote } from "./traceHelpers"
+import { TraceNavigationContext } from "./traceContext"
 import { derivationSourceLabel, substitutionRestatesValue, type DerivationTreeNode } from "./derivationTreeHelpers"
 
 // ---------------------------------------------------------------------------
@@ -18,16 +19,28 @@ function displaySubstituted(text: string | null): string | null {
 }
 
 function DerivationRowContent({ node }: { node: DerivationTreeNode }) {
+  const navigation = useContext(TraceNavigationContext)
   const valueKnown = node.kind !== "untraced" && node.kind !== "before_code" && !(node.kind === "unresolved" && node.value === undefined)
+  const nodeId = node.nodeId
   return (
-    <ExpressionChainRowContentView
-      column={node.column}
-      formulaText={node.expressionText ? formatDisplayExpression(node.expressionText).text : null}
-      substitutedText={substitutionRestatesValue(node.substitutedText, node.value) ? null : displaySubstituted(node.substitutedText)}
-      value={valueKnown ? node.value : "?"}
-      source={derivationSourceLabel(node)}
-      note={node.note}
-    />
+    // Pointing at a row rings its node on the canvas; its step label opens the card.
+    <div
+      onMouseEnter={nodeId ? () => navigation.hoverStep(nodeId) : undefined}
+      onMouseLeave={nodeId ? () => navigation.hoverStep(null) : undefined}
+    >
+      <ExpressionChainRowContentView
+        column={node.column}
+        formulaText={node.expressionText ? formatDisplayExpression(node.expressionText).text : null}
+        substitutedText={substitutionRestatesValue(node.substitutedText, node.value) ? null : displaySubstituted(node.substitutedText)}
+        value={valueKnown ? node.value : "?"}
+        source={derivationSourceLabel(node)}
+        note={node.note}
+        onSourceClick={nodeId ? () => navigation.focusStep(nodeId) : undefined}
+        sourceLinkLabel={nodeId
+          ? `Go to ${node.nodeName ?? nodeId}${node.stepNumber == null ? "" : `, step ${node.stepNumber}`}`
+          : undefined}
+      />
+    </div>
   )
 }
 

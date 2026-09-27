@@ -6,7 +6,7 @@ import type {
 } from "../types/trace"
 import { DerivationTree } from "./DerivationTree"
 import { buildDerivationTree, derivationSourcesFor } from "./derivationTreeHelpers"
-import { TraceStepsContext } from "./traceStepsContext"
+import { TraceStepsContext } from "./traceContext"
 import { formatTraceValue } from "./traceFormatting"
 import { CHART_COLORS } from "../theme/colors"
 import {

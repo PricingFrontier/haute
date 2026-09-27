@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useContext, useEffect, useRef, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { TraceResult, TraceStep } from "../types/trace"
 import {
@@ -13,6 +13,7 @@ import { isTraceOriginStep, isTraceSourceNodeType } from "./traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
 import { NodeDetailBlock } from "./NodeDetailBlock"
 import { ComputedHere } from "./DerivationTree"
+import { TraceNavigationContext } from "./traceContext"
 import { hasBandingSecondaryDetail, hasRenderableBandingRows } from "./bandingRows"
 import { hasRichRatingStepDetail } from "./ratingStepHelpers"
 import {
@@ -43,6 +44,7 @@ export function StepCard({
   isTargetStep,
   defaultExpanded = false,
   waterfall,
+  focusNonce,
 }: {
   step: TraceStep
   index: number
@@ -50,8 +52,29 @@ export function StepCard({
   isTargetStep?: boolean
   defaultExpanded?: boolean
   waterfall?: TraceResult["waterfall"]
+  /** Changes each time a derivation row's link asks for this card. */
+  focusNonce?: number
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
+  const navigation = useContext(TraceNavigationContext)
+  const cardRef = useRef<HTMLDivElement>(null)
+  // A focus request opens the card and flashes it, also when the card mounts with
+  // one (a link to a card the focused trace hid); the scroll waits for the render.
+  const [seenFocusNonce, setSeenFocusNonce] = useState<number | undefined>(undefined)
+  const [flashing, setFlashing] = useState(false)
+  if (focusNonce !== seenFocusNonce) {
+    setSeenFocusNonce(focusNonce)
+    if (focusNonce !== undefined) {
+      setExpanded(true)
+      setFlashing(true)
+    }
+  }
+  useEffect(() => {
+    if (focusNonce === undefined) return
+    cardRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" })
+    const timer = window.setTimeout(() => setFlashing(false), 1600)
+    return () => window.clearTimeout(timer)
+  }, [focusNonce])
   const accent = nodeTypeColors[step.node_type] || CHART_COLORS.cyan
   const typeLabel = nodeTypeLabels[step.node_type] || "NODE"
   const relevant = step.column_relevant
@@ -148,14 +171,20 @@ export function StepCard({
 
   return (
     <div
+      ref={cardRef}
       className="rounded-lg overflow-hidden transition-opacity"
       data-testid={`trace-step-card-${step.node_id}`}
       data-target-step={isTargetStep || undefined}
       data-relevance={relevant ? "relevant" : "irrelevant"}
+      data-trace-focused={flashing || undefined}
+      onMouseEnter={() => navigation.hoverStep(step.node_id)}
+      onMouseLeave={() => navigation.hoverStep(null)}
       style={{
         border: relevant ? `1px solid ${accent}40` : "1px solid var(--border)",
         background: "var(--bg-elevated)",
         opacity: relevant ? 1 : 0.55,
+        boxShadow: flashing ? "0 0 0 2px var(--accent)" : undefined,
+        transition: "box-shadow 0.3s ease, opacity 0.2s ease",
       }}
     >
       {/* Collapsed header - hover bg driven by Tailwind.  The inline

@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { AlertTriangle, Copy, Download, Info, Printer, X, Scan } from "lucide-react"
 import type { TraceRequestState } from "../hooks/useTracing"
 import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult } from "../types/trace"
 import PanelShell from "./PanelShell"
 import { StepCard } from "../trace/StepCard"
-import { TraceStepsContext } from "../trace/traceStepsContext"
+import { TraceNavigationContext, TraceStepsContext, type TraceNavigation } from "../trace/traceContext"
+import useUIStore from "../stores/useUIStore"
 import { formatTraceValue, traceValuePresentation } from "../trace/traceFormatting"
 import {
   defaultExpandedStepIds,
@@ -124,6 +125,9 @@ export function TraceStatePanel({ state, onCancel, onRetry, onClose }: TraceStat
   )
 }
 
+/** How long after a derivation link's click hovers are ignored: the scroll to the card. */
+const LINK_SCROLL_SETTLE_MS = 1_000
+
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const storyKey = traceStoryKey(trace)
   const [showHidden, setShowHidden] = useState(false)
@@ -179,6 +183,30 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     () => new Map(trace.steps.map((step, index) => [step.node_id, index])),
     [trace.steps],
   )
+  // A derivation row's step link opens that step's card (in the full trace when the
+  // focused one hides it) and centres its node; pointing at a card or row rings it.
+  const setTraceFocusNodeId = useUIStore((s) => s.setTraceFocusNodeId)
+  const requestTraceCentre = useUIStore((s) => s.requestTraceCentre)
+  const [focusRequest, setFocusRequest] = useState<{ nodeId: string; nonce: number } | null>(null)
+  // While the panel scrolls to a linked card, content moves under a still pointer
+  // and reports hovers the user never made: they wait until the scroll settles.
+  const hoverSettlesAtRef = useRef(0)
+  const navigation = useMemo<TraceNavigation>(() => ({
+    focusStep: (nodeId) => {
+      const shown = storyEntries.some((entry) => !("collapsed" in entry) && entry.node_id === nodeId)
+      if (!shown && stepIndexById.has(nodeId)) setShowHidden(true)
+      setFocusRequest((previous) => ({ nodeId, nonce: (previous?.nonce ?? 0) + 1 }))
+      hoverSettlesAtRef.current = performance.now() + LINK_SCROLL_SETTLE_MS
+      setTraceFocusNodeId(nodeId)
+      requestTraceCentre(nodeId)
+    },
+    hoverStep: (nodeId) => {
+      if (performance.now() < hoverSettlesAtRef.current) return
+      setTraceFocusNodeId(nodeId)
+    },
+  }), [storyEntries, stepIndexById, setTraceFocusNodeId, requestTraceCentre])
+  useEffect(() => () => setTraceFocusNodeId(null), [setTraceFocusNodeId])
+
   const outputPresentation = traceValuePresentation(trace.output_value, trace.column ?? "result")
   const rowIdPresentation = traceValuePresentation(trace.row_id_value, trace.row_id_column ?? "row")
 
@@ -227,6 +255,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
 
   return (
     <TraceStepsContext.Provider value={trace.steps}>
+    <TraceNavigationContext.Provider value={navigation}>
       <PanelShell testId="trace-panel">
         {/* Header */}
         <div
@@ -459,12 +488,14 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                 tracedColumn={trace.column}
                 isTargetStep={isTargetStep}
                 defaultExpanded={expandedStepIds.has(entry.node_id)}
+              focusNonce={focusRequest?.nodeId === entry.node_id ? focusRequest.nonce : undefined}
                 waterfall={isTargetStep ? trace.waterfall : undefined}
               />
             )
           })}
         </div>
       </PanelShell>
+    </TraceNavigationContext.Provider>
     </TraceStepsContext.Provider>
   )
 }

@@ -86,6 +86,7 @@ import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
 import InitialViewFit from "./components/InitialViewFit"
+import TraceViewFit from "./components/TraceViewFit"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -717,6 +718,7 @@ function FlowEditor() {
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
+  const traceFocusNodeId = useUIStore((s) => s.traceFocusNodeId)
   const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -928,6 +930,7 @@ function FlowEditor() {
     preambleRef,
     nodeStatuses,
     hoveredNodeId,
+    traceFocusNodeId,
     refreshPreview,
     previewSeedPlan:
       previewData !== null && previewData.nodeId === selectedNode?.id
@@ -1745,6 +1748,7 @@ function FlowEditor() {
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
                 <InitialViewFit />
+                <TraceViewFit traceResult={traceResult} />
               </ReactFlow>
             </div>
           </ErrorBoundary>

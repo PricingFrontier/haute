@@ -19,7 +19,7 @@
 | `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. Below the online score line, "How the score's inputs were calculated" shows a derivation tree for the objective and each constraint column (a ratio constraint's numerator and denominator), from where the apply read it. The ratebook ladder ends with a "Combined factor collar" row: the `[min, max]` bounds, the product before the collar, the deployed value after it, and a "clipped" chip when the collar applied. |
 | `frontend/src/trace/ScenarioExpanderDetail.tsx`, `frontend/src/trace/scenarioExpanderHelpers.ts` | Scenario expansion view and shape guards/row helpers. |
 | `frontend/src/trace/LiveSwitchDetail.tsx`, `frontend/src/trace/liveSwitchHelpers.ts` | Live-switch detail and typed extraction. |
-| `frontend/src/trace/DerivationTree.tsx`, `frontend/src/trace/derivationTreeHelpers.ts`, `frontend/src/trace/traceStepsContext.ts` | How a value was calculated, followed across steps: `buildDerivationTree` builds a tree from the steps' `derivations` (a formula, a load, a rule such as a model or an optimiser, a value generated before its node's code rewrote it, a node not in the trace, or no source found, each labelled with the step number its card shows), cut off with a note on a repeat within one path or beyond 12 levels; `DerivationTree` renders it with the expression-chain row view, formulas open and rules collapsed; `ComputedHere` lists a step's own formulas. `TraceStepsContext` gives details inside the panel every step of the trace. |
+| `frontend/src/trace/DerivationTree.tsx`, `frontend/src/trace/derivationTreeHelpers.ts`, `frontend/src/trace/traceContext.ts` | How a value was calculated, followed across steps: `buildDerivationTree` builds a tree from the steps' `derivations` (a formula, a load, a rule such as a model or an optimiser, a value generated before its node's code rewrote it, a node not in the trace, or no source found, each labelled with the step number its card shows), cut off with a note on a repeat within one path or beyond 12 levels; `DerivationTree` renders it with the expression-chain row view, formulas open and rules collapsed; `ComputedHere` lists a step's own formulas. `traceContext.ts` holds `TraceStepsContext` (every step of the trace, for details inside the panel) and `TraceNavigationContext` (`focusStep`, `hoverStep`; inert outside a panel). A row's step label is a link ("Go to fill_na, step 9"), and pointing at a row rings its node. |
 | `frontend/src/trace/traceHelpers.ts`, `frontend/src/trace/traceFormatting.ts`, `frontend/src/trace/traceOrigins.ts` | Waterfall/chain/source transformations, trace value formatting and origin classification. |
 
 ## Key types and data structures
@@ -47,7 +47,17 @@
    changed. That notice belongs to the context without the seed plan and the
    epoch, so it outlives the refresh it started — which replaces the seed plan
    and may raise the epoch — and is hidden only by a change of node, graph,
-   source, or row limit. On the canvas a step on the traced value's lineage
+   source, or row limit. `useTracing` also takes `traceFocusNodeId` from `useUIStore`:
+   while a trace shows, that node is projected with `_traceFocused` and drawn with an
+   accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and
+   clears it on unmount), except for a second after a link's click, while the scroll to the
+   card moves content under a still pointer; a derivation row's step link calls `focusStep`, which shows the
+   full trace when the focused one hides the step, opens and scrolls to its card and
+   flashes it (`data-trace-focused`, also for a card that mounts with the request), rings
+   the node and asks `useUIStore.requestTraceCentre` to centre it. `TraceViewFit`, inside
+   the editor's `<ReactFlow>`, fits the canvas to the lineage steps (`column_relevant`)
+   once per trace result and centres each requested node at the current zoom.
+   On the canvas a step on the traced value's lineage
    (`column_relevant`) is active and shows the traced column's value, or in a column
    trace whose step does not hold it, the value of its first `contributed_columns`
    entry — a step that only carries the value's inputs (a join) shows none; a kept
@@ -187,7 +197,13 @@ optimiser objective followed to the loaded values, a model's prediction as a rul
 in the trace, a read with no source, several possible sources, unfollowed reads, a value
 generated before its node's code, and the depth limit;
 `frontend/src/panels/__tests__/TracePanel.test.tsx` renders it in the
-online optimiser card and the "Computed here" list.
+online optimiser card and the "Computed here" list, follows a row's step link to its card
+and the canvas focus, shows the full trace for a link to a card the focused one hides, and
+rings a hovered card's node. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins
+one lineage fit per trace and centring at the current zoom;
+`frontend/src/hooks/__tests__/useTracing.test.ts` and
+`frontend/src/nodes/__tests__/PipelineNode.test.tsx` pin the `_traceFocused` projection and
+ring.
 Some presentational primitives (`ExpressionChain`, `InputSourceTree`, `WaterfallChart`, and the
 detail dispatcher) are principally covered through integration rendering rather than one test file
 per module.

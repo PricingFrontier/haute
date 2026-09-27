@@ -652,6 +652,38 @@ describe("useTracing", () => {
     expect(dimmedNode.style?.opacity).toBeUndefined()
   })
 
+  it("nodesWithStatus rings the node a trace card points at, only while a trace shows", async () => {
+    const trace = {
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      target_node_id: "n1",
+      row_index: 0,
+      column: "price",
+      output_value: 1,
+      total_nodes_in_pipeline: 2,
+      nodes_in_trace: 1,
+      execution_ms: 10,
+      row_id_column: null,
+      row_id_value: null,
+    }
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
+    const { result, rerender } = renderHook(
+      (props: { focus: string | null }) => useTracing(makeParams({ traceFocusNodeId: props.focus })),
+      { initialProps: { focus: "n1" as string | null } },
+    )
+    const focused = () => result.current.nodesWithStatus.map((n) => [n.id, n.data._traceFocused])
+    // No trace yet: nothing is ringed.
+    expect(focused()).toEqual([["n1", false], ["n2", false]])
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+    expect(focused()).toEqual([["n1", true], ["n2", false]])
+
+    rerender({ focus: null })
+    expect(focused()).toEqual([["n1", false], ["n2", false]])
+  })
+
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [

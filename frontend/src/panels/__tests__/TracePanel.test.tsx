@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-li
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
 import { downloadTextFile } from "../editors/shared/tableClipboard"
+import useUIStore from "../../stores/useUIStore"
 
 // The click handler is synchronous, but a whole parallel suite run can starve
 // this worker for longer than waitFor's 1s default before it retries.
@@ -802,6 +803,70 @@ describe("TracePanel", () => {
     expect(computedHere).toHaveTextContent("profit = premium - BurnCost")
     // A generated column has no formula to show.
     expect(computedHere).not.toHaveTextContent("price_adjustment =")
+
+    // A row's step link opens that step's card and points the canvas at its node.
+    fireEvent.click(within(applyCard).getAllByRole("button", { name: "Show what profit was calculated from" })[0])
+    useUIStore.setState({ traceFocusNodeId: null, traceCentreRequest: null })
+    fireEvent.click(within(applyCard).getByRole("button", { name: "Go to fill_na, step 2" }))
+    const fillNaCard = screen.getByTestId("trace-step-card-fill_na")
+    expect(fillNaCard).toHaveAttribute("data-trace-focused", "true")
+    expect(within(fillNaCard).getByTestId("trace-step-body-fill_na")).toBeInTheDocument()
+    expect(useUIStore.getState().traceFocusNodeId).toBe("fill_na")
+    expect(useUIStore.getState().traceCentreRequest).toEqual({ nodeId: "fill_na" })
+
+    // A hover while the panel scrolls to the card (content moving under a still
+    // pointer) does not move the ring off it.
+    fireEvent.mouseEnter(scenariosCard)
+    expect(useUIStore.getState().traceFocusNodeId).toBe("fill_na")
+
+    // Once that settles, hovering a card rings its node; leaving clears it.
+    const settled = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 5_000)
+    fireEvent.mouseEnter(scenariosCard)
+    expect(useUIStore.getState().traceFocusNodeId).toBe("scenarios")
+    fireEvent.mouseLeave(scenariosCard)
+    expect(useUIStore.getState().traceFocusNodeId).toBeNull()
+    settled.mockRestore()
+  })
+
+  it("shows the full trace when a derivation link points at a card the focused one hides", () => {
+    const diff = (added: string[], passed: string[] = []) => ({
+      columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "calc",
+          column: "y",
+          output_value: 2,
+          steps: [
+            makeStep({ node_id: "src", node_name: "src", node_type: "dataInput", schema_diff: diff(["x"]), output_values: { x: 1 }, contributed_columns: ["x"] }),
+            // Carries x only: the focused trace hides it.
+            makeStep({ node_id: "carrier", node_name: "carrier", schema_diff: diff([], ["x"]), output_values: { x: 1 } }),
+            makeStep({
+              node_id: "calc", node_name: "calc", schema_diff: diff(["y"], ["x"]), output_values: { x: 1, y: 2 },
+              contributed_columns: ["y"],
+              derivations: [{
+                column: "y", expression_text: "x * 2", substituted_text: "1 * 2", result_value: 2,
+                not_computable_reason: null, result_source: null, error: null, error_type: null,
+                reads: [{ column: "x", sources: [{ node_id: "carrier", column: "x", before_code: false }] }],
+              }],
+              node_detail: {
+                detail_type: "optimiser_apply", mode: "online", output_column: "y", output_value: 2,
+                objective_column: "x", candidates: [],
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId("trace-step-card-carrier")).not.toBeInTheDocument()
+
+    const calc = screen.getByTestId("trace-step-card-calc")
+    fireEvent.click(within(calc).getByRole("button", { name: "Go to carrier, step 2" }))
+
+    expect(screen.getByTestId("trace-step-card-carrier")).toHaveAttribute("data-trace-focused", "true")
+    expect(screen.getByTestId("trace-show-full")).toHaveTextContent("show focused trace")
   })
 
   it("names the step that loaded a carried key, and never claims a row-changing step left rows unchanged", () => {

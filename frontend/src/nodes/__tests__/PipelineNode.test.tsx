@@ -220,6 +220,17 @@ describe("PipelineNode", () => {
     expect(screen.getByTestId("node-Diffed").style.boxShadow).toContain("var(--diff-changed)")
   })
 
+  it("rings the card and the join marker a trace card points at", () => {
+    renderNode({ label: "Focused", nodeType: NODE_TYPES.POLARS, _traceActive: true, _traceFocused: true })
+    expect(screen.getByTestId("node-Focused").style.boxShadow).toContain("0 0 0 3px var(--accent)")
+    cleanup()
+    renderNode({ label: "Plain", nodeType: NODE_TYPES.POLARS, _traceActive: true })
+    expect(screen.getByTestId("node-Plain").style.boxShadow).not.toContain("var(--accent)")
+    cleanup()
+    renderNode({ label: "Join", nodeType: NODE_TYPES.EDGE_JOIN, _traceActive: true, _traceFocused: true })
+    expect(screen.getByTestId("edge-join-marker").style.boxShadow).toContain("0 0 0 3px var(--accent)")
+  })
+
   it("uses a dashed outline for a moved node", () => {
     renderNode({ label: "Moved", nodeType: NODE_TYPES.POLARS, _diffStatus: "moved" })
     expect(screen.getByTestId("node-Moved").style.outline).toContain("dashed")
