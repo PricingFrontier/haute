@@ -46,8 +46,13 @@
    changed. That notice belongs to the context without the seed plan and the
    epoch, so it outlives the refresh it started — which replaces the seed plan
    and may raise the epoch — and is hidden only by a change of node, graph,
-   source, or row limit. On the canvas a node the trace skipped because a
-   shared snapshot below it was read (a `snapshot_seed` omission) stays on the
+   source, or row limit. On the canvas a step on the traced value's lineage
+   (`column_relevant`) is active and shows the traced column's value, or in a column
+   trace whose step does not hold it, the value of its first `contributed_columns`
+   entry — a step that only carries the value's inputs (a join) shows none; a kept
+   step off the lineage is neither active nor dimmed. A node the trace could not
+   follow above a
+   shared snapshot (an omission whose diagnostic names `seed_node_ids`) stays on the
    trace path — not dimmed, its connecting edges highlighted — without the
    active styling or value of a traced step; other omissions are dimmed like
    unrelated nodes. Requests require document execution capability
@@ -62,12 +67,29 @@
 2. `frontend/src/panels/TracePanel.tsx` derives the story key used for card
    identity, finds the last applicable producer for the traced column,
    calculates dependency-preservation/default-expansion sets, and chooses a
-   focused or full sequence. It interleaves typed omissions by topological
-   rank. With no traced column, it leaves the steps uncollapsed.
+   focused or full sequence. The focused story keeps the producer and every step
+   whose `contributed_columns` is non-empty — every step computing a column the
+   traced value depends on, however far upstream — and hides steps that only carry
+   those columns; default expansion covers the producer and the non-bulk steps
+   creating its direct inputs. The correlation-warning banner lists the diagnostics
+   no omission card shows whose `severity` is not `info`: an informational diagnostic
+   (a join that found no row, an aggregate, identical rows) appears only as its
+   omission note or step label, and not at all for a node off the traced value's
+   lineage. It interleaves typed omissions by topological
+   rank: an omission that is a fact about the data is a neutral `role="note"` card —
+   `join_no_match` (the join found no row) labelled "no match", and `aggregated_rows`
+   (the row aggregates several input rows) labelled "aggregated" with its diagnostic's
+   group keys and row count, and the snapshot reasons `seed_inputs_changed`,
+   `seed_recompute_refused`, `seed_row_not_reproduced` and `seed_row_ambiguous` (a node
+   not traced above the snapshot its diagnostic's message names) labelled "snapshot";
+   every other omission, `seed_recompute_failed` and `ancestor_row_conflict` included,
+   is a warning "trace gap" alert. With no traced column, it leaves the steps uncollapsed.
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
-4. `frontend/src/trace/StepCard.tsx` renders schema/value context, labels a step whose
+4. `frontend/src/trace/StepCard.tsx` renders schema/value context — collapsed, the traced
+   column's value, else the first two `contributed_columns`, else the first added and
+   modified columns — dims a step whose `column_relevant` is false, labels a step whose
    `identical_row_count` is set "One of N identical rows" (the panel does not repeat its
    `identical_row_match` diagnostic as a correlation warning), and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
@@ -115,8 +137,8 @@
 ## Error handling
 
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
-typed omissions, request failures, and banding/model-score/optimiser/scenario/live-switch errors
-render persistent `role="alert"` UI. When the document lacks execution capability or the graph is
+typed omissions other than the notes (`join_no_match`, `aggregated_rows`, and the snapshot reasons), request failures, and
+banding/model-score/optimiser/scenario/live-switch errors render persistent `role="alert"` UI. When the document lacks execution capability or the graph is
 unsynchronised, trace requests do not start; a mid-flight document identity change silently resets
 trace state to `idle` without raising an alert. A banding or model-score root `error`
 suppresses all normal summary/result rows so placeholder nulls cannot look like
@@ -137,7 +159,7 @@ behaviour, alerts and detail variants. `frontend/src/panels/trace/__tests__/trac
 tests grouping and preservation rules. Focused helper/error suites are under
 `frontend/src/trace/__tests__/` for calculations, formatting, banding, model score and rating.
 `frontend/src/hooks/__tests__/useTracing.test.ts` covers semantic request binding,
-abort/clear races, progress, and recovery, including a node skipped for a snapshot kept on the
+abort/clear races, progress, and recovery, including a node not traced above a snapshot kept on the
 canvas trace path while other omissions dim, a completed trace hidden and an in-flight
 one aborted with its late response discarded when the node-data epoch changes, a trace hidden
 when the explained preview reads other generations, and `preview_seed_plan_expired` refreshing

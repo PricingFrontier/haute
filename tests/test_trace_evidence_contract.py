@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 import haute.trace as trace_mod
 from haute._trace_correlation import CorrelationWork, _correlate_rows_posthoc
+from haute._trace_lineage import trace_value_lineage
 from haute.schemas import TraceOmissionResponse, TraceResultResponse
 from haute.trace import (
     SchemaDiff,
@@ -75,7 +76,7 @@ def test_correlation_telemetry_is_emitted_when_correlation_fails(
     assert events[0]["duration_ms"] >= 0
 
 
-def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None:
+def test_an_aggregated_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None:
     source_path = tmp_path / "source.parquet"
     pl.DataFrame(
         {
@@ -110,7 +111,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
     omission = result.omissions[0]
     assert omission.node_id == "source"
     assert omission.topological_rank == 0
-    assert omission.reason == "duplicate_exact_match"
+    assert omission.reason == "aggregated_rows"
     assert result.correlation_diagnostics[omission.diagnostic_index]["node_id"] == "source"
     assert result.nodes_in_trace == len(result.steps) + len(result.omissions) == 2
 
@@ -121,7 +122,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
             "node_name": "source",
             "node_type": "dataInput",
             "topological_rank": 0,
-            "reason": "duplicate_exact_match",
+            "reason": "aggregated_rows",
             "diagnostic_index": omission.diagnostic_index,
         }
     ]
@@ -172,7 +173,23 @@ def test_trace_omission_schema_requires_linkable_evidence() -> None:
         )
 
 
+def _node(node_id: str, node_type: str, code: str = "") -> SimpleNamespace:
+    return SimpleNamespace(
+        data=SimpleNamespace(label=node_id, nodeType=node_type, config={"code": code})
+    )
+
+
 def test_benign_column_pruning_does_not_create_an_omission() -> None:
+    base_step = TraceStep(
+        node_id="base",
+        node_name="Base",
+        node_type="dataInput",
+        schema_diff=SchemaDiff(
+            columns_added=["base"], columns_removed=[], columns_modified=[], columns_passed=[]
+        ),
+        input_values={},
+        output_values={"base": 100},
+    )
     target_step = TraceStep(
         node_id="target",
         node_name="Target",
@@ -185,27 +202,37 @@ def test_benign_column_pruning_does_not_create_an_omission() -> None:
         ),
         input_values={"base": 100},
         output_values={"premium": 120},
-        expression={
-            "expression_text": "base * 1.2",
-            "expression_type": "arithmetic",
-            "referenced_columns": ["base"],
-        },
     )
     node_map = {
-        "unrelated": SimpleNamespace(data=SimpleNamespace(label="Unrelated", nodeType="dataInput")),
-        "target": SimpleNamespace(data=SimpleNamespace(label="Target", nodeType="polars")),
+        "base": _node("base", "dataInput"),
+        "unrelated": _node("unrelated", "dataInput"),
+        "target": _node(
+            "target", "polars", "df = base.with_columns((pl.col('base') * 1.2).alias('premium'))"
+        ),
     }
+    outputs = {
+        "base": pl.DataFrame({"base": [100]}),
+        "unrelated": pl.DataFrame({"claims_only": [1]}),
+    }
+    unresolved_rows = {"unrelated": ("no_matching_row", 0)}
+    order = ["base", "unrelated", "target"]
 
     omissions = _build_trace_omissions(
-        unresolved_rows={"unrelated": ("no_matching_row", 0)},
-        order=["unrelated", "target"],
+        unresolved_rows=unresolved_rows,
+        order=order,
         node_map=node_map,
-        eager_outputs={
-            "unrelated": pl.DataFrame({"claims_only": [1]}),
-            "target": pl.DataFrame({"base": [100], "premium": [120]}),
-        },
-        steps=[target_step],
-        column="premium",
+        lineage=trace_value_lineage(
+            column="premium",
+            target_node_id="target",
+            steps=[base_step, target_step],
+            order=order,
+            parents_of={"target": ["base", "unrelated"]},
+            node_map=node_map,
+            attempted=unresolved_rows.keys(),
+            output_columns=lambda node_id, _handle: set(outputs[node_id].columns),
+            source_handles={},
+            join_inputs={},
+        ),
     )
 
     assert omissions == []
@@ -213,24 +240,38 @@ def test_benign_column_pruning_does_not_create_an_omission() -> None:
 
 def test_unresolved_assigning_step_keeps_all_attempted_ancestor_omissions() -> None:
     node_map = {
-        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id, nodeType="polars"))
+        node_id: _node(node_id, "polars")
         for node_id in ("unresolved-origin", "unresolved-upstream", "target")
     }
+    outputs = {
+        "unresolved-upstream": pl.DataFrame({"unrelated_name": [1]}),
+        "unresolved-origin": pl.DataFrame({"another_name": [2]}),
+    }
+    unresolved_rows = {
+        "unresolved-upstream": ("no_matching_row", 0),
+        "unresolved-origin": ("no_matching_row", 1),
+    }
+    order = ["unresolved-upstream", "unresolved-origin", "target"]
 
     omissions = _build_trace_omissions(
-        unresolved_rows={
-            "unresolved-upstream": ("no_matching_row", 0),
-            "unresolved-origin": ("no_matching_row", 1),
-        },
-        order=["unresolved-upstream", "unresolved-origin", "target"],
+        unresolved_rows=unresolved_rows,
+        order=order,
         node_map=node_map,
-        eager_outputs={
-            "unresolved-upstream": pl.DataFrame({"unrelated_name": [1]}),
-            "unresolved-origin": pl.DataFrame({"another_name": [2]}),
-            "target": pl.DataFrame({"premium": [120]}),
-        },
-        steps=[],
-        column="premium",
+        lineage=trace_value_lineage(
+            column="premium",
+            target_node_id="target",
+            steps=[],
+            order=order,
+            parents_of={
+                "target": ["unresolved-origin"],
+                "unresolved-origin": ["unresolved-upstream"],
+            },
+            node_map=node_map,
+            attempted=unresolved_rows.keys(),
+            output_columns=lambda node_id, _handle: set(outputs[node_id].columns),
+            source_handles={},
+            join_inputs={},
+        ),
     )
 
     assert [omission.node_id for omission in omissions] == [

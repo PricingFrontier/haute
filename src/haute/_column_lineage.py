@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
@@ -1094,24 +1094,10 @@ def _selector_naming(expression: ast.AST, aliases: frozenset[str]) -> _SelectorN
     method, or ``pipe`` — renames outputs in a way the per-column expansion
     cannot follow, so the expression is refused.
     """
-    inner = expression
-    alias: str | None = None
-    prefix = suffix = ""
-    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
-        func = inner.func
-        literal = (
-            _literal_string(inner.args[0]) if len(inner.args) == 1 and not inner.keywords else None
-        )
-        if func.attr == "alias":
-            if literal is None:
-                return None
-            alias = literal
-            inner = func.value
-        elif isinstance(func.value, ast.Attribute) and func.value.attr == "name":
-            if func.attr not in {"prefix", "suffix"} or literal is None:
-                return None
-            prefix, suffix = (literal, "") if func.attr == "prefix" else ("", literal)
-            inner = func.value.value
+    naming = _outermost_naming(expression)
+    if naming is None:
+        return None
+    inner, alias, prefix, suffix = naming
     pure = literal_selector(inner, aliases=aliases)
     if pure is not None:
         return _SelectorNaming(pure, inner, inner, alias, prefix, suffix)
@@ -1119,8 +1105,45 @@ def _selector_naming(expression: ast.AST, aliases: frozenset[str]) -> _SelectorN
     if found is None:
         return None
     selector, root = found
-    current = inner
-    while current is not root:
+    if _unrenamed_root(inner, lambda node: node is root) is None:
+        return None
+    return _SelectorNaming(selector, root, inner, alias, prefix, suffix)
+
+
+def _outermost_naming(expression: ast.AST) -> tuple[ast.AST, str | None, str, str] | None:
+    """Split an expression's outermost naming call off as ``(inner, alias, prefix, suffix)``.
+
+    The naming call is ``alias`` or ``.name.prefix``/``.name.suffix`` with a
+    literal argument; any other ``.name`` method is refused.
+    """
+    if not (isinstance(expression, ast.Call) and isinstance(expression.func, ast.Attribute)):
+        return expression, None, "", ""
+    func = expression.func
+    literal = (
+        _literal_string(expression.args[0])
+        if len(expression.args) == 1 and not expression.keywords
+        else None
+    )
+    if func.attr == "alias":
+        return None if literal is None else (func.value, literal, "", "")
+    if isinstance(func.value, ast.Attribute) and func.value.attr == "name":
+        if func.attr not in {"prefix", "suffix"} or literal is None:
+            return None
+        prefix, suffix = (literal, "") if func.attr == "prefix" else ("", literal)
+        return func.value.value, None, prefix, suffix
+    return expression, None, "", ""
+
+
+def _unrenamed_root(expression: ast.AST, is_root: Callable[[ast.AST], bool]) -> ast.AST | None:
+    """Return the first node satisfying *is_root* on *expression*'s receiver chain.
+
+    The chain follows method receivers (through expression namespaces), the
+    left operand of a binary operation, and the operand of a unary one. A
+    naming step on the way (``alias``, ``pipe``, a ``.name`` or ``.struct``
+    method) renames the root's outputs, so it ends the walk with ``None``.
+    """
+    current = expression
+    while not is_root(current):
         if isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
             if current.func.attr in _NAME_CHANGING_METHOD_NAMES:
                 return None
@@ -1132,12 +1155,11 @@ def _selector_naming(expression: ast.AST, aliases: frozenset[str]) -> _SelectorN
             current = receiver
         elif isinstance(current, ast.BinOp):
             current = current.left
-        else:
-            # ``selector_root`` reached the root only through receivers, left
-            # operands, and unary operands, so this step is a unary operand.
-            assert isinstance(current, ast.UnaryOp)
+        elif isinstance(current, ast.UnaryOp):
             current = current.operand
-    return _SelectorNaming(selector, root, inner, alias, prefix, suffix)
+        else:
+            return None
+    return current
 
 
 def _selector_expression_item(
@@ -3177,6 +3199,9 @@ class CarriedColumnProof:
     assigned: frozenset[str]
     join_keys: Mapping[str, frozenset[str]]
     carried_only: frozenset[str] | None = None
+    whole_groups: bool = False
+    """The program's one grouping reads every root-input row: each output row
+    aggregates exactly the input rows sharing all its keys."""
 
 
 # Frame methods that never change a surviving row's values.
@@ -3184,6 +3209,22 @@ _VALUE_PRESERVING_FRAME_METHODS = frozenset(
     {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop", "drop_nulls", "lazy"}
 )
 _ASSIGNING_FRAME_METHODS = frozenset({"with_columns", "with_columns_seq"})
+# Frame methods that may drop, duplicate, or reshape rows: a grouping after one
+# does not aggregate every input row sharing its keys.
+_ROW_CHANGING_FRAME_METHODS = frozenset(
+    {
+        "filter",
+        "head",
+        "tail",
+        "limit",
+        "slice",
+        "unique",
+        "drop_nulls",
+        "select",
+        "join",
+        "cross_join",
+    }
+)
 _ROW_PRESERVING_JOINS = frozenset({"inner", "left", "semi", "anti"})
 _ALLOWED_JOIN_OPTIONS = frozenset(
     {"on", "left_on", "right_on", "how", "suffix", "validate", "coalesce", "maintain_order"}
@@ -3312,6 +3353,51 @@ def _literal_frame_columns(node: ast.AST) -> list[str] | None:
     return [str(column) for column in columns]
 
 
+def _listed_column_names(node: ast.AST) -> list[str] | None:
+    """Return the plain names ``pl.col`` lists: several names, or one list or tuple of them.
+
+    A single string argument is one column, which ``_expression_output`` reads.
+    """
+    if not _is_polars_call(node, "col"):
+        return None
+    assert isinstance(node, ast.Call)
+    if node.keywords:
+        return None
+    if len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
+        arguments = node.args[0].elts
+    elif len(node.args) >= 2:
+        arguments = node.args
+    else:
+        return None
+    names = [_literal_string(argument) for argument in arguments]
+    if not names or not all(name is not None and _plain_column_name(name) for name in names):
+        return None
+    return [name for name in names if name is not None]
+
+
+def _name_list_assignment(argument: ast.AST) -> set[str] | None:
+    """Return the columns a computation rooted at ``pl.col(<listed names>)`` writes.
+
+    The syntax fixes the listed names, so the outputs are exactly those names,
+    renamed only by the outermost call. A pure selection writes nothing. ``None``
+    when the expression has no such root or renames it deeper in the chain.
+    """
+    naming = _outermost_naming(argument)
+    if naming is None:
+        return None
+    inner, alias, prefix, suffix = naming
+    root = _unrenamed_root(inner, lambda node: _listed_column_names(node) is not None)
+    if root is None:
+        return None
+    names = _listed_column_names(root)
+    assert names is not None
+    if alias is not None:
+        return {alias}
+    if inner is root and not (prefix or suffix):
+        return set()
+    return {f"{prefix}{name}{suffix}" for name in names}
+
+
 def _selector_assignment(
     argument: ast.AST,
     aliases: frozenset[str],
@@ -3387,6 +3473,9 @@ def carried_column_proof(
         else {column for columns in input_columns.values() for column in columns}
     )
     frame_changed = False
+    rows_intact = True
+    grouped = False
+    whole_groups = False
     for statement in tree.body:
         if isinstance(statement, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
@@ -3416,6 +3505,8 @@ def carried_column_proof(
             call = calls[index]
             assert isinstance(call.func, ast.Attribute)
             method = call.func.attr
+            if method in _ROW_CHANGING_FRAME_METHODS:
+                rows_intact = False
             if method in _VALUE_PRESERVING_FRAME_METHODS:
                 pass
             elif method in _ASSIGNING_FRAME_METHODS or method == "select":
@@ -3441,6 +3532,10 @@ def carried_column_proof(
                         if written is None:
                             return None
                         outputs.extend((name, False) for name in written)
+                        continue
+                    listed = _name_list_assignment(argument)
+                    if listed is not None:
+                        outputs.extend((name, False) for name in listed)
                         continue
                     output = _expression_output(argument)
                     if output is None:
@@ -3541,11 +3636,19 @@ def carried_column_proof(
                     if literal is None:
                         return None
                     group_keys.extend(literal)
-                if call.keywords or not group_keys:
+                # ``maintain_order`` only orders the groups; any other keyword
+                # names a computed key.
+                if not group_keys or any(
+                    keyword.arg != "maintain_order" or _literal_bool(keyword.value) is None
+                    for keyword in call.keywords
+                ):
                     return None
                 carried_only = (
                     set(group_keys) if carried_only is None else carried_only & set(group_keys)
                 )
+                whole_groups = rows_intact and not grouped
+                grouped = True
+                rows_intact = False
                 frame_changed = True
                 index += 1
             else:
@@ -3560,6 +3663,7 @@ def carried_column_proof(
         frozenset(assigned),
         MappingProxyType(dict(join_keys)),
         None if carried_only is None else frozenset(carried_only),
+        whole_groups,
     )
 
 

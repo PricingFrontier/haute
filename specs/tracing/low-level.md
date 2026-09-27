@@ -8,6 +8,7 @@
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
+| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance) and the columns each step contributes. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -15,7 +16,11 @@
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
   `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
   `output_values` (column → value dicts), `topological_rank`,
-  `column_relevant: bool` (default `True`), `identical_row_count` (the number of
+  `column_relevant: bool` (default `True`; in a column trace, whether the step is on
+  the traced value's lineage), `contributed_columns: list[str]` (in a column trace,
+  the columns of the step's output row it computes that the traced value depends on,
+  sorted — a helper column the step dropped is followed but not listed; empty for a
+  step that only carries them and for a trace with no column), `identical_row_count` (the number of
   identical candidates when the step's row is one of several identical rows,
   else `None`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
@@ -84,7 +89,7 @@
   reconciliation.
 - **Trace execution cache** (`trace.py`) — `_cache`, a module-level
   `LRUCache[str, dict[str, Any]]`; each value contains `eager_outputs`, `order`,
-  `parents_of`, `node_map`, and `source_ids`. `TRACE_CACHE_MAX_BYTES` defaults to
+  `parents_of`, and `node_map`; source ids are derived per request. `TRACE_CACHE_MAX_BYTES` defaults to
   `PREVIEW_CACHE_MAX_BYTES` (see [caching](../caching/high-level.md)), overridable
   via `HAUTE_TRACE_CACHE_MAX_BYTES`. Both values are parsed into module constants
   at import time by canonical fail-fast `_env.int_env`; a malformed, zero, or
@@ -136,23 +141,57 @@ seeds nothing (every listed generation lacking columns the trace reads, or dropp
 one) is closed and the trace runs with no plan; otherwise `_execute_trace_core` runs under
 it for the whole trace. Under a plan: input preparation is the plan's; strategy
 planning admits and estimates only what the plan builds, estimating from its seeds'
-generations (`_planned_strategy_scope`), so cached work that could not be admitted if
-recomputed never is; the cache key carries the seeded generations
+generations (`_planned_strategy_scope`); the cache key carries the seeded generations
 (`_seeded_fingerprint`); `_materialize_eager_outputs` and `_build_trace_plans` execute
-under the plan, so nodes above a seed are never built and a seeded point's frame and
-uncapped plan are its generation; a seeded point has no parents for the rest of the
-trace and is a source (`_trace_source_ids`), so correlation, steps, and relevance stop
-there and an ancestor shared with an executed branch is correlated through that branch;
-each seeded step carries `snapshot_generation_id` and stays in the step list as the end
-of downstream provenance, but it has no input row, so enrichment never reconstructs its
-expression or calculation from its own output, an input source traced to it reports the
-value it held there with its `snapshot_generation_id` and nothing above it, and a
-pass-through target whose value is followed back to it borrows no formula; steps and
-omissions are ranked by position in the whole lineage; and every lineage node skipped because of a seed
-(`_snapshot_seed_skips`) is an omission with reason `snapshot_seed`, linked to a
-correlation diagnostic (`code`/`reason` `snapshot_seed`, severity `info`) whose
-`seed_node_ids` names the seeds below it. It never ran, so no schema says whether it
-bears on a traced column: it is always reported, never pruned for column relevance.
+under the plan, so they build nothing above a seed and a seeded point's frame and
+uncapped plan are its generation; the seeded correlation treats each seeded point as a
+source (its parents emptied), so an ancestor shared with an executed branch is correlated
+through that branch; each seeded step carries `snapshot_generation_id`; and steps and
+omissions are ranked by position in the whole lineage.
+
+**Above a seed (`_continue_above_seed`).** After the seeded correlation, each seed whose
+row resolved is continued on its own, never as a union with another seed's ancestry:
+
+1. Its ancestors are the seed's own lineage (`prepare_graph(graph, seed)`). With an
+   admitted context their snapshot-backed inputs are prepared (`prepare_input_snapshots`);
+   when that did anything, the identity the graph now produces at the seed
+   (`node_output_identity` in `_seed_plans.py`) must equal the leased one, else
+   `seed_inputs_changed`.
+2. `plan_execution_strategy` admits the recompute of the seed and its ancestors on the
+   real graph (`materialising_node_ids` = the seed and its ancestors, no estimation
+   graph). A `BoundedMemoryUnsupportedError` is `seed_recompute_refused`, carrying its
+   `reason_code`. Planning writes `execution_context.projection_plan`, so the continuation
+   saves it first and restores it when it ends.
+3. `_build_trace_plans(target=seed, snapshot_plan=None)` builds the ancestors' uncapped
+   plans and the recomputed seed plan in the continuation's own provider; the recomputed
+   seed plan serves only the proof and never replaces the generation's.
+4. The proof looks the recomputed seed plan up by every value of the snapshot row
+   (`_lookup_clicked_row`): exactly one row proves it, none is `seed_row_not_reproduced`,
+   and two are `seed_row_ambiguous`.
+5. `_correlate_rows_posthoc` correlates the ancestors from the proven row with a
+   `RowScopeResolver` over the continuation's plans, with no head frames and the proven row
+   recorded as unique. Its rows, positions, looked-up frames, multi-frame `row_frames`,
+   diagnostics, and unresolved nodes (ordinary correlation omissions) merge into the trace
+   for ancestors only. An ancestor another path already resolved must hold the same row;
+   otherwise it is an `ancestor_row_conflict` omission that no later path overrides. An
+   ancestor a continuation resolves after another path failed on it drops that failed
+   attempt's evidence.
+
+Any other exception in these steps is `seed_recompute_failed`, logged with its traceback,
+with its type and message in the diagnostic; `ExecutionCancelledError` and
+`ExecutionMemoryLimitExceededError` propagate. A proven seed regains its parents for steps,
+relevance, enrichment, and the waterfall, is not a source, and its step is marked
+`snapshot_reproduced` (not serialised): enrichment explains it from its traced input row,
+and input sources and pass-through origins continue above it. An unproven seed keeps its
+emptied parents: enrichment never reconstructs its expression or calculation from its own
+output, an input source traced to it reports the value it held there with its
+`snapshot_generation_id` and nothing above it, and a pass-through target whose value is
+followed back to it borrows no formula. Each of its ancestors that no proven continuation
+resolved is an omission with its continuation's reason, linked to a diagnostic (severity
+`info`, `warning` for `seed_recompute_failed` and `ancestor_row_conflict`) whose
+`seed_node_ids` names the seed; with no schema to judge it by, it is never pruned for
+column relevance. Source ids are computed per request from these final parents. The
+continuation is never cached: every click proves again.
 
 1. Validate `nodes` non-empty; resolve `target_node_id` (defaults to the last
    node in topological order, computed from the node list in *declared* order —
@@ -171,7 +210,7 @@ bears on a traced column: it is always reported, never pruned for column relevan
    node's prefix length with `trace_head_prefixes` (see
    [Limited-preview lineage](#limited-preview-lineage-tracecorrelationpy) below).
    On a trace-cache hit (`_cache.get(fp)`), reuse the cached head frames
-   (`eager_outputs`) and `order`/`parents_of`/`node_map`/`source_ids`. On a miss, call
+   (`eager_outputs`) and `order`/`parents_of`/`node_map`. On a miss, call
    `_materialize_eager_outputs()` (below) and store the result under `fp`. Uncapped
    lineage plans are never cached: they hold Python scans bound to this request's
    execution context, so `_build_trace_plans` builds them at most once per request, and
@@ -206,8 +245,10 @@ bears on a traced column: it is always reported, never pruned for column relevan
 8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
    correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
-   more than one parent supplies the key). Nodes whose row correlation returned
-   `None` are skipped entirely.
+   more than one parent supplies the key). A multi-frame parent's row is merged
+   only into a child that reads the frame it came from (`row_frames` against
+   `source_frames_of`). Nodes whose row correlation returned `None` are skipped
+   entirely.
 9. `enrich_steps()` (from `src/haute/_trace_enrichment.py`, imported into `trace.py` as
    `_enrich_steps`, passed `source_frames_of`, `incoming_edges_of`, and the request's
    `lineage_plans` provider) enriches every step in place. An online optimiser apply's
@@ -215,10 +256,14 @@ bears on a traced column: it is always reported, never pruned for column relevan
    ratio constraint's whole-frame baseline lie outside the head rows — while a
    ratebook-mode apply, which is row-local, explains from the frames that produced the
    clicked row.
-10. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
+10. If `column` is set, `trace_value_lineage()` (`src/haute/_trace_lineage.py`) walks
+    the traced value's lineage over the enriched steps, and
+    `_prune_to_column_relevance()` filters steps and tags each kept step's
+    `column_relevant` and `contributed_columns` from that lineage.
 11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
     retained value path into diagnostic-linked `TraceOmission` entries; benign
-    graph/column pruning remains absent.
+    graph/column pruning remains absent. In a column trace an unresolved node is on
+    the value path when the lineage reaches it.
 12. Resolve `output_value` from the target row (whole row dict if `column` is
     `None`, else the single value). Resolve `row_id_column`/`row_id_value` by
     scanning `nodes` for an `apiInput` node with a `row_id_column` config entry.
@@ -277,7 +322,13 @@ the limited preview shows rather than independent source samples.
    separately. A port is matched in the parent's head frame, with `_match_parent_row`'s
    positional and value matching, when its edge is aligned, the parent is head-framed, and
    the child's row came from the child's own head frame; the clicked target row starts
-   head-resolved. Every other port correlates in a row-scoped frame (`lookup`): the
+   head-resolved. A head-frame match compares the child's carried values (item 4) when
+   they carry no cast, so a column the child's code rewrote is left out rather than
+   relaxed around; a child whose code the proof cannot read keeps name-based matching,
+   whose relaxed match is reported low-confidence. `schema_for` reads a node's schema from
+   the frame this click already holds for it (its head frame or looked-up rows, both read
+   from its plan) before building the uncapped plans, so head-frame matching never builds
+   them. Every other port correlates in a row-scoped frame (`lookup`): the
    parent's uncapped plan filtered by typed equality on the resolved child row's carried
    columns and limited to two rows, matched strictly with relaxed matching disabled; two
    surviving rows are ambiguous. Lookups are memoised per request by node, port, and
@@ -321,13 +372,40 @@ the limited preview shows rather than independent source samples.
    wins, then the widest carried match, and a tie records `ambiguous_source_frame`. An
    unresolved port records an empty frame with its schema so column relevance keeps its
    omission; with no carried column the diagnostic reason is `row_scope_unproven`.
+   The resolver records in `row_frames` the frame each resolved multi-frame node's row
+   came from. A join-role port of an Edge Join whose `how` is `left`, `full`, or `anti`
+   whose lookup found no row is probed by `_unmatched_join_keys`: the join side's keys
+   looked up with the base row's key values (the child's left keys). No row, or — for
+   `left` and `anti`, where every base row survives — a null key (which joins nothing),
+   proves the join found no row; a full join's null base key may be a join-side-only row
+   and proves nothing. The port then records a
+   `join_no_match` diagnostic (severity `info`, reason `join_no_match`, the key columns
+   in `match_columns`) instead of `row_match_not_found`, so the omission is informational.
+   A key that matched a row whose other carried values differ remains an ordinary miss.
+   A child whose proof reports `whole_groups` and carries every group key
+   (`_CarriedValues.aggregated`) and whose lookup found several rows records an
+   `aggregated_rows` diagnostic (severity `info`, the keys in `match_columns`, and in
+   `candidate_count` and `matched_row_count` the plan's rows sharing them, counted by
+   `count_rows`) instead of the ambiguity; identical candidates keep the
+   `identical_row_match` rule. A group of one row resolves to that row.
    `_correlate_rows_posthoc` does not correlate a parent through a child that reads none of
    its ports.
 4. **Carried columns (`_carried_values`).** Join-role parents use the edge-join
    right-provenance mapping; base-role parents use the child columns present in the base;
    pass-through node types (including OUTPUT documents and the optimiser) use every shared
    column; node types with column contracts use the shared columns minus the builder's
-   produced columns. Code (Polars, Explore, external file, and builder post-code) must pass
+   produced columns. An online optimiser apply (its artifact's `mode`, loaded through
+   `load_configured_optimiser_artifact`; an apply with no configured source is a
+   pass-through) carries only the chosen scenario row's identity:
+   `online_apply_chosen_row_columns` maps its output `quote_id`, `optimal_step`, and
+   optimised value column to the artifact's quote-id, scenario-index, and scenario-value
+   columns in the apply's `String`, `Int32`, and `Float32` dtypes. Each mapped column the
+   child row holds is carried under its parent name, and a parent column whose dtype
+   differs is compared cast (non-strict) to the apply's dtype. The lookup, the in-memory
+   match, and the identical-row count all build that comparison through
+   `_typed_value_match_expr`'s `cast`, so a `Float64` scenario value matches the apply's
+   `Float32` output exactly. A ratebook apply uses the contract rule above.
+   Code (Polars, Explore, external file, and builder post-code) must pass
    `carried_column_proof` in `src/haute/_column_lineage.py`, given each port plan's column
    names and dtypes (builder post-code, which runs on the builder's own output, gets none),
    the preamble's selector aliases, and the child's `inputMapping` aliases, which the proof
@@ -347,12 +425,22 @@ the limited preview shows rather than independent source samples.
      selector expands only against the root input's dtypes before any assigning operation
      or join; a positional rooted selector, a naming step deeper in the chain, a
      non-literal join suffix, or missing input schemas fail the proof;
+   - an expression rooted at `pl.col` given literal plain column names (a list or tuple,
+     or several names) assigns exactly those names, renamed only by its outermost call
+     (`alias`, or `.name.prefix`/`.name.suffix`); a bare selection of them assigns
+     nothing, and a `.name` or `.struct` step deeper in the chain, or a regex, wildcard,
+     or non-literal entry, fails the proof. An `alias` deeper in the chain is read as for
+     one column, since Polars rejects one alias over several;
    - `with_row_index` assigns its name; a literal `rename` assigns both names;
    - `join` or `cross_join` of another input or an inline literal frame (whose columns are
      assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
      `on` keys as the same-name keys of that joined input; a non-root input joined twice
      fails the proof;
-   - a literal `group_by(...).agg(...)` carries only its keys;
+   - a literal `group_by(...).agg(...)` carries only its keys; a literal boolean
+     `maintain_order` keyword is allowed, and any other keyword (a named computed key)
+     fails the proof. The proof reports `whole_groups` when it is the program's only
+     grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,
+     so each group holds exactly the input rows sharing its keys;
    - an output whose name the syntax cannot fix — a regex or wildcard column outside a
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
@@ -453,9 +541,12 @@ of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge orde
    `row_indices` with it.
 2. Build `children_of` as the reverse of `parents_of`.
 3. With a `row_scope` resolver (every `execute_trace` call), walk `order` in reverse and
-   resolve each node through `RowScopeResolver.resolve` from a resolved child that reads
-   one of its ports, preferring a child whose edge can use head frames; a node with no such
-   child is not on the path to the target. Without a resolver (direct callers of the
+   resolve each node through `RowScopeResolver.resolve` from its resolved children that
+   read one of its ports, in a fixed order: children whose edge can use head frames first,
+   then by descending position in `order` (nearest the target first). The first child
+   that proves the row decides it and only its diagnostics are kept; when none does, the
+   first child's diagnostics explain the omission. A node with no such child is not on
+   the path to the target. Without a resolver (direct callers of the
    function), walk `order` in reverse. For each unresolved node with a materialized output:
    - Find a child of that node already resolved with a non-empty row
      (`resolved_child_id`); if none exists, the node is not on the path to the
@@ -509,7 +600,7 @@ its public facade.
    step that added or last modified it. When no parent or more than one does —
    a join whose sides both hold the column — or a parent missing from the steps
    might (its materialised frame, when there is one, has the column), or the
-   value reached a seeded step, the origin is unproven and nothing is borrowed:
+   value reached a seeded step no recompute reproduced, the origin is unproven and nothing is borrowed:
    another branch's formula would explain a value the target never had.
    **Call-phase rule** (`_assignment_values`/`_assignment_row`, for the step's
    own assignment, a borrowed one, an input source's derivation and each chain
@@ -663,7 +754,9 @@ snapshot deterministically.
   Boolean, integer/integer is exact, and finite float comparison uses
   `abs(a-b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`. Integer/float comparison
   is allowed only through the JavaScript-safe boundary; an unsafe integer may
-  match only its exact canonical decimal string.
+  match only its exact canonical decimal string. A carried column with a cast (an
+  online optimiser apply's chosen-row identity) is compared as
+  `cast(column, dtype, strict=False)` under the same contract for that dtype.
 - **Temporal, decimal, categorical, and nested matching stays typed.** Date,
   Time, Datetime, and Duration compare through checked integer temporal
   representations with timezone-awareness preserved; Decimal uses exact
@@ -718,12 +811,58 @@ snapshot deterministically.
   handle(s) before these rules inspect its columns. No selectable frame raises a
   message-bearing `ValueError` naming the edge join and base parent.
 - **Column relevance pruning has two distinct cases**, both anchored on
-  `_tag_column_relevance` tagging every step first: a pass-through column keeps
+  `_carries_column` (whether a step's output holds the traced column): a pass-through column keeps
   only nodes whose *output* actually carries it (pruning unrelated source
   branches); a calculated/modified column keeps its origin node(s) plus every
   ancestor that produces a column its formula's `referenced_columns` actually
   names (falling back to keeping *all* ancestors when no expression info is
-  available, e.g. an opaque node).
+  available, e.g. an opaque node). Pruning decides which steps are returned; the
+  lineage decides which of them are relevant.
+- **The value lineage is a backward demand walk** (`trace_value_lineage`). Each node
+  gets the set of its output columns the value depends on (or "every column"), seeded
+  with the traced column at the target and visited in reverse topological order over
+  the graph's parents. At a step, a demanded column it computes is contributed and
+  replaced by its dependencies; a demanded column it does not compute is carried to its
+  parents. A step computes a column its row shows added or modified, its effective code
+  assigns (even to the value the column already held, or to a helper column it later
+  drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
+  `dataOutput`) computes nothing: every column is carried, including one its schema
+  diff shows as added because the parent holding it was not correlated. A source
+  computes its columns from nothing.
+  Rules run before the node's code: a scenario expander's `column_name`/`step_column`
+  (reading nothing), and from `node_detail` a model score's `prediction_column`
+  (`feature_columns`), an online optimiser apply's `output_column` (the objective, the
+  quote id, scenario index and value columns, and each constraint's column — a ratio
+  constraint's numerator and denominator too), a ratebook apply's `output_column`
+  (every factor's `input_columns`), a rating table's `output_column` (its factor
+  columns) and combined output (its table columns), and a banding factor's
+  `output_column` (its `input_column`); a rule overwriting the column it reads (an
+  in-place banding factor) reads the input's value. A column the code assigns depends on what its
+  last assignment reads: `parse_expression` on the instance-aware wrapped code locates
+  it and the planner's fail-closed `_referenced_columns` names the columns of its
+  defining expression, so a column named only as a string (`over("region")`) counts. A
+  column the code does not assign depends on its rule. A detail carrying `error`, an
+  assignment that cannot be read or whose columns cannot all be named, and a computed
+  column no rule explains (an `output` node's mapping) depend on every input column.
+  A column an assignment reads is resolved to the value it saw: its own column, or one
+  the code assigns only in the same or a later `with_columns` call (`assignment_phases`),
+  is the value from before the code — the rule's, else the input's; one the code
+  assigns only in earlier calls is that last earlier assignment, followed within the
+  node; one the code assigns both before and after, or where an earlier call writes a
+  column whose name is not static, depends on every input column; one only a rule
+  computes is the rule's; any other is the input's. A column's value from before the
+  code and its final value are followed separately, so reading the first does not
+  hide the second's inputs. A column no step computes and no parent carries ends
+  there.
+  Carried columns are routed to the parents that were correlated or attempted, by the
+  columns of the frame each edge reads (the `sourceHandle`'s frame of a multi-frame
+  output): an Edge Join sends a colliding `<col><suffix>` to the join side as `<col>`,
+  base-side columns to the base and join-only columns to the join side; an inner, left,
+  semi or anti join's keys go to the base, and a right, full or cross join's keys go
+  to both sides under each side's own key name. Other nodes send a column to every
+  such parent whose edge's frame has it, and to every such parent when that frame is
+  unknown. An unresolved node that the walk reaches depends on every input column, so
+  every attempted ancestor above it stays relevant.
 - **`instanceOf` code resolution appears in three independent places**
   (`enrich_steps`, `_build_input_sources`, `_build_rename_chain`) — a cloned
   node instance whose own code lacks `.with_columns(` borrows the *original*
@@ -790,29 +929,48 @@ Tests live in `tests/`, one focused file per concern plus several broad
 integration/regression suites:
 
 - **`tests/test_trace_snapshot_seeding.py`** — traces over the generations their preview
-  read: a trace of a seeded preview stopping at the join step read from the snapshot and
-  reporting both sources as `snapshot_seed` omissions naming it; a first preview's
-  capture traced back to the identical row over a shuffled source, building nothing
-  above it; a diamond with one cached branch keeping the shared ancestor traceable
-  through the other; a snapshot published after an unseeded preview leaving its trace
-  unseeded; a refresh while another job leases the preview's generation still tracing
-  it; a clear with and without another lease; a graph edit answering 409
-  `preview_seed_plan_expired`; a column-projected capture recomputed; a trace reusing
-  the preview entry stored under its plan; a worker's expired plan mapped to 409; a
-  column trace never calculating a seeded step from its own output; downstream provenance
-  ending at the seeded step with the value it held there; a pass-through target explained
-  from the seed on its path rather than an executed creator on another, and never from
-  the other side of a join whose sides both hold its column — explained, without seeds,
-  by the join side that supplied it and by the last assignment rather than the first,
-  and given no formula when both join sides hold its value; an ancestor
-  correlated through the uncached branch when the cached one is ambiguous; and cached
-  work that could not be admitted if recomputed traced from its snapshot.
+  read: a trace of a seeded preview reading the join from the snapshot and, a recompute
+  reproducing its row, tracing both sources above it; a first preview's capture traced
+  back to the preview's row over a shuffled source; a diamond with one cached branch
+  whose shared ancestor both paths reach as one row; a snapshot published after an
+  unseeded preview leaving its trace unseeded; a refresh while another job leases the
+  preview's generation still tracing it; a clear with and without another lease; a graph
+  edit answering 409 `preview_seed_plan_expired`; a column-projected capture recomputed; a
+  trace reusing the preview entry stored under its plan; a worker's expired plan mapped to
+  409; a reproduced seed explained from its traced input, and a seed no recompute
+  reproduces never given a calculation, its source a `seed_row_not_reproduced` omission;
+  downstream provenance and a pass-through target's borrowed formula continuing above a
+  seed only when it was reproduced; a pass-through target never explained from the other
+  side of a join whose sides both hold its column — explained, without seeds, by the join
+  side that supplied it and by the last assignment rather than the first, and given no
+  formula when both join sides hold its value; an ancestor correlated through the
+  uncached branch when the cached one is ambiguous; cached work that could not be admitted
+  if recomputed traced from its snapshot with its ancestors `seed_recompute_refused`; a
+  recompute holding the snapshot row twice (`seed_row_ambiguous`); a seed whose inputs
+  moved (`seed_inputs_changed`); a seed whose own row is unresolved building nothing above
+  it; one refused seed not hiding what another seed's recompute traced; the context's
+  projection plan left in place after a reproduced, refused, and failed recompute; and the
+  merge never overwriting a row another path resolved (`ancestor_row_conflict`, final
+  for the trace even when a later seed agrees with one side) while dropping the evidence
+  of any earlier attempt a continuation superseded.
 
 - **`tests/test_trace.py`** — core unit coverage of `execute_trace`,
   `SchemaDiff`/`TraceResult`/`TraceStep`, and `_find_matching_row` directly
   against `haute._trace_correlation`; includes the fail-loud duplicate-match
   regression for `_find_target_row_index` (ambiguous relocation raises
   `ValueError` rather than returning the first matching index).
+- **`tests/test_trace_value_lineage.py`** — the value lineage end to end on a
+  demo-shaped pricing pipeline (joined-in data off the lineage, a join-side
+  premium, a competitor price two steps above the constraint it feeds, a cost, a
+  scenario expander's code and generated columns, an online apply, and an unsold
+  quote's join that no omission reports), a join that found no row reported only
+  when the value reads it, the model-score rule (a feature leads to the model
+  that predicted it; a failed explanation depends on every input), the rating
+  table, combined-output and banding rules, a helper column the code drops, an
+  assignment that kept the input value, a column reassigned after it was read, a
+  window partition column, a ratio constraint's numerator and denominator, a
+  multi-frame join base read through its edge's frame, and a coalesced full join's
+  differently named keys.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for
@@ -828,7 +986,11 @@ integration/regression suites:
   `row_limit`, including the shared-cache-fingerprint requirement between preview
   and trace calls. `TestLimitedPreviewTrace` traces rows of a target-only limited
   preview: a joined value to its lookup row with and without `maintainOrder`, a filtered
-  row past the source prefix, a grouped row's source rows reported ambiguous, order-
+  row past the source prefix, a grouped row's source rows reported as `aggregated_rows`
+  with their count (a group of one resolved to its row) but left ambiguous when a filter
+  or a rewritten key means they need not all be in its group, a full join's right-only
+  row never called a join miss, a head-frame parent matched on
+  its child's carried values with no relaxed match, order-
   preserving lineage from head frames with no lookup, code below an unordered join through
   its carried columns (and `row_scope_unproven` when the carried key is rewritten), a later
   join key never identifying an earlier joined input, an order-dependent expression never
@@ -836,7 +998,13 @@ integration/regression suites:
   computed and positional selectors below an unordered join, a row-local `polars.selectors`
   program traced from head frames, a selector renamed mid-expression reported
   `row_scope_unproven` instead of attributed to an unrelated row, and code that addresses
-  its input through an `inputMapping` alias traced through both upstream Edge Joins.
+  its input through an `inputMapping` alias traced through both upstream Edge Joins, a
+  node its nearest child cannot prove traced through another child, and a left join's
+  unmatched and null keys reported as `join_no_match`.
+  `tests/test_trace_multi_frame.py::test_a_source_row_is_given_only_to_the_child_reading_its_frame`
+  pins a multi-frame source's row coming from the join base's frame and never given as
+  the input of a child reading another frame. `tests/test_column_lineage.py` pins the
+  carried-column proof of `pl.col` name lists against executed values.
   `tests/test_trace_multi_frame.py::test_row_scope_names_each_port_of_one_source_by_its_own_frame`
   pins per-edge input names for both edge orders.
 - **`tests/test_trace_row_scope_lookup.py`** — `RowScopeResolver.lookup` probes by Edge
@@ -896,7 +1064,9 @@ integration/regression suites:
 - **`tests/test_trace_banding_lineage.py`** — lineage tests specific to
   banding-created fields.
 - **`tests/test_optimiser_apply_trace_enrichment.py`** — optimiser-apply
-  explainability enrichment.
+  explainability enrichment, and correlation of an online apply's parent to the
+  scenario row it chose through each kept identity column (scenario value, step,
+  or a non-string quote id), with the quote id alone left ambiguous.
 - **`tests/test_trace_w4_fixes.py`** — W4-audit correlation-soundness
   regressions: fail-loud/unresolved behaviour over wrong-row attribution, and
   numeric-comparison agreement with actual engine behaviour.

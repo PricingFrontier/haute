@@ -368,6 +368,81 @@ def test_limited_online_trace_explains_a_custom_quote_id_column(tmp_path):
     assert [candidate["scenario_index"] for candidate in detail["candidates"]] == [0, 1, 2]
 
 
+def _online_apply_graph(tmp_path, scored: pl.DataFrame, artifact: dict, **config):
+    artifact_path = _write_json(tmp_path / "online.json", artifact)
+    scored_path = tmp_path / "scored.parquet"
+    scored.write_parquet(scored_path)
+    return _g(
+        {
+            "nodes": [
+                _source_node("scored", str(scored_path)),
+                _optimiser_apply_node(
+                    {"sourceType": "file", "artifact_path": artifact_path, **config}
+                ),
+            ],
+            "edges": [_edge("scored", "apply")],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "selected_columns",
+    [["quote_id", "optimal_premium"], ["quote_id", "optimal_step"]],
+    ids=["scenario_value", "scenario_index"],
+)
+def test_online_trace_correlates_the_scenario_row_the_apply_chose(tmp_path, selected_columns):
+    graph = _online_apply_graph(
+        tmp_path,
+        _scored_online_df(),
+        _online_artifact(),
+        optimised_value_column="optimal_premium",
+        selected_columns=selected_columns,
+    )
+
+    result = execute_trace(graph, row_index=0, target_node_id="apply")
+
+    assert result.omissions == []
+    # q1's chosen scenario is index 2 (see the candidate explanation test above),
+    # shown as the pipeline holds it rather than the apply's Float32 copy.
+    assert _step_by_id(result, "scored").output_values == {
+        "quote_id": "q1",
+        "scenario_index": 2,
+        "scenario_value": 1.1,
+        "predicted_income": 110.0,
+        "predicted_volume": 0.7,
+    }
+
+
+def test_online_trace_correlates_a_non_string_quote_id_through_the_apply_cast(tmp_path):
+    artifact = _online_artifact()
+    artifact["quote_id"] = "policy_id"
+    scored = (
+        _scored_online_df()
+        .with_columns(pl.Series("quote_id", [11, 11, 11, 12, 12, 12, None], dtype=pl.Int64))
+        .rename({"quote_id": "policy_id"})
+    )
+    graph = _online_apply_graph(tmp_path, scored, artifact)
+
+    result = execute_trace(graph, row_index=1, target_node_id="apply")
+
+    assert result.output_value["quote_id"] == "12"
+    assert result.omissions == []
+    row = _step_by_id(result, "scored").output_values
+    assert (row["policy_id"], row["scenario_index"]) == (12, 2)
+
+
+def test_online_trace_leaves_the_quote_ambiguous_when_no_scenario_is_named(tmp_path):
+    graph = _online_apply_graph(
+        tmp_path, _scored_online_df(), _online_artifact(), selected_columns=["quote_id"]
+    )
+
+    result = execute_trace(graph, row_index=0, target_node_id="apply")
+
+    assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+        ("scored", "duplicate_exact_match")
+    ]
+
+
 def test_online_execute_trace_handles_unconstrained_artifact(tmp_path):
     artifact_path = _write_json(tmp_path / "unconstrained.json", _no_constraint_artifact())
     scored_path = tmp_path / "scored.parquet"
@@ -597,7 +672,6 @@ def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path, monkeypa
             list(prepared.order),
             prepared.parents_of,
             prepared.node_map,
-            {"request"},
             None,
         )
 
@@ -719,6 +793,9 @@ def test_ratebook_execute_trace_explains_composite_factor_ladder(tmp_path):
 
     ladder = detail["factor_ladder"]
     assert [step["factor"] for step in ladder] == ["channel:age_band", "region"]
+    assert [step["input_columns"] for step in ladder] == [["channel", "age_band"], ["region"]]
+    # The factor columns are what the traced value was computed from.
+    assert _step_by_id(result, "banded").contributed_columns == ["age_band", "channel", "region"]
     composite = ladder[0]
     assert composite["input_value"] == {"channel": "phone", "age_band": "18-25"}
     assert composite["factor_value"] == pytest.approx(0.98)

@@ -202,42 +202,6 @@ export function targetStepDependencyColumns(step: TraceStep, tracedColumn: strin
   return dependencyColumns
 }
 
-export function targetDependencyStepIds(steps: TraceStep[], targetStep: TraceStep | null, column: string | null): Set<string> {
-  const ids = new Set<string>()
-  if (!targetStep) return ids
-
-  const targetIndex = steps.findIndex((step) => step.node_id === targetStep.node_id)
-  const dependencyColumns = targetStepDependencyColumns(targetStep, column)
-  if (dependencyColumns.size === 0) return ids
-
-  steps.forEach((step, index) => {
-    if (step.node_id === targetStep.node_id) return
-    if (targetIndex >= 0 && index > targetIndex) return
-    for (const dependencyColumn of dependencyColumns) {
-      if (stepCreatesOrModifiesColumn(step, dependencyColumn)) {
-        ids.add(step.node_id)
-        return
-      }
-    }
-  })
-
-  return ids
-}
-
-export function directInputSourceStepIds(steps: TraceStep[], targetStep: TraceStep | null): Set<string> {
-  const ids = new Set<string>()
-  const sourceNodeNames = directInputSourceNodeNames(targetStep)
-  if (sourceNodeNames.size === 0) return ids
-
-  for (const step of steps) {
-    if (sourceNodeNames.has(step.node_name)) {
-      ids.add(step.node_id)
-    }
-  }
-
-  return ids
-}
-
 export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep | null, column: string | null): Set<string> {
   const ids = new Set<string>()
   if (!targetStep) return ids
@@ -272,10 +236,17 @@ export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep
   return ids
 }
 
-export function traceStoryPreserveStepIds(steps: TraceStep[], targetStep: TraceStep | null, column: string | null): Set<string> {
-  const ids = targetDependencyStepIds(steps, targetStep, column)
-  for (const sourceStepId of directInputSourceStepIds(steps, targetStep)) {
-    ids.add(sourceStepId)
+/**
+ * The focused story: the producing step and every step that computes a column
+ * the traced value depends on, however far upstream. Steps that only carry
+ * those columns (joins, switches) stay hidden until the full trace is shown.
+ */
+export function traceStoryPreserveStepIds(steps: TraceStep[], targetStep: TraceStep | null): Set<string> {
+  const ids = new Set<string>()
+  for (const step of steps) {
+    if (step.contributed_columns.length > 0) {
+      ids.add(step.node_id)
+    }
   }
   if (targetStep) {
     ids.add(targetStep.node_id)

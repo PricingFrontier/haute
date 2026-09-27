@@ -27,6 +27,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
+    contributed_columns: [],
     ...overrides,
   }
 }
@@ -268,6 +269,71 @@ describe("TracePanel", () => {
 
   it.each([
     {
+      reason: "join_no_match",
+      matchedRowCount: 0,
+      label: "no match",
+      summary: "No row from this input joined the traced row",
+    },
+    {
+      reason: "aggregated_rows",
+      matchedRowCount: 3,
+      label: "aggregated",
+      summary: "This row aggregates rows of this input grouped by quote_id: 3 of them share its key values.",
+    },
+    {
+      reason: "seed_row_not_reproduced",
+      matchedRowCount: 0,
+      label: "snapshot",
+      summary: "Not traced above the snapshot the preview read: recomputing it does not reproduce the snapshot's row.",
+    },
+    {
+      reason: "seed_recompute_refused",
+      matchedRowCount: 0,
+      label: "snapshot",
+      summary: "Not traced above the snapshot the preview read: recomputing it was not admitted.",
+    },
+  ])("shows a $reason omission as a note rather than a trace gap", ({ reason, matchedRowCount, label, summary }) => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
+          omissions: [{
+            node_id: "upstream",
+            node_name: "upstream",
+            node_type: "dataInput",
+            topological_rank: 0,
+            reason,
+            diagnostic_index: 0,
+          }],
+          correlation_diagnostics: [{
+            code: reason,
+            severity: "info",
+            reason,
+            message: "Backend detail.",
+            node_id: "upstream",
+            child_node_id: "target",
+            match_columns: ["quote_id"],
+            ignored_columns: [],
+            matched_row_count: matchedRowCount,
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+          nodes_in_trace: 1,
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const note = screen.getByTestId("trace-omission-upstream")
+    expect(note).toHaveAttribute("role", "note")
+    expect(note).toHaveTextContent(label)
+    expect(note).not.toHaveTextContent("trace gap")
+    expect(note).toHaveTextContent(summary)
+  })
+
+  it.each([
+    {
       name: "rich rating",
       step: makeStep({
         node_id: "target",
@@ -340,7 +406,7 @@ describe("TracePanel", () => {
   it("renders step names in order", () => {
     render(<TracePanel trace={makeTrace({
       steps: [
-        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"] }),
         makeStep({
           node_id: "n2",
           node_name: "Calc",
@@ -365,7 +431,7 @@ describe("TracePanel", () => {
   it("renders step indexes starting from 1", () => {
     render(<TracePanel trace={makeTrace({
       steps: [
-        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"] }),
         makeStep({
           node_id: "n2",
           node_name: "Calc",
@@ -412,6 +478,7 @@ describe("TracePanel", () => {
               },
               output_values: { driver_age: 22 },
               column_relevant: false,
+              contributed_columns: [],
             }),
             makeStep({
               node_id: "banding",
@@ -500,6 +567,7 @@ describe("TracePanel", () => {
               },
               expression: null,
               calculation: null,
+              contributed_columns: ["channel_band", "proposer_age_band", "vehicle_age_band"],
               node_detail: {
                 detail_type: "banding",
                 factors: [
@@ -558,6 +626,7 @@ describe("TracePanel", () => {
               },
               expression: null,
               calculation: null,
+              contributed_columns: ["optimised_premium"],
               node_detail: {
                 detail_type: "optimiser_apply",
                 mode: "ratebook",
@@ -641,6 +710,7 @@ describe("TracePanel", () => {
                 unused_constraint: 0.42,
               },
               column_relevant: false,
+              contributed_columns: [],
             }),
             makeStep({
               node_id: "unused_transform",
@@ -666,6 +736,7 @@ describe("TracePanel", () => {
                 difference_to_market: 0.21,
               },
               column_relevant: false,
+              contributed_columns: [],
             }),
             makeStep({
               node_id: "banding",
@@ -681,6 +752,7 @@ describe("TracePanel", () => {
               output_values: { proposer_age: 49, proposer_age_band: "49-55" },
               expression: null,
               calculation: null,
+              contributed_columns: ["proposer_age_band"],
               node_detail: {
                 detail_type: "banding",
                 factors: [
@@ -733,6 +805,7 @@ describe("TracePanel", () => {
                 },
               },
               expression: null,
+              contributed_columns: ["optimised_premium"],
               node_detail: {
                 detail_type: "optimiser_apply",
                 mode: "ratebook",
@@ -770,6 +843,118 @@ describe("TracePanel", () => {
     expect(screen.queryByText("difference_to_market")).not.toBeInTheDocument()
   })
 
+  it("keeps every step that computed an input of an optimised value in the focused trace", () => {
+    const diff = (added: string[], modified: string[] = []) => ({
+      columns_added: added,
+      columns_removed: [],
+      columns_modified: modified,
+      columns_passed: [],
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply_optimiser",
+          column: "optimal_premium",
+          output_value: 1.5,
+          steps: [
+            makeStep({
+              node_id: "nb_batch_input",
+              node_name: "nb_batch_input",
+              node_type: "dataInput",
+              schema_diff: diff(["quote_id", "channel", "ncd_years"]),
+              input_values: {},
+              output_values: { quote_id: "Q1", channel: "ctm", ncd_years: 11 },
+              contributed_columns: ["channel", "ncd_years", "quote_id"],
+            }),
+            makeStep({
+              node_id: "competitor_insights",
+              node_name: "competitor_insights",
+              node_type: "dataInput",
+              topological_rank: 1,
+              schema_diff: diff(["quote_id", "avg_cheapest_5"]),
+              input_values: {},
+              output_values: { quote_id: "Q1", avg_cheapest_5: 300 },
+              column_relevant: false,
+            }),
+            makeStep({
+              node_id: "competitor_join",
+              node_name: "competitor_join",
+              node_type: "edgeJoin",
+              topological_rank: 2,
+              schema_diff: diff([]),
+              output_values: { quote_id: "Q1", channel: "ctm", ncd_years: 11 },
+            }),
+            makeStep({
+              node_id: "competitor_scoring",
+              node_name: "competitor_scoring",
+              node_type: "modelScore",
+              topological_rank: 3,
+              schema_diff: diff(["competitor_premium"]),
+              output_values: { quote_id: "Q1", competitor_premium: 377.21 },
+              contributed_columns: ["competitor_premium"],
+            }),
+            makeStep({
+              node_id: "scenarios",
+              node_name: "scenarios",
+              node_type: "scenarioExpander",
+              topological_rank: 4,
+              schema_diff: diff(["price_adjustment", "profit"], ["diff_to_market"]),
+              output_values: { quote_id: "Q1", price_adjustment: 1.5, profit: 400, diff_to_market: 2.1 },
+              contributed_columns: ["diff_to_market", "price_adjustment", "profit"],
+            }),
+            makeStep({
+              node_id: "conversion_scoring",
+              node_name: "conversion_scoring",
+              node_type: "modelScore",
+              topological_rank: 5,
+              schema_diff: diff(["conversion_prediction"]),
+              output_values: { quote_id: "Q1", conversion_prediction: 0.004 },
+              contributed_columns: ["conversion_prediction"],
+            }),
+            makeStep({
+              node_id: "apply_optimiser",
+              node_name: "apply_optimiser",
+              node_type: "optimiserApply",
+              topological_rank: 6,
+              schema_diff: diff(["optimal_premium"]),
+              output_values: { quote_id: "Q1", optimal_premium: 1.5 },
+              contributed_columns: ["optimal_premium"],
+            }),
+          ],
+          // A policy join off the value's lineage found no row: a fact, not a warning.
+          correlation_diagnostics: [{
+            code: "join_no_match",
+            severity: "info",
+            reason: "join_no_match",
+            message: "No row of node 'policies' joined the traced row of 'SaleJoin'.",
+            node_id: "policies",
+            child_node_id: "SaleJoin",
+            match_columns: ["quote_id"],
+            ignored_columns: [],
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    for (const nodeId of ["nb_batch_input", "competitor_scoring", "scenarios", "conversion_scoring", "apply_optimiser"]) {
+      expect(screen.getByTestId(`trace-step-card-${nodeId}`)).toHaveAttribute("data-relevance", "relevant")
+    }
+    // The competitor price two steps above the apply shows what it computed.
+    expect(
+      within(screen.getByTestId("trace-step-card-competitor_scoring")).getByText(/competitor_premium: 377\.21/),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("trace-step-card-competitor_join")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("trace-step-card-competitor_insights")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("trace-correlation-diagnostics")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("trace-show-full"))
+    expect(screen.getByTestId("trace-step-card-competitor_join")).toHaveAttribute("data-relevance", "relevant")
+    expect(screen.getByTestId("trace-step-card-competitor_insights")).toHaveAttribute("data-relevance", "irrelevant")
+  })
+
   it("keeps bulk source-origin rows collapsed by default when they only add fields", () => {
     render(
       <TracePanel
@@ -802,6 +987,7 @@ describe("TracePanel", () => {
                 business_use: null,
                 cover_type: "comprehensive",
               },
+              contributed_columns: ["annual_mileage"],
             }),
             makeStep({
               node_id: "rating",
@@ -1488,7 +1674,7 @@ describe("TracePanel", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Irrelevant", column_relevant: false }),
+            makeStep({ node_id: "n1", node_name: "Irrelevant", column_relevant: false, contributed_columns: [] }),
           ],
         })}
         onClose={vi.fn()}
@@ -1508,6 +1694,7 @@ describe("TracePanel", () => {
               node_id: "n1",
               node_name: "Relevant Step",
               column_relevant: true,
+              contributed_columns: [],
               schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
             }),
           ],

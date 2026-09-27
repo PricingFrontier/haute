@@ -10,6 +10,7 @@ import pytest
 
 import haute._trace_correlation as trace_correlation
 from haute._trace_correlation import _find_matching_row, _trace_values_match
+from haute._trace_lineage import ValueLineage
 from haute.trace import (
     SchemaDiff,
     TraceResult,
@@ -353,7 +354,7 @@ class TestTraceJsonSafeRowMatching:
         )
         assert "2 relaxed matches" in message
 
-    def test_relaxed_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
+    def test_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -367,31 +368,30 @@ class TestTraceJsonSafeRowMatching:
                 "nodes": [
                     _source_node("source", str(p)),
                     _transform_node(
-                        "aggregate",
-                        "df = source.group_by('region').agg(pl.col('premium').sum())",
+                        "regions",
+                        "df = source.select('region').unique(maintain_order=True)",
                     ),
                 ],
-                "edges": [_edge("source", "aggregate")],
+                "edges": [_edge("source", "regions")],
             }
         )
 
         result = execute_trace(
             graph,
             row_index=0,
-            target_node_id="aggregate",
-            column="premium",
-            row_values={"region": "north", "premium": 30},
+            target_node_id="regions",
+            row_values={"region": "north"},
         )
 
-        assert {step.node_id for step in result.steps} == {"aggregate"}
+        assert {step.node_id for step in result.steps} == {"regions"}
         assert len(result.correlation_diagnostics) == 1
         diagnostic = result.correlation_diagnostics[0]
-        # The grouping carries only its key, so the strict lineage lookup finds
-        # both north source rows and reports the ambiguity.
+        # The program carries only the region, so the strict lineage lookup finds
+        # both north source rows, which differ, and reports the ambiguity.
         assert diagnostic["code"] == "ambiguous_row_match"
         assert diagnostic["reason"] == "duplicate_exact_match"
         assert diagnostic["node_id"] == "source"
-        assert diagnostic["child_node_id"] == "aggregate"
+        assert diagnostic["child_node_id"] == "regions"
         assert diagnostic["match_strategy"] == "exact"
         assert diagnostic["match_columns"] == ["region"]
         assert diagnostic["ignored_columns"] == []
@@ -504,7 +504,7 @@ class TestExecuteTrace:
         assert result.target_node_id == "t"
 
     def test_trace_calculated_column_keeps_ancestors(self, tmp_path):
-        """Calculated column keeps the creating node AND all its ancestors."""
+        """A calculated column keeps its creating node and the ancestors that feed it."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1], "z": [99]}).write_parquet(p)
 
@@ -522,12 +522,11 @@ class TestExecuteTrace:
         )
         result = execute_trace(graph, column="y")
 
-        # 'y' is created at t → t is column_relevant, src/mid are ancestors
+        # 'y' is created at t from x, which mid carries from src.
         ids = [s.node_id for s in result.steps]
         assert ids == ["src", "mid", "t"]
-        assert result.steps[2].column_relevant is True  # t: adds y
-        assert result.steps[0].column_relevant is False  # src: ancestor
-        assert result.steps[1].column_relevant is False  # mid: ancestor
+        assert all(s.column_relevant for s in result.steps)
+        assert [s.contributed_columns for s in result.steps] == [["x"], [], ["y"]]
 
     def test_trace_passthrough_prunes_unrelated_branches(self, tmp_path):
         """Pass-through column prunes source branches that don't carry it."""
@@ -648,7 +647,9 @@ class TestExecuteTrace:
             "sink": ["final"],
         }
 
-        pruned = _prune_to_column_relevance(steps, "premium", parents_of, node_map={})
+        pruned = _prune_to_column_relevance(
+            steps, "premium", parents_of, node_map={}, lineage=ValueLineage(frozenset(), {})
+        )
 
         assert [step.node_id for step in pruned] == [
             "base",

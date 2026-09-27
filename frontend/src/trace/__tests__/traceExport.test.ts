@@ -31,6 +31,7 @@ function traceFixture(): TraceResult {
         input_values: {},
         output_values: { base: 100 },
         column_relevant: true,
+        contributed_columns: [],
         expression: null,
         calculation: null,
         node_detail: null,
@@ -50,6 +51,7 @@ function traceFixture(): TraceResult {
         input_values: { base: 100 },
         output_values: { technical_premium: 123.456789 },
         column_relevant: true,
+        contributed_columns: [],
         expression: null,
         calculation: { substituted_text: "100 * 1.23456789", result_value: 123.456789, input_values: { base: 100 } },
         node_detail: {

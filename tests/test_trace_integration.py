@@ -1505,14 +1505,14 @@ class TestRowCorrelationFilterReducesRows:
 
 
 class TestRowCorrelationAggregation:
-    """I.3: Aggregation (group_by) -- ambiguous source rows are surfaced.
+    """I.3: Aggregation (group_by) -- the aggregated source rows are reported.
 
     Source: 5 rows, 2 groups. group_by produces 2 rows.
-    Why: Aggregation changes cardinality drastically; multiple source rows can
+    Why: Aggregation changes cardinality drastically; multiple source rows
     share the group key, so trace must not pick one arbitrarily.
     """
 
-    def test_aggregation_surfaces_ambiguous_group_key_source(self, tmp_path):
+    def test_aggregation_reports_the_source_rows_sharing_its_group_key(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -1542,16 +1542,14 @@ class TestRowCorrelationAggregation:
         assert "src" not in _step_ids(result)
         assert len(result.correlation_diagnostics) == 1
         diagnostic = result.correlation_diagnostics[0]
-        # The grouping carries only its key, so the lineage lookup finds more
-        # than one source row (candidates are capped at two) and reports the
-        # ambiguity instead of choosing one.
-        assert diagnostic["code"] == "ambiguous_row_match"
-        assert diagnostic["reason"] == "duplicate_exact_match"
+        # The grouping carries only its key: the row aggregates the source rows
+        # sharing it, which are counted over the whole source rather than one
+        # of them being chosen.
+        assert diagnostic["code"] == "aggregated_rows"
+        assert diagnostic["severity"] == "info"
         assert diagnostic["node_id"] == "src"
         assert diagnostic["child_node_id"] == "agg"
-        assert diagnostic["match_strategy"] == "exact"
         assert set(diagnostic["match_columns"]) == {"region"}
-        assert diagnostic["ignored_columns"] == []
         assert diagnostic["matched_row_count"] == 2
 
 

@@ -731,7 +731,7 @@ class TestLimitedPreviewTrace:
         assert row == {"x": 51}
         assert _step_by_id(result, "src").output_values == {"x": 51}
 
-    def test_grouped_row_reports_its_source_rows_as_ambiguous(self, tmp_path):
+    def test_grouped_and_sorted_row_reports_the_rows_it_aggregates(self, tmp_path):
         path = tmp_path / "data.parquet"
         pl.DataFrame(
             {"region": ["north", "south", "north", "south"], "premium": [1, 2, 3, 4]}
@@ -752,7 +752,9 @@ class TestLimitedPreviewTrace:
         _row, result = self._trace(graph, "grouped", 0, row_limit=1, column="premium")
 
         assert [omission.node_id for omission in result.omissions] == ["src"]
-        assert result.omissions[0].reason == "duplicate_exact_match"
+        assert result.omissions[0].reason == "aggregated_rows"
+        diagnostic = result.correlation_diagnostics[result.omissions[0].diagnostic_index]
+        assert diagnostic["candidate_count"] == 2
 
     def test_order_preserving_lineage_uses_head_frames_only(self, tmp_path, monkeypatch):
         from haute._trace_correlation import RowScopeResolver
@@ -896,10 +898,10 @@ class TestLimitedPreviewTrace:
         looked_up: list[dict] = []
         real_lookup = RowScopeResolver.lookup
 
-        def recording_lookup(self, node_id, source_handle, values):
+        def recording_lookup(self, node_id, source_handle, values, casts=None):
             if node_id == "join":
                 looked_up.append(dict(values))
-            return real_lookup(self, node_id, source_handle, values)
+            return real_lookup(self, node_id, source_handle, values, casts)
 
         monkeypatch.setattr(RowScopeResolver, "lookup", recording_lookup)
         if with_region:
@@ -924,9 +926,9 @@ class TestLimitedPreviewTrace:
         looked_up: list[str] = []
         real_lookup = RowScopeResolver.lookup
 
-        def recording_lookup(self, node_id, source_handle, values):
+        def recording_lookup(self, node_id, source_handle, values, casts=None):
             looked_up.append(node_id)
-            return real_lookup(self, node_id, source_handle, values)
+            return real_lookup(self, node_id, source_handle, values, casts)
 
         monkeypatch.setattr(RowScopeResolver, "lookup", recording_lookup)
         return looked_up
@@ -1233,3 +1235,204 @@ class TestLimitedPreviewTrace:
 
         assert row == {"region": "north", "factor": 2.0}
         assert _step_by_id(result, "src").output_values == {"region": "north"}
+
+    def test_a_node_its_nearest_child_cannot_prove_is_traced_through_another(self, tmp_path):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"id": list(range(10)), "v": [i * 10 for i in range(10)]}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(path)),
+                    _transform_node("visible", "df = src.with_columns(w=pl.col('v') * 2)"),
+                    # ``pipe`` hides what the code writes, so this child, nearest
+                    # the target, carries nothing that proves its source row.
+                    _transform_node("opaque", "df = src.pipe(lambda frame: frame)"),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(
+                            label="join",
+                            nodeType=NodeType.EDGE_JOIN,
+                            config={"how": "left", "on": ["id"]},
+                        ),
+                    ),
+                ],
+                "edges": [
+                    _edge("src", "visible"),
+                    _edge("src", "opaque"),
+                    _edge("opaque", "join", target_handle="base"),
+                    _edge("visible", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        row, result = self._trace(graph, "join", 3, row_limit=5, column=None)
+
+        assert result.omissions == []
+        assert _step_by_id(result, "src").output_values == {"id": row["id"], "v": row["v"]}
+
+    def test_a_head_frame_parent_is_matched_on_the_values_its_child_carried(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"id": [1, 2, 3], "flag": [None, 1, None]}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(path)),
+                    _transform_node(
+                        "filled", "df = src.with_columns(pl.col(['flag']).fill_null(0))"
+                    ),
+                ],
+                "edges": [_edge("src", "filled")],
+            }
+        )
+        looked_up = self._recorded_lookups(monkeypatch)
+
+        row, result = self._trace(graph, "filled", 2, row_limit=5, column=None)
+
+        assert row == {"id": 3, "flag": 0}
+        assert _step_by_id(result, "src").output_values == {"id": 3, "flag": None}
+        assert result.correlation_diagnostics == []
+        # The rewritten value is left out of the match, not relaxed around.
+        assert looked_up == []
+
+    def test_a_grouped_row_reports_the_rows_it_aggregates(self, tmp_path):
+        path = tmp_path / "claims.parquet"
+        pl.DataFrame({"quote_id": ["a", "a", "b"], "amount": [1.0, 2.0, 5.0]}).write_parquet(path)
+        code = (
+            "df = src.group_by(['quote_id'], maintain_order=True)"
+            ".agg([pl.col('amount').sum().alias('total')])"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(path)), _transform_node("claims", code)],
+                "edges": [_edge("src", "claims")],
+            }
+        )
+
+        _row, grouped = self._trace(graph, "claims", 0, row_limit=5, column=None)
+
+        assert [(omission.node_id, omission.reason) for omission in grouped.omissions] == [
+            ("src", "aggregated_rows")
+        ]
+        diagnostic = grouped.correlation_diagnostics[grouped.omissions[0].diagnostic_index]
+        assert (diagnostic["severity"], diagnostic["candidate_count"]) == ("info", 2)
+        assert diagnostic["match_columns"] == ["quote_id"]
+
+        _row, single = self._trace(graph, "claims", 1, row_limit=5, column=None)
+        assert single.omissions == []
+        assert _step_by_id(single, "src").output_values == {"quote_id": "b", "amount": 5.0}
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Only two of the quote's three rows reach the grouping.
+            "df = src.filter(pl.col('amount') > 10).group_by('quote_id')"
+            ".agg(pl.col('amount').sum())",
+            # The band key is rewritten, so rows sharing the quote id span groups.
+            "df = src.with_columns(pl.col('band') // 10).group_by(['quote_id', 'band'])"
+            ".agg(pl.col('amount').sum())",
+        ],
+        ids=["filtered", "rewritten_key"],
+    )
+    def test_a_grouped_row_is_not_claimed_to_aggregate_rows_it_may_not_hold(self, tmp_path, code):
+        path = tmp_path / "claims.parquet"
+        pl.DataFrame(
+            {"quote_id": ["a", "a", "a"], "band": [11, 15, 25], "amount": [10, 20, 30]}
+        ).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(path)), _transform_node("claims", code)],
+                "edges": [_edge("src", "claims")],
+            }
+        )
+
+        _row, result = self._trace(graph, "claims", 0, row_limit=5, column=None)
+
+        assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+            ("src", "duplicate_exact_match")
+        ]
+
+    def test_a_full_join_right_only_row_is_never_called_a_join_miss(self, tmp_path):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": [0, 1]}).write_parquet(base_path)
+        pl.DataFrame({"id": [0, 2], "premium": [0.0, 20.0]}).write_parquet(lookup_path)
+        # The right-only row keeps a null base key, and its own key is dropped.
+        config = {
+            "how": "full",
+            "on": ["id"],
+            "coalesce": False,
+            "selected_columns": ["id", "premium"],
+        }
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _source_node("lookup", str(lookup_path)),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(label="join", nodeType=NodeType.EDGE_JOIN, config=config),
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+        rows = execute_graph(graph, target_node_id="join", row_limit=5)["join"].preview
+        right_only = rows.index({"id": None, "premium": 20.0})
+
+        row, result = self._trace(graph, "join", right_only, row_limit=5, column=None)
+
+        assert row == {"id": None, "premium": 20.0}
+        # The lookup side supplied this row: failing to name it is a gap.
+        assert "join_no_match" not in {omission.reason for omission in result.omissions}
+
+    def test_a_join_that_found_no_row_is_reported_as_no_match(self, tmp_path):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": [0, 1, None, 3]}).write_parquet(base_path)
+        pl.DataFrame({"id": [0, 2], "premium": [0.0, 20.0]}).write_parquet(lookup_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _source_node("lookup", str(lookup_path)),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(
+                            label="join",
+                            nodeType=NodeType.EDGE_JOIN,
+                            config={"how": "left", "on": ["id"], "maintainOrder": "left"},
+                        ),
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        # id 1 has no lookup row, and a null id joins none.
+        for row_index in (1, 2):
+            row, result = self._trace(graph, "join", row_index, row_limit=5, column=None)
+
+            assert row["premium"] is None
+            assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+                ("lookup", "join_no_match")
+            ]
+            diagnostic = result.correlation_diagnostics[result.omissions[0].diagnostic_index]
+            assert (diagnostic["code"], diagnostic["severity"]) == ("join_no_match", "info")
+
+        _row, matched = self._trace(graph, "join", 0, row_limit=5, column=None)
+        assert matched.omissions == []
+        assert _step_by_id(matched, "lookup").output_values == {"id": 0, "premium": 0.0}

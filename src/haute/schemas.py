@@ -962,6 +962,9 @@ class TraceStepResponse(BaseModel):
     output_values: dict[str, Any] = Field(default_factory=dict)
     topological_rank: int = Field(ge=0)
     column_relevant: bool = True
+    # In a column trace, the columns this step computes that the traced value
+    # depends on; empty for a step that only carries them.
+    contributed_columns: list[str]
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
@@ -997,7 +1000,7 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
-    # For a ``snapshot_seed`` omission: the seeded nodes it was skipped through.
+    # For a node not traced above a snapshot: the seeded node it lies above.
     seed_node_ids: list[str] = Field(default_factory=list)
 
 

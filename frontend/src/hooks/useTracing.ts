@@ -571,11 +571,13 @@ export default function useTracing({
     for (const s of traceResult.steps) {
       ids.add(resolveTraceId(s.node_id))
     }
-    // A node skipped because a shared snapshot below it was read is still on
-    // the value's path — its data reached the target through that snapshot —
-    // so it is not dimmed as unrelated, though it carries no traced value.
+    // A node the trace could not follow above a shared snapshot (its
+    // diagnostic names the seeds) is still on the value's path — its data
+    // reached the target through that snapshot — so it is not dimmed as
+    // unrelated, though it carries no traced value.
     for (const omission of traceResult.omissions) {
-      if (omission.reason === "snapshot_seed") ids.add(resolveTraceId(omission.node_id))
+      const diagnostic = traceResult.correlation_diagnostics[omission.diagnostic_index]
+      if (diagnostic?.seed_node_ids.length) ids.add(resolveTraceId(omission.node_id))
     }
     return ids
   }, [traceResult, resolveTraceId])
@@ -588,12 +590,12 @@ export default function useTracing({
       if (!s.column_relevant) continue
       const visibleId = resolveTraceId(s.node_id)
       relIds.add(visibleId)
-      if (traceResult.column && s.output_values[traceResult.column] !== undefined) {
-        valMap.set(visibleId, s.output_values[traceResult.column])
-      } else {
-        const k = s.schema_diff.columns_added[0] || s.schema_diff.columns_modified[0]
-        if (k) valMap.set(visibleId, s.output_values[k])
-      }
+      // A column trace shows the traced value, else what the step computed
+      // for it; a step that only carries the value's inputs shows none.
+      const k = traceResult.column
+        ? (s.output_values[traceResult.column] !== undefined ? traceResult.column : s.contributed_columns[0])
+        : s.schema_diff.columns_added[0] || s.schema_diff.columns_modified[0]
+      if (k) valMap.set(visibleId, s.output_values[k])
     }
     return { traceValueMap: valMap, relevantNodeIds: relIds }
   }, [traceResult, resolveTraceId])

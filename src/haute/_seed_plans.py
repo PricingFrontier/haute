@@ -1233,6 +1233,18 @@ class SeedPlan:
         )
 
 
+def node_output_identity(
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    source: str,
+    store: NodeSnapshotStore | None = None,
+) -> SourceCacheIdentity:
+    """The identity *graph* produces at *node_id*'s output now, as a listed seed is checked."""
+    points = DataPointResolver(graph, source=source, store=store or _project_store())
+    return points.node_output_slot(node_id).identity(points.node_output_signature(node_id))
+
+
 def open_resolved_seed_plan(
     request: SeedPlanRequest,
     *,

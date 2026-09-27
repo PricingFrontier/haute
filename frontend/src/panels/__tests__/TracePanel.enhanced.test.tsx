@@ -45,6 +45,7 @@ function makeStep(overrides: Partial<EnhancedTraceStep> = {}): EnhancedTraceStep
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
+    contributed_columns: [],
     ...overrides,
   }
 }
@@ -515,6 +516,7 @@ describe("TracePanel - Node Detail", () => {
               },
               output_values: { risk_age: 35 },
               column_relevant: false,
+              contributed_columns: [],
             }),
             makeStep({
               node_id: "band",
@@ -1441,8 +1443,8 @@ describe("TracePanel - Waterfall View Concepts", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] } }),
-            makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+            makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] }, contributed_columns: ["premium"] }),
+            makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["premium"] }),
             makeStep({ node_id: "n3", node_name: "Step C", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
           ] as TraceStep[],
         })}
@@ -1530,6 +1532,7 @@ describe("TracePanel - Waterfall View Concepts", () => {
                 columns_passed: ["age", "name"],
               },
               column_relevant: false,
+              contributed_columns: [],
             }),
           ] as TraceStep[],
         })}
@@ -1556,6 +1559,7 @@ describe("TracePanel - Waterfall View Concepts", () => {
                 columns_passed: [],
               },
               column_relevant: false,
+              contributed_columns: [],
             }),
             makeStep({
               node_id: "n2",
@@ -1567,6 +1571,7 @@ describe("TracePanel - Waterfall View Concepts", () => {
                 columns_passed: ["age"],
               },
               column_relevant: true,
+              contributed_columns: [],
             }),
           ] as TraceStep[],
         })}
@@ -1576,7 +1581,8 @@ describe("TracePanel - Waterfall View Concepts", () => {
     // The relevant step should NOT have reduced opacity
     // "Creator" may appear in both CalculationHero (nodeName) and StepCard
     expect(screen.getAllByText("Creator").length).toBeGreaterThan(0)
-    // The non-relevant step should have reduced opacity
+    // The focused story hides a step off the lineage; the full trace dims it.
+    fireEvent.click(screen.getByTestId("trace-show-full"))
     const reducedOpacityEl = container.querySelector("[style*='opacity: 0.55']")
     expect(reducedOpacityEl).toBeTruthy()
   })

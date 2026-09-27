@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react"
-import { AlertTriangle, Copy, Download, Printer, X, Scan } from "lucide-react"
+import { AlertTriangle, Copy, Download, Info, Printer, X, Scan } from "lucide-react"
 import type { TraceRequestState } from "../hooks/useTracing"
-import type { TraceOmission, TraceResult } from "../types/trace"
+import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult } from "../types/trace"
 import PanelShell from "./PanelShell"
 import { StepCard } from "../trace/StepCard"
 import { formatTraceValue, traceValuePresentation } from "../trace/traceFormatting"
@@ -37,7 +37,43 @@ function loadTraceExport() {
   return import("../trace/traceExport")
 }
 
-function omissionSummary(reason: string): string {
+/** Card labels of omissions that are facts about the data, not correlation gaps. */
+const NOTE_LABELS: Readonly<Record<string, string>> = {
+  join_no_match: "no match",
+  aggregated_rows: "aggregated",
+  seed_inputs_changed: "snapshot",
+  seed_recompute_refused: "snapshot",
+  seed_row_not_reproduced: "snapshot",
+  seed_row_ambiguous: "snapshot",
+}
+
+/** Why a node above a snapshot the preview read was not traced. */
+const SNAPSHOT_REASONS: Readonly<Record<string, string>> = {
+  seed_inputs_changed: "its inputs changed since the preview read it",
+  seed_recompute_refused: "recomputing it was not admitted",
+  seed_recompute_failed: "recomputing it failed",
+  seed_row_not_reproduced: "recomputing it does not reproduce the snapshot's row",
+  seed_row_ambiguous: "recomputing it gives several rows equal to the snapshot's",
+}
+
+function omissionSummary(reason: string, diagnostic: TraceCorrelationDiagnostic | undefined): string {
+  if (reason === "join_no_match") {
+    return "No row from this input joined the traced row: the join found no match."
+  }
+  const snapshotReason = SNAPSHOT_REASONS[reason]
+  if (snapshotReason) {
+    return `Not traced above the snapshot the preview read: ${snapshotReason}.`
+  }
+  if (reason === "ancestor_row_conflict") {
+    return "Two traced paths reach different rows of this node, so neither is shown."
+  }
+  if (reason === "aggregated_rows") {
+    const count = diagnostic?.matched_row_count
+    const keys = diagnostic?.match_columns.join(", ")
+    return count != null && keys
+      ? `This row aggregates rows of this input grouped by ${keys}: ${count} of them share its key values.`
+      : "This row aggregates several rows of this input."
+  }
   if (reason.includes("ambiguous") || reason.includes("duplicate")) {
     return "One upstream row could not be identified unambiguously."
   }
@@ -95,18 +131,18 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     () => new Set(trace.omissions.map((omission) => omission.diagnostic_index)),
     [trace.omissions],
   )
-  // Omission diagnostics render as omission cards and identical-row matches as
-  // the step's own label; the rest are warnings.
+  // Omission diagnostics render as omission cards. An informational diagnostic
+  // (a join that found no row, an aggregate, identical rows) is shown only
+  // through its omission or step label — none when its node is off the traced
+  // value's lineage; the rest are warnings.
   const correlationDiagnostics = trace.correlation_diagnostics.filter(
-    (diagnostic, index) => (
-      !omittedDiagnosticIndices.has(index) && diagnostic.code !== "identical_row_match"
-    ),
+    (diagnostic, index) => !omittedDiagnosticIndices.has(index) && diagnostic.severity !== "info",
   )
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
   const preserveStepIds = useMemo(
-    () => traceStoryPreserveStepIds(trace.steps, targetStep, trace.column),
-    [trace.steps, targetStep, trace.column],
+    () => traceStoryPreserveStepIds(trace.steps, targetStep),
+    [trace.steps, targetStep],
   )
   const expandedStepIds = useMemo(
     () => defaultExpandedStepIds(trace.steps, targetStep, trace.column),
@@ -354,31 +390,38 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         {evidenceEntries.map((entry, entryIndex) => {
           if (isTraceOmission(entry)) {
             const diagnostic = trace.correlation_diagnostics[entry.diagnostic_index]
+            const noteLabel = NOTE_LABELS[entry.reason]
+            const Icon = noteLabel ? Info : AlertTriangle
+            const labelColor = noteLabel ? "var(--text-muted)" : "var(--warning-strong)"
             return (
               <div
                 key={`omission-${entry.node_id}-${entry.topological_rank}`}
-                role="alert"
+                role={noteLabel ? "note" : "alert"}
                 data-testid={`trace-omission-${entry.node_id}`}
                 className="rounded-lg px-3 py-2 text-[11px]"
-                style={{
-                  border: "1px dashed var(--warning-border-strong)",
-                  background: "var(--warning-soft)",
-                  color: "var(--text-secondary)",
-                }}
+                style={
+                  noteLabel
+                    ? { border: "1px dashed var(--border)", color: "var(--text-secondary)" }
+                    : {
+                        border: "1px dashed var(--warning-border-strong)",
+                        background: "var(--warning-soft)",
+                        color: "var(--text-secondary)",
+                      }
+                }
               >
                 <div className="flex items-center gap-2">
-                  <AlertTriangle size={13} aria-hidden="true" style={{ color: "var(--warning-strong)" }} />
+                  <Icon size={13} aria-hidden="true" style={{ color: labelColor }} />
                   <span className="font-mono" style={{ color: "var(--text-muted)" }}>
                     {entry.topological_rank + 1}
                   </span>
                   <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
                     {entry.node_name}
                   </span>
-                  <span className="text-[9px] uppercase tracking-wide" style={{ color: "var(--warning-strong)" }}>
-                    trace gap
+                  <span className="text-[9px] uppercase tracking-wide" style={{ color: labelColor }}>
+                    {noteLabel ?? "trace gap"}
                   </span>
                 </div>
-                <div className="mt-1">{omissionSummary(entry.reason)}</div>
+                <div className="mt-1">{omissionSummary(entry.reason, diagnostic)}</div>
                 {diagnostic && (
                   <details className="mt-1">
                     <summary>Technical details</summary>

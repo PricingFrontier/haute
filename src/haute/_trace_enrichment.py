@@ -1042,9 +1042,12 @@ def _build_input_sources(
                 "node_name": other_step.node_name,
             }
             snapshot_generation_id = getattr(other_step, "snapshot_generation_id", None)
-            if snapshot_generation_id is not None:
-                # Read from a shared snapshot: the input's provenance ends here,
-                # with the value it held, never a formula rebuilt from it.
+            if snapshot_generation_id is not None and not getattr(
+                other_step, "snapshot_reproduced", False
+            ):
+                # Read from a shared snapshot no recompute reproduced: the input's
+                # provenance ends here, with the value it held, never a formula
+                # rebuilt from it.
                 source_info["result_value"] = other_combined.get(ref_col)
                 source_info["snapshot_generation_id"] = snapshot_generation_id
                 result[ref_col] = source_info
@@ -1588,7 +1591,8 @@ def _pass_through_origin(
     that holds the column with that same value, to the step that added or
     last modified it.  When no parent or more than one does — a join whose
     sides each hold the column — or a parent whose row is unknown might, or
-    the value was read from a snapshot, its origin is unproven and ``None``
+    the value was read from a snapshot no recompute reproduced, its origin is
+    unproven and ``None``
     is returned: another branch's formula would explain a value the target
     never had.
     """
@@ -1609,8 +1613,11 @@ def _pass_through_origin(
         if len(carriers) != 1:
             return None
         current = carriers[0]
-        if getattr(current, "snapshot_generation_id", None) is not None:
-            # The value was read from a snapshot: there is no code to show.
+        if getattr(current, "snapshot_generation_id", None) is not None and not getattr(
+            current, "snapshot_reproduced", False
+        ):
+            # The value was read from a snapshot no recompute reproduced: there
+            # is no code to show.
             return None
         diff = current.schema_diff
         if column in diff.columns_added or column in diff.columns_modified:
@@ -1656,9 +1663,11 @@ def enrich_steps(
     frame_identity = _enrichment_frame_identity(eager_outputs)
 
     for step in steps:
-        if getattr(step, "snapshot_generation_id", None) is not None:
-            # Its row was read from a shared snapshot, not computed: there is
-            # no input row to explain it with.
+        if getattr(step, "snapshot_generation_id", None) is not None and not getattr(
+            step, "snapshot_reproduced", False
+        ):
+            # Its row was read from a shared snapshot no recompute reproduced:
+            # there is no input row to explain it with.
             continue
         try:
             node_data = node_map[step.node_id].data

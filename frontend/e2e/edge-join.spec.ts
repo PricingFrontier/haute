@@ -529,17 +529,20 @@ test.describe("Edge Join insertion workflow", () => {
     const tracePayload = await response.json() as {
       trace?: {
         steps?: Array<{ node_id?: string }>
-        omissions?: Array<{ node_id?: string; reason?: string }>
+        omissions?: Array<{ node_id?: string; reason?: string; diagnostic_index?: number }>
+        correlation_diagnostics?: Array<{ seed_node_ids?: string[] }>
       }
     }
     const tracedNodeIds = tracePayload.trace?.steps?.map((step) => step.node_id) ?? []
     // The previews above captured the joins, so the trace may read one from
-    // its snapshot; a join above that point is reported as skipped for it
-    // rather than recomputed. Either way both joins stay in the trace.
-    const skippedForSnapshot = (tracePayload.trace?.omissions ?? [])
-      .filter((omission) => omission.reason === "snapshot_seed")
+    // its snapshot. It traces above that point when a recompute reproduces the
+    // snapshot's row, and otherwise reports the join above it as not traced
+    // there. Either way both joins stay in the trace.
+    const diagnostics = tracePayload.trace?.correlation_diagnostics ?? []
+    const notTracedAboveSnapshot = (tracePayload.trace?.omissions ?? [])
+      .filter((omission) => (diagnostics[omission.diagnostic_index ?? -1]?.seed_node_ids ?? []).length > 0)
       .map((omission) => omission.node_id)
-    expect([...tracedNodeIds, ...skippedForSnapshot], "trace retains both Edge Join ancestors").toEqual(
+    expect([...tracedNodeIds, ...notTracedAboveSnapshot], "trace retains both Edge Join ancestors").toEqual(
       expect.arrayContaining([finalFirstJoin.id, finalSecondJoin.id]),
     )
     await expect(page.getByRole("complementary", { name: /node properties/i })).toContainText(/Trace:/)

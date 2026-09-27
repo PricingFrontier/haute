@@ -1560,6 +1560,7 @@ function parseTraceStep(value: unknown, field: string): TraceStep {
     output_values: obj.output_values === undefined ? {} : expectPlainObject("parseTraceResponse", obj.output_values, `${field}.output_values`),
     topological_rank: expectNonNegativeTraceInteger(obj.topological_rank, `${field}.topological_rank`),
     column_relevant: obj.column_relevant === undefined ? true : expectBoolean("parseTraceResponse", obj.column_relevant, `${field}.column_relevant`),
+    contributed_columns: parseStringArray("parseTraceResponse", obj.contributed_columns, `${field}.contributed_columns`),
     expression,
     calculation,
     node_detail,

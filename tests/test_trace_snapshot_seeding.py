@@ -72,6 +72,15 @@ def trace_builds(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     return built
 
 
+@pytest.fixture()
+def no_native_memory_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan as a thread-mode trace does: no hard worker cap, so an unestimable
+    materialisation is refused rather than planned conservatively."""
+    import haute.execution as execution
+
+    monkeypatch.setattr(execution, "current_native_memory_backend", lambda: None)
+
+
 def _listed(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A preview's ``seed_plan`` as a trace request carries it."""
     return [
@@ -119,7 +128,7 @@ def _omissions(trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {omission["node_id"]: omission for omission in trace["trace"]["omissions"]}
 
 
-def test_trace_of_seeded_preview_stops_at_join_and_omits_sources(
+def test_trace_of_seeded_preview_reads_the_join_and_traces_above_it(
     project: Path, api: Any, trace_builds: Counter[str]
 ) -> None:
     from haute.executor import _preview_cache
@@ -137,23 +146,18 @@ def test_trace_of_seeded_preview_stops_at_join_and_omits_sources(
 
     steps = _steps(trace)
     join = seeded["seed_plan"][0]
+    # The join's row is still the snapshot's; a recompute reproduced it, so the
+    # sources above it are traced rather than skipped.
     assert steps["join"]["snapshot_generation_id"] == join["generation_id"]
     assert steps["banding"]["output_values"]["band"] == row["band"]
-    omissions = _omissions(trace)
-    assert set(omissions) == {"policies", "claims"}
-    diagnostics = trace["trace"]["correlation_diagnostics"]
-    for node_id in ("policies", "claims"):
-        omission = omissions[node_id]
-        assert omission["reason"] == "snapshot_seed"
-        diagnostic = diagnostics[omission["diagnostic_index"]]
-        assert diagnostic["node_id"] == node_id
-        assert diagnostic["seed_node_ids"] == ["join"]
-    assert not {"policies", "claims", "join"} & set(trace_builds)
+    assert steps["policies"]["output_values"] == {"id": row["id"], "a": row["a"]}
+    assert steps["claims"]["output_values"] == {"id": row["id"], "d": row["d"]}
+    assert steps["join"]["input_values"]["policies.id"] == row["id"]
+    assert trace["trace"]["omissions"] == []
+    assert {"policies", "claims", "join"} <= set(trace_builds)
 
 
-def test_first_preview_then_trace_reads_the_capture_and_scans_no_source(
-    project: Path, api: Any, trace_builds: Counter[str]
-) -> None:
+def test_first_preview_then_trace_reads_the_capture(project: Path, api: Any) -> None:
     # A shuffle recomputed would give every row other values: only reading
     # the capture reproduces the preview's row.
     graph = _graph(
@@ -186,7 +190,6 @@ def test_first_preview_then_trace_reads_the_capture_and_scans_no_source(
     steps = _steps(trace)
     assert steps["banding"]["output_values"] == row
     assert steps["join"]["snapshot_generation_id"] == first["seed_plan"][0]["generation_id"]
-    assert not {"policies", "claims", "shuffled", "join"} & set(trace_builds)
 
 
 def _diamond(project: Path) -> PipelineGraph:
@@ -224,11 +227,18 @@ def test_diamond_single_cached_branch_keeps_shared_ancestor_traceable(
 
     steps = {step["node_id"]: step for step in result["steps"]}
     omitted = {omission["node_id"] for omission in result["omissions"]}
-    # ``A`` still ran for ``C``: it is a step, not an omission.
+    # ``A`` still ran for ``C``: it is a step, not an omission. The recompute
+    # above ``B`` reaches the same ``A`` row, so the two paths agree.
     assert "A" in steps and "A" not in omitted
     assert steps["B"]["snapshot_generation_id"] == b1
+    assert steps["B"]["input_values"]["a1"] == steps["A"]["output_values"]["a1"]
     assert steps["C"]["snapshot_generation_id"] is None
     assert not omitted
+    assert not [
+        diagnostic
+        for diagnostic in result["correlation_diagnostics"]
+        if diagnostic["code"] == "ancestor_row_conflict"
+    ]
 
 
 def _refresh(
@@ -387,13 +397,10 @@ def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
     assert raised.value.detail == payload
 
 
-def test_a_seeded_step_is_never_given_a_calculation(
-    project: Path, store: NodeSnapshotStore
-) -> None:
-    from haute.trace import execute_trace, trace_result_to_dict
-
+def _doubling(project: Path) -> PipelineGraph:
+    """``src → P`` (doubles the premium) ``→ T``."""
     pl.DataFrame({"id": [1, 2], "premium": [100, 110]}).write_parquet(project / "premiums.parquet")
-    graph = _graph(
+    return _graph(
         project,
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "premiums.parquet")),
@@ -402,6 +409,14 @@ def test_a_seeded_step_is_never_given_a_calculation(
         ],
         [("src", "P"), ("P", "T")],
     )
+
+
+def test_a_reproduced_seed_is_explained_from_its_traced_input(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute.trace import execute_trace, trace_result_to_dict
+
+    graph = _doubling(project)
     p1 = _publish(store, graph, "P", pl.DataFrame({"id": [1, 2], "premium": [200, 220]}))
 
     result = trace_result_to_dict(
@@ -414,12 +429,47 @@ def test_a_seeded_step_is_never_given_a_calculation(
         )
     )
 
-    step = {step["node_id"]: step for step in result["steps"]}["P"]
-    # Its row was read, not computed: no calculation doubles the doubled value.
-    assert step["snapshot_generation_id"] == p1
-    assert step["calculation"] is None
-    assert step["expression"] is None
+    steps = {step["node_id"]: step for step in result["steps"]}
+    # A recompute reproduced the snapshot row, so its input is traced and the
+    # doubling is explained from it, not from its own output.
+    assert steps["P"]["snapshot_generation_id"] == p1
+    assert steps["P"]["input_values"] == {"id": 1, "premium": 100}
+    assert steps["P"]["calculation"]["result_value"] == 200
+    assert steps["src"]["output_values"] == {"id": 1, "premium": 100}
     assert result["output_value"] == 200
+
+
+def test_a_seed_no_recompute_reproduces_is_never_given_a_calculation(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute.trace import execute_trace, trace_result_to_dict
+
+    graph = _doubling(project)
+    p1 = _publish(store, graph, "P", pl.DataFrame({"id": [1, 2], "premium": [900, 990]}))
+
+    result = trace_result_to_dict(
+        execute_trace(
+            graph,
+            target_node_id="T",
+            column="premium",
+            row_limit=200,
+            seed_plan=[ListedSeed("P", _identity(store, graph, "P").digest, p1)],
+        )
+    )
+
+    steps = {step["node_id"]: step for step in result["steps"]}
+    # Its row was read, not computed, and nothing above it holds that row: no
+    # calculation doubles the doubled value, and ``src`` is not traced.
+    assert steps["P"]["snapshot_generation_id"] == p1
+    assert steps["P"]["calculation"] is None
+    assert steps["P"]["expression"] is None
+    assert result["output_value"] == 900
+    assert "src" not in steps
+    [omission] = result["omissions"]
+    assert (omission["node_id"], omission["reason"]) == ("src", "seed_row_not_reproduced")
+    diagnostic = result["correlation_diagnostics"][omission["diagnostic_index"]]
+    assert diagnostic["severity"] == "info"
+    assert diagnostic["seed_node_ids"] == ["P"]
 
 
 def test_correlation_through_the_uncached_branch_when_the_cached_one_is_ambiguous(
@@ -460,6 +510,7 @@ def test_correlation_through_the_uncached_branch_when_the_cached_one_is_ambiguou
     assert not result["omissions"]
 
 
+@pytest.mark.usefixtures("no_native_memory_cap")
 def test_cached_work_that_could_not_be_admitted_is_still_traced_from_its_snapshot(
     project: Path, store: NodeSnapshotStore
 ) -> None:
@@ -492,10 +543,24 @@ def test_cached_work_that_could_not_be_admitted_is_still_traced_from_its_snapsho
 
     steps = {step.node_id: step for step in result.steps}
     assert steps["G"].snapshot_generation_id == g1
+    # Recomputing above ``G`` is refused here too, so its ancestors say so
+    # rather than being traced from an unadmitted recompute.
+    omissions = {omission.node_id: omission for omission in result.omissions}
+    assert set(omissions) == {"policies", "sampled"}
+    for omission in omissions.values():
+        assert omission.reason == "seed_recompute_refused"
+        diagnostic = result.correlation_diagnostics[omission.diagnostic_index]
+        assert diagnostic["seed_node_ids"] == ["G"]
+        assert diagnostic["reason_code"] == "materialisation_estimate_unavailable"
 
 
-def test_downstream_provenance_ends_at_the_seeded_step_with_its_value(
-    project: Path, store: NodeSnapshotStore
+@pytest.mark.parametrize(
+    ("premiums", "reproduced"),
+    [([200, 220], True), ([900, 990], False)],
+    ids=["reproduced", "not_reproduced"],
+)
+def test_downstream_provenance_continues_above_a_seed_only_when_reproduced(
+    project: Path, store: NodeSnapshotStore, premiums: list[int], reproduced: bool
 ) -> None:
     from haute.trace import execute_trace, trace_result_to_dict
 
@@ -520,7 +585,7 @@ def test_downstream_provenance_ends_at_the_seeded_step_with_its_value(
         store,
         graph,
         "B",
-        pl.DataFrame({"id": [1, 2], "premium": [200, 220], "x": [1, 1]}),
+        pl.DataFrame({"id": [1, 2], "premium": premiums, "x": [1, 1]}),
     )
 
     result = trace_result_to_dict(
@@ -536,17 +601,29 @@ def test_downstream_provenance_ends_at_the_seeded_step_with_its_value(
     steps = {step["node_id"]: step for step in result["steps"]}
     calculation = steps["E"]["calculation"]
     assert calculation is not None
-    assert calculation["result_value"] == 201
+    assert calculation["result_value"] == premiums[0] + 1
     source = calculation["input_sources"]["premium"]
     # The premium came from the cached ``B``, not from the executed ``A``.
     assert source["node_id"] == "B"
-    assert source["result_value"] == 200
-    assert source["snapshot_generation_id"] == b1
-    assert "input_sources" not in source
+    assert source["result_value"] == premiums[0]
+    if reproduced:
+        # A recompute reproduced ``B``'s row: its doubling explains the value.
+        assert source["expression_text"] == "premium * 2"
+        assert "snapshot_generation_id" not in source
+    else:
+        # Nothing above ``B`` holds that row: provenance ends with its value.
+        assert source["snapshot_generation_id"] == b1
+        assert "input_sources" not in source
+        assert "expression_text" not in source
 
 
-def test_a_pass_through_target_is_explained_from_the_seed_on_its_path(
-    project: Path, store: NodeSnapshotStore
+@pytest.mark.parametrize(
+    ("premiums", "reproduced"),
+    [([200, 220], True), ([900, 990], False)],
+    ids=["reproduced", "not_reproduced"],
+)
+def test_a_pass_through_target_borrows_a_seed_formula_only_when_reproduced(
+    project: Path, store: NodeSnapshotStore, premiums: list[int], reproduced: bool
 ) -> None:
     from haute.trace import execute_trace, trace_result_to_dict
 
@@ -571,7 +648,7 @@ def test_a_pass_through_target_is_explained_from_the_seed_on_its_path(
         store,
         graph,
         "B",
-        pl.DataFrame({"id": [1, 2], "base": [50, 55], "premium": [200, 220]}),
+        pl.DataFrame({"id": [1, 2], "base": [50, 55], "premium": premiums}),
     )
 
     result = trace_result_to_dict(
@@ -585,11 +662,15 @@ def test_a_pass_through_target_is_explained_from_the_seed_on_its_path(
     )
 
     steps = {step["node_id"]: step for step in result["steps"]}
-    assert result["output_value"] == 200
-    # ``A`` creates a premium too, but not the one ``T`` reads: that came
-    # from the snapshot of ``B``, which has no formula to show.
-    assert steps["T"]["calculation"] is None
-    assert steps["T"]["expression"] is None
+    assert result["output_value"] == premiums[0]
+    # ``A`` creates a premium too, but not the one ``T`` reads: that came from
+    # ``B``, whose doubling explains it only when a recompute reproduced it.
+    if reproduced:
+        assert steps["T"]["calculation"]["result_value"] == 200
+        assert steps["T"]["expression"]["expression_text"] == "premium * 2"
+    else:
+        assert steps["T"]["calculation"] is None
+        assert steps["T"]["expression"] is None
 
 
 def _colliding_join(project: Path, left: str, right: str) -> PipelineGraph:
@@ -642,9 +723,10 @@ def test_a_pass_through_target_never_takes_the_formula_of_the_other_join_side(
     steps = {step["node_id"]: step for step in result["steps"]}
     assert result["output_value"] == 200
     # ``C``'s premium reaches ``T`` only as ``premium_right``: its formula,
-    # 50 * 6 = 300, must never explain the 200 ``T`` read from ``B``'s snapshot.
-    assert steps["T"]["calculation"] is None
-    assert steps["T"]["expression"] is None
+    # 50 * 6 = 300, must never explain the 200 ``T`` read from ``B``'s
+    # snapshot. A recompute reproduced ``B``'s row, so ``B``'s own formula does.
+    assert steps["T"]["calculation"]["result_value"] == 200
+    assert "* 4" in steps["T"]["expression"]["expression_text"]
 
 
 def test_a_pass_through_target_is_explained_by_the_join_side_that_supplied_it(
@@ -732,3 +814,340 @@ def test_a_pass_through_target_shows_no_formula_when_both_join_sides_hold_its_va
     # ``T``'s premium came from: neither is shown as if it were proven.
     assert steps["T"]["calculation"] is None
     assert steps["T"]["expression"] is None
+
+
+def test_a_seed_the_recompute_holds_twice_is_ambiguous_above_it(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute.trace import execute_trace
+
+    pl.DataFrame({"id": [1, 2, 3], "a": [5, 5, 6]}).write_parquet(project / "dupes.parquet")
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "dupes.parquet")),
+            ("P", NodeType.POLARS, _code("df = src.select('a')")),
+            ("T", NodeType.POLARS, _code("df = P.with_columns(pl.lit(1).alias('x'))")),
+        ],
+        [("src", "P"), ("P", "T")],
+    )
+    p1 = _publish(store, graph, "P", pl.DataFrame({"a": [5, 5, 6]}))
+
+    result = execute_trace(
+        graph,
+        target_node_id="T",
+        row_limit=200,
+        seed_plan=[ListedSeed("P", _identity(store, graph, "P").digest, p1)],
+    )
+
+    # Two recomputed rows equal the snapshot's: neither is chosen as its source.
+    assert {step.node_id for step in result.steps} == {"P", "T"}
+    assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+        ("src", "seed_row_ambiguous")
+    ]
+
+
+def test_a_seed_whose_inputs_moved_is_not_traced_above(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute.trace import execute_trace
+
+    # A CSV input is snapshot-backed: preparing it for the recompute gives the
+    # seed an identity other than the one its snapshot was leased under.
+    claims = pl.DataFrame({"id": list(range(_ROWS)), "d": [value / 10 for value in range(_ROWS)]})
+    claims.write_csv(project / "claims.csv")
+    csv_input = {
+        "inputType": "file",
+        "format": "csv",
+        "mode": "scan",
+        "path": str(project / "claims.csv"),
+    }
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("claims", NodeType.DATA_INPUT, csv_input),
+            ("join", NodeType.POLARS, _code("df = policies.join(claims, on='id', how='left')")),
+            (
+                "banding",
+                NodeType.POLARS,
+                _code("df = join.with_columns((pl.col('a') * 2).alias('band'))"),
+            ),
+        ],
+        [("policies", "join"), ("claims", "join"), ("join", "banding")],
+    )
+    frame = pl.DataFrame(
+        {
+            "id": list(range(_ROWS)),
+            "a": list(range(_ROWS)),
+            "d": [value / 10 for value in range(_ROWS)],
+        }
+    )
+    j1 = _publish(store, graph, "join", frame)
+
+    result = execute_trace(
+        graph,
+        target_node_id="banding",
+        row_limit=200,
+        seed_plan=[ListedSeed("join", _identity(store, graph, "join").digest, j1)],
+    )
+
+    omissions = {omission.node_id: omission.reason for omission in result.omissions}
+    assert omissions == {"policies": "seed_inputs_changed", "claims": "seed_inputs_changed"}
+    assert {step.node_id for step in result.steps} == {"join", "banding"}
+
+
+def test_a_seed_whose_row_is_unresolved_builds_nothing_above_it(
+    project: Path, store: NodeSnapshotStore, trace_builds: Counter[str]
+) -> None:
+    from haute.trace import execute_trace
+
+    # ``pipe`` hides what the code writes, so the join's row is unproven.
+    banding = "df = join.pipe(lambda f: f.with_columns((pl.col('a') * 2).alias('band')))"
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("join", NodeType.POLARS, _code("df = policies.join(claims, on='id', how='left')")),
+            ("banding", NodeType.POLARS, _code(banding)),
+        ],
+        [("policies", "join"), ("claims", "join"), ("join", "banding")],
+    )
+    j1 = _publish(store, graph, "join", pl.DataFrame({"id": [0, 1], "a": [0, 1], "d": [0.0, 0.1]}))
+
+    result = execute_trace(
+        graph,
+        target_node_id="banding",
+        row_limit=200,
+        seed_plan=[ListedSeed("join", _identity(store, graph, "join").digest, j1)],
+    )
+
+    assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+        ("join", "row_scope_unproven")
+    ]
+    assert not {"policies", "claims"} & set(trace_builds)
+
+
+def _two_seeds(project: Path) -> PipelineGraph:
+    """``P`` recomputes faithfully; ``G`` groups a sample, which is never admitted here."""
+    return _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            (
+                "P",
+                NodeType.POLARS,
+                _code("df = policies.with_columns((pl.col('a') * 2).alias('b'))"),
+            ),
+            (
+                "sampled",
+                NodeType.POLARS,
+                _code("df = policies.collect().sample(fraction=1.0).lazy()"),
+            ),
+            ("G", NodeType.POLARS, _code("df = sampled.group_by('a').agg(pl.len().alias('n'))")),
+            ("T", NodeType.POLARS, _code("df = P.join(G, on='a', how='left')")),
+        ],
+        [("policies", "P"), ("policies", "sampled"), ("sampled", "G"), ("P", "T"), ("G", "T")],
+    )
+
+
+@pytest.mark.usefixtures("no_native_memory_cap")
+def test_one_refused_seed_does_not_hide_what_another_seed_traces(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    from haute.trace import execute_trace
+
+    graph = _two_seeds(project)
+    rows = list(range(_ROWS))
+    p1 = _publish(
+        store,
+        graph,
+        "P",
+        pl.DataFrame({"id": rows, "a": rows, "b": [value * 2 for value in rows]}),
+    )
+    g1 = _publish(store, graph, "G", pl.DataFrame({"a": rows, "n": [1] * _ROWS}))
+
+    result = execute_trace(
+        graph,
+        target_node_id="T",
+        row_limit=200,
+        seed_plan=[
+            ListedSeed("P", _identity(store, graph, "P").digest, p1),
+            ListedSeed("G", _identity(store, graph, "G").digest, g1),
+        ],
+    )
+
+    steps = {step.node_id: step for step in result.steps}
+    # ``policies`` sits above both seeds: ``P``'s recompute traced it, so
+    # ``G``'s refusal leaves only ``sampled`` untraced.
+    assert steps["policies"].output_values["a"] == steps["T"].output_values["a"]
+    assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+        ("sampled", "seed_recompute_refused")
+    ]
+
+
+def _broken_above_seed(project: Path) -> PipelineGraph:
+    """Building ``broken`` raises, so a recompute above ``S`` fails."""
+    return _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            (
+                "broken",
+                NodeType.POLARS,
+                _code("df = policies.with_columns(pl.lit(1 // 0).alias('z'))"),
+            ),
+            ("S", NodeType.POLARS, _code("df = broken.select('id', 'a')")),
+            ("T", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('x'))")),
+        ],
+        [("policies", "broken"), ("broken", "S"), ("S", "T")],
+    )
+
+
+@pytest.mark.parametrize("scenario", ["reproduced", "refused", "failed"])
+@pytest.mark.usefixtures("no_native_memory_cap")
+def test_the_recompute_above_a_seed_leaves_the_trace_plan_in_place(
+    project: Path, store: NodeSnapshotStore, scenario: str
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+    from haute.trace import execute_trace
+
+    rows = list(range(_ROWS))
+    if scenario == "reproduced":
+        graph, seed, target = _doubling(project), "P", "T"
+        frame = pl.DataFrame({"id": [1, 2], "premium": [200, 220]})
+        expected: set[str] = set()
+    elif scenario == "refused":
+        graph, seed, target = _two_seeds(project), "G", "T"
+        frame = pl.DataFrame({"a": rows, "n": [1] * _ROWS})
+        expected = {"seed_recompute_refused"}
+    else:
+        graph, seed, target = _broken_above_seed(project), "S", "T"
+        frame = pl.DataFrame({"id": rows, "a": rows})
+        expected = {"seed_recompute_failed"}
+    generation = _publish(store, graph, seed, frame)
+    context = create_admitted_execution_context(
+        operation="trace_test", profile=ExecutionProfile.PREVIEW_EAGER
+    )
+    try:
+        result = execute_trace(
+            graph,
+            target_node_id=target,
+            row_limit=200,
+            seed_plan=[ListedSeed(seed, _identity(store, graph, seed).digest, generation)],
+            execution_context=context,
+        )
+        planned = set(context.projection_plan.projection_plan.needed_by_node)
+    finally:
+        context.release_admission()
+
+    seed_reasons = {
+        omission.reason for omission in result.omissions if omission.reason.startswith("seed_")
+    }
+    assert seed_reasons == expected
+    # The recompute planned only the seed's lineage; the trace's own plan,
+    # which reaches its target, is what the context holds afterwards.
+    assert target in planned
+
+
+def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evidence() -> None:
+    from types import SimpleNamespace
+
+    from haute.trace import _merge_seed_continuations, _SeedContinuation
+
+    node_map = {
+        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
+        for node_id in ("S", "A", "B", "C")
+    }
+    # The trace resolved ``A`` through an executed branch and failed on ``B``;
+    # it left ``C`` unresolved for its own reason.
+    cached_rows: dict = {"A": {"id": 1, "v": 3}, "B": None, "C": None}
+    diagnostics = [
+        {"code": "ambiguous_row_match", "node_id": "B", "severity": "warning"},
+        {"code": "row_scope_unproven", "node_id": "C", "severity": "warning"},
+    ]
+    unresolved = {"B": ("duplicate_exact_match", 0), "C": ("row_scope_unproven", 1)}
+    continuation = _SeedContinuation(
+        seed_id="S",
+        ancestors=("A", "B"),
+        parents_of={"S": ["A", "B"], "A": [], "B": []},
+        rows={"A": {"id": 1, "v": 2}, "B": {"id": 1, "w": 5}},
+        positions={"A": 0, "B": 0},
+    )
+
+    proven, reported = _merge_seed_continuations(
+        [continuation],
+        node_map=node_map,
+        cached_rows=cached_rows,
+        row_positions={},
+        frames={},
+        row_frames={},
+        diagnostics=diagnostics,
+        unresolved=unresolved,
+    )
+
+    assert proven == {"S"} and reported == frozenset()
+    # Two paths gave ``A`` different rows: neither is shown.
+    assert cached_rows["A"] is None
+    reason, index = unresolved["A"]
+    assert reason == "ancestor_row_conflict"
+    assert diagnostics[index]["seed_node_ids"] == ["S"]
+    # ``B`` is traced above the seed; the failed attempt's evidence is gone and
+    # the remaining links still point at their own node.
+    assert cached_rows["B"] == {"id": 1, "w": 5}
+    assert "B" not in unresolved
+    assert [diagnostic["node_id"] for diagnostic in diagnostics] == ["C", "A"]
+    assert diagnostics[unresolved["C"][1]]["node_id"] == "C"
+
+
+def test_a_conflict_stays_final_and_a_later_continuation_supersedes_an_earlier_failure() -> None:
+    from types import SimpleNamespace
+
+    from haute.trace import _merge_seed_continuations, _SeedContinuation
+
+    node_map = {
+        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
+        for node_id in ("S1", "S2", "A", "B")
+    }
+    cached_rows: dict = {"A": {"id": 1}}
+    diagnostics: list = []
+    unresolved: dict = {}
+    first = _SeedContinuation(
+        seed_id="S1",
+        ancestors=("A", "B"),
+        parents_of={},
+        rows={"A": {"id": 2}, "B": None},
+        diagnostics=[{"code": "ambiguous_row_match", "node_id": "B", "severity": "warning"}],
+        unresolved={"B": ("duplicate_exact_match", 0)},
+    )
+    # The second seed reaches the trace's own ``A`` row, and proves ``B``.
+    second = _SeedContinuation(
+        seed_id="S2",
+        ancestors=("A", "B"),
+        parents_of={},
+        rows={"A": {"id": 1}, "B": {"id": 7}},
+    )
+
+    proven, _reported = _merge_seed_continuations(
+        [first, second],
+        node_map=node_map,
+        cached_rows=cached_rows,
+        row_positions={},
+        frames={},
+        row_frames={},
+        diagnostics=diagnostics,
+        unresolved=unresolved,
+    )
+
+    assert proven == {"S1", "S2"}
+    # Once two paths disagree about ``A``, no later path reinstates a row.
+    assert cached_rows["A"] is None
+    assert unresolved["A"][0] == "ancestor_row_conflict"
+    # ``B`` failed through the first seed but is proven through the second:
+    # it is traced, and the first seed's failed evidence is gone.
+    assert cached_rows["B"] == {"id": 7}
+    assert "B" not in unresolved
+    assert [diagnostic["code"] for diagnostic in diagnostics] == ["ancestor_row_conflict"]
+    assert diagnostics[unresolved["A"][1]]["node_id"] == "A"

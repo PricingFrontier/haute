@@ -340,6 +340,7 @@ class TestResponseShape:
             "output_values",
             "topological_rank",
             "column_relevant",
+            "contributed_columns",
         ]
         for step in trace["steps"]:
             for field in step_fields:

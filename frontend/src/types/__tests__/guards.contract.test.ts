@@ -1518,14 +1518,14 @@ describe("API response guards", () => {
           node_name: "policies",
           node_type: "dataInput",
           topological_rank: 0,
-          reason: "snapshot_seed",
+          reason: "seed_row_not_reproduced",
           diagnostic_index: 0,
         }],
         correlation_diagnostics: [{
-          code: "snapshot_seed",
+          code: "seed_row_not_reproduced",
           severity: "info",
-          reason: "snapshot_seed",
-          message: "Not computed: the trace read the snapshot of join.",
+          reason: "seed_row_not_reproduced",
+          message: "Not traced above the snapshot of join: a recompute holds no row equal to the snapshot's.",
           node_id: "policies",
           seed_node_ids: ["join"],
         }],
@@ -1533,7 +1533,7 @@ describe("API response guards", () => {
     })
 
     expect(parsed.trace?.steps[0]?.snapshot_generation_id).toBe("generation-1")
-    expect(parsed.trace?.omissions[0]?.reason).toBe("snapshot_seed")
+    expect(parsed.trace?.omissions[0]?.reason).toBe("seed_row_not_reproduced")
     expect(parsed.trace?.correlation_diagnostics[0]?.seed_node_ids).toEqual(["join"])
   })
 

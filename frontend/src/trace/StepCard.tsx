@@ -61,7 +61,8 @@ export function StepCard({
 
   const { columns_added, columns_modified, columns_removed } = step.schema_diff
 
-  // Key values to always show (collapsed): traced column or first added/modified
+  // Key values to always show (collapsed): the traced column, else the columns
+  // the step computed for the traced value, else its first added/modified.
   const keyEntries: { col: string; val: unknown; tag: "added" | "modified" | "value" }[] = []
   if (tracedColumn && step.output_values[tracedColumn] !== undefined) {
     const tag = columns_added.includes(tracedColumn)
@@ -70,6 +71,11 @@ export function StepCard({
         ? "modified"
         : "value"
     keyEntries.push({ col: tracedColumn, val: step.output_values[tracedColumn], tag })
+  } else if (step.contributed_columns.length > 0) {
+    for (const col of step.contributed_columns.slice(0, 2)) {
+      const tag = columns_added.includes(col) ? "added" : "modified"
+      keyEntries.push({ col, val: step.output_values[col], tag })
+    }
   } else {
     for (const col of columns_added.slice(0, 2)) {
       keyEntries.push({ col, val: step.output_values[col], tag: "added" })
