@@ -582,11 +582,14 @@ def _raise_interactive_remote_http_error(
                 raise HTTPException(status_code=400, detail=detail) from None
             if detail.startswith("Target node ") and "not found in graph" in detail:
                 raise HTTPException(status_code=404, detail=detail) from None
+    # The client gets a generic 500; the server log keeps what the worker raised.
     logger.error(
         "interactive_worker_remote_failure",
         operation=operation,
         remote_type=exc.remote_type,
         remote_module=exc.remote_module,
+        remote_message=exc.remote_message,
+        remote_traceback=exc.remote_traceback,
     )
     raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
