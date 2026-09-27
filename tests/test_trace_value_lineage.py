@@ -217,7 +217,7 @@ def _step(node_id: str, *, added=(), passed=(), detail: dict | None = None) -> T
             columns_passed=list(passed),
         ),
         input_values={},
-        output_values={},
+        output_values={column: None for column in (*passed, *added)},
         node_detail=detail,
     )
 
@@ -326,8 +326,18 @@ BANDING_DETAIL = {
             ("age", "area"),
         ),
         (NodeType.BANDING, BANDING_DETAIL, "age_band", ("age_band",), ("age",)),
+        (
+            NodeType.BANDING,
+            {
+                "detail_type": "banding",
+                "factors": [{"input_column": "age", "output_column": "age"}],
+            },
+            "age",
+            ("age",),
+            ("age",),
+        ),
     ],
-    ids=["rating-table", "rating-combined-output", "banding-factor"],
+    ids=["rating-table", "rating-combined-output", "banding-factor", "banding-in-place"],
 )
 def test_a_rating_or_banding_output_reads_its_factor_columns(
     node_type, detail, column, computed, read
@@ -379,12 +389,14 @@ def test_a_helper_column_the_code_drops_still_leads_to_its_inputs(tmp_path):
                 "calc",
                 'df = src.with_columns((pl.col("a") * 2).alias("tmp"))\n'
                 'df = df.with_columns((pl.col("tmp") + 1).alias("y")).drop("tmp")',
-            )
+            ),
+            ("final", 'df = calc.with_columns((pl.col("y") + 1).alias("z"))'),
         ],
-        "y",
+        "z",
     )
 
-    assert steps["calc"].contributed_columns == ["tmp", "y"]
+    # The dropped helper is followed but not reported: the step's row lacks it.
+    assert steps["calc"].contributed_columns == ["y"]
     assert steps["src"].contributed_columns == ["a"]
 
 
@@ -566,3 +578,39 @@ def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
 
     assert lineage.contributed["left"] == ("read",)
     assert lineage.contributed["right"] == ("right_key",)
+
+
+def test_a_generated_column_the_code_reassigns_is_followed_both_before_and_after():
+    code = (
+        "df = df.with_columns(\n"
+        '    pl.col("scenario_value").alias("before"),\n'
+        '    (pl.col("scenario_value") * pl.col("a")).alias("scenario_value"),\n'
+        ")\n"
+        'df = df.with_columns((pl.col("before") + pl.col("scenario_value")).alias("y"))'
+    )
+    expanded = ["scenario_index", "scenario_value", "before", "y"]
+    lineage = trace_value_lineage(
+        column="y",
+        target_node_id="scenarios",
+        steps=[
+            _step("src", added=["a", "b"]),
+            _step("scenarios", added=expanded, passed=["a", "b"]),
+        ],
+        order=["src", "scenarios"],
+        parents_of={"scenarios": ["src"]},
+        node_map={
+            "src": _code_node(NodeType.DATA_INPUT),
+            "scenarios": _code_node(
+                NodeType.SCENARIO_EXPANDER,
+                {"column_name": "scenario_value", "step_column": "scenario_index", "code": code},
+            ),
+        },
+        attempted=(),
+        output_columns=lambda node_id, _handle: {"src": {"a", "b"}}.get(node_id),
+        source_handles={},
+        join_inputs={},
+    )
+
+    # y reads the generated value (through before) and the reassigned one (x a).
+    assert lineage.contributed["scenarios"] == ("before", "scenario_value", "y")
+    assert lineage.contributed["src"] == ("a",)

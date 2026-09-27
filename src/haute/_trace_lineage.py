@@ -133,8 +133,11 @@ def trace_value_lineage(
             made, needed = _step_demand(
                 step, node_map[node_id], wanted, node_map, is_source=not graph_parents
             )
-            if made:
-                contributed[node_id] = tuple(sorted(made))
+            # A helper the step dropped is not in its row, so only what the row
+            # holds is reported.
+            shown = made & set(step.output_values)
+            if shown:
+                contributed[node_id] = tuple(sorted(shown))
         if not parents or not needed:
             continue
         roles = join_inputs.get(node_id)
@@ -216,7 +219,9 @@ class _Derivation:
         self.code = _wrap_node_code(_effective_node_code(config, node_map))
         self.made: set[str] = set()
         self.needed: _Demand = set()
-        # Columns whose value from before the code was already followed.
+        # Columns whose final value, and whose value from before the code,
+        # were already followed: one column can be both.
+        self.final: set[str] = set()
         self.before_code: set[str] = set()
 
     def read_input(self, column: str) -> None:
@@ -234,8 +239,9 @@ class _Derivation:
         )
 
     def contribute(self, column: str) -> None:
-        if column in self.made:
+        if column in self.final:
             return
+        self.final.add(column)
         self.made.add(column)
         by_code = self._code_derivation(column)
         if isinstance(by_code, _Unreadable):
@@ -335,7 +341,12 @@ class _Derivation:
             return
         self.before_code.add(column)
         for reference in by_rule:
-            self._value_before_code(reference)
+            if reference == column:
+                # An in-place rule (a banding factor overwriting its input)
+                # reads the value from before it: the input's.
+                self.read_input(column)
+            else:
+                self._value_before_code(reference)
 
     def _rule_references(self, column: str) -> tuple[str, ...] | _Unreadable | None:
         """What a generated or detail-explained column reads; ``None`` when no rule explains it."""

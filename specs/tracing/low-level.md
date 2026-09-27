@@ -18,7 +18,8 @@
   `output_values` (column → value dicts), `topological_rank`,
   `column_relevant: bool` (default `True`; in a column trace, whether the step is on
   the traced value's lineage), `contributed_columns: list[str]` (in a column trace,
-  the columns the step computes that the traced value depends on, sorted; empty for a
+  the columns of the step's output row it computes that the traced value depends on,
+  sorted — a helper column the step dropped is followed but not listed; empty for a
   step that only carries them and for a trace with no column), `identical_row_count` (the number of
   identical candidates when the step's row is one of several identical rows,
   else `None`), and enrichment fields populated by
@@ -835,7 +836,8 @@ snapshot deterministically.
   constraint's numerator and denominator too), a ratebook apply's `output_column`
   (every factor's `input_columns`), a rating table's `output_column` (its factor
   columns) and combined output (its table columns), and a banding factor's
-  `output_column` (its `input_column`). A column the code assigns depends on what its
+  `output_column` (its `input_column`); a rule overwriting the column it reads (an
+  in-place banding factor) reads the input's value. A column the code assigns depends on what its
   last assignment reads: `parse_expression` on the instance-aware wrapped code locates
   it and the planner's fail-closed `_referenced_columns` names the columns of its
   defining expression, so a column named only as a string (`over("region")`) counts. A
@@ -848,8 +850,10 @@ snapshot deterministically.
   assigns only in earlier calls is that last earlier assignment, followed within the
   node; one the code assigns both before and after, or where an earlier call writes a
   column whose name is not static, depends on every input column; one only a rule
-  computes is the rule's; any other is the input's. A column no step computes and no
-  parent carries ends there.
+  computes is the rule's; any other is the input's. A column's value from before the
+  code and its final value are followed separately, so reading the first does not
+  hide the second's inputs. A column no step computes and no parent carries ends
+  there.
   Carried columns are routed to the parents that were correlated or attempted, by the
   columns of the frame each edge reads (the `sourceHandle`'s frame of a multi-frame
   output): an Edge Join sends a colliding `<col><suffix>` to the join side as `<col>`,
