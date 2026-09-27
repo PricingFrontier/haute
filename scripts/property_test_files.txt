@@ -7,6 +7,7 @@ tests/test_chunk_whitelist_proofs.py
 tests/test_codegen_roundtrip_property.py
 tests/test_column_lineage_properties.py
 tests/test_expression_parity_properties.py
+tests/test_frontier_range_reducer.py
 tests/test_job_lifecycle_properties.py
 tests/test_json_shred_properties.py
 tests/test_metrics_gini_ties.py

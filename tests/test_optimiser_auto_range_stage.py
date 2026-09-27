@@ -275,3 +275,58 @@ def test_optimiser_workers_spawn_with_a_capped_polars_thread_pool(
     finally:
         context.release_admission()
     assert int(captured[0]["POLARS_MAX_THREADS"]) <= 8
+
+
+def test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint(
+    scored: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every preamble compile in one job uses the fingerprint pinned at admission."""
+    import haute.executor
+
+    graph = _body(scored).graph.model_copy(
+        update={"preamble": "PREAMBLE_CONST = 42\n", "source_file": str(tmp_path / "pipeline.py")}
+    )
+    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    fingerprints: list[str | None] = []
+    real_compile = haute.executor._compile_preamble
+
+    def recording_compile(preamble: str, *args: Any, **kwargs: Any) -> Any:
+        fingerprints.append(kwargs.get("execution_fingerprint"))
+        return real_compile(preamble, *args, **kwargs)
+
+    monkeypatch.setattr(haute.executor, "_compile_preamble", recording_compile)
+
+    _job_id, response = _run(OptimiserSolveService(JobStore()), body)
+
+    assert response.status == "ok"
+    assert fingerprints
+    assert fingerprints[0] is not None
+    assert len(set(fingerprints)) == 1
+
+
+def test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand(
+    scored: Path,
+) -> None:
+    """A second input into the optimiser is not seeded; the demand is the solve's."""
+    from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
+
+    single = _body(scored).graph
+    source = next(node for node in single.nodes if node.id == "source")
+    side = source.model_copy(
+        update={"id": "side_source", "data": source.data.model_copy(update={"label": "side"})}
+    )
+    graph = single.model_copy(
+        update={
+            "nodes": [*single.nodes, side],
+            "edges": [*single.edges, make_edge("side_source", "opt")],
+        }
+    )
+    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+
+    _node, prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
+
+    demand = prepared["required_columns_by_node"]
+    optimiser = next(node for node in graph.nodes if node.id == "opt")
+    assert demand == _optimiser_solve_required_columns_by_node(graph, "opt", optimiser.data.config)
+    assert set(demand) == {"source"}
+    assert {"quote_id", "expected_income", "volume"} <= set(demand["source"])
