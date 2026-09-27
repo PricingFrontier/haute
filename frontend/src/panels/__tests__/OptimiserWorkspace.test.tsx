@@ -15,7 +15,7 @@ import OptimiserPreview from "../OptimiserPreview"
 import type { FrontierData, OptimiserPreviewData } from "../OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
-import { makeHistoryEntry, makeInputSummary, makeSolveResult } from "../../test-utils/factories"
+import { makeHistoryEntry, makeSolveResult } from "../../test-utils/factories"
 import { makeAdjustmentReport, makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 
 vi.mock("../../api/client", () => ({
@@ -48,10 +48,6 @@ const VALIDATION_CSS = readFileSync(
 )
 const INDEX_CSS = readFileSync(path.resolve(HERE, "..", "..", "index.css"), "utf8")
 
-const EXPECTED_VALUES =
-  "Expected values from the scoring models on the solve quotes; not observed outcomes."
-// The source segment of the default input summary (makeInputSummary).
-const SOURCE = "Data: batch scenario of main.py"
 
 function makeFrontier(n = 5): FrontierData {
   return makeOnlineFrontier(n)
@@ -175,78 +171,10 @@ describe("Optimiser workspace", () => {
     expect(useUIStore.getState().modellingPreviewHeight).toBe(420)
   })
 
-  it("shows the provenance strip on every tab", () => {
-    renderPreview()
-    for (const name of ["Frontier", "Summary", "Quotes", "Convergence"]) {
-      fireEvent.click(screen.getByRole("tab", { name }))
-      expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-        `Online · 50,000 quotes × 21 scenario steps · ${SOURCE} · As solved · ${EXPECTED_VALUES}`,
-      )
-    }
-  })
-
-  it("names a selected frontier point as i of the points returned", () => {
+  it("shows no provenance strip: the header and panes already carry the mode, grid and point", () => {
     renderPreview(makeData({ selectedPointIndex: 2 }))
-    expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-      `Online · 50,000 quotes × 21 scenario steps · ${SOURCE} · Frontier point 3 of 5 · ${EXPECTED_VALUES}`,
-    )
-  })
-
-  it("names a ratebook solve and its grid", () => {
-    renderPreview(
-      makeData({
-        frontier: null,
-        result: makeSolveResult({
-          mode: "ratebook",
-          n_quotes: 1_200,
-          n_steps: 9,
-          cd_iterations: 4,
-          factor_tables: {
-            region: [{ __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 3 }],
-          },
-        }),
-      }),
-    )
-    for (const name of ["Summary", "Rates"]) {
-      fireEvent.click(screen.getByRole("tab", { name }))
-      expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-        `Ratebook · 1,200 quotes × 9 scenario steps · ${SOURCE} · As solved · ${EXPECTED_VALUES}`,
-      )
-    }
-  })
-
-  it("says so when a result does not report its grid, rather than omitting it", () => {
-    renderPreview(makeData({ result: onlineResult({ n_quotes: null, n_steps: null }) }))
-    expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-      `Online · Grid size not reported · ${SOURCE} · As solved · ${EXPECTED_VALUES}`,
-    )
-  })
-
-  it("names the data the solve ran on, from the result's input summary", () => {
-    renderPreview(makeData({
-      result: onlineResult({
-        input_summary: makeInputSummary({ data_source: "renewals_2026", source_file: "pricing/main.py" }),
-      }),
-    }))
-    expect(screen.getByTestId("optimiser-provenance")).toHaveTextContent(
-      "Data: renewals_2026 scenario of pricing/main.py",
-    )
-  })
-
-  it("names only the scenario when the pipeline has no source file", () => {
-    renderPreview(makeData({
-      result: onlineResult({ input_summary: makeInputSummary({ source_file: null }) }),
-    }))
-    const strip = screen.getByTestId("optimiser-provenance")
-    expect(strip).toHaveTextContent(`Data: batch scenario · As solved · ${EXPECTED_VALUES}`)
-    expect(strip).not.toHaveTextContent(" of ")
-  })
-
-  it("fails loudly on a mode it does not know", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {})
-    expect(() =>
-      renderPreview(makeData({ result: onlineResult({ mode: "hybrid" as OptimiserSolveResult["mode"] }) })),
-    ).toThrow(/Unknown optimiser mode "hybrid"/)
+    expect(screen.queryByTestId("optimiser-provenance")).not.toBeInTheDocument()
+    expect(screen.queryByText(/not observed outcomes/)).not.toBeInTheDocument()
   })
 
   it("introduces every tab, stating clamp rate as a search-space diagnostic", () => {

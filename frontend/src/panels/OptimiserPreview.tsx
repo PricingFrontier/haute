@@ -55,7 +55,6 @@ import AdjustmentsTab, { type PointAdjustmentReports } from "./optimiser/Adjustm
 import SegmentsTab, { type SegmentResults } from "./optimiser/SegmentsTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
-import { optimiserResultProvenance } from "./optimiser/resultProvenance"
 import {
   OPTIMISER_VIEW_INTRODUCTIONS,
   OPTIMISER_VIEW_LABELS,
@@ -522,7 +521,6 @@ export default function OptimiserPreview({
     result.n_quotes != null ? `${result.n_quotes.toLocaleString()} quotes` : null,
   ].filter(Boolean).join(" | ")
 
-  const provenance = optimiserResultProvenance(result, selectedIdx, headerPointCount)
   return (
     <ResultsWorkspace
       ariaLabel="Optimiser validation"
@@ -600,11 +598,6 @@ export default function OptimiserPreview({
             </div>
           )}
         </>
-      )}
-      provenance={(
-        <p data-testid="optimiser-provenance" className="m-0">
-          {provenance.join(" · ")}
-        </p>
       )}
       intro={OPTIMISER_VIEW_INTRODUCTIONS[activeTab]}
     >

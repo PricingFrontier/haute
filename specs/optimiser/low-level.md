@@ -392,8 +392,8 @@ an execution-context stage — calls:
   library's `per_factor_results` (one `PerFactorRecord` per inner grouped solve, in (CD pass,
   factor) order) into `ratebook_cd_trace` (see the result contract below). Like an online
   result, a ratebook result reports the shape of the grid it scored: `n_quotes` and `n_steps`
-  come from the solved `QuoteGrid`, so the result preview's provenance strip and the artifact's
-  `input_summary` name them for both modes. See Runtime ratebook apply below.
+  come from the solved `QuoteGrid`, so the result header and the artifact's `input_summary`
+  name them for both modes. See Runtime ratebook apply below.
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
 `result_dict` (including `effective_bounds`, see Constraint bounds below), optionally computes an efficient frontier inline (non-fatal on failure — a

@@ -27,8 +27,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: the Result line, then one card per constraint holding its column and remove action, then its at least / at most bound type, Fixed | Sweep switch and either its fixed value or its from/to range, then, when any constraint is swept, the Frontier section with points per swept constraint. Each swept card has its own Auto range button and error. It composes one `useOptimiserAutoRange` for the pane, running it for one constraint at a time and merging the filled range over the latest `frontier_ranges` (read through a ref when the run completes), keeping request state out of the parent form. |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. Its convergence result is the as-solved result (`originalResult`), never the frontier point the preview shows. |
 | `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. `run(targets)` names the constraints a run fills and the state reports them (`autoRangeTargets`), so a pane can show the run on the card that asked; the caller's `writeRanges` merges the result. |
-| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), the provenance strip, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
-| `frontend/src/panels/optimiser/resultViews.ts`, `frontend/src/panels/optimiser/resultProvenance.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`); and `optimiserResultProvenance`: the provenance strip's segments (mode, grid shape, the data source from the result's `input_summary`, as solved or frontier point i of N, and the expected-values statement). An unknown mode or a selected point outside the points returned throws. A failed solve with no earlier result has no result, so no preview and no strip. |
+| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
+| `frontend/src/panels/optimiser/resultViews.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`). A failed solve with no earlier result has no result, so no preview. |
 | `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
 | `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
@@ -464,12 +464,8 @@ without broadening the exactly-one-direct fallback.
   which a legend note names, and the focus detail says "no value order (categorical
   level)" in words. Every dot is focusable and fills the detail line; a closed values
   table lists Factor | Level | Rate | vs neutral 1.0 (%) | Quotes for the factors shown.
-- The optimiser provenance strip shows on every tab: "Online|Ratebook · N quotes × M
-  scenario steps · Data: <data_source> scenario of <source_file> · As solved|Frontier
-  point i of N · Expected values from the scoring models on the solve quotes; not
-  observed outcomes." The source segment reads the result's `input_summary`, and says
-  "Data: <data_source> scenario" when the graph has no source file. N of the frontier
-  point is the number of points returned, the same count the header stepper uses.
+- The optimiser result workspace shows no provenance strip (the header and point stepper
+  carry the mode's convergence, the quote count and the point shown).
   A result that does not report its grid shape says so in the strip instead of
   omitting it.
 - The optimiser Summary shows the result's `diagnostics_errors` in the shared
@@ -663,7 +659,7 @@ explicit sources and mixed healthy/zero-level outputs. The deterministic
 fields, selects and applies the backend `point_index`, and intercepts the
 MLflow API to assert request/result identity without contacting a live service.
 After its solve it walks every online pane: the Solve pane's status against the
-as-solved result, the tablist and provenance strip, the Summary attainment row
+as-solved result, the tablist, the Summary attainment row
 (Bound, Slack, Status consistent with each other), frontier point 2's attainment
 identical in the detail card and Summary, the Adjustments bars and base-price
 line, a Segments level of the fixture's `region` analysis column, the Quotes

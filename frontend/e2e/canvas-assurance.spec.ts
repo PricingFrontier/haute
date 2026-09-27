@@ -413,8 +413,7 @@ test.describe("frontend canvas assurance", () => {
     )).toBeVisible()
 
     // The workspace offers every online pane (no Rates: that is ratebook's),
-    // and the provenance strip says what the figures are: a frontier solve
-    // opens on its first point.
+    // and a frontier solve opens on its Frontier pane.
     const optimiserPreview = page.getByTestId("optimiser-preview-frame")
     await expect(resultTabs.getByRole("tab")).toHaveText([
       "Frontier",
@@ -423,15 +422,11 @@ test.describe("frontend canvas assurance", () => {
       "Segments",
       "Quotes",
       "Convergence",
+      "Curves",
+      "Statistics",
     ])
     await expect(resultTabs.getByRole("tab", { name: "Frontier", exact: true }))
       .toHaveAttribute("aria-selected", "true")
-    const provenance = optimiserPreview.getByTestId("optimiser-provenance")
-    await expect(provenance).toHaveText(new RegExp(
-      "^Online · 8 quotes × 5 scenario steps · Data: batch scenario of rating/main\\.py · "
-      + "Frontier point 1 of 5 · "
-      + "Expected values from the scoring models on the solve quotes; not observed outcomes\\.$",
-    ))
 
     // Summary states each constraint's attainment in words.
     await openResultPane(page, "Summary")
@@ -455,7 +450,6 @@ test.describe("frontend canvas assurance", () => {
     await expect(
       page.getByTestId("optimiser-preview-frame-header").getByText("Point 2 of 5", { exact: true }),
     ).toBeVisible()
-    await expect(provenance).toContainText("Frontier point 2 of 5")
     await expect(
       page.getByRole("alert").filter({ hasText: /Failed to select frontier point/i }),
     ).toHaveCount(0)
@@ -474,7 +468,7 @@ test.describe("frontend canvas assurance", () => {
 
     // The frontier detail card and Summary judge the selected point alike.
     const detailCard = optimiserPreview.locator(".optimiser-frontier-detail")
-    await expect(detailCard.getByText("Point details", { exact: true })).toBeVisible()
+    await expect(detailCard.getByText("Point 2", { exact: true })).toBeVisible()
     const detailAttainment = await attainmentRows(detailCard)
     expect(detailAttainment.rows).toHaveLength(1)
     expectAttainmentRowConsistent(detailAttainment.rows[0])
@@ -670,9 +664,6 @@ test.describe("frontend canvas assurance", () => {
       "Convergence",
     ])
     const ratebookPreview = page.getByTestId("optimiser-preview-frame")
-    await expect(ratebookPreview.getByTestId("optimiser-provenance")).toHaveText(new RegExp(
-      "^Ratebook · 8 quotes × 5 scenario steps · Data: .+ · As solved · ",
-    ))
 
     await openResultPane(page, "Rates")
     await expect(ratebookPreview.getByRole("heading", { name: "region_band", exact: true })).toBeVisible()
