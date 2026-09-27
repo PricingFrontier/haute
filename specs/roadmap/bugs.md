@@ -18,6 +18,10 @@ wrong. Current rating behaviour is specified in
 | BUG-03 | Planned | P3 | The ratebook optimiser settings nothing reads are gone. |
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-05 | Planned | P3 | The Data Input editor describes the Databricks query field as the SELECT clause it is. |
+| BUG-06 | Planned | P2 | A Delta or Iceberg table folder can be chosen as a Lakehouse Data Input in the editor. |
+| BUG-07 | Planned | P3 | The Load File picker offers only files a File Type can load. |
+| BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
+| BUG-09 | Planned | P3 | The Optimisation node's Chunk size field shows the chunk size the solve will use. |
 
 ## Planned improvements
 
@@ -36,7 +40,8 @@ default, adding or removing a table) therefore removes an `onMissing` set in
 the pipeline, with no message, and a table that was set to `"neutral"` fails
 the run on its next miss. The same rebuild gives a table with no
 `defaultValue` the default `"1.0"`, so a table written to fail on a miss
-starts pricing misses at 1.0 after an unrelated edit.
+starts pricing misses at 1.0 after an unrelated edit. Before any edit, the
+Default field already shows `1.0` for a table whose `defaultValue` is `null`.
 
 **Plan:** Carry `onMissing` through `normaliseRatingTable`, keep an absent
 `defaultValue` absent, and show `onMissing` in the table editor beside Default,
@@ -148,3 +153,76 @@ editor's test pins the wording.
 **Evidence:** `frontend/src/panels/editors/DataInputEditor.tsx` (the
 Databricks query hint); `src/haute/_databricks_io.py` (the SELECT validation);
 `docs/building-models/nodes/data-input.md`.
+
+### BUG-06 — A lakehouse table folder can be chosen as a Data Input
+**Why:** A Delta or Iceberg table is a folder. The Data Input's path browser
+opens a folder when it is clicked and only ever selects a file, and an input
+has no manual path entry (only outputs get one), so a Lakehouse input's
+**TABLE LOCATOR** cannot be set in the editor; only a hand-edited pipeline file
+reaches it.
+
+**Plan:** Let the browser select a folder for a lakehouse format (a Delta
+folder is recognisable by its `_delta_log`), or give lakehouse inputs the same
+manual path entry outputs have.
+
+**Acceptance:** In the editor, a Lakehouse Data Input can be pointed at a Delta
+table folder under the project and previews it; a frontend test covers the
+selection.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/_IoFormatEditor.tsx`
+(`manualEntry={direction === "output"}`); `frontend/src/panels/editors/_shared.tsx`
+(the browser's folder click); `src/haute/routes/files.py` (directory items).
+
+### BUG-07 — The Load File picker offers only loadable files
+**Why:** The Load File path browser lists `.onnx` and `.pmml` files, but no
+File Type loads them (Pickle, JSON, Joblib and CatBoost are the only loaders),
+so choosing one produces a node that cannot run.
+
+**Plan:** Drop the two extensions from the picker, or add loaders for them if
+Load File is meant to support those formats.
+
+**Acceptance:** The picker's extensions and the File Type loaders agree; a
+frontend test pins the extension list.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/ExternalFileEditor.tsx` (the
+picker's `extensions`); `src/haute/_io.py::_load_external_object_uncached`.
+
+### BUG-08 — A table added by hand starts with a valid label
+**Why:** A Quote Input table's label becomes its frame name downstream and
+must be an identifier. **Add Table** gives a new table its path as its label
+(`$[:]` for the first), which fails that rule, so every hand-built table
+starts invalid until the analyst renames it.
+
+**Plan:** Derive the new table's label the way inference does (`quote_info`
+for the root, the array's key below it), de-duplicated against existing
+labels.
+
+**Acceptance:** A table added with **Add Table** has a label that passes the
+label rule; a frontend test covers the root and a nested table.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx` (`addTable`);
+`specs/json-shredding/high-level.md` (the label rule).
+
+### BUG-09 — The Chunk size field shows the chunk size in effect
+**Why:** The Optimisation node's **Chunk size** field shows 500000 when the
+node has no `chunk_size`, but then the solve sizes its chunks from its memory
+budget instead. The field shows a value that is not in effect until the
+analyst commits one.
+
+**Plan:** Keep the field, and show the automatic sizing when no value is set
+(an empty field reading "Automatic", for example), so a number appears only
+when the analyst chose it.
+
+**Acceptance:** A node without `chunk_size` shows the automatic state; a node
+with one shows that value; a frontend test covers both.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/OptimiserConfig.tsx` (the `chunk_size`
+field default); `src/haute/routes/_optimiser_input.py::_chunk_size_decision_for_parquet`.
