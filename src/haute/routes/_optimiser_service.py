@@ -3709,21 +3709,24 @@ class OptimiserSolveService:
         job_id: str,
         *,
         execution_context: ExecutionContext | None = None,
+        n_steps: int | None = None,
     ) -> QuoteGrid:
         """Build the solver's QuoteGrid from a written or borrowed solver-input parquet.
 
-        The job records the grid's ``scenario_grid`` as soon as it exists.
+        The job records the grid's ``scenario_grid`` as soon as it exists. A
+        caller that already read the file's step count passes it as *n_steps*.
         """
         with (
             self._recorded_setup_failures(job_id, execution_context),
             grid_construction_failures(node_id),
             _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
         ):
-            n_steps = scenario_step_count(
-                Path(input_path),
-                str(config.get("scenario_index", "scenario_index")),
-                execution_context,
-            )
+            if n_steps is None:
+                n_steps = scenario_step_count(
+                    Path(input_path),
+                    str(config.get("scenario_index", "scenario_index")),
+                    execution_context,
+                )
             decision = grid_chunk_decision(n_steps)
             self._record_setup_chunking(job_id, "optimiser_grid", decision.provenance)
             grid = build_quote_grid(

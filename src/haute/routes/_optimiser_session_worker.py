@@ -197,14 +197,13 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
                 str(config["objective"]),
                 *request.constraint_cols,
             ]
+            n_steps = scenario_step_count(Path(request.input_path), step_col)
             grid_forecast = forecast_resident_grid_bytes(
                 Path(request.input_path),
                 columns,
                 qid_col,
                 len(request.constraint_cols),
-                grid_chunk_decision(
-                    scenario_step_count(Path(request.input_path), step_col)
-                ).chunk_size,
+                grid_chunk_decision(n_steps).chunk_size,
             )
             quote_grid = service._build_grid_from_parquet(
                 request.input_path,
@@ -213,6 +212,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
                 request.node_id,
                 job_id,
                 execution_context=None,
+                n_steps=n_steps,
             )
             if request.quote_analysis_handle is not None:
                 require_one_row_per_solved_quote(request.quote_analysis_handle, quote_grid.n_quotes)
