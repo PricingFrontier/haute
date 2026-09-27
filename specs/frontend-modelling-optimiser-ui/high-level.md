@@ -499,7 +499,10 @@ each one and why, in the same form as model validation. A failed solve with no e
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
 never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
 side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence; it has no
+Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence, then the
+pre-solve input's Curves and Statistics (the data preview's per-quote chart and per-scenario
+statistics, from the node's preview rows, while they hold an objective and scenario rows) so a
+solve never hides them; on Curves the header's point stepper gives way to the quote navigation. It has no
 Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
 detail card says so. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's

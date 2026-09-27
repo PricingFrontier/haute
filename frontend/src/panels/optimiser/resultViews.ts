@@ -10,6 +10,8 @@ export type OptimiserResultView =
   | "segments"
   | "quotes"
   | "convergence"
+  | "curves"
+  | "statistics"
 
 export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
   frontier: "Frontier",
@@ -19,6 +21,8 @@ export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
   segments: "Segments",
   quotes: "Quotes",
   convergence: "Convergence",
+  curves: "Curves",
+  statistics: "Statistics",
 }
 
 /** Every view's intro. Clamp rate is price-contour's search-space diagnostic
@@ -76,5 +80,17 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
       `How the objective, each constraint total against its bound and the ${LAMBDA_LABEL} `
       + "settled over the solve's iterations, or over a ratebook solve's coordinate-descent "
       + "passes, one line per factor (λ in the values table).",
+  },
+  curves: {
+    title: "Quote curves",
+    description:
+      "The optimiser's input for one quote at a time: the objective and each constraint across "
+      + "the quote's scenarios, from the node's preview rows. Step through quotes or find one by ID.",
+  },
+  statistics: {
+    title: "Scenario statistics",
+    description:
+      "The objective and each constraint at every scenario, summarised across the preview's "
+      + "quotes: count, mean, spread and quantiles. It describes the input, not the solution.",
   },
 }

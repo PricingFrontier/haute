@@ -37,7 +37,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
 | `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity) with Retry on failure; and the shared λ label and explanation. |
 | `frontend/src/panels/SortableValuesTable.tsx`, `frontend/src/panels/valuesSort.ts` | The shared sortable values table (extracted from the GLM coefficients): column headers as sort buttons with `aria-sort` and a ▲/▼ indicator on the sorted column (a disabled button for a column that cannot be sorted now, plain text for one that never can), the caller's cells and an empty-state `role="status"` message; `ValuesTableSearch`, its labelled search input; and `nextSort` (`valuesSort.ts`, with `SortState`), the one sort cycle (a new column sorts ascending, the sorted column reverses). Sorting itself is the caller's: GLM sorts in the browser, Quotes asks the server. |
-| `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
+| `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or quote count changes) and on-demand statistics; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
 | `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers and stale-aware data-input column fetching. |
@@ -370,8 +370,11 @@ Only a current, accepted save response may acknowledge this revision transition.
    the node does not hold and never changes the selection; its load is identified by
    `(jobId, frontier_generation, target)`, and a reply the server answered for another generation
    than the result shows is reported as the load's error.
-5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
-   orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
+5. `useOptimiserScenarioData` caps rows at 5,000 before grouping by quote, orders scenario rows,
+   and calculates full-preview statistics only while a Statistics pane is open (the data preview's
+   tab, or the result workspace's). `App` passes `OptimiserPreview` the active node's `ok`
+   preview as `scenarioData`; the result workspace offers Curves and Statistics only when those
+   rows hold an objective and scenario rows.
 
 Memory notices use the headline “{Profile} reached {threshold}% of its memory
 allowance.” Their details separately identify memory used, the process limit, and
@@ -625,7 +628,8 @@ an unswept breach) and the hand-calculated trade-off sign for min and max constr
 feasible-only line and the as-solved anchor;
 `frontend/src/panels/optimiser/__tests__/DetailCard.test.tsx` the reasons, λ sign and trade-off
 row; and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching,
-global-index selection and the in-slice stepper. Modelling subcomponents have suites
+global-index selection, the in-slice stepper, and the Curves and Statistics panes after a solve
+(quote navigation replacing the point stepper, no panes without preview rows or an objective). Modelling subcomponents have suites
 under `frontend/src/panels/modelling/__tests__/`:
 `frontend/src/panels/modelling/__tests__/SummaryTab.test.tsx` proves the validation card leads a holdout-validated refit's in-sample diagnostics with its row count
 while test metrics still lead a test-set run, and

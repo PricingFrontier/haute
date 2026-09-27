@@ -27,6 +27,7 @@ import type {
   OptimiserSegmentsResponse,
   OptimiserSolveResult,
 } from "../api/types"
+import type { PreviewData } from "./DataPreview"
 import type { SimpleEdge, SimpleNode } from "./editors"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
@@ -61,6 +62,15 @@ import {
   type OptimiserResultView,
 } from "./optimiser/resultViews"
 import ResultsWorkspace from "./ResultsWorkspace"
+import {
+  ScenarioCurvesPane,
+  ScenarioQuoteNavigation,
+  ScenarioStatisticsPane,
+} from "./optimiser/OptimiserScenarioPanes"
+import {
+  scenarioDataUnavailable,
+  useOptimiserScenarioData,
+} from "./optimiser/useOptimiserScenarioData"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
 export type { FrontierData }
@@ -86,6 +96,8 @@ interface OptimiserPreviewProps {
   allNodes: SimpleNode[]
   edges: SimpleEdge[]
   submodels?: Record<string, unknown>
+  /** The node's preview rows, which the Curves and Statistics panes chart; null while unavailable. */
+  scenarioData?: PreviewData | null
 }
 
 type RatesDetailState =
@@ -111,6 +123,17 @@ type OptimiserReview = {
 }
 
 const EMPTY_COLUMNS: { name: string; dtype: string }[] = []
+
+const NO_SCENARIO_DATA: PreviewData = {
+  nodeId: "",
+  nodeLabel: "",
+  status: "ok",
+  row_count: 0,
+  column_count: 0,
+  columns: [],
+  preview: [],
+  error: null,
+}
 
 const REQUEST_FAILED = "The request failed."
 
@@ -180,7 +203,15 @@ function HeaderPointStepper({
   )
 }
 
-export default function OptimiserPreview({ data, nodeId, allNodes, edges, submodels, onRefresh }: OptimiserPreviewProps) {
+export default function OptimiserPreview({
+  data,
+  nodeId,
+  allNodes,
+  edges,
+  submodels,
+  onRefresh,
+  scenarioData = null,
+}: OptimiserPreviewProps) {
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
   const { result, solvedResult, jobId } = displayData
@@ -266,7 +297,17 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const storeUpdateAfterSelect = useNodeResultsStore((s) => s.updateFrontierAfterSelect)
 
-  const nodeConfig = allNodes.find((node) => node.id === nodeId)?.data.config ?? {}
+  const nodeConfig = useMemo(
+    () => allNodes.find((node) => node.id === nodeId)?.data.config ?? {},
+    [allNodes, nodeId],
+  )
+  // The pre-solve Curves and Statistics panes chart the node's preview rows.
+  const scenario = useOptimiserScenarioData(
+    scenarioData ?? NO_SCENARIO_DATA,
+    nodeConfig,
+    tab === "statistics",
+  )
+  const hasScenarioPanes = scenarioData != null && scenarioDataUnavailable(scenario) === null
 
   // The result is stale once the node's solve inputs no longer match it.
   const cachedSolve = useNodeResultsStore((s) => s.solveResults[nodeId])
@@ -470,6 +511,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   availableTabs.push("quotes")
   // Convergence draws the solve's history or CD trace, so every result offers it.
   availableTabs.push("convergence")
+  // The input's curves and statistics stay available after a solve.
+  if (hasScenarioPanes) availableTabs.push("curves", "statistics")
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
 
   const tabs = availableTabs.map((key) => ({ key, label: OPTIMISER_VIEW_LABELS[key] }))
@@ -497,7 +540,9 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
       height={height}
       onHeightChange={rememberHeight}
       accent={OPTIMISER_ACCENT}
-      headerActions={(
+      headerActions={activeTab === "curves" ? (
+        <ScenarioQuoteNavigation scenario={scenario} />
+      ) : (
         <HeaderPointStepper
           pointCount={headerPointCount}
           selectedIdx={selectedIdx}
@@ -646,6 +691,10 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           selectedPoint={selectedIdx == null ? null : { index: selectedIdx, result }}
         />
       )}
+
+      {activeTab === "curves" && <ScenarioCurvesPane scenario={scenario} />}
+
+      {activeTab === "statistics" && <ScenarioStatisticsPane scenario={scenario} />}
 
       {activeTab === "quotes" && (
         <QuotesTab

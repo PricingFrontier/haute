@@ -300,6 +300,13 @@ function ActiveNodePreviewBody({
           allNodes={panelNodes}
           edges={panelEdges}
           submodels={submodels}
+          scenarioData={
+            previewData?.status === "ok"
+            && previewData.nodeId === activeNodeId
+            && previewData.preview.length > 0
+              ? previewData
+              : null
+          }
         />
       </Suspense>
     )

@@ -1499,4 +1499,60 @@ describe("OptimiserPreview", () => {
       expect(screen.getAllByText("1.1500").length).toBeGreaterThan(0)
     })
   })
+
+  describe("Curves and Statistics panes (the pre-solve input)", () => {
+    const SCENARIO_CONFIG = {
+      objective: "margin",
+      constraints: { volume: { min: 0.9 } },
+      quote_id: "quote_id",
+      scenario_index: "scenario_index",
+      scenario_value: "scenario_value",
+    }
+    const SCENARIO_ROWS = [
+      { quote_id: "Q001", scenario_index: 0, scenario_value: 0.9, margin: 100, volume: 1.0 },
+      { quote_id: "Q001", scenario_index: 1, scenario_value: 1.0, margin: 110, volume: 0.95 },
+      { quote_id: "Q002", scenario_index: 0, scenario_value: 0.9, margin: 200, volume: 1.0 },
+      { quote_id: "Q002", scenario_index: 1, scenario_value: 1.0, margin: 220, volume: 0.93 },
+    ]
+    const scenarioData = {
+      nodeId: "opt_1",
+      nodeLabel: "My Optimiser",
+      status: "ok" as const,
+      row_count: SCENARIO_ROWS.length,
+      column_count: 5,
+      columns: [],
+      preview: SCENARIO_ROWS,
+      error: null,
+    }
+
+    it("keeps the input's quote curves and statistics after a solve", () => {
+      renderPreview({ allNodes: [optimiserNode(SCENARIO_CONFIG)], scenarioData })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Curves" }))
+      expect(screen.getByRole("checkbox", { name: /margin/ })).toBeChecked()
+      expect(screen.getByRole("checkbox", { name: /volume/ })).toBeChecked()
+      const navigation = screen.getByTestId("optimiser-quote-navigation")
+      expect(within(navigation).getByText("1/2")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next quote" }))
+      expect(within(navigation).getByText("2/2")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole("tab", { name: "Statistics" }))
+      expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+      expect(screen.getByText("objective")).toBeInTheDocument()
+      expect(screen.getAllByRole("table")).toHaveLength(2)
+    })
+
+    it("offers no input panes without the node's preview rows", () => {
+      renderPreview({ allNodes: [optimiserNode(SCENARIO_CONFIG)], scenarioData: null })
+
+      expect(screen.queryByRole("tab", { name: "Curves" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Statistics" })).not.toBeInTheDocument()
+    })
+
+    it("offers no input panes when no objective is configured to chart", () => {
+      renderPreview({ allNodes: [optimiserNode({ ...SCENARIO_CONFIG, objective: "" })], scenarioData })
+
+      expect(screen.queryByRole("tab", { name: "Curves" })).not.toBeInTheDocument()
+    })
+  })
 })
