@@ -225,7 +225,7 @@ async function installTraceRoute(page: Page): Promise<void> {
               output_values: { quote_id: TRACE_VALUE },
               topological_rank: 0,
               column_relevant: true,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             },
           ],
         },

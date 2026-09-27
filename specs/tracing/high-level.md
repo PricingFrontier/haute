@@ -252,7 +252,11 @@ Out of scope (owned elsewhere, linked where relevant):
   name, an assignment the formula may or may not have seen, an enrichment error) makes
   every input column relevant. A step is `column_relevant` when it is on this lineage —
   it computes or carries a column the value depends on — and its `contributed_columns`
-  name the columns it computes for the value. A kept step off the lineage (an ancestor
+  name the columns it computes for the value. Its `derivations` explain each of those
+  columns: the step's formula evaluated on the traced row (none for a column a model,
+  an optimiser or a scenario grid computed, or a source loaded) and, for every column
+  that formula or rule read, the nodes that computed the value it read, so a value can
+  be followed down to what was loaded. A kept step off the lineage (an ancestor
   whose data never reaches the value) is not relevant, and an unresolved node is
   reported as an omission only when the lineage reaches it.
 - **Enrichment is best-effort per step.** Expression parsing/evaluation, chain

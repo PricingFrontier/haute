@@ -119,7 +119,7 @@ function makeTrace(nodeIds: string[]): TraceResult {
       output_values: {},
       topological_rank: topologicalRank,
       column_relevant: true,
-      contributed_columns: [],
+      contributed_columns: [], derivations: [],
     })),
     target_node_id: nodeIds.at(-1) ?? "",
     row_index: 0,
@@ -253,7 +253,7 @@ describe("useTracing", () => {
 
   it("handleCellClick calls traceCell and sets result on success", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -569,7 +569,10 @@ describe("useTracing", () => {
       trace: makeTrace(["external-source-b", "submodel_runtime/pricing/child", "external-target"]),
     })
 
-    const { result } = renderHook(() => useTracing(params))
+    const { result, rerender } = renderHook(
+      (focus: string | null) => useTracing({ ...params, traceFocusNodeId: focus }),
+      { initialProps: null as string | null },
+    )
     await act(async () => {
       result.current.handleCellClick(0, "price")
     })
@@ -577,6 +580,15 @@ describe("useTracing", () => {
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
       target_node_id: "submodel_runtime/pricing/child",
     }))
+
+    // A trace card points at runtime ids: the ring lands on the visible node for each.
+    const focusedIds = () => result.current.nodesWithStatus.filter((node) => node.data._traceFocused).map((node) => node.id)
+    rerender("submodel_runtime/pricing/child")
+    expect(focusedIds()).toEqual(["child"])
+    expect(result.current.resolveTraceNodeId("submodel_runtime/pricing/child")).toBe("child")
+    rerender("external-target")
+    expect(focusedIds()).toEqual(["boundary-output"])
+    rerender(null)
 
     const projectedData = Object.fromEntries(
       result.current.nodesWithStatus.map((node) => [node.id, node.data]),
@@ -628,7 +640,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -652,11 +664,43 @@ describe("useTracing", () => {
     expect(dimmedNode.style?.opacity).toBeUndefined()
   })
 
+  it("nodesWithStatus rings the node a trace card points at, only while a trace shows", async () => {
+    const trace = {
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      target_node_id: "n1",
+      row_index: 0,
+      column: "price",
+      output_value: 1,
+      total_nodes_in_pipeline: 2,
+      nodes_in_trace: 1,
+      execution_ms: 10,
+      row_id_column: null,
+      row_id_value: null,
+    }
+    mockTraceCell.mockResolvedValue({ status: "ok", trace: completeTrace(trace) })
+    const { result, rerender } = renderHook(
+      (props: { focus: string | null }) => useTracing(makeParams({ traceFocusNodeId: props.focus })),
+      { initialProps: { focus: "n1" as string | null } },
+    )
+    const focused = () => result.current.nodesWithStatus.map((n) => [n.id, n.data._traceFocused])
+    // No trace yet: nothing is ringed.
+    expect(focused()).toEqual([["n1", false], ["n2", false]])
+
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+    expect(focused()).toEqual([["n1", true], ["n2", false]])
+
+    rerender({ focus: null })
+    expect(focused()).toEqual([["n1", false], ["n2", false]])
+  })
+
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [] },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -682,7 +726,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus preserves transition on style", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -708,8 +752,8 @@ describe("useTracing", () => {
   it("edgesWithTrace highlights edges between traced nodes", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [] },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -913,7 +957,7 @@ describe("useTracing", () => {
 
   it("_hoverDimmed is false when trace is active (trace takes priority)", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -1195,10 +1239,10 @@ describe("useTracing validity across shared snapshots", () => {
         ...base,
         column: "optimal_premium",
         steps: [
-          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"] },
+          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"], derivations: [] },
           { ...base.steps[1], schema_diff: diff(["market_note"]), output_values: { market_note: "y" }, column_relevant: false },
           { ...base.steps[2], schema_diff: diff(["sale_flag"]), output_values: { sale_flag: null } },
-          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"] },
+          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"], derivations: [] },
         ],
       },
     })

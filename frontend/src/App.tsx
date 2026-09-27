@@ -26,7 +26,8 @@ import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 
-import TracePanel, { TraceStatePanel } from "./panels/TracePanel"
+import { TraceStatePanel } from "./panels/TraceStatePanel"
+import type { TraceResult } from "./types/trace"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
@@ -86,6 +87,7 @@ import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
 import InitialViewFit from "./components/InitialViewFit"
+import TraceViewFit from "./components/TraceViewFit"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -121,6 +123,10 @@ const ModellingResultExpired = lazy(() => import("./panels/modelling/ModellingRe
 // Optimiser results are produced only after a user-triggered solve, so keep
 // the comparatively heavy charts out of the initial application bundle.
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
+// The trace panel shows only after a cell click; its chunk is fetched when the
+// trace request starts, so it is usually ready by the time the result arrives.
+const loadTracePanel = () => import("./panels/TracePanel")
+const TracePanel = lazy(loadTracePanel)
 
 // ---------------------------------------------------------------------------
 // Module-level constants (no dynamic values — avoids re-creating each render)
@@ -511,7 +517,7 @@ type NodePropertiesPanelProps = {
   isInsideSubmodel: boolean
   currentSourceFile: string | null
   documentReadOnly: boolean
-  traceResult: ComponentProps<typeof TracePanel>["trace"] | null
+  traceResult: TraceResult | null
   traceState: TraceRequestState
   clearTrace: () => void
   cancelTrace: ComponentProps<typeof TraceStatePanel>["onCancel"]
@@ -616,7 +622,13 @@ function NodePropertiesPanel({
       </ErrorBoundary>
     )
   } else if (traceResult) {
-    content = <TracePanel trace={traceResult} onClose={clearTrace} />
+    content = (
+      <ErrorBoundary name="TracePanel">
+        <Suspense fallback={null}>
+          <TracePanel trace={traceResult} onClose={clearTrace} />
+        </Suspense>
+      </ErrorBoundary>
+    )
   } else if (visibleTraceState) {
     content = (
       <TraceStatePanel
@@ -724,6 +736,7 @@ function FlowEditor() {
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
+  const traceFocusNodeId = useUIStore((s) => s.traceFocusNodeId)
   const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -927,7 +940,7 @@ function FlowEditor() {
   const {
     traceResult, tracedCell, traceState,
     handleCellClick, clearTrace, cancelTrace, retryTrace,
-    nodesWithStatus, edgesWithTrace,
+    nodesWithStatus, edgesWithTrace, resolveTraceNodeId,
   } = useTracing({
     nodes, edges, selectedNode,
     submodels,
@@ -935,12 +948,18 @@ function FlowEditor() {
     preambleRef,
     nodeStatuses,
     hoveredNodeId,
+    traceFocusNodeId,
     refreshPreview,
     previewSeedPlan:
       previewData !== null && previewData.nodeId === selectedNode?.id
         ? previewData.seed_plan
         : undefined,
   })
+  // Fetch the lazy trace panel while the trace request runs.
+  useEffect(() => {
+    if (traceState.status === "loading") void loadTracePanel()
+  }, [traceState.status])
+
   const previousDocumentRevisionRef = useRef<string | null>(null)
   useEffect(() => {
     const previousRevision = previousDocumentRevisionRef.current
@@ -1752,6 +1771,7 @@ function FlowEditor() {
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
                 <InitialViewFit />
+                <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
               </ReactFlow>
             </div>
           </ErrorBoundary>

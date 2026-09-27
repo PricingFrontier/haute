@@ -968,6 +968,101 @@ def _effective_node_code(
     return local_code
 
 
+def _formula_fields(
+    step: TraceStep,
+    column: str,
+    code: str,
+    parsed: Any,
+    preamble_ns: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """*code*'s assignment of *column*, evaluated on *step*'s row.
+
+    ``expression_text`` when the parse found the formula, the
+    ``substituted_text`` and ``result_value`` of evaluating it, and
+    ``not_computable_reason``/``result_source`` when one row could not compute it.
+    """
+    fields: dict[str, Any] = {}
+    if parsed and parsed.expression_text:
+        fields["expression_text"] = parsed.expression_text
+    eval_values = _assignment_values(step, column, parsed, code)
+    if eval_values is None:
+        fields["result_value"] = step.output_values.get(column)
+        fields["substituted_text"] = f"{column} = {_quote_trace_value(fields['result_value'])}"
+        return fields
+    ev = evaluate_expression(
+        code,
+        column,
+        eval_values,
+        preamble_ns=preamble_ns,
+        row=_assignment_row(step, column, parsed, code),
+    )
+    if ev is not None:
+        fields["substituted_text"] = ev.substituted_text
+        fields.update(
+            _with_execution_value(
+                {
+                    "result_value": ev.result_value,
+                    "not_computable_reason": ev.not_computable_reason,
+                },
+                step,
+                column,
+            )
+        )
+    return fields
+
+
+def column_derivation(
+    step: TraceStep,
+    column: str,
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+    reads: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """How *step* computed *column* for a traced value, and what it read.
+
+    The formula, when the step's code assigns the column, is evaluated on the
+    step's row as the traced column's own is; a column a rule computed (a
+    model's prediction, an optimiser's choice) or a source loaded has none.
+    A step read from a snapshot no recompute reproduced has no row to
+    evaluate on, so only its value is shown.
+    """
+    derivation: dict[str, Any] = {
+        "column": column,
+        "expression_text": None,
+        "substituted_text": None,
+        "result_value": step.output_values.get(column),
+        "not_computable_reason": None,
+        "result_source": None,
+        "reads": reads,
+        "error": None,
+        "error_type": None,
+    }
+    if step.snapshot_generation_id is not None and not step.snapshot_reproduced:
+        return derivation
+    node = node_map.get(step.node_id)
+    config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
+    code = _wrap_node_code(_effective_node_code(config, node_map))
+    if not code.strip():
+        return derivation
+    try:
+        parsed = parse_expression(code, column)
+        if parsed is None or not parsed.expression_text or parsed.expression_type == "opaque":
+            return derivation
+        derivation.update(_formula_fields(step, column, code, parsed, preamble_ns))
+    except Exception as exc:
+        logger.warning(
+            "column_derivation_failed",
+            node_id=step.node_id,
+            column=column,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        derivation["error"] = f"formula evaluation failed: {exc}"
+        derivation["error_type"] = type(exc).__name__
+    return derivation
+
+
 def _build_input_sources(
     ref_cols: list[str],
     current_step: TraceStep,
@@ -1092,33 +1187,10 @@ def _build_input_sources(
                 if other_code and not banding_lineage_applied:
                     parsed = parse_expression(other_code, ref_col)
                     if parsed and parsed.expression_text:
-                        source_info["expression_text"] = parsed.expression_text
                         parsed_refs = list(parsed.referenced_columns)
-                    eval_values = _assignment_values(other_step, ref_col, parsed, other_code)
-                    if eval_values is None:
-                        source_info["result_value"] = other_step.output_values.get(ref_col)
-                        source_info["substituted_text"] = (
-                            f"{ref_col} = {_quote_trace_value(source_info['result_value'])}"
-                        )
-                    else:
-                        ev = evaluate_expression(
-                            other_code,
-                            ref_col,
-                            eval_values,
-                            preamble_ns=preamble_ns,
-                            row=_assignment_row(other_step, ref_col, parsed, other_code),
-                        )
-                        if ev is not None:
-                            shown = _with_execution_value(
-                                {
-                                    "result_value": ev.result_value,
-                                    "not_computable_reason": ev.not_computable_reason,
-                                },
-                                other_step,
-                                ref_col,
-                            )
-                            source_info["substituted_text"] = ev.substituted_text
-                            source_info.update(shown)
+                    source_info.update(
+                        _formula_fields(other_step, ref_col, other_code, parsed, preamble_ns)
+                    )
             except Exception as exc:
                 # Surface the derivation failure on the source entry so
                 # the caller can see why an input column's value/

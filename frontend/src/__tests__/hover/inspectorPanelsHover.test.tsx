@@ -490,7 +490,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
-    contributed_columns: [],
+    contributed_columns: [], derivations: [],
     ...overrides,
   }
 }
@@ -623,7 +623,7 @@ describe("TracePanel focused/full trace toggle", () => {
                 columns_passed: [],
               },
               column_relevant: true,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "n2",
@@ -636,7 +636,7 @@ describe("TracePanel focused/full trace toggle", () => {
                 columns_passed: ["premium"],
               },
               column_relevant: false,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "n3",
@@ -649,7 +649,7 @@ describe("TracePanel focused/full trace toggle", () => {
                 columns_passed: [],
               },
               column_relevant: true,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             }),
           ],
         })}

@@ -8,7 +8,7 @@
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
-| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance) and the columns each step contributes. |
+| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each contributed column read (`reads`: per column, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -20,7 +20,14 @@
   the traced value's lineage), `contributed_columns: list[str]` (in a column trace,
   the columns of the step's output row it computes that the traced value depends on,
   sorted — a helper column the step dropped is followed but not listed; empty for a
-  step that only carries them and for a trace with no column), `identical_row_count` (the number of
+  step that only carries them and for a trace with no column), `derivations: list[dict]`
+  (one entry per contributed column, in the same order: `column`, the step's formula as
+  `expression_text` with its `substituted_text`, `result_value`, `not_computable_reason` and
+  `result_source` when the step's code assigns the column, else those null and
+  `result_value` the row's value; `reads`, each read column with the `sources` that
+  computed the value read (`node_id`, `column`, `before_code`), or `None` when the column's
+  inputs could not be told apart; `error`/`error_type` when evaluating the formula
+  failed), `identical_row_count` (the number of
   identical candidates when the step's row is one of several identical rows,
   else `None`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
@@ -260,6 +267,23 @@ continuation is never cached: every click proves again.
     the traced value's lineage over the enriched steps, and
     `_prune_to_column_relevance()` filters steps and tags each kept step's
     `column_relevant` and `contributed_columns` from that lineage.
+    `_attach_derivations()` then gives each kept step its `derivations`:
+    `column_derivation()` (`_trace_enrichment.py`) evaluates the step's formula for
+    each contributed column with the traced column's own machinery (`_formula_fields`,
+    shared with `_build_input_sources`), skipping a step read from a snapshot no
+    recompute reproduced, and the lineage supplies what the column read. While
+    deriving a column the walk notes each reference as this node's own value (an
+    earlier assignment, or a generated column read before the code), a generated
+    value the code later rewrote (`before_code`), or an input; an input is resolved
+    after the walk by routing that one column up the same routes the demand took
+    (`_route_edge_join` with a one-column set at a join), past nodes that only
+    carried it, to the nodes that computed it. An uncorrelated node ends the route as
+    the source; a column no route reaches has no source. A generated value the code
+    rewrote has its rule's reads followed for the demand but not reported, since the
+    row shows the later value. An in-place rule (a banding factor overwriting its input)
+    reads its input's value, never its own output. A node whose demand is every column
+    counts as computed each output column its code or rule writes, including one assigned
+    the value it already held (its schema shows no change), so a read resolves to it.
 11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
     retained value path into diagnostic-linked `TraceOmission` entries; benign
     graph/column pruning remains absent. In a column trace an unresolved node is on
@@ -970,7 +994,15 @@ integration/regression suites:
   assignment that kept the input value, a column reassigned after it was read, a
   window partition column, a ratio constraint's numerator and denominator, a
   multi-frame join base read through its edge's frame, and a coalesced full join's
-  differently named keys.
+  differently named keys. It also pins each step's `derivations` on the pricing
+  pipeline (the income formula reads the premium the scenario step already rescaled
+  and the cost step's burn cost; the rescale's own premium resolves through the join
+  side to the loaded prices; the apply reads its objective and constraint from the
+  scenario step; a loaded column has no formula and no reads), the `before_code`
+  source of a generated column the code reassigns, a value reassigned unchanged under
+  every-column demand read from the step that assigned it, rating and banding rules
+  never reading their own output, and join reads resolving to both sides of a
+  coalesced full-join key and to an uncorrelated join side.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for

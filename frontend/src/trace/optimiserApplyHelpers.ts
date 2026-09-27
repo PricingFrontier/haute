@@ -41,6 +41,17 @@ export function optimiserConstraintNames(
   return [...names]
 }
 
+/** The columns a constraint reads: its own, or a ratio constraint's numerator and denominator. */
+export function optimiserConstraintColumns(name: string, entry: unknown): string[] {
+  const spec = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>).spec : undefined
+  if (typeof spec === "object" && spec !== null) {
+    const { numerator, denominator } = spec as Record<string, unknown>
+    const parts = [numerator, denominator].filter((part): part is string => typeof part === "string" && part.length > 0)
+    if (parts.length > 0) return parts
+  }
+  return [name]
+}
+
 export function formatOptimiserRecordCell(
   values: Record<string, unknown> | undefined,
   names: string[],

@@ -953,6 +953,36 @@ class SchemaDiffResponse(BaseModel):
     columns_passed: list[str] = Field(default_factory=list)
 
 
+class TraceColumnSourceResponse(BaseModel):
+    node_id: str
+    column: str
+    # The value a node's rule generated before its code rewrote the column.
+    before_code: bool
+
+
+class TraceColumnReadResponse(BaseModel):
+    column: str
+    # The nodes that computed the value read: none when the walk found none,
+    # several when it may have come from any of them.
+    sources: list[TraceColumnSourceResponse]
+
+
+class TraceColumnDerivationResponse(BaseModel):
+    column: str
+    # The step's formula for the column, evaluated on the traced row; null for
+    # a column a rule computed or a source loaded.
+    expression_text: str | None
+    substituted_text: str | None
+    result_value: Any
+    not_computable_reason: str | None
+    result_source: str | None
+    # null when which inputs the column read could not be told apart.
+    reads: list[TraceColumnReadResponse] | None
+    # Set when evaluating the formula failed; the value is still the row's.
+    error: str | None
+    error_type: str | None
+
+
 class TraceStepResponse(BaseModel):
     node_id: str
     node_name: str
@@ -965,6 +995,8 @@ class TraceStepResponse(BaseModel):
     # In a column trace, the columns this step computes that the traced value
     # depends on; empty for a step that only carries them.
     contributed_columns: list[str]
+    # How the step computed each contributed column, and what it read.
+    derivations: list[TraceColumnDerivationResponse]
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None

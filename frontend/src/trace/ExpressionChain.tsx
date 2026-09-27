@@ -25,6 +25,31 @@ function EntryNote({ note }: { note: string | null | undefined }) {
  * InputSourceTree can reuse the same text layout for nested sub-sources
  * without re-drawing the top-level connector chrome.
  */
+function SourceLabel({ source, onSourceClick, linkLabel }: {
+  source: string
+  onSourceClick?: () => void
+  linkLabel?: string
+}) {
+  if (!onSourceClick) {
+    return <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
+  }
+  return (
+    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+      {" ("}
+      <button
+        type="button"
+        onClick={onSourceClick}
+        aria-label={linkLabel ?? `Go to ${source}`}
+        className="underline decoration-dotted underline-offset-2 hover:text-[var(--accent)]"
+        style={{ font: "inherit", color: "inherit" }}
+      >
+        {source}
+      </button>
+      {")"}
+    </span>
+  )
+}
+
 export function ExpressionChainRowContentView({
   column,
   formulaText,
@@ -32,7 +57,14 @@ export function ExpressionChainRowContentView({
   value,
   source,
   note,
-}: ChainBoxEntry) {
+  onSourceClick,
+  sourceLinkLabel,
+}: ChainBoxEntry & {
+  /** Makes the source label a link, for a source the panel can show. */
+  onSourceClick?: () => void
+  /** The link's accessible name, when the label text does not name its target. */
+  sourceLinkLabel?: string
+}) {
   const fVal = formatSmartValue(value)
   if (formulaText) {
     return (
@@ -41,9 +73,7 @@ export function ExpressionChainRowContentView({
         <div style={{ color: "var(--text-primary)" }}>
           <span style={{ fontWeight: 600 }}>{column}</span>
           <span style={{ color: "var(--text-secondary)" }}> = {formulaText}</span>
-          {source && (
-            <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
-          )}
+          {source && <SourceLabel source={source} onSourceClick={onSourceClick} linkLabel={sourceLinkLabel} />}
         </div>
         {/* Line 2: result = substituted values */}
         <div style={{ color: "var(--text-secondary)", ...tabularNums }}>
@@ -67,9 +97,7 @@ export function ExpressionChainRowContentView({
       >
         {fVal}
       </span>
-      {source && (
-        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
-      )}
+      {source && <SourceLabel source={source} onSourceClick={onSourceClick} linkLabel={sourceLinkLabel} />}
       <EntryNote note={note} />
     </div>
   )

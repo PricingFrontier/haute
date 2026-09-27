@@ -34,6 +34,7 @@ const VOLATILE_NODE_DATA_KEYS = new Set([
   "_traceActive",
   "_traceDimmed",
   "_hoverDimmed",
+  "_traceFocused",
   "_traceValue",
   "_traceMotionDisabled",
   "_diffStatus",
