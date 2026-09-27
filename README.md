@@ -16,13 +16,22 @@
 
 Haute is a free, open-source pricing engine. Build rating pipelines in a visual editor, train and score models, optimise prices, trace how any price was calculated, and deploy the result as a pricing API.
 
-Every pipeline is a plain Python file. Analysts build on the canvas and developers work in the code, on the same files, so pricing work gets version control, code review, testing and CI/CD like any other software. Because the engine is open source, your team can inspect exactly how prices are calculated and run pipelines on your own infrastructure.
-
 <!--
   Screenshot placeholder: the editor with a pricing pipeline on the canvas and a rating step's
   factor table open. README.md is also the PyPI page, so reference the image by absolute URL, e.g.
   <p align="center"><img src="https://raw.githubusercontent.com/PricingFrontier/haute/main/docs/assets/editor.png" alt="The Haute editor" width="900"></p>
 -->
+
+## Why Haute
+
+The rest of data science has moved to open-source tools, version control, automated testing and continuous deployment. Many pricing teams still work in expensive, closed platforms: the calculations are hard to inspect, the skills don't transfer, and releases rely on manual exports and hand-offs. Haute brings modern data science and engineering tooling to pricing teams, behind a visual editor.
+
+- **Plain Python, not a proprietary format.** Each pipeline is an ordinary Python file, with node settings in JSON files beside it. Analysts build on the canvas and developers work in the code: saving in the editor updates the files, and edits saved in an IDE show up in the editor. You can read, test and version pipelines like any other code, and they aren't tied to a vendor.
+- **Releases with guardrails.** One wrong factor can misprice a whole book, so releases go through CI/CD: every change is validated, deployed to staging and approved before it reaches production. Analysts push their changes and don't need Docker or cloud tools on their machines.
+- **Skills that transfer.** The step builder shows the Polars code it writes, and every pipeline is Python, so what analysts learn in Haute applies well beyond it.
+- **Open and inspectable.** The engine is open source, so your team can see exactly how prices are calculated and run pipelines on your own infrastructure.
+
+Haute is for pricing and actuarial teams who want to build, test and release their own pricing changes without waiting on engineering, and for teams moving off legacy platforms who want to keep their guardrails.
 
 ## Quick start
 
@@ -33,47 +42,6 @@ haute serve
 ```
 
 `haute init` scaffolds a project with its configuration, test quotes and CI/CD workflows, and `haute serve` opens the editor in your browser. The [getting started guide](https://pricingfrontier.github.io/haute/getting-started/) covers setup in more detail.
-
-## A pipeline is a Python file
-
-```python
-import haute
-import polars as pl
-
-pipeline = haute.Pipeline("motor_pricing")
-
-
-@pipeline.data_input(config="config/data_input/quotes.json")
-def quotes():
-    """Read the quote rows."""
-
-
-@pipeline.polars
-def features(quotes: pl.LazyFrame) -> pl.LazyFrame:
-    """Derive the rating features."""
-    df = quotes.with_columns(
-        vehicle_age=2026 - pl.col("vehicle_year"),
-        driver_band=pl.col("driver_age").cut([25, 40, 65]).cast(pl.String),
-    )
-    return df
-
-
-@pipeline.rating_step(config="config/rating_step/premium.json")
-def premium(features):
-    """Look up the rating factors and combine them into a premium."""
-
-
-@pipeline.output(config="config/quote_response/priced.json")
-def priced(premium):
-    """Return the priced quotes."""
-
-
-pipeline.connect("quotes", "features")
-pipeline.connect("features", "premium")
-pipeline.connect("premium", "priced")
-```
-
-Nodes that Haute configures for you, such as data inputs, rating steps and model scores, are declarations that point to a JSON settings file. Code you write is ordinary Polars. The canvas layout lives in a separate sidecar file, so the pipeline runs the same with or without the editor. Saving in the editor updates these files, and changes you save from your IDE show up in the editor.
 
 ## Features
 
@@ -98,7 +66,7 @@ Nodes that Haute configures for you, such as data inputs, rating steps and model
 ### Explain and collaborate
 
 - **Trace any price.** Click a cell to see how it was calculated: the path through the canvas, a waterfall of how the value built up, the factors each rating step chose, the band each value fell in, how a model's score breaks down, and how each input was derived.
-- **Git without the command line.** Every save is recorded. Group saves into milestones with a message and version label, work on branches, push to a shared remote and open any past version, all from the editor. Protected branches such as `main` can't be written to directly.
+- **Git without the command line.** Built for teams where not everyone knows Git. Every save is recorded; group saves into milestones with a message and version label, work on branches, push to a shared remote and open any past version, all from the editor. Protected branches such as `main` can't be written to directly.
 - **Assistant (early preview).** Describe an edit in plain language, and the assistant makes it through the editor's validated save path. Bring your own model through Anthropic, OpenAI or Databricks.
 
 <!--
@@ -109,7 +77,7 @@ Nodes that Haute configures for you, such as data inputs, rating steps and model
 
 ## Deploy a pricing API
 
-Analysts don't deploy from their own machines: releases run in CI/CD. `haute init` generates the workflows for GitHub Actions, GitLab CI or Azure DevOps, and those workflows run Haute's command-line steps:
+Analysts preview their changes in the editor and push them; everything after that runs in CI/CD. `haute init` generates the workflows for GitHub Actions, GitLab CI or Azure DevOps, and those workflows run Haute's command-line steps:
 
 1. **Validate.** Every change is checked with `haute lint`, and your test quotes are scored through the pipeline with `haute deploy --dry-run`, optionally against expected outputs within a tolerance.
 2. **Deploy to staging.** `haute deploy` packages the live scoring path, leaving out training and analysis branches, as an API that takes quotes and returns prices. A real deploy refuses to run outside CI.
