@@ -1781,7 +1781,74 @@ class TestEstimateRoute:
         assert "scenario_index" in detail
         assert "scenario_value" in detail
 
-    def test_frontier_auto_range_rejects_null_quote_id_before_deriving_ranges(
+    def test_frontier_auto_range_checks_values_per_batch_with_whole_frame_totals(
+        self,
+        scored_data,
+    ):
+        """Violations in different batches are totalled, and no whole-frame query runs."""
+        from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        volume = [float(i) for i in range(10)]
+        volume[2] = float("nan")
+        volume[8] = float("nan")
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": [f"q{i}" for i in range(10)],
+                "expected_income": [100.0] * 10,
+                "volume": volume,
+            }
+        )
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        _node, prepared = service._prepare_frontier_auto_range(body)
+        previous = current_streaming_chunk_size()
+        set_streaming_chunk_size(3)
+        try:
+            with (
+                patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
+                patch(
+                    "haute.routes._optimiser_input.validate_input_value_contracts",
+                    side_effect=AssertionError("auto-range must not run a whole-frame query"),
+                ),
+                pytest.raises(HTTPException) as exc_info,
+            ):
+                service._run_frontier_auto_range_job(body, job_id, **prepared)
+        finally:
+            set_streaming_chunk_size(previous)
+
+        assert exc_info.value.status_code == 400
+        # Rows 2 and 8 sit in different batches of 3; both are counted.
+        assert "'volume' (2 NaN rows)" in exc_info.value.detail
+        assert service.frontier_auto_range_status(job_id).status == "contract_error"
+
+    def test_frontier_auto_range_batches_carry_a_string_quote_id_without_a_categorical(
+        self,
+        scored_data,
+    ):
+        """No Categorical cast is built for auto-range: the quote id stays text end to end."""
+        from haute.routes._optimiser_input import validate_and_project_auto_range
+
+        source_lf = pl.LazyFrame(
+            {"quote_id": ["q1", "q2"], "expected_income": [1.0, 2.0], "volume": [1.0, 2.0]}
+        )
+        config = {
+            "objective": "expected_income",
+            "constraints": {"volume": {"min": 0.0}},
+            "quote_id": "quote_id",
+        }
+
+        _constraints, projected_lf, _check = validate_and_project_auto_range(source_lf, config)
+
+        assert projected_lf.collect_schema()["quote_id"] == pl.String
+        assert "Categorical" not in projected_lf.explain()
+
+    def test_frontier_auto_range_rejects_null_quote_id(
         self,
         scored_data,
     ):
@@ -1804,10 +1871,6 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            patch(
-                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
-                side_effect=AssertionError("range derivation should not run"),
-            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
@@ -1841,7 +1904,7 @@ class TestEstimateRoute:
             pytest.param("volume", float("-inf"), "'volume' (1 infinite row)", id="constraint-inf"),
         ],
     )
-    def test_frontier_auto_range_rejects_non_finite_values_before_deriving_ranges(
+    def test_frontier_auto_range_rejects_non_finite_values(
         self,
         scored_data,
         column,
@@ -1871,10 +1934,6 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            patch(
-                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
-                side_effect=AssertionError("range derivation should not run"),
-            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)
@@ -1895,7 +1954,7 @@ class TestEstimateRoute:
             pytest.param("volume", "'volume' (1 null row)", id="constraint-null"),
         ],
     )
-    def test_frontier_auto_range_rejects_null_values_before_deriving_ranges(
+    def test_frontier_auto_range_rejects_null_values(
         self,
         scored_data,
         column,
@@ -1927,10 +1986,6 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": source_lf}),
-            patch(
-                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
-                side_effect=AssertionError("range derivation should not run"),
-            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             service._run_frontier_auto_range_job(body, job_id, **prepared)

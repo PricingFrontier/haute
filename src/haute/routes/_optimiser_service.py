@@ -108,6 +108,7 @@ from haute.routes._job_store import (
 )
 from haute.routes._optimiser_input import (
     _NULL_QUOTE_ID_DETAIL_PREFIX,
+    AutoRangeValueCheck,
     OptimiserSetupError,
     _execution_stage,
     _explicit_chunk_size_from_config,
@@ -666,6 +667,7 @@ def _estimate_scenario_frontier_ranges(
     scored_lf: Any,
     quote_id_col: str,
     constraint_cols: list[str],
+    value_check: AutoRangeValueCheck | None = None,
     check_cancelled: Callable[[], None] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Return exact online achievable min/max totals from the scenario frame.
@@ -684,17 +686,30 @@ def _estimate_scenario_frontier_ranges(
     chunk_size = _positive_int(ctx.chunk_size, field="chunk_size")
     partition_count = _positive_int(ctx.partition_count, field="partition_count")
     execution_context = ctx.execution_context
-    selected_lf = scored_lf.select(_frontier_range_batch_columns(quote_id_col, constraint_cols))
+    range_columns = _frontier_range_batch_columns(quote_id_col, constraint_cols)
     # ``chunk_size`` is the per-batch row count for the auto-range reducer;
     # the underlying scan and collect stream at the process chunk size.
+    raw_batches = bounded_collect_batches(
+        scored_lf,
+        chunk_size=chunk_size,
+        maintain_order=False,
+        execution_context=execution_context,
+        stage_name="frontier_range_collect_batch",
+    )
+
+    def range_batches() -> Iterator[pl.DataFrame]:
+        # Each batch is value-checked before it is reduced; once a batch
+        # fails, later ones are still counted (for whole-frame totals) but no
+        # longer reduced, and the violation is raised after the last one.
+        for batch in raw_batches:
+            if value_check is not None and not value_check.add(batch):
+                continue
+            yield batch.select(range_columns)
+        if value_check is not None:
+            value_check.raise_if_invalid()
+
     return _reduce_frontier_range_batches(
-        bounded_collect_batches(
-            selected_lf,
-            chunk_size=chunk_size,
-            maintain_order=False,
-            execution_context=execution_context,
-            stage_name="frontier_range_collect_batch",
-        ),
+        range_batches(),
         quote_id_col=quote_id_col,
         constraint_cols=constraint_cols,
         partition_count=partition_count,
@@ -704,12 +719,16 @@ def _estimate_scenario_frontier_ranges(
 
 
 def _frontier_range_batch_columns(quote_id_col: str, constraint_cols: list[str]) -> list[Any]:
-    """The columns one range batch carries: the quote id as text, then each constraint."""
+    """The columns one range batch carries: the quote id as text, then each constraint as Float32.
+
+    Float32 is the solver's precision for constraint values, so the ranges
+    describe what the solver will see.
+    """
     import polars as pl
 
     return [
         pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
-        *[pl.col(cname) for cname in constraint_cols],
+        *[pl.col(cname).cast(pl.Float32) for cname in constraint_cols],
     ]
 
 
@@ -2486,7 +2505,7 @@ class OptimiserSolveService:
             expected_status="running",
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
-        constraint_cols, scored_lf = self._validate_and_project_auto_range(
+        constraint_cols, scored_lf, value_check = self._validate_and_project_auto_range(
             source_lf,
             config,
             job_id,
@@ -2506,17 +2525,21 @@ class OptimiserSolveService:
             expected_status="running",
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
-        return _estimate_scenario_frontier_ranges(
-            FrontierAutoRangeContext(
-                chunk_size=current_streaming_chunk_size(),
-                partition_count=partition_count,
-                execution_context=execution_context,
-            ),
-            scored_lf=scored_lf,
-            quote_id_col=str(config.get("quote_id", "quote_id")),
-            constraint_cols=constraint_cols,
-            check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
-        )
+        # A value-contract violation surfaces when the last batch is read,
+        # recorded as setup's refusal exactly as the solve records it.
+        with self._recorded_setup_failures(job_id, execution_context):
+            return _estimate_scenario_frontier_ranges(
+                FrontierAutoRangeContext(
+                    chunk_size=current_streaming_chunk_size(),
+                    partition_count=partition_count,
+                    execution_context=execution_context,
+                ),
+                scored_lf=scored_lf,
+                quote_id_col=str(config.get("quote_id", "quote_id")),
+                constraint_cols=constraint_cols,
+                value_check=value_check,
+                check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+            )
 
     def _frontier_ranges_in_worker(
         self,
@@ -3118,14 +3141,10 @@ class OptimiserSolveService:
         job_id: str,
         *,
         execution_context: ExecutionContext | None = None,
-    ) -> tuple[list[str], Any]:
-        """Validate and project only the columns auto-range needs."""
+    ) -> tuple[list[str], Any, AutoRangeValueCheck]:
+        """Check auto-range's schema and project only the columns it reads."""
         with self._recorded_setup_failures(job_id, execution_context):
-            return validate_and_project_auto_range(
-                source_lf,
-                config,
-                execution_context=execution_context,
-            )
+            return validate_and_project_auto_range(source_lf, config)
 
     @staticmethod
     def _extract_factors(

@@ -492,9 +492,17 @@ these as arguments and never recompute them.
   failed job never leaves its memory reservation to garbage collection. An admission refusal is
   the job's `memory_limited`. In thread mode, or inside the worker, `_frontier_ranges` runs
   `_run_optimiser_input_stage` (`_execute_pipeline` under the setup seed plan with the solve's
-  demand, then `_resolve_data_input_frame`), validates and projects the constraint columns
-  (`_validate_and_project_auto_range`), and passes the projected frame to
-  `_estimate_scenario_frontier_ranges`, which reads it through `bounded_collect_batches` in
+  demand, then `_resolve_data_input_frame`), checks the schema and projects the quote id, the
+  objective (when present) and the constraints in their source dtypes
+  (`_validate_and_project_auto_range`, returning an `AutoRangeValueCheck`), and passes the
+  projected frame to `_estimate_scenario_frontier_ranges`. Values are checked per batch, not in a
+  whole-frame query: `AutoRangeValueCheck.add` evaluates the solver's value-contract expressions
+  (null quote ids, NaN, infinite and null values, Float32 overflow) on each batch and totals the
+  counts; once a batch fails, later batches are still counted but no longer reduced, and after the
+  last batch `raise_if_invalid` raises the solver's message with whole-frame totals, recorded as
+  setup's refusal. The quote id keeps its dtype (no Categorical round trip); each reduced batch
+  carries it as String and the constraints as Float32 (`_frontier_range_batch_columns`).
+  `_estimate_scenario_frontier_ranges` reads the frame through `bounded_collect_batches` in
   batches of `current_streaming_chunk_size()` rows (the Pipeline Settings streaming chunk size; a
   worker inherits it through `POLARS_STREAMING_CHUNK_SIZE`, and optimiser config has no auto-range
   size key) and feeds `_reduce_frontier_range_batches`, which reduces every batch into
