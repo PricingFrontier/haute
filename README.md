@@ -117,7 +117,7 @@ Nodes that Haute configures for you, such as data inputs, rating steps and model
 | **Docker** | Builds a serving image (`POST /quote`, `GET /health`) and optionally pushes it to a registry for your team to run. |
 | **Azure Container Apps / AWS ECS / GCP Cloud Run** | Builds and pushes the image; pointing the running service at it is a manual step for now. |
 
-`haute init` also generates CI/CD for GitHub Actions, GitLab CI or Azure DevOps. The workflow deploys to staging, smoke-tests it and writes an impact report comparing staging with production, then leaves the production release as a manual step. For the three container clouds it stops after pushing the image.
+`haute init` also generates CI/CD for GitHub Actions, GitLab CI or Azure DevOps. For Databricks, the workflow deploys to staging, smoke-tests it and writes an impact report comparing staging with production; the production release is a separate step that someone approves. For the three container clouds it stops after pushing the image.
 
 Generic MLflow (pyfunc) models can be scored in the editor but not yet deployed. See the [deployment documentation](https://pricingfrontier.github.io/haute/deployment/) for targets and release workflows.
 
