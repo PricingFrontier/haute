@@ -752,8 +752,11 @@ def _merge_seed_continuations(
     """
     proven: set[str] = set()
     reported: set[str] = set()
-    superseded: set[str] = set()
-    trace_evidence = len(diagnostics)
+    # Each node a continuation resolved after an earlier path failed on it, with
+    # the diagnostics count then: the evidence before it is superseded.
+    superseded: dict[str, int] = {}
+    # A node two paths gave different rows stays unshown for the whole trace.
+    conflicted: set[str] = set()
     for continuation in sorted(continuations, key=lambda item: item.reason is not None):
         seed_id = continuation.seed_id
         if continuation.reason is None:
@@ -762,6 +765,8 @@ def _merge_seed_continuations(
             for node_id in continuation.ancestors:
                 row = continuation.rows.get(node_id)
                 existing = cached_rows.get(node_id)
+                if node_id in conflicted:
+                    continue
                 if row is None:
                     if (
                         existing is None
@@ -772,6 +777,7 @@ def _merge_seed_continuations(
                     continue
                 if existing is not None:
                     if existing != row:
+                        conflicted.add(node_id)
                         cached_rows[node_id] = None
                         row_positions.pop(node_id, None)
                         diagnostics.append(
@@ -780,7 +786,7 @@ def _merge_seed_continuations(
                         unresolved[node_id] = ("ancestor_row_conflict", len(diagnostics) - 1)
                     continue
                 if node_id in unresolved:
-                    superseded.add(node_id)
+                    superseded[node_id] = len(diagnostics)
                     del unresolved[node_id]
                 cached_rows[node_id] = row
                 if node_id in continuation.positions:
@@ -822,7 +828,7 @@ def _merge_seed_continuations(
             unresolved[node_id] = (reason, len(diagnostics) - 1)
             reported.add(node_id)
     if superseded:
-        _drop_superseded_diagnostics(diagnostics, unresolved, superseded, before=trace_evidence)
+        _drop_superseded_diagnostics(diagnostics, unresolved, superseded)
     return frozenset(proven), frozenset(reported)
 
 
@@ -846,16 +852,19 @@ def _ancestor_conflict_diagnostic(
 def _drop_superseded_diagnostics(
     diagnostics: list[dict[str, Any]],
     unresolved: dict[str, tuple[str, int]],
-    node_ids: set[str],
-    *,
-    before: int,
+    superseded: Mapping[str, int],
 ) -> None:
-    """Remove the trace's failed-attempt evidence (entries before *before*) for
-    nodes a continuation resolved, keeping every omission's link valid."""
+    """Remove failed-attempt evidence for nodes a continuation later resolved.
+
+    *superseded* maps each such node to the diagnostics count when it was
+    resolved; its entries before that point are dropped, and every omission's
+    link is kept valid.
+    """
     kept: list[dict[str, Any]] = []
     index_of: dict[int, int] = {}
     for index, diagnostic in enumerate(diagnostics):
-        if index < before and diagnostic.get("node_id") in node_ids:
+        node_id = diagnostic.get("node_id")
+        if isinstance(node_id, str) and index < superseded.get(node_id, -1):
             continue
         index_of[index] = len(kept)
         kept.append(diagnostic)

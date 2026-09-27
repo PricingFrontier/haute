@@ -1088,3 +1088,54 @@ def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evid
     assert "B" not in unresolved
     assert [diagnostic["node_id"] for diagnostic in diagnostics] == ["C", "A"]
     assert diagnostics[unresolved["C"][1]]["node_id"] == "C"
+
+
+def test_a_conflict_stays_final_and_a_later_continuation_supersedes_an_earlier_failure() -> None:
+    from types import SimpleNamespace
+
+    from haute.trace import _merge_seed_continuations, _SeedContinuation
+
+    node_map = {
+        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
+        for node_id in ("S1", "S2", "A", "B")
+    }
+    cached_rows: dict = {"A": {"id": 1}}
+    diagnostics: list = []
+    unresolved: dict = {}
+    first = _SeedContinuation(
+        seed_id="S1",
+        ancestors=("A", "B"),
+        parents_of={},
+        rows={"A": {"id": 2}, "B": None},
+        diagnostics=[{"code": "ambiguous_row_match", "node_id": "B", "severity": "warning"}],
+        unresolved={"B": ("duplicate_exact_match", 0)},
+    )
+    # The second seed reaches the trace's own ``A`` row, and proves ``B``.
+    second = _SeedContinuation(
+        seed_id="S2",
+        ancestors=("A", "B"),
+        parents_of={},
+        rows={"A": {"id": 1}, "B": {"id": 7}},
+    )
+
+    proven, _reported = _merge_seed_continuations(
+        [first, second],
+        node_map=node_map,
+        cached_rows=cached_rows,
+        row_positions={},
+        frames={},
+        row_frames={},
+        diagnostics=diagnostics,
+        unresolved=unresolved,
+    )
+
+    assert proven == {"S1", "S2"}
+    # Once two paths disagree about ``A``, no later path reinstates a row.
+    assert cached_rows["A"] is None
+    assert unresolved["A"][0] == "ancestor_row_conflict"
+    # ``B`` failed through the first seed but is proven through the second:
+    # it is traced, and the first seed's failed evidence is gone.
+    assert cached_rows["B"] == {"id": 7}
+    assert "B" not in unresolved
+    assert [diagnostic["code"] for diagnostic in diagnostics] == ["ancestor_row_conflict"]
+    assert diagnostics[unresolved["A"][1]]["node_id"] == "A"

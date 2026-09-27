@@ -2461,7 +2461,8 @@ class RowScopeResolver:
         """Return the join keys no row of an Edge Join's join side matched, or ``None``.
 
         Only a strategy that keeps a base row without a join-side match can
-        emit one; a null key matches no row. The join side's keys are probed
+        emit one; a null base key matches no row, which proves a miss only
+        where every base row survives (left, anti). The join side's keys are probed
         with the base row's key values, so a row whose key matched but whose
         other values do not is not reported as a miss.
         """
@@ -2476,7 +2477,10 @@ class RowScopeResolver:
             return None
         keys = {right_key: child_row[left_key] for left_key, right_key in pairs}
         if any(value is None for value in keys.values()):
-            return keys
+            # Every base row survives a left or anti join, so a null base key
+            # is a base row that joined nothing. A full join's null base key
+            # may be a join-side-only row instead: that proves nothing.
+            return keys if join_kwargs["how"] in {"left", "anti"} else None
         found = self.lookup(parent_id, source_handle, keys)
         return keys if found is not None and found.height == 0 else None
 
@@ -2583,8 +2587,14 @@ class RowScopeResolver:
                 for name, value in carried.items()
                 if value is not None and (name not in other_columns or name in input_join_keys)
             }
-        # A program ending in ``group_by().agg()`` summarises every row sharing its keys.
-        return _CarriedValues(carried, {}, aggregated=proof.carried_only is not None)
+        # A grouping that reads every input row aggregates exactly the rows
+        # sharing all its keys — provided every key is carried unchanged.
+        aggregated = (
+            proof.whole_groups
+            and proof.carried_only is not None
+            and proof.carried_only == frozenset(carried)
+        )
+        return _CarriedValues(carried, {}, aggregated=aggregated)
 
     def _code_input_schemas(
         self,

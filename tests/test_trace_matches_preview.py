@@ -1325,6 +1325,75 @@ class TestLimitedPreviewTrace:
         assert single.omissions == []
         assert _step_by_id(single, "src").output_values == {"quote_id": "b", "amount": 5.0}
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Only two of the quote's three rows reach the grouping.
+            "df = src.filter(pl.col('amount') > 10).group_by('quote_id')"
+            ".agg(pl.col('amount').sum())",
+            # The band key is rewritten, so rows sharing the quote id span groups.
+            "df = src.with_columns(pl.col('band') // 10).group_by(['quote_id', 'band'])"
+            ".agg(pl.col('amount').sum())",
+        ],
+        ids=["filtered", "rewritten_key"],
+    )
+    def test_a_grouped_row_is_not_claimed_to_aggregate_rows_it_may_not_hold(self, tmp_path, code):
+        path = tmp_path / "claims.parquet"
+        pl.DataFrame(
+            {"quote_id": ["a", "a", "a"], "band": [11, 15, 25], "amount": [10, 20, 30]}
+        ).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(path)), _transform_node("claims", code)],
+                "edges": [_edge("src", "claims")],
+            }
+        )
+
+        _row, result = self._trace(graph, "claims", 0, row_limit=5, column=None)
+
+        assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+            ("src", "duplicate_exact_match")
+        ]
+
+    def test_a_full_join_right_only_row_is_never_called_a_join_miss(self, tmp_path):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": [0, 1]}).write_parquet(base_path)
+        pl.DataFrame({"id": [0, 2], "premium": [0.0, 20.0]}).write_parquet(lookup_path)
+        # The right-only row keeps a null base key, and its own key is dropped.
+        config = {
+            "how": "full",
+            "on": ["id"],
+            "coalesce": False,
+            "selected_columns": ["id", "premium"],
+        }
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _source_node("lookup", str(lookup_path)),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(label="join", nodeType=NodeType.EDGE_JOIN, config=config),
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+        rows = execute_graph(graph, target_node_id="join", row_limit=5)["join"].preview
+        right_only = rows.index({"id": None, "premium": 20.0})
+
+        row, result = self._trace(graph, "join", right_only, row_limit=5, column=None)
+
+        assert row == {"id": None, "premium": 20.0}
+        # The lookup side supplied this row: failing to name it is a gap.
+        assert "join_no_match" not in {omission.reason for omission in result.omissions}
+
     def test_a_join_that_found_no_row_is_reported_as_no_match(self, tmp_path):
         from haute._types import GraphNode, NodeData, NodeType
 

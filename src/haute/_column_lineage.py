@@ -3199,6 +3199,9 @@ class CarriedColumnProof:
     assigned: frozenset[str]
     join_keys: Mapping[str, frozenset[str]]
     carried_only: frozenset[str] | None = None
+    whole_groups: bool = False
+    """The program's one grouping reads every root-input row: each output row
+    aggregates exactly the input rows sharing all its keys."""
 
 
 # Frame methods that never change a surviving row's values.
@@ -3206,6 +3209,22 @@ _VALUE_PRESERVING_FRAME_METHODS = frozenset(
     {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop", "drop_nulls", "lazy"}
 )
 _ASSIGNING_FRAME_METHODS = frozenset({"with_columns", "with_columns_seq"})
+# Frame methods that may drop, duplicate, or reshape rows: a grouping after one
+# does not aggregate every input row sharing its keys.
+_ROW_CHANGING_FRAME_METHODS = frozenset(
+    {
+        "filter",
+        "head",
+        "tail",
+        "limit",
+        "slice",
+        "unique",
+        "drop_nulls",
+        "select",
+        "join",
+        "cross_join",
+    }
+)
 _ROW_PRESERVING_JOINS = frozenset({"inner", "left", "semi", "anti"})
 _ALLOWED_JOIN_OPTIONS = frozenset(
     {"on", "left_on", "right_on", "how", "suffix", "validate", "coalesce", "maintain_order"}
@@ -3454,6 +3473,9 @@ def carried_column_proof(
         else {column for columns in input_columns.values() for column in columns}
     )
     frame_changed = False
+    rows_intact = True
+    grouped = False
+    whole_groups = False
     for statement in tree.body:
         if isinstance(statement, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
@@ -3483,6 +3505,8 @@ def carried_column_proof(
             call = calls[index]
             assert isinstance(call.func, ast.Attribute)
             method = call.func.attr
+            if method in _ROW_CHANGING_FRAME_METHODS:
+                rows_intact = False
             if method in _VALUE_PRESERVING_FRAME_METHODS:
                 pass
             elif method in _ASSIGNING_FRAME_METHODS or method == "select":
@@ -3622,6 +3646,9 @@ def carried_column_proof(
                 carried_only = (
                     set(group_keys) if carried_only is None else carried_only & set(group_keys)
                 )
+                whole_groups = rows_intact and not grouped
+                grouped = True
+                rows_intact = False
                 frame_changed = True
                 index += 1
             else:
@@ -3636,6 +3663,7 @@ def carried_column_proof(
         frozenset(assigned),
         MappingProxyType(dict(join_keys)),
         None if carried_only is None else frozenset(carried_only),
+        whole_groups,
     )
 
 

@@ -139,14 +139,16 @@ Out of scope (owned elsewhere, linked where relevant):
   children that read that frame.
 - **A join that found no row is a fact, not a gap.** When an Edge Join that keeps
   unmatched base rows (`left`, `full`, `anti`) found no join-side row for the traced
-  row — no join-side row has the base row's key values, or a key is null — the join
+  row — no join-side row has the base row's key values, or (for `left` and `anti`,
+  where every base row survives) a key is null — the join
   side is reported as an informational `join_no_match` omission (an unsold quote's
   policy, a quote with no claims) rather than as a correlation failure.
-- **A grouped row is an aggregate, not a gap.** Code that ends in
-  `group_by(...).agg(...)` summarises every input row sharing its keys. When
-  several input rows share the traced row's keys, the input is reported as an
-  informational `aggregated_rows` omission naming the keys and how many input rows
-  share them; a group of one input row resolves to that row.
+- **A grouped row is an aggregate, not a gap.** Code whose one grouping reads every
+  input row (nothing before it filters, slices, deduplicates, selects, or joins) and
+  keeps every group key unchanged summarises exactly the input rows sharing its keys.
+  When several do, the input is reported as an informational `aggregated_rows` omission
+  naming the keys and how many input rows share them; a group of one input row resolves
+  to that row. Any other grouping leaves the ambiguity a gap.
 - **Head frames are matched on carried values too.** A parent matched in its head
   frame is matched on the values its child provably carried through unchanged, as a
   lookup is, so a column the child's code rewrote (`fill_null`) is left out of the

@@ -3414,6 +3414,30 @@ def test_carried_proof_names_the_columns_a_literal_name_list_writes(
 
 
 @pytest.mark.parametrize(
+    ("code", "whole_groups"),
+    [
+        ("df = src.group_by('k').agg(pl.col('x').sum())", True),
+        ("df = src.sort('x').with_columns(y=pl.col('x') * 2).group_by('k').agg(pl.len())", True),
+        ("df = src.filter(pl.col('x') > 0).group_by('k').agg(pl.len())", False),
+        ("df = src.unique().group_by('k').agg(pl.len())", False),
+        ("df = src.head(5).group_by('k').agg(pl.len())", False),
+        ("df = src.select('k', 'x').group_by('k').agg(pl.len())", False),
+        ("df = src.join(other, on='k').group_by('k').agg(pl.len())", False),
+        ("df = src.group_by('k').agg(pl.len()).group_by('k').agg(pl.len())", False),
+    ],
+)
+def test_carried_proof_says_whether_its_grouping_reads_every_input_row(
+    code: str, whole_groups: bool
+) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof(code, ("src", "other"))
+
+    assert proof is not None
+    assert proof.whole_groups is whole_groups
+
+
+@pytest.mark.parametrize(
     "code",
     [
         # A ``.name`` step before the last one renames what the list names.

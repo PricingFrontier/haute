@@ -168,7 +168,9 @@ row resolved is continued on its own, never as a union with another seed's ances
    recorded as unique. Its rows, positions, looked-up frames, multi-frame `row_frames`,
    diagnostics, and unresolved nodes (ordinary correlation omissions) merge into the trace
    for ancestors only. An ancestor another path already resolved must hold the same row;
-   otherwise it is an `ancestor_row_conflict` omission.
+   otherwise it is an `ancestor_row_conflict` omission that no later path overrides. An
+   ancestor a continuation resolves after another path failed on it drops that failed
+   attempt's evidence.
 
 Any other exception in these steps is `seed_recompute_failed`, logged with its traceback,
 with its type and message in the diagnostic; `ExecutionCancelledError` and
@@ -364,13 +366,15 @@ the limited preview shows rather than independent source samples.
    The resolver records in `row_frames` the frame each resolved multi-frame node's row
    came from. A join-role port of an Edge Join whose `how` is `left`, `full`, or `anti`
    whose lookup found no row is probed by `_unmatched_join_keys`: the join side's keys
-   looked up with the base row's key values (the child's left keys). No row, or a null
-   key (which joins nothing), proves the join found no row: the port records a
+   looked up with the base row's key values (the child's left keys). No row, or — for
+   `left` and `anti`, where every base row survives — a null key (which joins nothing),
+   proves the join found no row; a full join's null base key may be a join-side-only row
+   and proves nothing. The port then records a
    `join_no_match` diagnostic (severity `info`, reason `join_no_match`, the key columns
    in `match_columns`) instead of `row_match_not_found`, so the omission is informational.
    A key that matched a row whose other carried values differ remains an ordinary miss.
-   A child whose proof carries only group keys (its program ends in `group_by().agg()`,
-   `_CarriedValues.aggregated`) and whose lookup found several rows records an
+   A child whose proof reports `whole_groups` and carries every group key
+   (`_CarriedValues.aggregated`) and whose lookup found several rows records an
    `aggregated_rows` diagnostic (severity `info`, the keys in `match_columns`, and in
    `candidate_count` and `matched_row_count` the plan's rows sharing them, counted by
    `count_rows`) instead of the ambiguity; identical candidates keep the
@@ -425,7 +429,9 @@ the limited preview shows rather than independent source samples.
      fails the proof;
    - a literal `group_by(...).agg(...)` carries only its keys; a literal boolean
      `maintain_order` keyword is allowed, and any other keyword (a named computed key)
-     fails the proof;
+     fails the proof. The proof reports `whole_groups` when it is the program's only
+     grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,
+     so each group holds exactly the input rows sharing its keys;
    - an output whose name the syntax cannot fix — a regex or wildcard column outside a
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
@@ -889,8 +895,9 @@ integration/regression suites:
   moved (`seed_inputs_changed`); a seed whose own row is unresolved building nothing above
   it; one refused seed not hiding what another seed's recompute traced; the context's
   projection plan left in place after a reproduced, refused, and failed recompute; and the
-  merge never overwriting a row another path resolved (`ancestor_row_conflict`) while
-  dropping the evidence of the attempt a continuation superseded.
+  merge never overwriting a row another path resolved (`ancestor_row_conflict`, final
+  for the trace even when a later seed agrees with one side) while dropping the evidence
+  of any earlier attempt a continuation superseded.
 
 - **`tests/test_trace.py`** — core unit coverage of `execute_trace`,
   `SchemaDiff`/`TraceResult`/`TraceStep`, and `_find_matching_row` directly
@@ -913,7 +920,9 @@ integration/regression suites:
   and trace calls. `TestLimitedPreviewTrace` traces rows of a target-only limited
   preview: a joined value to its lookup row with and without `maintainOrder`, a filtered
   row past the source prefix, a grouped row's source rows reported as `aggregated_rows`
-  with their count (a group of one resolved to its row), a head-frame parent matched on
+  with their count (a group of one resolved to its row) but left ambiguous when a filter
+  or a rewritten key means they need not all be in its group, a full join's right-only
+  row never called a join miss, a head-frame parent matched on
   its child's carried values with no relaxed match, order-
   preserving lineage from head frames with no lookup, code below an unordered join through
   its carried columns (and `row_scope_unproven` when the carried key is rewritten), a later
