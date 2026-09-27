@@ -16,6 +16,8 @@ wrong. Current rating behaviour is specified in
 | BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
 | BUG-03 | Planned | P3 | The ratebook optimiser settings nothing reads are gone. |
+| BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
+| BUG-05 | Planned | P3 | The Data Input editor describes the Databricks query field as the SELECT clause it is. |
 
 ## Planned improvements
 
@@ -32,15 +34,18 @@ every table from `factors`, `factorDtypes`, `outputColumn`, `defaultValue` and
 `entries` only. Any edit of the node in the editor (a factor, an entry, the
 default, adding or removing a table) therefore removes an `onMissing` set in
 the pipeline, with no message, and a table that was set to `"neutral"` fails
-the run on its next miss.
+the run on its next miss. The same rebuild gives a table with no
+`defaultValue` the default `"1.0"`, so a table written to fail on a miss
+starts pricing misses at 1.0 after an unrelated edit.
 
-**Plan:** Carry `onMissing` through `normaliseRatingTable`, and show it in the
-table editor beside Default, where it applies only while Default is empty.
+**Plan:** Carry `onMissing` through `normaliseRatingTable`, keep an absent
+`defaultValue` absent, and show `onMissing` in the table editor beside Default,
+where it applies only while Default is empty.
 
 **Acceptance:** A frontend test edits an entry of a table configured with
-`onMissing: "neutral"` and the committed config still carries it; the editor
-shows the setting and changes it; the rating specification names the
-control.
+`onMissing: "neutral"` and no `defaultValue`, and the committed config still
+has that `onMissing` and no `defaultValue`; the editor shows the setting and
+changes it; the rating specification names the control.
 
 **Dependencies:** None to stop the loss; the control's placement follows
 `BUG-02`.
@@ -99,3 +104,47 @@ classification tests pass.
 `src/haute/_node_config_recovery.py`;
 `src/haute/routes/_optimiser_solver.py` (`RatebookOptimiser(`);
 `docs/building-models/nodes/optimiser.md`.
+
+### BUG-04 — A pickled XGBoost or LightGBM model loads in a Load File node
+**Why:** Load File reads pickle and joblib files through an exact allowlist of
+classes. The list names XGBoost's `XGBRegressor`, `XGBClassifier` and
+`XGBModel` and LightGBM's `LGBMRegressor`, `LGBMClassifier` and `LGBMModel`,
+but not the booster each of them pickles inside itself
+(`xgboost.core.Booster`, `lightgbm.basic.Booster`). Loading a pickled
+`XGBRegressor` or `LGBMRegressor` through `safe_unpickle` fails with "Blocked
+unpickling of xgboost.core.Booster" (or `lightgbm.basic.Booster`), so the
+listed entries can never load and the list claims support that does not
+exist. The Load File page now says these pickles fail.
+
+**Plan:** Decide whether Load File supports these models. If it does, add the
+two booster classes (and whatever else their pickles reference) and prove a
+pickled regressor and classifier of each library load and predict; if it does
+not, remove the wrapper entries so the refusal names the model class.
+
+**Acceptance:** A test pickles an `XGBRegressor` and an `LGBMRegressor` into a
+project folder and loads each through `safe_unpickle`: both load and predict,
+or both are refused naming their own class; the Load File page matches.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_sandbox.py` (`_ALLOWED_PICKLE_CLASSES`,
+`safe_unpickle`); `docs/building-models/nodes/external-file.md`.
+
+### BUG-05 — The Databricks query field says what it accepts
+**Why:** For a Databricks Data Input, `query` is only a SELECT clause: Haute
+appends `FROM <table>`, and a query with `FROM`, a semicolon, a comment or a
+write keyword is refused. The editor's hint calls the field an "Optional
+projection/filter clause", but a filter (`WHERE`) cannot work there, because
+it would come before the `FROM` Haute appends.
+
+**Plan:** Reword the hint to say the field takes a `SELECT` list of columns and
+Haute adds `FROM` and the table.
+
+**Acceptance:** The hint names a SELECT clause without FROM; the Data Input
+editor's test pins the wording.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/DataInputEditor.tsx` (the
+Databricks query hint); `src/haute/_databricks_io.py` (the SELECT validation);
+`docs/building-models/nodes/data-input.md`.
