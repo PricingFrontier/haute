@@ -31,16 +31,21 @@ const INVERSE_LINK_LABELS: Record<string, string> = { log: "exp", logit: "invers
 /**
  * The response-scale prediction of a link-function model, whose contribution
  * ladder sums to the linear predictor. Null when the ladder already ends on the
- * response scale (identity link, or no link reported).
+ * response scale (identity link, or no link reported). A classifier's response
+ * is its probability, not the class label its prediction column holds.
  */
 export function modelScoreLinkedPrediction(
   explanation: ModelScoreExplanationDetail | undefined,
-): { inverseLink: string; value: number } | null {
+): { inverseLink: string; isProbability: boolean; value: number } | null {
   const link = explanation?.link ?? explanation?.link_function
   if (!link || link === "identity") return null
-  const value = explanation?.prediction_value ?? explanation?.model_prediction_value
+  const value = explanation?.model_prediction_value ?? explanation?.prediction_value
   if (typeof value !== "number" || !Number.isFinite(value)) return null
-  return { inverseLink: INVERSE_LINK_LABELS[link] ?? `inverse ${link}`, value }
+  return {
+    inverseLink: INVERSE_LINK_LABELS[link] ?? `inverse ${link}`,
+    isProbability: explanation?.prediction_space === "probability",
+    value,
+  }
 }
 
 export function modelScoreFeatureColumns(detail: ModelScoreNodeDetail): string[] {

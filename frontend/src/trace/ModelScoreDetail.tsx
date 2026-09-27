@@ -178,9 +178,11 @@ export function ModelScoreDetailBlock({ detail }: {
                 className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 font-mono text-[10px] font-semibold"
                 data-testid="model-score-ladder-row"
               >
-                <span style={{ color: "var(--text-primary)" }}>Prediction</span>
+                <span style={{ color: "var(--text-primary)" }}>
+                  {linkedPrediction.isProbability ? "Probability" : "Prediction"}
+                </span>
                 <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
-                  {predictionColumn ?? ""}
+                  {linkedPrediction.isProbability ? "" : predictionColumn ?? ""}
                 </span>
                 <span className="text-right" style={{ color: "var(--text-muted)" }}>
                   {linkedPrediction.inverseLink}
