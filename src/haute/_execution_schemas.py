@@ -207,10 +207,8 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         "optimiser_setup",
         "optimiser_solve",
         "explore_analysis",
-        "auto_range",
         "deploy_live",
         "deploy_batch",
-        "chunked_map_reduce",
         "node_snapshot",
     ]
     boundedness: Literal["bounded", "unbounded", "unknown"]

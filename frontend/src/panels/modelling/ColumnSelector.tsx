@@ -30,7 +30,8 @@ export function ColumnSelector({
   const optionRefs = useRef<Array<HTMLLIElement | null>>([])
   const animationFrame = useRef<number | null>(null)
   const known = columns.some((column) => column.name === value)
-  const unavailable = value !== "" && !known
+  // A saved value is only flagged once the columns have arrived.
+  const unavailable = value !== "" && columns.length > 0 && !known
   const options = useMemo(() => {
     const needle = query.trim().toLowerCase()
     const matching = columns.filter(

@@ -1283,15 +1283,42 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
+        schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
         feature_contract_path=config.get("feature_contract_path") or None,
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
         mlflow_destination=str(config.get("mlflow_destination", "") or ""),
         alias=str(config.get("alias", "") or ""),
+        input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
     )
 
     return ctx.func_name, scorer.score, False
+
+
+def _upstream_scenario_fanout(
+    upstream_ids: list[str] | None,
+    node_map: dict[str, GraphNode] | None,
+) -> int:
+    """The product of the scenario expanders' step counts above a node.
+
+    An upper bound on how many rows the node's input holds per source row:
+    expanders on separate branches multiply too. A config the expander itself
+    would refuse counts as 1.
+    """
+    from haute._node_apply import scenario_step_count
+    from haute.errors import ConfigError
+
+    fanout = 1
+    for node_id in upstream_ids or ():
+        node = (node_map or {}).get(node_id)
+        if node is None or node.data.nodeType != NodeType.SCENARIO_EXPANDER:
+            continue
+        try:
+            fanout *= scenario_step_count(node.data.config)
+        except (ConfigError, TypeError, ValueError, OverflowError):
+            continue
+    return fanout
 
 
 @_register(NodeType.POLARS, recompute_cost="code", opaque=True)

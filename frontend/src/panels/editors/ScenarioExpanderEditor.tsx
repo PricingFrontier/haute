@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
-import { CommittedTextField } from "../../components/form"
+import { CommittedTextField, SavedValueOption } from "../../components/form"
 
 type ScenarioRangeNumberField = "min_value" | "max_value"
 type ScenarioRangeDraftState = {
@@ -177,6 +177,7 @@ export default function ScenarioExpanderEditor({
             onChange={(e) => onUpdate("quote_id", e.target.value)}
           >
             <option value="">-- select column --</option>
+            <SavedValueOption value={quoteId} options={upstreamColumns.map((c) => c.name)} />
             {upstreamColumns.map((c) => (
               <option key={c.name} value={c.name}>{c.name}</option>
             ))}

@@ -55,9 +55,9 @@ when its estimate fits the workflow's admitted memory headroom. Deploy estimates
 injected request data directly rather than requiring the original development-time
 source to remain readable.
 
-Haute never computes a global operation independently in each generic chunk. When a
-workflow uses chunking, it executes the global operation once under the same admission
-contract and chunks only a proven row-local suffix. If the estimate is too large,
+Haute never computes a global operation independently in each generic chunk. A bounded
+write slices a node only when its code is proven row-local; a global operation always
+runs once, under the same admission contract. If the estimate is too large,
 Haute returns a typed memory/admission diagnostic rather than producing a partial or
 approximate result.
 

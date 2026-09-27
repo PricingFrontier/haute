@@ -504,6 +504,14 @@ def model_score_whole_output() -> Iterator[None]:
         _score_whole_output.reset(token)
 
 
+# How many rows the scored frame holds per row of the source it is read from:
+# the product of the scenario expansions between them (1: none). The input
+# sink reads that source in proportionally smaller chunks.
+_score_input_fanout: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "haute_model_score_input_fanout", default=1
+)
+
+
 def _claim_score_output_destination() -> ScoreOutputDestination | None:
     destination = _score_output_destination.get()
     if destination is None or destination.used:
@@ -1333,6 +1341,7 @@ def _run_score_pipeline(
     extra_dfs: tuple[_Frame, ...] = (),
     source: str = "live",
     row_limit: int | None = None,
+    schema_only: bool = False,
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
@@ -1358,6 +1367,11 @@ def _run_score_pipeline(
         ``"live"`` → eager path; anything else → batched path.
     row_limit
         When set, forces the eager path regardless of source.
+    schema_only
+        The caller only needs the scored frame's schema
+        (``execute_lazy_graph(schema_only=True)``): score through the lazy
+        row-local scan, which reads no input rows until collected, never the
+        batched path that sinks and scores the whole input at build time.
     offset_column
         Offset column from the feature contract, when the caller has one.
         Authoritative over the model's self-description — the only offset
@@ -1397,7 +1411,7 @@ def _run_score_pipeline(
 
     # A captured scorer scores every row whatever the preview limit; the
     # batched path keeps that to one batch in memory at a time.
-    if row_limit and not (source != "live" and _score_whole_output.get()):
+    if schema_only or (row_limit and not (source != "live" and _score_whole_output.get())):
         result_lf = _score_row_local_scan(
             scoring_model,
             lf,
@@ -1549,6 +1563,9 @@ class ModelScorer:
         else uses the batched parquet path.
     row_limit : int | None
         When set (preview/trace), forces the eager path regardless of source.
+    schema_only : bool
+        The build only needs the scored schema: score through the lazy
+        row-local scan, never the batched path that scores the whole input.
     feature_contract_path : str | None
         Optional train-time feature contract. When it declares categorical
         value domains, runtime declarations must match and observed values
@@ -1561,6 +1578,11 @@ class ModelScorer:
         ``"server"``, ``"local"``); ``""`` means the local folder. The model is
         loaded from this destination even when the environment's other
         destination points elsewhere.
+    input_fanout : int
+        Rows of the scoring input per row of the source it is read from (the
+        product of the scenario expansions upstream; 1 when there are none).
+        The batched path sinks that input in proportionally smaller streaming
+        chunks.
     """
 
     def __init__(
@@ -1577,12 +1599,14 @@ class ModelScorer:
         source_names: list[str] | None = None,
         source: str = "live",
         row_limit: int | None = None,
+        schema_only: bool = False,
         required_output_columns: frozenset[str] | set[str] | None = None,
         feature_contract_path: str | None = None,
         categorical_levels: _CategoricalLevels = None,
         reuse_loaded_model: bool = False,
         mlflow_destination: str = "",
         alias: str = "",
+        input_fanout: int = 1,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
@@ -1598,6 +1622,7 @@ class ModelScorer:
         self.source_names = list(source_names) if source_names else []
         self.source = source
         self.row_limit = row_limit
+        self.schema_only = schema_only
         self.required_output_columns = (
             frozenset(str(c) for c in required_output_columns)
             if required_output_columns is not None
@@ -1611,6 +1636,7 @@ class ModelScorer:
         )
         self.reuse_loaded_model = reuse_loaded_model
         self.mlflow_destination = mlflow_destination
+        self.input_fanout = max(1, int(input_fanout))
         self._scoring_model: Any | None = None
         self._scoring_model_lock = threading.Lock()
 
@@ -1724,20 +1750,25 @@ class ModelScorer:
         else:
             dfs = dfs_positional
         lf = dfs[0] if dfs else pl.LazyFrame()
-        return _run_score_pipeline(
-            scoring_model,
-            lf,
-            task=self.task,
-            output_col=self.output_col,
-            code=self.code,
-            source_names=self.source_names,
-            extra_dfs=dfs[1:],
-            source=self.source,
-            row_limit=self.row_limit,
-            required_output_columns=self.required_output_columns,
-            categorical_levels=categorical_levels,
-            offset_column=offset_column,
-        )
+        fanout_token = _score_input_fanout.set(self.input_fanout)
+        try:
+            return _run_score_pipeline(
+                scoring_model,
+                lf,
+                task=self.task,
+                output_col=self.output_col,
+                code=self.code,
+                source_names=self.source_names,
+                extra_dfs=dfs[1:],
+                source=self.source,
+                row_limit=self.row_limit,
+                schema_only=self.schema_only,
+                required_output_columns=self.required_output_columns,
+                categorical_levels=categorical_levels,
+                offset_column=offset_column,
+            )
+        finally:
+            _score_input_fanout.reset(fanout_token)
 
 
 # ----------------------------------------------------------------------
@@ -1819,7 +1850,11 @@ def _sink_to_temp(
     import os
     import tempfile
 
-    from haute._polars_utils import bounded_sink
+    from haute._polars_utils import (
+        bounded_sink,
+        current_streaming_chunk_size,
+        streaming_chunk_size_cap,
+    )
 
     sink_lf = lf
     if columns is not None:
@@ -1835,8 +1870,18 @@ def _sink_to_temp(
         prefix="haute_score_in_",
     )
     os.close(fd)
+    # An expanded input multiplies every streaming chunk of its source by the
+    # fan-out in each thread; a proportionally smaller source chunk keeps an
+    # expanded chunk within the pipeline setting.
+    fanout = _score_input_fanout.get()
+    chunk_cap = (
+        streaming_chunk_size_cap(max(1, current_streaming_chunk_size() // fanout))
+        if fanout > 1
+        else nullcontext()
+    )
     try:
-        bounded_sink(sink_lf, path, fast_checkpoint=True)
+        with chunk_cap:
+            bounded_sink(sink_lf, path, fast_checkpoint=True)
     except BaseException:
         with suppress(FileNotFoundError):
             os.unlink(path)

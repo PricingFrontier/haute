@@ -5,7 +5,6 @@ import pytest
 from haute._api_input_schema import ApiInputSchemaError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
-    ChunkMemoryRiskError,
     ContractMismatchError,
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
@@ -56,24 +55,6 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
                 "node_id": "score",
                 "node_type": "modelScore",
                 "failure_kind": "artifact_store",
-            },
-        ),
-        (
-            ChunkMemoryRiskError(
-                "One estimated target row exceeds the configured chunk byte budget.",
-                target_node_id="output",
-                estimated_target_row_bytes=2_048,
-                target_chunk_bytes=1_024,
-            ),
-            {
-                "error_code": "chunk_memory_risk",
-                "message": ("One estimated target row exceeds the configured chunk byte budget."),
-                "target_node_id": "output",
-                "reason_code": "single_row_exceeds_budget",
-                "estimated_target_row_bytes": 2_048,
-                "estimated_minimum_chunk_bytes": 2_048,
-                "row_expansion_factor": 1,
-                "target_chunk_bytes": 1_024,
             },
         ),
         (

@@ -22,6 +22,7 @@ from fastapi import HTTPException
 
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionProfile
+from haute._polars_utils import set_streaming_chunk_size
 from haute._sandbox import set_project_root
 from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
@@ -45,6 +46,7 @@ from haute.routes._optimiser_worker import (
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest
 from tests.conftest import make_edge, make_graph
+from tests.test_optimiser_seeding import parallel_edge_graph, scored_graph
 
 _TERMINAL = {
     "completed",
@@ -193,17 +195,8 @@ def _ratebook_graph(path: Path, banding_path: Path) -> dict[str, Any]:
     ).model_dump()
 
 
-def _chunked_auto_range_graph(
-    path: Path, *, auto_range_chunk_size: int | None = 6
-) -> dict[str, Any]:
-    """Base -> scenario expander -> row-local feature node: a provably chunkable chain.
-
-    Without an ``auto_range_chunk_size`` the chunks are sized from a byte budget,
-    which samples rows of the target plan.
-    """
-    sizing: dict[str, int] = {}
-    if auto_range_chunk_size is not None:
-        sizing["auto_range_chunk_size"] = auto_range_chunk_size
+def _scenario_chain_graph(path: Path) -> dict[str, Any]:
+    """Base -> scenario expander -> feature node: the optimiser input is built upstream."""
     base = path.parent / "base.parquet"
     pl.DataFrame(
         {
@@ -268,7 +261,6 @@ def _chunked_auto_range_graph(
                         "config": _optimiser_config(
                             scenario_value="premium_multiplier",
                             data_input="features",
-                            **sizing,
                         ),
                     },
                 },
@@ -336,7 +328,7 @@ def _child_always_over_its_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every worker-local context sample one byte over its limit at each checkpoint.
 
     Only the child's context is affected: the parent admits its own context
-    through ``create_admitted_execution_context``.
+    before it spawns the worker.
     """
     real_create = _optimiser_worker.create_isolated_execution_context
 
@@ -399,16 +391,15 @@ class TestRealWorker:
         assert _solve_summary(process_status) == _solve_summary(thread_status)
         assert process_status["result"]["factor_tables"] == thread_status["result"]["factor_tables"]
 
-    @pytest.mark.parametrize("chunked", [True, False], ids=["chunked", "full_frame"])
+    @pytest.mark.parametrize("shape", ["scenario_chain", "scored_frame"])
     def test_auto_range_in_a_worker_matches_the_thread_path(
-        self, project: Path, monkeypatch: pytest.MonkeyPatch, chunked: bool
+        self, project: Path, monkeypatch: pytest.MonkeyPatch, shape: str
     ) -> None:
         path = _scored_parquet(project)
-        graph = _chunked_auto_range_graph(path) if chunked else _online_graph(path)
+        graph = _scenario_chain_graph(path) if shape == "scenario_chain" else _online_graph(path)
         body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
         service = OptimiserSolveService(JobStore())
-        prepared = service._prepare_frontier_auto_range(body)
-        assert (prepared["streaming_plan"] is not None) is chunked
+        _node, prepared = service._prepare_frontier_auto_range(body)
 
         def run() -> dict[str, Any]:
             job_id = service._store.create_job(
@@ -425,8 +416,8 @@ class TestRealWorker:
 
         assert [call["function"].__name__ for call in calls] == ["frontier_auto_range_worker"]
         assert isinstance(calls[0]["request"], FrontierAutoRangeWorkerRequest)
-        assert calls[0]["request"].chunked is chunked
         assert process_result == thread_result
+        assert process_result["ranges"]
 
     def test_a_solve_input_the_thread_path_would_borrow_is_written_by_the_worker(
         self, client, project: Path, monkeypatch: pytest.MonkeyPatch
@@ -459,11 +450,47 @@ class TestRealWorker:
         assert grid_inputs == [calls[0]["request"].output_path]
         assert _solve_summary(process_status) == _solve_summary(thread_status)
 
+    def test_a_parallel_edge_source_runs_auto_range_and_solve_setup_in_workers(
+        self, client, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One source feeds the optimiser through two edges: both jobs execute the
+        # optimiser and read the data table from its resolved frame.
+        graph = parallel_edge_graph(project, pl.read_parquet(_scored_parquet(project)))
+        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        service = OptimiserSolveService(JobStore())
+        _node, prepared = service._prepare_frontier_auto_range(body)
+
+        def auto_range() -> dict[str, Any]:
+            job_id = service._store.create_job(
+                {"status": "running", "job_type": "frontier_auto_range"}
+            )
+            service._store.atomic_update(job_id, {"start_time": time.monotonic()})
+            return service._run_frontier_auto_range_job(body, job_id, **prepared).model_dump()
+
+        thread_ranges = auto_range()
+        thread_status = _solve(client, graph)
+        assert thread_status["status"] == "completed", thread_status.get("message")
+
+        _process_mode(monkeypatch)
+        calls = _record_real_worker(monkeypatch)
+        process_ranges = auto_range()
+        process_status = _solve(client, graph)
+
+        assert [call["function"].__name__ for call in calls] == [
+            "frontier_auto_range_worker",
+            "materialise_solve_input_worker",
+        ]
+        assert process_ranges == thread_ranges
+        assert set(process_ranges["ranges"]) == {"volume"}
+        assert process_status["status"] == "completed", process_status.get("message")
+        assert _solve_summary(process_status) == _solve_summary(thread_status)
+
     def test_a_cancelled_auto_range_worker_leaves_no_scratch_files(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Many small reducer batches keep the worker writing bucket parts into its scratch
-        # directory long enough to stop it mid-reduction.
+        # Many small reducer batches (the pipeline's streaming chunk size, which the
+        # spawned worker inherits) keep the worker writing bucket parts into its
+        # scratch directory long enough to stop it mid-reduction.
         quotes = 50_000
         big = project / "big.parquet"
         pl.DataFrame(
@@ -476,10 +503,11 @@ class TestRealWorker:
             }
         ).write_parquet(big)
         body = OptimiserFrontierAutoRangeRequest.model_validate(
-            {"graph": _online_graph(big, auto_range_chunk_size=500), "node_id": "opt"}
+            {"graph": _online_graph(big), "node_id": "opt"}
         )
+        set_streaming_chunk_size(500)
         service = OptimiserSolveService(JobStore())
-        prepared = service._prepare_frontier_auto_range(body)
+        _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
         service._store.atomic_update(job_id, {"start_time": time.monotonic()})
         _process_mode(monkeypatch)
@@ -523,7 +551,7 @@ class TestWorkerOutcomes:
         graph = _online_graph(_scored_parquet(project, null_quote=null_quote))
         body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
         service = OptimiserSolveService(JobStore())
-        prepared = service._prepare_frontier_auto_range(body)
+        _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
         service._store.atomic_update(job_id, {"start_time": time.monotonic()})
         raised: BaseException | None = None
@@ -539,7 +567,7 @@ class TestWorkerOutcomes:
         graph = _online_graph(_scored_parquet(project, null_quote=True))
         body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
         thread_service = OptimiserSolveService(JobStore())
-        prepared = thread_service._prepare_frontier_auto_range(body)
+        _node, prepared = thread_service._prepare_frontier_auto_range(body)
         thread_job = thread_service._store.create_job(
             {"status": "running", "job_type": "frontier_auto_range"}
         )
@@ -766,6 +794,67 @@ class TestWorkerOutcomes:
         assert job["status"] == "error"
         assert getattr(raised, "status_code", None) == 500
 
+    def test_the_worker_runs_the_stage_on_the_demand_its_parent_resolved(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _mlflow_io
+
+        _process_mode(monkeypatch)
+        graph, predicted = scored_graph(project, monkeypatch, data=_scored_parquet(project).name)
+        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        service = OptimiserSolveService(JobStore())
+        _node, prepared = service._prepare_frontier_auto_range(body)
+        job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        service._store.atomic_update(job_id, {"start_time": time.monotonic()})
+
+        # From here on, only the worker's pipeline stage may load the model, and
+        # nothing may resolve the demand or prepare the request again.
+        def resolved_again(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("the auto-range demand was resolved again")
+
+        monkeypatch.setattr(
+            _optimiser_service, "_optimiser_solve_required_columns_by_node", resolved_again
+        )
+        monkeypatch.setattr(OptimiserSolveService, "_prepare_frontier_auto_range", resolved_again)
+        in_stage = False
+        stage_demands: list[Any] = []
+        real_stage = OptimiserSolveService._run_optimiser_input_stage
+
+        def recording_stage(self: OptimiserSolveService, *args: Any, **kwargs: Any) -> Any:
+            nonlocal in_stage
+            stage_demands.append(kwargs["required_columns_by_node"])
+            in_stage = True
+            try:
+                return real_stage(self, *args, **kwargs)
+            finally:
+                in_stage = False
+
+        loads: list[bool] = []
+        real_load = _mlflow_io.load_mlflow_model
+
+        def recording_load(*args: Any, **kwargs: Any) -> Any:
+            loads.append(in_stage)
+            return real_load(*args, **kwargs)
+
+        monkeypatch.setattr(OptimiserSolveService, "_run_optimiser_input_stage", recording_stage)
+        monkeypatch.setattr(_mlflow_io, "load_mlflow_model", recording_load)
+        worker = _InlineWorker()
+        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
+
+        response = service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert set(response.ranges) == {"volume"}
+        (call,) = worker.calls
+        request = call["request"]
+        assert isinstance(request, FrontierAutoRangeWorkerRequest)
+        assert request.required_columns_by_node == {
+            node_id: frozenset(columns)
+            for node_id, columns in prepared["required_columns_by_node"].items()
+        }
+        assert stage_demands == [request.required_columns_by_node]
+        assert predicted, "the stage scored the frame"
+        assert loads and all(loads)
+
     def test_an_auto_range_out_of_time_before_its_worker_starts_is_timed_out(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -775,7 +864,7 @@ class TestWorkerOutcomes:
         graph = _online_graph(_scored_parquet(project))
         body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
         service = OptimiserSolveService(JobStore())
-        prepared = service._prepare_frontier_auto_range(body)
+        _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
         service._store.atomic_update(
             job_id, {"start_time": time.monotonic() - prepared["timeout"] - 1.0}
@@ -895,7 +984,7 @@ class TestFailureRecords:
             (
                 ExecutionAdmissionError(
                     "frontier_auto_range",
-                    profile=ExecutionProfile.AUTO_RANGE,
+                    profile=ExecutionProfile.OPTIMISER_SOLVE,
                     memory_limit_bytes=1,
                     rss_at_admission_bytes=None,
                     reason="memory_sampler_unavailable",
@@ -952,7 +1041,7 @@ class TestPrivateRecords:
         graph = _online_graph(_scored_parquet(project, null_quote=fails))
         body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
         service = OptimiserSolveService(JobStore())
-        prepared = service._prepare_frontier_auto_range(body)
+        _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
         service._store.atomic_update(job_id, {"start_time": time.monotonic()})
 
@@ -985,7 +1074,7 @@ def test_a_self_admitted_auto_range_job_returns_its_admission_when_it_fails(
     graph = _online_graph(_scored_parquet(project, null_quote=True))
     body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
     service = OptimiserSolveService(JobStore())
-    prepared = service._prepare_frontier_auto_range(body)
+    _node, prepared = service._prepare_frontier_auto_range(body)
     job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
 
     def held() -> list[str]:
@@ -1076,75 +1165,6 @@ class TestEstimateWorker:
             "rss_limit_bytes": 1024,
             "reason": "worker_rss_limit_exceeded",
         }
-
-
-class TestAutoRangeChunkSizingInTheWorker:
-    """A process-mode start plans structurally; the worker sizes the chunks."""
-
-    def test_a_process_mode_start_reads_no_rows_in_the_server(
-        self, project: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import haute.chunking as chunking
-
-        graph = _chunked_auto_range_graph(_scored_parquet(project), auto_range_chunk_size=None)
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
-        service = OptimiserSolveService(JobStore())
-        monkeypatch.setattr(
-            chunking,
-            "_sample_variable_column_widths",
-            lambda *_args, **_kwargs: pytest.fail("sampled rows in the server process"),
-        )
-
-        prepared = service._prepare_frontier_auto_range(body, sample_row_widths=False)
-
-        assert prepared["streaming_plan"] is not None
-        assert prepared["streaming_plan"].sized is False
-        # Control: sizing the same plan does sample rows.
-        with pytest.raises(pytest.fail.Exception, match="sampled rows"):
-            service._prepare_frontier_auto_range(body)
-
-    def test_a_sizing_fallback_in_the_worker_runs_the_whole_frame(
-        self, project: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import haute.chunking as chunking
-        from haute.errors import ChunkPlanUnsupportedError
-
-        graph = _chunked_auto_range_graph(_scored_parquet(project), auto_range_chunk_size=None)
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
-
-        def unsampleable(*_args: Any, **_kwargs: Any) -> Any:
-            raise ChunkPlanUnsupportedError("The target's wide columns cannot be sampled.")
-
-        monkeypatch.setattr(chunking, "_sample_variable_column_widths", unsampleable)
-
-        def run(service: OptimiserSolveService, prepared: dict[str, Any]) -> tuple[Any, str]:
-            job_id = service._store.create_job(
-                {"status": "running", "job_type": "frontier_auto_range"}
-            )
-            service._store.atomic_update(job_id, {"start_time": time.monotonic()})
-            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
-            return response, job_id
-
-        thread_service = OptimiserSolveService(JobStore())
-        thread_prepared = thread_service._prepare_frontier_auto_range(body)
-        assert thread_prepared["streaming_plan"] is None
-        thread_response, _ = run(thread_service, thread_prepared)
-
-        _process_mode(monkeypatch)
-        worker = _InlineWorker()
-        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
-        service = OptimiserSolveService(JobStore())
-        prepared = service._prepare_frontier_auto_range(body, sample_row_widths=False)
-        assert prepared["streaming_plan"] is not None
-        response, job_id = run(service, prepared)
-
-        assert [call["request"].chunked for call in worker.calls] == [True, False]
-        assert response.ranges == thread_response.ranges
-        assert response.chunk_fallback is not None
-        assert response.chunk_fallback.code == "chunk_plan_unsupported"
-        assert response.warning == response.chunk_fallback.message
-        recorded = service._store.require_job(job_id)["chunk_fallback"]
-        assert recorded["code"] == "chunk_plan_unsupported"
 
 
 def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(

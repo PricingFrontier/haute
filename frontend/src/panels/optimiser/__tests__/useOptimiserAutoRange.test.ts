@@ -28,9 +28,8 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function renderAutoRange(onUpdate = vi.fn(() => ({ ok: true as const }))) {
   const hook = renderHook(() => useOptimiserAutoRange({
     nodeId: "optimiser-1",
-    constraintNames: ["loss_ratio"],
     buildGraph: () => ({ nodes: [], edges: [] }),
-    onUpdate,
+    writeRanges: onUpdate,
   }))
   return { ...hook, onUpdate }
 }
@@ -52,7 +51,7 @@ describe("useOptimiserAutoRange", () => {
     })
     const { result, unmount, onUpdate } = renderAutoRange()
 
-    act(() => result.current.run())
+    act(() => result.current.run(["loss_ratio"]))
     expect(result.current.autoRangeLoading).toBe(true)
     unmount()
     expect(requestSignal?.aborted).toBe(true)
@@ -81,7 +80,7 @@ describe("useOptimiserAutoRange", () => {
     })
     const { result, onUpdate } = renderAutoRange()
 
-    act(() => result.current.run())
+    act(() => result.current.run(["loss_ratio"]))
     await waitFor(() => expect(api.status).toHaveBeenCalledWith(
       "stale-job",
       { signal: expect.any(AbortSignal) },

@@ -133,9 +133,7 @@ def test_write_and_read_class_mappings() -> None:
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
         ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.LAZY_SINK,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
         ExecutionProfile.NODE_SNAPSHOT,
     ):
         assert snapshot_write_class(profile) == "bounded"

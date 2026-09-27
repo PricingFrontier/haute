@@ -41,10 +41,8 @@ export interface ExecutionStrategyDiagnosticPayload {
     | 'optimiser_setup'
     | 'optimiser_solve'
     | 'explore_analysis'
-    | 'auto_range'
     | 'deploy_live'
     | 'deploy_batch'
-    | 'chunked_map_reduce'
     | 'node_snapshot';
   provenance: ExecutionStrategyProvenanceCollectionPayload;
   raw_estimated_peak_bytes?: number | null;
@@ -410,10 +408,8 @@ export interface ExecutionStrategyDiagnosticPayloadOutput {
     | 'optimiser_setup'
     | 'optimiser_solve'
     | 'explore_analysis'
-    | 'auto_range'
     | 'deploy_live'
     | 'deploy_batch'
-    | 'chunked_map_reduce'
     | 'node_snapshot';
   provenance: ExecutionStrategyProvenanceCollectionPayloadOutput;
   raw_estimated_peak_bytes: number | null;
@@ -1616,7 +1612,6 @@ export interface OptimiserInputSummary {
 export interface OptimiserSolverSettings {
   cd_tolerance?: number;
   chunk_size: number | null;
-  frontier_enabled?: boolean;
   frontier_ranges?: {
     [k: string]: unknown;
   };
@@ -1751,29 +1746,11 @@ export interface OptimiserFrontierAutoRangeStatusResponse {
   terminal_reason: string | null;
 }
 export interface OptimiserFrontierAutoRangeResponse {
-  chunk_fallback: OptimiserChunkFallback | null;
   method: string;
   ranges: {
     [k: string]: OptimiserFrontierRange;
   };
   status: string;
-  warning: string | null;
-}
-/**
- * A lost chunk optimisation recorded on an auto-range job.
- *
- * Chunk ineligibility never fails the request, so this record is the only
- * place the reason survives; typing it keeps the emitted keys and the three
- * stable codes part of the API contract.
- */
-export interface OptimiserChunkFallback {
-  code: 'chunk_user_code_ineligible' | 'model_score_ineligible' | 'chunk_plan_unsupported';
-  column: number | null;
-  line: number | null;
-  message: string;
-  node_id: string | null;
-  operator: string | null;
-  reason: string | null;
 }
 export interface OptimiserFrontierRange {
   max: number;

@@ -243,8 +243,7 @@ def solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
             "max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS
         )
         settings["cd_tolerance"] = job_config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE)
-    if job_config.get("frontier_enabled") is True:
-        settings["frontier_enabled"] = True
+    if job_config.get("frontier_ranges"):
         settings["frontier_steps"] = job_config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
         settings["frontier_ranges"] = job_config.get("frontier_ranges")
     return settings
@@ -346,27 +345,58 @@ def _compute_frontier(
     return result
 
 
-def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
-    """Build absolute frontier ranges from canonical per-constraint config."""
+def swept_frontier_ranges(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """The absolute frontier ranges of the constraints the config sweeps.
+
+    A constraint is swept when ``frontier_ranges`` holds an entry for it; the
+    others stay at their ``constraints`` bound at every frontier point. The
+    result follows constraint order and is empty when nothing is swept.
+    """
     constraints = config.get("constraints") or {}
-    if not constraints:
-        return {}
-
     configured_ranges = config.get("frontier_ranges")
-    if configured_ranges is not None:
-        if not isinstance(configured_ranges, dict):
-            raise ValueError("frontier_ranges must be an object keyed by constraint name.")
-        ranges: dict[str, tuple[float, float]] = {}
-        for cname in constraints:
-            if cname not in configured_ranges:
-                raise ValueError(f"frontier_ranges is missing a range for constraint {cname!r}.")
-            ranges[str(cname)] = _normalise_frontier_range_pair(
-                configured_ranges[cname],
-                field=f"frontier_ranges.{cname}",
-            )
-        return ranges
+    if not constraints or configured_ranges is None:
+        return {}
+    if not isinstance(configured_ranges, dict):
+        raise ValueError("frontier_ranges must be an object keyed by constraint name.")
+    unknown = [str(name) for name in configured_ranges if name not in constraints]
+    if unknown:
+        raise ValueError(f"frontier_ranges names {', '.join(unknown)}, which are not constraints.")
+    return {
+        str(cname): _normalise_frontier_range_pair(
+            configured_ranges[cname],
+            field=f"frontier_ranges.{cname}",
+        )
+        for cname in constraints
+        if cname in configured_ranges
+    }
 
-    raise ValueError("frontier_ranges must provide min and max for each constraint.")
+
+def anchor_swept_constraints(config: dict[str, Any]) -> dict[str, Any]:
+    """The config a solve runs: each swept constraint is first solved at its range's start.
+
+    A swept constraint shows no bound of its own; its ``constraints`` value is
+    kept so un-sweeping restores it, but the solve, and so the as-solved
+    result, runs at its ``frontier_ranges`` ``min``. Anything malformed is left
+    for validation to report.
+    """
+    constraints = config.get("constraints")
+    ranges = config.get("frontier_ranges")
+    if not isinstance(constraints, dict) or not isinstance(ranges, dict):
+        return config
+    anchored: dict[str, Any] = {}
+    for name, spec in constraints.items():
+        entry = ranges.get(name)
+        start = entry.get("min") if isinstance(entry, dict) else None
+        if (
+            isinstance(spec, dict)
+            and len(spec) == 1
+            and isinstance(start, int | float)
+            and not isinstance(start, bool)
+        ):
+            anchored[name] = {next(iter(spec)): start}
+        else:
+            anchored[name] = spec
+    return {**config, "constraints": anchored}
 
 
 _RATEBOOK_FACTOR_LEVEL_SEPARATOR = "\x1f"
@@ -1010,10 +1040,10 @@ def _finalize_solve_result(
     kinds = constraint_kinds(constraints or {})
     # The absolute bounds the library solved at (pct constraints already scaled).
     result_dict["effective_bounds"] = effective_bounds(kinds, solve_result.constraint_bounds)
-    if constraints and config.get("frontier_enabled") is True:
+    if constraints and config.get("frontier_ranges"):
         try:
             frontier_steps = config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
-            ranges = _auto_frontier_ranges_from_config(config)
+            ranges = swept_frontier_ranges(config)
             if ranges:
                 enforce_frontier_compute_budget(
                     n_points_per_dim=frontier_steps,

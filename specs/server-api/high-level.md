@@ -289,7 +289,7 @@ the bounded version-1 strategy diagnostic DTO: canonical, capped collections des
 boundaries, reasons, and provenance without frames, plans, or user data. The shared
 public-error adapter is a closed set mapped to synchronous HTTP 422 and background-job
 `contract_error`: `ApiInputSchemaError`, `PreambleError`, `ContractResolutionError`,
-`ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`,
+`GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
 `RatingFactorMissingError`, `RatingFactorDtypeContractError`,
 `LiveSwitchScenarioError`, `NodeConfigError`, `OutputNestingKeyError`, and

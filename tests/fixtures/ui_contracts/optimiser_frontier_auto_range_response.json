@@ -6,7 +6,5 @@
       "max": 39.0
     }
   },
-  "method": "scenario_envelope",
-  "warning": null,
-  "chunk_fallback": null
+  "method": "scenario_envelope"
 }

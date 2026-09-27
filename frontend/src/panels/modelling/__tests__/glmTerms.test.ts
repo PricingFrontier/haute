@@ -12,6 +12,7 @@ import {
   additionalTypeOptions,
   columnContext,
   columnIssue,
+  COLUMNS_NOT_KNOWN,
   duplicateInteractionIndexes,
   expressionIdentifiers,
   featureTag,
@@ -518,5 +519,14 @@ describe("interaction transitions", () => {
     expect(setInteractionField(encoded, 0, "prior_weight", undefined)).toEqual(encoded)
     expect(setInteractionEncoding(encoded, 0, "product")).toEqual([{ factors: ["age", "region"], include_main: true }])
     expect(setInteractionEncoding(encoded, 0, "target_encoding")).toEqual(encoded)
+  })
+})
+
+describe("columnIssue before the columns load", () => {
+  it("reports waiting, not missing, and still names a role column", () => {
+    const unknown = columnContext([], new Map([["y", "target"]]))
+    expect(unknown.known).toBe(false)
+    expect(columnIssue("age", unknown)).toBe(COLUMNS_NOT_KNOWN)
+    expect(columnIssue("y", unknown)).toBe("y is the target column")
   })
 })

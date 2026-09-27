@@ -49,9 +49,8 @@ class TestReadSourceCSV:
             ExecutionProfile.LAZY_SINK,
             ExecutionProfile.TRAINING_PREP,
             ExecutionProfile.OPTIMISER_SETUP,
-            ExecutionProfile.AUTO_RANGE,
+            ExecutionProfile.OPTIMISER_SOLVE,
             ExecutionProfile.DEPLOY_BATCH,
-            ExecutionProfile.CHUNKED_MAP_REDUCE,
         ],
     )
     def test_bounded_profiles_require_declared_csv_schema(
@@ -90,7 +89,7 @@ class TestReadSourceCSV:
 
         result = read_source(
             path,
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
             schema_overrides={"quote_id": "String", "premium": "Float64"},
         ).collect()
 
@@ -204,7 +203,7 @@ class TestReadSourceProjectionAndSchema:
 
         lf = read_source(
             path,
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
             columns=[],
             schema_overrides={"a": "Int64"},
         )
@@ -559,7 +558,7 @@ class TestDataSourceAdapterFlatFile:
                 "path": str(path),
                 schema_key: {"quote_id": "String", "premium": "Float64"},
             },
-            profile=ExecutionProfile.AUTO_RANGE,
+            profile=ExecutionProfile.OPTIMISER_SOLVE,
         ).collect()
 
         assert result.schema["quote_id"] == pl.String
@@ -579,7 +578,7 @@ class TestDataSourceAdapterFlatFile:
                     "path": str(path),
                     "expected_columns": ["quote_id", "premium"],
                 },
-                profile=ExecutionProfile.AUTO_RANGE,
+                profile=ExecutionProfile.OPTIMISER_SOLVE,
             )
 
     def test_source_config_is_not_mutated(self, tmp_path: Path) -> None:

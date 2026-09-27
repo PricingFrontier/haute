@@ -381,9 +381,6 @@ with.
   `src/haute/_standalone_nodes.py` (owned by
   [pipeline-config](../pipeline-config/high-level.md)) to perform each
   configured node's work, so a declaration or hook runs on its own.
-- **Supplies canonical user-code text to** `haute.chunking`: chunk planning
-  reads the parsed `dataInput` code field and applies its own row-locality
-  proof to the same boilerplate-free text that codegen re-emits.
 - **Depended on by** the save-pipeline route, which calls
   `graph_to_code_multi` to produce a multi-file tree and `graph_to_code`
   for graphs that produce one pipeline file.

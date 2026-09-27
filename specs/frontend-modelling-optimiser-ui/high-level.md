@@ -178,7 +178,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   the user creates a separate modelling node, preserving the original node and all of its settings.
 - **Features** — CatBoost gets an always-expanded feature-card browser with a
   case-insensitive name-substring search, upstream dtype labels, and the existing explicit
-  not-found treatment/removal for stale exclusions. Each eligible feature has one compact,
+  not-found treatment/removal for stale exclusions, applied only once the upstream columns are
+  known (before then the saved exclusion count is shown instead). Each eligible feature has one compact,
   single-row bordered card: the name and dtype sit on the left, followed by the current-state
   inclusion button and monotonicity selector on the right. The green **Include** or red
   **Exclude** button reports its current state and toggles that state. These are compact,
@@ -377,41 +378,62 @@ The optimiser node panel presents **Data**, **Factors**, **Constraints**, **Solv
 **Export** panes in the same shared equal-width pane-tab strip the modelling and Explore editors
 use, hosted by the node panel
 ([frontend-node-editors](../frontend-node-editors/low-level.md#optimiser-config-panes)).
-**Factors** exists only in ratebook mode. The optimiser is sink-only and emits no output frame,
+Both modes show every pane. The optimiser is sink-only and emits no output frame,
 so like modelling it has no Columns tab: the node panel shows no Config/Columns strip and the pane
-strip sits directly beneath the header. One `optimiserPanesFor(mode)` list drives both the tabs
-and the pane bodies. The active pane is remembered per node in the UI store; a remembered pane
-the current mode lacks (Factors after switching to online) opens Data without discarding the
-stored ratebook source or factor columns, which reappear when ratebook mode is chosen again.
+strip sits directly beneath the header. One `OPTIMISER_PANES` list drives both the tabs
+and the pane bodies. The active pane is remembered per node in the UI store. Switching to online
+mode never discards the stored ratebook source or factor columns, which apply again when ratebook
+mode is chosen again.
 Pane ownership:
 
 - **Data** — the Online/Ratebook mode choice, the Objectives & Constraints input selector with
-  its missing/malformed-input alert, the objective ("Column to maximise"), and the Quote ID,
+  its missing/malformed-input alert, the objective ("Column to maximise"), and the Row ID,
   Scenario Index and Scenario Value column mappings. The objective is chosen here because it
-  is a column of the input selected directly above it. Last comes **Analysis columns**, with
-  help text saying they are used only to break results down and never reach the solver: an
-  **Analysis input** select listing only the optimiser's connected inputs, whose first option
-  is the Objectives & Constraints input (stored as no `analysis_input`), then a multi-select of
-  that frame's columns from its schema (the quote-id column excluded), capped at twelve with
-  the remaining choices disabled at the cap. Switching the analysis input removes the chosen
-  columns the newly selected frame does not have, once its columns are known; a configured
-  column the frame does not have, or a configured analysis input that is no longer connected,
-  is flagged in the pane and blocks the solve.
-- **Factors** — the Rating Factor Source selector, its combined disconnected-source and
-  zero-level warning, and the rating-factor toggles with their level counts.
-- **Constraints** — the constraint count heading with **Add**, then the **Individual point** /
-  **Efficient frontier** result-type choice, then one bordered card per constraint. Each card
-  carries the constraint column selector and remove action, and beneath them the fields for the
-  selected result type: the Minimum/Maximum bound and value for an individual point, or that
-  constraint's required min and max frontier range for an efficient frontier. The frontier's
-  **Auto range** action, **Steps per constraint** field (with the total number of solves it
-  implies) and auto-range error follow the cards, shown only for an efficient frontier. The
-  frontier is a sweep over the constraint bounds, so its settings live with the constraints
-  rather than in a pane of their own; a bound and its range are never listed in separate
-  per-constraint lists. Bound values and frontier range fields commit on blur or Enter, not per
-  keystroke. Clearing a bound value restores its stored value on commit, so a constraint is never
-  silently relaxed to 0; clearing a frontier range field removes that end of the range, which
-  the field and the Solve issue list then flag as missing.
+  is a column of the input selected directly above it. The input's columns are fetched only
+  after the node's preview settles, so every column field shows its saved value from the config
+  immediately: a saved column absent from the (not yet known) column list is still offered as
+  the selected option, and marked "(not in input)" once the columns are known and lack it.
+- **Factors** — in ratebook mode, the Rating Factor Source selector and its combined
+  disconnected-source and zero-level warning. Then, in both modes, one **Factors** table styled
+  like the modelling Features list: a count (`N ratebook · M of 12 validation`, the ratebook part
+  in ratebook mode only), help text saying validation factors only break results down by segment
+  and never reach the solver, a **Validation input** select listing only the optimiser's connected
+  inputs, whose first option is the Objectives & Constraints input (stored as no
+  `analysis_input`), a factor search, and one row per factor with its name, level count (rating
+  factors), dtype chip, and two checkboxes: **Ratebook** (writes `factor_columns`) and
+  **Validation** (writes `analysis_columns`). In ratebook mode the Rating Factor Source's factors
+  lead, followed by the validation frame's other columns (the quote-id column excluded); online
+  mode lists the frame's columns. The Ratebook box is enabled only in ratebook mode and only for
+  the source's factors; the Validation box only for a column of the validation frame, and not
+  for a new choice once twelve are chosen. Switching the validation input removes the chosen
+  validation factors the newly selected frame does not have, once its columns are known; a
+  configured validation factor the frame does not have, or a configured validation input that is
+  no longer connected, is flagged in the pane and blocks the solve. Until the validation
+  frame's columns are known, the saved validation factors are still listed, ticked, and can be
+  unticked.
+- **Constraints** — the constraint count heading with **Add**, then a **Result** line ("single
+  point", or "frontier over <swept constraints> · N solves", N counting the swept constraints
+  only), then one bordered card per constraint, all laid out the same way so each reads as a
+  sentence. There is no result-type choice: the solve is a single point unless a constraint is
+  swept. A card's first row holds the constraint column selector and the remove action; its
+  second row holds the bound type (**at least** / **at most**, stored as `min` / `max`), a
+  **Fixed | Sweep** switch, and the value area: one value when Fixed, or the **from** and **to**
+  ends of that constraint's frontier range when swept. A swept card shows no fixed value; the
+  solve runs a swept constraint at its range's start, and a fixed constraint is held at its value
+  at every frontier point. Switching to Sweep writes a `frontier_ranges` entry starting at the
+  fixed value; switching back to Fixed removes it, and the saved fixed value applies again. A
+  swept card carries its own **Auto range** button beneath its from/to, which fills that
+  constraint's range only, merged over the other constraints' current ranges; the running card's
+  button reads **Restart auto range**, and a failure shows on the card that asked. One auto-range
+  run exists at a time, so starting another card's supersedes it;
+  clearing both ends keeps the constraint swept. With no constraints the pane says the objective
+  is maximised alone. When any constraint is swept, a **Frontier** section follows the cards with
+  **Points per swept constraint** (`frontier_steps`). The frontier is a sweep over the
+  constraint bounds, so its settings live with the constraints rather than in a pane of their
+  own. Bound values and sweep range fields commit on blur or Enter, not per keystroke. Clearing a
+  bound value restores its stored value on commit, so a constraint is never silently relaxed to
+  0; clearing a sweep range field removes that end of the range, which the field and the Solve
+  issue list then flag as missing.
 - **Solve** — the stale-result banner, source-size estimate, **Optimise** action, progress with a
   **Stop** action, failure card and convergence result, followed by a **Solver settings** section
   holding maximum iterations and tolerance, chunk size and, in ratebook mode, the
@@ -419,18 +441,18 @@ Pane ownership:
   its convergence history. **Stop** cancels the running solve job (including
   its efficient-frontier phase) through the existing cancel route and records the returned
   terminal state the way modelling's Cancel does. The size estimate is requested only when an
-  input that changes it changes (the Objectives & Constraints input, mode, the Quote ID / Scenario
+  input that changes it changes (the Objectives & Constraints input, mode, the Row ID / Scenario
   Index / Scenario Value mappings, the Rating Factor Source and factors, the active source or the
   graph structure), never on objective, constraint, solver or export edits; an estimate the server
   cannot size reads "Size unknown". While the configuration cannot be solved the Optimise action
   stays disabled and one alert beneath it lists every blocking issue, each with a **Go to** link
   that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective; a
-  mapped Quote ID, Scenario Index or Scenario Value column that the input does not have (checked
-  once the input's columns are known); an Analysis input that is not connected, more than twelve
-  analysis columns, or an analysis column the analysis input does not have (checked once its
+  mapped Row ID, Scenario Index or Scenario Value column that the input does not have (checked
+  once the input's columns are known); a Validation input that is not connected, more than twelve
+  validation factors, or a validation factor the validation input does not have (checked once its
   columns are known); in ratebook mode no connected Rating Factor Source or no
-  selected factor; and for an efficient frontier a constraint whose range is missing an end or
-  whose minimum is not below its maximum, or more than 10,000 frontier solves in total. Warnings
+  selected factor; and a swept constraint whose range is missing an end or whose minimum is not
+  below its maximum, or more than 10,000 frontier solves in total over the swept constraints. Warnings
   that do not block — one scenario per quote, or quotes with differing scenario counts — appear
   under the estimate. Ctrl+Enter inside the optimiser editor starts the solve, or re-runs it when
   the result is stale, whenever the configuration can be solved.

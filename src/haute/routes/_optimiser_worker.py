@@ -33,6 +33,7 @@ counts or a typed answer and records nothing.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import tempfile
 import time
@@ -43,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -150,18 +152,18 @@ class SolveInputWorkerOutcome:
 class FrontierAutoRangeWorkerRequest:
     """Everything the auto-range child needs, as picklable plain data.
 
-    ``chunked`` is the parent's structural plan decision; the child re-plans
-    (a chunk plan is not picklable) and sizes the chunks, which samples rows,
-    so the server process never reads them. Sizing can lose a chunked plan:
-    the child then reports the fallback without computing anything, because
-    the parent opened the seed plan for the chunked execution target. Any
-    other disagreement fails loudly.
+    The parent resolved the job's config and demand once; the child runs the
+    solve setup's pipeline stage under the parent's seed plan and never
+    re-plans.
     """
 
     body: OptimiserFrontierAutoRangeRequest
+    config: dict[str, Any]
+    mode: str
+    timeout: int
+    required_columns_by_node: dict[str, frozenset[str]]
     project_root: str
     seed_plan: SeedPlanHandoff
-    chunked: bool
     scratch_dir: str
 
 
@@ -172,8 +174,26 @@ class FrontierAutoRangeWorkerOutcome:
     ranges: dict[str, dict[str, float]] | None = None
     execution_metrics: dict[str, Any] | None = None
     failure: OptimiserWorkerFailure | None = None
-    # Set when sizing the chunks lost the parent's chunked plan.
-    chunk_fallback: dict[str, Any] | None = None
+
+
+_OPTIMISER_POLARS_THREADS_ENV = "HAUTE_OPTIMISER_POLARS_THREADS"
+_DEFAULT_OPTIMISER_POLARS_THREADS = 8
+
+
+def resolve_optimiser_polars_threads() -> int:
+    """The Polars thread-pool size of the optimiser's setup and auto-range workers.
+
+    Polars bounds a streaming pipeline by morsels per thread, not bytes, so a
+    fan-out such as the scenario expander's explode multiplies what every
+    thread holds. On a 10M-quote x 11-scenario pipeline the scorer's input
+    sink peaked at 5.3 GiB with 22 threads and 1.8 GiB with 8, in the same
+    time; the batch reducer likewise loses no time at 8. Polars reads the
+    setting once at import, so it is applied to each worker at spawn.
+    """
+    return int_env(
+        _OPTIMISER_POLARS_THREADS_ENV,
+        min(os.cpu_count() or 1, _DEFAULT_OPTIMISER_POLARS_THREADS),
+    )
 
 
 @contextlib.contextmanager
@@ -233,7 +253,6 @@ def _private_auto_range_job(store: JobStore, request: FrontierAutoRangeWorkerReq
         "progress": 0.0,
         "config": {},
         "node_label": request.body.node_id,
-        "chunk_fallback": None,
     }
     job_id = store.create_job(job)
     store.atomic_update(job_id, {"start_time": time.monotonic()})
@@ -363,28 +382,16 @@ def frontier_auto_range_worker(
     try:
         context = create_isolated_execution_context(budget)
         with _temporary_files_in(request.scratch_dir):
-            prepared = service._prepare_frontier_auto_range(
-                request.body,
-                prepare_snapshot_inputs=False,
-            )
-            planned_chunked = prepared["streaming_plan"] is not None
-            if request.chunked and not planned_chunked and prepared["chunk_fallback"]:
-                return FrontierAutoRangeWorkerOutcome(
-                    execution_metrics=context.metrics_payload(status="completed"),
-                    chunk_fallback=prepared["chunk_fallback"],
-                )
-            if planned_chunked != request.chunked:
-                raise RuntimeError(
-                    "Auto-range chunk planning changed between the request and its worker; "
-                    "start auto-range again."
-                )
             response = service._run_frontier_auto_range_job(
                 request.body,
                 job_id,
+                config=request.config,
+                mode=request.mode,
+                timeout=request.timeout,
+                required_columns_by_node=request.required_columns_by_node,
                 execution_context=context,
                 seed_plan=request.seed_plan,
                 isolate=False,
-                **prepared,
             )
         return FrontierAutoRangeWorkerOutcome(
             ranges={

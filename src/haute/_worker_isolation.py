@@ -62,6 +62,9 @@ class IsolatedWorkerConfig:
     process_name: str = "haute-isolated-worker"
     # Widens only an RLIMIT_AS cap, for a model library's thread reservations.
     address_space_allowance_bytes: int = 0
+    # Variables set for the child at spawn only (for example a library's
+    # import-time thread pool size); the parent's environment is unchanged.
+    environment: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
@@ -94,6 +97,7 @@ def worker_config_for_memory_policy(
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
     address_space_allowance_bytes: int = 0,
+    environment: Mapping[str, str] | None = None,
 ) -> IsolatedWorkerConfig:
     """Build worker controls without implying a hard cap on unsupported hosts."""
     enforcement = resolve_worker_memory_enforcement()
@@ -110,6 +114,7 @@ def worker_config_for_memory_policy(
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
         address_space_allowance_bytes=address_space_allowance_bytes,
+        environment=dict(environment or {}),
     )
 
 
@@ -650,12 +655,20 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
     other spawn can inherit them, and every touched variable is restored to its
     prior value before the lock is released — including when ``start()`` raises.
     Callers with nothing to override pass an empty mapping so that every spawn
-    takes the same serialised path.
+    takes the same serialised path. A streaming chunk-size cap active in this
+    process stays in force here; the child is handed the setting it caps and
+    applies it at entry (``apply_spawned_streaming_chunk_size``).
     """
-    # Every worker learns its server's pid, so it can end when the server does
-    # (see ``haute._parent_watch``).
-    environment = {**environment, PARENT_PID_ENV: str(os.getpid())}
-    with _SPAWN_ENVIRONMENT_LOCK:
+    from haute._polars_utils import streaming_chunk_size_for_spawn
+
+    with _SPAWN_ENVIRONMENT_LOCK, streaming_chunk_size_for_spawn() as chunk_environment:
+        # Every worker learns its server's pid, so it can end when the server
+        # does (see ``haute._parent_watch``).
+        environment = {
+            **chunk_environment,
+            **environment,
+            PARENT_PID_ENV: str(os.getpid()),
+        }
         previous: dict[str, str | None] = {name: os.environ.get(name) for name in environment}
         try:
             os.environ.update(environment)
@@ -712,7 +725,7 @@ def run_isolated_worker(
     process_started = False
     try:
         try:
-            start_process_with_environment(process, {})
+            start_process_with_environment(process, worker_config.environment)
             process_started = True
         except Exception as exc:  # pragma: no cover - depends on multiprocessing internals
             raise IsolatedWorkerStartError(
@@ -834,7 +847,10 @@ def _isolated_worker_entrypoint(
     memory_limit_bytes: int | None,
     require_memory_limit: bool = False,
 ) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
     exit_with_parent()
+    apply_spawned_streaming_chunk_size()
     lease = NativeMemoryLease()
     applied = False
     try:
@@ -849,7 +865,7 @@ def _isolated_worker_entrypoint(
         result_queue.close()
         result_queue.join_thread()
         return
-    with native_memory_backend_scope(lease.backend if applied else None):
+    with native_memory_backend_scope(lease.backend if applied else None, lease):
         try:
             envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:

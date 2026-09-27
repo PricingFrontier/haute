@@ -1153,3 +1153,20 @@ describe("BandingEditor on a date column", () => {
     expect(JSON.parse(dialog.getAttribute("data-initial")!)).toBeNull()
   })
 })
+
+describe("BandingEditor saved input column", () => {
+  afterEach(cleanup)
+
+  it("marks a saved input column the upstream columns lack", () => {
+    renderEditor(
+      <BandingEditor
+        config={{ factors: [{ banding: "breakpoints", column: "old_age", outputColumn: "age_band", rules: [] }] }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
+        accentColor="#22d3ee"
+      />,
+    )
+    expect(screen.getByDisplayValue("old_age (not in input)")).toBeInTheDocument()
+  })
+})

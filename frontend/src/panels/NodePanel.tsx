@@ -27,7 +27,7 @@ import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDoc
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
-import { optimiserPanesFor, resolveOptimiserPane } from "./optimiser/optimiserPanes"
+import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -1579,13 +1579,12 @@ function NodePanelContent({
         ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
         : undefined,
   }))
-  const optimiserMode = typeof config.mode === "string" ? config.mode : "online"
   const showOptimiserPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.OPTIMISER
-  const activeOptimiserPane = resolveOptimiserPane(optimiserMode, showOptimiserPanes ? rememberedOptimiserPane : undefined)
+  const activeOptimiserPane = resolveOptimiserPane(showOptimiserPanes ? rememberedOptimiserPane : undefined)
   const flaggedOptimiserPanes = showOptimiserPanes && optimiserPaneIssues.nodeId === node.id
     ? optimiserPaneIssues.panes
     : []
-  const optimiserTabs = optimiserPanesFor(optimiserMode).map((pane) => ({
+  const optimiserTabs = OPTIMISER_PANES.map((pane) => ({
     ...pane,
     indicator: pane.key === "solve" && hasActiveSolveJob
       ? { kind: "active" as const, label: "Solve is running" }

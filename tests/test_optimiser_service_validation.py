@@ -447,8 +447,7 @@ def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-    prepared = service._prepare_frontier_auto_range(body)
-    prepared["streaming_plan"] = None
+    _node, prepared = service._prepare_frontier_auto_range(body)
 
     with (
         patch.object(service, "_execute_pipeline", side_effect=_group_by_contract_error()),

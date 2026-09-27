@@ -354,7 +354,7 @@ no reduced-arity path for earlier delegate signatures.
   probe's error; scorer exceptions keep their types at Haute's collect seams.
 - **Batched** (`_score_batched_unified`): wraps the raw model in a
   short-lived `ScoringModel` carrier, sinks the (possibly projection-
-  pruned) input to a temp parquet, delegates to
+  pruned) input to a temp parquet (skipped when the input is sliceable), delegates to
   `_batch_score_to_parquet` (chunked prediction, see below), unlinks the
   input temp file, registers the output temp directory for process-exit
   cleanup, and returns a lazy scan of its parts (`scan_parts`). Inside a
@@ -366,6 +366,18 @@ no reduced-arity path for earlier delegate signatures.
   uses this to make a batch Model Score's scored parts the staged artifact of
   its shared-snapshot capture, so the scored rows are written once (see the
   [execution engine](../execution-engine/low-level.md)).
+- **Input fan-out** (`ModelScorer(input_fanout=)`, `_score_input_fanout`):
+  the Model Score builder passes the product of the step counts of every
+  scenario expander upstream of the node (`_upstream_scenario_fanout`; an
+  expander without a valid step count counts as 1). `score()` sets it for the
+  pipeline it runs, and `_sink_to_temp` sinks under
+  `streaming_chunk_size_cap(current_streaming_chunk_size() // fanout)` when it
+  is above 1. An `explode` turns each streaming chunk of its source into
+  `fanout` times as many rows in every Polars thread, so the smaller source
+  chunk keeps an expanded chunk within the pipeline setting (real pipeline, 10M
+  quotes x 11: the auto-range worker's peak with the scored frame cold fell
+  from 4.1 to 2.75 GiB at the same speed). Branch expanders multiply too, so
+  the fan-out is an upper bound.
 - **Whole output under a row limit** (`model_score_whole_output`): a row limit
   normally selects the row-local scan, but inside this scope a non-live scorer
   takes the batched path. The walker sets it for a captured Model Score, whose
@@ -944,6 +956,18 @@ to a live MLflow tracking server.
   projection without the prediction predicts nothing, predictions and dtypes
   match eager scoring for regression and classification, and an undeclared
   categorical level raises through `streaming_collect`.
+- **`tests/test_scenario_fanout_sink.py`** — the input-sink cap:
+  `streaming_chunk_size_cap` semantics (it lowers the Polars value but not the
+  setting, never raises it, restores an unset value unset, keeps the smallest of
+  overlapping caps from two threads, lets a setting change inside a cap apply
+  when it ends, releases on an exception, a spawn during a cap leaves the
+  parent's cap in force throughout `start()` while the child runs at the
+  setting, and an isolated worker started under a cap runs at the setting),
+  `_upstream_scenario_fanout`
+  (product of the upstream expanders' step counts, invalid ones counting 1),
+  the Model Score builder handing its scorer that fan-out, and a batched score
+  of an expanded frame whose input sink runs at the setting divided by the
+  fan-out (at the setting with no fan-out).
 - **`tests/test_model_scorer_contracts.py`** — the shared
   `_positive_class_proba_vector` shape contract exercised at the module
   boundary (positive/negative/edge shapes, batch-helper agreement),

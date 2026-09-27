@@ -39,10 +39,8 @@ _DEFAULT_MEMORY_LIMIT_BYTES: dict[ExecutionProfile, int] = {
     ExecutionProfile.OPTIMISER_SETUP: 4 * 1024 * _MIB,
     ExecutionProfile.OPTIMISER_SOLVE: 4 * 1024 * _MIB,
     ExecutionProfile.EXPLORE_ANALYSIS: 4 * 1024 * _MIB,
-    ExecutionProfile.AUTO_RANGE: 2 * 1024 * _MIB,
     ExecutionProfile.DEPLOY_LIVE: 1024 * _MIB,
     ExecutionProfile.DEPLOY_BATCH: 4 * 1024 * _MIB,
-    ExecutionProfile.CHUNKED_MAP_REDUCE: 4 * 1024 * _MIB,
     ExecutionProfile.NODE_SNAPSHOT: 4 * 1024 * _MIB,
 }
 
@@ -82,10 +80,6 @@ _ADAPTIVE_MEMORY_POLICY: dict[ExecutionProfile, _AdaptiveMemoryPolicy] = {
         available_ram_basis_points=7_000,
         floor_bytes=4 * 1024 * _MIB,
     ),
-    ExecutionProfile.AUTO_RANGE: _AdaptiveMemoryPolicy(
-        available_ram_basis_points=6_000,
-        floor_bytes=2 * 1024 * _MIB,
-    ),
     ExecutionProfile.DEPLOY_LIVE: _AdaptiveMemoryPolicy(
         available_ram_basis_points=2_500,
         floor_bytes=1024 * _MIB,
@@ -93,10 +87,6 @@ _ADAPTIVE_MEMORY_POLICY: dict[ExecutionProfile, _AdaptiveMemoryPolicy] = {
     ),
     ExecutionProfile.DEPLOY_BATCH: _AdaptiveMemoryPolicy(
         available_ram_basis_points=7_000,
-        floor_bytes=4 * 1024 * _MIB,
-    ),
-    ExecutionProfile.CHUNKED_MAP_REDUCE: _AdaptiveMemoryPolicy(
-        available_ram_basis_points=6_000,
         floor_bytes=4 * 1024 * _MIB,
     ),
     ExecutionProfile.NODE_SNAPSHOT: _AdaptiveMemoryPolicy(
@@ -113,9 +103,7 @@ _ADAPTIVE_LOCAL_PROFILES = frozenset(
         ExecutionProfile.OPTIMISER_SETUP,
         ExecutionProfile.OPTIMISER_SOLVE,
         ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
         ExecutionProfile.NODE_SNAPSHOT,
     }
 )
@@ -145,10 +133,6 @@ _PROFILE_MEMORY_ENV: dict[ExecutionProfile, tuple[str, str]] = {
         "HAUTE_EXPLORE_MEMORY_LIMIT_BYTES",
         "HAUTE_EXPLORE_MEMORY_LIMIT_MB",
     ),
-    ExecutionProfile.AUTO_RANGE: (
-        "HAUTE_AUTO_RANGE_MEMORY_LIMIT_BYTES",
-        "HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB",
-    ),
     ExecutionProfile.DEPLOY_LIVE: (
         "HAUTE_DEPLOY_LIVE_MEMORY_LIMIT_BYTES",
         "HAUTE_DEPLOY_LIVE_MEMORY_LIMIT_MB",
@@ -156,10 +140,6 @@ _PROFILE_MEMORY_ENV: dict[ExecutionProfile, tuple[str, str]] = {
     ExecutionProfile.DEPLOY_BATCH: (
         "HAUTE_DEPLOY_BATCH_MEMORY_LIMIT_BYTES",
         "HAUTE_DEPLOY_BATCH_MEMORY_LIMIT_MB",
-    ),
-    ExecutionProfile.CHUNKED_MAP_REDUCE: (
-        "HAUTE_CHUNKED_MEMORY_LIMIT_BYTES",
-        "HAUTE_CHUNKED_MEMORY_LIMIT_MB",
     ),
     ExecutionProfile.NODE_SNAPSHOT: (
         "HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_BYTES",
@@ -197,10 +177,6 @@ _PROFILE_PROCESS_RSS_ENV: dict[ExecutionProfile, tuple[str, str]] = {
         "HAUTE_EXPLORE_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_EXPLORE_PROCESS_RSS_LIMIT_MB",
     ),
-    ExecutionProfile.AUTO_RANGE: (
-        "HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_BYTES",
-        "HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB",
-    ),
     ExecutionProfile.DEPLOY_LIVE: (
         "HAUTE_DEPLOY_LIVE_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_DEPLOY_LIVE_PROCESS_RSS_LIMIT_MB",
@@ -208,10 +184,6 @@ _PROFILE_PROCESS_RSS_ENV: dict[ExecutionProfile, tuple[str, str]] = {
     ExecutionProfile.DEPLOY_BATCH: (
         "HAUTE_DEPLOY_BATCH_PROCESS_RSS_LIMIT_BYTES",
         "HAUTE_DEPLOY_BATCH_PROCESS_RSS_LIMIT_MB",
-    ),
-    ExecutionProfile.CHUNKED_MAP_REDUCE: (
-        "HAUTE_CHUNKED_PROCESS_RSS_LIMIT_BYTES",
-        "HAUTE_CHUNKED_PROCESS_RSS_LIMIT_MB",
     ),
     ExecutionProfile.NODE_SNAPSHOT: (
         "HAUTE_NODE_SNAPSHOT_PROCESS_RSS_LIMIT_BYTES",
@@ -231,9 +203,7 @@ _IN_FLIGHT_PROFILE_SET = frozenset(
         ExecutionProfile.OPTIMISER_SETUP,
         ExecutionProfile.OPTIMISER_SOLVE,
         ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
         ExecutionProfile.NODE_SNAPSHOT,
     }
 )

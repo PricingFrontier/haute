@@ -49,8 +49,6 @@ from haute._types import (
 )
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.execution import (
-    ProjectionRequest,
-    plan_projection,
     ratebook_factor_required_columns,
 )
 from haute.graph_utils import NodeType
@@ -438,7 +436,10 @@ def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
 
     A separate analysis input sits outside the data input's lineage, so setup
     then executes the Optimiser itself in online mode too, which runs every
-    branch it consumes.
+    branch it consumes. So does a data source that feeds the Optimiser through
+    parallel edges: its demand is keyed on the Optimiser
+    (``_optimiser_solve_required_columns_by_node``), which lies outside the
+    data input's lineage.
     """
     optimiser_node = _find_optimiser_node(graph, node_id)
     configured_data_input = optimiser_node.data.config.get("data_input")
@@ -454,39 +455,15 @@ def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
             node_id,
             optimiser_node.data.config,
         )
-        if isinstance(data_input_id, str) and data_input_id:
+        if (
+            isinstance(data_input_id, str)
+            and data_input_id
+            and not _data_source_feeds_optimiser_through_parallel_edges(
+                graph, node_id, data_input_id
+            )
+        ):
             return data_input_id
     return node_id
-
-
-def _solve_columns_by_node(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    *,
-    source: str,
-) -> dict[str, frozenset[str]]:
-    """The columns the solve's setup reads at every node it executes.
-
-    A node the solve reads whole (no concrete demand) is left out: a capture
-    cannot promise it, so the solve recomputes that node as before.
-    """
-    projection = plan_projection(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id=_setup_execution_target_node_id(graph, node_id),
-            profile=ExecutionProfile.OPTIMISER_SETUP,
-            required_columns_by_node=_optimiser_solve_required_columns_by_node(
-                graph, node_id, config
-            ),
-            source=source,
-        )
-    )
-    return {
-        needed_node_id: frozenset(columns)
-        for needed_node_id, columns in projection.needed_by_node.items()
-        if columns is not None
-    }
 
 
 def _quote_id_column(config: Mapping[str, Any]) -> str:
@@ -934,22 +911,70 @@ def resolve_analysis_frame(
     )
 
 
+class AutoRangeValueCheck:
+    """The solver's value contracts, checked on each auto-range batch as it is read.
+
+    Counts are totalled across batches, so a violation is reported with the
+    same message and whole-frame counts as the one-pass check the solver runs
+    (``validate_input_value_contracts``), without a separate whole-frame query.
+    """
+
+    def __init__(self, schema: Any, *, quote_id_col: str, value_check_cols: list[str]) -> None:
+        self._non_finite_check_cols = _non_finite_check_columns(schema, value_check_cols)
+        self._null_check_cols = _null_check_columns(schema, value_check_cols)
+        self._exprs = _value_contract_validation_exprs(
+            quote_id_col=quote_id_col,
+            validate_quote_id_nulls=True,
+            non_finite_check_cols=self._non_finite_check_cols,
+            null_check_cols=self._null_check_cols,
+            cast_to_float32_cols=set(value_check_cols),
+        )
+        self._totals: dict[str, int] = {}
+
+    def add(self, batch: Any) -> bool:
+        """Count one batch's violations; return whether every batch so far was valid."""
+        if batch.height:
+            for alias, count in batch.select(self._exprs).row(0, named=True).items():
+                self._totals[alias] = self._totals.get(alias, 0) + int(count or 0)
+        return not self.violated
+
+    @property
+    def violated(self) -> bool:
+        return any(count > 0 for count in self._totals.values())
+
+    def raise_if_invalid(self) -> None:
+        """Raise the solver's contract error, with whole-frame totals, if any batch failed."""
+        import polars as pl
+
+        if not self.violated:
+            return
+        counts = pl.DataFrame({alias: [self._totals.get(alias, 0)] for alias in self._aliases()})
+        null_count = int(counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
+        if null_count > 0:
+            raise OptimiserSetupError(400, _quote_id_null_detail(null_count))
+        non_finite_detail = _non_finite_detail_from_counts(counts, self._non_finite_check_cols)
+        if non_finite_detail is not None:
+            raise OptimiserSetupError(400, non_finite_detail)
+        null_value_detail = _null_value_detail_from_counts(counts, self._null_check_cols)
+        if null_value_detail is not None:
+            raise OptimiserSetupError(400, null_value_detail)
+
+    def _aliases(self) -> list[str]:
+        return [expr.meta.output_name() for expr in self._exprs]
+
+
 def validate_and_project_auto_range(
     source_lf: Any,
     config: dict[str, Any],
-    *,
-    execution_context: ExecutionContext | None = None,
-) -> tuple[list[str], Any]:
-    """Validate and project only the columns auto-range needs.
+) -> tuple[list[str], Any, AutoRangeValueCheck]:
+    """Check auto-range's schema and project only the columns it reads.
 
-    Auto-range computes per-quote extrema for configured constraints. When the
-    projected input includes the configured objective, it validates the
-    objective for parity with solver input contracts, but it never passes
-    objective, scenario index, or scenario value columns to the range
-    estimator.
+    Returns the constraint columns, the projected frame (the quote id, the
+    objective when the input has it, and the constraints, in their source
+    dtypes) and the value check each batch goes through. The values are
+    checked per batch rather than in a whole-frame query, and the quote id
+    keeps its dtype: no Categorical round trip.
     """
-    import polars as pl
-
     constraints = config["constraints"]
     objective = str(config["objective"])
     qid_col = str(config.get("quote_id", "quote_id"))
@@ -961,29 +986,19 @@ def validate_and_project_auto_range(
     if detail is not None:
         raise OptimiserSetupError(400, detail)
 
-    qid_dtype = schema[qid_col]
     detail = _invalid_quote_id_dtype_detail(schema, qid_col)
     if detail is not None:
         raise OptimiserSetupError(400, detail)
 
     value_check_cols = [*constraint_cols]
-    if objective in available_cols:
+    if objective in available_cols and objective not in value_check_cols:
         value_check_cols.insert(0, objective)
-    validate_input_value_contracts(
-        source_lf,
+    value_check = AutoRangeValueCheck(
         schema,
         quote_id_col=qid_col,
-        validate_quote_id_nulls=True,
-        finite_columns=value_check_cols,
-        cast_to_float32_columns=value_check_cols,
-        execution_context=execution_context,
+        value_check_cols=value_check_cols,
     )
-
-    auto_range_cols = [qid_col, *constraint_cols]
-    cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]
-    if qid_dtype == pl.String:
-        cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
-    return constraint_cols, source_lf.select(auto_range_cols).with_columns(cast_exprs)
+    return constraint_cols, source_lf.select([qid_col, *value_check_cols]), value_check
 
 
 def extract_ratebook_factors(

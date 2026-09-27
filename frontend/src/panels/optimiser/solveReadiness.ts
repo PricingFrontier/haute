@@ -19,7 +19,7 @@ export const FRONTIER_COMPUTE_LIMIT = 10_000
 export const MAX_ANALYSIS_COLUMNS = 12
 
 export const COLUMN_MAPPINGS = [
-  { key: "quote_id", label: "Quote ID" },
+  { key: "quote_id", label: "Row ID" },
   { key: "scenario_index", label: "Scenario Index" },
   { key: "scenario_value", label: "Scenario Value" },
 ] as const
@@ -138,6 +138,14 @@ export type SolveReadiness = {
   canAutoRange: boolean
 }
 
+/** The constraints the frontier sweeps: those with a range entry, in constraint order. */
+export function sweptConstraintNames(
+  constraints: Record<string, unknown>,
+  frontierRanges: Record<string, unknown>,
+): string[] {
+  return Object.keys(constraints).filter((name) => Object.prototype.hasOwnProperty.call(frontierRanges, name))
+}
+
 /**
  * Every reason the node cannot be solved. Mapped columns are checked only once
  * the input's columns are known (`dataInputColumns` non-empty), and analysis
@@ -153,7 +161,6 @@ export function optimiserSolveReadiness(
   const objective = configField(config, "objective", "")
   const factorColumns = configField<string[][]>(config, "factor_columns", [])
   const constraints = configField<Record<string, Record<string, number>>>(config, "constraints", {})
-  const frontierEnabled = configField(config, "frontier_enabled", false)
   const frontierSteps = configField(config, "frontier_steps", 15)
   const frontierRanges = configField<Record<string, { min?: number; max?: number }>>(config, "frontier_ranges", {})
 
@@ -207,26 +214,26 @@ export function optimiserSolveReadiness(
   const analysisColumns = configField<string[]>(config, "analysis_columns", [])
   if (inputs.missingExplicitAnalysisInput) {
     issues.push({
-      pane: "data",
-      label: "Data",
+      pane: "factors",
+      label: "Factors",
       message: inputs.malformedAnalysisInput
-        ? "The analysis input must be an input name."
-        : "The selected analysis input is not connected.",
+        ? "The validation input must be an input name."
+        : "The selected validation input is not connected.",
     })
   } else if (analysisColumns.length > MAX_ANALYSIS_COLUMNS) {
     issues.push({
-      pane: "data",
-      label: "Data",
-      message: `Choose at most ${MAX_ANALYSIS_COLUMNS} analysis columns; ${analysisColumns.length} are chosen.`,
+      pane: "factors",
+      label: "Factors",
+      message: `Choose at most ${MAX_ANALYSIS_COLUMNS} validation factors; ${analysisColumns.length} are chosen.`,
     })
   } else if (analysisFrameColumns.length > 0) {
     const frameColumnNames = new Set(analysisFrameColumns.map((column) => column.name))
     for (const column of analysisColumns) {
       if (!frameColumnNames.has(column)) {
         issues.push({
-          pane: "data",
-          label: "Data",
-          message: `Analysis column “${column}” is not a column of the analysis input.`,
+          pane: "factors",
+          label: "Factors",
+          message: `Validation factor “${column}” is not a column of the validation input.`,
         })
       }
     }
@@ -234,9 +241,9 @@ export function optimiserSolveReadiness(
   // Auto range needs only a solvable setup: it exists to fill the frontier
   // ranges the checks below report as missing.
   const canAutoRange = issues.length === 0
-  const constraintNames = Object.keys(constraints)
-  if (frontierEnabled && constraintNames.length > 0) {
-    for (const name of constraintNames) {
+  const swept = sweptConstraintNames(constraints, frontierRanges)
+  if (swept.length > 0) {
+    for (const name of swept) {
       const range = frontierRanges[name]
       const min = typeof range?.min === "number" && Number.isFinite(range.min) ? range.min : undefined
       const max = typeof range?.max === "number" && Number.isFinite(range.max) ? range.max : undefined
@@ -254,12 +261,12 @@ export function optimiserSolveReadiness(
         })
       }
     }
-    const frontierSolves = frontierSteps ** constraintNames.length
+    const frontierSolves = frontierSteps ** swept.length
     if (frontierSolves > FRONTIER_COMPUTE_LIMIT) {
       issues.push({
         pane: "constraints",
         label: "Constraints",
-        message: `The frontier would run ${frontierSolves.toLocaleString()} solves; the limit is ${FRONTIER_COMPUTE_LIMIT.toLocaleString()}. Reduce the steps per constraint.`,
+        message: `The frontier would run ${frontierSolves.toLocaleString()} solves; the limit is ${FRONTIER_COMPUTE_LIMIT.toLocaleString()}. Reduce the points per swept constraint or sweep fewer constraints.`,
       })
     }
   }

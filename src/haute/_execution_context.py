@@ -57,10 +57,8 @@ class ExecutionProfile(StrEnum):
     OPTIMISER_SETUP = "optimiser_setup"
     OPTIMISER_SOLVE = "optimiser_solve"
     EXPLORE_ANALYSIS = "explore_analysis"
-    AUTO_RANGE = "auto_range"
     DEPLOY_LIVE = "deploy_live"
     DEPLOY_BATCH = "deploy_batch"
-    CHUNKED_MAP_REDUCE = "chunked_map_reduce"
     NODE_SNAPSHOT = "node_snapshot"
 
 

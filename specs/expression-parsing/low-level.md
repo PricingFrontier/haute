@@ -161,7 +161,7 @@ no alias or migration shim; direct test callers use the same current contract.
   `None` passed without `row` becomes a `Null`-dtype column, which Polars rejects for numeric,
   temporal and string methods.
 - **Row-local means registered row-local**: `classify_row_local_expression` admits an operation
-  the Polars operation registry classes as row-local, whether or not chunked execution has a
+  the Polars operation registry classes as row-local, whether or not the chunk classifier has a
   proof for it (`pl.min_horizontal`, `pl.format` and a `when` chained on a conditional are
   admitted), and keeps the chunk classifier's argument guards (`fill_null(strategy=...)`,
   format-inferring `str.to_date()`). An operation missing from the registry is not proven

@@ -1,25 +1,21 @@
 import { describe, expect, it } from "vitest"
-import { optimiserPanesFor, resolveOptimiserPane } from "../optimiserPanes"
+import { OPTIMISER_PANES, resolveOptimiserPane } from "../optimiserPanes"
 
-describe("optimiserPanesFor", () => {
-  it("offers Factors only in ratebook mode", () => {
-    expect(optimiserPanesFor("ratebook").map((pane) => pane.label)).toEqual([
+describe("OPTIMISER_PANES", () => {
+  it("lists the panes in tab order", () => {
+    expect(OPTIMISER_PANES.map((pane) => pane.label)).toEqual([
       "Data", "Factors", "Constraints", "Solve", "Export",
-    ])
-    expect(optimiserPanesFor("online").map((pane) => pane.label)).toEqual([
-      "Data", "Constraints", "Solve", "Export",
     ])
   })
 })
 
 describe("resolveOptimiserPane", () => {
-  it("keeps a remembered pane the mode has", () => {
-    expect(resolveOptimiserPane("online", "solve")).toBe("solve")
-    expect(resolveOptimiserPane("ratebook", "factors")).toBe("factors")
+  it("keeps a remembered pane", () => {
+    expect(resolveOptimiserPane("solve")).toBe("solve")
+    expect(resolveOptimiserPane("factors")).toBe("factors")
   })
 
-  it("opens Data when nothing is remembered or the mode lacks the pane", () => {
-    expect(resolveOptimiserPane("ratebook", undefined)).toBe("data")
-    expect(resolveOptimiserPane("online", "factors")).toBe("data")
+  it("opens Data when nothing is remembered", () => {
+    expect(resolveOptimiserPane(undefined)).toBe("data")
   })
 })

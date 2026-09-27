@@ -26,13 +26,9 @@ from haute._types import PipelineGraph
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_artifacts import _cleanup_orphan_apply_result_artifact
 from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
-from haute.routes._optimiser_service import (
-    OptimiserSolveService,
-    _auto_range_required_columns_by_node,
-)
+from haute.routes._optimiser_service import OptimiserSolveService
 from haute.schemas import (
     OptimiserEstimateRequest,
-    OptimiserFrontierAutoRangeRequest,
     OptimiserSolveRequest,
 )
 from tests.test_training_seeding import _MODELLING, _train
@@ -46,7 +42,7 @@ _SOLVER_COLUMNS = {"quote_id", "scenario_index", "scenario_value", "expected_inc
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(haute_scratch)
     set_project_root(haute_scratch)
-    for profile in ("OPTIMISER_SETUP", "AUTO_RANGE", "TRAINING"):
+    for profile in ("OPTIMISER_SETUP", "OPTIMISER_SOLVE", "TRAINING"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     rows = [(quote, scenario) for quote in range(_QUOTES) for scenario in range(_SCENARIOS)]
@@ -200,19 +196,23 @@ def _setup(
     read: tuple[str, ...],
     profile: ExecutionProfile = ExecutionProfile.OPTIMISER_SETUP,
     extract_factors: bool = False,
+    required_columns_by_node: dict[str, frozenset[str]] | None = None,
 ) -> _Setup:
-    """Run one optimiser setup as its callers do and read *read* while the plan is held."""
+    """Run one optimiser setup as its callers do and read *read* while the plan is held.
+
+    *required_columns_by_node* replaces the solve's demand, to publish a
+    capture another caller would have made.
+    """
     calls = _counting_builds(monkeypatch)
     pipeline = PipelineGraph.model_validate(graph)
     config = pipeline.node_map["opt"].data.config
     mode = str(config["mode"])
-    body: OptimiserSolveRequest | OptimiserFrontierAutoRangeRequest
-    if profile == ExecutionProfile.AUTO_RANGE:
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        required = _auto_range_required_columns_by_node(pipeline, "opt", config, mode=mode)
-    else:
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
-        required = _optimiser_solve_required_columns_by_node(pipeline, "opt", config)
+    body = OptimiserSolveRequest(graph=graph, node_id="opt")
+    required = (
+        _optimiser_solve_required_columns_by_node(pipeline, "opt", config)
+        if required_columns_by_node is None
+        else required_columns_by_node
+    )
     store = JobStore()
     service = OptimiserSolveService(store)
     context = create_admitted_execution_context(operation="optimiser_setup_test", profile=profile)
@@ -359,87 +359,315 @@ def test_ratebook_factors_from_separate_api_input(
     assert cold.factor_rows == warm.factor_rows == _QUOTES
 
 
-def test_auto_range_capture_serves_the_solve(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    graph = _online_chain(project)
-    pipeline = PipelineGraph.model_validate(graph)
-    auto_range_demand = _auto_range_required_columns_by_node(
-        pipeline, "opt", pipeline.node_map["opt"].data.config, mode="online"
+# ---------------------------------------------------------------------------
+# Auto-range runs the solve setup's pipeline stage
+# ---------------------------------------------------------------------------
+
+
+def _analysis_side_input_graph(project: Path) -> dict[str, Any]:
+    """``src → D`` is the data input; ``attrs`` a separate analysis input."""
+    return _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            (
+                "D",
+                "polars",
+                {"code": "df = src.with_columns(pl.col('volume') * 1.0).sort('quote_id')"},
+            ),
+            ("attrs", "dataInput", _data_input(project, "attrs.parquet")),
+            (
+                "opt",
+                "optimiser",
+                {**_online("D"), "analysis_input": "attrs", "analysis_columns": ["territory"]},
+            ),
+        ],
+        [("src", "D"), ("D", "opt"), ("attrs", "opt")],
     )
-    # Auto-range itself needs fewer columns than the solve reads.
-    assert set(auto_range_demand["D"]) < _SOLVER_COLUMNS
-
-    auto_range = _setup(monkeypatch, graph, read=("D",), profile=ExecutionProfile.AUTO_RANGE)
-    solve = _setup(monkeypatch, graph, read=("D",))
-
-    # It captures the solve's columns, so the solve seeds instead of recomputing.
-    assert auto_range.captures == [("D", "published")]
-    assert solve.seeds == {"D"}
-    assert sum(solve.calls.values()) == 0
-    assert _SOLVER_COLUMNS <= set(solve.frames["D"].columns)
 
 
-def test_streaming_auto_range_capture_serves_the_solve(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Streaming auto-range captures its pre-expansion base with the solve's columns."""
+def _api_column(name: str, kind: str) -> dict[str, Any]:
+    return {"name": name, "path": f"$[:].{name}", "type": kind, "selected": True}
+
+
+def parallel_edge_graph(root: Path, quotes: pl.DataFrame) -> dict[str, Any]:
+    """One API source feeds the optimiser through two edges, one per emitted table.
+
+    ``quotes`` is the data input; ``keys`` is a second frame of the same source.
+    """
+    (root / "quotes.json").write_text(json.dumps(quotes.to_dicts()), encoding="utf-8")
+    api = {
+        "path": str(root / "quotes.json"),
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    _api_column("quote_id", "str"),
+                    _api_column("scenario_index", "int"),
+                    _api_column("scenario_value", "float"),
+                    _api_column("expected_income", "float"),
+                    _api_column("volume", "float"),
+                ],
+            },
+            {
+                "path": "$[:]",
+                "label": "keys",
+                "emit": True,
+                "columns": [_api_column("quote_id", "str")],
+            },
+        ],
+    }
+    return _graph(
+        root,
+        [("api", "apiInput", api), ("opt", "optimiser", _online("quotes"))],
+        [
+            {"id": "e_quotes", "source": "api", "sourceHandle": "quotes", "target": "opt"},
+            {"id": "e_keys", "source": "api", "sourceHandle": "keys", "target": "opt"},
+        ],
+    )
+
+
+def _parallel_edge_graph(project: Path) -> dict[str, Any]:
+    return parallel_edge_graph(project, pl.read_parquet(project / "quotes.parquet"))
+
+
+def _plain_graph(project: Path) -> dict[str, Any]:
+    """``src → opt``: the parallel-edge source's data table, read directly."""
+    return _graph(
+        project,
+        [
+            ("src", "dataInput", _data_input(project, "quotes.parquet")),
+            ("opt", "optimiser", _online("src")),
+        ],
+        [("src", "opt")],
+    )
+
+
+def _client() -> Any:
     from fastapi.testclient import TestClient
 
     from haute.server import app
 
-    pl.DataFrame(
-        {
-            "quote_id": [f"q{quote}" for quote in range(_QUOTES)],
-            "volume": [1.0] * _QUOTES,
-            "expected_income": [100.0 + quote for quote in range(_QUOTES)],
-        }
-    ).write_parquet(project / "per_quote.parquet")
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _completed(client: Any, route: str, start: str, graph: dict[str, Any]) -> dict[str, Any]:
+    started = client.post(f"/api/optimiser/{start}", json={"graph": graph, "node_id": "opt"})
+    assert started.status_code == 200, started.text
+    job_id = started.json()["job_id"]
+    _poll(client, route, job_id)
+    status: dict[str, Any] = client.get(f"/api/optimiser/{route}/status/{job_id}").json()
+    assert status["status"] == "completed", status.get("message")
+    return status
+
+
+def _auto_range_job(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
+    return _completed(client, "frontier/auto-range", "frontier/auto-range/start", graph)
+
+
+def _solve_job(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
+    return _completed(client, "solve", "solve", graph)
+
+
+def _job_captures(status: dict[str, Any]) -> list[tuple[str, str]]:
+    return [
+        (capture["node_id"], capture["outcome"])
+        for capture in status["execution_metrics"]["shared_snapshot_captures"]
+    ]
+
+
+def _job_seeds(status: dict[str, Any]) -> set[str]:
+    return {seed["node_id"] for seed in status["execution_metrics"]["shared_snapshot_seeds"]}
+
+
+def _recording_seed_plans(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record every seed-plan request optimiser setup opens, then open it."""
+    from haute.routes import _optimiser_service
+
+    requests: list[Any] = []
+    real = _optimiser_service.open_seed_plan
+
+    def recording(request: Any, **kwargs: Any) -> Any:
+        requests.append(request)
+        return real(request, **kwargs)
+
+    monkeypatch.setattr(_optimiser_service, "open_seed_plan", recording)
+    return requests
+
+
+_STAGE_GRAPHS = {
+    "online": (_online_chain, "D"),
+    # Ratebook setup also reads the banding input, so it executes the optimiser.
+    "ratebook": (_ratebook_graph, "opt"),
+    # A separate analysis input lies outside the data input's lineage.
+    "analysis_side_input": (_analysis_side_input_graph, "opt"),
+    # Demand on one frame of a multi-frame source is keyed on the optimiser.
+    "parallel_edges": (_parallel_edge_graph, "opt"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_STAGE_GRAPHS))
+def test_auto_range_and_solve_setup_open_the_same_seed_plan(
+    project: Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    build, target = _STAGE_GRAPHS[shape]
+    graph = build(project)
+    requests = _recording_seed_plans(monkeypatch)
+    client = _client()
+
+    _auto_range_job(client, graph)
+    _solve_job(client, graph)
+
+    auto_range_request, solve_request = requests
+    assert auto_range_request == solve_request
+    assert solve_request.target_node_id == target
+    assert solve_request.profile is ExecutionProfile.OPTIMISER_SOLVE
+
+
+def test_a_parallel_edge_source_runs_auto_range_and_solve_on_its_data_table(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client()
+    plain_ranges = _auto_range_job(client, _plain_graph(project))["result"]["ranges"]
+    plain_solve = _solve_job(client, _plain_graph(project))["result"]
+
+    graph = _parallel_edge_graph(project)
+    ranges = _auto_range_job(client, graph)["result"]["ranges"]
+    solve = _solve_job(client, graph)["result"]
+
+    assert ranges == plain_ranges
+    assert solve["total_objective"] == pytest.approx(plain_solve["total_objective"])
+    assert solve["constraints"] == pytest.approx(plain_solve["constraints"])
+
+
+def scored_graph(
+    project: Path, monkeypatch: pytest.MonkeyPatch, *, data: str = "quotes.parquet"
+) -> tuple[dict[str, Any], list[int]]:
+    """``src → M → opt``, where ``M`` is a Model Score node; returns its predict calls.
+
+    *data* names the scored quotes under *project*.
+    """
+    from haute import _mlflow_io
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    predicted: list[int] = []
+
+    class Uplift:
+        def predict(self, features: Any) -> Any:
+            import numpy as np
+
+            predicted.append(len(features))
+            return np.asarray(features["expected_income"], dtype="float64") * 1.1
+
+    monkeypatch.setattr(
+        _mlflow_io,
+        "load_mlflow_model",
+        lambda *_args, **_kwargs: _mlflow_io.ScoringModel(
+            Uplift(), ["expected_income"], flavor="pyfunc"
+        ),
+    )
+    contract_path = project / "feature_contract.json"
+    save_contract(
+        build_contract(
+            features=["expected_income"],
+            feature_types={"expected_income": "Float64"},
+            categorical_features=[],
+            target_name="target",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_path,
+    )
     graph = _graph(
         project,
         [
-            ("src", "dataInput", _data_input(project, "per_quote.parquet")),
+            ("src", "dataInput", _data_input(project, data)),
             (
-                "base",
-                "polars",
-                {"code": "df = src.with_columns(pl.col('volume') * 1.0).sort('quote_id')"},
-            ),
-            (
-                "scenario",
-                "scenarioExpander",
+                "M",
+                "modelScore",
                 {
-                    "quote_id": "quote_id",
-                    "column_name": "scenario_value",
-                    "min_value": 0.9,
-                    "max_value": 1.1,
-                    "stepCount": _SCENARIOS,
-                    "step_column": "scenario_index",
+                    "sourceType": "run",
+                    "run_id": "run-1",
+                    "artifact_path": "model.pyfunc",
+                    "task": "regression",
+                    "output_column": "score",
+                    "feature_contract_path": str(contract_path),
                 },
             ),
-            ("opt", "optimiser", {**_online("scenario"), "chunk_size": 2}),
+            ("opt", "optimiser", {**_online("M"), "objective": "score"}),
         ],
-        [("src", "base"), ("base", "scenario"), ("scenario", "opt")],
+        [("src", "M"), ("M", "opt")],
     )
-    client = TestClient(app, raise_server_exceptions=False)
+    return graph, predicted
 
-    started = client.post(
-        "/api/optimiser/frontier/auto-range/start", json={"graph": graph, "node_id": "opt"}
+
+def test_auto_range_capture_of_a_scored_frame_serves_the_solve(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, predicted = scored_graph(project, monkeypatch)
+    client = _client()
+
+    auto_range = _auto_range_job(client, graph)
+    assert predicted, "the cold auto-range scores the frame"
+    assert ("M", "published") in _job_captures(auto_range)
+    scored = len(predicted)
+    calls = _counting_builds(monkeypatch)
+    _solve_job(client, graph)
+
+    assert len(predicted) == scored
+    assert calls["src"] == calls["M"] == 0
+
+
+def test_solve_capture_of_a_scored_frame_serves_auto_range(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, predicted = scored_graph(project, monkeypatch)
+    client = _client()
+
+    _solve_job(client, graph)
+    assert predicted, "the cold solve scores the frame"
+    scored = len(predicted)
+    calls = _counting_builds(monkeypatch)
+    auto_range = _auto_range_job(client, graph)
+
+    assert len(predicted) == scored
+    assert calls["src"] == calls["M"] == 0
+    assert "M" in _job_seeds(auto_range)
+    assert _job_captures(auto_range) == []
+
+
+def test_auto_range_widens_a_narrow_generation_the_solve_then_seeds(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, predicted = scored_graph(project, monkeypatch)
+    # A fresh generation of the scored frame without the solve's scenario columns,
+    # as a capture of only what the ranges read would publish.
+    narrow = _setup(
+        monkeypatch,
+        graph,
+        read=("M",),
+        required_columns_by_node={"M": frozenset({"quote_id", "score", "volume"})},
     )
-    assert started.status_code == 200, started.text
-    job_id = started.json()["job_id"]
-    assert _poll(client, "frontier/auto-range", job_id) == "completed"
-    status = client.get(f"/api/optimiser/frontier/auto-range/status/{job_id}").json()
-    solve = _setup(monkeypatch, graph, read=("scenario",))
+    assert narrow.captures == [("M", "published")]
+    assert "scenario_index" not in narrow.frames["M"].columns
+    scored_narrow = len(predicted)
+    client = _client()
 
-    # The streaming path ran from the base below the expander and captured it
-    # with what the solve reads there, not just what auto-range reads.
-    assert [
-        (capture["node_id"], capture["outcome"])
-        for capture in status["execution_metrics"]["shared_snapshot_captures"]
-    ] == [("base", "published")]
-    assert solve.seeds == {"base"}
-    assert solve.calls["src"] == solve.calls["base"] == 0
-    assert _SOLVER_COLUMNS <= set(solve.frames["scenario"].columns)
+    auto_range = _auto_range_job(client, graph)
+
+    # The narrow generation cannot serve the solve's demand: auto-range rebuilds
+    # the scored frame and publishes it with the solve's columns.
+    assert len(predicted) > scored_narrow
+    assert ("M", "published") in _job_captures(auto_range)
+    widened = len(predicted)
+    calls = _counting_builds(monkeypatch)
+    _solve_job(client, graph)
+
+    assert len(predicted) == widened
+    assert calls["src"] == calls["M"] == 0
 
 
 def test_estimate_seeds_setup_capture(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:

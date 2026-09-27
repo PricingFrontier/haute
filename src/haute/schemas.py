@@ -3062,33 +3062,10 @@ class OptimiserFrontierRange(BaseModel):
     max: float
 
 
-class OptimiserChunkFallback(BaseModel):
-    """A lost chunk optimisation recorded on an auto-range job.
-
-    Chunk ineligibility never fails the request, so this record is the only
-    place the reason survives; typing it keeps the emitted keys and the three
-    stable codes part of the API contract.
-    """
-
-    code: Literal[
-        "chunk_user_code_ineligible",
-        "model_score_ineligible",
-        "chunk_plan_unsupported",
-    ]
-    node_id: str | None = None
-    operator: str | None = None
-    reason: str | None = None
-    line: int | None = None
-    column: int | None = None
-    message: str
-
-
 class OptimiserFrontierAutoRangeResponse(BaseModel):
     status: str = "ok"
     ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
     method: str = "scenario_envelope"
-    warning: str | None = None
-    chunk_fallback: OptimiserChunkFallback | None = None
 
 
 class OptimiserFrontierAutoRangeStartResponse(BaseModel):
@@ -3328,8 +3305,7 @@ class OptimiserSolverSettings(BaseModel):
     # Ratebook only.
     max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
     cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
-    # Only when the solve requested a frontier.
-    frontier_enabled: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Only when the solve swept a constraint.
     frontier_steps: int | None = Field(default=None, exclude_if=lambda value: value is None)
     frontier_ranges: dict[str, Any] | None = Field(
         default=None, exclude_if=lambda value: value is None

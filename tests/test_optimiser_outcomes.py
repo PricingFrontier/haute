@@ -23,8 +23,8 @@ from haute._types import PipelineGraph
 from haute.routes import _optimiser_artifacts, _optimiser_input, _optimiser_service
 from haute.routes._optimiser_input import (
     OptimiserSetupError,
+    _optimiser_solve_required_columns_by_node,
     _setup_execution_target_node_id,
-    _solve_columns_by_node,
     resolve_analysis_frame,
     resolve_analysis_plan,
 )
@@ -321,7 +321,6 @@ class TestScenarioGrid:
             client,
             _data_graph(
                 _scored(tmp_path),
-                frontier_enabled=True,
                 frontier_steps=3,
                 frontier_ranges={"volume": {"min": 5.0, "max": 7.0}},
             ),
@@ -636,7 +635,7 @@ class TestSideInputPath:
         assert _setup_execution_target_node_id(graph, "opt") == "opt"
         assert "regions" in _optimiser_input._optimiser_side_input_ids(graph, "opt")
         # Only quote_id and the analysis columns are demanded from the frame.
-        demand = _solve_columns_by_node(graph, "opt", dict(config), source="batch")
+        demand = _optimiser_solve_required_columns_by_node(graph, "opt", dict(config))
         assert demand["regions"] == frozenset({"quote_id", "region"})
 
     def test_changing_analysis_input_changes_the_solves_identity(self, tmp_path):

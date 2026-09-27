@@ -52,11 +52,11 @@ This tells the optimiser: maximise the objective column, but keep premium at or 
     | `structure_mode` | `"explicit"` (you define the factor structure) or `"auto"` (inferred from the data) |
 
 ??? info "Efficient frontier"
-    The efficient frontier shows the best achievable tradeoff between your objective and your constraints. Enable it to see how the optimum changes as absolute portfolio total bounds are tightened or relaxed.
+    The efficient frontier shows the best achievable tradeoff between your objective and your constraints. Switch a constraint to **Sweep** to see how the optimum changes as its absolute portfolio total bound is tightened or relaxed; constraints you do not sweep stay at their bound at every frontier point. With nothing swept, the optimiser solves a single point.
 
     Frontier is available in both online and ratebook modes. Ratebook frontiers can be significantly more expensive because each frontier point may require another factor-table optimisation.
 
-    Prefer `frontier_ranges` for new configs. Each range is keyed by constraint name and uses absolute portfolio totals, not multipliers:
+    Each swept constraint has an entry in `frontier_ranges`, keyed by constraint name, in absolute portfolio totals rather than multipliers:
 
     ```json
     {
@@ -69,9 +69,8 @@ This tells the optimiser: maximise the objective column, but keep premium at or 
 
     | Config | Description |
     |---|---|
-    | `frontier_enabled` | Whether to compute an efficient frontier after the individual-point solve |
-    | `frontier_ranges` | Preferred absolute `min`/`max` portfolio totals for each constraint |
-    | `frontier_steps` | Number of points per constraint dimension on the frontier |
+    | `frontier_ranges` | Absolute `min`/`max` portfolio totals for each swept constraint; a frontier is computed when any constraint has one |
+    | `frontier_steps` | Number of points per swept constraint on the frontier |
 
 **See also:**
 

@@ -173,12 +173,12 @@ describe("executionDiagnostics", () => {
   it("derives a useful memory-limited failure message from execution metrics", () => {
     const message = buildExecutionFailureMessage(
       "Stopped",
-      makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+      makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: "memory_limited" }),
       { prefix: "Auto range failed" },
     )
 
     expect(message).toBe(
-      "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+      "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
     )
   })
 
@@ -324,7 +324,28 @@ describe("executionDiagnostics", () => {
       [
         "an admission refused by in-flight work",
         { reason: "in_flight_memory_budget_exceeded", rss_at_admission_bytes: GB },
-        "Other running work holds the memory this needs. Try again when it finishes.",
+        "Another job is running. Try again when it finishes.",
+      ],
+      [
+        "an admission refused by a running auto range",
+        {
+          reason: "in_flight_memory_budget_exceeded",
+          in_flight_operations: ["optimiser_solve:frontier_auto_range"],
+        },
+        "Another job is running (Auto range). Try again when it finishes.",
+      ],
+      [
+        "an admission refused by several jobs, one of them unnamed",
+        {
+          reason: "in_flight_memory_budget_exceeded",
+          in_flight_operations: [
+            "optimiser_solve:optimiser_solve",
+            "training_prep:training_job",
+            "lazy_sink:some_internal_step",
+            "optimiser_solve:optimiser_solve_worker",
+          ],
+        },
+        "Another job is running (Optimisation, Model training). Try again when it finishes.",
       ],
       [
         "an unenforceable native cap",

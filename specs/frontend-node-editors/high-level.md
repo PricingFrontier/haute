@@ -22,6 +22,11 @@ backend API modules own validation and persistence.
 - Editor updates flow through the supplied configuration callbacks. Text and numeric drafts are
   committed on blur/Enter where their controls use the shared committed-input primitives, so a
   normal edit does not create a graph mutation for each keystroke.
+- An editor shows its saved configuration as soon as it opens. Upstream column lists arrive
+  with the first preview, so until then a column field shows its saved value (a select offers
+  it through the shared `SavedValueOption`), and nothing is flagged as missing: a saved column
+  is marked "(not in input)", unavailable, or not found only once the columns are known and
+  lack it.
 - Connected inputs are listed by their **input name — the exact argument name in the node's
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),

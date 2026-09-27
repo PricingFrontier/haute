@@ -52,7 +52,7 @@ export type SegmentResults = {
   indexes: Readonly<Record<string, OptimiserSegmentIndexResponse>>
 }
 
-export const NO_SEGMENT_KEYS = "Add analysis columns in the optimiser config"
+export const NO_SEGMENT_KEYS = "Tick validation factors in the optimiser's Factors pane"
 
 const QUOTES_WEIGHT = "quotes"
 const APPLY_REPLACED = "frontier_point_apply_replaced"

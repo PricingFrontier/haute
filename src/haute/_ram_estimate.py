@@ -67,6 +67,7 @@ __all__ = [
     "estimate_materialisation_boundaries",
     "estimate_safe_training_rows",
     "decoded_frame_row_width_bytes",
+    "string_view_bytes_per_row",
     "RamEstimate",
     "TrainingEstimateUnavailableReason",
 ]
@@ -81,6 +82,26 @@ def decoded_frame_row_width_bytes(frame: pl.DataFrame) -> float:
     return sum(
         max(8, frame.get_column(column).estimated_size() / frame.height) for column in frame.columns
     )
+
+
+_STRING_VIEW_BYTES = 16
+_STRING_VIEW_INLINE_BYTES = 12
+
+
+def string_view_bytes_per_row(series: pl.Series) -> float:
+    """Bytes per value of a String column as Arrow string views hold it.
+
+    Every value is a 16-byte view; a value longer than 12 bytes also keeps its
+    payload in a data buffer, while shorter values are inlined in the view.
+    Normalised by height like :func:`decoded_frame_row_width_bytes`.
+    """
+    if not isinstance(series, pl.Series):
+        raise TypeError("series must be a Polars Series")
+    if series.len() == 0:
+        return float(_STRING_VIEW_BYTES)
+    lengths = series.cast(pl.String).str.len_bytes()
+    payload = lengths.filter(lengths > _STRING_VIEW_INLINE_BYTES).sum()
+    return _STRING_VIEW_BYTES + float(payload or 0) / series.len()
 
 
 class MaterialisationEstimateState(StrEnum):

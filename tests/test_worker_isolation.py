@@ -73,6 +73,10 @@ def _allocate_native_column(size_bytes: int) -> int:
     return pl.select(pl.int_range(0, size_bytes // 8, dtype=pl.Int64).alias("x")).height
 
 
+def _read_environment(name: str) -> str | None:
+    return os.environ.get(name)
+
+
 def _raise_value_error(message: str) -> None:
     raise ValueError(message)
 
@@ -404,6 +408,21 @@ def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
 ) -> None:
     """Every supervisor maps worker failures to 507 through one shared predicate."""
     assert isolated_worker_failure_is_memory(failure) is expected
+
+
+def test_isolated_worker_environment_reaches_the_child_only() -> None:
+    """A spawn-time variable is visible in the child and never left in the parent."""
+    name = "HAUTE_TEST_WORKER_ENVIRONMENT"
+    assert name not in os.environ
+
+    result = run_isolated_worker(
+        _read_environment,
+        name,
+        config=IsolatedWorkerConfig(process_name="test-worker", environment={name: "7"}),
+    )
+
+    assert result == "7"
+    assert name not in os.environ
 
 
 def test_isolated_worker_returns_picklable_value() -> None:

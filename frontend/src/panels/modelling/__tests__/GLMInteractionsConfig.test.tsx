@@ -198,3 +198,21 @@ describe("GLMInteractionsConfig", () => {
     expect(within(card(1)).queryByText(/Duplicate interaction/)).not.toBeInTheDocument()
   })
 })
+
+describe("GLMInteractionsConfig before the columns load", () => {
+  afterEach(cleanup)
+
+  it("shows the saved factors without flagging them", () => {
+    render(
+      <GLMInteractionsConfig
+        config={{ target: "target", algorithm: "glm", terms: { age: { type: "linear" } }, interactions: [{ factors: ["age", "region"], include_main: true }] }}
+        onUpdate={vi.fn<OnUpdateConfig>(() => ({ ok: true as const }))}
+        columns={[]}
+      />,
+    )
+    expect(screen.getByRole("combobox", { name: "Interaction 1 feature 1" })).toHaveValue("age")
+    expect(screen.getByRole("combobox", { name: "Interaction 1 feature 2" })).toHaveValue("region")
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(screen.queryByText(/unavailable/)).toBeNull()
+  })
+})

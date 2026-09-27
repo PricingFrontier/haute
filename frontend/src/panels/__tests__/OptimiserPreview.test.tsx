@@ -1320,7 +1320,6 @@ describe("OptimiserPreview", () => {
           optimiserNode({
             objective: "profit",
             constraints: { volume: { min: 1 } },
-            frontier_enabled: true,
             frontier_steps: 10_001,
             frontier_ranges: { volume: { min: 0, max: 2 } },
           }),
@@ -1350,7 +1349,7 @@ describe("OptimiserPreview", () => {
       })
 
       expect(screen.getByRole("button", { name: "Re-run" })).toBeDisabled()
-      expect(screen.getByText(/Quote ID uses "quote_id", which the input does not have/)).toBeInTheDocument()
+      expect(screen.getByText(/Row ID uses "quote_id", which the input does not have/)).toBeInTheDocument()
     })
 
     it("shows no strip while the result matches the config", () => {

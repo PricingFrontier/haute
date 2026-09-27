@@ -830,9 +830,9 @@ The behaviour is defined by
 [the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#optimiser-config-panes).
 
 `frontend/src/panels/NodePanel.tsx` renders an optimiser strip for every non-instance optimiser
-node from `optimiserPanesFor(mode)`: Data, Factors (ratebook only), Constraints, Solve and Export.
-It uses the same shared tab control, remembers the pane per node in the UI store, and resolves a
-remembered pane the mode lacks to Data for both the tab and the editor body. Its descriptors add
+node from `OPTIMISER_PANES`: Data, Factors, Constraints, Solve and Export, in both modes.
+It uses the same shared tab control, remembers the pane per node in the UI store, and opens Data
+when none is remembered, for both the tab and the editor body. Its descriptors add
 the active indicator on Solve, from the Boolean presence of `solveJobs[node.id]`, and a compact
 warning indicator on each pane `OptimiserConfig` reports through `onPaneIssuesChange` as holding a
 blocking Solve issue; a report from another node's editor never badges this one. It also passes

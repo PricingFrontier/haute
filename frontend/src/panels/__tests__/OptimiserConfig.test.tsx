@@ -798,7 +798,7 @@ describe("OptimiserConfig", () => {
           ["vehicle_age_band"],
         ])
       })
-      expect(await screen.findByText("Rating Factors (3 selected)")).toBeInTheDocument()
+      expect(await screen.findByText("3 ratebook · 0 of 12 validation")).toBeInTheDocument()
       showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).not.toBeDisabled()
       expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -883,7 +883,7 @@ describe("OptimiserConfig", () => {
         ],
       }))
 
-      expect(screen.getByText("Rating Factors (0 selected)")).toBeInTheDocument()
+      expect(screen.getByText("0 ratebook · 0 of 12 validation")).toBeInTheDocument()
       showPane("solve")
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
       expect(screen.getByRole("alert")).toHaveTextContent("Select at least one rating factor.")
@@ -893,6 +893,60 @@ describe("OptimiserConfig", () => {
   // ═══════════════════════════════════════════════════════════════════
   // Panes
   // ═══════════════════════════════════════════════════════════════════
+
+  describe("Saved values before the input's columns load", () => {
+    it("shows the configured objective and column mappings while the column fetch is deferred", () => {
+      mockUseDataInputColumns.mockReturnValue([])
+      renderConfig(makeProps({
+        deferColumnFetch: true,
+        upstreamColumns: [],
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "profit",
+          quote_id: "qid",
+          constraints: {},
+        },
+      }))
+
+      expect(screen.getByDisplayValue("profit")).toBeInTheDocument()
+      expect(screen.getByDisplayValue("qid")).toBeInTheDocument()
+      // Unset mappings show the default column they fall back to.
+      expect(screen.getByDisplayValue("scenario_index")).toBeInTheDocument()
+      expect(screen.getByDisplayValue("scenario_value")).toBeInTheDocument()
+    })
+
+    it("marks a saved column the loaded input lacks", () => {
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "profit", constraints: {} },
+      }))
+      expect(screen.getByDisplayValue("profit (not in input)")).toBeInTheDocument()
+    })
+
+    it("lists the saved validation factors, ticked and removable, before the columns load", () => {
+      mockUseDataInputColumns.mockReturnValue([])
+      const props = makeProps({
+        deferColumnFetch: true,
+        upstreamColumns: [],
+        activePane: "factors",
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: {},
+          analysis_columns: ["region"],
+        },
+      })
+      renderConfig(props)
+
+      expect(screen.getByText("The validation input's columns are not known yet.")).toBeInTheDocument()
+      const region = screen.getByRole("checkbox", { name: "Use region for validation" })
+      expect(region).toBeChecked()
+      expect(region).toBeEnabled()
+      fireEvent.click(region)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", [])
+    })
+  })
 
   describe("Panes", () => {
     it("renders only the selected pane's controls", () => {
@@ -908,10 +962,13 @@ describe("OptimiserConfig", () => {
       expect(screen.queryByRole("radiogroup", { name: "MLflow destination" })).not.toBeInTheDocument()
     })
 
-    it("shows Data for a Factors selection in online mode", () => {
+    it("shows Factors in online mode with the ratebook choices greyed out", () => {
       renderConfig(makeProps({ activePane: "factors" }))
-      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "optimiser-data-pane")
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "optimiser-factors-pane")
       expect(screen.queryByText("Rating Factor Source")).not.toBeInTheDocument()
+      expect(screen.getByRole("checkbox", { name: "Use premium for ratebook optimisation" })).toBeDisabled()
+      expect(screen.getByRole("checkbox", { name: "Use premium for validation" })).toBeEnabled()
+      expect(screen.getByText("0 of 12 validation")).toBeInTheDocument()
     })
 
     it("lists every solve-blocking issue and links each to its pane", () => {
@@ -978,7 +1035,7 @@ describe("OptimiserConfig", () => {
       ])
       renderConfig(makeProps({ upstreamColumns: [] }))
       expect(screen.getByRole("button", { name: /Optimise/ })).toBeDisabled()
-      expect(screen.getByRole("alert")).toHaveTextContent('Quote ID uses "quote_id", which the input does not have.')
+      expect(screen.getByRole("alert")).toHaveTextContent('Row ID uses "quote_id", which the input does not have.')
     })
 
     it("blocks an efficient frontier with an incomplete or inverted range, or too many solves", () => {
@@ -988,17 +1045,33 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1 }, volume: { min: 10 } },
-          frontier_enabled: true,
           frontier_steps: 101,
-          frontier_ranges: { loss_ratio: { min: 2, max: 1 } },
+          frontier_ranges: { loss_ratio: { min: 2, max: 1 }, volume: {} },
         },
       }))
       const alert = screen.getByRole("alert")
       expect(within(alert).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
         "The frontier range for loss_ratio needs a minimum below its maximum.Go to Constraints",
         "Set both ends of the frontier range for volume.Go to Constraints",
-        "The frontier would run 10,201 solves; the limit is 10,000. Reduce the steps per constraint.Go to Constraints",
+        "The frontier would run 10,201 solves; the limit is 10,000. Reduce the points per swept constraint or sweep fewer constraints.Go to Constraints",
       ])
+    })
+
+    it("needs no range for a constraint that is not swept", () => {
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 1 }, volume: { min: 10 } },
+          frontier_steps: 101,
+          frontier_ranges: { loss_ratio: { min: 0.5, max: 1 } },
+        },
+      }))
+      showPane("solve")
+      // One swept constraint: 101 solves, under the limit, and volume needs no range.
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeEnabled()
     })
 
     it("keeps Auto range available while the frontier ranges are still missing", () => {
@@ -1009,10 +1082,10 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       }))
-      expect(screen.getByRole("button", { name: "Auto range" })).toBeEnabled()
+      expect(screen.getByRole("button", { name: "Auto range loss_ratio" })).toBeEnabled()
     })
 
     it("warns without blocking when each quote has one scenario", async () => {
@@ -1112,11 +1185,10 @@ describe("OptimiserConfig", () => {
         mode: "online",
         objective: "premium",
         constraints: { loss_ratio: { max: 1 } },
-        frontier_enabled: true,
         frontier_ranges: { loss_ratio: { min: 1, max: 5 } },
       }
       renderStatefulConfig(makeProps({ activePane: "constraints", config }))
-      const min = screen.getByLabelText("loss_ratio min value")
+      const min = screen.getByLabelText("loss_ratio sweep from")
       fireEvent.change(min, { target: { value: "2" } })
       fireEvent.keyDown(min, { key: "Enter", ctrlKey: true })
 
@@ -1133,11 +1205,10 @@ describe("OptimiserConfig", () => {
         mode: "online",
         objective: "premium",
         constraints: { loss_ratio: { max: 1 } },
-        frontier_enabled: true,
         frontier_ranges: { loss_ratio: { min: 1, max: 5 } },
       }
       renderStatefulConfig(makeProps({ activePane: "constraints", config }))
-      const min = screen.getByLabelText("loss_ratio min value")
+      const min = screen.getByLabelText("loss_ratio sweep from")
       fireEvent.change(min, { target: { value: "9" } })
       fireEvent.keyDown(min, { key: "Enter", ctrlKey: true })
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
@@ -1236,9 +1307,9 @@ describe("OptimiserConfig", () => {
   describe("Column Mappings", () => {
     withPane("data")
 
-    it("renders Quote ID, Scenario Index, Scenario Value selectors", () => {
+    it("renders Row ID, Scenario Index, Scenario Value selectors", () => {
       renderConfig(makeProps())
-      expect(screen.getByText("Quote ID")).toBeInTheDocument()
+      expect(screen.getByText("Row ID")).toBeInTheDocument()
       expect(screen.getByText("Scenario Index")).toBeInTheDocument()
       expect(screen.getByText("Scenario Value")).toBeInTheDocument()
     })
@@ -1246,12 +1317,12 @@ describe("OptimiserConfig", () => {
     it("column mapping change calls onUpdate with correct key", () => {
       const props = makeProps()
       renderConfig(props)
-      // Find all selects — look for the one with "Select quote id..." placeholder
+      // Find all selects — look for the one with "Select row id..." placeholder
       const selects = screen.getAllByRole("combobox")
-      const quoteIdSelect = selects.find(s =>
-        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Select quote id..."),
+      const rowIdSelect = selects.find(s =>
+        Array.from(s.querySelectorAll("option")).some(o => o.textContent === "Select row id..."),
       )!
-      fireEvent.change(quoteIdSelect, { target: { value: "premium" } })
+      fireEvent.change(rowIdSelect, { target: { value: "premium" } })
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith("quote_id", "premium")
     })
   })
@@ -1314,8 +1385,8 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      expect(screen.getByText("Minimum")).toBeInTheDocument()
-      expect(screen.getByText("Maximum")).toBeInTheDocument()
+      expect(screen.getByText("at least")).toBeInTheDocument()
+      expect(screen.getByText("at most")).toBeInTheDocument()
       expect(screen.queryByText("Min %")).not.toBeInTheDocument()
       expect(screen.queryByText("Max %")).not.toBeInTheDocument()
       expect(screen.queryByDisplayValue("min_abs")).not.toBeInTheDocument()
@@ -2126,201 +2197,128 @@ describe("OptimiserConfig", () => {
   })
 
   // ═══════════════════════════════════════════════════════════════════
-  // Result type / Efficient Frontier
+  // Constraint cards, sweeps and the frontier
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("Result type / Efficient Frontier", () => {
+  describe("Constraint sweeps / Efficient Frontier", () => {
     withPane("constraints")
 
-    it("does not show result type selector when no constraints are configured", () => {
+    const LOSS = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } }
+
+    it("says the optimiser is unconstrained when no constraints are configured", () => {
       renderConfig(makeProps())
       expect(screen.queryByTestId("constraint-card")).not.toBeInTheDocument()
-      expect(screen.queryByText("Result type")).not.toBeInTheDocument()
-      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
+      expect(screen.getByText(/No constraints: the optimiser maximises the objective alone/)).toBeInTheDocument()
+      expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
     })
 
-    it("does not show orphan frontier settings when frontier is stale-enabled without constraints", () => {
+    it("shows no frontier settings for stale ranges without constraints", () => {
       renderConfig(makeProps({
-        config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: {},
-          frontier_enabled: true,
-        },
+        config: { ...LOSS, constraints: {}, frontier_ranges: { gone: { min: 1, max: 2 } } },
       }))
       expect(screen.queryByTestId("constraint-card")).not.toBeInTheDocument()
-      expect(screen.queryByText("Result type")).not.toBeInTheDocument()
-      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
-      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Max value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Steps")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
     })
 
-    it("shows point/frontier choice inside constraints when constraints are configured", () => {
+    it("shows every card's bound and an unticked Sweep when nothing is swept", () => {
+      renderConfig(makeProps({ config: LOSS }))
+      const card = screen.getByRole("group", { name: "loss_ratio constraint" })
+      expect(within(card).getByRole("combobox", { name: "loss_ratio constraint bound type" })).toHaveValue("max")
+      expect(within(card).getByRole("combobox", { name: "loss_ratio constraint bound type" })).toHaveDisplayValue("at most")
+      expect(within(card).getByLabelText("loss_ratio constraint value")).toHaveValue(1.05)
+      expect(within(card).getByRole("radio", { name: "Fixed" })).toBeChecked()
+      expect(within(card).queryByLabelText("loss_ratio sweep from")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
+      expect(screen.getByTestId("constraints-result")).toHaveTextContent("Result: single point")
+    })
+
+    it("keeps the bound beside the range of a swept constraint and holds the unswept one", () => {
       renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-            },
-          }))
-      expect(screen.getByText("Result type")).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: "Individual point" })).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: "Efficient frontier" })).toBeInTheDocument()
-      const card = screen.getByTestId("constraint-card")
-      expect(within(card).getByTestId("constraint-row")).toBeInTheDocument()
-      const bound = within(card).getByTestId("constraint-bound-row")
-      expect(within(bound).getByText("Maximum")).toBeInTheDocument()
-      expect(within(bound).getByDisplayValue("1.05")).toBeInTheDocument()
-      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Max value")).not.toBeInTheDocument()
-      expect(screen.queryByText("Steps")).not.toBeInTheDocument()
+        config: {
+          ...LOSS,
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
+          frontier_ranges: { loss_ratio: { min: 0.9, max: 1.2 } },
+        },
+      }))
+      const loss = screen.getByRole("group", { name: "loss_ratio constraint" })
+      // A swept constraint shows its range in place of a fixed value.
+      expect(within(loss).queryByLabelText("loss_ratio constraint value")).not.toBeInTheDocument()
+      expect(within(loss).getByRole("radio", { name: "Sweep" })).toBeChecked()
+      expect(within(loss).getByLabelText("loss_ratio sweep from")).toHaveValue(0.9)
+      expect(within(loss).getByLabelText("loss_ratio sweep to")).toHaveValue(1.2)
+      const volume = screen.getByRole("group", { name: "volume constraint" })
+      expect(within(volume).getByLabelText("volume constraint value")).toHaveValue(900)
+      expect(within(volume).getByRole("radio", { name: "Fixed" })).toBeChecked()
+      // Points and Auto range belong to the whole frontier, not to one card.
+      const frontier = screen.getByTestId("frontier-settings")
+      expect(within(frontier).getByText("Points per swept constraint")).toBeInTheDocument()
+      // Only the swept constraint multiplies the solves.
+      expect(screen.getByTestId("constraints-result")).toHaveTextContent("Result: frontier over loss_ratio · 15 solves")
     })
 
-    it("keeps each constraint's bound or frontier range inside that constraint's card", () => {
-      const config = {
-        _nodeId: "opt_1",
-        mode: "online",
-        objective: "premium",
-        constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
-        frontier_ranges: { loss_ratio: { min: 0.9, max: 1.2 }, volume: { min: 800, max: 1000 } },
-      }
-      const view = renderConfig(makeProps({ config }))
-      const [lossCard, volumeCard] = screen.getAllByTestId("constraint-card")
-      expect(within(lossCard).getByRole("combobox", { name: "loss_ratio constraint column" })).toBeInTheDocument()
-      expect(within(lossCard).getByLabelText("loss_ratio constraint value")).toHaveValue(1.05)
-      expect(within(volumeCard).getByRole("combobox", { name: "volume constraint column" })).toBeInTheDocument()
-      expect(within(volumeCard).getByLabelText("volume constraint value")).toHaveValue(900)
-      view.unmount()
-
-      renderConfig(makeProps({ config: { ...config, frontier_enabled: true } }))
-      const [lossRangeCard, volumeRangeCard] = screen.getAllByTestId("constraint-card")
-      expect(within(lossRangeCard).getByLabelText("loss_ratio min value")).toHaveValue(0.9)
-      expect(within(lossRangeCard).getByLabelText("loss_ratio max value")).toHaveValue(1.2)
-      expect(within(lossRangeCard).queryByLabelText("loss_ratio constraint value")).not.toBeInTheDocument()
-      expect(within(volumeRangeCard).getByLabelText("volume min value")).toHaveValue(800)
-      expect(within(volumeRangeCard).getByLabelText("volume max value")).toHaveValue(1000)
-      // Steps and Auto range belong to the whole frontier, not to one card.
-      expect(within(lossRangeCard).queryByText("Steps")).not.toBeInTheDocument()
-      expect(within(screen.getByTestId("frontier-settings")).getByText("Steps per constraint")).toBeInTheDocument()
-    })
-
-    it("shows point/frontier choice inside ratebook constraints", () => {
+    it("counts the solves over every swept constraint", () => {
       renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "ratebook",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              factor_columns: [["age_band"]],
-            },
-          }))
-      expect(screen.getByText("Result type")).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: "Individual point" })).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: "Efficient frontier" })).toBeInTheDocument()
-      const bound = within(screen.getByTestId("constraint-card")).getByTestId("constraint-bound-row")
-      expect(within(bound).getByText("Maximum")).toBeInTheDocument()
-      expect(within(bound).getByDisplayValue("1.05")).toBeInTheDocument()
-      expect(screen.queryByText("Min value")).not.toBeInTheDocument()
+        config: {
+          ...LOSS,
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
+          frontier_steps: 4,
+          frontier_ranges: { loss_ratio: { min: 0.9, max: 1.2 }, volume: { min: 800, max: 1000 } },
+        },
+      }))
+      expect(screen.getByTestId("constraints-result")).toHaveTextContent("Result: frontier over loss_ratio, volume · 16 solves")
     })
 
-    it("shows frontier settings for ratebook efficient frontier", () => {
-      renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "ratebook",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              factor_columns: [["age_band"]],
-              frontier_enabled: true,
-            },
-          }))
-      const card = screen.getByTestId("constraint-card")
-      expect(within(card).queryByTestId("constraint-bound-row")).not.toBeInTheDocument()
-      expect(within(card).queryByText("Maximum")).not.toBeInTheDocument()
-      expect(within(card).queryByDisplayValue("1.05")).not.toBeInTheDocument()
-      expect(within(card).getByText("Min value")).toBeInTheDocument()
-      expect(within(card).getByText("Max value")).toBeInTheDocument()
-      expect(screen.queryByText("Min multiplier")).not.toBeInTheDocument()
-      expect(screen.queryByText("Max multiplier")).not.toBeInTheDocument()
-      expect(within(screen.getByTestId("frontier-settings")).getByText("Steps per constraint")).toBeInTheDocument()
-    })
-
-    it("selecting efficient frontier updates frontier_enabled", () => {
+    it("Sweep starts the range at the fixed value; Fixed removes the range", () => {
       const props = makeProps({
         config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: { loss_ratio: { max: 1.05 } },
+          ...LOSS,
+          constraints: { loss_ratio: { max: 1.05 }, volume: { min: 900 } },
+          frontier_ranges: { volume: { min: 800, max: 1000 } },
         },
       })
       renderConfig(props)
-      fireEvent.click(screen.getByRole("button", { name: "Efficient frontier" }))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_enabled", true)
+      fireEvent.click(within(screen.getByRole("radiogroup", { name: "loss_ratio bound" })).getByRole("radio", { name: "Sweep" }))
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
+        frontier_ranges: { volume: { min: 800, max: 1000 }, loss_ratio: { min: 1.05 } },
+      })
+      fireEvent.click(within(screen.getByRole("radiogroup", { name: "volume bound" })).getByRole("radio", { name: "Fixed" }))
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({ frontier_ranges: {} })
     })
 
-    it("selecting individual point updates frontier_enabled", () => {
+    it("clearing both ends keeps the constraint swept", () => {
       const props = makeProps({
-        config: {
-          _nodeId: "opt_1",
-          mode: "online",
-          objective: "premium",
-          constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
-        },
+        config: { ...LOSS, frontier_ranges: { loss_ratio: { min: 0.9 } } },
       })
       renderConfig(props)
-      fireEvent.click(screen.getByRole("button", { name: "Individual point" }))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("frontier_enabled", false)
+      const from = screen.getByLabelText("loss_ratio sweep from")
+      fireEvent.change(from, { target: { value: "" } })
+      fireEvent.blur(from)
+      expect(props.componentProps.onUpdate).toHaveBeenCalledWith({ frontier_ranges: { loss_ratio: {} } })
     })
 
-    it("highlights missing frontier range values instead of rendering defaults", () => {
+    it("shows the sweep in ratebook mode the same way", () => {
       renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              frontier_enabled: true,
-            },
-          }))
-      expect(screen.getAllByTestId("constraint-card")).toHaveLength(1)
-      const card = screen.getByTestId("constraint-card")
-      expect(within(card).getByTestId("constraint-row")).toBeInTheDocument()
-      expect(within(card).getByText("Min value")).toBeInTheDocument()
-      expect(within(card).getByText("Max value")).toBeInTheDocument()
-      expect(screen.queryByText("Min multiplier")).not.toBeInTheDocument()
-      expect(screen.queryByText("Max multiplier")).not.toBeInTheDocument()
-      const minInput = within(card).getByLabelText("loss_ratio min value") as HTMLInputElement
-      const maxInput = within(card).getByLabelText("loss_ratio max value") as HTMLInputElement
-      expect(minInput.value).toBe("")
-      expect(maxInput.value).toBe("")
-      expect(minInput).toHaveAttribute("aria-invalid", "true")
-      expect(maxInput).toHaveAttribute("aria-invalid", "true")
-      expect(screen.queryByDisplayValue("0.8")).not.toBeInTheDocument()
-      expect(screen.queryByDisplayValue("1.1")).not.toBeInTheDocument()
-      const frontierSettings = screen.getByTestId("frontier-settings")
-      expect(within(frontierSettings).getByText("Steps per constraint")).toBeInTheDocument()
-      expect(within(frontierSettings).getByDisplayValue("15")).toBeInTheDocument()
-      expect(within(card).queryByTestId("constraint-bound-row")).not.toBeInTheDocument()
-      expect(within(card).queryByText("Maximum")).not.toBeInTheDocument()
-      expect(within(card).queryByDisplayValue("1.05")).not.toBeInTheDocument()
+        config: { ...LOSS, mode: "ratebook", factor_columns: [["age_band"]], frontier_ranges: { loss_ratio: {} } },
+      }))
+      const card = screen.getByRole("group", { name: "loss_ratio constraint" })
+      expect(within(card).getByLabelText("loss_ratio sweep from")).toBeInTheDocument()
+      expect(within(screen.getByTestId("frontier-settings")).getByText("Points per swept constraint")).toBeInTheDocument()
     })
 
-    it("renders per-constraint frontier range values from config", () => {
-      renderConfig(makeProps({
-            config: {
-              _nodeId: "opt_1",
-              mode: "online",
-              objective: "premium",
-              constraints: { loss_ratio: { max: 1.05 } },
-              frontier_enabled: true,
-              frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
-            },
-          }))
+    it("highlights missing sweep ends instead of rendering defaults", () => {
+      renderConfig(makeProps({ config: { ...LOSS, frontier_ranges: { loss_ratio: {} } } }))
+      const card = screen.getByRole("group", { name: "loss_ratio constraint" })
+      const fromInput = within(card).getByLabelText("loss_ratio sweep from") as HTMLInputElement
+      const toInput = within(card).getByLabelText("loss_ratio sweep to") as HTMLInputElement
+      expect(fromInput.value).toBe("")
+      expect(toInput.value).toBe("")
+      expect(fromInput).toHaveAttribute("aria-invalid", "true")
+      expect(toInput).toHaveAttribute("aria-invalid", "true")
+      expect(within(screen.getByTestId("frontier-settings")).getByDisplayValue("15")).toBeInTheDocument()
+    })
+
+    it("renders per-constraint sweep values from config", () => {
+      renderConfig(makeProps({ config: { ...LOSS, frontier_ranges: { loss_ratio: { min: 11, max: 39 } } } }))
       expect(screen.getByDisplayValue("11")).toBeInTheDocument()
       expect(screen.getByDisplayValue("39")).toBeInTheDocument()
     })
@@ -2340,7 +2338,6 @@ describe("OptimiserConfig", () => {
           status: "ok",
           ranges: { loss_ratio: { min: 11, max: 39 } },
           method: "scenario_envelope",
-          warning: null,
         },
       })
       const props = makeProps({
@@ -2349,12 +2346,12 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       await waitFor(() => {
         expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith({
@@ -2370,6 +2367,70 @@ describe("OptimiserConfig", () => {
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
       })
+    })
+
+    it("fills only the clicked constraint and keeps the other swept range", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "started",
+        job_id: "range-job-2",
+        error: null,
+      })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1.2,
+        result: {
+          status: "ok",
+          // The job ranges every constraint; only the clicked one is written.
+          ranges: { loss_ratio: { min: 11, max: 39 }, volume: { min: 1, max: 2 } },
+          method: "scenario_envelope",
+        },
+      })
+      const props = makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 }, volume: { min: 900 } },
+          frontier_ranges: { loss_ratio: {}, volume: { min: 800, max: 1000 } },
+        },
+      })
+      renderConfig(props)
+
+      const volumeCard = screen.getByRole("group", { name: "volume constraint" })
+      expect(within(volumeCard).getByRole("button", { name: "Auto range volume" })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+
+      await waitFor(() => {
+        expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
+          frontier_ranges: { loss_ratio: { min: 11, max: 39 }, volume: { min: 800, max: 1000 } },
+        })
+      })
+    })
+
+    it("shows an auto-range failure on the card that asked", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({
+        status: "error",
+        job_id: null,
+        error: "Auto range needs a solvable setup",
+      })
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 }, volume: { min: 900 } },
+          frontier_ranges: { loss_ratio: {}, volume: {} },
+        },
+      }))
+
+      fireEvent.click(screen.getByRole("button", { name: "Auto range volume" }))
+
+      const volumeCard = screen.getByRole("group", { name: "volume constraint" })
+      expect(await within(volumeCard).findByText(/Auto range needs a solvable setup/)).toBeInTheDocument()
+      const lossCard = screen.getByRole("group", { name: "loss_ratio constraint" })
+      expect(within(lossCard).queryByText(/Auto range needs a solvable setup/)).not.toBeInTheDocument()
     })
 
     it("lets a running auto-range job be restarted and supersedes the old request", async () => {
@@ -2392,7 +2453,6 @@ describe("OptimiserConfig", () => {
             status: "ok",
             ranges: { loss_ratio: { min: 10, max: 40 } },
             method: "scenario_envelope",
-            warning: null,
           },
         })
       const props = makeProps({
@@ -2401,13 +2461,13 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
-      const restart = await screen.findByRole("button", { name: "Restart auto range" })
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+      const restart = await screen.findByRole("button", { name: "Restart auto range loss_ratio" })
       expect(restart).toBeEnabled()
       fireEvent.click(restart)
 
@@ -2437,7 +2497,7 @@ describe("OptimiserConfig", () => {
         error_code: "contract_error",
         http_status_code: 422,
         execution_metrics: makeExecutionMetricsFixture({
-          profile: "auto_range",
+          profile: "optimiser_solve",
           status: "running",
           terminal_reason: null,
         }),
@@ -2448,12 +2508,12 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
         "Fan-in projection contract does not cover columns required by the node.",
@@ -2486,12 +2546,12 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
         "Configured optimiser data_input 'optimiser_input' did not produce data.",
@@ -2514,7 +2574,7 @@ describe("OptimiserConfig", () => {
         terminal_reason: "memory_limited",
         error_code: "memory_limited",
         http_status_code: 507,
-        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range" }),
+        execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_solve" }),
       })
       const props = makeProps({
         config: {
@@ -2522,15 +2582,15 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
       expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
@@ -2552,7 +2612,7 @@ describe("OptimiserConfig", () => {
         terminal_reason: "memory_limited",
         error_code: "memory_limit",
         http_status_code: 507,
-        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+        execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: "memory_limited" }),
       })
       const props = makeProps({
         config: {
@@ -2560,22 +2620,22 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range preserves structured metrics from admission failures before a job starts", async () => {
       const executionMetrics = makeExecutionMetricsFixture({
-        profile: "auto_range",
+        profile: "optimiser_solve",
         terminal_reason: null,
       })
       mockStartOptimiserFrontierAutoRange.mockRejectedValue(Object.assign(new Error("HTTP 507"), {
@@ -2600,15 +2660,15 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
       expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
@@ -2638,12 +2698,12 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 35 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
 
-      fireEvent.click(screen.getByRole("button", { name: "Auto range" }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText("Auto range failed (contract_error)")).toBeInTheDocument()
       expect(screen.queryByText(/developer-only/)).not.toBeInTheDocument()
@@ -2657,11 +2717,11 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
-      const input = screen.getByLabelText("loss_ratio min value")
+      const input = screen.getByLabelText("loss_ratio sweep from")
       fireEvent.change(input, { target: { value: "0.75" } })
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
@@ -2677,11 +2737,11 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
-      const input = screen.getByLabelText("loss_ratio max value")
+      const input = screen.getByLabelText("loss_ratio sweep to")
       fireEvent.change(input, { target: { value: "1.25" } })
       fireEvent.keyDown(input, { key: "Enter" })
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
@@ -2696,7 +2756,7 @@ describe("OptimiserConfig", () => {
           mode: "online",
           objective: "premium",
           constraints: { loss_ratio: { max: 1.05 } },
-          frontier_enabled: true,
+          frontier_ranges: { loss_ratio: {} },
         },
       })
       renderConfig(props)
@@ -3254,10 +3314,12 @@ describe("OptimiserConfig", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════
-// Analysis columns (OPT-V09A)
+// Factors table: ratebook and validation factors (OPT-V09A)
 // ═══════════════════════════════════════════════════════════════════
 
-describe("OptimiserConfig analysis columns", () => {
+describe("OptimiserConfig factors table", () => {
+  withPane("factors")
+
   const DATA_COLUMNS = [
     { name: "premium", dtype: "Float64" },
     { name: "volume", dtype: "Float64" },
@@ -3297,8 +3359,10 @@ describe("OptimiserConfig analysis columns", () => {
   }
 
   function columnChoices(): string[] {
-    const group = screen.getByRole("group", { name: "Analysis columns" })
-    return within(group).getAllByRole("checkbox").map((box) => box.getAttribute("name") ?? "")
+    const group = screen.getByRole("group", { name: "Factors" })
+    return within(group)
+      .getAllByRole("checkbox", { name: /for validation$/ })
+      .map((box) => (box.getAttribute("aria-label") ?? "").replace(/^Use (.*) for validation$/, "$1"))
   }
 
   beforeEach(() => {
@@ -3310,13 +3374,13 @@ describe("OptimiserConfig analysis columns", () => {
   it("lists only the connected inputs, the data input first", () => {
     renderConfig(analysisProps())
 
-    const select = screen.getByRole("combobox", { name: "Analysis input" }) as HTMLSelectElement
+    const select = screen.getByRole("combobox", { name: "Validation input" }) as HTMLSelectElement
     expect(select).toHaveValue("")
     expect(Array.from(select.options).map((option) => [option.value, option.text])).toEqual([
       ["", "scored (Objectives & Constraints input)"],
       ["regions", "regions"],
     ])
-    expect(screen.getByText(/used only to break results down/i)).toBeInTheDocument()
+    expect(screen.getByText(/break the results down by segment/i)).toBeInTheDocument()
   })
 
   it("offers the chosen frame's columns, never the quote id", () => {
@@ -3335,9 +3399,9 @@ describe("OptimiserConfig analysis columns", () => {
     const props = analysisProps({ analysis_columns: ["region"] })
     renderConfig(props)
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "volume" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use volume for validation" }))
     expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", ["region", "volume"])
-    fireEvent.click(screen.getByRole("checkbox", { name: "region" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use region for validation" }))
     expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", [])
   })
 
@@ -3345,7 +3409,7 @@ describe("OptimiserConfig analysis columns", () => {
     const onUpdate = vi.fn()
     renderStatefulConfig(analysisProps({ analysis_columns: ["region", "premium"] }), onUpdate)
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Analysis input" }), {
+    fireEvent.change(screen.getByRole("combobox", { name: "Validation input" }), {
       target: { value: "regions" },
     })
 
@@ -3353,28 +3417,28 @@ describe("OptimiserConfig analysis columns", () => {
       expect(onUpdate).toHaveBeenCalledWith("analysis_columns", ["region"])
     })
     expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
-    expect(screen.getByRole("checkbox", { name: "region" })).toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Use region for validation" })).toBeChecked()
   })
 
   it("flags a configured column the frame lacks without rewriting the configuration", () => {
     const props = analysisProps({ analysis_input: "regions", analysis_columns: ["region", "segment"] })
     renderConfig(props)
 
-    expect(screen.getByText(/“segment” is not a column of the analysis input/)).toBeInTheDocument()
+    expect(screen.getByText(/“segment” is not a column of the validation input/)).toBeInTheDocument()
     expect(props.componentProps.onUpdate).not.toHaveBeenCalledWith("analysis_columns", expect.anything())
     showPane("solve")
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Analysis column “segment” is not a column of the analysis input.",
+      "Validation factor “segment” is not a column of the validation input.",
     )
   })
 
-  it("flags an analysis input that is no longer connected", () => {
+  it("flags a validation input that is no longer connected", () => {
     renderConfig(analysisProps({ analysis_input: "stray", analysis_columns: ["region"] }))
 
-    expect(screen.getByRole("combobox", { name: "Analysis input" })).toHaveValue("stray")
-    expect(screen.getByText("The configured analysis input is not connected.")).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "Validation input" })).toHaveValue("stray")
+    expect(screen.getByText("The configured validation input is not connected.")).toBeInTheDocument()
     showPane("solve")
-    expect(screen.getByRole("alert")).toHaveTextContent("The selected analysis input is not connected.")
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected validation input is not connected.")
   })
 
   it("disables further choices at twelve columns", () => {
@@ -3382,12 +3446,61 @@ describe("OptimiserConfig analysis columns", () => {
     mockUseDataInputColumns.mockImplementation(() => [...many, { name: "c12", dtype: "String" }])
     renderConfig(analysisProps({ analysis_columns: many.map((column) => column.name) }))
 
-    expect(screen.getByRole("checkbox", { name: "c12" })).toBeDisabled()
-    expect(screen.getByRole("checkbox", { name: "c0" })).toBeEnabled()
-    expect(screen.getByText("12 of 12 chosen")).toBeInTheDocument()
+    expect(screen.getByRole("checkbox", { name: "Use c12 for validation" })).toBeDisabled()
+    expect(screen.getByRole("checkbox", { name: "Use c0 for validation" })).toBeEnabled()
+    expect(screen.getByText("12 of 12 validation")).toBeInTheDocument()
   })
 
-  it("marks the solve stale when the analysis columns change", () => {
+  it("lists rating factors first, each with a ratebook and a validation choice", () => {
+    vi.mocked(classifyBandingNode).mockReturnValue({
+      levels: { region: ["North", "South"], age_band: ["Young", "Old", "Senior"] },
+      configuredOutputs: ["region", "age_band"],
+      zeroLevelOutputs: [],
+      zeroLevelIssues: [],
+    })
+    const props = makeProps({
+      config: {
+        _nodeId: "opt_1",
+        mode: "ratebook",
+        objective: "premium",
+        constraints: {},
+        data_input: "scored",
+        banding_source: "Banding",
+        factor_columns: [["age_band"]],
+        analysis_columns: ["region"],
+      },
+      allNodes: [...NODES, { id: "banding_1", data: { label: "Banding", description: "", nodeType: "banding", config: {} } }],
+      edges: [...EDGES, { id: "e-banding", source: "banding_1", target: "opt_1" }],
+    })
+    renderConfig(props)
+
+    expect(columnChoices()).toEqual(["age_band", "region", "premium", "volume", "scenario_index", "scenario_value"])
+    expect(screen.getByText("1 ratebook · 1 of 12 validation")).toBeInTheDocument()
+    expect(screen.getByText("3 levels")).toBeInTheDocument()
+
+    // A rating factor the validation input lacks can only be optimised.
+    expect(screen.getByRole("checkbox", { name: "Use age_band for ratebook optimisation" })).toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Use age_band for validation" })).toBeDisabled()
+    // A rating factor the input has takes both.
+    const regionRatebook = screen.getByRole("checkbox", { name: "Use region for ratebook optimisation" })
+    expect(regionRatebook).not.toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Use region for validation" })).toBeChecked()
+    // A plain column is validation only.
+    expect(screen.getByRole("checkbox", { name: "Use premium for ratebook optimisation" })).toBeDisabled()
+
+    fireEvent.click(regionRatebook)
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("factor_columns", [["age_band"], ["region"]])
+  })
+
+  it("filters the factors by search", () => {
+    renderConfig(analysisProps())
+    fireEvent.change(screen.getByRole("textbox", { name: "Search factors" }), { target: { value: "scen" } })
+    expect(columnChoices()).toEqual(["scenario_index", "scenario_value"])
+    fireEvent.change(screen.getByRole("textbox", { name: "Search factors" }), { target: { value: "zzz" } })
+    expect(screen.getByText("No matching factors.")).toBeInTheDocument()
+  })
+
+  it("marks the solve stale when the validation factors change", () => {
     const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, data_input: "scored" }
     useNodeResultsStore.setState({
       solveResults: {

@@ -44,7 +44,6 @@ pytestmark = pytest.mark.skipif(
 
 _MIB = 1024 * 1024
 _FRONTIER: dict[str, Any] = {
-    "frontier_enabled": True,
     "frontier_ranges": {"volume": {"min": 0.5, "max": 2.0}},
 }
 
@@ -229,9 +228,7 @@ class TestSessionSolve:
         graph = (
             _ratebook_graph(scored, _banding_for(scored))
             if mode == "ratebook"
-            else _online_graph(
-                scored, frontier_enabled=True, frontier_ranges={"volume": {"min": 0.5, "max": 2.0}}
-            )
+            else _online_graph(scored, frontier_ranges={"volume": {"min": 0.5, "max": 2.0}})
         )
         status = _solve(client, graph)
         assert status["status"] == "completed", status.get("message")
@@ -370,7 +367,6 @@ class TestSessionLifecycle:
     ) -> None:
         graph = _online_graph(
             _scored_parquet(project),
-            frontier_enabled=True,
             frontier_ranges={"volume": {"min": 0.5, "max": 2.0}},
         )
         job_id = _start(client, graph)
@@ -389,7 +385,6 @@ class TestSessionLifecycle:
     ) -> None:
         graph = _online_graph(
             _scored_parquet(project),
-            frontier_enabled=True,
             frontier_ranges={"volume": {"min": 0.5, "max": 2.0}},
         )
         job_id = _start(client, graph)
@@ -410,7 +405,6 @@ class TestSessionLifecycle:
     ) -> None:
         graph = _online_graph(
             _scored_parquet(project),
-            frontier_enabled=True,
             frontier_ranges={"volume": {"min": 0.5, "max": 2.0}},
         )
         monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")

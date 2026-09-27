@@ -53,3 +53,13 @@ describe("ColumnSelector", () => {
 })
 
 afterEach(cleanup)
+
+describe("ColumnSelector before the columns load", () => {
+  afterEach(cleanup)
+
+  it("shows the saved value without flagging it", () => {
+    render(<ColumnSelector label="Target column" value="claims" columns={[]} onChange={vi.fn()} />)
+    expect(screen.getByRole("button", { name: "Target column" })).toHaveTextContent("claims")
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+})

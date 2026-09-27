@@ -2927,10 +2927,8 @@
             "optimiser_setup",
             "optimiser_solve",
             "explore_analysis",
-            "auto_range",
             "deploy_live",
             "deploy_batch",
-            "chunked_map_reduce",
             "node_snapshot"
           ],
           "title": "Profile",
@@ -3142,10 +3140,8 @@
             "optimiser_setup",
             "optimiser_solve",
             "explore_analysis",
-            "auto_range",
             "deploy_live",
             "deploy_batch",
-            "chunked_map_reduce",
             "node_snapshot"
           ],
           "title": "Profile",
@@ -8336,95 +8332,6 @@
       "title": "OptimiserApplyResponse",
       "type": "object"
     },
-    "OptimiserChunkFallback": {
-      "description": "A lost chunk optimisation recorded on an auto-range job.\n\nChunk ineligibility never fails the request, so this record is the only\nplace the reason survives; typing it keeps the emitted keys and the three\nstable codes part of the API contract.",
-      "properties": {
-        "code": {
-          "enum": [
-            "chunk_user_code_ineligible",
-            "model_score_ineligible",
-            "chunk_plan_unsupported"
-          ],
-          "title": "Code",
-          "type": "string"
-        },
-        "column": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Column"
-        },
-        "line": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Line"
-        },
-        "message": {
-          "title": "Message",
-          "type": "string"
-        },
-        "node_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Node Id"
-        },
-        "operator": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Operator"
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reason"
-        }
-      },
-      "required": [
-        "code",
-        "node_id",
-        "operator",
-        "reason",
-        "line",
-        "column",
-        "message"
-      ],
-      "title": "OptimiserChunkFallback",
-      "type": "object"
-    },
     "OptimiserCombinedFactorBounds": {
       "description": "The scenario range a ratebook solve scored: the deployed factor's collar.\n\n``min``/``max`` are the solved grid's first and last scenario values\n(Float32 widened). Every apply clips the combined ratebook factor to them.",
       "properties": {
@@ -8613,17 +8520,6 @@
     },
     "OptimiserFrontierAutoRangeResponse": {
       "properties": {
-        "chunk_fallback": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserChunkFallback"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
         "method": {
           "default": "scenario_envelope",
           "title": "Method",
@@ -8640,26 +8536,12 @@
           "default": "ok",
           "title": "Status",
           "type": "string"
-        },
-        "warning": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Warning"
         }
       },
       "required": [
         "status",
         "ranges",
-        "method",
-        "warning",
-        "chunk_fallback"
+        "method"
       ],
       "title": "OptimiserFrontierAutoRangeResponse",
       "type": "object"
@@ -10790,10 +10672,6 @@
             }
           ],
           "title": "Chunk Size"
-        },
-        "frontier_enabled": {
-          "title": "Frontier Enabled",
-          "type": "boolean"
         },
         "frontier_ranges": {
           "additionalProperties": true,
