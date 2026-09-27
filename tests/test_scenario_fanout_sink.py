@@ -8,6 +8,8 @@ expanded chunk stays within the setting.
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
 import threading
 from typing import Any
 from unittest.mock import patch
@@ -115,6 +117,29 @@ def test_a_cap_is_released_when_its_block_raises() -> None:
         raise RuntimeError("boom")
 
     assert _polars_chunk() == 1_000
+
+
+def _report_chunk_environment(results: Any) -> None:
+    results.put(os.environ.get("POLARS_STREAMING_CHUNK_SIZE"))
+
+
+def test_a_worker_spawned_during_a_cap_inherits_the_setting_not_the_cap() -> None:
+    from haute._worker_isolation import start_process_with_environment
+
+    set_streaming_chunk_size(1_000)
+    context = mp.get_context("spawn")
+    results = context.Queue()
+    child = context.Process(target=_report_chunk_environment, args=(results,))
+    with streaming_chunk_size_cap(90):
+        start_process_with_environment(child, {})
+        # The spawn leaves this process's cap in place.
+        assert _polars_chunk() == 90
+    try:
+        assert results.get(timeout=120) == "1000"
+    finally:
+        child.join(timeout=60)
+        if child.is_alive():
+            child.kill()
 
 
 # ---------------------------------------------------------------------------

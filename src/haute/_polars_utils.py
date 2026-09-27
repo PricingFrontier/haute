@@ -724,6 +724,27 @@ def current_streaming_chunk_size() -> int:
 
 
 @contextmanager
+def streaming_chunk_size_for_spawn() -> Iterator[dict[str, str]]:
+    """Hold the chunk size steady while a child spawns; yield what it must inherit.
+
+    A child reads ``POLARS_STREAMING_CHUNK_SIZE`` as its setting, so while a
+    cap is active it is given the setting instead of the cap (the default when
+    none was ever configured); with no cap it inherits the value unchanged.
+    No cap starts or ends until the block exits.
+    """
+    with _streaming_chunk_lock:
+        if not _streaming_chunk_caps:
+            yield {}
+            return
+        setting = (
+            _streaming_chunk_setting
+            if _streaming_chunk_setting is not None
+            else DEFAULT_STREAMING_CHUNK_SIZE
+        )
+        yield {"POLARS_STREAMING_CHUNK_SIZE": str(setting)}
+
+
+@contextmanager
 def streaming_chunk_size_cap(rows: int) -> Iterator[None]:
     """Cap the streaming chunk Polars uses at *rows* while the block runs.
 
@@ -733,7 +754,8 @@ def streaming_chunk_size_cap(rows: int) -> Iterator[None]:
     expanded chunk within the pipeline setting. Only queries started inside
     the block see the cap. The configuration is process-wide, so a concurrent
     query in another thread may run with the smaller chunk too: that changes
-    its speed and memory, never its result.
+    its speed and memory, never its result. A worker spawned meanwhile
+    inherits the setting, not the cap (``streaming_chunk_size_for_spawn``).
     """
     global _streaming_chunk_setting
     token = object()

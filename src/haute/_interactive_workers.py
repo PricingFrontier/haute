@@ -264,7 +264,7 @@ def _interactive_worker_entrypoint(
                 # Only a cap installed by THIS request is evidence for it.
                 backend = lease.backend if applied else None
                 run_function = True
-            with native_memory_backend_scope(backend):
+            with native_memory_backend_scope(backend, lease):
                 if run_function:
                     try:
                         with bind_job_progress(progress_cell, job_id):

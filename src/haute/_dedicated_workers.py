@@ -256,7 +256,7 @@ def _dedicated_worker_entrypoint(
         except BaseException as exc:
             envelope = _error_envelope(command_id, exc, cap)
         else:
-            with native_memory_backend_scope(state.backend):
+            with native_memory_backend_scope(state.backend, lease):
                 try:
                     with bind_job_progress(progress_cell, command_id):
                         value = function(*args, **kwargs)

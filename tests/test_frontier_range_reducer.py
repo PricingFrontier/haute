@@ -21,6 +21,11 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from haute._execution_context import ExecutionMemoryLimitExceededError
+from haute._native_memory_limit import (
+    NativeLimitState,
+    native_headroom_bytes,
+    native_memory_backend_scope,
+)
 from haute._ram_estimate import string_view_bytes_per_row
 from haute.routes import _optimiser_service as svc
 from haute.routes._optimiser_service import (
@@ -204,6 +209,46 @@ def test_reducer_budget_is_the_cap_or_a_quarter_of_the_headroom(
     assert _reducer_budget(_Headroom(1024 * MIB)) == _ReducerBudget(  # type: ignore[arg-type]
         64 * MIB, "HAUTE_OPTIMISER_REDUCER_BUDGET_MB"
     )
+
+
+class _CappedLease:
+    """A native lease whose cap stands ``headroom`` bytes above its current charge."""
+
+    backend = "windows_job"
+
+    def __init__(self, headroom: int) -> None:
+        self.headroom = headroom
+
+    def limit_state(self) -> NativeLimitState:
+        return NativeLimitState("windows_job", baseline_bytes=0, ceiling_bytes=10 * 1024 * MIB)
+
+    def current_charge_bytes(self) -> int:
+        return 10 * 1024 * MIB - self.headroom
+
+
+def test_native_headroom_is_the_capped_worker_calls_ceiling_minus_its_charge() -> None:
+    assert native_headroom_bytes() is None
+    with native_memory_backend_scope("windows_job", _CappedLease(300 * MIB)):  # type: ignore[arg-type]
+        assert native_headroom_bytes() == 300 * MIB
+    with native_memory_backend_scope("windows_job", _CappedLease(-5)):  # type: ignore[arg-type]
+        assert native_headroom_bytes() == 0
+    # An uncapped call exposes no lease, whatever the caller passes.
+    with native_memory_backend_scope(None, _CappedLease(300 * MIB)):  # type: ignore[arg-type]
+        assert native_headroom_bytes() is None
+    assert native_headroom_bytes() is None
+
+
+def test_reducer_budget_takes_the_smaller_of_the_rss_and_native_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAUTE_OPTIMISER_REDUCER_BUDGET_MB", raising=False)
+    # Ample RSS headroom, but the worker is near its private-byte cap.
+    with native_memory_backend_scope("windows_job", _CappedLease(1024 * MIB)):  # type: ignore[arg-type]
+        assert _reducer_budget(_Headroom(8192 * MIB)).budget_bytes == 256 * MIB  # type: ignore[arg-type]
+        # And the other way round: the RSS headroom is the smaller.
+        assert _reducer_budget(_Headroom(512 * MIB)).budget_bytes == 128 * MIB  # type: ignore[arg-type]
+        # With no execution context the native headroom still bounds the budget.
+        assert _reducer_budget(None).budget_bytes == 256 * MIB
 
 
 def test_reducer_minimum_is_the_measured_floor_or_the_structural_term() -> None:

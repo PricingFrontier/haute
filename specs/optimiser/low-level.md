@@ -517,9 +517,11 @@ these as arguments and never recompute them.
 - **The reducer is exact in Float64.** Only final per-quote extrema are summed; a quote's
   extrema from several batches are combined (min of mins, max of maxes) first, and nothing is
   subtracted. Its budget `G_r` is fixed when it starts: `min(512 MiB, headroom // 4)`, where
-  headroom is the execution context's `remaining_memory_bytes()` (in a process-mode worker that
-  context is sized to the admitted grant its native cap enforces), and 512 MiB when there is no
-  effective limit; `HAUTE_OPTIMISER_REDUCER_BUDGET_MB` overrides the 512 MiB term.
+  headroom is the smaller of the execution context's `remaining_memory_bytes()` and
+  `native_headroom_bytes()` (the worker call's native cap ceiling minus its current charge;
+  equal grants do not leave equal allowances, since a worker can near its private-byte cap with
+  RSS to spare), and 512 MiB when neither gives a limit; `HAUTE_OPTIMISER_REDUCER_BUDGET_MB`
+  overrides the 512 MiB term.
   - *Carry path.* Per batch, one group-by gives each quote's Float32 extrema (cast to Float64),
     first and last row and row count; the batch is contiguous iff `last - first + 1 == n` for
     every quote. The batch's last quote is held back and combined with the next batch's first
@@ -1498,6 +1500,15 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   malformed outcome are errors. `OptimiserWorkerFailure` keeps only a record's failure fields,
   and a child failure before any job mapping (admission, a pre-job HTTP error) is classified in
   the child.
+- **`tests/test_frontier_range_reducer.py`** — the exact auto-range reducer: carry-path totals
+  against a per-quote reference over split and unsplit quotes (including a Hypothesis property),
+  each fallback reason (a non-contiguous batch, a reappearing quote, a full hash buffer) reaching
+  the same totals through the bucketed Float64 finish (colliding hashes cost speed, not
+  accuracy; partial files are bucket-sorted with at most 64 row groups; cancellation is checked
+  between files), its final flush, the budget rule (the cap
+  or a quarter of the smaller of the RSS and native headroom, `native_headroom_bytes()` inside a
+  capped call) and its typed refusal below the minimum, and `string_view_bytes_per_row` against
+  Arrow's buffer sizes.
 - **`tests/performance/test_auto_range_memory.py`** — the auto-range memory bound on the
   representative fixture (200,000 quotes, a scenario expander and real CatBoost scoring between
   the data input and the optimiser, the scored frame never cached), each run measured in a

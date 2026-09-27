@@ -28,6 +28,10 @@ _CURRENT_NATIVE_MEMORY_BACKEND: ContextVar[NativeMemoryBackend | None] = Context
     "haute_current_native_memory_backend",
     default=None,
 )
+_CURRENT_NATIVE_MEMORY_LEASE: ContextVar[NativeMemoryLease | None] = ContextVar(
+    "haute_current_native_memory_lease",
+    default=None,
+)
 
 
 # A model library starts its own thread pool during a fit. Measured on a 32-CPU
@@ -94,17 +98,35 @@ def current_native_memory_backend() -> NativeMemoryBackend | None:
     return _CURRENT_NATIVE_MEMORY_BACKEND.get()
 
 
+def native_headroom_bytes() -> int | None:
+    """What the current worker call's native cap still allows: its ceiling minus the charge.
+
+    ``None`` outside a capped worker call, or when the backend gives no reading.
+    """
+    lease = _CURRENT_NATIVE_MEMORY_LEASE.get()
+    if lease is None or lease.backend is None:
+        return None
+    ceiling = lease.limit_state().ceiling_bytes
+    charge = lease.current_charge_bytes()
+    if ceiling is None or charge is None:
+        return None
+    return max(0, ceiling - charge)
+
+
 @contextmanager
 def native_memory_backend_scope(
     backend: NativeMemoryBackend | None,
+    lease: NativeMemoryLease | None = None,
 ) -> Iterator[None]:
-    """Expose one lease backend only while its worker call remains active."""
+    """Expose one lease (and its backend) only while its worker call remains active."""
     if backend not in {None, "cgroup", "rlimit", "windows_job"}:
         raise ValueError(f"unknown native memory backend: {backend!r}")
     token = _CURRENT_NATIVE_MEMORY_BACKEND.set(backend)
+    lease_token = _CURRENT_NATIVE_MEMORY_LEASE.set(lease if backend is not None else None)
     try:
         yield
     finally:
+        _CURRENT_NATIVE_MEMORY_LEASE.reset(lease_token)
         _CURRENT_NATIVE_MEMORY_BACKEND.reset(token)
 
 

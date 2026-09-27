@@ -526,12 +526,23 @@ class _ReducerBudget:
 def _reducer_budget(execution_context: ExecutionContext | None) -> _ReducerBudget:
     """G_r = min(cap, headroom // 4); the cap alone when there is no effective limit.
 
-    The headroom is the execution context's remaining RSS headroom. In a
-    process-mode worker that context is sized to the admitted grant, which is
-    also what the worker's native private-byte cap enforces.
+    The headroom is the smaller of the execution context's remaining RSS
+    headroom and the worker's native cap headroom (ceiling minus current
+    charge): equal grants do not leave equal allowances, since a worker can
+    near its private-byte cap with RSS to spare.
     """
+    from haute._native_memory_limit import native_headroom_bytes
+
     cap = _default_reducer_budget_mb() * _MIB
-    headroom = None if execution_context is None else execution_context.remaining_memory_bytes()
+    allowances = [
+        allowance
+        for allowance in (
+            None if execution_context is None else execution_context.remaining_memory_bytes(),
+            native_headroom_bytes(),
+        )
+        if allowance is not None
+    ]
+    headroom = min(allowances) if allowances else None
     if headroom is None or cap <= headroom // 4:
         return _ReducerBudget(budget_bytes=cap, setting=_REDUCER_BUDGET_SETTING)
     return _ReducerBudget(budget_bytes=headroom // 4, setting=_REDUCER_HEADROOM_SETTING)

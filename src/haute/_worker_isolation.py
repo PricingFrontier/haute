@@ -655,12 +655,19 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
     other spawn can inherit them, and every touched variable is restored to its
     prior value before the lock is released — including when ``start()`` raises.
     Callers with nothing to override pass an empty mapping so that every spawn
-    takes the same serialised path.
+    takes the same serialised path. A streaming chunk-size cap active in this
+    process is not inherited: the child gets the setting it caps.
     """
-    # Every worker learns its server's pid, so it can end when the server does
-    # (see ``haute._parent_watch``).
-    environment = {**environment, PARENT_PID_ENV: str(os.getpid())}
-    with _SPAWN_ENVIRONMENT_LOCK:
+    from haute._polars_utils import streaming_chunk_size_for_spawn
+
+    with _SPAWN_ENVIRONMENT_LOCK, streaming_chunk_size_for_spawn() as chunk_environment:
+        # Every worker learns its server's pid, so it can end when the server
+        # does (see ``haute._parent_watch``).
+        environment = {
+            **chunk_environment,
+            **environment,
+            PARENT_PID_ENV: str(os.getpid()),
+        }
         previous: dict[str, str | None] = {name: os.environ.get(name) for name in environment}
         try:
             os.environ.update(environment)
@@ -854,7 +861,7 @@ def _isolated_worker_entrypoint(
         result_queue.close()
         result_queue.join_thread()
         return
-    with native_memory_backend_scope(lease.backend if applied else None):
+    with native_memory_backend_scope(lease.backend if applied else None, lease):
         try:
             envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:

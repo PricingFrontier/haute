@@ -978,7 +978,10 @@ is active, and `set_streaming_chunk_size` during a cap changes the setting the c
 returns to. Its one caller is the batch Model Score input sink (the mlflow-model-registry
 low-level spec); the configuration is process-wide, so a query another thread starts
 meanwhile runs with the smaller chunk, which changes its memory and speed, never its
-result. The server lifespan applies `current_streaming_chunk_size()` once,
+result. `start_process_with_environment` holds the chunk-size lock while a child spawns
+(`streaming_chunk_size_for_spawn`) and, under an active cap, gives the child the setting
+rather than the cap, since a child reads the variable as its setting. The server lifespan
+applies `current_streaming_chunk_size()` once,
 before the interactive worker pool starts, so a value already in the environment is
 kept. `InteractiveWorkerPool.run` captures the current value with each task, and the
 warm worker applies it before running that task. `bounded_sink` and
@@ -1014,7 +1017,9 @@ before attempting an installation and `restore()` clears it after releasing the
 cap, so `lease.backend` is non-`None` only while a cap installed by the current
 request is active; `_isolated_worker_entrypoint` and the warm interactive worker
 loop enter `native_memory_backend_scope` with that backend only when `apply()`
-returned `True`. Independently, the parent samples child RSS and
+returned `True`; the scope also exposes the lease itself, so
+`native_headroom_bytes()` answers the cap's ceiling minus its current charge
+inside a capped call (`None` elsewhere). Independently, the parent samples child RSS and
 terminates it when the configured cap is crossed; this watchdog is secondary
 defence and observability, never evidence that a hard kernel cap exists.
 `process_memory_caps_supported()` therefore means a native hard cap is available,

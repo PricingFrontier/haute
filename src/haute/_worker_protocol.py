@@ -570,7 +570,7 @@ def _protocol_entrypoint(
                 required=require_memory_limit,
                 address_space_allowance_bytes=address_space_allowance_bytes,
             )
-        with native_memory_backend_scope(lease.backend if applied else None):
+        with native_memory_backend_scope(lease.backend if applied else None, lease):
             result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):
             result_queue.put(("error", result))
