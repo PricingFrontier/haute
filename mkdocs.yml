@@ -113,17 +113,17 @@ nav:
         - Edge Join: building-models/nodes/edge-join.md
         - Banding: building-models/nodes/banding.md
         - Rating Step: building-models/nodes/rating-step.md
-        - Scenario Expander: building-models/nodes/scenario-expander.md
+        - Expander: building-models/nodes/scenario-expander.md
         - Source Switch: building-models/nodes/source-switch.md
       - Models:
         - Model Training: building-models/nodes/model-training.md
-        - Model Score: building-models/nodes/model-score.md
-        - External File: building-models/nodes/external-file.md
+        - Model Scoring: building-models/nodes/model-score.md
+        - Load File: building-models/nodes/external-file.md
       - Optimisation:
-        - Optimiser: building-models/nodes/optimiser.md
-        - Optimiser Apply: building-models/nodes/optimiser-apply.md
+        - Optimisation: building-models/nodes/optimiser.md
+        - Apply Optimisation: building-models/nodes/optimiser-apply.md
       - Pipeline Outputs:
-        - Output: building-models/nodes/output.md
+        - Quote Response: building-models/nodes/output.md
         - Data Output: building-models/nodes/data-output.md
       - Analysis:
         - Explore: building-models/nodes/explore.md

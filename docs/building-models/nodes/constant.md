@@ -24,15 +24,18 @@ Each entry becomes a column in the output. Values are coerced to numbers where p
 
 ## Connecting to other nodes
 
-The Constant node produces a single-row table. When you connect it to a Polars node alongside your main data, you cross-join it so every row gets access to every constant. Here's what that looks like:
+The Constant node produces a single-row table. To give every row of your main data access to every constant, cross-join the two:
+
+- **With an [Edge Join](edge-join.md)**: drag the Constant's output onto the connection that carries your data, then set the join type to **Cross**.
+- **In a [Polars](polars.md) node**: connect both, start from your data and add a **Join another input** step that joins the Constant's input with join type **cross**. Then add steps that use the constants, such as an **Add column** step that multiplies `base_premium` by `expense_loading`.
+
+The same Polars node written as code (after **Switch to code**), with inputs `quotes` (your data) and `params` (your constants):
 
 ```python
-# In a Polars node with two inputs: 'quotes' (your data) and 'params' (your constants)
 df = quotes.join(params, how="cross")
 df = df.with_columns(
     (pl.col("base_premium") * pl.col("expense_loading")).alias("loaded_premium")
 )
-return df
 ```
 
 !!! note "Dates"

@@ -1,6 +1,6 @@
-# Model Score
+# Model Scoring
 
-You've trained a model and logged it to MLflow (and perhaps your promotion process has registered it). The Model Score node loads it, casts your data to the types the model expects, and produces predictions  - all without writing scoring code. The model is cached and reloaded automatically when the file changes on disk.
+You've trained a model and logged it to MLflow (and perhaps your promotion process has registered it). The Model Scoring node loads it, casts your data to the types the model expects, and produces predictions  - all without writing scoring code. The model is cached and reloaded automatically when the file changes on disk.
 
 !!! note "What is MLflow?"
     MLflow is an open-source platform for tracking model experiments and storing trained models  - think of it as version control for models. If your team has set up MLflow (or uses Databricks, which includes it), your trained models are stored in a model registry where they can be loaded by version.
@@ -8,7 +8,7 @@ You've trained a model and logged it to MLflow (and perhaps your promotion proce
 !!! info "When to use"
     - Your models are managed in MLflow with versioning and a model registry.
     - You want automatic feature type casting and model caching.
-    - If your model is a standalone file not in MLflow, use [External File](external-file.md) instead.
+    - If your model is a standalone file not in MLflow, use [Load File](external-file.md) instead.
 
 This node accepts a single input.
 
@@ -24,7 +24,8 @@ This node accepts a single input.
 | `task` | **Required.** `"regression"` or `"classification"` |
 | `mlflow_destination` | `"databricks"` or `"server"` to load from that MLflow destination; leave it out to use the project's local MLflow folder |
 | `output_column` | Name for the prediction column. Defaults to `"prediction"`. |
-| `code` | Post-scoring transformation code  - useful for deriving columns from the prediction (e.g. `expected_claims = prediction * exposure`). |
+| `steps` | Post-scoring steps built on the node's **Polars** tab  - useful for deriving columns from the prediction (e.g. `expected_claims = prediction * exposure`). See [Post-scoring steps](#post-scoring-steps). |
+| `code` | The Polars code the steps generate, or your own code after **Switch to code**. |
 
 ### Example configuration
 
@@ -50,11 +51,13 @@ The most common setup  - loading a registered model for regression:
 
 Use `regression` when your model predicts a number (frequency, severity, premium). Use `classification` when your model predicts a category or probability (e.g. likelihood of claim, fraud detection).
 
-A run logged by haute's Model Training node records its task. When you pick such a run or registered version, Model Score takes the task from it and shows it read-only. A model logged elsewhere may not record one, so you choose the task yourself. Either way, scoring a model as the wrong task fails with an error naming the task it was trained for.
+A classification model also adds an `<output_column>_proba` column (for example `prediction_proba`) beside the predicted class: the probability of the positive class, which is usually what you use downstream. It appears when the model can produce probabilities.
+
+A run logged by haute's Model Training node records its task. When you pick such a run or registered version, Model Scoring takes the task from it and shows it read-only. A model logged elsewhere may not record one, so you choose the task yourself. Either way, scoring a model as the wrong task fails with an error naming the task it was trained for.
 
 ### Model files
 
-Model Score loads the native model a Model Training run logged: CatBoost (`.cbm`),
+Model Scoring loads the native model a Model Training run logged: CatBoost (`.cbm`),
 XGBoost (`.ubj`), LightGBM (`.lgbm`), EBM (`.ebm`) or GLM (`.rsglm`), or an MLflow pyfunc
 model. XGBoost and LightGBM files describe their own inputs and offset. An EBM file is
 the bare estimator, so it loads only with the feature contract Model Training logged
@@ -62,16 +65,17 @@ beside it, and only under the `interpret-core` version that contract records; a
 contract for a different loss or version is refused rather than scored. Categorical
 values a tree or EBM model never saw fail instead of scoring as missing.
 
-### Post-scoring code
+### Post-scoring steps
 
-The `code` field lets you transform the predictions after scoring. The prediction is already in the `output_column` (e.g. `"predicted_frequency"`):
+The node's **Polars** tab lets you transform the predictions after scoring, as steps in the same step builder as a [Polars](polars.md) node. The steps start from the scored frame, `df`, where the prediction is already in the `output_column` (e.g. `"predicted_frequency"`). For example, an **Add column** step named `expected_claims` that multiplies `predicted_frequency` by `exposure`. The node's config stores the `steps`, and `code` is the Polars code they generate.
+
+For anything the steps don't cover, add a **Free code** step, or click **Switch to code** to replace the steps with their code and edit it directly (this is one-way). Code works on `df` and assigns its result back to `df`, with no `return`:
 
 ```python
 # The prediction is already in the output_column (e.g. "predicted_frequency")
 df = df.with_columns(
     (pl.col("predicted_frequency") * pl.col("exposure")).alias("expected_claims")
 )
-return df
 ```
 
 ### Instances
@@ -80,5 +84,5 @@ Instances let you reuse the same scoring configuration with different inputs  - 
 
 **See also:**
 
-- [External File](external-file.md)  - for standalone model files not managed in MLflow
+- [Load File](external-file.md)  - for standalone model files not managed in MLflow
 - [Model Training](model-training.md)  - to train models that can be scored here

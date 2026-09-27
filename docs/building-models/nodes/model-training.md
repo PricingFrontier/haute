@@ -6,7 +6,7 @@ Explainable Boosting Machine (EBM, from InterpretML), and the GLM (generalised l
 model, via RustyStats). You choose the family when you add the node, and it stays fixed:
 a different family is a new node. Every run records reproducible evaluation evidence and
 saves a native model plus its feature contract. A completed result can then be logged to MLflow
-as a candidate run and scored by a [Model Score](model-score.md) node.
+as a candidate run and scored by a [Model Scoring](model-score.md) node.
 
 !!! note "What is MLflow?"
     [MLflow](https://mlflow.org) is an open-source platform for tracking experiments and storing models. If you're new to MLflow, the key concepts are: an **experiment** groups related training runs, a **run** is a single training attempt with its metrics and parameters, and the **model registry** stores production-ready models by name and version.
@@ -14,33 +14,41 @@ as a candidate run and scored by a [Model Score](model-score.md) node.
 This node accepts a single input and produces no downstream data—it is a terminal
 node. Training in the editor keeps the model and its evaluation artifacts with that
 training result; logging it to MLflow and saving it to a project file are explicit
-post-training actions in the node's **Export** pane. An exported training script writes
-them to `output_dir`.
+post-training actions in the node's **Export** pane.
 
 | Config | Description |
 |---|---|
-| `name` | **Required.** Model name |
+| `name` | Optional model name used to name the training artifacts. The editor has no field for it; training uses the node's id. |
 | `target` | **Required.** Target column (the value you're predicting) |
 | `weight` | Weight column for weighted training (e.g. exposure) |
 | `offset` | Offset column. Under a log link (a log-link GLM, or a `Poisson`, `Gamma` or `Tweedie` loss) it is a strictly positive exposure multiplier: 2× exposure gives 2× the expected count, and null, zero, or negative values are refused when training and when scoring. Under any other link it is added to the prediction. Different from `weight`, which weights the loss. |
-| `exclude` | Tree and EBM families. Columns to exclude from the model inputs (e.g. identifiers, dates, or target-related columns). All columns except the target, weight, offset, and excluded columns are used as model features. If your data contains ID columns, dates, or columns derived from the target, add them here to prevent data leakage. A GLM's features are its terms and interaction factors instead. |
+| `exclude` | Tree and EBM families. Columns to exclude from the model inputs (e.g. identifiers, dates, or target-related columns). All columns except the target, weight, offset, evaluation columns (see **Feature selection** below) and excluded columns are used as model features. If your data contains ID columns, dates, or columns derived from the target, add them here to prevent data leakage. A GLM's features are its terms and interaction factors instead. |
 | `algorithm` | **Required.** `"catboost"`, `"xgboost"`, `"lightgbm"`, `"ebm"`, or `"glm"`, chosen when the node is created |
-| `task` | **Required.** `"regression"` or `"classification"` |
+| `loss_function` | **Required** for the tree and EBM families: the training loss, chosen with the **Objective** buttons in the **Target** pane (see **Model families** below). A GLM sets its distribution `family` instead. |
+| `task` | `"regression"` (the default) or `"classification"`. Choosing a loss in the **Target** pane sets it, along with that loss's default metrics. |
 | `params` | Fixed parameters of the chosen family (see **Model families** below) |
 | `evaluation` | **Required.** Version-1 development/validation/final-test workflow (see below) |
 | `tuning` | Optional bounded search over the evaluation validation fits (every family except the GLM) |
 | `metrics` | Evaluation metrics: `"gini"`, `"rmse"`, `"mae"`, `"mse"`, `"r2"`, `"auc"`, `"logloss"`, `"poisson_deviance"`, `"tweedie_deviance"`, `"gamma_deviance"` |
 | `mlflow_experiment` | MLflow experiment the Export pane logs to (blank uses the default shown in the field) |
 | `mlflow_destination` | `"databricks"` or `"server"` to log to that MLflow destination; leave it out to use the project's local MLflow folder |
-| `output_dir` | Folder an exported training script saves trained model files to (e.g. `models/frequency`) |
 | `model_export_path` | Filename or path the Export pane's **Save model to file** action writes the trained model to (e.g. `frequency` saves `models/frequency.cbm` for CatBoost); the feature contract is written beside it |
-| `row_limit` | Limit the number of rows used for training (randomly sampled) |
+| `row_limit` | Limit the number of rows used for training (a seeded random sample). Set it as **Row limit** in the **Split** pane. |
+
+!!! note "Training data that does not fit in memory"
+    Before training, the **Train** pane estimates the RAM the data needs. When it would
+    not fit, the pane shows **Will downsample** and the training rows, and training uses a
+    seeded random sample of rows capped at a limit that fits; the result records the
+    downsampling. A `row_limit` you set yourself still applies when it is lower. When the
+    data passes through a join that has no key contract, the pane shows **Row count not
+    proven** with the upper bound instead of a verdict, and an **Open** button for each
+    such join: declaring the join many-to-one bounds the rows by its base input.
 
 !!! tip "Choosing a metric"
     For frequency models (Poisson), use `poisson_deviance`. For severity models, use `gamma_deviance` with a Gamma loss or `tweedie_deviance` with a Tweedie loss. For general regression, `rmse` or `gini` are common choices. For classification, use `auc` or `logloss`.
 
 !!! note "Registering and promoting models"
-    Haute logs candidate runs but never registers a trained model. Registering a run in the MLflow model registry, and promoting it (for example after comparing it with the current champion and moving an alias), is a separate process outside Haute. A [Model Score](model-score.md) node can then load the registered version or alias, or score a logged run directly.
+    Haute logs candidate runs but never registers a trained model. Registering a run in the MLflow model registry, and promoting it (for example after comparing it with the current champion and moving an alias), is a separate process outside Haute. A [Model Scoring](model-score.md) node can then load the registered version or alias, or score a logged run directly.
 
 ## Model families
 
@@ -50,7 +58,7 @@ them to `output_dir`.
 | Losses | RMSE, MAE, Poisson, Tweedie, Logloss, CrossEntropy | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | Distribution `family` and `link` |
 | Round budget (`params`) | `iterations` | `num_boost_round` | `num_iterations` | `max_rounds` (required) | — |
 | Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | Never | — |
-| Final refit | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Winning `max_rounds`, unchanged | Same settings |
+| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Winning `max_rounds`, unchanged | Same settings |
 | Tuning | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
 | Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes, not on an interaction | Per term |
 | Feature weights | Yes | No | No | No | No |
@@ -76,11 +84,12 @@ CatBoost trains on a GPU when its **GPU training** box is ticked (`task_type: "G
 XGBoost trains on an NVIDIA GPU when its **GPU training** box is ticked, which sets the
 node's `device` to `"gpu"`. LightGBM and EBM train on the CPU only.
 
-Haute installs XGBoost's CPU-only build. To train XGBoost on a GPU, run
-`haute gpu-setup` once in the project (see
+Haute installs XGBoost's CPU-only build, so XGBoost trains on the CPU with no extra
+setup. GPU training is optional: if you want it, run `haute gpu-setup` once in the
+project (see
 [Installing Haute](../../getting-started/installing-haute.md#xgboost-gpu-training)) and
-restart `haute serve`. The XGBoost box is disabled, with the reason, until the server can
-train on a CUDA GPU.
+restart `haute serve`. Until the server can train on a CUDA GPU, the XGBoost box is
+disabled and says why.
 
 XGBoost never falls back to the CPU silently. A GPU training request fails before the fit
 when no GPU can be used, and fails afterwards if XGBoost trained somewhere else; nothing is
@@ -96,10 +105,13 @@ last result stale.
 
 ## Feature selection and validation
 
-Feature selection is explicit. When you provide an explicit feature list, Haute
-uses exactly those named feature columns. Without one, it uses the
-schema-derived **all-except** set: every available column except the target,
-weight, and columns in `exclude`.
+Feature selection is explicit. When the node's config has an explicit feature list
+(`feature_columns`), Haute uses exactly those named feature columns. Without one, it
+uses the schema-derived **all-except** set: every available column except the target,
+weight, offset, any fold or identifier columns, the group or date column the evaluation
+uses, and columns in `exclude`. The **Features** pane sets `exclude` and monotone
+constraints; the explicit feature list and CatBoost's `feature_weights` have no editor
+control and are set only in the node's config.
 
 The training metadata needed to identify the run is retained separately from
 model features. Target and weight are excluded because they have training
@@ -208,6 +220,14 @@ null or invalid dates fail with an actionable error.
 When the evaluation fields are complete, the Split pane shows the exact planned
 development/final-test counts and validation-fit bounds before training.
 
+With a single validation set, the Split pane's **Refit on training + validation** box
+(`refit_on_development`, ticked by default) decides whether the final model is refitted on
+all development rows. Untick it to keep the one model trained on the training rows during
+validation, with no second fit; without a final test, its diagnostics are then labelled
+as validation diagnostics. The box is not
+offered with cross-validation or no validation, which always perform their final fit, and
+parameter tuning requires the refit, so **Tune parameters** ticks it again.
+
 ## Optional tuning
 
 Every family except the GLM can tune a bounded search space on the exact validation plan
@@ -251,7 +271,9 @@ loss/objective, device, threads, callbacks, write directories, or random seed.
 
 ??? info "CatBoost parameters"
     Fixed constructor parameters are passed via `params`; objective and
-    cross-cutting settings remain top-level:
+    cross-cutting settings remain top-level. A new CatBoost node's **Parameters** JSON
+    starts from `iterations` 1000, `learning_rate` 0.05, `depth` 6, `l2_leaf_reg` 3,
+    `early_stopping_rounds` 50 and `one_hot_max_size` 10:
 
     ```json
     {
@@ -260,7 +282,8 @@ loss/objective, device, threads, callbacks, write directories, or random seed.
         "iterations": 500,
         "depth": 6,
         "learning_rate": 0.1,
-        "early_stopping_rounds": 50
+        "early_stopping_rounds": 50,
+        "one_hot_max_size": 10
       },
       "monotone_constraints": {
         "vehicle_age": 1
@@ -276,6 +299,7 @@ loss/objective, device, threads, callbacks, write directories, or random seed.
     | `params.depth` | Tree depth |
     | `params.learning_rate` | Step-size shrinkage—smaller values are slower but often more accurate |
     | `params.early_stopping_rounds` | Stop a validation fit when its metric stops improving |
+    | `params.one_hot_max_size` | Categorical columns with up to this many levels are one-hot encoded; above it CatBoost uses target statistics, which are much slower to train. The **Train** pane's run summary shows the resulting **Categorical encoding**. |
     | `monotone_constraints` | Top-level `-1`/`1` constraints for selected numeric features |
 
 ??? info "XGBoost parameters"
@@ -386,7 +410,7 @@ loss/objective, device, threads, callbacks, write directories, or random seed.
     | `var_power` | **Required** for Tweedie: from 1 (Poisson) to 2 (Gamma). **Estimate from data** profiles it on the node's training data. |
     | `theta` | **Required** for Negative Binomial: a positive dispersion. RustyStats refuses to fit without it; **Estimate from data** profiles the likelihood on the node's training data. |
 
-    `exclude`, `feature_columns` and `monotone_constraints` apply to the tree and EBM families (`feature_weights` to CatBoost only) and are refused for a GLM.
+    `exclude`, `feature_columns` and `monotone_constraints` apply to the tree and EBM families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features are its terms and interaction factors.
 
     **Terms.** Each column's dtype decides which fits it offers:
 
@@ -433,17 +457,40 @@ loss/objective, device, threads, callbacks, write directories, or random seed.
 
 ## Reading the result
 
-The Summary view keeps model-selection evidence distinct from final performance:
+While a CatBoost, XGBoost or LightGBM model trains, the **Train** pane draws its loss
+curve live. The finished
+result opens in a results panel with these tabs; a tab appears only when the result has
+something to show in it:
 
-- **Selection estimates** are the single-validation or cross-validation metrics used
+- **Summary**: the metrics, evaluation and tuning evidence described below.
+- **Coefficients** and **Relativities** (GLM): each term's estimate and uncertainty, and
+  its effect relative to a baseline of 1.
+- **Terms** (EBM): each main effect's shape and each interaction's score table.
+- **Loss**: training and validation loss across iterations. After a single validation fit
+  and a refit, it draws the validation fit and says which fit it is.
+- **Lift**: how well predictions separate lower and higher outcomes.
+- **Residuals**: prediction errors and actual against predicted.
+- **Features**: feature importance.
+- **AvE**: actual against expected across each feature's groups, with exposure.
+- **PDP**: partial dependence, how predictions change as one feature varies.
+
+The Summary keeps model-selection evidence distinct from final performance:
+
+- **Test metrics** are the performance on the untouched test set, when one was reserved.
+- **Test diagnostics**, **Validation diagnostics** or **Training diagnostics** are named
+  after the rows they were evaluated on. Without a test set they are usually training
+  diagnostics, which are in-sample performance and are marked as such.
+- When a validation fit ran and no test set was reserved, the Summary leads with a
+  **Validation, N rows** card (**Validation (K-fold mean), N rows** under
+  cross-validation): the out-of-sample metrics used to select the model. The collapsed
+  results bar shows the same metrics.
+- **Candidate selection** holds the single-validation or cross-validation metrics used
   to compare fixed/tuned candidates. Cross-validation summaries are weighted by the
   number of validation rows in each fit.
-- **Final-test metrics** appear only when an untouched final test was configured.
-- **Development diagnostics** are shown when no final test exists; they are labelled
-  as development diagnostics and are not presented as out-of-sample performance.
 - A tuned run shows the baseline, winning trial, improvement, selected parameters,
   final tree count (tree families) or the winning round budget (EBM), and exact total
-  fit count.
+  fit count. **Use best as fixed parameters** copies the winning parameters into the
+  node's fixed `params` and turns tuning off.
 - An EBM adds a **Terms** view: each main effect's shape (including the score for
   missing values) and each interaction's score table, as additive scores on the model's
   link scale. They are the model itself, not SHAP values.
@@ -496,4 +543,4 @@ result is no longer available and asks you to train again.
 
 **See also:**
 
-- [Model Score](model-score.md)  - to score data with your trained model
+- [Model Scoring](model-score.md)  - to score data with your trained model

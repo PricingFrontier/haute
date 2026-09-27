@@ -1,4 +1,4 @@
-# Output
+# Quote Response
 
 You've calculated a price. Now you choose which columns to send back in the API response  - the final premium, any breakdown fields, a reference ID. Everything not listed here is still calculated but stays internal.
 
@@ -33,12 +33,12 @@ An `output_path` uses the same path notation as the Quote Input tables: `$[:].fi
 This returns only the quote ID, the final premium, and the area factor in the API response. All other columns (raw inputs, intermediate calculations) are still computed but not exposed. Fields whose value is null, and empty arrays or objects, are left out of the response.
 
 !!! warning "One per pipeline"
-    You can only have one Output node in a pipeline.
+    You can only have one Quote Response node in a pipeline.
 
 !!! note "Required for live pricing"
-    The Output node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
+    The Quote Response node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
 
 **See also:**
 
 - [Data Output](data-output.md)  - save results to a file for batch scoring
-- [Deployment guide](../../deployment/index.md)  - how the Output node maps to your live API response
+- [Deployment guide](../../deployment/index.md)  - how the Quote Response node maps to your live API response

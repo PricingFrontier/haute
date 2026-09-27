@@ -3,7 +3,7 @@
 Every step in a Haute pipeline is a node. You connect nodes on the canvas to define how data flows from source to output. Each node type is described on its own page.
 
 !!! tip "First pipeline?"
-    If you're building your first pipeline, a common path is: [Quote Input](quote-input.md) or [Data Input](data-input.md) → [Polars](polars.md) (clean your data) → [Banding](banding.md) and [Rating Step](rating-step.md) (build your rating structure) → [Output](output.md). You don't need every node type to get started.
+    If you're building your first pipeline, a common path is: [Quote Input](quote-input.md) or [Data Input](data-input.md) → [Polars](polars.md) (clean your data) → [Banding](banding.md) and [Rating Step](rating-step.md) (build your rating structure) → [Quote Response](output.md). You don't need every node type to get started.
 
 !!! info "About the config examples"
     The JSON examples on these pages show the underlying configuration. In the Haute UI, you configure most of these through forms, dropdowns, and editable tables  - you don't need to write JSON by hand.
@@ -21,12 +21,12 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Join another dataframe into an existing connection | [Edge Join](edge-join.md) |
 | Convert ages or values into bands | [Banding](banding.md) |
 | Look up rating factors from a table | [Rating Step](rating-step.md) |
-| Score data with a trained model | [Model Score](model-score.md) or [External File](external-file.md) |
+| Score data with a trained model | [Model Scoring](model-score.md) or [Load File](external-file.md) |
 | Train a new model | [Model Training](model-training.md) |
-| Optimise prices subject to constraints | [Scenario Expander](scenario-expander.md) + [Optimiser](optimiser.md) |
-| Apply saved optimisation results | [Optimiser Apply](optimiser-apply.md) |
+| Optimise prices subject to constraints | [Expander](scenario-expander.md) + [Optimisation](optimiser.md) |
+| Apply saved optimisation results | [Apply Optimisation](optimiser-apply.md) |
 | Switch between live and batch data | [Source Switch](source-switch.md) |
-| Choose which columns to return from the API | [Output](output.md) |
+| Choose which columns to return from the API | [Quote Response](output.md) |
 | Profile a dataset, build pivot tables and charts | [Explore](explore.md) |
 | Save results to a file or table | [Data Output](data-output.md) |
 | Group nodes into a reusable block | [Submodel](submodel.md) |
@@ -46,7 +46,7 @@ Below is a simple motor pricing pipeline that takes in quote data, enriches it, 
                                                   │
                                                   ▼
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│    Output     │◀────│   Polars      │◀────│ Rating Step   │
+│Quote Response │◀────│   Polars      │◀────│ Rating Step   │
 │ (return cols) │     │ (premium)     │     │ (factors)     │
 └──────────────┘     └──────────────┘     └──────────────┘
 ```
@@ -63,7 +63,7 @@ Below is a simple motor pricing pipeline that takes in quote data, enriches it, 
 
 5. **[Polars](polars.md)**  - Calculates the final premium: `final_premium = base_rate * combined_factor`. This is a single expression that produces the price.
 
-6. **[Output](output.md)**  - Selects the columns to return from the API: `quote_id`, `final_premium`, `area_factor`, and `age_factor`.
+6. **[Quote Response](output.md)**  - Selects the columns to return from the API: `quote_id`, `final_premium`, `area_factor`, and `age_factor`.
 
 !!! tip "Try it yourself"
     You can recreate this pipeline on the canvas in a few minutes. Start with a Quote Input node, then chain each step by dragging a connection from one node's output to the next node's input.
@@ -82,25 +82,25 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 
 - **[Polars](polars.md)**  - general-purpose node for joins, filters, and calculations
 - **[Edge Join](edge-join.md)**  - compact join node created from canvas connections
-- **[Banding](banding.md)**  - converts continuous or categorical values into bands
+- **[Banding](banding.md)**  - bands numeric or date values by breakpoints, or categorical values by mapping
 - **[Rating Step](rating-step.md)**  - looks up rating factors from tables and combines them
-- **[Scenario Expander](scenario-expander.md)**  - generates a range of candidate values for each row (used with the Optimiser)
+- **[Expander](scenario-expander.md)**  - generates a range of candidate values for each row (used with Optimisation)
 - **[Source Switch](source-switch.md)**  - toggles between live and batch data sources
 
 ## Models
 
 - **[Model Training](model-training.md)**  - trains a CatBoost, XGBoost, LightGBM, EBM or GLM model
-- **[Model Score](model-score.md)**  - scores data with an MLflow-managed model
-- **[External File](external-file.md)**  - loads and scores a standalone model file
+- **[Model Scoring](model-score.md)**  - scores data with an MLflow-managed model
+- **[Load File](external-file.md)**  - loads and scores a standalone model file
 
 ## Optimisation
 
-- **[Optimiser](optimiser.md)**  - find the best price per quote (or the best factor table) subject to your constraints
-- **[Optimiser Apply](optimiser-apply.md)**  - apply the saved results to new data at deployment time
+- **[Optimisation](optimiser.md)**  - find the best price per quote (or the best factor table) subject to your constraints
+- **[Apply Optimisation](optimiser-apply.md)**  - apply the saved results to new data at deployment time
 
 ## Pipeline outputs
 
-- **[Output](output.md)**  - chooses which columns to return in the API response
+- **[Quote Response](output.md)**  - chooses which columns to return in the API response
 - **[Data Output](data-output.md)**  - saves results to a file, lakehouse or database table
 
 ## Analysis

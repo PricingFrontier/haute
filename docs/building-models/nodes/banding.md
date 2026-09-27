@@ -22,10 +22,19 @@ Each factor has:
 |---|---|
 | `column` | **Required.** Input column to band |
 | `outputColumn` | **Required.** Name of the new banded column |
-| `banding` | **Required.** `"breakpoints"` (numeric bands) or `"categorical"` |
+| `banding` | **Required.** `"breakpoints"` (numeric or date bands, **Numeric** in the editor) or `"categorical"` (**Categorical**) |
 | `rules` | **Required.** Rules defining each band. In the JSON sidecar they are a key/value map |
 | `default` | Value assigned to rows that don't match any rule |
-| `rightClosed` | Breakpoints only. `true` (the default) makes each band include its upper boundary; `false` makes it include its lower one |
+| `rightClosed` | Breakpoints only. `true` (the default) makes each band include its upper boundary; `false` makes it include its lower one. The editor shows it as **(incl.)** or **(excl.)** but cannot change it: set it in the JSON sidecar. |
+
+In the editor, the node lists its factors in a searchable list, and each factor has a
+**Numeric** / **Categorical** **Type** toggle. Numeric covers dates too; it is unavailable
+for a column that is neither a number nor a date. A Numeric factor with no breakpoints
+offers **Generate even bands**, which fills them from a start, end and step (on a date
+column, a step of days, weeks, months or years), or **Add manually**. When the input data
+is available, the editor draws a histogram of the whole dataset with the band boundaries
+and shows how many rows each rule matches, and a Categorical factor offers a picker of the
+column's values. **Copy banding as TSV** copies the rules for a spreadsheet.
 
 **Breakpoint rules** define ordered numeric bands. Each key is the upper
 boundary of a band and its value is the band's name; use an empty-string key for

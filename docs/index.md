@@ -51,10 +51,10 @@ hide:
 | Category | Nodes |
 |---|---|
 | Inputs | [Quote Input](building-models/nodes/quote-input.md) · [Data Input](building-models/nodes/data-input.md) · [Constant](building-models/nodes/constant.md) |
-| Transforms | [Polars](building-models/nodes/polars.md) · [Edge Join](building-models/nodes/edge-join.md) · [Banding](building-models/nodes/banding.md) · [Rating Step](building-models/nodes/rating-step.md) · [Scenario Expander](building-models/nodes/scenario-expander.md) · [Source Switch](building-models/nodes/source-switch.md) |
-| Models | [Model Training](building-models/nodes/model-training.md) · [Model Score](building-models/nodes/model-score.md) · [External File](building-models/nodes/external-file.md) |
-| Optimisation | [Optimiser](building-models/nodes/optimiser.md) · [Optimiser Apply](building-models/nodes/optimiser-apply.md) |
-| Outputs | [Output](building-models/nodes/output.md) · [Data Output](building-models/nodes/data-output.md) |
+| Transforms | [Polars](building-models/nodes/polars.md) · [Edge Join](building-models/nodes/edge-join.md) · [Banding](building-models/nodes/banding.md) · [Rating Step](building-models/nodes/rating-step.md) · [Expander](building-models/nodes/scenario-expander.md) · [Source Switch](building-models/nodes/source-switch.md) |
+| Models | [Model Training](building-models/nodes/model-training.md) · [Model Scoring](building-models/nodes/model-score.md) · [Load File](building-models/nodes/external-file.md) |
+| Optimisation | [Optimisation](building-models/nodes/optimiser.md) · [Apply Optimisation](building-models/nodes/optimiser-apply.md) |
+| Outputs | [Quote Response](building-models/nodes/output.md) · [Data Output](building-models/nodes/data-output.md) |
 | Analysis | [Explore](building-models/nodes/explore.md) |
 | Organisation | [Submodel](building-models/nodes/submodel.md) · [Instances](building-models/nodes/instances.md) |
 

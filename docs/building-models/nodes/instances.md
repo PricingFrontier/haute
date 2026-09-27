@@ -17,20 +17,19 @@ An instance points at an existing node (the **original**) and inherits its code 
 | Config | Description |
 |---|---|
 | `instanceOf` | **Required.** Name of the node to reuse logic from |
-| `inputMapping` | **Required.** Maps the original node's input names to this instance's inputs |
+| `inputMapping` | Maps the original node's input names to this instance's inputs. Optional: see below |
 
 When you update the original node's code, every instance updates automatically.
 
+Haute matches the original's inputs to the instance's inputs by exact name first, then by an unambiguous partial name match, then by position. You only need an `inputMapping` when that matching is ambiguous (several upstream inputs fit one original input); the instance's panel then warns you, and saving and running are blocked until you choose each input in its **Input Mapping** selectors. You can also use those selectors to override the automatic match.
+
 ## Example
 
-Suppose you have a Polars node called `clean_policies` that normalises column names:
+Suppose you have a Polars node called `clean_policies` that normalises column names. It starts from its input `policies` and has one **Rename columns** step (`Date_Of_Birth` to `date_of_birth`, `Post_Code` to `postcode`). Its generated code reads:
 
 ```python
-df = df.with_columns(
-    pl.col("Date_Of_Birth").alias("date_of_birth"),
-    pl.col("Post_Code").alias("postcode"),
-)
-return df
+df = policies
+df = df.rename({'Date_Of_Birth': 'date_of_birth', 'Post_Code': 'postcode'})
 ```
 
 You want to apply the same cleaning to a different dataset called `claims_data`. Instead of duplicating the node, create an instance:
@@ -42,17 +41,17 @@ You want to apply the same cleaning to a different dataset called `claims_data`.
 }
 ```
 
-The `inputMapping` says: wherever the original node reads from `policies`, this instance reads from `claims_data` instead. The code stays the same.
+The `inputMapping` says: wherever the original node reads from `policies`, this instance reads from `claims_data` instead. The code stays the same. With a single input, Haute makes this match by position on its own, so here the mapping only makes it explicit.
 
 ## Which node types support instances?
 
-Instances are available on [Polars](polars.md) and [Model Score](model-score.md) nodes. In both cases, the configuration is the same  - `instanceOf` and `inputMapping`.
+Every node type can have instances except Quote Input, Quote Response and Source Switch, because a pipeline allows only one of each; for the same reason, neither can a submodel that contains one of them. The configuration is always the same  - `instanceOf` and `inputMapping`. Submodels have instances too; see [Submodel](submodel.md).
 
 ## Creating an instance in the UI
 
-On the canvas, right-click a node and choose **Create Instance**. Haute creates a new node pre-configured with `instanceOf` pointing at the original. Connect the new node's inputs to the data you want to process.
+Select exactly one node on the canvas and click **Instance** in the toolbar. Haute creates a new node beside it, pre-configured with `instanceOf` pointing at the original. Connect the new node's inputs to the data you want to process. (For a submodel, you can also right-click it and choose **Create Instance**.)
 
 **See also:**
 
 - [Polars](polars.md)  - the most common node type to create instances of
-- [Model Score](model-score.md)  - reuse scoring configuration with different data
+- [Model Scoring](model-score.md)  - reuse scoring configuration with different data

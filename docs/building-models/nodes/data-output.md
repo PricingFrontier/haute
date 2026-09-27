@@ -6,7 +6,7 @@ You want to save results  - scoring a full dataset and writing the output to par
     Like "Save As CSV" in Excel: the destination is part of your pipeline, and you write it when you're ready.
 
 !!! info "When to use"
-    Use this for batch scoring  - processing a full dataset and saving the results. For live API responses, use [Output](output.md) instead.
+    Use this for batch scoring  - processing a full dataset and saving the results. For live API responses, use [Quote Response](output.md) instead.
 
 This node accepts a single input. Every configuration chooses exactly one destination with `outputType`:
 
@@ -48,8 +48,8 @@ Clicking **Write** writes the full scored dataset to `outputs/scored_policies.pa
 
 Running or previewing the pipeline passes data through a Data Output without writing anything. To write, click **Write** in the node's editor: Haute runs the pipeline up to the node and writes the destination. If the destination file already exists, the editor asks you to confirm with **Replace existing file** before overwriting it. For a lakehouse or database destination, what happens when the table already exists is the Polars writer's own behaviour, which you can set through `arguments` (for example `if_table_exists` for a database table).
 
-!!! note "All columns are written"
-    All columns from the input are written. To control which columns are saved, add a [Polars](polars.md) node upstream with [`selected_columns`](polars.md#selected_columns).
+!!! note "Choosing the columns"
+    By default, every column of the input is written. To write only some of them, untick the others on the node's **Columns** tab (`selected_columns`); no upstream node is needed.
 
 !!! note "Not part of a deployed API"
     A deployed pricing API never writes: its Data Output nodes pass data through without invoking the writer.
@@ -59,4 +59,4 @@ Running or previewing the pipeline passes data through a Data Output without wri
 
 **See also:**
 
-- [Output](output.md)  - define the API response for live pricing
+- [Quote Response](output.md)  - define the API response for live pricing

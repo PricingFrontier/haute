@@ -66,7 +66,8 @@ a hard memory cap. Previews and traces, Data Output writes, Explore, JSON cache 
 training preparation, and multi-row batch scoring in a deployed container all run
 inside a worker with a native memory cap, so Haute runs the operation once under the
 run's full reserved memory envelope and reports the **Warned** outcome naming the
-missing proof. Optimiser stages and single-row live scoring run without that cap, so
+missing proof. A host with no native memory cap (macOS) cannot give that guarantee, so
+there these surfaces return the typed diagnostic instead. Optimiser stages and single-row live scoring run without that cap, so
 they return the typed diagnostic, and its remediation says so. A Databricks deployment
 scores every request in the serving process, so an operation Haute cannot estimate
 fails the bundle at build time with a correction that points at a container target.
