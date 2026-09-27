@@ -427,6 +427,12 @@ def test_a_rating_or_banding_output_reads_its_factor_columns(
 
     assert lineage.contributed["rate"] == computed
     assert lineage.contributed["quotes"] == read
+    for derived, reads in lineage.reads["rate"].items():
+        for read_column in reads or ():
+            # A rule never reads its own output: an in-place factor reads its input's value.
+            assert ColumnSource("rate", derived) not in read_column.sources
+            if read_column.column in read:
+                assert read_column.sources == (ColumnSource("quotes", read_column.column),)
 
 
 def _chain_trace(tmp_path, source: pl.DataFrame, codes: list[tuple[str, str]], column: str):
@@ -495,6 +501,29 @@ def test_a_column_reassigned_after_it_was_read_depends_on_every_input(tmp_path):
 
     # y read the first x (from a); the last assignment of x reads b.
     assert {"a", "b"} <= set(steps["src"].contributed_columns)
+
+
+def test_a_value_reassigned_unchanged_is_read_from_the_step_that_assigned_it(tmp_path):
+    steps = _chain_trace(
+        tmp_path,
+        pl.DataFrame({"x": [5.0], "a": [1.0]}),
+        [
+            # Assigns x the value it already held: its row shows no change.
+            ("keep", 'df = src.with_columns(pl.lit(5.0).alias("x"))'),
+            (
+                "calc",
+                # t reads columns the trace cannot name, so calc depends on every input.
+                'df = keep.with_columns(pl.sum_horizontal(pl.all()).alias("t"))\n'
+                'df = df.with_columns((pl.col("x") + pl.col("t")).alias("y"))',
+            ),
+        ],
+        "y",
+    )
+
+    (y,) = [d for d in steps["calc"].derivations if d["column"] == "y"]
+    x_sources = [read["sources"] for read in y["reads"] if read["column"] == "x"]
+    assert x_sources == [[{"node_id": "keep", "column": "x", "before_code": False}]]
+    assert "x" in steps["keep"].contributed_columns
 
 
 def test_a_window_partition_column_leads_to_the_step_that_computed_it(tmp_path):

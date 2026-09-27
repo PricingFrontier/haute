@@ -48,12 +48,14 @@
    epoch, so it outlives the refresh it started — which replaces the seed plan
    and may raise the epoch — and is hidden only by a change of node, graph,
    source, or row limit. `useTracing` also takes `traceFocusNodeId` from `useUIStore`:
-   while a trace shows, that node is projected with `_traceFocused` and drawn with an
-   accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and
+   while a trace shows, the canvas node showing that step (resolved from the runtime id
+   through the hook's `resolveTraceNodeId`, as for trace activity: a submodel's card or a
+   boundary) is projected with `_traceFocused` and drawn with an accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and
    clears it on unmount), except for a second after a link's click, while the scroll to the
    card moves content under a still pointer; a derivation row's step link calls `focusStep`, which shows the
    full trace when the focused one hides the step, opens and scrolls to its card and
-   flashes it (`data-trace-focused`, also for a card that mounts with the request), rings
+   flashes it (`data-trace-focused`, also for a card that mounts with the request; a later
+   link to another card ends the flash), rings
    the node and asks `useUIStore.requestTraceCentre` to centre it. `TraceViewFit`, inside
    the editor's `<ReactFlow>`, fits the canvas to the lineage steps (`column_relevant`)
    once per trace result and centres each requested node at the current zoom.

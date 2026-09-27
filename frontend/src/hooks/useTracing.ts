@@ -68,6 +68,8 @@ export interface TracingReturn {
   retryTrace: () => void
   nodesWithStatus: Node[]
   edgesWithTrace: Edge[]
+  /** The canvas node showing a trace step: a submodel's card, a boundary, or the node itself. */
+  resolveTraceNodeId: (id: string) => string
 }
 
 export interface EdgeAdjacency {
@@ -655,6 +657,7 @@ export default function useTracing({
 
   const nodesWithStatus = useMemo(() => {
     const hasTrace = traceResult !== null
+    const focusedId = traceFocusNodeId === null ? null : resolveTraceId(traceFocusNodeId)
     const seenIds = new Set<string>()
     const next: Node[] = new Array(nodes.length)
 
@@ -667,7 +670,7 @@ export default function useTracing({
       const traceDimmed = hasTrace && !inTrace
       // Hover dim: when hovering a node and no trace is active, dim unconnected nodes
       const hoverDimmed = !hasTrace && hoverConnectedIds !== null && !hoverConnectedIds.has(n.id)
-      const traceFocused = hasTrace && n.id === traceFocusNodeId
+      const traceFocused = hasTrace && n.id === focusedId
       const traceValue = traceValueMap.get(n.id)
 
       const cached = projectionCache.get(n.id)
@@ -727,7 +730,7 @@ export default function useTracing({
     }
 
     return next
-  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, traceFocusNodeId, projectionCache, traceMotionLite])
+  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, traceFocusNodeId, resolveTraceId, projectionCache, traceMotionLite])
 
   const edgesWithTrace = useMemo(() => {
     // Trace styling takes priority over hover styling
@@ -842,5 +845,6 @@ export default function useTracing({
     traceResult, tracedCell, traceState,
     handleCellClick, clearTrace, cancelTrace, retryTrace,
     nodesWithStatus, edgesWithTrace,
+    resolveTraceNodeId: resolveTraceId,
   }
 }

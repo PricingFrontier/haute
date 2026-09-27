@@ -922,7 +922,7 @@ function FlowEditor() {
   const {
     traceResult, tracedCell, traceState,
     handleCellClick, clearTrace, cancelTrace, retryTrace,
-    nodesWithStatus, edgesWithTrace,
+    nodesWithStatus, edgesWithTrace, resolveTraceNodeId,
   } = useTracing({
     nodes, edges, selectedNode,
     submodels,
@@ -1748,7 +1748,7 @@ function FlowEditor() {
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
                 <InitialViewFit />
-                <TraceViewFit traceResult={traceResult} />
+                <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
               </ReactFlow>
             </div>
           </ErrorBoundary>

@@ -49,6 +49,8 @@ function trace(steps: TraceStep[]): TraceResult {
   }
 }
 
+const identity = (id: string) => id
+
 beforeEach(() => {
   flow.fitView.mockReset()
   flow.zoom = 0.8
@@ -60,11 +62,11 @@ afterEach(cleanup)
 describe("TraceViewFit", () => {
   it("fits the canvas to the traced value's lineage once per trace", () => {
     const first = trace([step("source"), step("joined_in", false), step("target")])
-    const { rerender } = render(<TraceViewFit traceResult={null} />)
+    const { rerender } = render(<TraceViewFit traceResult={null} resolveNodeId={identity} />)
     expect(flow.fitView).not.toHaveBeenCalled()
 
-    rerender(<TraceViewFit traceResult={first} />)
-    rerender(<TraceViewFit traceResult={first} />)
+    rerender(<TraceViewFit traceResult={first} resolveNodeId={identity} />)
+    rerender(<TraceViewFit traceResult={first} resolveNodeId={identity} />)
 
     expect(flow.fitView).toHaveBeenCalledOnce()
     expect(flow.fitView).toHaveBeenCalledWith({
@@ -73,12 +75,12 @@ describe("TraceViewFit", () => {
       duration: 300,
     })
 
-    rerender(<TraceViewFit traceResult={trace([step("other")])} />)
+    rerender(<TraceViewFit traceResult={trace([step("other")])} resolveNodeId={identity} />)
     expect(flow.fitView).toHaveBeenCalledTimes(2)
   })
 
   it("centres a requested node at the current zoom", () => {
-    render(<TraceViewFit traceResult={null} />)
+    render(<TraceViewFit traceResult={null} resolveNodeId={identity} />)
 
     act(() => useUIStore.getState().requestTraceCentre("fill_na"))
 
@@ -91,5 +93,24 @@ describe("TraceViewFit", () => {
     // The same node asked for again is centred again.
     act(() => useUIStore.getState().requestTraceCentre("fill_na"))
     expect(flow.fitView).toHaveBeenCalledTimes(2)
+  })
+
+  it("fits and centres the canvas nodes that show runtime trace ids", () => {
+    const visible = (id: string) => id.replace("submodel_runtime/pricing/", "")
+    const { rerender } = render(
+      <TraceViewFit
+        traceResult={trace([step("submodel_runtime/pricing/a"), step("submodel_runtime/pricing/b"), step("b")])}
+        resolveNodeId={visible}
+      />,
+    )
+    expect(flow.fitView).toHaveBeenLastCalledWith({ nodes: [{ id: "a" }, { id: "b" }], padding: 0.2, duration: 300 })
+
+    act(() => useUIStore.getState().requestTraceCentre("submodel_runtime/pricing/a"))
+    expect(flow.fitView).toHaveBeenLastCalledWith(expect.objectContaining({ nodes: [{ id: "a" }] }))
+    const calls = flow.fitView.mock.calls.length
+
+    // A new resolver alone (the canvas changed) does not centre again.
+    rerender(<TraceViewFit traceResult={null} resolveNodeId={(id) => visible(id)} />)
+    expect(flow.fitView).toHaveBeenCalledTimes(calls)
   })
 })

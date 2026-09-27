@@ -67,6 +67,9 @@ export function StepCard({
     if (focusNonce !== undefined) {
       setExpanded(true)
       setFlashing(true)
+    } else {
+      // Focus moved to another card before the flash ended.
+      setFlashing(false)
     }
   }
   useEffect(() => {

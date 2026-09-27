@@ -569,7 +569,10 @@ describe("useTracing", () => {
       trace: makeTrace(["external-source-b", "submodel_runtime/pricing/child", "external-target"]),
     })
 
-    const { result } = renderHook(() => useTracing(params))
+    const { result, rerender } = renderHook(
+      (focus: string | null) => useTracing({ ...params, traceFocusNodeId: focus }),
+      { initialProps: null as string | null },
+    )
     await act(async () => {
       result.current.handleCellClick(0, "price")
     })
@@ -577,6 +580,15 @@ describe("useTracing", () => {
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
       target_node_id: "submodel_runtime/pricing/child",
     }))
+
+    // A trace card points at runtime ids: the ring lands on the visible node for each.
+    const focusedIds = () => result.current.nodesWithStatus.filter((node) => node.data._traceFocused).map((node) => node.id)
+    rerender("submodel_runtime/pricing/child")
+    expect(focusedIds()).toEqual(["child"])
+    expect(result.current.resolveTraceNodeId("submodel_runtime/pricing/child")).toBe("child")
+    rerender("external-target")
+    expect(focusedIds()).toEqual(["boundary-output"])
+    rerender(null)
 
     const projectedData = Object.fromEntries(
       result.current.nodesWithStatus.map((node) => [node.id, node.data]),

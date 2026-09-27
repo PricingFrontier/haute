@@ -280,7 +280,10 @@ continuation is never cached: every click proves again.
     carried it, to the nodes that computed it. An uncorrelated node ends the route as
     the source; a column no route reaches has no source. A generated value the code
     rewrote has its rule's reads followed for the demand but not reported, since the
-    row shows the later value.
+    row shows the later value. An in-place rule (a banding factor overwriting its input)
+    reads its input's value, never its own output. A node whose demand is every column
+    counts as computed each output column its code or rule writes, including one assigned
+    the value it already held (its schema shows no change), so a read resolves to it.
 11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
     retained value path into diagnostic-linked `TraceOmission` entries; benign
     graph/column pruning remains absent. In a column trace an unresolved node is on
@@ -995,8 +998,11 @@ integration/regression suites:
   pipeline (the income formula reads the premium the scenario step already rescaled
   and the cost step's burn cost; the rescale's own premium resolves through the join
   side to the loaded prices; the apply reads its objective and constraint from the
-  scenario step; a loaded column has no formula and no reads) and the `before_code`
-  source of a generated column the code reassigns.
+  scenario step; a loaded column has no formula and no reads), the `before_code`
+  source of a generated column the code reassigns, a value reassigned unchanged under
+  every-column demand read from the step that assigned it, rating and banding rules
+  never reading their own output, and join reads resolving to both sides of a
+  coalesced full-join key and to an uncorrelated join side.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for

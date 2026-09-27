@@ -826,6 +826,11 @@ describe("TracePanel", () => {
     fireEvent.mouseLeave(scenariosCard)
     expect(useUIStore.getState().traceFocusNodeId).toBeNull()
     settled.mockRestore()
+
+    // Following another link moves the flash: the first card does not stay highlighted.
+    fireEvent.click(within(applyCard).getAllByRole("button", { name: "Go to premiums, step 1" })[0])
+    expect(screen.getByTestId("trace-step-card-premiums")).toHaveAttribute("data-trace-focused", "true")
+    expect(fillNaCard).not.toHaveAttribute("data-trace-focused")
   })
 
   it("shows the full trace when a derivation link points at a card the focused one hides", () => {

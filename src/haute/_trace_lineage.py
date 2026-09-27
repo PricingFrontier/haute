@@ -289,7 +289,11 @@ def _step_demand(
         loaded = changed if isinstance(wanted, _EveryColumn) else changed & wanted
         return loaded, set(), {column: [] for column in loaded}
     if isinstance(wanted, _EveryColumn):
-        return changed, EVERY_COLUMN, dict.fromkeys(changed)
+        # Every column the step computes, also one its code assigned the value it
+        # already held (its row shows no change): a child reading it read this.
+        derivation = _Derivation(step, node, changed, node_map)
+        made = changed | {column for column in step.output_values if derivation.computes(column)}
+        return made, EVERY_COLUMN, dict.fromkeys(made)
     derivation = _Derivation(step, node, changed, node_map)
     for column in sorted(wanted):
         if derivation.computes(column):
@@ -390,7 +394,12 @@ class _Derivation:
             self.depend_on_every_input()
             return
         for reference in by_rule:
-            self._value_before_code(reference)
+            if reference == column:
+                # An in-place rule (a banding factor overwriting its input)
+                # reads the value from before it: the input's, never its own.
+                self.read_input(column)
+            else:
+                self._value_before_code(reference)
 
     def _code_writes(self, column: str) -> bool:
         return bool(self.code.strip()) and (
