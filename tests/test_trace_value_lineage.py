@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-from haute._trace_lineage import trace_value_lineage
+from haute._trace_lineage import JoinInputs, trace_value_lineage
 from haute._types import GraphNode, NodeData, NodeType
 from haute.trace import SchemaDiff, TraceResult, TraceStep, execute_trace
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
@@ -262,12 +262,13 @@ def _model_chain_lineage(competitor_detail: dict):
             "conversion": _graph_node(NodeType.MODEL_SCORE),
         },
         attempted=(),
-        output_columns={
+        output_columns=lambda node_id, _handle: {
             "quotes": {"age", "region", "unrelated"},
             "rivals": {"rival_note"},
             "competitor": {"age", "region", "unrelated", "rival_note", "competitor_premium"},
-        }.get,
-        edge_join_roles={},
+        }.get(node_id),
+        source_handles={},
+        join_inputs={},
     )
 
 
@@ -344,9 +345,224 @@ def test_a_rating_or_banding_output_reads_its_factor_columns(
         parents_of={"rate": ["quotes"]},
         node_map={"quotes": _graph_node(NodeType.DATA_INPUT), "rate": _graph_node(node_type)},
         attempted=(),
-        output_columns={"quotes": {"age", "area", "other"}}.get,
-        edge_join_roles={},
+        output_columns=lambda node_id, _handle: {"quotes": {"age", "area", "other"}}.get(node_id),
+        source_handles={},
+        join_inputs={},
     )
 
     assert lineage.contributed["rate"] == computed
     assert lineage.contributed["quotes"] == read
+
+
+def _chain_trace(tmp_path, source: pl.DataFrame, codes: list[tuple[str, str]], column: str):
+    """Trace *column* at the end of a chain of Polars nodes over one source."""
+    source.write_parquet(tmp_path / "src.parquet")
+    ids = ["src", *(node_id for node_id, _code in codes)]
+    graph = make_graph(
+        {
+            "nodes": [
+                make_source_node("src", str(tmp_path / "src.parquet")),
+                *(make_transform_node(node_id, code) for node_id, code in codes),
+            ],
+            "edges": [make_edge(parent, child) for parent, child in zip(ids, ids[1:])],
+        }
+    )
+    return _steps_by_id(execute_trace(graph, target_node_id=ids[-1], column=column))
+
+
+def test_a_helper_column_the_code_drops_still_leads_to_its_inputs(tmp_path):
+    steps = _chain_trace(
+        tmp_path,
+        pl.DataFrame({"a": [1.0], "b": [2.0]}),
+        [
+            (
+                "calc",
+                'df = src.with_columns((pl.col("a") * 2).alias("tmp"))\n'
+                'df = df.with_columns((pl.col("tmp") + 1).alias("y")).drop("tmp")',
+            )
+        ],
+        "y",
+    )
+
+    assert steps["calc"].contributed_columns == ["tmp", "y"]
+    assert steps["src"].contributed_columns == ["a"]
+
+
+def test_an_assignment_that_kept_the_input_value_still_replaces_it(tmp_path):
+    steps = _chain_trace(
+        tmp_path,
+        pl.DataFrame({"a": [1.0], "x": [5]}),
+        [("calc", 'df = src.with_columns(pl.lit(5).alias("x"))')],
+        "x",
+    )
+
+    assert steps["calc"].contributed_columns == ["x"]
+    # The literal, not the source's equal x, is the value's origin.
+    assert steps["src"].column_relevant is False
+
+
+def test_a_column_reassigned_after_it_was_read_depends_on_every_input(tmp_path):
+    steps = _chain_trace(
+        tmp_path,
+        pl.DataFrame({"a": [1.0], "b": [2.0], "c": [3.0]}),
+        [
+            (
+                "calc",
+                'df = src.with_columns(pl.col("a").alias("x"))\n'
+                'df = df.with_columns((pl.col("x") * 2).alias("y"))\n'
+                'df = df.with_columns(pl.col("b").alias("x"))',
+            )
+        ],
+        "y",
+    )
+
+    # y read the first x (from a); the last assignment of x reads b.
+    assert {"a", "b"} <= set(steps["src"].contributed_columns)
+
+
+def test_a_window_partition_column_leads_to_the_step_that_computed_it(tmp_path):
+    steps = _chain_trace(
+        tmp_path,
+        pl.DataFrame({"age": [31, 45], "premium": [100.0, 200.0]}),
+        [
+            ("bands", 'df = src.with_columns((pl.col("age") // 10).alias("band"))'),
+            ("calc", 'df = bands.with_columns(pl.col("premium").sum().over("band").alias("y"))'),
+        ],
+        "y",
+    )
+
+    assert steps["bands"].contributed_columns == ["band"]
+    assert steps["src"].contributed_columns == ["age", "premium"]
+
+
+def test_a_ratio_constraint_leads_to_its_numerator_and_denominator(tmp_path):
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q1", "q1"],
+            "scenario_index": [0, 1, 2],
+            "scenario_value": [0.9, 1.0, 1.1],
+            "predicted_income": [90.0, 100.0, 110.0],
+            "claims_base": [55.0, 60.0, 70.0],
+            "predicted_premium": [100.0, 100.0, 100.0],
+            "unrelated": [1.0, 2.0, 3.0],
+        }
+    ).write_parquet(tmp_path / "scored.parquet")
+    artifact_path = tmp_path / "ratio.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "version": "ratio_v1",
+                "mode": "online",
+                "lambdas": {"loss_ratio": 0.2},
+                "objective": "predicted_income",
+                "constraints": {
+                    "loss_ratio": {
+                        "max": 0.60,
+                        "numerator": "predicted_claims",
+                        "denominator": "predicted_premium",
+                    }
+                },
+                "quote_id": "quote_id",
+                "scenario_index": "scenario_index",
+                "scenario_value": "scenario_value",
+            }
+        ),
+        encoding="utf-8",
+    )
+    graph = make_graph(
+        {
+            "nodes": [
+                make_source_node("scored", str(tmp_path / "scored.parquet")),
+                make_transform_node(
+                    "claims",
+                    'df = scored.with_columns(pl.col("claims_base").alias("predicted_claims"))',
+                ),
+                _node(
+                    "apply",
+                    NodeType.OPTIMISER_APPLY,
+                    {
+                        "sourceType": "file",
+                        "artifact_path": str(artifact_path),
+                        "optimised_value_column": "optimal_premium",
+                    },
+                ),
+            ],
+            "edges": [make_edge("scored", "claims"), make_edge("claims", "apply")],
+        }
+    )
+
+    steps = _steps_by_id(execute_trace(graph, target_node_id="apply", column="optimal_premium"))
+
+    assert steps["apply"].node_detail is not None
+    assert steps["apply"].node_detail["status"] == "ok", steps["apply"].node_detail
+    assert steps["claims"].contributed_columns == ["predicted_claims"]
+    assert {"claims_base", "predicted_premium"} <= set(steps["scored"].contributed_columns)
+    assert "unrelated" not in steps["scored"].contributed_columns
+
+
+def _code_node(node_type: NodeType, config: dict | None = None) -> SimpleNamespace:
+    return SimpleNamespace(data=SimpleNamespace(nodeType=node_type, config=config or {}, label=""))
+
+
+def _join_lineage(join_config: dict, *, frames: dict, base: tuple, join: tuple, **options):
+    """left -> join <- right -> calc reading ``key_or_value`` from the join."""
+    calc_code = 'df = joined.with_columns((pl.col("read") * 2).alias("y"))'
+    steps = [
+        _step(base[0], added=sorted(frames[base])),
+        *([] if options.get("join_unresolved") else [_step(join[0], added=sorted(frames[join]))]),
+        _step("joined", added=[]),
+        _step("calc", added=["y"], passed=["read"]),
+    ]
+    order = [base[0], join[0], "joined", "calc"]
+    return trace_value_lineage(
+        column="y",
+        target_node_id="calc",
+        steps=steps,
+        order=order,
+        parents_of={"joined": [base[0], join[0]], "calc": ["joined"]},
+        node_map={
+            base[0]: _code_node(NodeType.API_INPUT),
+            join[0]: _code_node(NodeType.DATA_INPUT),
+            "joined": _code_node(NodeType.EDGE_JOIN, join_config),
+            "calc": _code_node(NodeType.POLARS, {"code": calc_code}),
+        },
+        attempted={join[0]} if options.get("join_unresolved") else (),
+        output_columns=lambda node_id, handle: frames.get((node_id, handle)),
+        source_handles={(base[0], "joined"): [base[1]], (join[0], "joined"): [join[1]]},
+        join_inputs={"joined": JoinInputs(base=base, join=join)},
+    )
+
+
+@pytest.mark.parametrize("join_unresolved", [False, True], ids=["correlated", "unresolved"])
+def test_a_multi_frame_base_is_read_through_the_frame_its_edge_names(join_unresolved):
+    frames = {
+        ("api", "policies"): {"quote_id", "x"},
+        ("api", "drivers"): {"quote_id", "read"},
+        ("rates", None): {"quote_id", "read"},
+    }
+    lineage = _join_lineage(
+        {"how": "left", "on": ["quote_id"]},
+        frames=frames,
+        base=("api", "policies"),
+        join=("rates", None),
+        join_unresolved=join_unresolved,
+    )
+
+    # The policies frame the join reads has no ``read``: the join side supplied it.
+    assert "rates" in lineage.reached
+    assert "api" not in lineage.reached
+    if not join_unresolved:
+        assert lineage.contributed["rates"] == ("read",)
+
+
+def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
+    frames = {("left", None): {"read", "x"}, ("right", None): {"right_key", "z"}}
+    lineage = _join_lineage(
+        {"how": "full", "leftOn": "read", "rightOn": "right_key", "coalesce": True},
+        frames=frames,
+        base=("left", None),
+        join=("right", None),
+    )
+
+    assert lineage.contributed["left"] == ("read",)
+    assert lineage.contributed["right"] == ("right_key",)

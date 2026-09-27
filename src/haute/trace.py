@@ -96,7 +96,7 @@ from haute._trace_enrichment import (
     enrich_scenario_expansion,
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
-from haute._trace_lineage import ValueLineage, trace_value_lineage
+from haute._trace_lineage import JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
@@ -1057,11 +1057,16 @@ def _execute_trace_core(
         for pair, metadata_edges in edge_metadata.items()
     }
     edge_join_roles: dict[str, tuple[str, str]] = {}
+    join_inputs: dict[str, JoinInputs] = {}
     for node in nodes:
         if node.data.nodeType != NodeType.EDGE_JOIN:
             continue
         roles = edge_join_role_edges(node, edge_metadata)
         edge_join_roles[node.id] = (roles.base.source_id, roles.join.source_id)
+        join_inputs[node.id] = JoinInputs(
+            base=(roles.base.source_id, roles.base.source_handle),
+            join=(roles.join.source_id, roles.join.source_handle),
+        )
 
     # Plans hold Python scans bound to this request's execution context, so they
     # are built per request and never cached with the head frames.
@@ -1342,8 +1347,9 @@ def _execute_trace_core(
             parents_of=parents_of,
             node_map=node_map,
             attempted=unresolved_rows.keys(),
-            output_columns=lambda node_id: _known_output_columns(frames.get(node_id)),
-            edge_join_roles=edge_join_roles,
+            output_columns=lambda node_id, handle: _frame_columns(frames.get(node_id), handle),
+            source_handles=source_frames_of,
+            join_inputs=join_inputs,
         )
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map, lineage)
 
@@ -1789,17 +1795,16 @@ def _assemble_steps(
     return steps
 
 
-def _known_output_columns(output: Any) -> set[str] | None:
-    """A materialised node output's columns (every frame's), or ``None`` when unknown."""
+def _frame_columns(output: Any, handle: str | None) -> set[str] | None:
+    """A materialised output's columns, of the frame *handle* names in a multi-frame one.
+
+    ``None`` when unknown: nothing materialised, or no frame the handle names.
+    """
     if isinstance(output, pl.DataFrame):
         return set(output.columns)
     if isinstance(output, dict):
-        return {
-            column
-            for frame in output.values()
-            if isinstance(frame, pl.DataFrame)
-            for column in frame.columns
-        }
+        frame = output.get(handle) if isinstance(handle, str) else None
+        return set(frame.columns) if isinstance(frame, pl.DataFrame) else None
     return None
 
 

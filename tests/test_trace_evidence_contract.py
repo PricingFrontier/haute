@@ -229,8 +229,9 @@ def test_benign_column_pruning_does_not_create_an_omission() -> None:
             parents_of={"target": ["base", "unrelated"]},
             node_map=node_map,
             attempted=unresolved_rows.keys(),
-            output_columns=lambda node_id: set(outputs[node_id].columns),
-            edge_join_roles={},
+            output_columns=lambda node_id, _handle: set(outputs[node_id].columns),
+            source_handles={},
+            join_inputs={},
         ),
     )
 
@@ -267,8 +268,9 @@ def test_unresolved_assigning_step_keeps_all_attempted_ancestor_omissions() -> N
             },
             node_map=node_map,
             attempted=unresolved_rows.keys(),
-            output_columns=lambda node_id: set(outputs[node_id].columns),
-            edge_join_roles={},
+            output_columns=lambda node_id, _handle: set(outputs[node_id].columns),
+            source_handles={},
+            join_inputs={},
         ),
     )
 

@@ -236,16 +236,20 @@ Out of scope (owned elsewhere, linked where relevant):
   back to keeping all ancestors if no expression info is available).
 - **Relevance follows the value's whole lineage.** Walking back from the target, the
   trace asks of each node which of its output columns the traced value depends on,
-  starting from the traced column. A node that computes such a column passes on what
-  that column was computed from: a formula's referenced columns (a formula reading a
+  starting from the traced column. A node that computes such a column — its row shows
+  it changed, its code assigns it, or a rule of the node generates it — passes on what
+  that column was computed from: every column its formula names (a formula reading a
   column its own node assigned earlier reads that assignment), a model's features, an
-  online optimiser apply's objective, constraints, quote id and scenario columns, a
-  ratebook apply's factor columns, a rating table's factors, a banding factor's input,
-  and nothing for a scenario expander's generated columns or a source's own columns. A
-  node that only carries a column passes the column on to the parent it came from: an
-  Edge Join routes it to the side whose value the output holds (join keys to the base),
-  so a joined-in table whose columns the value never reads is not on the lineage. A
-  column whose derivation cannot be read (an opaque formula, an enrichment error) makes
+  online optimiser apply's objective, constraints (a ratio's numerator and
+  denominator), quote id and scenario columns, a ratebook apply's factor columns, a
+  rating table's factors, a banding factor's input, and nothing for a scenario
+  expander's generated columns or a source's own columns. A node that only carries a
+  column passes the column on to the parent it came from, judged by the frame that
+  parent's edge reads: an Edge Join routes it to the side whose value the output holds
+  (an inner or left join's keys to the base; a full or right join's to both sides), so
+  a joined-in table whose columns the value never reads is not on the lineage. A column
+  whose derivation cannot be read (an opaque formula, a column read by an unstated
+  name, an assignment the formula may or may not have seen, an enrichment error) makes
   every input column relevant. A step is `column_relevant` when it is on this lineage —
   it computes or carries a column the value depends on — and its `contributed_columns`
   name the columns it computes for the value. A kept step off the lineage (an ancestor

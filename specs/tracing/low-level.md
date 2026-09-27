@@ -820,32 +820,45 @@ snapshot deterministically.
 - **The value lineage is a backward demand walk** (`trace_value_lineage`). Each node
   gets the set of its output columns the value depends on (or "every column"), seeded
   with the traced column at the target and visited in reverse topological order over
-  the graph's parents. At a step, a demanded column it produced (`columns_added` ∪
-  `columns_modified`) is contributed and replaced by its dependencies; a demanded
-  column it did not produce is carried to its parents. A pure router (`edgeJoin`,
-  `liveSwitch`, `dataOutput`) produces nothing: every column is carried, including one
-  its schema diff shows as added because the parent holding it was not correlated.
-  A source produces its columns from nothing. Dependencies of a contributed column
-  come, in order, from: the node's
-  generated columns (scenario expander `column_name`/`step_column`: none); its
-  `node_detail` (model score `prediction_column` → `feature_columns`; online optimiser
-  apply `output_column` → objective, constraint keys, quote id, scenario index and
-  value columns; ratebook `output_column` → every factor's `input_columns`; rating
-  table `output_column` → its factor columns and a combined output → its table
-  columns; banding `output_column` → `input_column`); then the node's effective code
-  (`parse_expression` on the instance-aware wrapped code). A detail carrying `error`,
-  code that assigns the column in a form the parser cannot read, or a produced column
-  no rule explains (an `output` node's mapping) depends on every input column. A referenced column the node itself produced is read as the node's own
-  assignment when `assignment_phases` places it in an earlier call (its dependencies
-  are followed within the node), as the input value when the same or a later call
-  assigns it, and as both when the order is unknown; a formula reading its own column
-  reads the input value. A column no step produced and no parent carries ends there.
-  Carried columns are routed to the parents that were correlated or attempted: an
-  Edge Join sends a colliding `<col><suffix>` to the join side as `<col>`, base-side
-  columns and join keys to the base, and join-only columns to the join side (a
-  `right`/`full`/`cross` join sends a key to both); other nodes send a column to every
-  such parent whose output has it. An unresolved node that the walk reaches depends on
-  every input column, so every attempted ancestor above it stays relevant.
+  the graph's parents. At a step, a demanded column it computes is contributed and
+  replaced by its dependencies; a demanded column it does not compute is carried to its
+  parents. A step computes a column its row shows added or modified, its effective code
+  assigns (even to the value the column already held, or to a helper column it later
+  drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
+  `dataOutput`) computes nothing: every column is carried, including one its schema
+  diff shows as added because the parent holding it was not correlated. A source
+  computes its columns from nothing.
+  Rules run before the node's code: a scenario expander's `column_name`/`step_column`
+  (reading nothing), and from `node_detail` a model score's `prediction_column`
+  (`feature_columns`), an online optimiser apply's `output_column` (the objective, the
+  quote id, scenario index and value columns, and each constraint's column — a ratio
+  constraint's numerator and denominator too), a ratebook apply's `output_column`
+  (every factor's `input_columns`), a rating table's `output_column` (its factor
+  columns) and combined output (its table columns), and a banding factor's
+  `output_column` (its `input_column`). A column the code assigns depends on what its
+  last assignment reads: `parse_expression` on the instance-aware wrapped code locates
+  it and the planner's fail-closed `_referenced_columns` names the columns of its
+  defining expression, so a column named only as a string (`over("region")`) counts. A
+  column the code does not assign depends on its rule. A detail carrying `error`, an
+  assignment that cannot be read or whose columns cannot all be named, and a computed
+  column no rule explains (an `output` node's mapping) depend on every input column.
+  A column an assignment reads is resolved to the value it saw: its own column, or one
+  the code assigns only in the same or a later `with_columns` call (`assignment_phases`),
+  is the value from before the code — the rule's, else the input's; one the code
+  assigns only in earlier calls is that last earlier assignment, followed within the
+  node; one the code assigns both before and after, or where an earlier call writes a
+  column whose name is not static, depends on every input column; one only a rule
+  computes is the rule's; any other is the input's. A column no step computes and no
+  parent carries ends there.
+  Carried columns are routed to the parents that were correlated or attempted, by the
+  columns of the frame each edge reads (the `sourceHandle`'s frame of a multi-frame
+  output): an Edge Join sends a colliding `<col><suffix>` to the join side as `<col>`,
+  base-side columns to the base and join-only columns to the join side; an inner, left,
+  semi or anti join's keys go to the base, and a right, full or cross join's keys go
+  to both sides under each side's own key name. Other nodes send a column to every
+  such parent whose edge's frame has it, and to every such parent when that frame is
+  unknown. An unresolved node that the walk reaches depends on every input column, so
+  every attempted ancestor above it stays relevant.
 - **`instanceOf` code resolution appears in three independent places**
   (`enrich_steps`, `_build_input_sources`, `_build_rename_chain`) — a cloned
   node instance whose own code lacks `.with_columns(` borrows the *original*
@@ -948,8 +961,12 @@ integration/regression suites:
   scenario expander's code and generated columns, an online apply, and an unsold
   quote's join that no omission reports), a join that found no row reported only
   when the value reads it, the model-score rule (a feature leads to the model
-  that predicted it; a failed explanation depends on every input), and the rating
-  table, combined-output and banding rules.
+  that predicted it; a failed explanation depends on every input), the rating
+  table, combined-output and banding rules, a helper column the code drops, an
+  assignment that kept the input value, a column reassigned after it was read, a
+  window partition column, a ratio constraint's numerator and denominator, a
+  multi-frame join base read through its edge's frame, and a coalesced full join's
+  differently named keys.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for
