@@ -135,10 +135,11 @@ export function OptimiserOnlineDetail({ detail, step }: {
             <span className="font-semibold">{formatValue(selected.objective)}</span>
             {selectedLambdaEntries.map(([name, value]) => (
               <span key={name} className="inline-flex min-w-0 items-center gap-1">
-                <span style={{ color: "var(--text-muted)" }}>+</span>
+                {/* The sign is the operator, so the term's magnitude follows it. */}
+                <span style={{ color: "var(--text-muted)" }}>{value < 0 ? "-" : "+"}</span>
                 <span style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>lambda {name}</span>
                 <span style={{ color: value >= 0 ? "var(--delta-positive-text)" : "var(--danger-text)" }}>
-                  {formatSignedValue(value)}
+                  {formatValue(Math.abs(value))}
                 </span>
               </span>
             ))}

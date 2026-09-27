@@ -190,10 +190,15 @@ export function StepCard({
         {(() => {
           const badge = (() => {
             if (tracedColumn) {
+              // A step off the value's lineage (a joined-in table sharing the
+              // column) neither created nor carried the traced value.
+              if (!relevant) return null
               const diff = step.schema_diff
               if (diff.columns_added.includes(tracedColumn)) return "creates"
               if (diff.columns_modified.includes(tracedColumn)) return "modifies"
-              if (diff.columns_passed.includes(tracedColumn)) return "rows unchanged"
+              // The value is carried unchanged; the step may still expand or
+              // aggregate rows, so nothing is said about rows.
+              if (diff.columns_passed.includes(tracedColumn)) return "value unchanged"
               return null
             }
             return step.row_lineage_type === "passthrough"

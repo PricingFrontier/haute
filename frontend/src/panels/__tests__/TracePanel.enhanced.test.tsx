@@ -1568,7 +1568,7 @@ describe("TracePanel - Waterfall View Concepts", () => {
           steps: [
             makeStep({ node_id: "n1", node_name: "Step A", schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] }, contributed_columns: ["premium"], derivations: [] }),
             makeStep({ node_id: "n2", node_name: "Step B", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["premium"], derivations: [] }),
-            makeStep({ node_id: "n3", node_name: "Step C", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+            makeStep({ node_id: "n3", node_name: "Step C", schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["premium"] }),
           ] as TraceStep[],
         })}
         onClose={vi.fn()}

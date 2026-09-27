@@ -66,7 +66,9 @@
    loading chrome, while a request still pending after that delay enables compact
    progress/cancel UI.
 2. `frontend/src/panels/TracePanel.tsx` derives the story key used for card
-   identity, finds the last applicable producer for the traced column,
+   identity, finds the last applicable producer for the traced column (the last step
+   whose `contributed_columns` name it, so a joined-in table that also adds a shared key
+   is never named; without one, the last step adding or modifying it),
    calculates dependency-preservation/default-expansion sets, and chooses a
    focused or full sequence. The focused story keeps the producer and every step
    whose `contributed_columns` is non-empty — every step computing a column the
@@ -126,6 +128,12 @@
 
 - The traced column's `schema_diff` is the evidence used to select/retain steps; a trace with all
   pass-through steps preserves endpoints so the story does not collapse entirely.
+- A card's relation badge says what the step did with the traced value: "creates",
+  "modifies", or "value unchanged" for a step that only carries it (which may still expand or
+  aggregate rows, so no badge speaks for rows in a column trace). A step off the value's
+  lineage has none.
+- The online optimiser's score line reads as arithmetic: each lambda term's sign is its
+  operator, followed by the term's magnitude.
 - An opaque/missing primary creator may be replaced by a later usable pass-through expression.
   Source-like/bulk origins are treated specially so a broad import does not dominate the default
   story.

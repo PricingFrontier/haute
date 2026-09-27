@@ -804,6 +804,48 @@ describe("TracePanel", () => {
     expect(computedHere).not.toHaveTextContent("price_adjustment =")
   })
 
+  it("names the step that loaded a carried key, and never claims a row-changing step left rows unchanged", () => {
+    const addsQuoteId = { columns_added: ["quote_id"], columns_removed: [], columns_modified: [], columns_passed: [] }
+    const passesQuoteId = { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["quote_id"] }
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply",
+          column: "quote_id",
+          output_value: "Q-1",
+          steps: [
+            makeStep({
+              node_id: "nb_batch_input", node_name: "nb_batch_input", node_type: "dataInput",
+              schema_diff: addsQuoteId, output_values: { quote_id: "Q-1" }, contributed_columns: ["quote_id"],
+            }),
+            makeStep({
+              node_id: "premiums", node_name: "premiums", node_type: "dataInput",
+              schema_diff: addsQuoteId, output_values: { quote_id: "Q-1" }, column_relevant: false,
+            }),
+            makeStep({
+              node_id: "scenarios", node_name: "scenarios", node_type: "scenarioExpander",
+              schema_diff: passesQuoteId, output_values: { quote_id: "Q-1" }, row_lineage_type: "expanded",
+            }),
+            makeStep({
+              node_id: "apply", node_name: "apply", node_type: "optimiserApply",
+              schema_diff: passesQuoteId, output_values: { quote_id: "Q-1" }, row_lineage_type: "aggregated",
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/created by/).textContent).toContain("nb_batch_input")
+    fireEvent.click(screen.getByTestId("trace-show-full"))
+
+    expect(within(screen.getByTestId("trace-step-card-nb_batch_input")).getByText("creates")).toBeInTheDocument()
+    // premiums also holds quote_id, but the value is not its: no relation is claimed.
+    expect(within(screen.getByTestId("trace-step-card-premiums")).queryByText("creates")).not.toBeInTheDocument()
+    expect(within(screen.getByTestId("trace-step-card-scenarios")).getByText("value unchanged")).toBeInTheDocument()
+    expect(screen.queryByText("rows unchanged")).not.toBeInTheDocument()
+  })
+
   it("lists what a step changed, not the columns it passed through", () => {
     const burnCost = {
       column: "BurnCost",
@@ -1423,7 +1465,7 @@ describe("TracePanel", () => {
     expect(screen.getByText(/gap.*\+11/)).toBeInTheDocument()
     expect(screen.queryByText("Score calculation")).not.toBeInTheDocument()
     expect(screen.getByLabelText("Optimiser score calculation")).toHaveTextContent(
-      /expected_margin\s*95\s*\+\s*lambda expected_loss\s*-4\s*=\s*score\s*91/,
+      /expected_margin\s*95\s*-\s*lambda expected_loss\s*4\s*=\s*score\s*91/,
     )
     expect(screen.getAllByText("expected_loss").length).toBeGreaterThan(0)
     expect(screen.getByText("-20")).toBeInTheDocument()
