@@ -2,9 +2,6 @@
 
 You have values that don't change per quote  - expense loadings, tax rates, minimum premiums. The Constant node stores them in one place so every part of your pipeline can reference them.
 
-!!! tip "Spreadsheet equivalent"
-    Like a named range or a parameters sheet in Excel  - one place to store values you reference throughout your workbook.
-
 !!! info "When to use"
     Use this to store values that don't change per quote  - expense loadings, tax rates, minimum premiums, effective dates. These values are available to every downstream node.
 

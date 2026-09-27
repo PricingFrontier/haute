@@ -2,9 +2,6 @@
 
 An Edge Join is a compact transform node for joining another dataframe into an existing flow. It is useful when you want to enrich the table already travelling along a connection without adding a full Polars code node.
 
-!!! tip "Spreadsheet equivalent"
-    Like using a lookup table to add columns to the current sheet, while keeping the main sheet as the dominant input.
-
 !!! info "When to use"
     - Adding external scores, lookup columns, or reference data to an existing dataframe.
     - Keeping a common join visible on the canvas without writing custom Polars code.

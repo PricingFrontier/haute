@@ -2,9 +2,6 @@
 
 You want to test a range of candidate prices for each quote  - say, 50 price points between 200 and 800  - so the optimiser can pick the best one. The Expander generates those candidates by cross-joining each row with a range of values.
 
-!!! tip "Spreadsheet equivalent"
-    Similar to a data table or sensitivity analysis in Excel, but integrated into the pipeline so the [Optimisation](optimiser.md) node can act on the results.
-
 This node accepts a single input. The editor's field names are shown in bold.
 
 | Config | Description |

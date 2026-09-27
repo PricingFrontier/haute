@@ -2,9 +2,6 @@
 
 You have a set of rating factors  - area, age band, NCD level  - and a table of relativities for each. The Rating Step looks up the right factor for each row and combines them into a single multiplier (or sum). This is how you build a traditional multiplicative or additive rating structure.
 
-!!! tip "Spreadsheet equivalent"
-    Like VLOOKUP or INDEX/MATCH in Excel, but it handles multi-dimensional lookups and combines the results automatically.
-
 !!! info "When to use"
     - Building a traditional multiplicative or additive rating structure.
     - Recreating factor tables from a spreadsheet or another rating tool.

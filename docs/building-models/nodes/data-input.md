@@ -2,9 +2,6 @@
 
 You have tabular data you want to bring into your pipeline  - historical policies, external enrichment data, lookup tables. The Data Input node reads it from a file, a lakehouse table, a database, a Databricks table, or records typed straight into the node.
 
-!!! tip "Spreadsheet equivalent"
-    Like opening a CSV or connecting to an external data source in Excel  - it brings data into your workbook.
-
 !!! info "When to use"
     - Loading historical data for analysis or model training.
     - Bringing in reference data to join with your quotes (e.g. postcode lookups, external scores).

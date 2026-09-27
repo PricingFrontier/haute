@@ -2,9 +2,6 @@
 
 You have a node that does exactly what you need  - but you want to apply the same logic to a different input. Instead of duplicating the node (and maintaining two copies), you create an **instance** that reuses the original's configuration with different inputs.
 
-!!! tip "Spreadsheet equivalent"
-    Like copying a formula that references one tab and pasting it so it references a different tab  - the logic is identical, only the data source changes.
-
 !!! info "When to use"
     - You have the same cleaning or transformation logic applied to multiple datasets (e.g. normalising column names on both policies and claims).
     - You want to score the same model against different data splits (e.g. training vs validation).

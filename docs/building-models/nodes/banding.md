@@ -2,9 +2,6 @@
 
 You have a continuous value like driver age or sum insured, but your rating structure needs age bands or value brackets. The Banding node turns a column of raw values into a column of bands, using rules you define. It also works with categorical values  - grouping many fuel types into "Standard" vs "Green", for example.
 
-!!! tip "Spreadsheet equivalent"
-    This replaces nested IF statements in Excel (e.g. `=IF(age<=25, "18-25", IF(age<=65, "26-65", "65+"))`) or banding definitions in tools like Earnix or Radar.
-
 !!! info "When to use"
     - Converting continuous values (age, mileage, sum insured) into discrete bands for your rating tables.
     - Grouping categorical values into broader categories.

@@ -2,9 +2,6 @@
 
 This is the general-purpose node for shaping your data. Joining two datasets, calculating a new column, filtering rows  - if there isn't a specialised node for it, you do it here, as a list of steps or as Polars code. This is the node you'll use most often.
 
-!!! tip "Spreadsheet equivalent"
-    Think of this as the formula bar in a spreadsheet, but for entire columns at once. Instead of writing a formula in one cell and dragging it down, you write one expression and it applies to every row.
-
 !!! info "When to use"
     - Joining two datasets together (e.g. quotes with external enrichment data).
     - Creating derived columns (age from date of birth, vehicle age from year of manufacture).
@@ -49,17 +46,17 @@ names written in free code need to be updated manually when those inputs change.
 
 ## Reading Polars code
 
-If you're coming from Excel or a drag-and-drop pricing tool, the code on this page may look unfamiliar. Here's a quick cheat-sheet  - every concept below maps to something you already know.
+If you're coming from a drag-and-drop pricing tool, the code on this page may look unfamiliar. Here's a quick cheat-sheet.
 
-| Polars syntax | What it means | Excel equivalent |
-|---|---|---|
-| `df` | A **dataframe**  - a table of data. `df` is the node's **output**: assign your result to it. Each input is available by the name of the upstream node it came from. | A spreadsheet tab |
-| `pl.col("column_name")` | Refers to a column by name. | Clicking a column header |
-| `.alias("new_name")` | Gives the result a new column name. | Naming a cell or column |
-| `.with_columns(...)` | Adds or replaces columns in the table. | Adding a new formula column |
-| `.filter(...)` | Keeps only rows that match a condition. | Filtering rows in Excel |
-| `pl.when(...).then(...).otherwise(...)` | An IF statement. | `=IF(condition, then, else)` |
-| `pl.lit("value")` | A fixed/literal value. | Typing a constant into a formula |
+| Polars syntax | What it means |
+|---|---|
+| `df` | A **dataframe**  - a table of data. `df` is the node's **output**: assign your result to it. Each input is available by the name of the upstream node it came from. |
+| `pl.col("column_name")` | Refers to a column by name. |
+| `.alias("new_name")` | Gives the result a new column name. |
+| `.with_columns(...)` | Adds or replaces columns in the table. |
+| `.filter(...)` | Keeps only rows that match a condition. |
+| `pl.when(...).then(...).otherwise(...)` | An IF statement. |
+| `pl.lit("value")` | A fixed/literal value. |
 
 After **Switch to code**, each input table is available by the name of the node it came from. For example, if you connect a node called `policies`, you reference it as `policies` in your code. `df` is not an input  - it's the variable your code must assign its result to (reading `df` before assigning it is an error). Haute passes whatever `df` holds to the next node, so do not end your code with `return df`; the editor shows that line, dimmed, under the code box.
 
@@ -107,7 +104,7 @@ df = policies.with_columns(
 df = policies.filter(pl.col("cover_type") == "comprehensive")
 ```
 
-**Conditional logic** (like IF in a spreadsheet):
+**Conditional logic:**
 
 ```python
 df = policies.with_columns(
@@ -120,7 +117,7 @@ df = policies.with_columns(
 
 ## `selected_columns`
 
-If set, only these columns are kept in the output  - like hiding columns in Excel. If not set, all columns pass through unchanged.
+If set, only these columns are kept in the output. If not set, all columns pass through unchanged.
 
 This is useful when a node produces many intermediate columns but the next node only needs a few. Set it on the node's **Columns** tab: **Output Columns** lists every column the node produces, with a checkbox each. Untick the columns you don't need; the filter box finds a column by name, **All** keeps every column again, and **None** clears the ticks so you can pick a few. The list appears once the node has been previewed or run.
 

@@ -2,9 +2,6 @@
 
 You want to save results  - scoring a full dataset and writing the output to parquet, CSV or a database table for downstream analysis.
 
-!!! tip "Spreadsheet equivalent"
-    Like "Save As CSV" in Excel: the destination is part of your pipeline, and you write it when you're ready.
-
 !!! info "When to use"
     Use this for batch scoring  - processing a full dataset and saving the results. For live API responses, use [Quote Response](output.md) instead.
 

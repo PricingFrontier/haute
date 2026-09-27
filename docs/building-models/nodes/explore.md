@@ -2,9 +2,6 @@
 
 You want to understand a dataset before you model or rate it  - how many rows, which columns are missing values, what the categories look like, how a measure breaks down by segment. The Explore node profiles the full data at any step of your pipeline without becoming part of it.
 
-!!! tip "Spreadsheet equivalent"
-    Like a pivot table and a column summary on a scratch tab  - you look at the data from every angle, and nothing on that tab feeds the final price.
-
 !!! info "When to use"
     - Checking a data source for missing values, constant columns, duplicates or outliers.
     - Seeing the distinct values of a categorical column before you band or rate it.

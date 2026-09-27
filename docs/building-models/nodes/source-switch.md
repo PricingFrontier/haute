@@ -2,9 +2,6 @@
 
 You want your pipeline to use live API data in production but a batch file during development. The Source Switch lets you wire up both paths and toggle between them.
 
-!!! tip "Spreadsheet equivalent"
-    Like having two versions of a data tab and a toggle to switch between them.
-
 !!! info "When to use"
     Use this when your pipeline needs to work with different data sources depending on the context  - typically batch data for development and live API data in production. You won't need this for your first pipeline.
 

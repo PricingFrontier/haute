@@ -1,9 +1,6 @@
 # Submodel
 
-As your pipeline grows, the canvas gets crowded. Submodels let you collapse a group of nodes into a single block  - like grouping sheets in a workbook. Double-click to step inside; click the breadcrumb to come back out.
-
-!!! tip "Spreadsheet equivalent"
-    Like grouping several tabs into a named section  - you see one clean label in the main view, and can expand it when you need the detail.
+As your pipeline grows, the canvas gets crowded. Submodels let you collapse a group of nodes into a single block. Double-click to step inside; click the breadcrumb to come back out.
 
 !!! info "When to use"
     Use this when your canvas is getting crowded and you want to group related nodes into a single collapsible block. Also useful for reusing the same logic across multiple pipelines.

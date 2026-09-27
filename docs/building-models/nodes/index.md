@@ -116,14 +116,14 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 
 ## Key terms
 
-A quick glossary for terms you'll see throughout these docs. If you're coming from Excel, Earnix, or Radar, the analogies should feel familiar.
+A quick glossary for terms you'll see throughout these docs.
 
 | Term | What it means |
 |---|---|
-| **Pipeline** | A chain of connected steps that transforms data into a price  - like a multi-tab workbook where each tab feeds the next. |
+| **Pipeline** | A chain of connected steps that transforms data into a price. |
 | **Node** | A single step in the pipeline. It might be a data source, a calculation, a model score, or an output. Each node type has its own page in this section. |
 | **Canvas** | The visual editor workspace where you drag, drop, and connect nodes to build your pipeline. |
-| **DataFrame / df** | A table of data (rows and columns), like a spreadsheet tab. In code, `df` is shorthand for this. |
+| **DataFrame / df** | A table of data (rows and columns). In code, `df` is shorthand for this. |
 | **Polars** | The data engine Haute uses under the hood. When you see `pl.col("x")` in code, it means "the column called x." Think of it as a formula language for tables. |
 | **Parquet** | A file format for tabular data, like CSV but faster and smaller. You don't need to understand the internals  - just know it's a data file. |
 | **MLflow** | An open-source platform Haute uses to track model training experiments and store trained models. Think of it as version control for models. |

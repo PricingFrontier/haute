@@ -2,9 +2,6 @@
 
 You've calculated a price. Now you choose which columns to send back in the API response  - the final premium, any breakdown fields, a reference ID. Everything not listed here is still calculated but stays internal.
 
-!!! tip "Spreadsheet equivalent"
-    Like choosing which columns to include in a final report tab  - everything is still calculated behind the scenes, but only selected fields are shown.
-
 !!! info "When to use"
     Use this to define the API response for live pricing. For saving results to a file (batch scoring), use [Data Output](data-output.md) instead. You can use both in the same pipeline.
 

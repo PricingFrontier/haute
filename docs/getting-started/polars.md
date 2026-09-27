@@ -1,12 +1,12 @@
 # Polars
 
-Haute uses [Polars](https://pola.rs/) as its data engine. If you've worked with data in Excel, SAS, Emblem, or any other pricing platform, Polars fills the same role - it's the thing that holds your data and does the calculations. The difference is that it's open source, extremely fast, and designed for modern hardware.
+Haute uses [Polars](https://pola.rs/) as its data engine. If you've worked with data in SAS, Emblem, Radar or any other pricing platform, Polars fills the same role - it's the thing that holds your data and does the calculations. The difference is that it's open source, extremely fast, and designed for modern hardware.
 
 ---
 
 ## What Polars actually is
 
-Polars is a dataframe library. A dataframe is a table - rows and columns, like a spreadsheet. When Haute loads your data, transforms it, joins it, filters it, or scores it through a model, Polars is doing that work underneath.
+Polars is a dataframe library. A dataframe is a table - rows and columns. When Haute loads your data, transforms it, joins it, filters it, or scores it through a model, Polars is doing that work underneath.
 
 You don't need to write Polars code to use Haute. The visual editor handles that: you build each transformation from steps named in plain English, and Haute turns them into Polars code. When you look at the generated code beside the steps, or at the generated Python file, the expressions you see are Polars expressions. Understanding the basics helps you read what's happening, even if you never write it from scratch.
 
@@ -52,10 +52,10 @@ If you're used to building rating structures in proprietary software, most of th
 
 | What you know | What Polars calls it |
 |---|---|
-| A table or worksheet | A DataFrame |
+| A table | A DataFrame |
 | Filtering rows | `.filter()` |
 | Adding or changing a column | `.with_columns()` |
-| A lookup table / VLOOKUP | A join (`.join()`) |
+| A lookup table | A join (`.join()`) |
 | Sorting | `.sort()` |
 | Selecting specific columns | `.select()` |
 | Grouping and summarising | `.group_by().agg()` |
@@ -94,7 +94,7 @@ For more involved logic, you can write your own Python functions. `haute init` c
 
 Two of the most common operations in pricing - rating table lookups and banding - are handled by dedicated node types. Both use Polars under the hood, but you configure them through the visual editor rather than writing code.
 
-**Rating tables** work like VLOOKUP. You define a table of factors and values, and Haute joins it to your data on the factor columns. The join is a standard Polars left join - every row in your data gets matched to the corresponding value in the lookup table. Rows that don't match take the table's default value (1.0 for a new table, unless you change it); if you clear the default, a row with no match stops the run with an error that names the missing keys. The lookup table is validated before the join runs: entries with NaN or infinite values are rejected, because a silent bad value in a rating table can corrupt an entire book of prices.
+**Rating tables** are lookups. You define a table of factors and values, and Haute joins it to your data on the factor columns. The join is a standard Polars left join - every row in your data gets matched to the corresponding value in the lookup table. Rows that don't match take the table's default value (1.0 for a new table, unless you change it); if you clear the default, a row with no match stops the run with an error that names the missing keys. The lookup table is validated before the join runs: entries with NaN or infinite values are rejected, because a silent bad value in a rating table can corrupt an entire book of prices.
 
 **Banding** maps numeric, date or categorical values into groups. **Numeric** banding (for age, sum insured or a policy start date) uses breakpoints: each has an upper boundary and a band name, and the boundaries are numbers, dates (`YYYY-MM-DD`) or dates and times - one kind per factor. **Generate even bands** fills in evenly spaced breakpoints for you, in calendar steps for a date column. **Categorical** banding (for vehicle type) maps exact values to groups. Under the hood, numeric banding builds a chain of conditional expressions - the Polars equivalent of nested IF statements - and categorical banding uses strict value replacement. Both produce a new column with the banded result.
 

@@ -2,9 +2,6 @@
 
 Your pipeline will receive live API requests in production. During development, you need realistic data to build and test against. The Quote Input node handles both  - it's the entry point for live pricing, and it reads a preview file so you can work with sample data on your machine.
 
-!!! tip "Spreadsheet equivalent"
-    Like the input tab in an Excel workbook  - the place where raw data enters your calculation chain.
-
 !!! info "When to use"
     Use this as the entry point for live pricing. During development, it reads a preview file so you can build and test your pipeline. In production, it receives live API requests instead. Use [Data Input](data-input.md) for loading historical data or reference tables.
 
