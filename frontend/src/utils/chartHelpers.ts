@@ -6,6 +6,11 @@
 
 const COMPACT_FROM = 10_000
 const EXPONENTIAL_BELOW = 0.0001
+// A double carries about 15 significant digits: ticks closer together than
+// that are float noise, and no label precision can tell them apart.
+const MAX_TICK_SIGNIFICANT_DIGITS = 15
+// A spread this small relative to the values is rounding noise, not data.
+const FLAT_SPREAD_RELATIVE = 1e-9
 
 /** Keep exact data in details; axes use a readable, consistent compact format. */
 export function formatChartNumber(value: number): string {
@@ -77,8 +82,11 @@ export function formatChartTicks(ticks: readonly number[]): string[] {
   const initial = (notation === "exponential" ? 1 : 2) - exponent(largest)
   let decimals = notation === "standard" ? Math.max(0, initial) : initial
   const labelsAt = (places: number) => ticks.map((tick) => tickLabel(tick, notation, places))
+  // Never more digits than a double holds (Intl refuses more than 21 anyway):
+  // ticks that still read alike there differ only by float noise.
+  const maxDecimals = MAX_TICK_SIGNIFICANT_DIGITS - 1 - exponent(largest)
   let labels = labelsAt(decimals)
-  while (labels.some((label, i) => i > 0 && label === labels[i - 1])) {
+  while (decimals < maxDecimals && labels.some((label, i) => i > 0 && label === labels[i - 1])) {
     decimals += 1
     labels = labelsAt(decimals)
   }
@@ -92,11 +100,18 @@ export function formatChartTicks(ticks: readonly number[]): string[] {
   return labels
 }
 
-/** A padded domain also gives constant and single-point series a finite scale. */
+/**
+ * A padded domain also gives constant and single-point series a finite scale.
+ * A series whose spread is rounding noise (a flat frontier's objective, say)
+ * is padded like a constant one, so its axis reads as flat.
+ */
 export function chartDomain(values: number[], includeZero = false): [number, number] {
   const min = Math.min(...values, ...(includeZero ? [0] : []))
   const max = Math.max(...values, ...(includeZero ? [0] : []))
-  const pad = (max - min || Math.max(Math.abs(max), 0.001)) * 0.08
+  const magnitude = Math.max(Math.abs(min), Math.abs(max))
+  const spread = max - min
+  const flat = spread <= magnitude * FLAT_SPREAD_RELATIVE
+  const pad = (flat ? Math.max(magnitude, 0.001) : spread) * 0.08
   return [min - pad, max + pad]
 }
 
