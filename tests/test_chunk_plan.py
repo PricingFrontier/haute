@@ -621,7 +621,7 @@ def test_chunk_plan_accepts_snapshot_backed_json_sources():
     assert plan.chunk_size == 10
 
 
-def test_chunk_plan_requires_explicit_model_score_batch_reuse(tmp_path):
+def test_chunk_plan_reuses_the_model_across_chunks_by_default(tmp_path):
     from haute.modelling._feature_contract import build_contract, save_contract
 
     contract_path = tmp_path / "feature_contract.json"
@@ -659,17 +659,7 @@ def test_chunk_plan_requires_explicit_model_score_batch_reuse(tmp_path):
         }
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="model_reuse_lifetime='batch'"):
-        chunk_plan(
-            ChunkPlanRequest(
-                graph=graph,
-                target_node_id="out",
-                chunk_size=10,
-                required_columns_by_node={"out": {"prediction"}},
-            )
-        )
-
-    graph.nodes[1].data.config["model_reuse_lifetime"] = "batch"
+    # No config key is needed: a chunked run reuses the loaded model for every chunk.
     plan = chunk_plan(
         ChunkPlanRequest(
             graph=graph,

@@ -958,8 +958,11 @@ which would silently under-bound the chunk).
 graph order, collects the source in `plan.source_chunk_size`-row batches via
 `bounded_collect_batches`, and walks the chunk suffix once per batch through the graph
 walker: `prepare_walk(..., policy=CollectPolicy.chunk())` builds the functions of the
-nodes below the chunk start once (Model Score nodes the plan marks for batch reuse keep
-their loaded model; nothing above the chain, the start node included, is built), with
+nodes below the chunk start once (every Model Score node in a plan is declared with
+`model_reuse_lifetime="batch"` and keeps its loaded model across the run's chunks, so the
+model is loaded once and scores match an unchunked run; no config key opts a node in, and
+a Model Score node with post-processing code is not chunked; nothing above the chain, the
+start node included, is built), with
 the plan's per-node demand as each builder's and each output's demand, graph routing
 on the plan's source and the chain's builders on `live`. Each `PreparedWalk.run` starts
 from the batch as the start node's frame, invokes each node (stage `chunk_node`),

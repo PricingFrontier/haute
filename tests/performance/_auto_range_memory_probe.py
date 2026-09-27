@@ -95,7 +95,6 @@ def build_graph(base_path: Path, *, steps: int, chunk_rows: int) -> Any:
                     "artifact_path": "model.cbm",
                     "task": "regression",
                     "output_column": "conversion_prediction",
-                    "model_reuse_lifetime": "batch",
                     "contract": {
                         "inputs": list(FEATURES),
                         "outputs": ["conversion_prediction"],

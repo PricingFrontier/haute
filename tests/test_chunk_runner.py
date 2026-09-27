@@ -654,7 +654,6 @@ def test_chunk_runner_reuses_model_score_model_across_chunks(tmp_path: Path) -> 
                         "task": "regression",
                         "output_column": "prediction",
                         "feature_contract_path": str(contract_path),
-                        "model_reuse_lifetime": "batch",
                     },
                 ),
                 _node("out", "output", make_output_config(output_fields)),

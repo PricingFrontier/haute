@@ -1167,7 +1167,7 @@ whose message already names every problem and the remedy.
   code) falls back to the full non-streaming estimate path rather than raising, and the lost
   optimisation is recorded rather than hidden: `_streaming_auto_range_node_is_eligible` returns
   the classifier decision as a `chunk_user_code_ineligible` fallback, a model-score node reports
-  `model_score_ineligible` with the reason `model_reuse_lifetime`, `post_processing_code`, or
+  `model_score_ineligible` with the reason `post_processing_code` or
   `column_renames`, and a `chunk_plan` rejection reports `chunk_plan_unsupported` with the node
   the planner rejected (from the error's public payload or its `node_id`/`target_node_id`
   context), never the optimiser node. This is a memory/latency trade-off, not a correctness

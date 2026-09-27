@@ -1728,14 +1728,9 @@ def _capability_for_node(
             preserves_row_order=True,
         )
     if node_type == NodeType.MODEL_SCORE:
-        lifetime = node.data.config.get("model_reuse_lifetime")
-        if lifetime != "batch":
-            raise ChunkPlanUnsupportedError(
-                "Chunked modelScore requires model_reuse_lifetime='batch'.",
-                node_id=node.id,
-                node_type=node_type.value,
-                model_reuse_lifetime=lifetime,
-            )
+        # A chunked run loads the model once and reuses it for every chunk
+        # ("batch" lifetime); the model is identical, so scores match the
+        # unchunked run.
         if (node.data.config.get("code") or "").strip():
             raise ChunkPlanUnsupportedError(
                 "Chunked modelScore post-processing code is not supported in V1.",

@@ -773,9 +773,7 @@ def _streaming_auto_range_node_is_eligible(
         # user-defined transforms; keep them on the full lazy path for now.
         # Each ineligibility has its own stable reason so the warning names the
         # actual blocker rather than a blanket "post-processing" label.
-        if config.get("model_reuse_lifetime") != "batch":
-            model_score_reason = "model_reuse_lifetime"
-        elif (config.get("code") or "").strip():
+        if (config.get("code") or "").strip():
             model_score_reason = "post_processing_code"
         elif config.get("column_renames"):
             model_score_reason = "column_renames"
@@ -925,6 +923,7 @@ def _build_streaming_auto_range_plan(
     chain_node_ids = tuple(reversed(downstream_to_upstream))
     try:
         from haute.chunking import ChunkPlanRequest, chunk_plan
+        from haute.executor import _resolve_batch_scenario
 
         explicit_chunk_size = _auto_range_explicit_chunk_size_from_config(config)
         sized = explicit_chunk_size is not None or sample_row_widths
@@ -939,7 +938,9 @@ def _build_streaming_auto_range_plan(
                     None if structural_chunk_size is not None else _auto_range_target_chunk_bytes()
                 ),
                 required_columns_by_node=required_columns_by_node,
-                source="batch",
+                # The pipeline's own batch scenario, as the unchunked path routes:
+                # a source switch without a "batch" input would fail to plan.
+                source=_resolve_batch_scenario(graph) or "batch",
             )
         )
     except ChunkPlanUnsupportedError as exc:

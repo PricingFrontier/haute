@@ -2659,7 +2659,6 @@ class TestEstimateRoute:
                                 "artifact_path": "model.rsglm",
                                 "task": "regression",
                                 "output_column": "conversion_prediction",
-                                "model_reuse_lifetime": "batch",
                                 "contract": {
                                     "inputs": ["scenario_feature"],
                                     "outputs": ["conversion_prediction"],
@@ -3593,6 +3592,103 @@ class TestEstimateRoute:
         assert plan.base_required_columns == frozenset({"quote_id", "premium"})
         assert plan.chunk_plan.chunk_size_policy == "byte_budget"
         assert plan.chunk_plan.target_chunk_bytes is not None
+
+    def test_streaming_auto_range_plan_routes_through_the_pipelines_batch_scenario(self, tmp_path):
+        """A source switch mapped to a named batch scenario (not "batch") still chunks."""
+        source_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": ["q1"], "premium": [100.0]}).write_parquet(source_path)
+        source_config = _snapshot_parquet_data_input(str(source_path), contract="opaque")
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "nb_source",
+                        "data": {
+                            "label": "nb_source",
+                            "nodeType": "dataInput",
+                            "config": source_config,
+                        },
+                    },
+                    {
+                        "id": "live_source",
+                        "data": {
+                            "label": "live_source",
+                            "nodeType": "dataInput",
+                            "config": source_config,
+                        },
+                    },
+                    {
+                        "id": "sw",
+                        "data": {
+                            "label": "sw",
+                            "nodeType": "liveSwitch",
+                            "config": {
+                                "inputs": ["nb_source", "live_source"],
+                                "input_scenario_map": {
+                                    "nb_source": "nb_batch",
+                                    "live_source": "live",
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "id": "base",
+                        "data": {
+                            "label": "base",
+                            "nodeType": "polars",
+                            "config": {"code": "df = sw"},
+                        },
+                    },
+                    {
+                        "id": "premium",
+                        "data": {
+                            "label": "premium",
+                            "nodeType": "scenarioExpander",
+                            "config": {
+                                "quote_id": "quote_id",
+                                "column_name": "premium_multiplier",
+                                "stepCount": 2,
+                            },
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "optimiser",
+                            "nodeType": "optimiser",
+                            "config": {
+                                "mode": "online",
+                                "objective": "premium",
+                                "constraints": {"premium": {"min": 0.0}},
+                                "quote_id": "quote_id",
+                                "scenario_index": "scenario_index",
+                                "scenario_value": "premium_multiplier",
+                                "data_input": "premium",
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    make_edge("nb_source", "sw").model_dump(),
+                    make_edge("live_source", "sw").model_dump(),
+                    make_edge("sw", "base").model_dump(),
+                    make_edge("base", "premium").model_dump(),
+                    make_edge("premium", "opt").model_dump(),
+                ],
+            }
+        )
+
+        plan, fallback = _build_streaming_auto_range_plan(
+            graph,
+            "opt",
+            graph.node_map["opt"].data.config,
+            mode="online",
+            required_columns_by_node={"premium": frozenset({"quote_id", "premium"})},
+        )
+
+        assert fallback is None
+        assert plan is not None
+        assert plan.chunk_plan.source == "nb_batch"
 
     def test_streaming_auto_range_plan_infers_single_optimiser_parent(self, tmp_path):
         """Single-input optimiser graphs do not need explicit data_input for streaming."""
@@ -17233,9 +17329,8 @@ def test_generic_chunk_plan_rejection_keeps_the_rejected_node(tmp_path) -> None:
 @pytest.mark.parametrize(
     ("config", "expected_reason"),
     [
-        ({"model_reuse_lifetime": "request"}, "model_reuse_lifetime"),
-        ({"model_reuse_lifetime": "batch", "code": "df = df"}, "post_processing_code"),
-        ({"model_reuse_lifetime": "batch", "column_renames": {"a": "b"}}, "column_renames"),
+        ({"code": "df = df"}, "post_processing_code"),
+        ({"column_renames": {"a": "b"}}, "column_renames"),
     ],
 )
 def test_model_score_fallback_names_its_actual_blocker(config: dict, expected_reason: str) -> None:
@@ -17257,13 +17352,10 @@ def test_model_score_fallback_names_its_actual_blocker(config: dict, expected_re
     assert fallback.reason == expected_reason
     assert expected_reason in fallback.message
 
+    # A plain Model Scoring node chunks with no extra setting.
     clean = GraphNode(
         id="score",
-        data=NodeData(
-            label="score",
-            nodeType=NodeType.MODEL_SCORE,
-            config={"model_reuse_lifetime": "batch"},
-        ),
+        data=NodeData(label="score", nodeType=NodeType.MODEL_SCORE, config={"sourceType": "run"}),
     )
     assert _streaming_auto_range_node_is_eligible(clean, frame_names=("df",)) == (True, None)
 
