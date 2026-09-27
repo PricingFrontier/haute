@@ -37,4 +37,3 @@ The data-quality summary lists columns with missing values, numeric columns with
 **See also:**
 
 - [Polars](polars.md)  - shaping the data you explore
-- [Preparing Your Data](../preparing-your-data.md)  - a walkthrough of cleaning data before modelling

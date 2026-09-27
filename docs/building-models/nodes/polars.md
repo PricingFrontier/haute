@@ -80,9 +80,6 @@ safe, but it can scan more columns or require an admitted materialisation. See
 [Execution Strategy](../execution-strategy.md) for the boundary and diagnostic
 details.
 
-!!! tip "Column sidebar"
-    The code editor has an **Available Columns** panel below it. Click the **+** next to any column name to insert it at your cursor. If you're new to Polars, start with [Preparing Your Data](../preparing-your-data.md) for a guided walkthrough.
-
 ## Common patterns
 
 The examples below assume one upstream node called `policies`; start from the
@@ -146,6 +143,5 @@ This creates a node that runs the same code as `clean_policies`, but reads from 
 
 **See also:**
 
-- [Preparing Your Data](../preparing-your-data.md)  - guided walkthrough for newcomers
 - [Polars (Getting Started)](../../getting-started/polars.md)  - deeper dive into the data engine
 - [Execution Strategy](../execution-strategy.md)  - projection and boundary diagnostics

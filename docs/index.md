@@ -27,7 +27,6 @@ hide:
     Prepare your data, build pipelines from nodes and see how Haute runs them.
 
     - [Overview](building-models/index.md)
-    - [Preparing your data](building-models/preparing-your-data.md)
     - [Node types](building-models/nodes/index.md)
     - [Execution strategy](building-models/execution-strategy.md)
     - [Filesystem portability](building-models/filesystem-portability.md)

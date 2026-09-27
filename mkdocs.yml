@@ -101,7 +101,6 @@ nav:
     - Polars: getting-started/polars.md
   - Building Models:
     - building-models/index.md
-    - Preparing Your Data: building-models/preparing-your-data.md
     - Execution Strategy: building-models/execution-strategy.md
     - Node Types:
       - building-models/nodes/index.md

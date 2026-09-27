@@ -61,4 +61,4 @@ The subtlety, and the limit of the simple mental model: **the rule follows the s
 - A boring naming convention (lowercase, underscores, ASCII) for data files sidesteps every trap on this page.
 - If you see the case-ambiguity warning in the server log, resolve it before the checkout travels.
 
-**See also:** [Data Input](nodes/data-input.md), [External File](nodes/external-file.md), [Preparing Your Data](preparing-your-data.md).
+**See also:** [Data Input](nodes/data-input.md), [External File](nodes/external-file.md).

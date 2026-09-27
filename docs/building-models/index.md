@@ -11,5 +11,5 @@ This section covers how to build pricing models in Haute - from loading your dat
 
 | I want to... | Read this |
 |---|---|
-| Load JSON data and turn it into clean columns for modelling | [Preparing Your Data](preparing-your-data.md) |
+| Turn nested JSON quote requests into tables of columns | [Quote Input](nodes/quote-input.md#nested-requests) |
 | Understand what each node type does and how to configure it | [Node Types](nodes/index.md) |

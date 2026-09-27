@@ -81,4 +81,4 @@ A Databricks table:
 !!! warning "Credentials never go in the config"
     A database `uri` must not contain a user name, password or secret query parameter. Put a URI with credentials in an environment variable and name that variable in `connection`.
 
-**See also:** [Polars](polars.md) for code syntax and [Preparing Your Data](../preparing-your-data.md) for a walkthrough. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).
+**See also:** [Polars](polars.md) for code syntax. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).
