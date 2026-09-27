@@ -115,13 +115,12 @@
   align-items: flex-start;
 }
 .optimiser-frontier-chart {
-  flex: 55 1 0;
+  flex: 1 1 0;
   min-width: 0;
 }
 .optimiser-frontier-detail {
-  flex: 45 1 0;
-  min-width: 200px;
-  max-width: 320px;
+  flex: 1 1 0;
+  min-width: 0;
 }
 @container (max-width: 640px) {
   .validation-coefficient-reference > span:first-child,

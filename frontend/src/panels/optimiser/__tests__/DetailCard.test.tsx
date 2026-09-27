@@ -49,7 +49,6 @@ function detail(point: FrontierPoint, tradeOff: DiscreteTradeOff = NO_NEXT): Det
   return {
     index: 2,
     point,
-    kinds: KINDS,
     xName: "volume",
     assessment: assessFrontierPoint(point, NAMES, KINDS),
     tradeOff,
@@ -99,18 +98,21 @@ describe("optimiser DetailCard", () => {
     expect(screen.queryByText(/binding/i)).not.toBeInTheDocument()
   })
 
-  it("points publishing to the Export pane", () => {
-    renderCard(onlinePoint())
-    expect(screen.getByText("Save or log this point from the node's Export pane.")).toBeInTheDocument()
+  it("carries only the values: no guidance, no λ narration", () => {
+    renderCard(onlinePoint(), { kind: "value", value: 20, nextIndex: 0 })
+    expect(screen.queryByText(/Export pane/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/as reported/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/entering each quote's choice/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/not a check of λ/)).not.toBeInTheDocument()
   })
 
-  it("states the point's number, convergence and iterations", () => {
+  it("states the point's number, objective, convergence and iterations", () => {
     renderCard(onlinePoint())
-    expect(screen.getByText("Point details")).toBeInTheDocument()
-    expect(fact("Point")).toBe("3")
+    expect(screen.getByText("Point 3")).toBeInTheDocument()
+    expect(screen.getByLabelText("Objective")).toHaveTextContent("130,000")
     expect(fact("Converged")).toBe("Yes")
     expect(fact("Iterations")).toBe("17")
-    expect(fact("Feasibility")).toBe("Feasible: converged and every bound met")
+    expect(fact("Feasibility")).toBe("Feasible")
   })
 
   it("counts a ratebook point's iterations as coordinate-descent passes", () => {
@@ -118,69 +120,40 @@ describe("optimiser DetailCard", () => {
     expect(fact("CD passes")).toBe("6")
   })
 
-  it("shows λ exactly as the solver reports it, with the sign it enters each quote's choice with", () => {
-    renderCard(onlinePoint())
-    const list = screen.getByRole("list", { name: "Multipliers as reported" })
-    const items = within(list).getAllByRole("listitem").map((item) => item.textContent)
-    expect(items).toEqual([
-      "volume (min): λ = 23, entering each quote's choice as +λ × volume",
-      "margin (max): λ = 0.0123456789, entering each quote's choice as −λ × margin",
-    ])
-  })
-
   it("explains a converged ratebook point that breaches a bound", () => {
     renderCard(ratebookPoint())
     expect(fact("Converged")).toBe("Yes")
-    expect(fact("Feasibility")).toBe(
-      "Breached: coordinate descent converged (the factor values stopped moving), which does not "
-      + "check bounds; volume 4.968 is below its minimum 5.5",
-    )
+    expect(fact("Feasibility")).toBe("Breached: volume 4.968 < 5.5")
   })
 
   it("explains a converged online point that breaches only an unswept bound", () => {
     renderCard(onlinePoint({ totals: { volume: 5.5, margin: 401 } }))
-    expect(fact("Feasibility")).toBe(
-      "Breached: the multipliers converged within the solver's tolerance, but margin 401 is above its maximum 400",
-    )
+    expect(fact("Feasibility")).toBe("Breached: margin 401 > 400")
   })
 
   it("names why an online point did not converge", () => {
     renderCard(onlinePoint({ converged: false, non_convergence_reason: "above_envelope" }))
     expect(fact("Converged")).toBe("No")
-    expect(fact("Feasibility")).toBe(
-      "Not converged: the bound lies beyond what the solver can reach (the λ search hit its cap); "
-      + "this is the closest point it found",
-    )
+    expect(fact("Feasibility")).toBe("Not converged: bound beyond reach (λ search capped)")
   })
 
   it("names why a ratebook point did not converge", () => {
     renderCard(ratebookPoint({ converged: false }))
-    expect(fact("Feasibility")).toBe(
-      "Not converged: the factor values were still moving when coordinate descent stopped",
-    )
+    expect(fact("Feasibility")).toBe("Not converged: factors still moving")
   })
 
-  it("shows the discrete trade-off with its sign and what it is", () => {
+  it("shows the discrete trade-off with its sign and the point it steps to", () => {
     renderCard(onlinePoint(), { kind: "value", value: 20, nextIndex: 0 })
-    expect(
-      fact("Objective change per unit of volume bound relaxed, to the next point in this slice"),
-    ).toBe("+20 (to point 1)")
-    expect(screen.getByText(
-      /A discrete step across the frontier, in which other achieved totals may also move\. It is not a check of λ\./,
-    )).toBeInTheDocument()
+    expect(fact("Objective per unit volume")).toBe("+20 (to point 1)")
   })
 
   it("shows a negative trade-off with its sign", () => {
     renderCard(onlinePoint(), { kind: "value", value: -0.25, nextIndex: 4 })
-    expect(
-      fact("Objective change per unit of volume bound relaxed, to the next point in this slice"),
-    ).toBe("−0.25 (to point 5)")
+    expect(fact("Objective per unit volume")).toBe("−0.25 (to point 5)")
   })
 
   it("shows — with the reason when there is no trade-off", () => {
     renderCard(onlinePoint(), { kind: "unavailable", reason: "The next point in this slice has the same volume bound." })
-    expect(
-      fact("Objective change per unit of volume bound relaxed, to the next point in this slice"),
-    ).toBe("— The next point in this slice has the same volume bound.")
+    expect(fact("Objective per unit volume")).toBe("— The next point in this slice has the same volume bound.")
   })
 })

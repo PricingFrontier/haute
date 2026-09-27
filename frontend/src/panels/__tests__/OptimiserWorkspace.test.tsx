@@ -360,7 +360,5 @@ describe("Optimiser workspace", () => {
     const picker = screen.getByLabelText(/X axis/)
     expect(picker.tagName).toBe("SELECT")
     expect(picker).toHaveClass("validation-control")
-    expect(screen.getByText(/5 frontier points\. Click a point for details\./))
-      .toHaveClass("validation-chart-description")
   })
 })

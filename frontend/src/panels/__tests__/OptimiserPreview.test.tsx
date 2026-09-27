@@ -337,7 +337,7 @@ describe("OptimiserPreview", () => {
       const { rerender } = renderPreview({
         data: makeData({ frontier: makeFrontier() }),
       })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
@@ -678,8 +678,7 @@ describe("OptimiserPreview", () => {
 
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      // Chart info text is visible by default
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
     it("keeps frontier point navigation available on the Summary tab", () => {
@@ -702,7 +701,7 @@ describe("OptimiserPreview", () => {
   describe("Frontier tab with data", () => {
     it("renders frontier scatter chart area", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
     it("communicates when the frontier payload is capped", () => {
@@ -741,7 +740,7 @@ describe("OptimiserPreview", () => {
 
     it("keeps hook order stable if frontier data disappears while the tab is mounted", () => {
       const { rerender } = renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
@@ -757,15 +756,20 @@ describe("OptimiserPreview", () => {
           selectedPointIndex: 2,
         }),
       })
-      expect(screen.getByText("Point details")).toBeInTheDocument()
+      expect(screen.getByText("Feasibility", { selector: "dt" })).toBeInTheDocument()
+      expect(screen.getAllByText("Point 3").length).toBeGreaterThan(0)
     })
 
-    it("offers no publish actions on the detail card and points to the Export pane", () => {
+    it("offers no publish actions on the detail card", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
-      expect(screen.getByText("Point details")).toBeInTheDocument()
+      expect(screen.getByText("Feasibility", { selector: "dt" })).toBeInTheDocument()
       expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: /Log to MLflow/ })).not.toBeInTheDocument()
-      expect(screen.getByText("Save or log this point from the node's Export pane.")).toBeInTheDocument()
+    })
+
+    it("drops the chart's hover detail while the card shows the selected point", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByText("Hover or focus a frontier point to inspect its values.")).not.toBeInTheDocument()
     })
 
     it("clicking a scatter point switches locally without a select API call", () => {
@@ -1072,10 +1076,7 @@ describe("OptimiserPreview", () => {
 
     it("shows the selected point's trade-off to its slice neighbour in the detail card", () => {
       renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
-      const term = screen.getByText(
-        "Objective change per unit of volume bound relaxed, to the next point in this slice",
-        { selector: "dt" },
-      )
+      const term = screen.getByText("Objective per unit volume", { selector: "dt" })
       // (130 − 120) / (5.5 − 5) to point 1, in point 3's slice.
       expect(term.nextElementSibling).toHaveTextContent("+20 (to point 1)")
     })
@@ -1428,7 +1429,7 @@ describe("OptimiserPreview", () => {
 
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
       expect(screen.queryByText("Optimised")).not.toBeInTheDocument()
     })
   })

@@ -109,10 +109,24 @@ export function chartDomain(values: number[], includeZero = false): [number, num
   const min = Math.min(...values, ...(includeZero ? [0] : []))
   const max = Math.max(...values, ...(includeZero ? [0] : []))
   const magnitude = Math.max(Math.abs(min), Math.abs(max))
-  const spread = max - min
-  const flat = spread <= magnitude * FLAT_SPREAD_RELATIVE
-  const pad = (flat ? Math.max(magnitude, 0.001) : spread) * 0.08
+  const pad = (isFlatSpread(min, max) ? Math.max(magnitude, 0.001) : max - min) * 0.08
   return [min - pad, max + pad]
+}
+
+/** Whether `max - min` is no spread at all: zero, or rounding noise relative to the values. */
+function isFlatSpread(min: number, max: number): boolean {
+  return max - min <= Math.max(Math.abs(min), Math.abs(max)) * FLAT_SPREAD_RELATIVE
+}
+
+/**
+ * The range an axis's ticks span inside its `chartDomain`: the values' own
+ * range, or for a flat series the padded domain, so its ticks spread across
+ * the axis instead of stacking on one pixel.
+ */
+export function chartTickSpan(values: number[]): [number, number] {
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  return isFlatSpread(min, max) ? chartDomain(values) : [min, max]
 }
 
 /** `count` evenly spaced ticks from `low` to `high` inclusive; a degenerate range yields one. */

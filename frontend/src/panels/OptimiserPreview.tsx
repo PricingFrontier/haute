@@ -837,24 +837,20 @@ function FrontierTab({
           onPointClick={onPointClick}
         />
 
-        <p className="validation-chart-description mt-2">
-          {slicing.slices.length > 1 && (
-            <>This slice holds {slice.indices.length.toLocaleString()} of the {shownPointCount.toLocaleString()} frontier points. </>
-          )}
-          {frontier.points_truncated ? (
-            <>
-              Showing {shownPointCount.toLocaleString()} of {totalPointCount.toLocaleString()} frontier points;
-              response cap is {(frontier.points_limit ?? shownPointCount).toLocaleString()}
-              {slicing.slices.length > 1 ? ", so a slice may be incomplete" : ""}. Click a point for details.
-            </>
-          ) : slicing.slices.length > 1 ? (
-            <>Click a point for details.</>
-          ) : (
-            <>
-              {shownPointCount.toLocaleString()} frontier points. Click a point for details.
-            </>
-          )}
-        </p>
+        {(slicing.slices.length > 1 || frontier.points_truncated) && (
+          <p className="validation-chart-description mt-2">
+            {slicing.slices.length > 1 && (
+              <>This slice holds {slice.indices.length.toLocaleString()} of the {shownPointCount.toLocaleString()} frontier points. </>
+            )}
+            {frontier.points_truncated && (
+              <>
+                Showing {shownPointCount.toLocaleString()} of {totalPointCount.toLocaleString()} frontier points;
+                response cap is {(frontier.points_limit ?? shownPointCount).toLocaleString()}
+                {slicing.slices.length > 1 ? ", so a slice may be incomplete" : ""}.
+              </>
+            )}
+          </p>
+        )}
 
         <ChartValuesTable
           summary="View slice values"
@@ -882,7 +878,6 @@ function FrontierTab({
             frontierPoint={{
               index: selectedIdx,
               point: selectedPoint,
-              kinds,
               xName,
               assessment: assessments[selectedIdx],
               tradeOff: discreteTradeOff({ points, slicing, assessments, kinds, index: selectedIdx }),
