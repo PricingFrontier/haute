@@ -72,6 +72,15 @@ def trace_builds(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     return built
 
 
+@pytest.fixture()
+def no_native_memory_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan as a thread-mode trace does: no hard worker cap, so an unestimable
+    materialisation is refused rather than planned conservatively."""
+    import haute.execution as execution
+
+    monkeypatch.setattr(execution, "current_native_memory_backend", lambda: None)
+
+
 def _listed(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A preview's ``seed_plan`` as a trace request carries it."""
     return [
@@ -501,6 +510,7 @@ def test_correlation_through_the_uncached_branch_when_the_cached_one_is_ambiguou
     assert not result["omissions"]
 
 
+@pytest.mark.usefixtures("no_native_memory_cap")
 def test_cached_work_that_could_not_be_admitted_is_still_traced_from_its_snapshot(
     project: Path, store: NodeSnapshotStore
 ) -> None:
@@ -942,6 +952,7 @@ def _two_seeds(project: Path) -> PipelineGraph:
     )
 
 
+@pytest.mark.usefixtures("no_native_memory_cap")
 def test_one_refused_seed_does_not_hide_what_another_seed_traces(
     project: Path, store: NodeSnapshotStore
 ) -> None:
@@ -995,6 +1006,7 @@ def _broken_above_seed(project: Path) -> PipelineGraph:
 
 
 @pytest.mark.parametrize("scenario", ["reproduced", "refused", "failed"])
+@pytest.mark.usefixtures("no_native_memory_cap")
 def test_the_recompute_above_a_seed_leaves_the_trace_plan_in_place(
     project: Path, store: NodeSnapshotStore, scenario: str
 ) -> None:
