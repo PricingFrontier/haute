@@ -14,7 +14,7 @@
 
 ---
 
-Haute is a free, open-source pricing engine. Build rating pipelines in a visual editor, train and score models, optimise prices, trace how any price was calculated, and deploy the result as a pricing API.
+Haute is a free, open-source pricing engine. Build rating pipelines in a visual editor, train and score models, optimise prices, trace how any price was calculated, and deploy the result as a pricing API, all on standard open-source tools such as Polars, MLflow and Git.
 
 <!--
   Screenshot placeholder: the editor with a pricing pipeline on the canvas and a rating step's
@@ -24,14 +24,37 @@ Haute is a free, open-source pricing engine. Build rating pipelines in a visual 
 
 ## Why Haute
 
-The rest of data science has moved to open-source tools, version control, automated testing and continuous deployment. Many pricing teams still work in expensive, closed platforms: the calculations are hard to inspect, the skills don't transfer, and releases rely on manual exports and hand-offs. Haute brings modern data science and engineering tooling to pricing teams, behind a visual editor.
+The rest of data science runs on open-source tools, version control, automated testing and continuous deployment. Pricing teams are often still working across a chain of proprietary products, and that stack holds them back:
 
-- **Plain Python, not a proprietary format.** Each pipeline is an ordinary Python file, with node settings in JSON files beside it. Analysts build on the canvas and developers work in the code: saving in the editor updates the files, and edits saved in an IDE show up in the editor. You can read, test and version pipelines like any other code, and they aren't tied to a vendor.
-- **Releases with guardrails.** One wrong factor can misprice a whole book, so releases go through CI/CD: every change is validated, deployed to staging and approved before it reaches production. Analysts push their changes and don't need Docker or cloud tools on their machines.
-- **Skills that transfer.** The step builder shows the Polars code it writes, and every pipeline is Python, so what analysts learn in Haute applies well beyond it.
-- **Open and inspectable.** The engine is open source, so your team can see exactly how prices are calculated and run pipelines on your own infrastructure.
+- **Closed and expensive.** Licences often run to six figures, the work is stored in proprietary formats, and the calculations can't be inspected, tested or version-controlled like code. Leaving means rebuilding everything.
+- **Split across tools.** Data preparation, modelling, rating structures, optimisation and the live rating engine often sit in separate products. Every change is exported, re-keyed and reconciled between them, and each hand-off is a chance for error.
+- **Manual releases.** Changes reach production through exports, spreadsheet checks and email sign-offs rather than automated tests, staged deployments and impact analysis.
+- **Skills locked to one vendor.** Analysts learn an interface instead of Python. When the tool can't do something, neither can the team, and newer modelling methods arrive only when the vendor adds them.
+
+Haute replaces that chain with one open pipeline:
+
+- **Open, and yours.** Haute is free and open source. Each pipeline is an ordinary Python file with its settings in JSON files beside it, kept in sync with the editor as you work. You can read, test and version pipelines like any other code, see exactly how every price is calculated, and run them on your own infrastructure.
+- **One pipeline from data to deployed price.** Data preparation, rating, models and optimisation live in one pipeline that analysts build on the canvas and developers edit as code. The same logic prices batch data and live quotes, so nothing is rebuilt for production.
+- **Releases with guardrails.** One wrong factor can misprice a whole book, so every change is validated, deployed to staging and approved in CI/CD before it reaches production. Analysts push their changes; they don't need Docker or cloud tools on their machines.
+- **Skills that transfer.** Everything underneath is standard tooling, and the step builder shows the Polars code it writes, so what analysts learn applies well beyond Haute.
 
 Haute is for pricing and actuarial teams who want to build, test and release their own pricing changes without waiting on engineering, and for teams moving off legacy platforms who want to keep their guardrails.
+
+## Built on open-source tools
+
+Haute connects standard tools rather than replacing them:
+
+| Tool | Role in Haute |
+|---|---|
+| **Python** | Every pipeline is a Python file, with one function per node. |
+| **[Polars](https://pola.rs/)** | The data engine. It works on whole columns across every CPU core, keeps column types strict, and optimises a full pipeline run as one lazy query plan. |
+| **[MLflow](https://mlflow.org/)** | Experiment tracking and the model registry, locally, on your own server or on Databricks. Trained models are logged with their model cards, and pipelines score registered models by version or alias. |
+| **Git** | Version control. Every save in the editor is a commit, so a pipeline's history can be reviewed like any other codebase. |
+| **CatBoost, XGBoost, LightGBM, RustyStats, InterpretML** | Model training (gradient boosting, GLMs and explainable boosting machines), with Optuna for hyperparameter tuning. |
+| **[price-contour](https://github.com/PricingFrontier/price-contour)** | Constrained price optimisation. |
+| **GitHub Actions, GitLab CI, Azure DevOps** | Validation and releases, through workflows `haute init` generates. |
+| **Databricks** | Optional: read Unity Catalog tables, track models in Databricks MLflow, and serve pipelines on Model Serving. |
+| **Docker** | Serve a pipeline from a container image you run on your own infrastructure. |
 
 ## Quick start
 
@@ -45,7 +68,7 @@ haute serve
 
 ## Features
 
-### Build rating logic
+### Build pipelines
 
 - **Rating steps.** Factor tables of one to three factors, banded or raw, with spreadsheet copy and paste, default values, and combined outputs (multiply, add, min or max).
 - **Banding.** Group continuous values with breakpoints, or map categories into rating groups.
@@ -53,6 +76,7 @@ haute serve
 - **Data.** Parquet, CSV, JSON and Arrow files, plus Excel, Delta Lake, Iceberg and Databricks Unity Catalog through optional packages. Nested JSON or XML quotes are split into flat tables, and responses can be nested JSON.
 - **Reuse.** Group nodes into submodels, and create instances that apply a node's logic to different inputs.
 - **Live and batch.** Source switches send development or batch data through the same logic that prices live quotes.
+- **Fast feedback.** Previews reuse cached results from earlier steps, and per-node timing and memory breakdowns show where a run spends its time.
 
 ### Explore, model and optimise
 
