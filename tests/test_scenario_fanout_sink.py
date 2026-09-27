@@ -9,7 +9,6 @@ expanded chunk stays within the setting.
 from __future__ import annotations
 
 import multiprocessing as mp
-import os
 import threading
 from typing import Any
 from unittest.mock import patch
@@ -119,27 +118,56 @@ def test_a_cap_is_released_when_its_block_raises() -> None:
     assert _polars_chunk() == 1_000
 
 
-def _report_chunk_environment(results: Any) -> None:
-    results.put(os.environ.get("POLARS_STREAMING_CHUNK_SIZE"))
+def _report_applied_chunk(results: Any) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
+    apply_spawned_streaming_chunk_size()
+    results.put(_polars_chunk())
 
 
-def test_a_worker_spawned_during_a_cap_inherits_the_setting_not_the_cap() -> None:
+def _chunk_in_isolated_worker() -> int | None:
+    return _polars_chunk()
+
+
+class _ParentObservingProcess(mp.get_context("spawn").Process):  # type: ignore[misc]
+    """Records this process's Polars chunk size while ``start()`` runs."""
+
+    parent_chunk_at_start: list[int | None] = []
+
+    def start(self) -> None:
+        _ParentObservingProcess.parent_chunk_at_start.append(_polars_chunk())
+        super().start()
+        _ParentObservingProcess.parent_chunk_at_start.append(_polars_chunk())
+
+
+def test_a_spawn_during_a_cap_keeps_the_parents_cap_and_hands_the_child_the_setting() -> None:
     from haute._worker_isolation import start_process_with_environment
 
     set_streaming_chunk_size(1_000)
-    context = mp.get_context("spawn")
-    results = context.Queue()
-    child = context.Process(target=_report_chunk_environment, args=(results,))
+    results = mp.get_context("spawn").Queue()
+    _ParentObservingProcess.parent_chunk_at_start.clear()
+    child = _ParentObservingProcess(target=_report_applied_chunk, args=(results,))
     with streaming_chunk_size_cap(90):
         start_process_with_environment(child, {})
-        # The spawn leaves this process's cap in place.
         assert _polars_chunk() == 90
     try:
-        assert results.get(timeout=120) == "1000"
+        # The cap stayed in force here throughout the spawn...
+        assert _ParentObservingProcess.parent_chunk_at_start == [90, 90]
+        # ...and the child runs at the setting it capped.
+        assert results.get(timeout=120) == 1_000
     finally:
         child.join(timeout=60)
         if child.is_alive():
             child.kill()
+
+
+def test_an_isolated_worker_started_during_a_cap_runs_at_the_setting() -> None:
+    from haute._worker_isolation import run_isolated_worker
+
+    set_streaming_chunk_size(1_000)
+
+    with streaming_chunk_size_cap(90):
+        assert run_isolated_worker(_chunk_in_isolated_worker) == 1_000
 
 
 # ---------------------------------------------------------------------------

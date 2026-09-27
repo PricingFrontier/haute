@@ -656,7 +656,8 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
     prior value before the lock is released — including when ``start()`` raises.
     Callers with nothing to override pass an empty mapping so that every spawn
     takes the same serialised path. A streaming chunk-size cap active in this
-    process is not inherited: the child gets the setting it caps.
+    process stays in force here; the child is handed the setting it caps and
+    applies it at entry (``apply_spawned_streaming_chunk_size``).
     """
     from haute._polars_utils import streaming_chunk_size_for_spawn
 
@@ -846,7 +847,10 @@ def _isolated_worker_entrypoint(
     memory_limit_bytes: int | None,
     require_memory_limit: bool = False,
 ) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
     exit_with_parent()
+    apply_spawned_streaming_chunk_size()
     lease = NativeMemoryLease()
     applied = False
     try:

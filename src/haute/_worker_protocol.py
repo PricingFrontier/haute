@@ -556,7 +556,10 @@ def _protocol_entrypoint(
     require_memory_limit: bool = False,
     address_space_allowance_bytes: int = 0,
 ) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
     exit_with_parent()
+    apply_spawned_streaming_chunk_size()
     runtime = WorkerRuntime(progress_queue, artifact_root)
     lease = NativeMemoryLease()
     applied = False

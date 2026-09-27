@@ -671,6 +671,9 @@ MAX_STREAMING_CHUNK_SIZE: int = 10_000_000
 _streaming_chunk_lock = threading.Lock()
 _streaming_chunk_setting: int | None = None
 _streaming_chunk_caps: dict[object, int] = {}
+# A worker spawned while a cap is active reads its setting from here rather
+# than from ``POLARS_STREAMING_CHUNK_SIZE``, which holds the parent's cap.
+SPAWN_STREAMING_CHUNK_SIZE_ENV = "HAUTE_SPAWN_STREAMING_CHUNK_SIZE"
 
 
 def _configured_streaming_chunk_size() -> int | None:
@@ -727,10 +730,12 @@ def current_streaming_chunk_size() -> int:
 def streaming_chunk_size_for_spawn() -> Iterator[dict[str, str]]:
     """Hold the chunk size steady while a child spawns; yield what it must inherit.
 
-    A child reads ``POLARS_STREAMING_CHUNK_SIZE`` as its setting, so while a
-    cap is active it is given the setting instead of the cap (the default when
-    none was ever configured); with no cap it inherits the value unchanged.
-    No cap starts or ends until the block exits.
+    While a cap is active the child inherits the parent's capped
+    ``POLARS_STREAMING_CHUNK_SIZE``, which this process keeps using, so the
+    setting travels under :data:`SPAWN_STREAMING_CHUNK_SIZE_ENV` instead (the
+    default when none was ever configured) and the child applies it with
+    :func:`apply_spawned_streaming_chunk_size`. With no cap there is nothing to
+    add. No cap starts or ends until the block exits.
     """
     with _streaming_chunk_lock:
         if not _streaming_chunk_caps:
@@ -741,7 +746,16 @@ def streaming_chunk_size_for_spawn() -> Iterator[dict[str, str]]:
             if _streaming_chunk_setting is not None
             else DEFAULT_STREAMING_CHUNK_SIZE
         )
-        yield {"POLARS_STREAMING_CHUNK_SIZE": str(setting)}
+        yield {SPAWN_STREAMING_CHUNK_SIZE_ENV: str(setting)}
+
+
+def apply_spawned_streaming_chunk_size() -> None:
+    """In a spawned worker, replace an inherited cap with the setting it capped."""
+    import os
+
+    raw = os.environ.pop(SPAWN_STREAMING_CHUNK_SIZE_ENV, None)
+    if raw is not None:
+        set_streaming_chunk_size(int(raw))
 
 
 @contextmanager
@@ -755,7 +769,7 @@ def streaming_chunk_size_cap(rows: int) -> Iterator[None]:
     the block see the cap. The configuration is process-wide, so a concurrent
     query in another thread may run with the smaller chunk too: that changes
     its speed and memory, never its result. A worker spawned meanwhile
-    inherits the setting, not the cap (``streaming_chunk_size_for_spawn``).
+    applies the setting, not the cap (``streaming_chunk_size_for_spawn``).
     """
     global _streaming_chunk_setting
     token = object()

@@ -979,8 +979,12 @@ returns to. Its one caller is the batch Model Score input sink (the mlflow-model
 low-level spec); the configuration is process-wide, so a query another thread starts
 meanwhile runs with the smaller chunk, which changes its memory and speed, never its
 result. `start_process_with_environment` holds the chunk-size lock while a child spawns
-(`streaming_chunk_size_for_spawn`) and, under an active cap, gives the child the setting
-rather than the cap, since a child reads the variable as its setting. The server lifespan
+(`streaming_chunk_size_for_spawn`), so no cap starts or ends mid-spawn, and never touches
+this process's `POLARS_STREAMING_CHUNK_SIZE`, so a sink already running under a cap keeps
+it. Under an active cap the child inherits the capped variable but is also handed the
+setting as `HAUTE_SPAWN_STREAMING_CHUNK_SIZE`, which the isolated-worker and worker-protocol
+entry points apply first (`apply_spawned_streaming_chunk_size`); warm interactive and
+dedicated workers already apply the server's setting with every task. The server lifespan
 applies `current_streaming_chunk_size()` once,
 before the interactive worker pool starts, so a value already in the environment is
 kept. `InteractiveWorkerPool.run` captures the current value with each task, and the

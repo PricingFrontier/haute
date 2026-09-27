@@ -960,8 +960,10 @@ to a live MLflow tracking server.
   `streaming_chunk_size_cap` semantics (it lowers the Polars value but not the
   setting, never raises it, restores an unset value unset, keeps the smallest of
   overlapping caps from two threads, lets a setting change inside a cap apply
-  when it ends, releases on an exception, and a worker spawned during a cap
-  inherits the setting, not the cap), `_upstream_scenario_fanout`
+  when it ends, releases on an exception, a spawn during a cap leaves the
+  parent's cap in force throughout `start()` while the child runs at the
+  setting, and an isolated worker started under a cap runs at the setting),
+  `_upstream_scenario_fanout`
   (product of the upstream expanders' step counts, invalid ones counting 1),
   the Model Score builder handing its scorer that fan-out, and a batched score
   of an expanded frame whose input sink runs at the setting divided by the
