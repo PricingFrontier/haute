@@ -5,8 +5,8 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 !!! tip "First pipeline?"
     If you're building your first pipeline, a common path is: [Quote Input](quote-input.md) or [Data Input](data-input.md) → [Polars](polars.md) (clean your data) → [Banding](banding.md) and [Rating Step](rating-step.md) (build your rating structure) → [Quote Response](output.md). You don't need every node type to get started.
 
-!!! info "About the config examples"
-    The JSON examples on these pages show the underlying configuration. In the Haute UI, you configure most of these through forms, dropdowns, and editable tables  - you don't need to write JSON by hand.
+!!! info "How these pages are written"
+    Each page walks through the node's panel in the editor: what each tab, field and button is for. How the same settings are stored in the pipeline file is in a closed **In the pipeline file** section at the end of each page, for when you read the generated code or review a change.
 
 ---
 
@@ -31,6 +31,20 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Save results to a file or table | [Data Output](data-output.md) |
 | Group nodes into a reusable block | [Submodel](submodel.md) |
 | Reuse a node's logic with different inputs | [Instances](instances.md) |
+
+---
+
+## Working with any node
+
+- **Adding and connecting nodes.** Drag a node from the **Nodes** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name.
+- **The node panel.** Click a node to open its panel on the right. Most nodes have tabs along its top:
+    - **CONFIG** holds the node's own settings, described on its page. On a Polars node this tab is called **POLARS**, because the node's settings are its steps.
+    - **POLARS**, on Data Input, Load File, Expander, Rating Step and Model Scoring nodes, adds optional steps that run on the node's result, built the same way as a Polars node's (see [Building the node from steps](polars.md#building-the-node-from-steps)).
+    - **COLUMNS** lists the node's **Output Columns**: untick a column to stop the node passing it on. **Filter columns...** finds a column by name, and **All** and **None** tick or clear every box. The list appears once the node has been previewed. Quote Input, Quote Response, Model Training, Optimisation, Explore and Submodel nodes have no Columns tab.
+
+    Model Training, Optimisation and Explore nodes split their settings into panes instead, described on their pages.
+- **The preview.** Under the canvas, the preview shows the selected node's output. With **Calculation** set to **Automatic** in Pipeline settings (the toolbar's **Pipeline** button), clicking a node calculates its preview; set to **Manual**, a node shows its last result until you click **Refresh** (Ctrl+Enter). **Preview rows** in Pipeline settings sets how many rows a preview shows (0 means no limit), and **Search columns...** narrows the columns shown. Click a cell to trace how its value was calculated (see [Price tracing](../../getting-started/polars.md#price-tracing)).
+- **Renaming, copying and deleting.** Right-click a node for **Rename**, **Duplicate** and **Delete**. A node's name is also the name downstream nodes use for its data.
 
 ---
 
