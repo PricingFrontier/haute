@@ -1538,6 +1538,9 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByRole("tab", { name: "Curves" }))
       expect(screen.getByRole("checkbox", { name: /margin/ })).toBeChecked()
       expect(screen.getByRole("checkbox", { name: /volume/ })).toBeChecked()
+      // The header describes the sampled input, not the solve.
+      expect(screen.getByText(/^2 quotes \| 2 scenarios/)).toBeInTheDocument()
+      expect(screen.queryByText(/^Converged/)).not.toBeInTheDocument()
       const navigation = screen.getByTestId("optimiser-quote-navigation")
       expect(within(navigation).getByText("1/2")).toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Next quote" }))
@@ -1545,6 +1548,7 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByRole("tab", { name: "Statistics" }))
       expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+      expect(screen.getByText(/^2 quotes \| 2 scenarios/)).toBeInTheDocument()
       expect(screen.getByText("objective")).toBeInTheDocument()
       expect(screen.getAllByRole("table")).toHaveLength(2)
     })

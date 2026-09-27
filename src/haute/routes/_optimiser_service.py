@@ -121,11 +121,12 @@ from haute.routes._optimiser_input import (
     build_quote_grid,
     estimate_input_metrics,
     extract_ratebook_factors,
+    grid_chunk_decision,
     grid_construction_failures,
-    pipeline_chunk_decision,
     resolve_analysis_frame,
     resolve_analysis_plan,
     resolve_data_input_frame,
+    scenario_step_count,
     validate_and_project,
     validate_and_project_auto_range,
     write_solver_input,
@@ -3718,13 +3719,19 @@ class OptimiserSolveService:
             grid_construction_failures(node_id),
             _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
         ):
-            decision = pipeline_chunk_decision("optimiser_grid")
+            n_steps = scenario_step_count(
+                Path(input_path),
+                str(config.get("scenario_index", "scenario_index")),
+                execution_context,
+            )
+            decision = grid_chunk_decision(n_steps)
             self._record_setup_chunking(job_id, "optimiser_grid", decision.provenance)
             grid = build_quote_grid(
                 input_path,
                 constraint_cols,
                 config,
                 decision.chunk_size,
+                n_steps=n_steps,
                 execution_context=execution_context,
             )
             self._record_scenario_grid(job_id, grid)

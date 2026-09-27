@@ -66,6 +66,13 @@ context without the resolved value rather than silently resetting elapsed-time a
   `pipeline_chunk_decision(source)` makes it from `current_streaming_chunk_size()` (the Pipeline
   Settings value; the optimiser node has no chunk size of its own), recording
   `{"policy": "pipeline_setting", "chunk_size", "source"}` in the job's `setup_chunking`.
+  The grid build uses `grid_chunk_decision(n_steps)` instead: the builder reads whole quotes,
+  so the setting is raised to `n_steps` rows when it is smaller, and the record adds
+  `pipeline_chunk_size` (the setting) and `n_steps`. `scenario_step_count` reads `n_steps` as one
+  past the largest `scenario_index` in one scan of that column, and the builder receives it
+  explicitly instead of auto-detecting it from its first chunk (which fails below
+  `n_steps + 1` rows). The ratebook factor artifact has one row per quote, so its contexts take
+  the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
   of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)
   and execution context for one auto-range run.
@@ -270,8 +277,8 @@ are held until the grid is built and released on every exit. No checkpoint direc
 7. Writes the scored data to a setup-owned temp parquet, or borrows an unchanged captured
    snapshot under the plan's lease (`_write_solver_input`), and builds the solver's `QuoteGrid`
    from that file via `price_contour.build_grid_from_parquet_chunked`
-   (`_build_grid_from_parquet`), choosing a chunk size from either explicit config or a
-   byte-budget policy against the parquet's own metadata. The builder decodes only the solver
+   (`_build_grid_from_parquet`) in chunks of the Pipeline Settings chunk size raised to one
+   quote's rows (`grid_chunk_decision`), passing the file's `n_steps`. The builder decodes only the solver
    columns, so retained analysis columns never reach it, and `_build_grid_from_parquet` records
    the job's `scenario_grid` as soon as the grid exists. When analysis columns are configured,
    `quote_analysis.parquet` is reduced from the written solver input (or the side-input frame)
@@ -1208,8 +1215,7 @@ whose message already names every problem and the remedy.
   token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
   the exclusion lease until it can no longer mutate state.
-- **Generic setup failure detail is boundary-safe.** Explicit grid chunk-size
-  validation remains an actionable 400. Unknown `_execute_pipeline` and
+- **Generic setup failure detail is boundary-safe.** Unknown `_execute_pipeline` and
   `_build_grid` failures are fixed-detail 500s and preserve their raw
   exception only in server logs, as defined by
   [OPT-D01](error-detail-policy.md).
@@ -1559,15 +1565,14 @@ The required behaviour is defined in
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
-## Decoded input widths for setup chunking
+## Decoded input widths for the resident-grid forecast
 
-Automatic optimiser-grid and ratebook-factor chunk sizing uses the larger of
-the existing Parquet page-size estimate and a bounded decoded sample (at most
-512 rows). Each sampled column has an eight-byte minimum, and strings/binary
-use their decoded resident width. Repeated dictionary values must not make a
-large decoded batch look like a tiny encoded page. Explicit positive row
-overrides retain their current meaning. The existing setup execution limits
-remain authoritative: chunked input still builds a resident solver grid.
+Setup chunk sizes are the Pipeline Settings value (see `_ChunkSizeDecision`), not
+a byte budget. The resident-grid forecast (`forecast_resident_grid_bytes`) prices
+each input row from a bounded decoded sample (at most 512 rows), in which strings
+and binary use their decoded resident width, so repeated dictionary values cannot
+make a large decoded batch look like a tiny encoded page. The setup execution
+limits remain authoritative: chunked input still builds a resident solver grid.
 ## Reuse and admit the resident grid input
 
 Grid setup reuses a single local Parquet scan when its optimised plan is only

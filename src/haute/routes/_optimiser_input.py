@@ -331,6 +331,49 @@ def pipeline_chunk_decision(source: str) -> _ChunkSizeDecision:
     )
 
 
+def scenario_step_count(
+    path: Path, scenario_index: str, execution_context: ExecutionContext | None = None
+) -> int | None:
+    """The grid's per-quote step count, one past the largest ``scenario_index``; None when empty.
+
+    Every quote in a well-formed solver input runs ``scenario_index`` 0..n-1,
+    so one scan of that column fixes the count the builder would otherwise
+    auto-detect from its first chunk. The builder validates the layout itself.
+    """
+    import polars as pl
+
+    from haute._polars_utils import cancellable_streaming_collect
+
+    max_lf = pl.scan_parquet(path).select(pl.col(scenario_index).max())
+    frame = (
+        max_lf.collect()
+        if execution_context is None
+        else cancellable_streaming_collect(max_lf, execution_context=execution_context)
+    )
+    largest = frame.item()
+    return None if largest is None else int(largest) + 1
+
+
+def grid_chunk_decision(n_steps: int | None) -> _ChunkSizeDecision:
+    """The pipeline chunk size, raised to one quote's rows when it is smaller.
+
+    The grid builder reads whole quotes, so a chunk holds at least ``n_steps``
+    rows whatever Pipeline Settings says; the provenance keeps the setting.
+    """
+    setting = current_streaming_chunk_size()
+    chunk_size = setting if n_steps is None else max(setting, n_steps)
+    return _ChunkSizeDecision(
+        chunk_size=chunk_size,
+        provenance={
+            "policy": "pipeline_setting",
+            "chunk_size": chunk_size,
+            "pipeline_chunk_size": setting,
+            "n_steps": n_steps,
+            "source": "optimiser_grid",
+        },
+    )
+
+
 def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[str]:
     """Return optimiser parent ids that are consumed after graph execution.
 
@@ -1102,6 +1145,7 @@ def build_quote_grid(
     config: Mapping[str, Any],
     chunk_size: int,
     *,
+    n_steps: int | None,
     execution_context: ExecutionContext | None,
 ) -> QuoteGrid:
     """Admit the resident grid, then build it from the solver-input parquet."""
@@ -1125,6 +1169,7 @@ def build_quote_grid(
         scenario_index=step_col,
         scenario_value=mult_col,
         objective=objective,
+        n_steps=n_steps,
     )
     return grid
 

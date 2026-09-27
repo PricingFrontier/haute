@@ -530,7 +530,7 @@ export default function OptimiserPreview({
       nodeLabel={displayData.nodeLabel}
       nodeType={NODE_TYPES.OPTIMISER}
       onRefresh={onRefresh}
-      subtitle={statusSummary}
+      subtitle={activeTab === "curves" || activeTab === "statistics" ? scenario.metadata : statusSummary}
       collapsedMeta={`${result.converged ? "Converged" : "Not converged"} | Objective: ${formatNumber(result.total_objective)}`}
       data-testid="optimiser-preview-frame"
       height={height}

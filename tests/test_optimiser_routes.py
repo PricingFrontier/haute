@@ -13030,9 +13030,12 @@ class TestBuildGrid:
             service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
 
         assert mock_build.call_args.args[2] == 3
+        assert mock_build.call_args.kwargs["n_steps"] == 2
         assert store.get_job(job_id)["setup_chunking"]["optimiser_grid"] == {
             "policy": "pipeline_setting",
             "chunk_size": 3,
+            "pipeline_chunk_size": 3,
+            "n_steps": 2,
             "source": "optimiser_grid",
         }
 
@@ -13072,12 +13075,15 @@ class TestBuildGrid:
 
         assert mock_build.call_args.args[2] == 2
 
-    @pytest.mark.parametrize("chunk_size", [500_000, 2])
+    @pytest.mark.parametrize("chunk_size", [500_000, 4, 3, 2, 1])
     def test_build_grid_accepts_categorical_quote_id_with_real_price_contour(
         self,
         chunk_size,
     ):
-        """Real 0.3.2 grid builders accept categorical quote IDs."""
+        """The real grid builder accepts categorical quote IDs at any pipeline chunk size.
+
+        A setting below one quote's three rows reads a whole quote per chunk.
+        """
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
@@ -13099,19 +13105,19 @@ class TestBuildGrid:
         }
         from haute._polars_utils import set_streaming_chunk_size
 
-        # One pipeline chunk holds the whole grid; two rows split every quote.
+        # One pipeline chunk holds the whole grid; smaller settings split quotes.
         set_streaming_chunk_size(chunk_size)
 
         scored_lf = pl.LazyFrame(
             {
                 "quote_key": pl.Series(
-                    ["q1", "q1", "q2", "q2"],
+                    ["q1", "q1", "q1", "q2", "q2", "q2"],
                     dtype=pl.Categorical,
                 ),
-                "scenario_step": pl.Series([0, 1, 0, 1], dtype=pl.Int32),
-                "price_factor": pl.Series([0.9, 1.1, 0.9, 1.1], dtype=pl.Float32),
-                "income": pl.Series([100.0, 110.0, 200.0, 220.0], dtype=pl.Float32),
-                "vol": pl.Series([0.9, 0.85, 0.95, 0.90], dtype=pl.Float32),
+                "scenario_step": pl.Series([0, 1, 2, 0, 1, 2], dtype=pl.Int32),
+                "price_factor": pl.Series([0.9, 1.0, 1.1, 0.9, 1.0, 1.1], dtype=pl.Float32),
+                "income": pl.Series([100.0, 105.0, 110.0, 200.0, 210.0, 220.0], dtype=pl.Float32),
+                "vol": pl.Series([0.9, 0.87, 0.85, 0.95, 0.92, 0.90], dtype=pl.Float32),
             }
         )
 
@@ -13119,8 +13125,11 @@ class TestBuildGrid:
 
         assert grid.quote_ids == ["q1", "q2"]
         assert grid.n_quotes == 2
-        assert grid.n_steps == 2
-        assert grid.scenario_values == pytest.approx([0.9, 1.1])
+        assert grid.n_steps == 3
+        assert grid.scenario_values == pytest.approx([0.9, 1.0, 1.1])
+        assert store.get_job(job_id)["setup_chunking"]["optimiser_grid"]["chunk_size"] == max(
+            chunk_size, 3
+        )
 
     def test_build_grid_failure_updates_job_store(self, tmp_path):
         """Grid construction failure updates job store with error."""
