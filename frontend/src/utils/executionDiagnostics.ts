@@ -184,6 +184,41 @@ function byteField(fields: Record<string, unknown>, key: string): number | null 
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
 }
 
+/** User-facing names of the jobs whose memory reservation can refuse other work. */
+const RUNNING_JOB_NAMES: Readonly<Record<string, string>> = {
+  frontier_auto_range: "Auto range",
+  optimiser_solve: "Optimisation",
+  optimiser_solve_worker: "Optimisation",
+  optimiser_frontier_recompute: "Frontier recompute",
+  optimiser_estimate: "Solve estimate",
+  training_job: "Model training",
+  training_pipeline: "Model training",
+  training_evaluation_preview: "Training preview",
+  explore_relationships: "Explore",
+  explore_pivot: "Explore",
+  explore_pivot_members: "Explore",
+  node_snapshot: "Data caching",
+  input_snapshot_build: "Data caching",
+  pipeline_write_output: "Data output",
+}
+
+/**
+ * The running jobs named by an in-flight refusal's `in_flight_operations`
+ * (`"<profile>:<operation>"`), deduplicated in order; unknown operations are
+ * left out rather than shown by their internal names.
+ */
+function runningJobNames(detail: Record<string, unknown>): string[] {
+  const holders = detail.in_flight_operations
+  if (!Array.isArray(holders)) return []
+  const names: string[] = []
+  for (const holder of holders) {
+    if (typeof holder !== "string") continue
+    const name = RUNNING_JOB_NAMES[holder.slice(holder.indexOf(":") + 1)]
+    if (name && !names.includes(name)) names.push(name)
+  }
+  return names
+}
+
 /** Plain-language text for a structured `memory_limit` detail, by its closed reason. */
 function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
   const memory = (key: string) => {
@@ -218,8 +253,11 @@ function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
       }
       return ranOutOfMemory(`Haute reached its ${processLimit} while running this.`)
     }
-    case "in_flight_memory_budget_exceeded":
-      return "Other running work holds the memory this needs. Try again when it finishes."
+    case "in_flight_memory_budget_exceeded": {
+      const jobs = runningJobNames(detail)
+      const running = jobs.length ? ` (${jobs.join(", ")})` : ""
+      return `Another job is running${running}. Try again when it finishes.`
+    }
     case "native_memory_cap_unavailable":
       return "This can't run because Haute can't enforce its memory limit on this machine."
     case "memory_sampler_unavailable":

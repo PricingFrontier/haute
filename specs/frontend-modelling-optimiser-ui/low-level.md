@@ -393,8 +393,12 @@ or an unknown reason — it ran out of memory before it finished;
 `process_rss_limit_exceeded` — at admission (the detail carries `rss_at_admission_bytes`)
 not enough memory is free to start because Haute already uses that much of its
 `process_rss_limit_bytes` limit, otherwise Haute reached its process limit (the running
-execution's effective `rss_limit_bytes`) while running it; `in_flight_memory_budget_exceeded` — other running work holds the memory it needs,
-so try again when that finishes; `native_memory_cap_unavailable` — Haute cannot enforce
+execution's effective `rss_limit_bytes`) while running it; `in_flight_memory_budget_exceeded` — another job is running,
+named from the detail's `in_flight_operations` (`<profile>:<operation>`) by a fixed map of user-facing job names
+(Auto range, Optimisation, Frontier recompute, Solve estimate, Model training, Training preview, Explore, Data
+caching, Data output; an operation outside the map is left out, never shown by its internal name), so try again
+when it finishes — a solve estimate refused while auto-range runs reads "Solve estimate failed: Another job is
+running (Auto range). Try again when it finishes."; `native_memory_cap_unavailable` — Haute cannot enforce
 its memory limit on this machine; `memory_sampler_unavailable` — Haute stopped it because
 it could not measure its memory use. A byte value missing from the detail is omitted
 from the sentence rather than invented. Each ran-out-of-memory outcome (the first four,
