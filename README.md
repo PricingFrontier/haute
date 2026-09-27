@@ -109,34 +109,20 @@ Nodes that Haute configures for you, such as data inputs, rating steps and model
 
 ## Deploy a pricing API
 
-`haute deploy` packages the live scoring path of a pipeline as an API that takes quotes and returns prices, leaving out training and analysis branches. It first runs your test quotes through the pipeline and can check expected outputs within a tolerance. A real deploy runs only in CI; `--dry-run` validates locally.
+Analysts don't deploy from their own machines: releases run in CI/CD. `haute init` generates the workflows for GitHub Actions, GitLab CI or Azure DevOps, and those workflows run Haute's command-line steps:
+
+1. **Validate.** Every change is checked with `haute lint`, and your test quotes are scored through the pipeline with `haute deploy --dry-run`, optionally against expected outputs within a tolerance.
+2. **Deploy to staging.** `haute deploy` packages the live scoring path, leaving out training and analysis branches, as an API that takes quotes and returns prices. A real deploy refuses to run outside CI.
+3. **Check staging.** For Databricks, `haute smoke` sends the test quotes to the staging endpoint, and `haute impact` writes a report comparing staging with production on a sample.
+4. **Release.** Production is a separate step that someone approves.
 
 | Target | Current support |
 |---|---|
 | **Databricks** | Registers the pipeline and creates or updates a Model Serving endpoint. |
 | **Docker** | Builds a serving image (`POST /quote`, `GET /health`) and optionally pushes it to a registry for your team to run. |
-| **Azure Container Apps / AWS ECS / GCP Cloud Run** | Builds and pushes the image; pointing the running service at it is a manual step for now. |
-
-`haute init` also generates CI/CD for GitHub Actions, GitLab CI or Azure DevOps. For Databricks, the workflow deploys to staging, smoke-tests it and writes an impact report comparing staging with production; the production release is a separate step that someone approves. For the three container clouds it stops after pushing the image.
+| **Azure Container Apps / AWS ECS / GCP Cloud Run** | Builds and pushes the image. Pointing the running service at it is a manual step for now, so the workflow stops after the push. |
 
 Generic MLflow (pyfunc) models can be scored in the editor but not yet deployed. See the [deployment documentation](https://pricingfrontier.github.io/haute/deployment/) for targets and release workflows.
-
-## Command line
-
-| Command | What it does |
-|---|---|
-| `haute init` | Scaffold a project |
-| `haute serve` | Open the editor |
-| `haute run` | Run a pipeline from the terminal |
-| `haute lint` | Check a pipeline without running it |
-| `haute train` | Run an exported training script |
-| `haute deploy` | Validate and deploy a pipeline (`--dry-run` validates only) |
-| `haute smoke` | Send the test quotes to a live endpoint |
-| `haute impact` | Compare staging and production pricing on a sample |
-| `haute status` | Show a model's latest registered version |
-| `haute gpu-setup` | Switch XGBoost to its GPU build |
-
-Every command also runs as `python -m haute`, for managed machines that block console launchers.
 
 ## Status
 
