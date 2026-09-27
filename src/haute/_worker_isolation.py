@@ -62,6 +62,9 @@ class IsolatedWorkerConfig:
     process_name: str = "haute-isolated-worker"
     # Widens only an RLIMIT_AS cap, for a model library's thread reservations.
     address_space_allowance_bytes: int = 0
+    # Variables set for the child at spawn only (for example a library's
+    # import-time thread pool size); the parent's environment is unchanged.
+    environment: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
@@ -94,6 +97,7 @@ def worker_config_for_memory_policy(
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
     address_space_allowance_bytes: int = 0,
+    environment: Mapping[str, str] | None = None,
 ) -> IsolatedWorkerConfig:
     """Build worker controls without implying a hard cap on unsupported hosts."""
     enforcement = resolve_worker_memory_enforcement()
@@ -110,6 +114,7 @@ def worker_config_for_memory_policy(
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
         address_space_allowance_bytes=address_space_allowance_bytes,
+        environment=dict(environment or {}),
     )
 
 
@@ -712,7 +717,7 @@ def run_isolated_worker(
     process_started = False
     try:
         try:
-            start_process_with_environment(process, {})
+            start_process_with_environment(process, worker_config.environment)
             process_started = True
         except Exception as exc:  # pragma: no cover - depends on multiprocessing internals
             raise IsolatedWorkerStartError(

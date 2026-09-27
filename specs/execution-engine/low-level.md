@@ -163,8 +163,10 @@
 - **`IsolatedWorkerConfig`** (frozen dataclass) — `timeout_seconds`,
   `memory_limit_bytes`, `require_memory_limit`, `cleanup_callbacks`, `stop_reason`
   (polled callback returning a `WorkerTerminalReason | None`),
-  `stop_poll_interval_seconds`, `process_name`; validates positivity in
-  `__post_init__`.
+  `stop_poll_interval_seconds`, `process_name`, `address_space_allowance_bytes`,
+  `environment` (variables set for the child at spawn only, through
+  `start_process_with_environment`; the parent's environment is restored); validates positivity
+  in `__post_init__`.
 - **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
   `total_rows`, `estimated_bytes`, `available_bytes`, `bytes_per_row`,
   `was_downsampled`, `warning`, `probe_columns`, `unavailable_reason`,

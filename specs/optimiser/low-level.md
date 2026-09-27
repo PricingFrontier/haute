@@ -288,7 +288,12 @@ context (`_open_setup_seed_plan`, which prepares inputs and holds the plan's lea
 exits) and runs `materialise_solve_input_worker` through `_run_optimiser_worker`: the admitted
 headroom (`isolated_execution_budget`) is both the child's execution budget and its native cap,
 and the job's cancellation reason is the worker's stop signal, so cancellation or supersession
-terminates the worker. The child adopts the plan (`SeedPlan.adopt`), runs
+terminates the worker. Every optimiser worker (setup and auto-range) spawns with
+`POLARS_MAX_THREADS` set to `resolve_optimiser_polars_threads()` — min(CPU count, 8), overridden
+by `HAUTE_OPTIMISER_POLARS_THREADS` — because Polars bounds a streaming pipeline by morsels per
+thread, so a scenario expander's fan-out multiplies what each thread holds (measured: the
+scorer's input sink on a 10M x 11 pipeline peaked at 5.3 GiB with 22 threads and 1.8 GiB with 8,
+in the same time). The child adopts the plan (`SeedPlan.adopt`), runs
 `_materialise_solve_input` (`_prepare_solver_frame` — steps 2–6 — then `_write_solver_input`
 with borrowing off, then, with analysis columns, `_write_quote_analysis`) against a private job record in the `optimiser_worker` job store,
 deleted when the child finishes, and returns a `SolveInput` (the parent's

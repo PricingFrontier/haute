@@ -169,6 +169,7 @@ from haute.routes._optimiser_worker import (
     SolveInputWorkerRequest,
     frontier_auto_range_worker,
     materialise_solve_input_worker,
+    resolve_optimiser_polars_threads,
     worker_scratch_directory,
 )
 from haute.schemas import (
@@ -1563,6 +1564,7 @@ class OptimiserSolveService:
             timeout_seconds=timeout_seconds,
             stop_reason=lambda: self._jobs.cancellation_reason(job_id),
             process_name=process_name,
+            environment={"POLARS_MAX_THREADS": str(resolve_optimiser_polars_threads())},
         )
         try:
             return run_isolated_worker(function, request, budget, config=worker_config)

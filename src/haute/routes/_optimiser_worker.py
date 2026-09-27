@@ -33,6 +33,7 @@ counts or a typed answer and records nothing.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import tempfile
 import time
@@ -43,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -173,6 +175,26 @@ class FrontierAutoRangeWorkerOutcome:
     ranges: dict[str, dict[str, float]] | None = None
     execution_metrics: dict[str, Any] | None = None
     failure: OptimiserWorkerFailure | None = None
+
+
+_OPTIMISER_POLARS_THREADS_ENV = "HAUTE_OPTIMISER_POLARS_THREADS"
+_DEFAULT_OPTIMISER_POLARS_THREADS = 8
+
+
+def resolve_optimiser_polars_threads() -> int:
+    """The Polars thread-pool size of the optimiser's setup and auto-range workers.
+
+    Polars bounds a streaming pipeline by morsels per thread, not bytes, so a
+    fan-out such as the scenario expander's explode multiplies what every
+    thread holds. On a 10M-quote x 11-scenario pipeline the scorer's input
+    sink peaked at 5.3 GiB with 22 threads and 1.8 GiB with 8, in the same
+    time; the batch reducer likewise loses no time at 8. Polars reads the
+    setting once at import, so it is applied to each worker at spawn.
+    """
+    return int_env(
+        _OPTIMISER_POLARS_THREADS_ENV,
+        min(os.cpu_count() or 1, _DEFAULT_OPTIMISER_POLARS_THREADS),
+    )
 
 
 @contextlib.contextmanager

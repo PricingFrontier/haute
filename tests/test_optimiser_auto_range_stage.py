@@ -236,3 +236,42 @@ def test_the_optimiser_chunk_size_does_not_size_auto_range_batches(
     assert [rows for rows, _heights in reads] == [11, 11, 11]
     assert reads[0][1] == reads[1][1] == reads[2][1]
     assert unset.ranges == tiny.ranges == huge.ranges
+
+
+def test_optimiser_workers_spawn_with_a_capped_polars_thread_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup and auto-range workers get POLARS_MAX_THREADS at spawn; the override wins."""
+    from haute.routes._optimiser_worker import resolve_optimiser_polars_threads
+
+    captured: list[dict[str, str]] = []
+
+    def fake_run(function: Any, request: Any, budget: Any, *, config: Any) -> str:
+        captured.append(dict(config.environment))
+        return "done"
+
+    monkeypatch.setattr(_optimiser_service, "run_isolated_worker", fake_run)
+    service = OptimiserSolveService(JobStore())
+    context = create_admitted_execution_context(
+        operation="optimiser_setup_test",
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
+    )
+    try:
+        for override, expected in ((None, str(resolve_optimiser_polars_threads())), ("3", "3")):
+            if override is None:
+                monkeypatch.delenv("HAUTE_OPTIMISER_POLARS_THREADS", raising=False)
+            else:
+                monkeypatch.setenv("HAUTE_OPTIMISER_POLARS_THREADS", override)
+            service._run_optimiser_worker(
+                lambda *_: None,
+                None,
+                job_id="job",
+                node_id="opt",
+                execution_context=context,
+                timeout_seconds=None,
+                process_name="haute-optimiser-setup",
+            )
+            assert captured[-1]["POLARS_MAX_THREADS"] == expected
+    finally:
+        context.release_admission()
+    assert int(captured[0]["POLARS_MAX_THREADS"]) <= 8
