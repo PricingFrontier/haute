@@ -395,7 +395,7 @@ export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {})
     data_source: "batch",
     source_file: "main.py",
     graph_fingerprint: "3f9a1c",
-    solver_settings: { max_iter: 50, tolerance: 1e-6, chunk_size: null },
+    solver_settings: { max_iter: 50, tolerance: 1e-6 },
     ...overrides,
   }
 }

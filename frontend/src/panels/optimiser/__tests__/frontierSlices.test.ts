@@ -3,7 +3,6 @@ import type { FrontierPoint } from "../../../api/types"
 import {
   assessFrontierPoint,
   asSolvedOnSlice,
-  discreteTradeOff,
   displayedSlicePosition,
   frontierConstraintKinds,
   sliceFrontier,
@@ -42,10 +41,6 @@ function gridPoint(
 
 function grid(overrides: Record<number, Partial<FrontierPoint>> = {}): FrontierPoint[] {
   return GRID_SPEC.map((spec, index) => gridPoint(spec, overrides[index]))
-}
-
-function assessAll(points: FrontierPoint[], names = GRID_NAMES, kinds = GRID_KINDS) {
-  return points.map((point) => assessFrontierPoint(point, names, kinds))
 }
 
 describe("frontierConstraintKinds", () => {
@@ -236,89 +231,5 @@ describe("asSolvedOnSlice", () => {
     const frontier = makeOnlineFrontier(3)
     const single = sliceFrontier(frontier.points, ["loss_ratio"], ["loss_ratio"], "loss_ratio")
     expect(asSolvedOnSlice(frontier.points, single, single.slices[0], {})).toBe(true)
-  })
-})
-
-describe("discreteTradeOff", () => {
-  function tradeOff(points: FrontierPoint[], xName: string, index: number) {
-    const slicing = sliceFrontier(points, GRID_NAMES, GRID_NAMES, xName)
-    return discreteTradeOff({
-      points,
-      slicing,
-      assessments: assessAll(points),
-      kinds: GRID_KINDS,
-      index,
-    })
-  }
-
-  it("relaxes a min constraint by lowering its bound (hand-calculated)", () => {
-    // Point 3 (volume ≥ 5.5, objective 120) relaxes to point 1 (volume ≥ 5,
-    // objective 130): (130 − 120) / (5.5 − 5) = +20 per unit of volume.
-    expect(tradeOff(grid(), "volume", 2)).toEqual({ kind: "value", value: 20, nextIndex: 0 })
-    // Point 5 (≥ 6, 105) to point 3 (≥ 5.5, 120): 15 / 0.5 = +30.
-    expect(tradeOff(grid(), "volume", 4)).toEqual({ kind: "value", value: 30, nextIndex: 2 })
-  })
-
-  it("relaxes a max constraint by raising its bound (hand-calculated)", () => {
-    // Point 1 (margin ≤ 400, objective 130) relaxes to point 2 (margin ≤ 450,
-    // objective 140): (140 − 130) / (450 − 400) = +0.2 per unit of margin.
-    const result = tradeOff(grid(), "margin", 0)
-    expect(result.kind).toBe("value")
-    if (result.kind !== "value") return
-    expect(result.value).toBeCloseTo(0.2, 12)
-    expect(result.nextIndex).toBe(1)
-  })
-
-  it("has no value at the slice's least-constrained end", () => {
-    expect(tradeOff(grid(), "volume", 0)).toMatchObject({ kind: "unavailable" })
-    expect(tradeOff(grid(), "margin", 1)).toMatchObject({ kind: "unavailable" })
-  })
-
-  it("has no value between identical bounds", () => {
-    const points = grid({ 0: { bounds: { volume: 5.5, margin: 400 }, totals: { volume: 5.6, margin: 390 } } })
-    expect(tradeOff(points, "volume", 2)).toMatchObject({
-      kind: "unavailable",
-      reason: expect.stringMatching(/same volume bound/),
-    })
-  })
-
-  it("has no value when either neighbour did not converge", () => {
-    expect(tradeOff(grid({ 0: { converged: false } }), "volume", 2)).toMatchObject({
-      kind: "unavailable",
-      reason: expect.stringMatching(/next point .* not feasible/),
-    })
-    expect(tradeOff(grid({ 2: { converged: false } }), "volume", 2)).toMatchObject({
-      kind: "unavailable",
-      reason: expect.stringMatching(/This point is not feasible/),
-    })
-  })
-
-  it("has no value when a converged neighbour breaches a swept bound", () => {
-    const points = grid({ 0: { totals: { volume: 4.968, margin: 390 } } })
-    expect(tradeOff(points, "volume", 2)).toMatchObject({ kind: "unavailable" })
-  })
-
-  it("has no value when a converged neighbour breaches only an unswept bound", () => {
-    // loss_ratio (max) is swept; volume (min, 0.9) is not. Point 2 converged
-    // and meets its loss_ratio bound but its volume is 0.85.
-    const names = ["loss_ratio", "volume"]
-    const kinds: ConstraintKinds = { loss_ratio: "max", volume: "min" }
-    const points = [0, 1, 2].map((i) => makeOnlineFrontierPoint(i, {
-      thresholds: { loss_ratio: 0.6 + i * 0.1, volume: 0.9 },
-      bounds: { loss_ratio: 0.6 + i * 0.1, volume: 0.9 },
-      totals: { loss_ratio: 0.55 + i * 0.1, volume: i === 1 ? 0.85 : 0.95 },
-      lambdas: { loss_ratio: 0.001, volume: 0 },
-    }))
-    const assessments = points.map((point) => assessFrontierPoint(point, names, kinds))
-    expect(assessments.map((a) => a.status)).toEqual(["feasible", "breached", "feasible"])
-    const slicing = sliceFrontier(points, names, ["loss_ratio"], "loss_ratio")
-    expect(discreteTradeOff({ points, slicing, assessments, kinds, index: 0 })).toMatchObject({
-      kind: "unavailable",
-      reason: expect.stringMatching(/next point .* not feasible/),
-    })
-    expect(discreteTradeOff({ points, slicing, assessments, kinds, index: 1 })).toMatchObject({
-      kind: "unavailable",
-      reason: expect.stringMatching(/This point is not feasible/),
-    })
   })
 })

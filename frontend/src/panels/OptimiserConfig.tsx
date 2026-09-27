@@ -110,7 +110,6 @@ export default function OptimiserConfig({
   const scenarioValue = configField(config, "scenario_value", "scenario_value")
   const maxIter = configField(config, "max_iter", 50)
   const tolerance = configField(config, "tolerance", 1e-6)
-  const chunkSize = configField(config, "chunk_size", 500_000)
   const maxCdIterations = configField(config, "max_cd_iterations", 10)
   const cdTolerance = configField(config, "cd_tolerance", 1e-3)
   const frontierSteps = configField(config, "frontier_steps", 15)
@@ -601,28 +600,8 @@ export default function OptimiserConfig({
   } else if (pane === "solve") {
     paneBody = (
       <>
-        <OptimiserSolveStatus
-          isStale={isStale}
-          onSolve={handleSolve}
-          onStop={solveJob ? handleStop : undefined}
-          stopping={stopping}
-          solving={solving}
-          canSolve={canSolve}
-          issues={solveIssues}
-          warnings={solveWarnings}
-          onReviewPane={(target) => setOptimiserPane(nodeId, target)}
-          accentColor={accentColor}
-          estimate={solveEstimate}
-          progress={solveProgress}
-          error={solveError}
-          terminalMetrics={solveTerminalMetrics}
-          terminalStatus={solveTerminalStatus}
-          result={solveResult}
-          iterationSummary={solveIterationSummary}
-        />
-
         {/* Solver settings */}
-        <section className="space-y-2 pt-2" style={{ borderTop: "1px solid var(--border)" }} aria-labelledby="optimiser-solver-settings-heading">
+        <section className="space-y-2" aria-labelledby="optimiser-solver-settings-heading">
           <h3 id="optimiser-solver-settings-heading" className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             Solver settings
           </h3>
@@ -672,17 +651,28 @@ export default function OptimiserConfig({
               </div>
             </div>
           )}
-          <div>
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Chunk size</label>
-            <CommittedTextField
-              type="number" min={1000} step={10000}
-              value={String(chunkSize)}
-              onCommit={(v) => onUpdate("chunk_size", safeParseInt(v, 500_000))}
-              className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-              style={inputStyle}
-            />
-          </div>
         </section>
+
+        {/* The estimate, readiness and the Optimise button follow the settings they run with */}
+        <OptimiserSolveStatus
+          isStale={isStale}
+          onSolve={handleSolve}
+          onStop={solveJob ? handleStop : undefined}
+          stopping={stopping}
+          solving={solving}
+          canSolve={canSolve}
+          issues={solveIssues}
+          warnings={solveWarnings}
+          onReviewPane={(target) => setOptimiserPane(nodeId, target)}
+          accentColor={accentColor}
+          estimate={solveEstimate}
+          progress={solveProgress}
+          error={solveError}
+          terminalMetrics={solveTerminalMetrics}
+          terminalStatus={solveTerminalStatus}
+          result={solveResult}
+          iterationSummary={solveIterationSummary}
+        />
       </>
     )
   } else {

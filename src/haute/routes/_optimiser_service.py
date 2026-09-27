@@ -112,7 +112,6 @@ from haute.routes._optimiser_input import (
     AutoRangeValueCheck,
     OptimiserSetupError,
     _execution_stage,
-    _explicit_chunk_size_from_config,
     _find_optimiser_node,
     _optimiser_side_input_ids,
     _optimiser_solve_required_columns_by_node,
@@ -127,6 +126,7 @@ from haute.routes._optimiser_input import (
     resolve_analysis_frame,
     resolve_analysis_plan,
     resolve_data_input_frame,
+    scenario_step_count,
     validate_and_project,
     validate_and_project_auto_range,
     write_solver_input,
@@ -3216,7 +3216,6 @@ class OptimiserSolveService:
 
         try:
             _solve_timeout_from_config(config)
-            _explicit_chunk_size_from_config(config)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
@@ -3710,23 +3709,32 @@ class OptimiserSolveService:
         job_id: str,
         *,
         execution_context: ExecutionContext | None = None,
+        n_steps: int | None = None,
     ) -> QuoteGrid:
         """Build the solver's QuoteGrid from a written or borrowed solver-input parquet.
 
-        The job records the grid's ``scenario_grid`` as soon as it exists.
+        The job records the grid's ``scenario_grid`` as soon as it exists. A
+        caller that already read the file's step count passes it as *n_steps*.
         """
         with (
             self._recorded_setup_failures(job_id, execution_context),
             grid_construction_failures(node_id),
             _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
         ):
-            decision = grid_chunk_decision(config, input_path)
+            if n_steps is None:
+                n_steps = scenario_step_count(
+                    Path(input_path),
+                    str(config.get("scenario_index", "scenario_index")),
+                    execution_context,
+                )
+            decision = grid_chunk_decision(n_steps)
             self._record_setup_chunking(job_id, "optimiser_grid", decision.provenance)
             grid = build_quote_grid(
                 input_path,
                 constraint_cols,
                 config,
                 decision.chunk_size,
+                n_steps=n_steps,
                 execution_context=execution_context,
             )
             self._record_scenario_grid(job_id, grid)

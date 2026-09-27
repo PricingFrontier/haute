@@ -1435,12 +1435,13 @@ describe("OptimiserConfig", () => {
       renderConfig(makeProps())
       expect(screen.getByRole("heading", { name: "Solver settings" })).toBeInTheDocument()
       expect(screen.queryByText("Advanced")).not.toBeInTheDocument()
-      expect(screen.getByText("Chunk size")).toBeInTheDocument()
+      expect(screen.getByText("Max iterations")).toBeInTheDocument()
+      expect(screen.getByText("Tolerance")).toBeInTheDocument()
     })
 
     it("offers no history toggle: every solve records its history", () => {
       renderConfig(makeProps())
-      expect(screen.getByDisplayValue("500000")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "Solver settings" })).toBeInTheDocument()
       expect(screen.queryByText("Record history")).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: /^(On|Off)$/ })).not.toBeInTheDocument()
     })
@@ -1740,14 +1741,17 @@ describe("OptimiserConfig", () => {
   describe("Solver settings extended", () => {
     withPane("solve")
 
-    it("changing chunk_size calls onUpdate", () => {
-      const props = makeProps()
-      renderConfig(props)
-      const input = screen.getByDisplayValue("500000")
-      fireEvent.change(input, { target: { value: "100000" } })
-      expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
-      fireEvent.blur(input)
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
+    it("has no chunk size: the solve reads in the pipeline settings' chunk size", () => {
+      renderConfig(makeProps())
+      expect(screen.queryByText("Chunk size")).not.toBeInTheDocument()
+      expect(screen.queryByDisplayValue("500000")).not.toBeInTheDocument()
+    })
+
+    it("puts the Optimise button after the solver settings it runs with", () => {
+      renderConfig(makeProps())
+      const settings = screen.getByRole("heading", { name: "Solver settings" })
+      const optimise = screen.getByRole("button", { name: /Optimise/ })
+      expect(settings.compareDocumentPosition(optimise) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
   })
 

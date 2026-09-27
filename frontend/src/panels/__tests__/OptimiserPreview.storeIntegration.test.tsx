@@ -193,8 +193,7 @@ describe("OptimiserPreview store integration", () => {
     expect(data).not.toBeNull()
     render(<OptimiserPreview data={data!} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
-    fireEvent.click(screen.getByText("Summary"))
-
+    // A frontier result's summary sits in its Frontier pane.
     expect(screen.getByText("Materialising selected point rates...")).toBeInTheDocument()
     expect(await screen.findByTestId("ratebook-impact-beeswarm")).toBeInTheDocument()
     expect(screen.getByText("Mechanical Price Effect")).toBeInTheDocument()
@@ -260,7 +259,9 @@ describe("OptimiserPreview store integration", () => {
     expect(screen.getByText("Materialising selected point rates...")).toBeInTheDocument()
     expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(1)
 
-    fireEvent.click(screen.getByText("Frontier"))
+    // Leaving for a pane that does not plot the rates aborts the request;
+    // returning retries it.
+    fireEvent.click(screen.getByText("Convergence"))
     fireEvent.click(screen.getByText("Rates"))
 
     expect(await screen.findAllByText("North")).not.toHaveLength(0)
@@ -647,7 +648,7 @@ describe("OptimiserPreview store integration", () => {
       openQuotes()
       expect(await screen.findByText("Q001")).toBeInTheDocument()
 
-      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
       openQuotes()
 
       expect(screen.getByText("Q001")).toBeInTheDocument()

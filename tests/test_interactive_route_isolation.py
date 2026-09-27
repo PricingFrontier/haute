@@ -636,3 +636,28 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
     assert body["quote_count"] == 2
     assert body["scenarios_per_quote_max"] == 3
     assert body["expanded_row_count"] == 5
+
+
+def test_an_unclassified_remote_failure_is_logged_with_what_the_worker_raised() -> None:
+    """The client gets a generic 500; the server log keeps the worker's message and traceback."""
+    import structlog.testing
+
+    from haute.routes.pipeline import _raise_interactive_remote_http_error
+
+    remote = _remote_error(
+        remote_module="builtins",
+        remote_type="PermissionError",
+        public_payload=None,
+    )
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(HTTPException) as exc_info:
+        _raise_interactive_remote_http_error(remote, operation="pipeline_preview")
+
+    assert exc_info.value.status_code == 500
+    assert "private child detail" not in str(exc_info.value.detail)
+    (event,) = [
+        entry for entry in captured if entry["event"] == "interactive_worker_remote_failure"
+    ]
+    assert event["remote_type"] == "PermissionError"
+    assert event["remote_message"] == "private child detail"
+    assert event["remote_traceback"] == "private traceback"

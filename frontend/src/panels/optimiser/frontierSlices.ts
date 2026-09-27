@@ -64,10 +64,6 @@ export interface FrontierSliceChoice {
   selection: number | null
 }
 
-export type DiscreteTradeOff =
-  | { kind: "value"; value: number; nextIndex: number }
-  | { kind: "unavailable"; reason: string }
-
 function requireNumber(map: Record<string, number>, name: string, field: string, index: number | null): number {
   const value = map[name]
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -217,52 +213,4 @@ export function asSolvedOnSlice(
     if (typeof solved !== "number") throw new Error(`The solve reports no bound for ${name}`)
     return solved === representative.bounds[name]
   })
-}
-
-/**
- * The objective change per unit of the x bound relaxed, to the next point in
- * the relaxing direction of the same slice: raising a max bound, lowering a
- * min one. The denominator is the bound, which the reviewer controls, not the
- * achieved total. It exists only between two feasible points with different
- * bounds; it is a discrete step in which other totals may also move, never a
- * check of λ.
- */
-export function discreteTradeOff({
-  points,
-  slicing,
-  assessments,
-  kinds,
-  index,
-}: {
-  points: FrontierPoint[]
-  slicing: FrontierSlicing
-  assessments: FrontierPointAssessment[]
-  kinds: ConstraintKinds
-  index: number
-}): DiscreteTradeOff {
-  const xName = slicing.xName
-  const kind = kinds[xName]
-  if (kind === undefined) throw new Error(`No constraint kind for frontier constraint ${xName}`)
-  if (assessments[index].status !== "feasible") {
-    return { kind: "unavailable", reason: "This point is not feasible." }
-  }
-  const { previous, next } = sliceNeighbours(slicing, index)
-  const nextIndex = kind === "max" ? next : previous
-  if (nextIndex === null) {
-    return { kind: "unavailable", reason: `No point in this slice relaxes the ${xName} bound further.` }
-  }
-  if (assessments[nextIndex].status !== "feasible") {
-    return { kind: "unavailable", reason: `The next point in this slice (point ${nextIndex + 1}) is not feasible.` }
-  }
-  const bound = points[index].bounds[xName]
-  const nextBound = points[nextIndex].bounds[xName]
-  const relaxation = kind === "max" ? nextBound - bound : bound - nextBound
-  if (relaxation === 0) {
-    return { kind: "unavailable", reason: `The next point in this slice has the same ${xName} bound.` }
-  }
-  return {
-    kind: "value",
-    value: (points[nextIndex].total_objective - points[index].total_objective) / relaxation,
-    nextIndex,
-  }
 }

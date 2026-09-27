@@ -37,6 +37,20 @@ describe("formatChartTicks", () => {
     }
   })
 
+  it("never asks for more digits than a double holds when ticks differ only by float noise", () => {
+    // Ticks a few ulps apart, as an unpadded domain over float-noise values
+    // gives: Intl refuses more than 21 significant digits, and labelling
+    // used to raise its RangeError. Standard, compact and exponential axes.
+    for (const value of [0.5, 1_424_952.8829840268, 0.00001234]) {
+      const ticks = [value, nextDouble(value), nextDouble(nextDouble(value))]
+      const labels = formatChartTicks(ticks)
+      expect(labels).toHaveLength(3)
+      for (const label of labels) {
+        expect(label.replace(/[^0-9]/g, "").replace(/^0+/, "").length).toBeLessThanOrEqual(16)
+      }
+    }
+  })
+
   it("labels a narrow range with distinct numbers at one precision", () => {
     // formatChartNumber labels each of these ticks "107".
     expect(formatChartTicks(chartTicks(107, 107.3, 5))).toEqual(["107.00", "107.08", "107.15", "107.23", "107.30"])
@@ -91,7 +105,25 @@ describe("chartDomain", () => {
   it("can include zero", () => {
     expect(chartDomain([10, 20], true)[0]).toBeLessThan(0)
   })
+
+  it("pads a series whose spread is float noise like a constant one", () => {
+    const value = 1_424_952.8829840268
+    const flat = chartDomain([value, nextDouble(value), nextDouble(nextDouble(value))])
+    const [constantLow, constantHigh] = chartDomain([value])
+    expect(flat[0]).toBeCloseTo(constantLow, 6)
+    expect(flat[1]).toBeCloseTo(constantHigh, 6)
+    // Its padded axis labels at an ordinary precision.
+    expect(formatChartTicks(chartTicks(...flat, 5))).toEqual(["1.31M", "1.37M", "1.42M", "1.48M", "1.54M"])
+  })
 })
+
+/** The next representable double above a positive value. */
+function nextDouble(value: number): number {
+  const buffer = new Float64Array([value])
+  const bits = new BigInt64Array(buffer.buffer)
+  bits[0] += 1n
+  return buffer[0]
+}
 
 describe("chartTicks", () => {
   it("spaces ticks evenly and includes both ends", () => {

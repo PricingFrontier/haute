@@ -835,7 +835,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "candidate_min",
                 "candidate_steps",
                 "cd_tolerance",
-                "chunk_size",
                 "constraints",
                 "factor_columns",
                 "frontier_ranges",

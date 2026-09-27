@@ -145,7 +145,11 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
     """Build the grid, solve and finalize; keep the native state here, return the rest."""
     from haute._sandbox import set_project_root
     from haute.routes._job_store import get_job_store
-    from haute.routes._optimiser_input import forecast_resident_grid_bytes, grid_chunk_decision
+    from haute.routes._optimiser_input import (
+        forecast_resident_grid_bytes,
+        grid_chunk_decision,
+        scenario_step_count,
+    )
     from haute.routes._optimiser_outcomes import require_one_row_per_solved_quote
     from haute.routes._optimiser_service import (
         OptimiserSolveService,
@@ -185,19 +189,21 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
         with solver_worker_context():
             _report_stage("Building quote grid", 0.05)
             qid_col = str(config.get("quote_id", "quote_id"))
+            step_col = str(config.get("scenario_index", "scenario_index"))
             columns = [
                 qid_col,
-                str(config.get("scenario_index", "scenario_index")),
+                step_col,
                 str(config.get("scenario_value", "scenario_value")),
                 str(config["objective"]),
                 *request.constraint_cols,
             ]
+            n_steps = scenario_step_count(Path(request.input_path), step_col)
             grid_forecast = forecast_resident_grid_bytes(
                 Path(request.input_path),
                 columns,
                 qid_col,
                 len(request.constraint_cols),
-                grid_chunk_decision(config, request.input_path).chunk_size,
+                grid_chunk_decision(n_steps).chunk_size,
             )
             quote_grid = service._build_grid_from_parquet(
                 request.input_path,
@@ -206,6 +212,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
                 request.node_id,
                 job_id,
                 execution_context=None,
+                n_steps=n_steps,
             )
             if request.quote_analysis_handle is not None:
                 require_one_row_per_solved_quote(request.quote_analysis_handle, quote_grid.n_quotes)

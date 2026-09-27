@@ -261,7 +261,7 @@ describe("FrontierChart", () => {
     expect(labels).toEqual(expect.arrayContaining(["10.0", "20.0", "0", "100"]))
   })
 
-  it("gives a single repeated point a finite scale and one tick per axis", () => {
+  it("centres a single repeated point and spreads distinct ticks across its padded axes", () => {
     const { left, right, top, plotBottom } = FRONTIER_CHART_LAYOUT
     const { container } = renderChart({
       points: slicePoints([[0, 0.5, 5]]),
@@ -270,9 +270,28 @@ describe("FrontierChart", () => {
     const point = screen.getByRole("button", { name: "Select frontier point 1" })
     expect(Number(point.getAttribute("cx"))).toBeCloseTo(left + (WIDTH - left - right) / 2, 6)
     expect(Number(point.getAttribute("cy"))).toBeCloseTo(top + (plotBottom - top) / 2, 6)
-    const tickLabels = Array.from(container.querySelectorAll("svg text"))
-      .map((text) => text.textContent)
-      .filter((text) => text === "5" || text === "0.5")
-    expect(tickLabels).toEqual(["5", "0.5"])
+    const xTicks = Array.from(container.querySelectorAll("svg text"))
+      .filter((text) => Number(text.getAttribute("y")) === plotBottom + 20)
+    expect(xTicks.length).toBeGreaterThan(1)
+    expect(new Set(xTicks.map((text) => text.getAttribute("x"))).size).toBe(xTicks.length)
+    expect(new Set(xTicks.map((text) => text.textContent)).size).toBe(xTicks.length)
+  })
+
+  it("spreads the ticks of a series flat but for float noise instead of stacking them", () => {
+    const value = 1_424_952.8829840268
+    const next = (x: number) => {
+      const buffer = new Float64Array([x])
+      new BigInt64Array(buffer.buffer)[0] += 1n
+      return buffer[0]
+    }
+    const { container } = renderChart({
+      points: slicePoints([[0, value, 5], [1, next(value), 6], [2, next(next(value)), 7]]),
+      asSolved: { x: value, y: 5, onSlice: true },
+    })
+    const { plotBottom } = FRONTIER_CHART_LAYOUT
+    const xTicks = Array.from(container.querySelectorAll("svg text"))
+      .filter((text) => Number(text.getAttribute("y")) === plotBottom + 20)
+    const positions = xTicks.map((text) => Number(text.getAttribute("x")))
+    expect(Math.max(...positions) - Math.min(...positions)).toBeGreaterThan(100)
   })
 })
