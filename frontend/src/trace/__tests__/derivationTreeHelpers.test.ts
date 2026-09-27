@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import type { TraceColumnDerivation, TraceColumnRead, TraceStep } from "../../types/trace"
-import { buildDerivationTree, derivationSourcesFor, type DerivationTreeNode } from "../derivationTreeHelpers"
+import {
+  buildDerivationTree,
+  derivationSourcesFor,
+  substitutionRestatesValue,
+  type DerivationTreeNode,
+} from "../derivationTreeHelpers"
 
 function derivation(
   column: string,
@@ -151,5 +156,19 @@ describe("buildDerivationTree", () => {
       ["BurnCost", 0, "Its inputs are too deep to show here."],
       ["premium", 0, "Its inputs are too deep to show here."],
     ])
+  })
+})
+
+describe("substitutionRestatesValue", () => {
+  it.each([
+    ["180.0", 180, true],
+    ["528.09", 528.0900268554688, true],
+    ["-2.5e-3", -0.0025, true],
+    ["792.135 - 528.09", 264.045, false],
+    ["528.09", 529, false],
+    ['"south"', "south", false],
+    [null, 180, false],
+  ])("%s restating %s is %s", (substituted, value, expected) => {
+    expect(substitutionRestatesValue(substituted, value)).toBe(expected)
   })
 })

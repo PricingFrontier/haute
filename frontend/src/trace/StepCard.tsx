@@ -9,7 +9,7 @@ import { formatExpression } from "../utils/formatTrace"
 import { traceValuePresentation } from "./traceFormatting"
 import CalculationHero from "./CalculationHero"
 import WaterfallErrorAlert from "./WaterfallErrorAlert"
-import { isTraceOriginStep } from "./traceOrigins"
+import { isTraceOriginStep, isTraceSourceNodeType } from "./traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
 import { NodeDetailBlock } from "./NodeDetailBlock"
 import { ComputedHere } from "./DerivationTree"
@@ -130,6 +130,17 @@ export function StepCard({
     derivation.expression_text &&
     !(derivation.column === tracedColumn && (step.expression != null || step.calculation != null)),
   )
+  // The value table shows what the step did: the traced column and the columns it
+  // changed, not the ones it passed through. A source "adds" every column it loads,
+  // so in a column trace it shows only those the traced value uses. A column the
+  // card already explains under "Computed here" is not repeated.
+  const explainedHere = new Set(computedHere.map((derivation) => derivation.column))
+  const tableColumns = allOutputCols.filter((col) => {
+    if (explainedHere.has(col)) return false
+    if (col === tracedColumn) return true
+    if (tracedColumn && isTraceSourceNodeType(step.node_type)) return step.contributed_columns.includes(col)
+    return columns_added.includes(col) || columns_modified.includes(col)
+  })
   const showColumnValuesTable = !step.expression &&
     !step.calculation &&
     !richNodeDetail &&
@@ -338,7 +349,7 @@ export function StepCard({
 
           {/* Column values table (shown when no richer node-specific detail exists) */}
           {showColumnValuesTable && <div className="space-y-0.5">
-            {allOutputCols.map((col) => {
+            {tableColumns.map((col) => {
               const isAdded = columns_added.includes(col)
               const isModified = columns_modified.includes(col)
               const isRemoved = columns_removed.includes(col)

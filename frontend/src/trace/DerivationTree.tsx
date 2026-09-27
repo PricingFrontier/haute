@@ -4,7 +4,7 @@ import type { TraceColumnDerivation } from "../types/trace"
 import { ExpressionChainRowContentView } from "./ExpressionChain"
 import { formatDisplayExpression } from "./traceFormatting"
 import { evaluatedValue, notComputableNote } from "./traceHelpers"
-import { derivationSourceLabel, type DerivationTreeNode } from "./derivationTreeHelpers"
+import { derivationSourceLabel, substitutionRestatesValue, type DerivationTreeNode } from "./derivationTreeHelpers"
 
 // ---------------------------------------------------------------------------
 // DerivationTree — how a value in the trace was calculated, down to the values
@@ -23,7 +23,7 @@ function DerivationRowContent({ node }: { node: DerivationTreeNode }) {
     <ExpressionChainRowContentView
       column={node.column}
       formulaText={node.expressionText ? formatDisplayExpression(node.expressionText).text : null}
-      substitutedText={displaySubstituted(node.substitutedText)}
+      substitutedText={substitutionRestatesValue(node.substitutedText, node.value) ? null : displaySubstituted(node.substitutedText)}
       value={valueKnown ? node.value : "?"}
       source={derivationSourceLabel(node)}
       note={node.note}
@@ -81,18 +81,21 @@ export function ComputedHere({ derivations }: { derivations: TraceColumnDerivati
       <div style={{ color: "var(--text-muted)", fontSize: 10, fontFamily: "inherit" }} className="font-semibold uppercase">
         Computed here
       </div>
-      {derivations.map((derivation) => (
+      {derivations.map((derivation) => {
+        const value = evaluatedValue(derivation, undefined)
+        return (
         <div key={derivation.column} style={{ paddingLeft: 8 }}>
           <ExpressionChainRowContentView
             column={derivation.column}
             formulaText={derivation.expression_text ? formatDisplayExpression(derivation.expression_text).text : null}
-            substitutedText={displaySubstituted(derivation.substituted_text)}
-            value={evaluatedValue(derivation, undefined)}
+            substitutedText={substitutionRestatesValue(derivation.substituted_text, value) ? null : displaySubstituted(derivation.substituted_text)}
+            value={value}
             source={null}
             note={derivation.error ?? notComputableNote(derivation)}
           />
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

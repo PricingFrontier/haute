@@ -804,6 +804,77 @@ describe("TracePanel", () => {
     expect(computedHere).not.toHaveTextContent("price_adjustment =")
   })
 
+  it("lists what a step changed, not the columns it passed through", () => {
+    const burnCost = {
+      column: "BurnCost",
+      expression_text: "premium",
+      substituted_text: "180.0",
+      result_value: 180,
+      not_computable_reason: null,
+      result_source: null,
+      reads: [{ column: "premium", sources: [{ node_id: "quotes", column: "premium", before_code: false }] }],
+      error: null,
+      error_type: null,
+    }
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "fill_na",
+          column: "profit",
+          steps: [
+            makeStep({
+              node_id: "quotes",
+              node_name: "quotes",
+              node_type: "dataInput",
+              schema_diff: { columns_added: ["first_name", "postcode", "premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+              input_values: {},
+              output_values: { first_name: "Finley", postcode: "PO14 3EZ", premium: 180 },
+              contributed_columns: ["premium"],
+            }),
+            makeStep({
+              node_id: "fill_na",
+              node_name: "fill_na",
+              schema_diff: {
+                columns_added: ["BurnCost"],
+                columns_removed: [],
+                columns_modified: ["SaleFlag"],
+                columns_passed: ["first_name", "postcode", "premium"],
+              },
+              input_values: { first_name: "Finley", postcode: "PO14 3EZ", premium: 180, SaleFlag: null },
+              output_values: { first_name: "Finley", postcode: "PO14 3EZ", premium: 180, SaleFlag: 0, BurnCost: 180 },
+              contributed_columns: ["BurnCost"],
+              derivations: [burnCost],
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const expand = (nodeId: string) => {
+      const card = screen.getByTestId(`trace-step-card-${nodeId}`)
+      if (!within(card).queryByTestId(`trace-step-body-${nodeId}`)) {
+        fireEvent.click(within(card).getAllByRole("button")[0])
+      }
+      return within(card).getByTestId(`trace-step-body-${nodeId}`)
+    }
+
+    const fillNa = expand("fill_na")
+    expect(fillNa).toHaveTextContent("SaleFlag")
+    expect(fillNa).toHaveTextContent("3 passed through")
+    expect(within(fillNa).queryByText("first_name")).not.toBeInTheDocument()
+    expect(within(fillNa).queryByText("postcode")).not.toBeInTheDocument()
+    // BurnCost is explained under "Computed here", once, without restating 180.
+    expect(within(fillNa).getAllByText("BurnCost")).toHaveLength(1)
+    expect(within(fillNa).getByTestId("trace-computed-here")).not.toHaveTextContent("180.0")
+
+    // A source shows only the loaded columns the traced value uses.
+    const quotes = expand("quotes")
+    expect(within(quotes).getByText("premium")).toBeInTheDocument()
+    expect(within(quotes).queryByText("first_name")).not.toBeInTheDocument()
+    expect(quotes).toHaveTextContent("+3 added")
+  })
+
   it("omits unrelated optimiser input branches from the focused ratebook trace", () => {
     render(
       <TracePanel
@@ -1136,8 +1207,11 @@ describe("TracePanel", () => {
     expect(screen.queryByText("business_use")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText("batch_quotes").closest("button") as HTMLElement)
-    expect(screen.getByTestId("trace-step-body-batch_quotes")).toBeInTheDocument()
-    expect(screen.getByText("business_use")).toBeInTheDocument()
+    const body = screen.getByTestId("trace-step-body-batch_quotes")
+    // Expanded, it lists the loaded column the value uses, not every column loaded.
+    expect(within(body).getByText("annual_mileage")).toBeInTheDocument()
+    expect(within(body).queryByText("business_use")).not.toBeInTheDocument()
+    expect(body).toHaveTextContent("+5 added")
   })
 
   it("renders source-origin columns with the source node instead of computed", () => {

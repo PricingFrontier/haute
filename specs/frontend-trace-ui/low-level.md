@@ -96,7 +96,12 @@
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
    data present. The expanded body also lists, under "Computed here", the step's formulas for
    the other columns the traced value depends on (the traced column's own formula is shown
-   above it when the step has one).
+   above it when the step has one), leaving out a substituted line that only restates the
+   value (a formula copying a column). Its value table lists what the step did, not every
+   column of its row: the traced column and the columns it added or modified, except one
+   already under "Computed here"; a source, which adds every column it loads, lists in a
+   column trace only the columns the traced value uses. The added/modified/passed-through
+   counts still say what is not listed, and exports keep the full rows.
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.

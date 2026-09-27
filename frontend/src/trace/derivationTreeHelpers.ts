@@ -206,3 +206,15 @@ export function derivationSourceLabel(node: DerivationTreeNode): string | null {
       return node.nodeId ? stepLabel(node) : null
   }
 }
+
+/**
+ * Whether a formula's substituted text only restates its value, as a formula
+ * that copies a column does (`BurnCost = premium` substitutes to `180.0`).
+ * Compared within float32 precision, so a Float32 column's digits still match.
+ */
+export function substitutionRestatesValue(substituted: string | null, value: unknown): boolean {
+  if (!substituted || typeof value !== "number" || !Number.isFinite(value)) return false
+  const text = substituted.trim()
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(text)) return false
+  return Math.abs(Number(text) - value) <= 1e-6 * Math.max(1, Math.abs(value))
+}
