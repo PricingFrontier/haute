@@ -4,6 +4,7 @@ import {
   modelScoreTitle,
   modelScorePrediction,
   modelScoreFeatureColumns,
+  modelScoreLinkedPrediction,
   resolveContributionFeatureValue,
 } from "../modelScoreHelpers"
 import type {
@@ -170,5 +171,25 @@ describe("resolveContributionFeatureValue", () => {
       hasValue: false,
       value: undefined,
     })
+  })
+})
+
+describe("modelScoreLinkedPrediction", () => {
+  it.each([
+    [{ link: "logit", prediction_value: 0.25 }, { inverseLink: "inverse logit", value: 0.25 }],
+    [{ link: "log", prediction_value: 120 }, { inverseLink: "exp", value: 120 }],
+    [{ link_function: "probit", model_prediction_value: 0.4 }, { inverseLink: "inverse probit", value: 0.4 }],
+  ])("names the inverse link of %o", (explanation, expected) => {
+    expect(modelScoreLinkedPrediction(explanation as ModelScoreExplanationDetail)).toEqual(expected)
+  })
+
+  it.each([
+    ["no explanation", undefined],
+    ["no link", { prediction_value: 0.25 }],
+    ["identity link", { link: "identity", prediction_value: 0.25 }],
+    ["no response value", { link: "logit", prediction_value: null }],
+    ["non-finite response value", { link: "log", prediction_value: Number.POSITIVE_INFINITY }],
+  ])("returns null with %s", (_label, explanation) => {
+    expect(modelScoreLinkedPrediction(explanation as ModelScoreExplanationDetail | undefined)).toBeNull()
   })
 })

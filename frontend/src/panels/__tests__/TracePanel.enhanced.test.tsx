@@ -692,7 +692,7 @@ describe("TracePanel - Node Detail", () => {
     expect(screen.queryByText(/^computed$/i)).not.toBeInTheDocument()
   })
 
-  it("uses RustyStats contribution totals rather than response predictions in ladders", () => {
+  it("ends a GLM ladder at the linear predictor, then applies the inverse link for the prediction", () => {
     render(
       <TracePanel
         trace={makeTrace({
@@ -732,6 +732,8 @@ describe("TracePanel - Node Detail", () => {
                 explanation: {
                   method: "rustystats_glm_contributions",
                   status: "ok",
+                  family: "binomial",
+                  link: "logit",
                   output_space: "linear_predictor",
                   prediction_space: "response",
                   base_value: 0.1,
@@ -757,10 +759,71 @@ describe("TracePanel - Node Detail", () => {
 
     const ladder = screen.getByLabelText("Model score contribution ladder")
     const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[2]).toHaveTextContent("Linear predictor")
+    expect(rows[2]).toHaveTextContent("0.3")
+    expect(rows[2]).not.toHaveTextContent("Prediction")
+    expect(rows[2]).not.toHaveTextContent("0.57")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("conversion_prediction")
+    expect(rows[3]).toHaveTextContent("inverse logit")
+    expect(rows[3]).toHaveTextContent("0.57")
+  })
+
+  it("keeps an identity-link GLM ladder ending at the prediction", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "severity_score",
+          column: "severity",
+          output_value: 1.25,
+          steps: [
+            makeStep({
+              node_id: "severity_score",
+              node_name: "Severity GLM",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["severity"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              input_values: { age: 40 },
+              output_values: { age: 40, severity: 1.25 },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 1.25,
+                prediction_column: "severity",
+                feature_columns: ["age"],
+                feature_values: { age: 40 },
+                explanation: {
+                  method: "rustystats_glm_contributions",
+                  status: "ok",
+                  family: "gaussian",
+                  link: "identity",
+                  output_space: "linear_predictor",
+                  prediction_space: "response",
+                  base_value: 1,
+                  prediction_from_contributions: 1.25,
+                  prediction_value: 1.25,
+                  contributions: [{ feature: "age", feature_value: 40, contribution: 0.25, rank: 1 }],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
     expect(rows).toHaveLength(3)
     expect(rows[2]).toHaveTextContent("Prediction")
-    expect(rows[2]).toHaveTextContent("0.3")
-    expect(rows[2]).not.toHaveTextContent("0.57")
+    expect(rows[2]).toHaveTextContent("severity")
+    expect(rows[2]).toHaveTextContent("1.25")
+    expect(within(ladder).queryByText("Linear predictor")).not.toBeInTheDocument()
+    expect(within(ladder).queryByText(/inverse/)).not.toBeInTheDocument()
   })
 
   it("renders CatBoost SHAP contributions as a running score ladder", () => {

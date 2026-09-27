@@ -26,6 +26,23 @@ export function modelScorePrediction(detail: ModelScoreNodeDetail): { hasPredict
   return { hasPrediction: false, value: undefined }
 }
 
+const INVERSE_LINK_LABELS: Record<string, string> = { log: "exp", logit: "inverse logit" }
+
+/**
+ * The response-scale prediction of a link-function model, whose contribution
+ * ladder sums to the linear predictor. Null when the ladder already ends on the
+ * response scale (identity link, or no link reported).
+ */
+export function modelScoreLinkedPrediction(
+  explanation: ModelScoreExplanationDetail | undefined,
+): { inverseLink: string; value: number } | null {
+  const link = explanation?.link ?? explanation?.link_function
+  if (!link || link === "identity") return null
+  const value = explanation?.prediction_value ?? explanation?.model_prediction_value
+  if (typeof value !== "number" || !Number.isFinite(value)) return null
+  return { inverseLink: INVERSE_LINK_LABELS[link] ?? `inverse ${link}`, value }
+}
+
 export function modelScoreFeatureColumns(detail: ModelScoreNodeDetail): string[] {
   if (Array.isArray(detail.feature_columns) && detail.feature_columns.length > 0) return detail.feature_columns
   return []
