@@ -1,4 +1,4 @@
-import type { OptimiserApplyNodeDetail, TraceNodeDetail } from "../types/trace"
+import type { OptimiserApplyNodeDetail, TraceNodeDetail, TraceStep } from "../types/trace"
 import {
   TraceDetailPanel,
 } from "./TraceDetail"
@@ -26,10 +26,13 @@ export function NodeDetailBlock({
   detail,
   tracedColumn,
   showBandingSummary = true,
+  step,
 }: {
   detail: TraceNodeDetail
   tracedColumn?: string | null
   showBandingSummary?: boolean
+  /** The step the detail belongs to, for details that follow its reads. */
+  step?: TraceStep
 }) {
   const detailType = detail.detail_type as string | undefined
 
@@ -47,7 +50,7 @@ export function NodeDetailBlock({
       return <OptimiserApplyErrorDetail detail={optimiserDetail} />
     }
     if (optimiserDetail.mode === "online") {
-      return <OptimiserOnlineDetail detail={optimiserDetail} />
+      return <OptimiserOnlineDetail detail={optimiserDetail} step={step} />
     }
     if (optimiserDetail.mode === "ratebook") {
       return <OptimiserRatebookDetail detail={optimiserDetail} />

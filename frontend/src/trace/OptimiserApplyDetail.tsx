@@ -1,7 +1,12 @@
+import { useContext } from "react"
 import type {
   OptimiserApplyNodeDetail,
   OptimiserApplyRatebookFactorDetail,
+  TraceStep,
 } from "../types/trace"
+import { DerivationTree } from "./DerivationTree"
+import { buildDerivationTree, derivationSourcesFor } from "./derivationTreeHelpers"
+import { TraceStepsContext } from "./traceContext"
 import { formatTraceValue } from "./traceFormatting"
 import { CHART_COLORS } from "../theme/colors"
 import {
@@ -21,6 +26,7 @@ import {
   optimiserCandidateGridClass,
   optimiserCandidateIsSelected,
   optimiserChartPath,
+  optimiserConstraintColumns,
   optimiserConstraintNames,
   optimiserDisplayCandidates,
   optimiserScoreComparison,
@@ -30,8 +36,56 @@ import {
 
 const formatValue = formatTraceValue
 
-export function OptimiserOnlineDetail({ detail }: {
+/**
+ * How the score's inputs were calculated: the objective and each constraint,
+ * followed from where the optimiser read them down to the loaded values.
+ */
+function OptimiserInputDerivations({ step, objectiveColumn, constraintColumns, outputColumn }: {
+  step: TraceStep
+  objectiveColumn: string | null | undefined
+  constraintColumns: string[]
+  outputColumn: string
+}) {
+  const steps = useContext(TraceStepsContext)
+  const inputs = [
+    ...(objectiveColumn ? [{ role: "Objective", column: objectiveColumn }] : []),
+    ...constraintColumns.map((column) => ({ role: "Constraint", column })),
+  ].map((input) => ({
+    ...input,
+    sources: derivationSourcesFor(step, outputColumn, input.column),
+  }))
+  if (steps.length === 0 || inputs.every((input) => input.sources.length === 0)) return null
+  return (
+    <TraceDetailSection title="How the score's inputs were calculated">
+      <div className="space-y-2" data-testid="optimiser-input-derivations">
+        {inputs.map(({ role, column, sources }) => (
+          <div key={`${role}-${column}`} className="space-y-1">
+            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              {role}: <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{column}</span>
+              {sources.length > 1 ? ` (one of ${sources.length} possible sources)` : ""}
+            </div>
+            {sources.length === 0 ? (
+              <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                The trace found no node that computed it.
+              </div>
+            ) : sources.map((source) => (
+              <DerivationTree
+                key={`${source.node_id}:${source.column}`}
+                root={buildDerivationTree(steps, source)}
+                label={`How ${column} was calculated`}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </TraceDetailSection>
+  )
+}
+
+export function OptimiserOnlineDetail({ detail, step }: {
   detail: Extract<OptimiserApplyNodeDetail, { mode: "online" }>
+  /** The apply step, whose reads say where the objective and constraints came from. */
+  step?: TraceStep
 }) {
   const candidates = Array.isArray(detail.candidates) ? detail.candidates : []
   const selected = optimiserSelectedCandidate(candidates, detail.selected)
@@ -81,10 +135,11 @@ export function OptimiserOnlineDetail({ detail }: {
             <span className="font-semibold">{formatValue(selected.objective)}</span>
             {selectedLambdaEntries.map(([name, value]) => (
               <span key={name} className="inline-flex min-w-0 items-center gap-1">
-                <span style={{ color: "var(--text-muted)" }}>+</span>
+                {/* The sign is the operator, so the term's magnitude follows it. */}
+                <span style={{ color: "var(--text-muted)" }}>{value < 0 ? "-" : "+"}</span>
                 <span style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>lambda {name}</span>
                 <span style={{ color: value >= 0 ? "var(--delta-positive-text)" : "var(--danger-text)" }}>
-                  {formatSignedValue(value)}
+                  {formatValue(Math.abs(value))}
                 </span>
               </span>
             ))}
@@ -92,6 +147,15 @@ export function OptimiserOnlineDetail({ detail }: {
             <span className="font-semibold" style={{ color: "var(--text-primary)" }}>score {formatValue(selected.decision_score)}</span>
           </div>
         </TraceDetailCallout>
+      )}
+
+      {step && (
+        <OptimiserInputDerivations
+          step={step}
+          objectiveColumn={detail.objective_column}
+          constraintColumns={constraintNames.flatMap((name) => optimiserConstraintColumns(name, detail.constraints?.[name]))}
+          outputColumn={detail.output_column}
+        />
       )}
 
       {points.length > 0 && (

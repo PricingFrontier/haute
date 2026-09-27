@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useContext, useEffect, useRef, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { TraceResult, TraceStep } from "../types/trace"
 import {
@@ -9,9 +9,11 @@ import { formatExpression } from "../utils/formatTrace"
 import { traceValuePresentation } from "./traceFormatting"
 import CalculationHero from "./CalculationHero"
 import WaterfallErrorAlert from "./WaterfallErrorAlert"
-import { isTraceOriginStep } from "./traceOrigins"
+import { isTraceOriginStep, isTraceSourceNodeType } from "./traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
 import { NodeDetailBlock } from "./NodeDetailBlock"
+import { ComputedHere } from "./DerivationTree"
+import { TraceNavigationContext } from "./traceContext"
 import { hasBandingSecondaryDetail, hasRenderableBandingRows } from "./bandingRows"
 import { hasRichRatingStepDetail } from "./ratingStepHelpers"
 import {
@@ -42,6 +44,7 @@ export function StepCard({
   isTargetStep,
   defaultExpanded = false,
   waterfall,
+  focusNonce,
 }: {
   step: TraceStep
   index: number
@@ -49,8 +52,32 @@ export function StepCard({
   isTargetStep?: boolean
   defaultExpanded?: boolean
   waterfall?: TraceResult["waterfall"]
+  /** Changes each time a derivation row's link asks for this card. */
+  focusNonce?: number
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
+  const navigation = useContext(TraceNavigationContext)
+  const cardRef = useRef<HTMLDivElement>(null)
+  // A focus request opens the card and flashes it, also when the card mounts with
+  // one (a link to a card the focused trace hid); the scroll waits for the render.
+  const [seenFocusNonce, setSeenFocusNonce] = useState<number | undefined>(undefined)
+  const [flashing, setFlashing] = useState(false)
+  if (focusNonce !== seenFocusNonce) {
+    setSeenFocusNonce(focusNonce)
+    if (focusNonce !== undefined) {
+      setExpanded(true)
+      setFlashing(true)
+    } else {
+      // Focus moved to another card before the flash ended.
+      setFlashing(false)
+    }
+  }
+  useEffect(() => {
+    if (focusNonce === undefined) return
+    cardRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" })
+    const timer = window.setTimeout(() => setFlashing(false), 1600)
+    return () => window.clearTimeout(timer)
+  }, [focusNonce])
   const accent = nodeTypeColors[step.node_type] || CHART_COLORS.cyan
   const typeLabel = nodeTypeLabels[step.node_type] || "NODE"
   const relevant = step.column_relevant
@@ -124,6 +151,22 @@ export function StepCard({
       )
     ),
   )
+  // The traced column's own formula is already shown above when the step has one.
+  const computedHere = step.derivations.filter((derivation) =>
+    derivation.expression_text &&
+    !(derivation.column === tracedColumn && (step.expression != null || step.calculation != null)),
+  )
+  // The value table shows what the step did: the traced column and the columns it
+  // changed, not the ones it passed through. A source "adds" every column it loads,
+  // so in a column trace it shows only those the traced value uses. A column the
+  // card already explains under "Computed here" is not repeated.
+  const explainedHere = new Set(computedHere.map((derivation) => derivation.column))
+  const tableColumns = allOutputCols.filter((col) => {
+    if (explainedHere.has(col)) return false
+    if (col === tracedColumn) return true
+    if (tracedColumn && isTraceSourceNodeType(step.node_type)) return step.contributed_columns.includes(col)
+    return columns_added.includes(col) || columns_modified.includes(col)
+  })
   const showColumnValuesTable = !step.expression &&
     !step.calculation &&
     !richNodeDetail &&
@@ -131,14 +174,20 @@ export function StepCard({
 
   return (
     <div
+      ref={cardRef}
       className="rounded-lg overflow-hidden transition-opacity"
       data-testid={`trace-step-card-${step.node_id}`}
       data-target-step={isTargetStep || undefined}
       data-relevance={relevant ? "relevant" : "irrelevant"}
+      data-trace-focused={flashing || undefined}
+      onMouseEnter={() => navigation.hoverStep(step.node_id)}
+      onMouseLeave={() => navigation.hoverStep(null)}
       style={{
         border: relevant ? `1px solid ${accent}40` : "1px solid var(--border)",
         background: "var(--bg-elevated)",
         opacity: relevant ? 1 : 0.55,
+        boxShadow: flashing ? "0 0 0 2px var(--accent)" : undefined,
+        transition: "box-shadow 0.3s ease, opacity 0.2s ease",
       }}
     >
       {/* Collapsed header - hover bg driven by Tailwind.  The inline
@@ -173,10 +222,15 @@ export function StepCard({
         {(() => {
           const badge = (() => {
             if (tracedColumn) {
+              // A step off the value's lineage (a joined-in table sharing the
+              // column) neither created nor carried the traced value.
+              if (!relevant) return null
               const diff = step.schema_diff
               if (diff.columns_added.includes(tracedColumn)) return "creates"
               if (diff.columns_modified.includes(tracedColumn)) return "modifies"
-              if (diff.columns_passed.includes(tracedColumn)) return "rows unchanged"
+              // The value is carried unchanged; the step may still expand or
+              // aggregate rows, so nothing is said about rows.
+              if (diff.columns_passed.includes(tracedColumn)) return "value unchanged"
               return null
             }
             return step.row_lineage_type === "passthrough"
@@ -306,9 +360,12 @@ export function StepCard({
             </div>
           )}
 
+          {/* This step's formulas for the other columns the traced value depends on */}
+          <ComputedHere derivations={computedHere} />
+
           {/* Node detail section */}
           {showSecondaryDetail && step.node_detail && (
-            <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} />
+            <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} step={step} />
           )}
 
           {/* Schema changes summary */}
@@ -329,7 +386,7 @@ export function StepCard({
 
           {/* Column values table (shown when no richer node-specific detail exists) */}
           {showColumnValuesTable && <div className="space-y-0.5">
-            {allOutputCols.map((col) => {
+            {tableColumns.map((col) => {
               const isAdded = columns_added.includes(col)
               const isModified = columns_modified.includes(col)
               const isRemoved = columns_removed.includes(col)

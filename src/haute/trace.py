@@ -86,6 +86,7 @@ from haute._trace_correlation import (
     trace_edge_alignment,
     trace_head_prefixes,
 )
+from haute._trace_enrichment import column_derivation as _column_derivation
 from haute._trace_enrichment import (
     detect_row_lineage_type,
     enrich_banding,
@@ -96,7 +97,7 @@ from haute._trace_enrichment import (
     enrich_scenario_expansion,
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
-from haute._trace_lineage import JoinInputs, ValueLineage, trace_value_lineage
+from haute._trace_lineage import ColumnRead, JoinInputs, ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
@@ -164,6 +165,9 @@ class TraceStep:
     column_relevant: bool = True
     # In a column trace, the columns this node computes that the value depends on.
     contributed_columns: list[str] = field(default_factory=list)
+    # For each contributed column: its formula evaluated on this row, and the
+    # columns it read with the nodes that computed them.
+    derivations: list[dict[str, Any]] = field(default_factory=list)
 
     # Expression parsing and enrichment, populated by _enrich_steps.
     expression: dict[str, Any] | None = None
@@ -1352,6 +1356,7 @@ def _execute_trace_core(
             join_inputs=join_inputs,
         )
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map, lineage)
+        _attach_derivations(steps, lineage, node_map, formula_names)
 
     # A node not traced above a seed was never computed for this trace, so no
     # schema says whether it bears on a traced column: it is always reported.
@@ -1955,6 +1960,45 @@ def _prune_to_column_relevance(
     return kept
 
 
+def _attach_derivations(
+    steps: list[TraceStep],
+    lineage: ValueLineage,
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+) -> None:
+    """Explain every column a kept step contributes to the traced value."""
+    for step in steps:
+        step.derivations = [
+            _column_derivation(
+                step,
+                column,
+                node_map,
+                preamble_ns,
+                _reads_payload(lineage.column_reads(step.node_id, column)),
+            )
+            for column in step.contributed_columns
+        ]
+
+
+def _reads_payload(reads: tuple[ColumnRead, ...] | None) -> list[dict[str, Any]] | None:
+    if reads is None:
+        return None
+    return [
+        {
+            "column": read.column,
+            "sources": [
+                {
+                    "node_id": source.node_id,
+                    "column": source.column,
+                    "before_code": source.before_code,
+                }
+                for source in read.sources
+            ],
+        }
+        for read in reads
+    ]
+
+
 def _carries_column(step: TraceStep, column: str) -> bool:
     """Whether *step*'s output holds the traced column."""
     sd = step.schema_diff
@@ -1994,6 +2038,7 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                 "topological_rank": s.topological_rank,
                 "column_relevant": s.column_relevant,
                 "contributed_columns": s.contributed_columns,
+                "derivations": s.derivations,
                 "expression": s.expression,
                 "calculation": s.calculation,
                 "node_detail": s.node_detail,

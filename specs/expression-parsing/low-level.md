@@ -176,7 +176,10 @@ no alias or migration shim; direct test callers use the same current contract.
   over all identifier-like column names, longest-first, and substitutes in one left-to-right pass —
   so a value inserted for one column can never be re-scanned and corrupted by a shorter column
   name's pattern matching inside the inserted text. Non-identifier column names (spaces/special
-  characters) fall back to literal (non-regex) replacement.
+  characters) fall back to literal (non-regex) replacement. Given the traced row's typed frame,
+  a Float32 column's value is shown with its float32 digits (`528.09`, not the widened
+  `528.0900268554688`) by `_display_values`; only the text changes, and the values computed on
+  stay exact.
 - **BOM handling**: `parse_expression`, `parse_expression_chain`, and
   `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
   inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).

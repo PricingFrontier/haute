@@ -105,6 +105,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _traceActive?: boolean
   _traceDimmed?: boolean
   _hoverDimmed?: boolean
+  /** The node a trace card or derivation row points at: ringed on the canvas. */
+  _traceFocused?: boolean
   _traceValue?: unknown
   _traceMotionDisabled?: boolean
   /** Diff status in the read-only comparison view (S11) — drives a ring on the

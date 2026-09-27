@@ -648,7 +648,7 @@ class TestExecuteTrace:
         }
 
         pruned = _prune_to_column_relevance(
-            steps, "premium", parents_of, node_map={}, lineage=ValueLineage(frozenset(), {})
+            steps, "premium", parents_of, node_map={}, lineage=ValueLineage(frozenset(), {}, {})
         )
 
         assert [step.node_id for step in pruned] == [

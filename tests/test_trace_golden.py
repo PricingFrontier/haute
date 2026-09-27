@@ -37,6 +37,19 @@ def _make_trace_result() -> TraceResult:
                 topological_rank=0,
                 column_relevant=True,
                 contributed_columns=["base_rate"],
+                derivations=[
+                    {
+                        "column": "base_rate",
+                        "expression_text": None,
+                        "substituted_text": None,
+                        "result_value": 10.0,
+                        "not_computable_reason": None,
+                        "result_source": None,
+                        "reads": [],
+                        "error": None,
+                        "error_type": None,
+                    }
+                ],
                 expression=None,
                 calculation=None,
                 node_detail=None,
