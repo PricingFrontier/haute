@@ -47,7 +47,7 @@ Haute connects standard tools rather than replacing them:
 | Tool | Role in Haute |
 |---|---|
 | **Python** | Every pipeline is a Python file, with one function per node. |
-| **[Polars](https://pola.rs/)** | The data engine. It works on whole columns across every CPU core, keeps column types strict, and optimises a full pipeline run as one lazy query plan. |
+| **[Polars](https://pola.rs/)** | The data engine: columnar, multi-threaded and strict about types. |
 | **[MLflow](https://mlflow.org/)** | Experiment tracking and the model registry, locally, on your own server or on Databricks. Trained models are logged with their model cards, and pipelines score registered models by version or alias. |
 | **Git** | Version control. Every save in the editor is a commit, so a pipeline's history can be reviewed like any other codebase. |
 | **CatBoost, XGBoost, LightGBM, RustyStats, InterpretML** | Model training (gradient boosting, GLMs and explainable boosting machines), with Optuna for hyperparameter tuning. |
@@ -76,7 +76,15 @@ haute serve
 - **Data.** Parquet, CSV, JSON and Arrow files, plus Excel, Delta Lake, Iceberg and Databricks Unity Catalog through optional packages. Nested JSON or XML quotes are split into flat tables, and responses can be nested JSON.
 - **Reuse.** Group nodes into submodels, and create instances that apply a node's logic to different inputs.
 - **Live and batch.** Source switches send development or batch data through the same logic that prices live quotes.
-- **Fast feedback.** Previews reuse cached results from earlier steps, and per-node timing and memory breakdowns show where a run spends its time.
+
+### A fast, memory-efficient engine
+
+Pipelines run on a highly optimised execution engine built on Polars, so they're very fast and light on memory, even on large datasets.
+
+- **Quick previews.** Previews reuse cached results from earlier steps, and the cache lives on disk, so it survives a restart. Non-Parquet sources are read once into a Parquet snapshot and reused until they change.
+- **One optimised plan for full runs.** Batch runs, scoring and training compile the whole pipeline into a single lazy Polars plan, so unused columns are never read and filters apply as early as possible. Writes stream to disk in chunks wherever the format allows, and one chunk-size setting trades memory for speed.
+- **Memory under control.** Heavy work runs in worker processes with hard memory caps that respect container limits. A run that won't fit is refused before it starts instead of running the machine out of memory, and training works out a safe row limit up front.
+- **Visibility.** Per-node timing and memory breakdowns show where a run spends its time.
 
 ### Explore, model and optimise
 
