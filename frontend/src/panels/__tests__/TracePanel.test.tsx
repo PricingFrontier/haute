@@ -880,12 +880,13 @@ describe("TracePanel", () => {
     // The story's p-3 padding: the landed card sits where the first card does.
     const CARD_GAP = 12
 
-    /** Lays the story out with only `landingCardId`'s card below the fold. */
+    /** Lays the story out with only `landingCardId`'s card below the fold, moving with the scroll. */
     function layOut(landingCardId: string) {
       vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const scrolled = this.closest<HTMLElement>("[data-testid='trace-story']")?.scrollTop ?? 0
         const top = this.dataset.testid === "trace-story"
           ? STORY_TOP
-          : this.dataset.testid === `trace-step-card-${landingCardId}` ? CARD_TOP : 0
+          : this.dataset.testid === `trace-step-card-${landingCardId}` ? CARD_TOP - scrolled : 0
         return DOMRect.fromRect({ x: 0, y: top, width: 400, height: 50 })
       })
     }
@@ -896,7 +897,8 @@ describe("TracePanel", () => {
       const story = screen.getByTestId("trace-story")
       expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
 
-      story.scrollTop = 0
+      // A trace fast enough to show no loading state arrives in the scrolled panel.
+      story.scrollTop = 300
       rerender(<TracePanel trace={makeTrace({ row_index: 1 })} onClose={vi.fn()} />)
       expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
     })

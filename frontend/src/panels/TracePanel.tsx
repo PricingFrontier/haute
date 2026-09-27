@@ -150,7 +150,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   )
   // A trace opens on the clicked node's card, the last step, rather than at the
   // pipeline's first; when the focused story hides that node (it only carries the
-  // value), on the last card shown. Only a new trace moves the story, and only it.
+  // value), on the last card shown. Only a new trace moves the story, and it moves
+  // nothing else: no smooth scrollIntoView, which would also scroll the panel's parents.
   const landingNodeId = useMemo(() => {
     const shownSteps = storyEntries.filter((entry): entry is TraceStep => !("collapsed" in entry))
     return shownSteps.some((step) => step.node_id === trace.target_node_id)
