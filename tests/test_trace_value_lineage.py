@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-from haute._trace_lineage import JoinInputs, trace_value_lineage
+from haute._trace_lineage import ColumnRead, ColumnSource, JoinInputs, trace_value_lineage
 from haute._types import GraphNode, NodeData, NodeType
-from haute.trace import SchemaDiff, TraceResult, TraceStep, execute_trace
+from haute.trace import SchemaDiff, TraceResult, TraceStep, execute_trace, trace_result_to_dict
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -161,6 +161,71 @@ def test_an_optimised_value_is_relevant_through_every_step_it_was_computed_from(
     # No policy joined this quote, and the value never reads a policy column.
     assert "policies" not in steps
     assert result.omissions == []
+
+
+def _source(node_id: str, column: str) -> dict:
+    return {"node_id": node_id, "column": column, "before_code": False}
+
+
+def test_each_contributing_step_shows_its_formula_and_where_each_input_was_computed(tmp_path):
+    result = execute_trace(
+        _pricing_graph(tmp_path),
+        target_node_id="apply",
+        column="optimal_premium",
+        row_index=0,
+    )
+
+    steps = _steps_by_id(result)
+
+    def derivation(node_id: str, column: str) -> dict:
+        (found,) = [d for d in steps[node_id].derivations if d["column"] == column]
+        return found
+
+    assert [d["column"] for d in steps["scenarios"].derivations] == steps[
+        "scenarios"
+    ].contributed_columns
+    assert steps["insights"].derivations == []
+
+    income = derivation("scenarios", "predicted_income")
+    assert income["expression_text"] == "premium - burn_cost"
+    assert income["substituted_text"] is not None
+    assert income["result_value"] == steps["scenarios"].output_values["predicted_income"]
+    # It read the premium this step had already rescaled, not the joined-in one.
+    assert income["reads"] == [
+        {"column": "burn_cost", "sources": [_source("cost", "burn_cost")]},
+        {"column": "premium", "sources": [_source("scenarios", "premium")]},
+    ]
+
+    premium = derivation("scenarios", "premium")
+    assert premium["expression_text"] == "premium * scenario_value"
+    # Its own premium is the value from before the code: prices', through the join.
+    assert premium["reads"] == [
+        {"column": "premium", "sources": [_source("prices", "premium")]},
+        {"column": "scenario_value", "sources": [_source("scenarios", "scenario_value")]},
+    ]
+    assert derivation("cost", "burn_cost")["reads"] == [
+        {"column": "premium", "sources": [_source("prices", "premium")]}
+    ]
+
+    # A loaded column has no formula and reads nothing.
+    loaded = derivation("prices", "premium")
+    assert loaded["expression_text"] is None
+    assert loaded["reads"] == []
+    assert loaded["result_value"] == steps["prices"].output_values["premium"]
+
+    # The optimiser reads its objective and constraint where scenarios computed them.
+    apply_reads = {
+        read["column"]: read["sources"] for read in derivation("apply", "optimal_premium")["reads"]
+    }
+    assert apply_reads["predicted_income"] == [_source("scenarios", "predicted_income")]
+    assert apply_reads["predicted_volume"] == [_source("scenarios", "predicted_volume")]
+    assert apply_reads["quote_id"] == [_source("quotes", "quote_id")]
+    assert derivation("apply", "optimal_premium")["expression_text"] is None
+
+    serialised = trace_result_to_dict(result)["steps"]
+    assert {step["node_id"]: step["derivations"] for step in serialised} == {
+        node_id: step.derivations for node_id, step in steps.items()
+    }
 
 
 def _policy_graph(tmp_path) -> object:
@@ -565,6 +630,8 @@ def test_a_multi_frame_base_is_read_through_the_frame_its_edge_names(join_unreso
     assert "api" not in lineage.reached
     if not join_unresolved:
         assert lineage.contributed["rates"] == ("read",)
+    # Either way the value y read came from the join side, correlated or not.
+    assert lineage.reads["calc"]["y"] == (ColumnRead("read", (ColumnSource("rates", "read"),)),)
 
 
 def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
@@ -578,6 +645,10 @@ def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
 
     assert lineage.contributed["left"] == ("read",)
     assert lineage.contributed["right"] == ("right_key",)
+    # The coalesced key may hold either side's value: both are its sources.
+    assert lineage.reads["calc"]["y"] == (
+        ColumnRead("read", (ColumnSource("left", "read"), ColumnSource("right", "right_key"))),
+    )
 
 
 def test_a_generated_column_the_code_reassigns_is_followed_both_before_and_after():
@@ -614,3 +685,22 @@ def test_a_generated_column_the_code_reassigns_is_followed_both_before_and_after
     # y reads the generated value (through before) and the reassigned one (x a).
     assert lineage.contributed["scenarios"] == ("before", "scenario_value", "y")
     assert lineage.contributed["src"] == ("a",)
+    reads = lineage.reads["scenarios"]
+    assert reads["y"] == (
+        ColumnRead("before", (ColumnSource("scenarios", "before"),)),
+        ColumnRead("scenario_value", (ColumnSource("scenarios", "scenario_value"),)),
+    )
+    # before saw the generated value, which the code then reassigned.
+    assert reads["before"] == (
+        ColumnRead(
+            "scenario_value",
+            (ColumnSource("scenarios", "scenario_value", before_code=True),),
+        ),
+    )
+    assert reads["scenario_value"] == (
+        ColumnRead("a", (ColumnSource("src", "a"),)),
+        ColumnRead(
+            "scenario_value",
+            (ColumnSource("scenarios", "scenario_value", before_code=True),),
+        ),
+    )

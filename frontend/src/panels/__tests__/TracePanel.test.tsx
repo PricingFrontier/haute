@@ -27,7 +27,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
-    contributed_columns: [],
+    contributed_columns: [], derivations: [],
     ...overrides,
   }
 }
@@ -406,7 +406,7 @@ describe("TracePanel", () => {
   it("renders step names in order", () => {
     render(<TracePanel trace={makeTrace({
       steps: [
-        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"] }),
+        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"], derivations: [] }),
         makeStep({
           node_id: "n2",
           node_name: "Calc",
@@ -431,7 +431,7 @@ describe("TracePanel", () => {
   it("renders step indexes starting from 1", () => {
     render(<TracePanel trace={makeTrace({
       steps: [
-        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"] }),
+        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"], derivations: [] }),
         makeStep({
           node_id: "n2",
           node_name: "Calc",
@@ -478,7 +478,7 @@ describe("TracePanel", () => {
               },
               output_values: { driver_age: 22 },
               column_relevant: false,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "banding",
@@ -567,7 +567,7 @@ describe("TracePanel", () => {
               },
               expression: null,
               calculation: null,
-              contributed_columns: ["channel_band", "proposer_age_band", "vehicle_age_band"],
+              contributed_columns: ["channel_band", "proposer_age_band", "vehicle_age_band"], derivations: [],
               node_detail: {
                 detail_type: "banding",
                 factors: [
@@ -626,7 +626,7 @@ describe("TracePanel", () => {
               },
               expression: null,
               calculation: null,
-              contributed_columns: ["optimised_premium"],
+              contributed_columns: ["optimised_premium"], derivations: [],
               node_detail: {
                 detail_type: "optimiser_apply",
                 mode: "ratebook",
@@ -686,6 +686,124 @@ describe("TracePanel", () => {
     expect(within(bandingCard).queryByText("noise")).not.toBeInTheDocument()
   })
 
+  it("shows how an online optimiser's objective was calculated, down to the loaded values", () => {
+    const formula = (
+      column: string,
+      expression: string,
+      substituted: string,
+      value: number,
+      reads: Array<[string, string, string]>,
+    ) => ({
+      column,
+      expression_text: expression,
+      substituted_text: substituted,
+      result_value: value,
+      not_computable_reason: null,
+      result_source: null,
+      reads: reads.map(([readColumn, nodeId, sourceColumn]) => ({
+        column: readColumn,
+        sources: [{ node_id: nodeId, column: sourceColumn, before_code: false }],
+      })),
+      error: null,
+      error_type: null,
+    })
+    const loaded = (column: string, value: number) => ({
+      ...formula(column, "", "", value, []),
+      expression_text: null,
+      substituted_text: null,
+    })
+    const diff = (added: string[], modified: string[] = []) => ({
+      columns_added: added, columns_removed: [], columns_modified: modified, columns_passed: [],
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply_optimiser",
+          column: "optimal_premium",
+          output_value: 1.5,
+          steps: [
+            makeStep({
+              node_id: "premiums", node_name: "premiums", node_type: "dataInput",
+              schema_diff: diff(["premium"]), output_values: { premium: 528.09 },
+              contributed_columns: ["premium"], derivations: [loaded("premium", 528.09)],
+            }),
+            makeStep({
+              node_id: "fill_na", node_name: "fill_na", node_type: "polars",
+              schema_diff: diff(["BurnCost"]), output_values: { premium: 528.09, BurnCost: 528.09 },
+              contributed_columns: ["BurnCost"],
+              derivations: [formula("BurnCost", "premium", "528.09", 528.09, [["premium", "premiums", "premium"]])],
+            }),
+            makeStep({
+              node_id: "scenarios", node_name: "scenarios", node_type: "scenarioExpander",
+              schema_diff: diff(["price_adjustment", "profit"], ["premium"]),
+              output_values: { premium: 792.135, BurnCost: 528.09, price_adjustment: 1.5, profit: 264.045 },
+              contributed_columns: ["premium", "price_adjustment", "profit"],
+              derivations: [
+                formula("premium", "premium * price_adjustment", "528.09 * 1.5", 792.135, [
+                  ["premium", "premiums", "premium"],
+                  ["price_adjustment", "scenarios", "price_adjustment"],
+                ]),
+                loaded("price_adjustment", 1.5),
+                formula("profit", "premium - BurnCost", "792.135 - 528.09", 264.045, [
+                  ["BurnCost", "fill_na", "BurnCost"],
+                  ["premium", "scenarios", "premium"],
+                ]),
+              ],
+            }),
+            makeStep({
+              node_id: "apply_optimiser", node_name: "apply_optimiser", node_type: "optimiserApply",
+              schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 },
+              contributed_columns: ["optimal_premium"],
+              derivations: [{
+                ...loaded("optimal_premium", 1.5),
+                reads: [{ column: "profit", sources: [{ node_id: "scenarios", column: "profit", before_code: false }] }],
+              }],
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "online",
+                output_column: "optimal_premium",
+                output_value: 1.5,
+                objective_column: "profit",
+                scenario_value_column: "price_adjustment",
+                candidates: [
+                  { scenario_index: 0, scenario_value: 1, objective: 0, decision_score: 0, selected: false, is_baseline: true },
+                  { scenario_index: 1, scenario_value: 1.5, objective: 264.045, decision_score: 264.045, selected: true, is_baseline: false },
+                ],
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const applyCard = screen.getByTestId("trace-step-card-apply_optimiser")
+    const tree = within(applyCard).getByRole("group", { name: "How profit was calculated" })
+    const rows = within(tree).getAllByTestId("derivation-row")
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["formula", "formula", "loaded", "formula", "loaded", "rule"])
+    expect(rows[5]).toHaveTextContent("price_adjustment = 1.5 (generated by scenarios, step 3)")
+    expect(rows[0]).toHaveTextContent("profit = premium - BurnCost (scenarios, step 3)")
+    expect(rows[0]).toHaveTextContent("264.045 = 792.135 - 528.09")
+    expect(rows[1]).toHaveTextContent("BurnCost = premium (fill_na, step 2)")
+    expect(rows[2]).toHaveTextContent("premium = 528.09 (loaded by premiums, step 1)")
+    // The premium profit read is the one scenarios had already rescaled.
+    expect(rows[3]).toHaveTextContent("premium = premium × price_adjustment (scenarios, step 3)")
+    expect(rows[3]).toHaveTextContent("792.135 = 528.09 × 1.5")
+
+    fireEvent.click(within(rows[0]).getAllByRole("button", { name: "Hide what profit was calculated from" })[0])
+    expect(within(tree).getAllByTestId("derivation-row")).toHaveLength(1)
+
+    const scenariosCard = screen.getByTestId("trace-step-card-scenarios")
+    if (!within(scenariosCard).queryByTestId("trace-computed-here")) {
+      fireEvent.click(within(scenariosCard).getAllByRole("button")[0])
+    }
+    const computedHere = within(scenariosCard).getByTestId("trace-computed-here")
+    expect(computedHere).toHaveTextContent("premium = premium × price_adjustment")
+    expect(computedHere).toHaveTextContent("profit = premium - BurnCost")
+    // A generated column has no formula to show.
+    expect(computedHere).not.toHaveTextContent("price_adjustment =")
+  })
+
   it("omits unrelated optimiser input branches from the focused ratebook trace", () => {
     render(
       <TracePanel
@@ -710,7 +828,7 @@ describe("TracePanel", () => {
                 unused_constraint: 0.42,
               },
               column_relevant: false,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "unused_transform",
@@ -736,7 +854,7 @@ describe("TracePanel", () => {
                 difference_to_market: 0.21,
               },
               column_relevant: false,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "banding",
@@ -752,7 +870,7 @@ describe("TracePanel", () => {
               output_values: { proposer_age: 49, proposer_age_band: "49-55" },
               expression: null,
               calculation: null,
-              contributed_columns: ["proposer_age_band"],
+              contributed_columns: ["proposer_age_band"], derivations: [],
               node_detail: {
                 detail_type: "banding",
                 factors: [
@@ -805,7 +923,7 @@ describe("TracePanel", () => {
                 },
               },
               expression: null,
-              contributed_columns: ["optimised_premium"],
+              contributed_columns: ["optimised_premium"], derivations: [],
               node_detail: {
                 detail_type: "optimiser_apply",
                 mode: "ratebook",
@@ -864,7 +982,7 @@ describe("TracePanel", () => {
               schema_diff: diff(["quote_id", "channel", "ncd_years"]),
               input_values: {},
               output_values: { quote_id: "Q1", channel: "ctm", ncd_years: 11 },
-              contributed_columns: ["channel", "ncd_years", "quote_id"],
+              contributed_columns: ["channel", "ncd_years", "quote_id"], derivations: [],
             }),
             makeStep({
               node_id: "competitor_insights",
@@ -891,7 +1009,7 @@ describe("TracePanel", () => {
               topological_rank: 3,
               schema_diff: diff(["competitor_premium"]),
               output_values: { quote_id: "Q1", competitor_premium: 377.21 },
-              contributed_columns: ["competitor_premium"],
+              contributed_columns: ["competitor_premium"], derivations: [],
             }),
             makeStep({
               node_id: "scenarios",
@@ -900,7 +1018,7 @@ describe("TracePanel", () => {
               topological_rank: 4,
               schema_diff: diff(["price_adjustment", "profit"], ["diff_to_market"]),
               output_values: { quote_id: "Q1", price_adjustment: 1.5, profit: 400, diff_to_market: 2.1 },
-              contributed_columns: ["diff_to_market", "price_adjustment", "profit"],
+              contributed_columns: ["diff_to_market", "price_adjustment", "profit"], derivations: [],
             }),
             makeStep({
               node_id: "conversion_scoring",
@@ -909,7 +1027,7 @@ describe("TracePanel", () => {
               topological_rank: 5,
               schema_diff: diff(["conversion_prediction"]),
               output_values: { quote_id: "Q1", conversion_prediction: 0.004 },
-              contributed_columns: ["conversion_prediction"],
+              contributed_columns: ["conversion_prediction"], derivations: [],
             }),
             makeStep({
               node_id: "apply_optimiser",
@@ -918,7 +1036,7 @@ describe("TracePanel", () => {
               topological_rank: 6,
               schema_diff: diff(["optimal_premium"]),
               output_values: { quote_id: "Q1", optimal_premium: 1.5 },
-              contributed_columns: ["optimal_premium"],
+              contributed_columns: ["optimal_premium"], derivations: [],
             }),
           ],
           // A policy join off the value's lineage found no row: a fact, not a warning.
@@ -987,7 +1105,7 @@ describe("TracePanel", () => {
                 business_use: null,
                 cover_type: "comprehensive",
               },
-              contributed_columns: ["annual_mileage"],
+              contributed_columns: ["annual_mileage"], derivations: [],
             }),
             makeStep({
               node_id: "rating",
@@ -1674,7 +1792,7 @@ describe("TracePanel", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Irrelevant", column_relevant: false, contributed_columns: [] }),
+            makeStep({ node_id: "n1", node_name: "Irrelevant", column_relevant: false, contributed_columns: [], derivations: [] }),
           ],
         })}
         onClose={vi.fn()}
@@ -1694,7 +1812,7 @@ describe("TracePanel", () => {
               node_id: "n1",
               node_name: "Relevant Step",
               column_relevant: true,
-              contributed_columns: [],
+              contributed_columns: [], derivations: [],
               schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
             }),
           ],

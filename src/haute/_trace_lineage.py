@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from haute._column_lineage import _referenced_columns
 from haute._edge_join import build_edge_join_kwargs
@@ -63,14 +63,48 @@ _BASE_KEY_JOINS: Final = frozenset({"inner", "left", "semi", "anti"})
 
 
 @dataclass(frozen=True)
+class ColumnSource:
+    """Where a value a step read was computed: a node and its column.
+
+    ``before_code`` marks a value a node's rule generated before its code
+    reassigned the column, so the node's row holds a later value.
+    """
+
+    node_id: str
+    column: str
+    before_code: bool = False
+
+
+@dataclass(frozen=True)
+class ColumnRead:
+    """A column a computed column read, and every node that computed the value read.
+
+    No source means the walk found none; more than one means the value may
+    have come from any of them.
+    """
+
+    column: str
+    sources: tuple[ColumnSource, ...]
+
+
+@dataclass(frozen=True)
 class ValueLineage:
-    """The nodes a traced value's lineage reaches, and what each step computes for it."""
+    """The nodes a traced value's lineage reaches, and what each step computes for it.
+
+    ``reads`` maps a node and a column it contributes to the columns that
+    column was computed from, or to ``None`` when the walk could not tell
+    which inputs it read.
+    """
 
     reached: frozenset[str]
     contributed: Mapping[str, tuple[str, ...]]
+    reads: Mapping[str, Mapping[str, tuple[ColumnRead, ...] | None]]
 
     def contributed_columns(self, node_id: str) -> list[str]:
         return list(self.contributed.get(node_id, ()))
+
+    def column_reads(self, node_id: str, column: str) -> tuple[ColumnRead, ...] | None:
+        return self.reads.get(node_id, {}).get(column, ())
 
 
 @dataclass(frozen=True)
@@ -108,6 +142,8 @@ def trace_value_lineage(
     demand: dict[str, _Demand] = {target_node_id: {column}}
     contributed: dict[str, tuple[str, ...]] = {}
     reached: set[str] = set()
+    made_by: dict[str, set[str]] = {}
+    local_reads: dict[str, _LocalReads] = {}
 
     def edge_columns(parent_id: str, child_id: str) -> set[str] | None:
         columns: set[str] = set()
@@ -118,21 +154,39 @@ def trace_value_lineage(
             columns |= frame_columns
         return columns
 
+    def lineage_parents(node_id: str) -> list[str]:
+        return [p for p in parents_of.get(node_id, ()) if p in step_by_id or p in attempted]
+
+    def route(node_id: str, needed: set[str]) -> dict[str, _Demand]:
+        """The parents *needed* columns come from, each with its own names for them."""
+        parents = lineage_parents(node_id)
+        roles = join_inputs.get(node_id)
+        if node_map[node_id].data.nodeType == NodeType.EDGE_JOIN and roles is not None:
+            return _route_edge_join(node_map[node_id], needed, parents, output_columns, roles)
+        routed: dict[str, _Demand] = {}
+        for parent_id in parents:
+            columns = edge_columns(parent_id, node_id)
+            carried = set(needed) if columns is None else needed & columns
+            if carried:
+                routed[parent_id] = carried
+        return routed
+
     for node_id in reversed(order):
         wanted = demand.get(node_id)
         if not wanted:
             continue
         reached.add(node_id)
         graph_parents = parents_of.get(node_id, ())
-        parents = [p for p in graph_parents if p in step_by_id or p in attempted]
+        parents = lineage_parents(node_id)
         step = step_by_id.get(node_id)
         needed: _Demand
         if step is None:
             needed = EVERY_COLUMN
         else:
-            made, needed = _step_demand(
+            made, needed, local_reads[node_id] = _step_demand(
                 step, node_map[node_id], wanted, node_map, is_source=not graph_parents
             )
+            made_by[node_id] = made
             # A helper the step dropped is not in its row, so only what the row
             # holds is reported.
             shown = made & set(step.output_values)
@@ -140,21 +194,62 @@ def trace_value_lineage(
                 contributed[node_id] = tuple(sorted(shown))
         if not parents or not needed:
             continue
-        roles = join_inputs.get(node_id)
-        if isinstance(needed, _EveryColumn):
-            routed: dict[str, _Demand] = {parent_id: EVERY_COLUMN for parent_id in parents}
-        elif node_map[node_id].data.nodeType == NodeType.EDGE_JOIN and roles is not None:
-            routed = _route_edge_join(node_map[node_id], needed, parents, output_columns, roles)
-        else:
-            routed = {}
-            for parent_id in parents:
-                columns = edge_columns(parent_id, node_id)
-                carried = set(needed) if columns is None else needed & columns
-                if carried:
-                    routed[parent_id] = carried
+        routed: dict[str, _Demand] = (
+            {parent_id: EVERY_COLUMN for parent_id in parents}
+            if isinstance(needed, _EveryColumn)
+            else route(node_id, needed)
+        )
         for parent_id, parent_demand in routed.items():
             _merge(demand, parent_id, parent_demand)
-    return ValueLineage(reached=frozenset(reached), contributed=contributed)
+
+    resolved: dict[tuple[str, str], tuple[ColumnSource, ...]] = {}
+
+    def computed_by(node_id: str, column: str) -> tuple[ColumnSource, ...]:
+        """The nodes that computed the value *node_id* read as *column* from its inputs.
+
+        The value is followed up the same routes the walk sent the demand, past
+        every node that only carried it, to the nodes that computed it. A node
+        the trace could not correlate ends the walk as the source.
+        """
+        key = (node_id, column)
+        if key not in resolved:
+            resolved[key] = ()
+            found: set[ColumnSource] = set()
+            for parent_id, parent_columns in route(node_id, {column}).items():
+                assert isinstance(parent_columns, set)
+                for parent_column in parent_columns:
+                    if parent_id not in step_by_id or parent_column in made_by.get(parent_id, ()):
+                        found.add(ColumnSource(parent_id, parent_column))
+                    else:
+                        found.update(computed_by(parent_id, parent_column))
+            resolved[key] = tuple(sorted(found, key=lambda s: (s.node_id, s.column)))
+        return resolved[key]
+
+    reads: dict[str, dict[str, tuple[ColumnRead, ...] | None]] = {}
+    for node_id, shown_columns in contributed.items():
+        node_reads = local_reads[node_id]
+        reads[node_id] = {}
+        for shown_column in shown_columns:
+            local = node_reads.get(shown_column, [])
+            if local is None:
+                reads[node_id][shown_column] = None
+                continue
+            sources: dict[str, set[ColumnSource]] = {}
+            for reference, kind in local:
+                if kind == "input":
+                    sources.setdefault(reference, set()).update(computed_by(node_id, reference))
+                else:
+                    sources.setdefault(reference, set()).add(
+                        ColumnSource(node_id, reference, before_code=kind == "before_code")
+                    )
+            reads[node_id][shown_column] = tuple(
+                ColumnRead(
+                    reference,
+                    tuple(sorted(found, key=lambda s: (s.node_id, s.column, s.before_code))),
+                )
+                for reference, found in sorted(sources.items())
+            )
+    return ValueLineage(reached=frozenset(reached), contributed=contributed, reads=reads)
 
 
 def _merge(demand: dict[str, _Demand], node_id: str, more: _Demand) -> None:
@@ -168,6 +263,14 @@ def _merge(demand: dict[str, _Demand], node_id: str, more: _Demand) -> None:
     current.update(more)
 
 
+_ReadKind = Literal["here", "before_code", "input"]
+# Per computed column, the columns it read and where each read resolves: this
+# node's own value ("here"), a value its rule generated before its code
+# rewrote it ("before_code"), or its inputs ("input"). ``None`` when the
+# column's inputs could not be told apart.
+_LocalReads = dict[str, list[tuple[str, _ReadKind]] | None]
+
+
 def _step_demand(
     step: TraceStep,
     node: GraphNode,
@@ -175,23 +278,25 @@ def _step_demand(
     node_map: Mapping[str, GraphNode],
     *,
     is_source: bool,
-) -> tuple[set[str], _Demand]:
-    """The columns *step* computes for the value, and what it needs from its inputs."""
+) -> tuple[set[str], _Demand, _LocalReads]:
+    """The columns *step* computes for the value, what it needs from its inputs,
+    and what each computed column read."""
     if node.data.nodeType in _ROUTER_TYPES:
-        return set(), wanted
+        return set(), wanted, {}
     diff = step.schema_diff
     changed = set(diff.columns_added) | set(diff.columns_modified)
     if is_source:
-        return (changed if isinstance(wanted, _EveryColumn) else changed & wanted), set()
+        loaded = changed if isinstance(wanted, _EveryColumn) else changed & wanted
+        return loaded, set(), {column: [] for column in loaded}
     if isinstance(wanted, _EveryColumn):
-        return changed, EVERY_COLUMN
+        return changed, EVERY_COLUMN, dict.fromkeys(changed)
     derivation = _Derivation(step, node, changed, node_map)
     for column in sorted(wanted):
         if derivation.computes(column):
             derivation.contribute(column)
         else:
             derivation.read_input(column)
-    return derivation.made, derivation.needed
+    return derivation.made, derivation.needed, derivation.local_reads()
 
 
 class _Derivation:
@@ -223,12 +328,31 @@ class _Derivation:
         # were already followed: one column can be both.
         self.final: set[str] = set()
         self.before_code: set[str] = set()
+        # The computed column whose reads are being followed, innermost last;
+        # ``None`` for a generated value the code then rewrote, whose reads
+        # the row does not show.
+        self._deriving: list[str | None] = []
+        self._reads: dict[str, list[tuple[str, _ReadKind]]] = {}
+        self._reads_unknown: set[str] = set()
+
+    def local_reads(self) -> _LocalReads:
+        return {
+            column: None if column in self._reads_unknown else list(self._reads.get(column, ()))
+            for column in self.made
+        }
+
+    def _note(self, reference: str, kind: _ReadKind) -> None:
+        if self._deriving and self._deriving[-1] is not None:
+            self._reads.setdefault(self._deriving[-1], []).append((reference, kind))
 
     def read_input(self, column: str) -> None:
+        self._note(column, "input")
         if isinstance(self.needed, set):
             self.needed.add(column)
 
     def depend_on_every_input(self) -> None:
+        if self._deriving and self._deriving[-1] is not None:
+            self._reads_unknown.add(self._deriving[-1])
         self.needed = EVERY_COLUMN
 
     def computes(self, column: str) -> bool:
@@ -239,10 +363,18 @@ class _Derivation:
         )
 
     def contribute(self, column: str) -> None:
+        self._note(column, "here")
         if column in self.final:
             return
         self.final.add(column)
         self.made.add(column)
+        self._deriving.append(column)
+        try:
+            self._derive(column)
+        finally:
+            self._deriving.pop()
+
+    def _derive(self, column: str) -> None:
         by_code = self._code_derivation(column)
         if isinstance(by_code, _Unreadable):
             self.depend_on_every_input()
@@ -337,16 +469,24 @@ class _Derivation:
             return
         # The node's rule computed it before the code ran.
         self.made.add(column)
+        rewritten = self._code_writes(column)
+        self._note(column, "before_code" if rewritten else "here")
         if column in self.before_code:
             return
         self.before_code.add(column)
-        for reference in by_rule:
-            if reference == column:
-                # An in-place rule (a banding factor overwriting its input)
-                # reads the value from before it: the input's.
-                self.read_input(column)
-            else:
-                self._value_before_code(reference)
+        # When the code rewrote the value, the row holds the later one, so what
+        # the rule read is followed for the demand but not reported.
+        self._deriving.append(None if rewritten else column)
+        try:
+            for reference in by_rule:
+                if reference == column:
+                    # An in-place rule (a banding factor overwriting its input)
+                    # reads the value from before it: the input's.
+                    self.read_input(column)
+                else:
+                    self._value_before_code(reference)
+        finally:
+            self._deriving.pop()
 
     def _rule_references(self, column: str) -> tuple[str, ...] | _Unreadable | None:
         """What a generated or detail-explained column reads; ``None`` when no rule explains it."""

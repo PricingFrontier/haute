@@ -96,6 +96,7 @@ export function buildTraceExportRows(trace: TraceResult): TraceExportRow[] {
       fieldRow("step", "output_values", item.output_values, item),
       fieldRow("step", "expression", item.expression, item),
       fieldRow("step", "calculation", item.calculation, item),
+      fieldRow("step", "derivations", item.derivations, item),
       fieldRow("step", "node_detail", item.node_detail, item),
       fieldRow("step", "row_lineage_type", item.row_lineage_type, item),
     )

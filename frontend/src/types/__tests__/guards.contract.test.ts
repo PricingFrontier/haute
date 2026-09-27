@@ -1505,6 +1505,38 @@ describe("API response guards", () => {
     expect(() => parseTraceResponse(withCount(1))).toThrow("identical_row_count")
   })
 
+  it("parses a step's column derivations and rejects a malformed read", () => {
+    const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
+    const [step] = fixture.trace.steps as Record<string, unknown>[]
+    const withDerivations = (derivations: unknown) => ({
+      ...fixture,
+      trace: { ...fixture.trace, steps: [{ ...step, derivations }] },
+    })
+    const profit = {
+      column: "profit",
+      expression_text: "premium - BurnCost",
+      substituted_text: "792.135 - 528.09",
+      result_value: 264.045,
+      not_computable_reason: null,
+      result_source: null,
+      reads: [
+        { column: "BurnCost", sources: [{ node_id: "fill_na", column: "BurnCost", before_code: false }] },
+        { column: "premium", sources: [] },
+      ],
+      error: null,
+      error_type: null,
+    }
+
+    const [parsed] = parseTraceResponse(withDerivations([profit])).trace?.steps[0]?.derivations ?? []
+    expect(parsed).toEqual(profit)
+    expect(parseTraceResponse(withDerivations([{ ...profit, reads: null }])).trace?.steps[0]?.derivations[0]?.reads)
+      .toBeNull()
+    expect(() => parseTraceResponse(withDerivations(undefined))).toThrow("derivations")
+    expect(() => parseTraceResponse(withDerivations([
+      { ...profit, reads: [{ column: "premium", sources: [{ node_id: "prices", column: "premium" }] }] },
+    ]))).toThrow("before_code")
+  })
+
   it("parses where a seeded trace read its rows and what it skipped", () => {
     const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
     const [step] = fixture.trace.steps as Record<string, unknown>[]

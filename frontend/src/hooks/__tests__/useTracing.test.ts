@@ -119,7 +119,7 @@ function makeTrace(nodeIds: string[]): TraceResult {
       output_values: {},
       topological_rank: topologicalRank,
       column_relevant: true,
-      contributed_columns: [],
+      contributed_columns: [], derivations: [],
     })),
     target_node_id: nodeIds.at(-1) ?? "",
     row_index: 0,
@@ -253,7 +253,7 @@ describe("useTracing", () => {
 
   it("handleCellClick calls traceCell and sets result on success", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -628,7 +628,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -655,8 +655,8 @@ describe("useTracing", () => {
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [] },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -682,7 +682,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus preserves transition on style", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -708,8 +708,8 @@ describe("useTracing", () => {
   it("edgesWithTrace highlights edges between traced nodes", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [] },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -913,7 +913,7 @@ describe("useTracing", () => {
 
   it("_hoverDimmed is false when trace is active (trace takes priority)", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -1195,10 +1195,10 @@ describe("useTracing validity across shared snapshots", () => {
         ...base,
         column: "optimal_premium",
         steps: [
-          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"] },
+          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"], derivations: [] },
           { ...base.steps[1], schema_diff: diff(["market_note"]), output_values: { market_note: "y" }, column_relevant: false },
           { ...base.steps[2], schema_diff: diff(["sale_flag"]), output_values: { sale_flag: null } },
-          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"] },
+          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"], derivations: [] },
         ],
       },
     })

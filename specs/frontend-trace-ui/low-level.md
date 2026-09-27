@@ -16,9 +16,10 @@
 | `frontend/src/trace/BandingDetail.tsx`, `frontend/src/trace/bandingRows.ts` | Banding detail renderer and normalised display rows/ranges. |
 | `frontend/src/trace/RatingStepDetail.tsx`, `frontend/src/trace/ratingStepHelpers.ts` | Rating detail renderer and table/output normalisers. |
 | `frontend/src/trace/ModelScoreDetail.tsx`, `frontend/src/trace/modelScoreHelpers.ts` | Score/contribution view and typed model-score field extraction. The contribution ladder of a model with a non-identity `link` ends with a "Linear predictor" row (base plus contributions), then a "Prediction" row naming the inverse link (for example "inverse logit", "exp") with the explanation's response-scale value (`model_prediction_value`, else `prediction_value`). For a classifier (`prediction_space` "probability") that row reads "Probability" without the column name, because the column holds the class label. Any other ladder ends with a single "Prediction" row. |
-| `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. The ratebook ladder ends with a "Combined factor collar" row: the `[min, max]` bounds, the product before the collar, the deployed value after it, and a "clipped" chip when the collar applied. |
+| `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. Below the online score line, "How the score's inputs were calculated" shows a derivation tree for the objective and each constraint column (a ratio constraint's numerator and denominator), from where the apply read it. The ratebook ladder ends with a "Combined factor collar" row: the `[min, max]` bounds, the product before the collar, the deployed value after it, and a "clipped" chip when the collar applied. |
 | `frontend/src/trace/ScenarioExpanderDetail.tsx`, `frontend/src/trace/scenarioExpanderHelpers.ts` | Scenario expansion view and shape guards/row helpers. |
 | `frontend/src/trace/LiveSwitchDetail.tsx`, `frontend/src/trace/liveSwitchHelpers.ts` | Live-switch detail and typed extraction. |
+| `frontend/src/trace/DerivationTree.tsx`, `frontend/src/trace/derivationTreeHelpers.ts`, `frontend/src/trace/traceStepsContext.ts` | How a value was calculated, followed across steps: `buildDerivationTree` builds a tree from the steps' `derivations` (a formula, a load, a rule such as a model or an optimiser, a value generated before its node's code rewrote it, a node not in the trace, or no source found, each labelled with the step number its card shows), cut off with a note on a repeat within one path or beyond 12 levels; `DerivationTree` renders it with the expression-chain row view, formulas open and rules collapsed; `ComputedHere` lists a step's own formulas. `TraceStepsContext` gives details inside the panel every step of the trace. |
 | `frontend/src/trace/traceHelpers.ts`, `frontend/src/trace/traceFormatting.ts`, `frontend/src/trace/traceOrigins.ts` | Waterfall/chain/source transformations, trace value formatting and origin classification. |
 
 ## Key types and data structures
@@ -93,7 +94,9 @@
    `identical_row_count` is set "One of N identical rows" (the panel does not repeat its
    `identical_row_match` diagnostic as a correlation warning), and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
-   data present.
+   data present. The expanded body also lists, under "Computed here", the step's formulas for
+   the other columns the traced value depends on (the traced column's own formula is shown
+   above it when the step has one).
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.
@@ -164,8 +167,14 @@ canvas trace path while other omissions dim, a completed trace hidden and an in-
 one aborted with its late response discarded when the node-data epoch changes, a trace hidden
 when the explained preview reads other generations, and `preview_seed_plan_expired` refreshing
 the preview with a notice that survives that refresh and its captures until the node changes. `frontend/src/trace/__tests__/traceExport.test.ts`
-covers the deterministic Markdown/CSV projection and filesystem-safe names used
-by clipboard, download, and print.
+covers the deterministic Markdown/CSV projection (each step's `derivations` included) and
+filesystem-safe names used by clipboard, download, and print.
+`frontend/src/trace/__tests__/derivationTreeHelpers.test.ts` covers the derivation tree: an
+optimiser objective followed to the loaded values, a model's prediction as a rule, a node not
+in the trace, a read with no source, several possible sources, unfollowed reads, a value
+generated before its node's code, and the depth limit;
+`frontend/src/panels/__tests__/TracePanel.test.tsx` renders it in the
+online optimiser card and the "Computed here" list.
 Some presentational primitives (`ExpressionChain`, `InputSourceTree`, `WaterfallChart`, and the
 detail dispatcher) are principally covered through integration rendering rather than one test file
 per module.

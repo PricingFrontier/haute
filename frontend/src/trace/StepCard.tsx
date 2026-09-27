@@ -12,6 +12,7 @@ import WaterfallErrorAlert from "./WaterfallErrorAlert"
 import { isTraceOriginStep } from "./traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
 import { NodeDetailBlock } from "./NodeDetailBlock"
+import { ComputedHere } from "./DerivationTree"
 import { hasBandingSecondaryDetail, hasRenderableBandingRows } from "./bandingRows"
 import { hasRichRatingStepDetail } from "./ratingStepHelpers"
 import {
@@ -123,6 +124,11 @@ export function StepCard({
         (step.calculation == null || hasBandingSecondaryDetail(step.node_detail))
       )
     ),
+  )
+  // The traced column's own formula is already shown above when the step has one.
+  const computedHere = step.derivations.filter((derivation) =>
+    derivation.expression_text &&
+    !(derivation.column === tracedColumn && (step.expression != null || step.calculation != null)),
   )
   const showColumnValuesTable = !step.expression &&
     !step.calculation &&
@@ -306,9 +312,12 @@ export function StepCard({
             </div>
           )}
 
+          {/* This step's formulas for the other columns the traced value depends on */}
+          <ComputedHere derivations={computedHere} />
+
           {/* Node detail section */}
           {showSecondaryDetail && step.node_detail && (
-            <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} />
+            <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} step={step} />
           )}
 
           {/* Schema changes summary */}
