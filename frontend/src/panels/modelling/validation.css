@@ -129,8 +129,18 @@
   top: 0;
   background: var(--bg-panel);
 }
+.optimiser-frontier-points th,
+.optimiser-frontier-points td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
 .optimiser-frontier-points tbody tr {
   cursor: pointer;
+}
+.optimiser-frontier-summary {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
 .optimiser-frontier-points tbody tr:hover {
   background: var(--chrome-hover);

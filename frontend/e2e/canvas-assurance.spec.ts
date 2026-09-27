@@ -417,7 +417,6 @@ test.describe("frontend canvas assurance", () => {
     const optimiserPreview = page.getByTestId("optimiser-preview-frame")
     await expect(resultTabs.getByRole("tab")).toHaveText([
       "Frontier",
-      "Summary",
       "Adjustments",
       "Segments",
       "Quotes",
@@ -428,8 +427,7 @@ test.describe("frontend canvas assurance", () => {
     await expect(resultTabs.getByRole("tab", { name: "Frontier", exact: true }))
       .toHaveAttribute("aria-selected", "true")
 
-    // Summary states each constraint's attainment in words.
-    await openResultPane(page, "Summary")
+    // The Frontier pane's summary states each constraint's attainment in words.
     const solvedAttainment = await attainmentRows(optimiserPreview)
     expect(solvedAttainment.headers).toEqual([
       "Constraint", "Kind", "Bound", "Achieved", "Slack", "Status", "λ (multiplier)",
@@ -467,14 +465,10 @@ test.describe("frontend canvas assurance", () => {
     await page.setViewportSize(desktopViewport)
 
     // The points table beside the chart highlights the selected point, and
-    // Summary judges it.
+    // the pane's summary judges it.
     const pointsTable = optimiserPreview.getByRole("table", { name: "Frontier slice points" })
     await expect(pointsTable.locator('tr[aria-current="true"]').getByRole("rowheader"))
       .toHaveText("Point 2")
-    await openResultPane(page, "Summary")
-    await expect(
-      optimiserPreview.getByText("Frontier point 2's adjustments load in the Adjustments tab."),
-    ).toBeVisible()
     const summaryAttainment = await attainmentRows(optimiserPreview)
     expect(summaryAttainment.rows).toHaveLength(1)
     expectAttainmentRowConsistent(summaryAttainment.rows[0])

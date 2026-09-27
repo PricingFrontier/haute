@@ -53,7 +53,6 @@ import SegmentsTab, { type SegmentResults } from "./optimiser/SegmentsTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import {
-  OPTIMISER_VIEW_INTRODUCTIONS,
   OPTIMISER_VIEW_LABELS,
   type OptimiserResultView,
 } from "./optimiser/resultViews"
@@ -378,7 +377,8 @@ export default function OptimiserPreview({
   )
   const shouldMaterialiseSelectedRates = (
     selectedRatebookRatesMissing
-    && (tab === "rates" || tab === "summary")
+    // Rates draws them; Summary, and the Frontier pane that carries it, plots them.
+    && (tab === "rates" || tab === "summary" || tab === "frontier")
   )
   useEffect(() => {
     if (!shouldMaterialiseSelectedRates || selectedIdx == null) return
@@ -497,7 +497,8 @@ export default function OptimiserPreview({
   const canMaterialiseSelectedRates = result.mode === "ratebook" && frontier != null && selectedIdx != null
   const headerPointCount = frontier?.points.length ?? 0
   const iterationSummary = formatOptimiserIterationSummary(result)
-  const availableTabs: OptimiserResultView[] = frontierWithPoints ? ["frontier", "summary"] : ["summary"]
+  // A frontier result's Frontier pane carries the Summary numbers under its chart.
+  const availableTabs: OptimiserResultView[] = frontierWithPoints ? ["frontier"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   // Every result describes its adjustments: online choices, or the ratebook's evaluated steps.
   availableTabs.push("adjustments")
@@ -596,26 +597,37 @@ export default function OptimiserPreview({
           )}
         </>
       )}
-      intro={OPTIMISER_VIEW_INTRODUCTIONS[activeTab]}
+      intro={null}
     >
       {activeTab === "frontier" && frontierWithPoints && slicing && (
-        <FrontierTab
-          frontier={frontierWithPoints}
-          solvedResult={solvedResult}
-          selectedIdx={selectedIdx}
-          xConstraintIdx={xConstraintIdx}
-          onXConstraintChange={setXConstraintIdx}
-          slicing={slicing}
-          slicePosition={displayedSlicePosition(
-            slicing,
-            selectedIdx,
-            sliceChoice,
-            frontierWithPoints.frontier_generation,
-          )}
-          onSliceChange={handleSliceChange}
-          objectiveName={objectiveName}
-          onPointClick={handlePointClick}
-        />
+        <>
+          <FrontierTab
+            frontier={frontierWithPoints}
+            solvedResult={solvedResult}
+            selectedIdx={selectedIdx}
+            xConstraintIdx={xConstraintIdx}
+            onXConstraintChange={setXConstraintIdx}
+            slicing={slicing}
+            slicePosition={displayedSlicePosition(
+              slicing,
+              selectedIdx,
+              sliceChoice,
+              frontierWithPoints.frontier_generation,
+            )}
+            onSliceChange={handleSliceChange}
+            objectiveName={objectiveName}
+            onPointClick={handlePointClick}
+          />
+          <div className="optimiser-frontier-summary">
+            <SummaryTab
+              result={result}
+              selectedPointIndex={selectedIdx}
+              canMaterialiseRatebookRates={selectedRatebookRatesMissing}
+              ratebookRatesDetail={ratesDetail}
+              onOpenAdjustments={openAdjustments}
+            />
+          </div>
+        </>
       )}
 
       {activeTab === "summary" && (
@@ -770,10 +782,21 @@ function FrontierTab({
   const totalPointCount = frontier.n_points || points.length
   const iterationsLabel = points[0].mode === "ratebook" ? "CD passes" : "Iterations"
 
-  // Picking a point on the chart brings its row into view in the points table.
+  // Picking a point on the chart brings its row into view in the points table,
+  // scrolling that table alone (scrollIntoView would scroll the pane too).
   const selectedRowRef = useRef<HTMLTableRowElement>(null)
   useEffect(() => {
-    selectedRowRef.current?.scrollIntoView?.({ block: "nearest" })
+    const row = selectedRowRef.current
+    const box = row?.closest<HTMLElement>(".optimiser-frontier-points")
+    if (!row || !box) return
+    const rowRect = row.getBoundingClientRect()
+    const boxRect = box.getBoundingClientRect()
+    const headerHeight = box.querySelector("thead")?.getBoundingClientRect().height ?? 0
+    if (rowRect.top < boxRect.top + headerHeight) {
+      box.scrollTop -= boxRect.top + headerHeight - rowRect.top
+    } else if (rowRect.bottom > boxRect.bottom) {
+      box.scrollTop += rowRect.bottom - boxRect.bottom
+    }
   }, [selectedIdx, slicePosition])
 
   return (

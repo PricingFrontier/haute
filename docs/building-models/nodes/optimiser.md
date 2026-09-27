@@ -71,6 +71,15 @@ This tells the optimiser: maximise the objective column, but keep premium at or 
     | `frontier_ranges` | Absolute `min`/`max` portfolio totals for each swept constraint; a frontier is computed when any constraint has one |
     | `frontier_steps` | Number of points per swept constraint on the frontier |
 
+??? info "Reading the results"
+    Every figure is an expected value from the scoring models on the solve's quotes, not an observed outcome.
+
+    - **Frontier** (when a constraint is swept): each point is a solve at a different constraint target, the highest expected objective found at that level. The line joins feasible points (converged, with every bound met); a hollow point did not converge and a cross converged but breaches a bound. The ringed marker is the solve itself. The points table beside the chart lists each point's bound, achieved total, objective and status; selecting a point in either makes it the Export pane's publish target. The summary numbers below describe the selected point.
+    - **Summary** (the Frontier pane's lower half when there is a frontier): the objective and, per constraint, the bound the result was solved at, the achieved total, the slack, whether the bound is met, and λ, the constraint's multiplier. A min constraint enters each quote's choice as +λ × its column and a max constraint as −λ × its column. In ratebook mode, the clamp rate is the mean, over every grouped solve, of the share of (quote, candidate) targets strictly outside the scenario range; quotes at a grid edge are not counted.
+    - **Adjustments**, **Segments**, **Quotes**: the chosen scenario values across the book, by analysis column or rating factor, and quote by quote, against 1.0, the base price with no adjustment.
+    - **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes).
+    - **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes.
+
 **See also:**
 
 - [Scenario Expander](scenario-expander.md)  - generate candidate prices for the optimiser

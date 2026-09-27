@@ -107,7 +107,6 @@ describe("Optimiser workspace", () => {
     const tabs = within(tablist).getAllByRole("tab")
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Frontier",
-      "Summary",
       "Adjustments",
       "Segments",
       "Quotes",
@@ -177,23 +176,11 @@ describe("Optimiser workspace", () => {
     expect(screen.queryByText(/not observed outcomes/)).not.toBeInTheDocument()
   })
 
-  it("introduces every tab but Frontier, stating clamp rate as a search-space diagnostic", () => {
-    const expected: Record<string, string> = {
-      Summary: "Solve summary",
-      Adjustments: "Adjustments",
-      Segments: "Segments",
-      Quotes: "Per-quote choices",
-      Convergence: "Convergence",
-    }
+  it("introduces no tab: every pane opens on its values", () => {
     renderPreview()
-    fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
-    expect(within(activePane()).queryByRole("heading", { level: 3 })).not.toBeInTheDocument()
-    for (const [tab, title] of Object.entries(expected)) {
+    for (const tab of ["Frontier", "Adjustments", "Segments", "Quotes", "Convergence"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }))
-      const pane = activePane()
-      expect(within(pane).getByRole("heading", { level: 3, name: title })).toBeInTheDocument()
-      expect(within(pane).getByRole("heading", { level: 3 }).nextElementSibling?.textContent)
-        .not.toBe("")
+      expect(within(activePane()).queryByRole("heading", { level: 3 })).not.toBeInTheDocument()
     }
     cleanup()
 
@@ -210,12 +197,10 @@ describe("Optimiser workspace", () => {
         }),
       }),
     )
-    fireEvent.click(screen.getByRole("tab", { name: "Rates" }))
-    const rates = activePane()
-    expect(within(rates).getByRole("heading", { level: 3, name: "Ratebook rates" }))
-      .toBeInTheDocument()
-    expect(rates).toHaveTextContent(/strictly outside the scenario range/)
-    expect(rates).toHaveTextContent(/quotes at a grid edge are not counted/i)
+    for (const tab of ["Summary", "Rates"]) {
+      fireEvent.click(screen.getByRole("tab", { name: tab }))
+      expect(activePane()).not.toHaveTextContent(/Solve summary|Ratebook rates/)
+    }
   })
 
   it("uses its own accent, never the warning colour", () => {

@@ -259,20 +259,17 @@ describe("optimiser SummaryTab adjustments summary", () => {
       .toBeInTheDocument()
   })
 
-  it("sends a selected point's adjustments to the Adjustments tab", () => {
-    const onOpenAdjustments = vi.fn()
+  it("shows no adjustments summary for a selected frontier point, whose report loads in its own tab", () => {
     render(
       <SummaryTab
         selectedPointIndex={2}
         result={makeOnlineSolveResult({ adjustments: null })}
-        onOpenAdjustments={onOpenAdjustments}
+        onOpenAdjustments={vi.fn()}
       />,
     )
 
-    const summary = screen.getByRole("group", { name: "Adjustments" })
-    expect(summary).toHaveTextContent("Frontier point 3's adjustments load in the Adjustments tab.")
-    fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
-    expect(onOpenAdjustments).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
+    expect(screen.queryByText(/load in the Adjustments tab/)).not.toBeInTheDocument()
   })
 
   it("shows no adjustments summary where the workspace offers no Adjustments tab", () => {

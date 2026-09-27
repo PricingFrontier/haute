@@ -135,18 +135,15 @@ function AdjustmentsSummary({
   onOpenAdjustments: () => void
 }) {
   // A selected point's displayed result has no report (its summary removes the
-  // solve's); the Adjustments tab loads the point's own.
-  const report = selectedPointIndex === null ? result.adjustments : null
+  // solve's); the Adjustments tab loads the point's own, so nothing shows here.
+  if (selectedPointIndex !== null) return null
+  const report = result.adjustments
   // Quote count always weighs a report, first.
   const quotes = report == null ? null : report.weightings[0]
   return (
     <section role="group" aria-label="Adjustments" className="min-w-[200px] space-y-1">
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Adjustments</label>
-      {selectedPointIndex !== null ? (
-        <p className="m-0 text-xs" style={{ color: "var(--text-secondary)" }}>
-          {`Frontier point ${selectedPointIndex + 1}'s adjustments load in the Adjustments tab.`}
-        </p>
-      ) : report != null && quotes !== null ? (
+      {report != null && quotes !== null ? (
         <>
           <dl className="m-0 space-y-0.5 text-xs font-mono">
             {([

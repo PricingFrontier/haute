@@ -490,15 +490,16 @@ needs attention"), so the reason Optimise is disabled is visible from every pane
 
 **Result preview.** The optimiser result preview uses the same results workspace as model
 validation: a Focus view that fills the viewport and keeps the active tab (Escape returns), a
-docked height remembered for the session, results-style tabs and a short introduction on every
-tab. It has no provenance strip: the header already states convergence, iterations and the quote
+docked height remembered for the session and results-style tabs. No tab has an introduction:
+each opens on its values, and the reading of them is documented. It has no provenance strip: the header already states convergence, iterations and the quote
 count, and the point stepper which frontier point is shown. When a diagnostic could not be produced (the adjustment report,
-or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
+or the efficient frontier), the summary says so in a "Diagnostics Issues" alert naming
 each one and why, in the same form as model validation. A failed solve with no earlier result
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
-never the warning colour the stale strip uses. The Frontier pane has no intro; its chart and
-the slice's points table sit side by side at equal widths, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence, then the
+never the warning colour the stale strip uses. The Frontier pane's chart and the slice's points
+table (never wrapping a cell; it scrolls sideways instead) sit side by side at equal widths,
+stacking when the workspace is narrow, and the Summary numbers follow them in the same pane. It
+offers Frontier when the solve produced one, else Summary, then Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence, then the
 pre-solve input's Curves and Statistics (the data preview's per-quote chart and per-scenario
 statistics, from the node's preview rows, while they hold an objective and scenario rows) so a
 solve never hides them; on Curves the header's point stepper gives way to the quote navigation. It has no

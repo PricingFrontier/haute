@@ -27,8 +27,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: the Result line, then one card per constraint holding its column and remove action, then its at least / at most bound type, Fixed | Sweep switch and either its fixed value or its from/to range, then, when any constraint is swept, the Frontier section with points per swept constraint. Each swept card has its own Auto range button and error. It composes one `useOptimiserAutoRange` for the pane, running it for one constraint at a time and merging the filled range over the latest `frontier_ranges` (read through a ref when the run completes), keeping request state out of the parent form. |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. Its convergence result is the as-solved result (`originalResult`), never the frontier point the preview shows. |
 | `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. `run(targets)` names the constraints a run fills and the state reports them (`autoRangeTargets`), so a pane can show the run on the card that asked; the caller's `writeRanges` merges the result. |
-| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
-| `frontend/src/panels/optimiser/resultViews.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`). A failed solve with no earlier result has no result, so no preview. |
+| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), no tab intros, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
+| `frontend/src/panels/optimiser/resultViews.ts` | The result views in tab order with their labels; no view has an intro. A failed solve with no earlier result has no result, so no preview. |
 | `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
 | `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
@@ -437,11 +437,14 @@ without broadening the exactly-one-direct fallback.
   `--optimiser-accent-soft`), never a warning colour: the stale strip and breached
   statuses use the warning palette, and a warning accent would make the whole pane
   read as a warning.
-- Every optimiser tab, Summary included, has an intro from
-  `OPTIMISER_VIEW_INTRODUCTIONS`. The Rates intro states clamp rate as the
-  price-contour search-space diagnostic: the mean, over every grouped solve, of the
-  fraction of (quote, candidate) targets strictly outside the scenario range; quotes
-  at a grid edge are not counted in it.
+- No optimiser tab has an intro (`intro={null}`); the clamp-rate definition (the mean,
+  over every grouped solve, of the fraction of (quote, candidate) targets strictly
+  outside the scenario range; quotes at a grid edge not counted) is documented.
+- A frontier result offers no Summary tab: the Frontier pane renders `SummaryTab` below
+  its chart and points table, and materialises a selected ratebook point's rates there
+  as the Summary and Rates tabs do. `SummaryTab` shows no adjustments block for a
+  selected point (its report loads in the Adjustments tab). The points table scrolls
+  itself, not the pane, to bring the selected row into view.
 - The Rates tab uses the per-feature diagnostic layout: a browser of factors ranked by
   rate spread (quote-weighted mean |ln rate|, how far the factor's rates move from 1.0),
   with search, beside the selected factor's `RelativityBars` in banding order and an
@@ -576,8 +579,8 @@ Top-level coverage lives in `frontend/src/panels/__tests__/ModellingConfig.test.
 `frontend/src/panels/__tests__/ValidationWorkspace.test.tsx` (the modelling workspace: Focus
 view, remembered height, diagnostics strip; unchanged by the shell extraction, so it guards it),
 `frontend/src/panels/__tests__/OptimiserWorkspace.test.tsx` (the optimiser workspace on the same
-shell: tab/pane ARIA wiring, Focus view Escape keeping the tab, remembered height, the provenance
-strip on every tab, per-tab intros, and the Frontier tab's narrow-width stacking rule),
+shell: tab/pane ARIA wiring, Focus view Escape keeping the tab, remembered height, no
+provenance strip or tab intros, and the Frontier tab's narrow-width stacking rule),
 `frontend/src/panels/__tests__/OptimiserConfig.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`, and

@@ -681,7 +681,7 @@ describe("OptimiserPreview", () => {
       expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
-    it("keeps frontier point navigation available on the Summary tab", () => {
+    it("keeps frontier point navigation available on another tab", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -689,7 +689,7 @@ describe("OptimiserPreview", () => {
         }),
       })
 
-      fireEvent.click(screen.getByText("Summary"))
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
 
       expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
@@ -814,12 +814,12 @@ describe("OptimiserPreview", () => {
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("Summary states the selected point's attainment against its own bound in text", () => {
+    it("the Frontier pane states the selected point's attainment against its own bound in text", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      fireEvent.click(screen.getByText("Summary"))
+      expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument()
       expect(attainmentCells("loss_ratio")).toEqual(["max", "0.58", "0.55", "+0.03 (+5.17%)", "Met", "0.001000"])
     })
 
@@ -843,12 +843,11 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/120\.0%/)).not.toBeInTheDocument()
     })
 
-    it("Summary shows the selected point's lambda values", () => {
+    it("the Frontier pane shows the selected point's lambda values", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      fireEvent.click(screen.getByText("Summary"))
       expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
       expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
     })
@@ -1183,10 +1182,9 @@ describe("OptimiserPreview", () => {
         adjustments: makeAdjustmentReport({ n_quotes: 50000 }),
       }))
       renderPreview({ data: selectedData(frontier, 2) })
-      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
 
-      expect(screen.getByRole("group", { name: "Adjustments" }))
-        .toHaveTextContent("Frontier point 3's adjustments load in the Adjustments tab.")
+      // The Frontier pane's summary shows no adjustments for a selected point.
+      expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
       expect(adjustmentRequests()).toHaveLength(0)
 
       fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
@@ -1196,7 +1194,7 @@ describe("OptimiserPreview", () => {
       ])
 
       // The loaded report belongs to the review: reopening the tab asks again for nothing.
-      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
       fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
       expect(screen.getByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
       expect(adjustmentRequests()).toHaveLength(1)
@@ -1397,13 +1395,12 @@ describe("OptimiserPreview", () => {
   })
 
   describe("constraint attainment across panes (G03)", () => {
-    it("prints the selected point's own bound and status on Summary", () => {
+    it("prints the selected point's own bound and status in the Frontier pane", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 4, result: pointResult(frontier, 4) }),
       })
 
-      fireEvent.click(screen.getByText("Summary"))
       const summary = attainmentCells("loss_ratio")
 
       // The point's swept 0.62 breaches; the configured and as-solved 1.05 would not.
@@ -1437,7 +1434,9 @@ describe("OptimiserPreview", () => {
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
       expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
-      expect(screen.queryByText("Optimised")).not.toBeInTheDocument()
+      // The Summary numbers sit in the Frontier pane, under the chart.
+      expect(screen.getByText("Optimised")).toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument()
     })
   })
 
