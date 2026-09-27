@@ -874,6 +874,65 @@ describe("TracePanel", () => {
     expect(screen.getByTestId("trace-show-full")).toHaveTextContent("show focused trace")
   })
 
+  describe("opening position", () => {
+    const STORY_TOP = 100
+    const CARD_TOP = 900
+    // The story's p-3 padding: the landed card sits where the first card does.
+    const CARD_GAP = 12
+
+    /** Lays the story out with only `landingCardId`'s card below the fold. */
+    function layOut(landingCardId: string) {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const top = this.dataset.testid === "trace-story"
+          ? STORY_TOP
+          : this.dataset.testid === `trace-step-card-${landingCardId}` ? CARD_TOP : 0
+        return DOMRect.fromRect({ x: 0, y: top, width: 400, height: 50 })
+      })
+    }
+
+    it("opens scrolled to the clicked node's card and lands again for a new trace", () => {
+      layOut("n2")
+      const { rerender } = render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+      const story = screen.getByTestId("trace-story")
+      expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+
+      story.scrollTop = 0
+      rerender(<TracePanel trace={makeTrace({ row_index: 1 })} onClose={vi.fn()} />)
+      expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+    })
+
+    it("opens on the last card shown when the focused trace hides the clicked node, and stays there", () => {
+      const diff = (added: string[], passed: string[] = []) => ({
+        columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
+      })
+      layOut("calc")
+      render(
+        <TracePanel
+          trace={makeTrace({
+            target_node_id: "out",
+            column: "y",
+            output_value: 2,
+            steps: [
+              makeStep({ node_id: "src", node_name: "src", node_type: "dataInput", schema_diff: diff(["x"]), output_values: { x: 1 }, contributed_columns: ["x"] }),
+              makeStep({ node_id: "calc", node_name: "calc", schema_diff: diff(["y"], ["x"]), output_values: { x: 1, y: 2 }, contributed_columns: ["y"] }),
+              // The clicked node only carries y: the focused trace hides it.
+              makeStep({ node_id: "out", node_name: "out", node_type: "dataOutput", schema_diff: diff([], ["x", "y"]), output_values: { x: 1, y: 2 } }),
+            ],
+          })}
+          onClose={vi.fn()}
+        />,
+      )
+      expect(screen.queryByTestId("trace-step-card-out")).not.toBeInTheDocument()
+      const story = screen.getByTestId("trace-story")
+      expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+
+      story.scrollTop = 40
+      fireEvent.click(screen.getByTestId("trace-show-full"))
+      expect(screen.getByTestId("trace-step-card-out")).toBeInTheDocument()
+      expect(story.scrollTop).toBe(40)
+    })
+  })
+
   it("names the step that loaded a carried key, and never claims a row-changing step left rows unchanged", () => {
     const addsQuoteId = { columns_added: ["quote_id"], columns_removed: [], columns_modified: [], columns_passed: [] }
     const passesQuoteId = { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["quote_id"] }

@@ -45,6 +45,7 @@ export function StepCard({
   defaultExpanded = false,
   waterfall,
   focusNonce,
+  isLanding,
 }: {
   step: TraceStep
   index: number
@@ -54,6 +55,8 @@ export function StepCard({
   waterfall?: TraceResult["waterfall"]
   /** Changes each time a derivation row's link asks for this card. */
   focusNonce?: number
+  /** The card a new trace opens scrolled to. */
+  isLanding?: boolean
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const navigation = useContext(TraceNavigationContext)
@@ -178,6 +181,7 @@ export function StepCard({
       className="rounded-lg overflow-hidden transition-opacity"
       data-testid={`trace-step-card-${step.node_id}`}
       data-target-step={isTargetStep || undefined}
+      data-trace-landing={isLanding || undefined}
       data-relevance={relevant ? "relevant" : "irrelevant"}
       data-trace-focused={flashing || undefined}
       onMouseEnter={() => navigation.hoverStep(step.node_id)}

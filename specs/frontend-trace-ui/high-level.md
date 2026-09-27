@@ -15,7 +15,8 @@ the validated response snapshot. The backend owns trace computation and response
 ## Behaviour
 
 - The panel identifies the relevant producing step, collapses non-essential pass-through work,
-  and lets the user reveal hidden steps or expand individual cards.
+  and lets the user reveal hidden steps or expand individual cards. It opens scrolled to the
+  clicked node's card, at the end of the story, rather than at the pipeline's first step.
 - A card presents schema changes, inputs/outputs, expressions and calculations, with a specialised
   banding, rating, model-score, optimiser-apply, scenario-expander or live-switch detail when
   the trace supplies one. Unknown detail types remain inspectable as generic JSON.

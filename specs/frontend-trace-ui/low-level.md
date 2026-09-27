@@ -100,6 +100,11 @@
    not traced above the snapshot its diagnostic's message names) labelled "snapshot";
    every other omission, `seed_recompute_failed` and `ancestor_row_conflict` included,
    is a warning "trace gap" alert. With no traced column, it leaves the steps uncollapsed.
+   The story opens on the clicked node: each new story key scrolls the story, instantly and
+   without moving any other scroll container, so the card of `target_node_id` starts at the
+   top of the view, or the last card shown when the focused story hides that node (a node
+   that only carries the traced column). The clicked node is the last step, so the view
+   opens at the end of the story; showing or hiding the full trace keeps the position.
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
@@ -201,8 +206,9 @@ in the trace, a read with no source, several possible sources, unfollowed reads,
 generated before its node's code, and the depth limit;
 `frontend/src/panels/__tests__/TracePanel.test.tsx` renders it in the
 online optimiser card and the "Computed here" list, follows a row's step link to its card
-and the canvas focus, shows the full trace for a link to a card the focused one hides, and
-rings a hovered card's node. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins
+and the canvas focus, shows the full trace for a link to a card the focused one hides,
+rings a hovered card's node, and opens scrolled to the clicked node's card, or to the last
+card shown when the focused trace hides it. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins
 one lineage fit per trace and centring at the current zoom;
 `frontend/src/hooks/__tests__/useTracing.test.ts` and
 `frontend/src/nodes/__tests__/PipelineNode.test.tsx` pin the `_traceFocused` projection and
