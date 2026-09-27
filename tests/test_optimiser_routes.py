@@ -33,7 +33,6 @@ from haute.routes._optimiser_limits import (
 )
 from haute.routes._optimiser_service import (
     FrontierAutoRangeContext,
-    _default_auto_range_partitions,
     _estimate_scenario_frontier_ranges,
 )
 from haute.routes._optimiser_solver import SolveContext, _as_solved_adjustments
@@ -2480,7 +2479,7 @@ class TestEstimateRoute:
 
         with pytest.raises(BackgroundJobStoppedError):
             _estimate_scenario_frontier_ranges(
-                FrontierAutoRangeContext(chunk_size=1, partition_count=2),
+                FrontierAutoRangeContext(chunk_size=1),
                 scored_lf=df.lazy(),
                 quote_id_col="quote_id",
                 constraint_cols=["volume"],
@@ -2504,7 +2503,7 @@ class TestEstimateRoute:
         )
 
         ranges = _estimate_scenario_frontier_ranges(
-            FrontierAutoRangeContext(chunk_size=2, partition_count=2),
+            FrontierAutoRangeContext(chunk_size=2),
             scored_lf=df.lazy(),
             quote_id_col="quote_id",
             constraint_cols=["volume", "margin"],
@@ -2556,7 +2555,6 @@ class TestEstimateRoute:
             _estimate_scenario_frontier_ranges(
                 FrontierAutoRangeContext(
                     chunk_size=2,
-                    partition_count=2,
                     execution_context=context,
                 ),
                 scored_lf=df.lazy(),
@@ -2648,6 +2646,54 @@ class TestEstimateRoute:
         assert job["http_status_code"] == 400
         assert job["error_detail"] == "bad lazy range"
         assert job["execution_metrics"]["terminal_reason"] == "contract_error"
+
+    def test_frontier_auto_range_reducer_budget_below_minimum_is_memory_limited(
+        self,
+        scored_data,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import (
+            AutoRangeReducerBudgetError,
+            OptimiserSolveService,
+        )
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        _node, prepared = service._prepare_frontier_auto_range(body)
+        error = AutoRangeReducerBudgetError(
+            budget_bytes=64 * 1024 * 1024,
+            minimum_bytes=384 * 1024 * 1024,
+            violation="batch_not_contiguous",
+            setting="HAUTE_OPTIMISER_REDUCER_BUDGET_MB",
+        )
+
+        with (
+            patch.object(
+                service,
+                "_execute_pipeline",
+                return_value={"source": pl.scan_parquet(scored_data)},
+            ),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=error,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 507
+        detail = exc_info.value.detail
+        assert detail["reason"] == "reducer_budget_below_minimum"
+        assert detail["reducer_budget_bytes"] == 64 * 1024 * 1024
+        assert detail["reducer_min_budget_bytes"] == 384 * 1024 * 1024
+        assert detail["violation"] == "batch_not_contiguous"
+        job = store.require_job(job_id)
+        assert job["status"] == "memory_limited"
+        assert job["terminal_reason"] == "memory_limited"
 
     def test_frontier_auto_range_missing_column_status_includes_http_metadata(
         self,
@@ -2851,7 +2897,6 @@ class TestEstimateRoute:
                                 "scenario_value": "premium_multiplier",
                                 "data_input": "optimiser_input",
                                 "chunk_size": 2,
-                                "auto_range_partition_count": 2,
                             },
                         },
                     },
@@ -2911,7 +2956,6 @@ class TestEstimateRoute:
         node, prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
         assert node.id == "opt"
-        assert prepared["partition_count"] == _default_auto_range_partitions()
         assert prepared["required_columns_by_node"] == _optimiser_solve_required_columns_by_node(
             body.graph, "opt", node.data.config
         )
@@ -2931,22 +2975,6 @@ class TestEstimateRoute:
 
         assert resp.status_code == 400
         assert "chunk_size must be a positive integer" in resp.json()["detail"]
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_rejects_invalid_partition_count(
-        self,
-        client,
-        scored_data,
-    ):
-        graph = _make_optimiser_graph(scored_data, config={"auto_range_partition_count": 0})
-
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
-        )
-
-        assert resp.status_code == 400
-        assert "auto_range_partition_count must be a positive integer" in resp.json()["detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_runtime_projects_contract_free_fan_in(

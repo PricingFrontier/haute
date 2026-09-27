@@ -353,12 +353,6 @@ _EXPECTED_DEBT_IDS = {
     # Haute's default xgboost-cpu install lack; the device-free GPU contract
     # (config, refusal, fallback detection, VRAM, route, gpu-setup) runs everywhere.
     "3f2e4ca1be0a6123",
-    # Strict expected failure in tests/performance/test_auto_range_memory.py
-    # (perf lane): auto-range runs the solve setup's stage, and an uncached
-    # scored frame's peak follows the batch scorer's sink of the expanded frame
-    # until WP7 of .scratch/plans/2026-09-27-auto-range-ram.md bounds it.
-    # strict=True turns it into a failure as soon as WP7 makes the bound hold.
-    "ee9d1732207bddbe",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

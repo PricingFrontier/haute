@@ -4731,7 +4731,6 @@ def _auto_range_prepared(node: Any) -> tuple[Any, dict[str, Any]]:
     return node, {
         "config": {"objective": "expected_income", "constraints": {}},
         "mode": "online",
-        "partition_count": 1,
         "timeout": 10,
         "required_columns_by_node": {},
     }

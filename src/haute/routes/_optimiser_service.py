@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import gc
+import math
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -216,9 +217,9 @@ def _default_auto_range_timeout() -> int:
     return int_env("HAUTE_AUTO_RANGE_TIMEOUT", 1800)
 
 
-def _default_auto_range_partitions() -> int:
-    # disk buckets for chunked auto-range aggregation
-    return int_env("HAUTE_AUTO_RANGE_PARTITIONS", 16)
+def _default_reducer_budget_mb() -> int:
+    # the auto-range reducer's byte budget cap, before the headroom term
+    return int_env("HAUTE_OPTIMISER_REDUCER_BUDGET_MB", 512)
 
 
 _JOB_TYPE_KEY = "job_type"
@@ -229,7 +230,6 @@ _ESTIMATE_JOB_TYPE: Literal["estimate"] = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE: Literal["frontier_auto_range"] = "frontier_auto_range"
 _FRONTIER_RECOMPUTE_JOB_TYPE: Literal["frontier_recompute"] = "frontier_recompute"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
-_AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
 _FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = TERMINAL_REASONS
@@ -480,13 +480,6 @@ def _solve_timeout_from_config(config: Mapping[str, Any]) -> int | None:
     return _optional_positive_int(config.get("timeout"), field="timeout")
 
 
-def _auto_range_partition_count_from_config(config: dict[str, Any]) -> int:
-    return _positive_int(
-        config.get("auto_range_partition_count", _default_auto_range_partitions()),
-        field="auto_range_partition_count",
-    )
-
-
 def _auto_range_timeout_from_config(config: dict[str, Any]) -> int:
     return _positive_int(
         config.get("auto_range_timeout", _default_auto_range_timeout()),
@@ -494,38 +487,207 @@ def _auto_range_timeout_from_config(config: dict[str, Any]) -> int:
     )
 
 
+_MIB = 1024 * 1024
+# The fallback finish's measured fixed cost (engine and allocator retention at
+# eight threads): below it the finish's private growth exceeded its budget.
+_REDUCER_MEASURED_MIN_BUDGET_BYTES = 384 * _MIB
+# Row groups per partial file: bounds one file's footer while a pass still
+# prunes most of a file's row groups by their bucket statistics.
+_REDUCER_ROW_GROUPS_PER_PART = 64
+# One footer column chunk as held in memory (4x its ~110-byte encoding).
+_REDUCER_FOOTER_CHUNK_BYTES = 440
+# Group-by state per distinct quote relative to its decoded partial row.
+_REDUCER_GROUP_STATE_FACTOR = 4
+# A finished-quote hash costs 8 bytes, plus 1 for the final duplicate scan
+# and room for the one-off concatenation before the sort.
+_REDUCER_HASH_BUDGET_DIVISOR = 18
+_REDUCER_BUCKET_COUNT = 65_536
+_REDUCER_BUCKET_DIVISOR = 2**48
+_REDUCER_BUCKET_COLUMN = "__haute_frontier_range_bucket"
+_REDUCER_ROW_COLUMN = "__haute_frontier_range_row"
+_REDUCER_FIRST_COLUMN = "__haute_frontier_range_first"
+_REDUCER_LAST_COLUMN = "__haute_frontier_range_last"
+_REDUCER_COUNT_COLUMN = "__haute_frontier_range_count"
+_REDUCER_HASH_COLUMN = "__haute_frontier_range_hash"
+_REDUCER_BUDGET_SETTING = "HAUTE_OPTIMISER_REDUCER_BUDGET_MB"
+_REDUCER_HEADROOM_SETTING = "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB"
+
+ReducerFallbackReason = Literal["batch_not_contiguous", "quote_reappeared", "hash_buffer_full"]
+
+
+@dataclass(frozen=True, slots=True)
+class _ReducerBudget:
+    """The reducer's byte budget G_r and the setting that bounds it."""
+
+    budget_bytes: int
+    setting: str
+
+
+def _reducer_budget(execution_context: ExecutionContext | None) -> _ReducerBudget:
+    """G_r = min(cap, headroom // 4); the cap alone when there is no effective limit.
+
+    The headroom is the execution context's remaining RSS headroom. In a
+    process-mode worker that context is sized to the admitted grant, which is
+    also what the worker's native private-byte cap enforces.
+    """
+    cap = _default_reducer_budget_mb() * _MIB
+    headroom = None if execution_context is None else execution_context.remaining_memory_bytes()
+    if headroom is None or cap <= headroom // 4:
+        return _ReducerBudget(budget_bytes=cap, setting=_REDUCER_BUDGET_SETTING)
+    return _ReducerBudget(budget_bytes=headroom // 4, setting=_REDUCER_HEADROOM_SETTING)
+
+
+def _reducer_partial_row_bytes(constraint_count: int, key_width: float) -> float:
+    """b_raw: one decoded partial row (key, a Float64 min and max per constraint, bucket)."""
+    return key_width + 16 * constraint_count + 16
+
+
+def _reducer_min_budget_bytes(constraint_count: int, key_width: float, batch_row_cap: int) -> int:
+    """G_min, below which the exact fallback finish cannot run within its budget.
+
+    The larger of the measured fixed cost and eight times one partial file's
+    in-memory footer plus two of its decoded row groups.
+    """
+    footer = _REDUCER_ROW_GROUPS_PER_PART * (2 * constraint_count + 2) * _REDUCER_FOOTER_CHUNK_BYTES
+    rows_per_group = math.ceil(batch_row_cap / _REDUCER_ROW_GROUPS_PER_PART)
+    structural = 8 * (
+        footer + 2 * rows_per_group * _reducer_partial_row_bytes(constraint_count, key_width)
+    )
+    return max(_REDUCER_MEASURED_MIN_BUDGET_BYTES, math.ceil(structural))
+
+
+def _reducer_fallback_pass_count(
+    partial_rows: int, row_state_bytes: float, budget_bytes: int
+) -> int:
+    """P: the smallest power of two whose passes keep group state within half the budget."""
+    needed = math.ceil(partial_rows * row_state_bytes / max(1, budget_bytes // 2))
+    passes = 1
+    while passes < needed and passes < _REDUCER_BUCKET_COUNT:
+        passes *= 2
+    return passes
+
+
+class AutoRangeReducerBudgetError(ExecutionMemoryLimitExceededError):
+    """The frame needs the exact fallback, which the reducer's budget cannot hold."""
+
+    def __init__(
+        self,
+        *,
+        budget_bytes: int,
+        minimum_bytes: int,
+        violation: str,
+        setting: str,
+        job_id: str | None = None,
+    ) -> None:
+        super().__init__(
+            "frontier_auto_range_reducer",
+            rss_bytes=minimum_bytes,
+            limit_bytes=budget_bytes,
+            job_id=job_id,
+            reason="reducer_budget_below_minimum",
+        )
+        self.budget_bytes = budget_bytes
+        self.minimum_bytes = minimum_bytes
+        self.violation = violation
+        self.setting = setting
+        self.args = (
+            f"The auto-range reducer's memory budget ({budget_bytes} bytes) is below "
+            f"its minimum ({minimum_bytes} bytes), and the scenario frame needs its "
+            f"exact fallback ({violation}); raise {setting}.",
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        payload = super().to_payload()
+        payload.update(
+            {
+                "reducer_budget_bytes": self.budget_bytes,
+                "reducer_min_budget_bytes": self.minimum_bytes,
+                "violation": self.violation,
+                "setting": self.setting,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _CarriedQuote:
+    """The previous batch's last quote, held back in case the next batch continues it."""
+
+    quote_id: str
+    quote_hash: int
+    values: tuple[float | None, ...]
+
+
+def _combine_extremum(left: float | None, right: float | None, *, is_min: bool) -> float | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right) if is_min else max(left, right)
+
+
 class _ScenarioFrontierRangeAccumulator:
-    """Accumulate per-quote scenario extrema through disk-backed buckets."""
+    """Exact per-quote scenario extrema totals over bounded batches, in Float64.
+
+    Only final per-quote extrema are summed: a quote's extrema from several
+    batches are combined (min of mins, max of maxes) first, and nothing is
+    ever subtracted.
+
+    **Carry path.** Batches are almost always grouped by quote (the expander
+    emits a quote's scenarios together and captures keep order), so one
+    group-by per batch gives each quote's extrema plus its first/last row and
+    count. The batch is contiguous iff ``last - first + 1 == n`` for every
+    quote. The batch's last quote is held back and combined with the next
+    batch's first quote when they match; every other quote is finished, its
+    extrema added to running sums and its hash buffered. At the finish a
+    repeated hash (a quote that reappeared, or a collision) means the sums
+    cannot be trusted.
+
+    **Fallback.** Every batch also writes its per-quote partial to one sorted,
+    bucketed parquet file, because a violation can appear after earlier
+    batches were reduced. On a violation the carry state is dropped and the
+    finish combines the partials by quote value in bucket-range passes,
+    reading one file at a time. Below :func:`_reducer_min_budget_bytes` the
+    fallback is unavailable: no partials are written and a violation fails the
+    job as ``memory_limited``.
+    """
 
     def __init__(
         self,
         *,
         quote_id_col: str,
         constraint_cols: list[str],
-        partition_count: int,
         parts_root: Path,
+        budget: _ReducerBudget,
+        batch_row_cap: int,
+        job_id: str | None = None,
     ) -> None:
         import polars as pl
 
         self.quote_id_col = quote_id_col
         self.constraint_cols = list(constraint_cols)
-        self.partition_count = partition_count
         self.parts_root = parts_root
-        self.bucket_files: dict[int, list[Path]] = {}
+        self.budget = budget
+        self.batch_row_cap = batch_row_cap
+        self.job_id = job_id
         self.row_count = 0
         self.null_quote_id_count = 0
         self.aliases: dict[str, tuple[str, str]] = {}
+        self.extrema_columns: list[str] = []
+        self.is_min: list[bool] = []
         self.aggregate_exprs = []
         self.combine_exprs = []
-        self.bucket_total_exprs = []
+        self.sum_exprs = []
         for idx, cname in enumerate(self.constraint_cols):
             min_alias = f"__haute_frontier_min_{idx}"
             max_alias = f"__haute_frontier_max_{idx}"
             self.aliases[cname] = (min_alias, max_alias)
+            self.extrema_columns.extend([min_alias, max_alias])
+            self.is_min.extend([True, False])
             self.aggregate_exprs.extend(
                 [
-                    pl.col(cname).min().alias(min_alias),
-                    pl.col(cname).max().alias(max_alias),
+                    pl.col(cname).min().cast(pl.Float64).alias(min_alias),
+                    pl.col(cname).max().cast(pl.Float64).alias(max_alias),
                 ]
             )
             self.combine_exprs.extend(
@@ -534,12 +696,21 @@ class _ScenarioFrontierRangeAccumulator:
                     pl.col(max_alias).max().alias(max_alias),
                 ]
             )
-            self.bucket_total_exprs.extend(
-                [
-                    pl.col(min_alias).sum().alias(min_alias),
-                    pl.col(max_alias).sum().alias(max_alias),
-                ]
-            )
+        self.sum_exprs = [pl.col(alias).sum().alias(alias) for alias in self.extrema_columns]
+        # Fallback: one partial file per batch while the fallback is available.
+        self.key_width = 0.0
+        self.min_budget_bytes: int | None = None
+        self.fallback_available: bool | None = None
+        self.part_files: list[Path] = []
+        self.partial_rows = 0
+        # Carry path state, dropped when the carry path is turned off.
+        self.carry_path = True
+        self.fallback_reason: ReducerFallbackReason | None = None
+        self.carry: _CarriedQuote | None = None
+        self.totals: list[float] = [0.0] * len(self.extrema_columns)
+        self.hash_chunks: list[np.ndarray] = []
+        self.hash_count = 0
+        self.hash_capacity = budget.budget_bytes // _REDUCER_HASH_BUDGET_DIVISOR
 
     def add_batch(self, batch: pl.DataFrame, *, batch_index: int) -> None:
         import polars as pl
@@ -551,32 +722,210 @@ class _ScenarioFrontierRangeAccumulator:
         if null_count > 0:
             self.null_quote_id_count += null_count
             return
+        if self.null_quote_id_count > 0:
+            # The finish raises the null-quote error; reducing further is waste.
+            return
 
         partial = (
-            batch.group_by(self.quote_id_col)
-            .agg(self.aggregate_exprs)
-            .with_columns(
-                (pl.col(self.quote_id_col).hash(seed=0) % self.partition_count)
-                .cast(pl.UInt32)
-                .alias(_AUTO_RANGE_BUCKET_COLUMN)
+            batch.with_row_index(_REDUCER_ROW_COLUMN)
+            .group_by(self.quote_id_col)
+            .agg(
+                *self.aggregate_exprs,
+                pl.col(_REDUCER_ROW_COLUMN).min().alias(_REDUCER_FIRST_COLUMN),
+                pl.col(_REDUCER_ROW_COLUMN).max().alias(_REDUCER_LAST_COLUMN),
+                pl.len().alias(_REDUCER_COUNT_COLUMN),
             )
+            .with_columns(pl.col(self.quote_id_col).hash(seed=0).alias(_REDUCER_HASH_COLUMN))
         )
-        bucket_ids = (
-            partial.select(_AUTO_RANGE_BUCKET_COLUMN)
-            .unique(maintain_order=False)
-            .get_column(_AUTO_RANGE_BUCKET_COLUMN)
-            .to_list()
+        self._update_fallback_availability(partial)
+        if self.fallback_available:
+            self._write_partial(partial, batch_index=batch_index)
+        if not self.carry_path:
+            return
+        contiguous = bool(
+            partial.select(
+                (
+                    pl.col(_REDUCER_LAST_COLUMN) - pl.col(_REDUCER_FIRST_COLUMN) + 1
+                    == pl.col(_REDUCER_COUNT_COLUMN)
+                ).all()
+            ).item()
         )
-        for raw_bucket in bucket_ids:
-            bucket = int(raw_bucket)
-            bucket_df = partial.filter(pl.col(_AUTO_RANGE_BUCKET_COLUMN) == bucket).drop(
-                _AUTO_RANGE_BUCKET_COLUMN
+        if not contiguous:
+            self._leave_carry_path("batch_not_contiguous", batch_index=batch_index)
+            return
+        self._carry_batch(partial, height=batch.height, batch_index=batch_index)
+
+    def _update_fallback_availability(self, partial: pl.DataFrame) -> None:
+        """Re-check G_min with the widest key seen; once unavailable, the fallback stays so."""
+        from haute._ram_estimate import string_view_bytes_per_row
+
+        if self.fallback_available is False:
+            return
+        self.key_width = max(
+            self.key_width,
+            string_view_bytes_per_row(partial.get_column(self.quote_id_col)),
+        )
+        self.min_budget_bytes = _reducer_min_budget_bytes(
+            len(self.constraint_cols),
+            self.key_width,
+            self.batch_row_cap,
+        )
+        available = self.budget.budget_bytes >= self.min_budget_bytes
+        was_available = self.fallback_available
+        self.fallback_available = available
+        if not available:
+            # Partials already written can no longer be completed by later ones.
+            self._discard_partials()
+            if was_available and not self.carry_path and self.fallback_reason is not None:
+                raise self._budget_error(self.fallback_reason)
+
+    def _discard_partials(self) -> None:
+        for path in self.part_files:
+            path.unlink(missing_ok=True)
+        self.part_files = []
+        self.partial_rows = 0
+
+    def _write_partial(self, partial: pl.DataFrame, *, batch_index: int) -> None:
+        """One lz4 file per batch, sorted by a 16-bit bucket, at most 64 row groups."""
+        import polars as pl
+
+        part = partial.select(
+            self.quote_id_col,
+            *self.extrema_columns,
+            (pl.col(_REDUCER_HASH_COLUMN) // pl.lit(_REDUCER_BUCKET_DIVISOR, dtype=pl.UInt64))
+            .cast(pl.UInt16)
+            .alias(_REDUCER_BUCKET_COLUMN),
+        ).sort(_REDUCER_BUCKET_COLUMN)
+        path = self.parts_root / f"part_{batch_index:08d}.parquet"
+        part.write_parquet(
+            path,
+            compression="lz4",
+            statistics=True,
+            row_group_size=max(1, math.ceil(part.height / _REDUCER_ROW_GROUPS_PER_PART)),
+        )
+        self.part_files.append(path)
+        self.partial_rows += part.height
+
+    def _budget_error(self, violation: str) -> AutoRangeReducerBudgetError:
+        return AutoRangeReducerBudgetError(
+            budget_bytes=self.budget.budget_bytes,
+            minimum_bytes=int(self.min_budget_bytes or 0),
+            violation=violation,
+            setting=self.budget.setting,
+            job_id=self.job_id,
+        )
+
+    def _leave_carry_path(self, reason: ReducerFallbackReason, *, batch_index: int | None) -> None:
+        """Drop the carry state; the exact fallback finish, if available, takes over."""
+        self.carry_path = False
+        self.fallback_reason = reason
+        self.carry = None
+        self.totals = []
+        self.hash_chunks = []
+        self.hash_count = 0
+        logger.info(
+            "auto_range_reducer_fallback",
+            reason=reason,
+            batch_index=batch_index,
+            fallback_available=bool(self.fallback_available),
+            reducer_budget_bytes=self.budget.budget_bytes,
+            reducer_min_budget_bytes=self.min_budget_bytes,
+        )
+        if not self.fallback_available:
+            raise self._budget_error(reason)
+
+    def _row_values(self, frame: pl.DataFrame) -> tuple[float | None, ...]:
+        return tuple(frame.select(self.extrema_columns).row(0))
+
+    def _combine_values(
+        self,
+        left: tuple[float | None, ...],
+        right: tuple[float | None, ...],
+    ) -> tuple[float | None, ...]:
+        return tuple(
+            _combine_extremum(a, b, is_min=is_min)
+            for a, b, is_min in zip(left, right, self.is_min, strict=True)
+        )
+
+    def _carry_batch(self, partial: pl.DataFrame, *, height: int, batch_index: int) -> None:
+        """Finish every quote but the batch's last, which becomes the new carry."""
+        import polars as pl
+
+        first_col = pl.col(_REDUCER_FIRST_COLUMN)
+        last_col = pl.col(_REDUCER_LAST_COLUMN)
+        head = partial.filter(first_col == 0)
+        tail = partial.filter(last_col == height - 1)
+        middle = partial.filter((first_col != 0) & (last_col != height - 1))
+        head_quote = _CarriedQuote(
+            quote_id=str(head.get_column(self.quote_id_col).item()),
+            quote_hash=int(head.get_column(_REDUCER_HASH_COLUMN).item()),
+            values=self._row_values(head),
+        )
+        finished: list[_CarriedQuote] = []
+        if self.carry is not None:
+            if self.carry.quote_id == head_quote.quote_id:
+                head_quote = dataclasses.replace(
+                    head_quote,
+                    values=self._combine_values(self.carry.values, head_quote.values),
+                )
+            else:
+                finished.append(self.carry)
+        if partial.height == 1:
+            new_carry = head_quote
+        else:
+            finished.append(head_quote)
+            new_carry = _CarriedQuote(
+                quote_id=str(tail.get_column(self.quote_id_col).item()),
+                quote_hash=int(tail.get_column(_REDUCER_HASH_COLUMN).item()),
+                values=self._row_values(tail),
             )
-            bucket_dir = self.parts_root / f"bucket_{bucket:04d}"
-            bucket_dir.mkdir(exist_ok=True)
-            part_path = bucket_dir / f"part_{batch_index:08d}.parquet"
-            bucket_df.write_parquet(part_path, compression="lz4")
-            self.bucket_files.setdefault(bucket, []).append(part_path)
+        new_hashes = np.concatenate(
+            [
+                np.fromiter((quote.quote_hash for quote in finished), dtype=np.uint64),
+                middle.get_column(_REDUCER_HASH_COLUMN).to_numpy().astype(np.uint64, copy=False),
+            ]
+        )
+        if not self._append_hashes(new_hashes, batch_index=batch_index):
+            return
+        middle_sums = middle.select(self.sum_exprs).row(0) if middle.height else ()
+        for values in [*(quote.values for quote in finished), middle_sums]:
+            self._add_to_totals(values)
+        self.carry = new_carry
+
+    def _append_hashes(self, hashes: np.ndarray, *, batch_index: int | None) -> bool:
+        """Buffer finished-quote hashes; a buffer that would overflow ends the carry path."""
+        if self.hash_count + hashes.size > self.hash_capacity:
+            self._leave_carry_path("hash_buffer_full", batch_index=batch_index)
+            return False
+        if hashes.size:
+            self.hash_chunks.append(hashes)
+            self.hash_count += int(hashes.size)
+        return True
+
+    def _add_to_totals(self, values: Iterable[float | None]) -> None:
+        for idx, value in enumerate(values):
+            if value is not None:
+                self.totals[idx] += float(value)
+
+    def _carry_totals(self) -> list[float] | None:
+        """The carry path's totals, or ``None`` when it must fall back at the finish."""
+        if self.carry is not None:
+            carry = self.carry
+            self.carry = None
+            if not self._append_hashes(
+                np.array([carry.quote_hash], dtype=np.uint64), batch_index=None
+            ):
+                return None
+            self._add_to_totals(carry.values)
+        hashes = np.concatenate(self.hash_chunks) if self.hash_chunks else np.empty(0, np.uint64)
+        self.hash_chunks = []
+        hashes.sort()
+        repeated = hashes.size > 1 and bool((hashes[1:] == hashes[:-1]).any())
+        del hashes
+        if repeated:
+            self._leave_carry_path("quote_reappeared", batch_index=None)
+            return None
+        return self.totals
 
     def finish(
         self,
@@ -584,8 +933,6 @@ class _ScenarioFrontierRangeAccumulator:
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> dict[str, dict[str, float]]:
-        import polars as pl
-
         if check_cancelled is not None:
             check_cancelled()
         if self.row_count == 0:
@@ -597,45 +944,109 @@ class _ScenarioFrontierRangeAccumulator:
             )
             raise ValueError(detail)
 
-        range_totals = {cname: {"min": 0.0, "max": 0.0} for cname in self.constraint_cols}
-        for paths in self.bucket_files.values():
-            if check_cancelled is not None:
-                check_cancelled()
-            if execution_context is not None:
-                execution_context.checkpoint(label="frontier_range_bucket_start")
-            with _execution_stage(
-                execution_context,
-                "frontier_range_bucket_reduce",
-            ):
-                bucket_totals_lf = (
-                    pl.scan_parquet([str(path) for path in paths])
-                    .group_by(self.quote_id_col)
-                    .agg(self.combine_exprs)
-                    .select(self.bucket_total_exprs)
-                )
-                bucket_totals = streaming_collect(
-                    bucket_totals_lf,
-                    execution_context=execution_context,
-                )
-            if execution_context is not None:
-                execution_context.checkpoint(label="frontier_range_bucket_done")
-            if bucket_totals.height != 1:
-                raise ValueError("Unable to estimate frontier ranges from a scenario bucket.")
-            row = bucket_totals.row(0, named=True)
-            for cname, (min_alias, max_alias) in self.aliases.items():
-                range_totals[cname]["min"] += float(row[min_alias])
-                range_totals[cname]["max"] += float(row[max_alias])
+        totals = self._carry_totals() if self.carry_path else None
+        if totals is None:
+            totals = self._fallback_totals(
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
 
         ranges: dict[str, dict[str, float]] = {}
-        for cname, values in range_totals.items():
-            min_value = values["min"]
-            max_value = values["max"]
+        for cname, (min_alias, max_alias) in self.aliases.items():
+            min_value = totals[self.extrema_columns.index(min_alias)]
+            max_value = totals[self.extrema_columns.index(max_alias)]
             if not np.isfinite(min_value) or not np.isfinite(max_value):
                 raise ValueError(f"Estimated frontier range for {cname!r} is not finite.")
             if min_value > max_value:
                 raise ValueError(f"Estimated frontier range for {cname!r} is invalid.")
             ranges[cname] = {"min": min_value, "max": max_value}
         return ranges
+
+    def _fallback_totals(
+        self,
+        *,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> list[float]:
+        """Today's bucketed combine-then-sum, in Float64, over bucket-range passes."""
+        row_state_bytes = _REDUCER_GROUP_STATE_FACTOR * _reducer_partial_row_bytes(
+            len(self.constraint_cols), self.key_width
+        )
+        passes = _reducer_fallback_pass_count(
+            self.partial_rows, row_state_bytes, self.budget.budget_bytes
+        )
+        width = _REDUCER_BUCKET_COUNT // passes
+        piece_threshold = max(1, self.budget.budget_bytes // 8)
+        totals = [0.0] * len(self.extrema_columns)
+        for pass_index in range(passes):
+            if check_cancelled is not None:
+                check_cancelled()
+            if execution_context is not None:
+                execution_context.checkpoint(label="frontier_range_fallback_pass_start")
+            with _execution_stage(execution_context, "frontier_range_fallback_pass"):
+                state = self._fallback_pass_state(
+                    pass_index * width,
+                    (pass_index + 1) * width - 1,
+                    piece_threshold=piece_threshold,
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
+                )
+                if state is not None:
+                    for idx, value in enumerate(state.select(self.sum_exprs).row(0)):
+                        if value is not None:
+                            totals[idx] += float(value)
+                del state
+            if execution_context is not None:
+                execution_context.checkpoint(label="frontier_range_fallback_pass_done")
+        return totals
+
+    def _fallback_pass_state(
+        self,
+        low_bucket: int,
+        high_bucket: int,
+        *,
+        piece_threshold: int,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> pl.DataFrame | None:
+        """One pass's per-quote state: every file's pieces in the bucket range, by quote value."""
+        import polars as pl
+
+        state: pl.DataFrame | None = None
+        pieces: list[pl.DataFrame] = []
+        buffered_bytes = 0
+        for path in self.part_files:
+            if check_cancelled is not None:
+                check_cancelled()
+            piece = streaming_collect(
+                pl.scan_parquet(path)
+                .filter(pl.col(_REDUCER_BUCKET_COLUMN).is_between(low_bucket, high_bucket))
+                .drop(_REDUCER_BUCKET_COLUMN),
+                execution_context=execution_context,
+            )
+            if piece.height == 0:
+                continue
+            pieces.append(piece)
+            buffered_bytes += int(piece.estimated_size())
+            if buffered_bytes >= piece_threshold:
+                state = self._merge_pass_pieces(state, pieces)
+                pieces = []
+                buffered_bytes = 0
+        if pieces:
+            # The final flush: pieces below the threshold, or after the last
+            # merge, belong in this pass's totals too.
+            state = self._merge_pass_pieces(state, pieces)
+        return state
+
+    def _merge_pass_pieces(
+        self,
+        state: pl.DataFrame | None,
+        pieces: list[pl.DataFrame],
+    ) -> pl.DataFrame:
+        import polars as pl
+
+        frames = pieces if state is None else [state, *pieces]
+        return pl.concat(frames, how="vertical").group_by(self.quote_id_col).agg(self.combine_exprs)
 
 
 def _add_frontier_range_batch(
@@ -658,7 +1069,6 @@ class FrontierAutoRangeContext:
     """Per-job context for frontier auto-range estimation."""
 
     chunk_size: int = dataclasses.field(default_factory=current_streaming_chunk_size)
-    partition_count: int = dataclasses.field(default_factory=_default_auto_range_partitions)
     execution_context: ExecutionContext | None = None
 
 
@@ -674,10 +1084,10 @@ def _estimate_scenario_frontier_ranges(
     """Return exact online achievable min/max totals from the scenario frame.
 
     For each constraint, each quote can independently choose the scenario that
-    minimises or maximises that constraint total.  The input is read in bounded
-    batches, reduced to per-batch quote extrema, then hash-partitioned to
-    temporary parquet files so quotes split across read batches are recombined
-    without one global per-quote aggregate table.
+    minimises or maximises that constraint total. The input is read in bounded
+    batches in the frame's order and reduced by
+    :class:`_ScenarioFrontierRangeAccumulator` without one global per-quote
+    aggregate table.
     """
     if not constraint_cols:
         return {}
@@ -685,15 +1095,16 @@ def _estimate_scenario_frontier_ranges(
     if check_cancelled is not None:
         check_cancelled()
     chunk_size = _positive_int(ctx.chunk_size, field="chunk_size")
-    partition_count = _positive_int(ctx.partition_count, field="partition_count")
     execution_context = ctx.execution_context
     range_columns = _frontier_range_batch_columns(quote_id_col, constraint_cols)
     # ``chunk_size`` is the per-batch row count for the auto-range reducer;
-    # the underlying scan and collect stream at the process chunk size.
+    # the underlying scan and collect stream at the process chunk size. The
+    # frame's quote order reaches the reducer, whose carry path relies on it
+    # (and verifies it).
     raw_batches = bounded_collect_batches(
         scored_lf,
         chunk_size=chunk_size,
-        maintain_order=False,
+        maintain_order=True,
         execution_context=execution_context,
         stage_name="frontier_range_collect_batch",
     )
@@ -713,7 +1124,7 @@ def _estimate_scenario_frontier_ranges(
         range_batches(),
         quote_id_col=quote_id_col,
         constraint_cols=constraint_cols,
-        partition_count=partition_count,
+        batch_row_cap=chunk_size,
         check_cancelled=check_cancelled,
         execution_context=execution_context,
     )
@@ -738,22 +1149,24 @@ def _reduce_frontier_range_batches(
     *,
     quote_id_col: str,
     constraint_cols: list[str],
-    partition_count: int,
+    batch_row_cap: int,
     check_cancelled: Callable[[], None] | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> dict[str, dict[str, float]]:
-    """Reduce range batches, whichever path produced them, to exact range totals.
+    """Reduce range batches of at most *batch_row_cap* rows to exact Float64 range totals.
 
-    Each batch is reduced to per-quote extrema and hash-partitioned to
-    temporary parquet parts, so a quote split across batches is recombined in
-    ``finish()`` without one global per-quote aggregate table.
+    The reducer's budget is fixed when it starts; its partial files live in a
+    private temporary directory removed on every exit.
     """
+    budget = _reducer_budget(execution_context)
     with _optimiser_artifacts._range_parts_directory() as parts_root:
         accumulator = _ScenarioFrontierRangeAccumulator(
             quote_id_col=quote_id_col,
             constraint_cols=constraint_cols,
-            partition_count=partition_count,
             parts_root=parts_root,
+            budget=budget,
+            batch_row_cap=batch_row_cap,
+            job_id=None if execution_context is None else execution_context.job_id,
         )
         for batch_index, batch in enumerate(batches):
             if check_cancelled is not None:
@@ -2158,14 +2571,12 @@ class OptimiserSolveService:
         config = dict(node.data.config)
         mode = self._validate_config(config)
         try:
-            partition_count = _auto_range_partition_count_from_config(config)
             timeout = _auto_range_timeout_from_config(config)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return node, {
             "config": config,
             "mode": mode,
-            "partition_count": partition_count,
             "timeout": timeout,
             "required_columns_by_node": _optimiser_solve_required_columns_by_node(
                 body.graph,
@@ -2181,7 +2592,6 @@ class OptimiserSolveService:
         *,
         config: dict[str, Any],
         mode: str,
-        partition_count: int,
         timeout: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         execution_context: ExecutionContext | None = None,
@@ -2202,7 +2612,6 @@ class OptimiserSolveService:
         job_kwargs: dict[str, Any] = {
             "config": config,
             "mode": mode,
-            "partition_count": partition_count,
             "timeout": timeout,
             "required_columns_by_node": required_columns_by_node,
             "seed_plan": seed_plan,
@@ -2265,7 +2674,6 @@ class OptimiserSolveService:
         execution_context: ExecutionContext,
         config: dict[str, Any],
         mode: str,
-        partition_count: int,
         timeout: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         seed_plan: SeedPlanHandoff | None,
@@ -2288,7 +2696,6 @@ class OptimiserSolveService:
                         job_id,
                         config=config,
                         mode=mode,
-                        partition_count=partition_count,
                         required_columns_by_node=required_columns_by_node,
                         timeout=timeout,
                         execution_context=execution_context,
@@ -2299,7 +2706,6 @@ class OptimiserSolveService:
                         job_id,
                         resources,
                         config=config,
-                        partition_count=partition_count,
                         required_columns_by_node=required_columns_by_node,
                         execution_context=execution_context,
                         seed_plan=seed_plan,
@@ -2467,7 +2873,6 @@ class OptimiserSolveService:
         resources: contextlib.ExitStack,
         *,
         config: dict[str, Any],
-        partition_count: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         execution_context: ExecutionContext,
         seed_plan: SeedPlanHandoff | None = None,
@@ -2533,7 +2938,6 @@ class OptimiserSolveService:
             return _estimate_scenario_frontier_ranges(
                 FrontierAutoRangeContext(
                     chunk_size=current_streaming_chunk_size(),
-                    partition_count=partition_count,
                     execution_context=execution_context,
                 ),
                 scored_lf=scored_lf,
@@ -2550,7 +2954,6 @@ class OptimiserSolveService:
         *,
         config: dict[str, Any],
         mode: str,
-        partition_count: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         timeout: int,
         execution_context: ExecutionContext,
@@ -2592,7 +2995,6 @@ class OptimiserSolveService:
                         body=body,
                         config=dict(config),
                         mode=mode,
-                        partition_count=partition_count,
                         timeout=timeout,
                         required_columns_by_node={
                             node_id: frozenset(columns)

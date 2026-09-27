@@ -65,13 +65,13 @@ context without the resolved value rather than silently resetting elapsed-time a
   `(chunk_size, provenance)` for the solver-input grid build, recording whether a chunk
   size came from explicit config or a byte-budget policy.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
-  of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`),
-  partition count, and execution context for one auto-range run.
-- `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — a
-  disk-bucketed accumulator that combines
-  per-quote scenario min/max across many batches by hash-partitioning into parquet parts and
-  combining them in `finish()`, so auto-range estimation never has to hold the full per-quote
-  range set in memory at once.
+  of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)
+  and execution context for one auto-range run.
+- `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — the exact
+  Float64 range reducer (see "Frontier auto-range estimation"): a carry-over path for
+  quote-grouped batches, verified per batch and at the finish, with a bucketed combine over
+  per-batch parquet partials as its exact fallback, so auto-range never holds one global
+  per-quote table.
 
 No `TypedDict`s are defined anywhere in the component; job-store entries and artifact handles
 are plain `dict[str, Any]`, validated defensively at each read site rather than at a type
@@ -477,8 +477,7 @@ and structured classification layer.
 
 Auto-range runs solve setup's pipeline stage and reduces its frame; it has no execution path of
 its own. `start_frontier_auto_range` calls `_prepare_frontier_auto_range` in the request thread,
-which validates config/mode (a 400 before any job exists), resolves `partition_count`
-(`auto_range_partition_count`, default `HAUTE_AUTO_RANGE_PARTITIONS`, 16) and `timeout`
+which validates config/mode (a 400 before any job exists), resolves `timeout`
 (`auto_range_timeout`, default `HAUTE_AUTO_RANGE_TIMEOUT`, 1800 s), and resolves the solve's
 column demand once (`_optimiser_solve_required_columns_by_node`); the job and its worker take
 these as arguments and never recompute them.
@@ -510,9 +509,45 @@ these as arguments and never recompute them.
   `_estimate_scenario_frontier_ranges` reads the frame through `bounded_collect_batches` in
   batches of `current_streaming_chunk_size()` rows (the Pipeline Settings streaming chunk size; a
   worker inherits it through `POLARS_STREAMING_CHUNK_SIZE`, and optimiser config has no auto-range
-  size key) and feeds `_reduce_frontier_range_batches`, which reduces every batch into
-  `_ScenarioFrontierRangeAccumulator` and calls `finish()`. The completed result is `status`,
-  `ranges` and `method` (`scenario_envelope`); there is no warning or fallback record.
+  size key), with `maintain_order=True` so the frame's quote order (the expander emits a quote's
+  scenarios together and captures keep order) reaches `_reduce_frontier_range_batches`, which
+  reduces every batch into `_ScenarioFrontierRangeAccumulator` and calls `finish()`. The
+  completed result is `status`, `ranges` and `method` (`scenario_envelope`); there is no warning
+  or fallback record.
+- **The reducer is exact in Float64.** Only final per-quote extrema are summed; a quote's
+  extrema from several batches are combined (min of mins, max of maxes) first, and nothing is
+  subtracted. Its budget `G_r` is fixed when it starts: `min(512 MiB, headroom // 4)`, where
+  headroom is the execution context's `remaining_memory_bytes()` (in a process-mode worker that
+  context is sized to the admitted grant its native cap enforces), and 512 MiB when there is no
+  effective limit; `HAUTE_OPTIMISER_REDUCER_BUDGET_MB` overrides the 512 MiB term.
+  - *Carry path.* Per batch, one group-by gives each quote's Float32 extrema (cast to Float64),
+    first and last row and row count; the batch is contiguous iff `last - first + 1 == n` for
+    every quote. The batch's last quote is held back and combined with the next batch's first
+    quote when their ids are equal; every other quote is finished, its extrema added to running
+    Float64 sums and its `hash(seed=0)` appended to a buffer of at most `G_r / 18` hashes. At the
+    finish the buffer is sorted and any repeat (a quote that reappeared, or a collision) means
+    the sums are discarded.
+  - *Partials.* While the fallback is available every batch also writes its per-quote partial
+    as one lz4 parquet file in a private temporary directory (`_range_parts_directory`),
+    with a 16-bit bucket (`hash // 2**48`), sorted by bucket, in at most 64 row groups of
+    `ceil(n / 64)` rows, because a violation can appear after earlier batches were reduced.
+  - *Fallback.* A non-contiguous batch (`batch_not_contiguous`), a full hash buffer
+    (`hash_buffer_full`) or a repeat at the finish (`quote_reappeared`) turns the carry path off,
+    logged as `auto_range_reducer_fallback` with the reason. The finish then combines the
+    partials by quote value in `P` bucket-range passes (`P` the smallest power of two keeping
+    `N_p * 4 * b_raw` within `G_r / 2`, `N_p` the partial rows written, `b_raw = w_key + 16c +
+    16`, `w_key` the widest view-aware key width seen, `string_view_bytes_per_row`), reading the
+    files one at a time with the bucket filter, merging buffered pieces into the pass state
+    whenever they reach `G_r / 8` and always once more after the last file, then summing the
+    pass state in Float64. Cancellation is checked between batches, passes and files.
+  - *Minimum budget.* `_reducer_min_budget_bytes(c, w_key, R_b)` is the larger of a measured
+    384 MiB and `8 * (64 * (2c + 2) * 440 + 2 * ceil(R_b / 64) * b_raw)`, re-checked with each
+    batch's key width. Below it the fallback is unavailable: no partials are written (any
+    already written are dropped), the carry path still runs, and a violation fails the job as
+    `memory_limited` (`AutoRangeReducerBudgetError`, reason `reducer_budget_below_minimum`,
+    naming the budget, the minimum, the violation and the setting to raise) before any fallback
+    read.
+  - The empty-frame, null-quote-id and non-finite or inverted range errors are unchanged.
 - In process mode the job computes its totals in one hard-capped worker attempt instead
   (`_frontier_ranges_in_worker`): it opens the seed plan exactly as solve setup opens it
   (`_open_setup_seed_plan` with the solve's demand, held until the worker exits), runs
@@ -520,9 +555,9 @@ these as arguments and never recompute them.
   the worker's timeout (its expiry publishes the job's `timed_out`), and completes with the
   returned totals and the worker's metrics adopted as evidence. The
   `FrontierAutoRangeWorkerRequest` carries the parent-resolved `config`, `mode`,
-  `partition_count`, `timeout` and `required_columns_by_node` with the seed-plan handoff; the
+  `timeout` and `required_columns_by_node` with the seed-plan handoff; the
   child runs this same job with `isolate=False` against a private job record and the adopted
-  plan, never re-planning, with its temporary files (the reducer's bucket parts) in a
+  plan, never re-planning, with its temporary files (the reducer's partial files) in a
   parent-owned scratch directory removed after the worker exits. Its terminal failure record is
   replayed through the job's failure mapping (`OptimiserWorkerFailureError`), and a `MemoryError`
   behind a failure is a 507 as for setup. Progress messages inside the worker are not relayed;

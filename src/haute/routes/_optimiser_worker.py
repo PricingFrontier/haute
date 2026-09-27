@@ -160,7 +160,6 @@ class FrontierAutoRangeWorkerRequest:
     body: OptimiserFrontierAutoRangeRequest
     config: dict[str, Any]
     mode: str
-    partition_count: int
     timeout: int
     required_columns_by_node: dict[str, frozenset[str]]
     project_root: str
@@ -388,7 +387,6 @@ def frontier_auto_range_worker(
                 job_id,
                 config=request.config,
                 mode=request.mode,
-                partition_count=request.partition_count,
                 timeout=request.timeout,
                 required_columns_by_node=request.required_columns_by_node,
                 execution_context=context,

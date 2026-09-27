@@ -120,11 +120,11 @@ _ACCESSOR_CASES = [
     ),
     (
         "haute.routes._optimiser_service",
-        "_default_auto_range_partitions",
-        "HAUTE_AUTO_RANGE_PARTITIONS",
-        "8",
-        8,
-        16,
+        "_default_reducer_budget_mb",
+        "HAUTE_OPTIMISER_REDUCER_BUDGET_MB",
+        "64",
+        64,
+        512,
     ),
     (
         "haute.routes._train_service",
@@ -244,10 +244,8 @@ def test_auto_range_context_default_reflects_env(monkeypatch):
     from haute.routes._optimiser_service import FrontierAutoRangeContext
 
     pl.Config.set_streaming_chunk_size(333)
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PARTITIONS", "9")
     ctx = FrontierAutoRangeContext()
     assert ctx.chunk_size == 333
-    assert ctx.partition_count == 9
 
 
 DirectEnvRead = tuple[str, str, str, str]

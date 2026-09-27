@@ -135,13 +135,6 @@ def test_auto_range_reduces_in_pipeline_batches_at_every_scenario_count(
             assert bounds["min"] <= bounds["max"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Uncached auto-range peak follows the batch scorer's sink of the expanded frame; "
-        "fixed by WP7 of .scratch/plans/2026-09-27-auto-range-ram.md"
-    ),
-)
 def test_auto_range_memory_does_not_grow_with_scenario_count(
     probes: tuple[dict[str, Any], dict[str, Any]],
 ) -> None:
