@@ -6,6 +6,7 @@ import contextvars
 import math
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
@@ -663,6 +664,32 @@ def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _
 
 MAX_STREAMING_CHUNK_SIZE: int = 10_000_000
 
+# Polars reads its streaming chunk size from process-wide configuration. The
+# pipeline setting is the base; an active cap (``streaming_chunk_size_cap``)
+# lowers what Polars sees without changing the setting, and the smallest
+# active cap wins while caps from several threads overlap.
+_streaming_chunk_lock = threading.Lock()
+_streaming_chunk_setting: int | None = None
+_streaming_chunk_caps: dict[object, int] = {}
+
+
+def _configured_streaming_chunk_size() -> int | None:
+    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    try:
+        value = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else None
+
+
+def _apply_streaming_chunk_size_locked(setting: int | None) -> None:
+    caps = list(_streaming_chunk_caps.values())
+    if not caps:
+        pl.Config.set_streaming_chunk_size(setting)
+        return
+    base = setting if setting is not None else DEFAULT_STREAMING_CHUNK_SIZE
+    pl.Config.set_streaming_chunk_size(min(base, *caps))
+
 
 def set_streaming_chunk_size(chunk_size: int) -> None:
     """Set the editor's streaming chunk size for this process.
@@ -670,8 +697,9 @@ def set_streaming_chunk_size(chunk_size: int) -> None:
     Polars keeps the value as process-wide configuration: it writes the
     ``POLARS_STREAMING_CHUNK_SIZE`` environment variable, which a worker
     spawned afterwards inherits. The value changes memory use and speed, never
-    results, so it is applied without a lock or a restore.
+    results. An active :func:`streaming_chunk_size_cap` keeps applying below it.
     """
+    global _streaming_chunk_setting
     if (
         not isinstance(chunk_size, int)
         or isinstance(chunk_size, bool)
@@ -680,17 +708,46 @@ def set_streaming_chunk_size(chunk_size: int) -> None:
         raise ValueError(
             f"streaming_chunk_size must be an integer from 1 to {MAX_STREAMING_CHUNK_SIZE:,}"
         )
-    pl.Config.set_streaming_chunk_size(chunk_size)
+    with _streaming_chunk_lock:
+        _streaming_chunk_setting = chunk_size
+        _apply_streaming_chunk_size_locked(chunk_size)
 
 
 def current_streaming_chunk_size() -> int:
-    """The process streaming chunk size, else the default."""
-    raw = pl.Config.state(if_set=True).get("POLARS_STREAMING_CHUNK_SIZE")
+    """The process streaming chunk size setting, else the default; never a cap."""
+    with _streaming_chunk_lock:
+        if _streaming_chunk_caps:
+            setting = _streaming_chunk_setting
+        else:
+            setting = _configured_streaming_chunk_size()
+    return setting if setting is not None else DEFAULT_STREAMING_CHUNK_SIZE
+
+
+@contextmanager
+def streaming_chunk_size_cap(rows: int) -> Iterator[None]:
+    """Cap the streaming chunk Polars uses at *rows* while the block runs.
+
+    A query that multiplies rows (a scenario expansion's ``explode``) turns
+    each chunk of its source into ``fanout`` times as many rows in every
+    thread; reading the source in chunks of ``setting // fanout`` keeps an
+    expanded chunk within the pipeline setting. Only queries started inside
+    the block see the cap. The configuration is process-wide, so a concurrent
+    query in another thread may run with the smaller chunk too: that changes
+    its speed and memory, never its result.
+    """
+    global _streaming_chunk_setting
+    token = object()
+    with _streaming_chunk_lock:
+        if not _streaming_chunk_caps:
+            _streaming_chunk_setting = _configured_streaming_chunk_size()
+        _streaming_chunk_caps[token] = max(1, int(rows))
+        _apply_streaming_chunk_size_locked(_streaming_chunk_setting)
     try:
-        value = int(raw) if raw else 0
-    except (TypeError, ValueError):
-        value = 0
-    return value if value > 0 else DEFAULT_STREAMING_CHUNK_SIZE
+        yield
+    finally:
+        with _streaming_chunk_lock:
+            del _streaming_chunk_caps[token]
+            _apply_streaming_chunk_size_locked(_streaming_chunk_setting)
 
 
 def streaming_sink(

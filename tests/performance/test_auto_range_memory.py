@@ -1,14 +1,12 @@
 """Fresh-process evidence for the frontier auto-range memory bound.
 
 Auto-range runs the solve setup's pipeline stage and reduces the resolved frame
-in batches of the pipeline's streaming chunk size. The memory bound -- four
-times the scenarios raises the job's peak by at most half, plus 64 MiB -- does
-not hold yet: an uncached scored frame is sunk whole by the batch scorer. It
-stays asserted as a strict expected failure until WP7 of
-``.scratch/plans/2026-09-27-auto-range-ram.md`` bounds that sink. Measured on
+in batches of the pipeline's streaming chunk size. The memory bound: four times
+the scenarios raises the job's peak by at most half, plus 64 MiB. Measured on
 the representative fixture -- high quote cardinality, a scenario expander and
-real CatBoost scoring between the base and the optimiser -- at two scenario
-counts in fresh interpreters.
+real CatBoost scoring between the base and the optimiser, the scored frame
+never cached -- at two scenario counts in fresh interpreters, with the Polars
+thread pool the optimiser's workers run with.
 """
 
 from __future__ import annotations
@@ -31,7 +29,10 @@ _PROBE = Path(__file__).with_name("_auto_range_memory_probe.py")
 _QUOTES = 200_000
 _SMALL_STEPS = 5
 _LARGE_STEPS = 4 * _SMALL_STEPS
-_CHUNK_ROWS = 500_000
+# Sized to the fixture as 500,000 rows is to a real 10M-quote pipeline: the
+# scored frame spans many chunks. At 500,000 rows every streaming stage could
+# hold this fixture's whole 4M-row frame, and the bound would measure nothing.
+_CHUNK_ROWS = 50_000
 _GROWTH_FACTOR = 1.5
 _GROWTH_SLACK_BYTES = 64 * 1024 * 1024
 
@@ -78,7 +79,11 @@ def _run_probe(tmp_path: Path, fixture: Path, steps: int) -> dict[str, Any]:
     child_output = io.BytesIO()
     interpreter = str(getattr(sys, "_base_executable", sys.executable))
     inherited_paths = [path for path in sys.path if path]
+    from haute.routes._optimiser_worker import resolve_optimiser_polars_threads
+
+    # The pool size is fixed when Polars loads, so it is set before the probe runs.
     bootstrap = (
+        f"import os;os.environ['POLARS_MAX_THREADS']='{resolve_optimiser_polars_threads()}';"
         "import runpy,sys;"
         f"sys.path[:0]={inherited_paths!r};"
         f"runpy.run_path({str(_PROBE)!r},run_name='__main__')"

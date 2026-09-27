@@ -142,11 +142,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   (`PUT /api/execution-settings`). Server-thread executions read the process value,
   spawned workers inherit it at spawn, and every task handed to a warm interactive
   worker carries the server's current value, which the worker applies before running
-  the task. No execution scopes, locks or restores the value, so no request waits on
-  another to apply it. The value never changes results, only memory use and speed, so
-  a change reaches executions started afterwards and may reach one in flight at its
-  next collect. Requests carry no chunk size, and deployed scoring runs with the
-  default.
+  the task. No execution scopes the value, so no request waits on another to apply
+  it. The one narrower cap: a batch Model Score below scenario expanders sinks its
+  input under the setting divided by their fan-out, because an `explode` multiplies
+  every streaming chunk of its source by the step count in each thread; the cap
+  lowers what Polars sees during that sink and never the setting itself. The value
+  never changes results, only memory use and speed, so a change reaches executions
+  started afterwards and may reach one in flight at its next collect. Requests carry
+  no chunk size, and deployed scoring runs with the default.
 - **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
   Parquet Data Input is scanned directly. Every other data input executes from a
   validated leased snapshot generation. Graph execution may schedule a missing or stale

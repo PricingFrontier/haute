@@ -970,13 +970,22 @@ Polars' process value (`POLARS_STREAMING_CHUNK_SIZE`), falling back to
 `DEFAULT_STREAMING_CHUNK_SIZE` (500,000). `set_streaming_chunk_size(n)` validates `n`
 (an integer from 1 to 10,000,000; a bool is refused) and sets it with
 `pl.Config.set_streaming_chunk_size`, which writes the environment variable a spawned
-child inherits. The server lifespan applies `current_streaming_chunk_size()` once,
+child inherits. `streaming_chunk_size_cap(rows)` lowers the value Polars sees while its
+block runs: under a module lock it records the cap, applies the smallest active cap
+below the setting, and on exit applies the next smallest or the setting again (unset
+stays unset). `current_streaming_chunk_size()` keeps reporting the setting while a cap
+is active, and `set_streaming_chunk_size` during a cap changes the setting the cap
+returns to. Its one caller is the batch Model Score input sink (the mlflow-model-registry
+low-level spec); the configuration is process-wide, so a query another thread starts
+meanwhile runs with the smaller chunk, which changes its memory and speed, never its
+result. The server lifespan applies `current_streaming_chunk_size()` once,
 before the interactive worker pool starts, so a value already in the environment is
 kept. `InteractiveWorkerPool.run` captures the current value with each task, and the
 warm worker applies it before running that task. `bounded_sink` and
 `bounded_hashed_sink` take no chunk size: native sinks run under the process value, and
 a chunked write slices at it unless its caller names `chunk_rows`. No production code
-saves, scopes or restores Polars configuration around an execution.
+saves, scopes or restores Polars configuration around an execution; the input-sink cap
+scopes one sink.
 
 **Worker isolation (`run_isolated_worker`).** Starts a `spawn`-context child process
 running `_isolated_worker_entrypoint`. Before user work begins, Linux prefers a

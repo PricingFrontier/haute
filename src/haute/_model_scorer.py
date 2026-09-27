@@ -504,6 +504,14 @@ def model_score_whole_output() -> Iterator[None]:
         _score_whole_output.reset(token)
 
 
+# How many rows the scored frame holds per row of the source it is read from:
+# the product of the scenario expansions between them (1: none). The input
+# sink reads that source in proportionally smaller chunks.
+_score_input_fanout: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "haute_model_score_input_fanout", default=1
+)
+
+
 def _claim_score_output_destination() -> ScoreOutputDestination | None:
     destination = _score_output_destination.get()
     if destination is None or destination.used:
@@ -1570,6 +1578,11 @@ class ModelScorer:
         ``"server"``, ``"local"``); ``""`` means the local folder. The model is
         loaded from this destination even when the environment's other
         destination points elsewhere.
+    input_fanout : int
+        Rows of the scoring input per row of the source it is read from (the
+        product of the scenario expansions upstream; 1 when there are none).
+        The batched path sinks that input in proportionally smaller streaming
+        chunks.
     """
 
     def __init__(
@@ -1593,6 +1606,7 @@ class ModelScorer:
         reuse_loaded_model: bool = False,
         mlflow_destination: str = "",
         alias: str = "",
+        input_fanout: int = 1,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
@@ -1622,6 +1636,7 @@ class ModelScorer:
         )
         self.reuse_loaded_model = reuse_loaded_model
         self.mlflow_destination = mlflow_destination
+        self.input_fanout = max(1, int(input_fanout))
         self._scoring_model: Any | None = None
         self._scoring_model_lock = threading.Lock()
 
@@ -1735,21 +1750,25 @@ class ModelScorer:
         else:
             dfs = dfs_positional
         lf = dfs[0] if dfs else pl.LazyFrame()
-        return _run_score_pipeline(
-            scoring_model,
-            lf,
-            task=self.task,
-            output_col=self.output_col,
-            code=self.code,
-            source_names=self.source_names,
-            extra_dfs=dfs[1:],
-            source=self.source,
-            row_limit=self.row_limit,
-            schema_only=self.schema_only,
-            required_output_columns=self.required_output_columns,
-            categorical_levels=categorical_levels,
-            offset_column=offset_column,
-        )
+        fanout_token = _score_input_fanout.set(self.input_fanout)
+        try:
+            return _run_score_pipeline(
+                scoring_model,
+                lf,
+                task=self.task,
+                output_col=self.output_col,
+                code=self.code,
+                source_names=self.source_names,
+                extra_dfs=dfs[1:],
+                source=self.source,
+                row_limit=self.row_limit,
+                schema_only=self.schema_only,
+                required_output_columns=self.required_output_columns,
+                categorical_levels=categorical_levels,
+                offset_column=offset_column,
+            )
+        finally:
+            _score_input_fanout.reset(fanout_token)
 
 
 # ----------------------------------------------------------------------
@@ -1831,7 +1850,11 @@ def _sink_to_temp(
     import os
     import tempfile
 
-    from haute._polars_utils import bounded_sink
+    from haute._polars_utils import (
+        bounded_sink,
+        current_streaming_chunk_size,
+        streaming_chunk_size_cap,
+    )
 
     sink_lf = lf
     if columns is not None:
@@ -1847,8 +1870,18 @@ def _sink_to_temp(
         prefix="haute_score_in_",
     )
     os.close(fd)
+    # An expanded input multiplies every streaming chunk of its source by the
+    # fan-out in each thread; a proportionally smaller source chunk keeps an
+    # expanded chunk within the pipeline setting.
+    fanout = _score_input_fanout.get()
+    chunk_cap = (
+        streaming_chunk_size_cap(max(1, current_streaming_chunk_size() // fanout))
+        if fanout > 1
+        else nullcontext()
+    )
     try:
-        bounded_sink(sink_lf, path, fast_checkpoint=True)
+        with chunk_cap:
+            bounded_sink(sink_lf, path, fast_checkpoint=True)
     except BaseException:
         with suppress(FileNotFoundError):
             os.unlink(path)

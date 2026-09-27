@@ -1500,8 +1500,10 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   the child.
 - **`tests/performance/test_auto_range_memory.py`** — the auto-range memory bound on the
   representative fixture (200,000 quotes, a scenario expander and real CatBoost scoring between
-  the data input and the optimiser), each run measured in a fresh interpreter by
-  `tests/performance/_auto_range_memory_probe.py`.
+  the data input and the optimiser, the scored frame never cached), each run measured in a
+  fresh interpreter by `tests/performance/_auto_range_memory_probe.py` with the optimiser
+  workers' Polars thread pool and a 50,000-row chunk: sized to the fixture so its scored frame
+  spans many chunks, as a real pipeline's does at 500,000.
 
 - **`tests/test_optimiser_level_tie_properties.py`** — the generated level-tie family
   (ENG-T11, ledger W09-S03): for generated Int64, Float64, Float32 and String levels, single
