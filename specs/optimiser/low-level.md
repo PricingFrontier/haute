@@ -404,8 +404,8 @@ names must all agree, see Constraint bounds) the result carries:
 - `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
   `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
   (`OptimiserSolverSettings`: `max_iter`, `tolerance`, `chunk_size`, and
-  `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_enabled`,
-  `frontier_steps` and `frontier_ranges` only when the solve requested a frontier). It is built
+  `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` only
+  when the solve swept a constraint). It is built
   once in `_finalize_solve_result` by `solve_input_summary(job)` from the solve-time config
   snapshot and `input_provenance`; a solve job without `input_provenance` fails loudly. The
   published artifact's `input_summary` and `solver_settings` are read from it (see Save and
@@ -789,8 +789,8 @@ collar), plus the audit
 trail: `solver_settings` (the result's `input_summary.solver_settings`, built from the solve-time
 config snapshot with the solver defaults applied:
 `max_iter`, `tolerance` and `chunk_size`, plus `max_cd_iterations` and
-`cd_tolerance` for ratebook; `frontier_enabled`, `frontier_steps` and `frontier_ranges` when the
-solve requested a frontier), `effective_constraints` (a point's constraint specs with that point's
+`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` when the
+solve swept a constraint), `effective_constraints` (a point's constraint specs with that point's
 thresholds via `_frontier_point_constraints_override`; the configured constraints for the
 anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the provenance fields of the
 result's own `input_summary`), and `stale_at_publish` (the request's `stale` flag, which the UI sets when
@@ -1509,8 +1509,15 @@ families; the dtype agreement matrix in `test_optimiser_ratebook_apply_agreement
 The required behaviour is defined in
 [the optimiser high-level contract](high-level.md#canonical-frontier-ranges).
 
-- `src/haute/routes/_optimiser_solver.py::_auto_frontier_ranges_from_config` resolves ranges
-  exclusively from `frontier_ranges`; it contains no global-range compatibility branch.
+- `src/haute/routes/_optimiser_solver.py::swept_frontier_ranges` resolves ranges exclusively
+  from `frontier_ranges`, in constraint order, for the swept constraints only (empty when none
+  is swept, which skips the frontier); it contains no global-range compatibility branch and
+  rejects a range naming an unconfigured constraint. The library holds each unswept constraint
+  at its constructor bound (`price_contour`'s Python frontier path).
+- `anchor_swept_constraints` (same module) is applied to the node config at solve start
+  (`OptimiserService.start`), before the job records its config: each swept constraint's single
+  bound is replaced by its range's `min`, so the solve, the job snapshot and everything read from
+  it agree. A range without a numeric `min` leaves the bound for validation.
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.

@@ -500,7 +500,13 @@ The optimiser follows the
 [canonical-only format policy](../README.md#canonical-only-format-policy).
 Every configured constraint range is represented only by
 `frontier_ranges[constraint] = {"min": number, "max": number}`. There is no global-range reader,
-fallback, mirroring, or migration in the service or optimiser UI.
+fallback, mirroring, or migration in the service or optimiser UI. A constraint is swept exactly
+when it has a `frontier_ranges` entry: a solve computes a frontier when any constraint is swept,
+over the swept constraints only, with every other constraint held at its `constraints` bound at
+each point. There is no separate frontier on/off flag. A range naming a constraint that is not
+configured is rejected. A swept constraint's saved `constraints` value is not used while it is
+swept: the solve (and so the as-solved result) runs it at its range's `min`, and the value
+applies again once the constraint is no longer swept.
 
 Tests cover exact per-constraint validation and assert that frontend persistence
 contains `frontier_ranges` only.

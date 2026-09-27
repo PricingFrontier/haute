@@ -300,7 +300,6 @@ class TestFinalizeFrontier:
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
-                    "frontier_enabled": True,
                     # The absolute-range design requires frontier_ranges.
                     "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                 },
@@ -368,7 +367,6 @@ class TestFinalizeFrontier:
                 "config": {
                     "mode": "ratebook",
                     "constraints": {"loss": {"max": 1.05}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -488,7 +486,6 @@ class TestFinalizeFrontier:
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
-                    "frontier_enabled": True,
                 },
             }
         )
@@ -534,7 +531,6 @@ class TestFinalizeFrontier:
                         "loss": {"max": 1.05},
                         "zero_cstr": {"max": 1.0},
                     },
-                    "frontier_enabled": True,
                     # Explicit absolute ranges — proves the result does not
                     # depend on baseline values (zero_cstr's baseline is 0).
                     "frontier_ranges": {

@@ -321,7 +321,6 @@ class TestScenarioGrid:
             client,
             _data_graph(
                 _scored(tmp_path),
-                frontier_enabled=True,
                 frontier_steps=3,
                 frontier_ranges={"volume": {"min": 5.0, "max": 7.0}},
             ),

@@ -6586,7 +6586,7 @@ class TestFrontierRoute:
         assert "frontier_ranges.volume must contain min and max values" in resp.json()["detail"]
         mock_solver.frontier.assert_not_called()
 
-    def test_frontier_without_ranges_requires_config_constraints(self, client, clean_job_store):
+    def test_frontier_without_ranges_requires_a_swept_constraint(self, client, clean_job_store):
         seed_job(
             clean_job_store,
             "auto_frontier_no_constraints",
@@ -6607,7 +6607,7 @@ class TestFrontierRoute:
         )
 
         assert resp.status_code == 400
-        assert "no configured constraints" in resp.json()["detail"].lower()
+        assert "sweeps no constraint" in resp.json()["detail"].lower()
 
     def test_frontier_rejects_invalid_threshold_range_shape_at_schema_layer(
         self,
@@ -7081,7 +7081,6 @@ class TestBuildArtifactPayload:
                     "max_iter": 80,
                     "cd_tolerance": 0.01,
                     "chunk_size": 5000,
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.0}},
                 },
                 "base_result": {"n_quotes": 12, "n_steps": 3},
@@ -7114,7 +7113,6 @@ class TestBuildArtifactPayload:
             "chunk_size": 5000,
             "max_cd_iterations": 10,
             "cd_tolerance": 0.01,
-            "frontier_enabled": True,
             "frontier_steps": 15,
             "frontier_ranges": {"volume": {"min": 0.8, "max": 1.0}},
         }
@@ -8954,7 +8952,6 @@ class TestFrontierInSolve:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -8980,7 +8977,6 @@ class TestFrontierInSolve:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -9039,27 +9035,18 @@ class TestFrontierInSolve:
         assert result.get("lambdas") == {}
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_solve_with_empty_constraints_ignores_frontier_enabled(
+    def test_solve_with_empty_constraints_computes_no_frontier(
         self,
         client,
         scored_data,
     ):
-        """When ``frontier_enabled=true`` but ``constraints={}``, the
-        frontier is silently skipped (no points to optimise over).
-
-        This is the contract behaviour that the rating UI relies on:
-        ``frontier_enabled`` is a hint, not a hard requirement; the
-        solver determines whether a frontier is meaningful.  A regression
-        that started erroring (or, worse, silently producing garbage
-        lambdas) on this combination would break every config that
-        toggles ``frontier_enabled`` on without first adding constraints.
-        """
+        """With no constraints nothing is swept, so no frontier is computed
+        and no spurious ``frontier_error`` is reported."""
         graph = _make_optimiser_graph(
             scored_data,
             config={
                 "objective": "expected_income",
                 "constraints": {},
-                "frontier_enabled": True,
                 "frontier_ranges": {},  # no constraints → no ranges
                 "max_iter": 5,
             },
@@ -9072,10 +9059,38 @@ class TestFrontierInSolve:
 
         assert status["status"] == "completed"
         result = status["result"]
-        # frontier_enabled with no constraints is a no-op — no frontier
-        # data, no spurious frontier_error message.
         assert result.get("frontier") is None
         assert result.get("frontier_error") is None
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_swept_constraint_is_solved_at_its_range_start(
+        self,
+        client,
+        scored_data,
+        clean_job_store,
+    ):
+        """A swept constraint's hidden bound never reaches the solve: the job
+        runs it at the start of its range, so the as-solved result sits on the
+        frontier."""
+        graph = _make_optimiser_graph(
+            scored_data,
+            config={
+                "constraints": {"volume": {"min": 1.0}},
+                "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
+                "frontier_steps": 3,
+                "max_iter": 5,
+            },
+        )
+        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
+        status = _poll_until_done(client, job_id)
+
+        assert status["status"] == "completed"
+        assert clean_job_store.require_job(job_id)["config"]["constraints"] == {
+            "volume": {"min": 40.0}
+        }
 
 
 class TestFrontierSelect:
@@ -9087,7 +9102,6 @@ class TestFrontierSelect:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -9120,7 +9134,6 @@ class TestFrontierSelect:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -9382,7 +9395,6 @@ class TestFrontierSelect:
         graph = _make_optimiser_graph(
             scored_data,
             config={
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
@@ -9868,15 +9880,15 @@ class TestFinalizeSolveResult:
         assert job["status"] == "completed"
         assert job["elapsed_seconds"] == 2.5
 
-    def test_frontier_not_computed_for_individual_point_mode(self):
+    def test_frontier_not_computed_when_no_constraint_is_swept(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        for frontier_enabled in (None, False):
-            config = {"constraints": {"volume": {"min": 0.9}}}
-            if frontier_enabled is not None:
-                config["frontier_enabled"] = frontier_enabled
+        for ranges in (None, {}):
+            config: dict[str, Any] = {"constraints": {"volume": {"min": 0.9}}, "frontier_steps": 3}
+            if ranges is not None:
+                config["frontier_ranges"] = ranges
             job_id = store.create_job(
                 {
                     "input_provenance": SOLVE_PROVENANCE,
@@ -9903,7 +9915,42 @@ class TestFinalizeSolveResult:
             assert job["result"]["frontier"] is None
             mock_solver.frontier.assert_not_called()
 
-    def test_frontier_missing_ranges_surfaces_error_without_defaulting(self):
+    def test_swept_frontier_ranges_covers_only_the_swept_constraints(self):
+        from haute.routes._optimiser_solver import swept_frontier_ranges
+
+        config = {
+            "constraints": {"volume": {"min": 0.9}, "loss": {"max": 0.7}, "premium": {"min": 1.0}},
+            # Keyed out of constraint order: the result follows constraint order.
+            "frontier_ranges": {
+                "premium": {"min": 1.0, "max": 2.0},
+                "volume": {"min": 0.8, "max": 0.95},
+            },
+        }
+
+        ranges = swept_frontier_ranges(config)
+
+        assert ranges == {"volume": (0.8, 0.95), "premium": (1.0, 2.0)}
+        assert list(ranges) == ["volume", "premium"]
+        assert swept_frontier_ranges({**config, "frontier_ranges": {}}) == {}
+
+    def test_anchor_swept_constraints_solves_each_swept_constraint_at_its_range_start(self):
+        from haute.routes._optimiser_solver import anchor_swept_constraints
+
+        config = {
+            "constraints": {"volume": {"min": 0.0}, "loss": {"max": 0.7}},
+            "frontier_ranges": {"volume": {"min": 0.8, "max": 0.95}},
+        }
+
+        anchored = anchor_swept_constraints(config)
+
+        assert anchored["constraints"] == {"volume": {"min": 0.8}, "loss": {"max": 0.7}}
+        # The saved bound is untouched, so un-sweeping restores it.
+        assert config["constraints"]["volume"] == {"min": 0.0}
+        # A swept range without a start leaves the bound for validation.
+        incomplete = {**config, "frontier_ranges": {"volume": {"max": 0.95}}}
+        assert anchor_swept_constraints(incomplete)["constraints"]["volume"] == {"min": 0.0}
+
+    def test_frontier_range_for_an_unknown_constraint_surfaces_error(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_solver import _finalize_solve_result
 
@@ -9915,8 +9962,8 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_steps": 3,
+                    "frontier_ranges": {"premium": {"min": 1.0, "max": 2.0}},
                 },
             }
         )
@@ -9937,7 +9984,10 @@ class TestFinalizeSolveResult:
         assert job["status"] == "completed"
         assert job["frontier_data"] is None
         assert job["result"]["frontier"] is None
-        assert "frontier_ranges must provide min and max" in job["result"]["frontier_error"]
+        assert (
+            "frontier_ranges names premium, which are not constraints"
+            in job["result"]["frontier_error"]
+        )
         mock_solver.frontier.assert_not_called()
 
     def test_frontier_partial_range_surfaces_error_without_defaulting_missing_side(self):
@@ -9952,7 +10002,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8}},
                     "frontier_steps": 3,
                 },
@@ -9993,7 +10042,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": constraints,
-                    "frontier_enabled": True,
                     "frontier_ranges": {name: {"min": 0.0, "max": 1.0} for name in constraints},
                     "frontier_steps": 100,
                 },
@@ -10031,7 +10079,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -10093,7 +10140,6 @@ class TestFinalizeSolveResult:
                 "start_time": time.monotonic() - 5.0,
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -10151,7 +10197,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 70.0, "max": 95.0}},
                     "frontier_steps": 3,
                 },
@@ -10189,7 +10234,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -10259,7 +10303,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                 },
             }
@@ -10297,7 +10340,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -10346,7 +10388,6 @@ class TestFinalizeSolveResult:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -13854,7 +13895,6 @@ class TestSolveRatebookUnit:
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
@@ -13899,7 +13939,6 @@ class TestSolveRatebookUnit:
             "constraints": {"volume": {"min": 0.9}},
             "factor_columns": [["region"]],
             "quote_id": "quote_id",
-            "frontier_enabled": True,
             "frontier_ranges": {"volume": {"min": 0.8, "max": 1.1}},
             "frontier_steps": 3,
         }
@@ -16206,7 +16245,6 @@ class TestIntegrationRealSolver:
             config={
                 "objective": "expected_income",
                 "constraints": {"volume": {"min": 0.90}},
-                "frontier_enabled": True,
                 "frontier_ranges": {"volume": {"min": 4.0, "max": 6.0}},
                 "max_iter": 20,
                 "tolerance": 1e-4,

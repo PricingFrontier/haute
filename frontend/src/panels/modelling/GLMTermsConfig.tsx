@@ -274,7 +274,14 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
         </div>
       ) : (
         <div className="mt-3 grid gap-1.5">
-          {unresolved.length > 0 && (
+          {unresolved.length > 0 && !context.known && (
+            <div role="group" aria-label="Saved terms" className="rounded-lg px-3 py-2" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+              <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Saved terms</p>
+              <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>The upstream columns are not known yet; these terms are checked once they load.</p>
+              <div className="ml-2 mt-1.5 grid min-w-0 gap-1.5 border-l pl-3" style={{ borderColor: "var(--border)" }}>{unresolved.map(renderUnresolved)}</div>
+            </div>
+          )}
+          {unresolved.length > 0 && context.known && (
             <div role="group" aria-label="Unresolved terms" className="rounded-lg px-3 py-2" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
               <p className="text-xs font-semibold" style={{ color: "var(--danger-text-soft)" }}>Unresolved terms</p>
               <p className="mt-1 text-[11px]" style={{ color: "var(--danger-text-soft)" }}>These terms cannot be fitted. Fix or remove them before training.</p>
@@ -315,7 +322,7 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
           })}
           {visible.length === 0 && (
             <p className="rounded-lg border border-dashed px-3 py-5 text-center text-[10px]" style={{ color: "var(--text-muted)", borderColor: "var(--border)" }}>
-              No matching feature columns.
+              {context.known ? "No matching feature columns." : "The upstream columns are not known yet."}
             </p>
           )}
         </div>

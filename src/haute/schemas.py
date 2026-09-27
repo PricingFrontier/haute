@@ -3325,8 +3325,7 @@ class OptimiserSolverSettings(BaseModel):
     # Ratebook only.
     max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
     cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
-    # Only when the solve requested a frontier.
-    frontier_enabled: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Only when the solve swept a constraint.
     frontier_steps: int | None = Field(default=None, exclude_if=lambda value: value is None)
     frontier_ranges: dict[str, Any] | None = Field(
         default=None, exclude_if=lambda value: value is None

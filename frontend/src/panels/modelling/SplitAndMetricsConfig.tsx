@@ -1,4 +1,4 @@
-import { ConfigSection } from "../../components/form"
+import { ConfigSection, SavedValueOption } from "../../components/form"
 import type { EvaluationPreview } from "../../api/types"
 import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
 import { NumberField } from "./NumberField"
@@ -70,6 +70,7 @@ export function SplitAndMetricsConfig({
   preview,
   previewError = null,
 }: SplitAndMetricsConfigProps) {
+  const columnNames = columns.map((column) => column.name)
   const strategy = (
     evaluation.strategy === "group" || evaluation.strategy === "temporal"
       ? evaluation.strategy
@@ -190,6 +191,7 @@ export function SplitAndMetricsConfig({
               style={MODELLING_INPUT_STYLE}
             >
               <option value="">Select...</option>
+              <SavedValueOption value={text(evaluation.group_column)} options={columnNames} />
               {columns.map((x) => (
                 <option key={x.name} value={x.name}>
                   {x.name}
@@ -209,6 +211,7 @@ export function SplitAndMetricsConfig({
               style={MODELLING_INPUT_STYLE}
             >
               <option value="">Select...</option>
+              <SavedValueOption value={text(evaluation.date_column)} options={columnNames} />
               {columns.map((x) => (
                 <option key={x.name} value={x.name}>
                   {x.name}

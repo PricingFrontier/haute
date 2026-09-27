@@ -10791,10 +10791,6 @@
           ],
           "title": "Chunk Size"
         },
-        "frontier_enabled": {
-          "title": "Frontier Enabled",
-          "type": "boolean"
-        },
         "frontier_ranges": {
           "additionalProperties": true,
           "title": "Frontier Ranges",

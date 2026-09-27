@@ -164,6 +164,7 @@ from haute.routes._optimiser_solver import (
     _OptimiserSolverExecutionError,
     _solve_online,
     _solve_ratebook,
+    anchor_swept_constraints,
     solver_worker_context,
 )
 from haute.routes._optimiser_worker import (
@@ -1291,7 +1292,8 @@ class OptimiserSolveService:
         """
         body = cast(OptimiserSolveRequest, _with_flattened_optimiser_graph(body))
         node = _find_optimiser_node(body.graph, body.node_id)
-        config = dict(node.data.config)
+        # A swept constraint is solved at its range's start; the job records that bound.
+        config = anchor_swept_constraints(dict(node.data.config))
 
         mode = self._validate_config(config)
         factor_level_order = _compute_ratebook_factor_level_order(

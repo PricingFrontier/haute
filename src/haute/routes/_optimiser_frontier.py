@@ -99,7 +99,6 @@ from haute.routes._optimiser_solver import (
     _FRONTIER_FACTOR_TABLES_KEY,
     _FRONTIER_GENERATION_KEY,
     _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
-    _auto_frontier_ranges_from_config,
     _build_ratebook_factor_contexts,
     _compute_frontier,
     _ratebook_factor_dtypes_from_artifact,
@@ -107,6 +106,7 @@ from haute.routes._optimiser_solver import (
     _serialise_ratebook_factor_tables,
     frontier_point_factor_tables,
     solver_worker_context,
+    swept_frontier_ranges,
 )
 from haute.routes._shared_flights import (
     FlightReplacedError,
@@ -248,15 +248,15 @@ def _frontier_ranges_for_request(
         }
 
     try:
-        ranges = _auto_frontier_ranges_from_config(job.get("config", {}))
+        ranges = swept_frontier_ranges(job.get("config", {}))
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ranges:
         raise HTTPException(
             status_code=400,
             detail=(
-                "No frontier threshold ranges provided and the job has no configured "
-                "constraints to derive automatic ranges from."
+                "No frontier threshold ranges provided and the job's configuration "
+                "sweeps no constraint."
             ),
         )
     return ranges

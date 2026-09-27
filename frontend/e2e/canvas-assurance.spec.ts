@@ -344,21 +344,13 @@ test.describe("frontend canvas assurance", () => {
       "Optimisation node: browser_optimiser",
     )
     await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
-    await optimiserPanel.getByRole("button", {
-      name: "Individual point",
-      exact: true,
-    }).click()
-    const constraintValue = optimiserPanel.getByRole("spinbutton", {
+    // The fixture sweeps volume: its card shows the range in place of a fixed value.
+    await expect(optimiserPanel.getByRole("radio", { name: "Sweep" })).toBeChecked()
+    await expect(optimiserPanel.getByRole("spinbutton", {
       name: "volume constraint value",
-    })
-    await constraintValue.fill("8.4")
-    await expect(constraintValue).toHaveValue("8.4")
-    await optimiserPanel.getByRole("button", {
-      name: "Efficient frontier",
-      exact: true,
-    }).click()
-    const minRange = optimiserPanel.getByLabel("volume min value")
-    const maxRange = optimiserPanel.getByLabel("volume max value")
+    })).toHaveCount(0)
+    const minRange = optimiserPanel.getByLabel("volume sweep from")
+    const maxRange = optimiserPanel.getByLabel("volume sweep to")
     await minRange.fill("7.8")
     await maxRange.fill("9.2")
     await expect(minRange).toHaveValue("7.8")
@@ -373,7 +365,8 @@ test.describe("frontend canvas assurance", () => {
         range: (config.frontier_ranges as JsonObject).volume,
       }
     }).toEqual({
-      constraint: { min: 8.4 },
+      // The saved bound is kept for switching back to Fixed.
+      constraint: { min: 8.0 },
       range: { min: 7.8, max: 9.2 },
     })
 
@@ -383,19 +376,8 @@ test.describe("frontend canvas assurance", () => {
       "Optimisation node: browser_optimiser",
     )
     await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
-    await optimiserPanel.getByRole("button", {
-      name: "Individual point",
-      exact: true,
-    }).click()
-    await expect(optimiserPanel.getByRole("spinbutton", {
-      name: "volume constraint value",
-    })).toHaveValue("8.4")
-    await optimiserPanel.getByRole("button", {
-      name: "Efficient frontier",
-      exact: true,
-    }).click()
-    await expect(optimiserPanel.getByLabel("volume min value")).toHaveValue("7.8")
-    await expect(optimiserPanel.getByLabel("volume max value")).toHaveValue("9.2")
+    await expect(optimiserPanel.getByLabel("volume sweep from")).toHaveValue("7.8")
+    await expect(optimiserPanel.getByLabel("volume sweep to")).toHaveValue("9.2")
 
     const solveResponsePromise = page.waitForResponse(response => (
       response.url().endsWith("/api/optimiser/solve")

@@ -63,7 +63,8 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
     () => new Set(eligible.map((column) => column.name)),
     [eligible],
   )
-  const staleExclusions = exclude.filter(
+  // Exclusions are only flagged once the upstream columns have arrived.
+  const staleExclusions = columns.length === 0 ? [] : exclude.filter(
     (name) => !columns.some((column) => column.name === name),
   )
   const visible = eligible.filter(
@@ -338,7 +339,9 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
             className="rounded-lg border border-dashed px-3 py-5 text-center text-[10px]"
             style={{ color: "var(--text-muted)", borderColor: "var(--border)" }}
           >
-            No matching feature columns.
+            {columns.length === 0
+              ? `The upstream columns are not known yet${exclude.length > 0 ? `; ${exclude.length} saved ${exclude.length === 1 ? "exclusion" : "exclusions"} will apply` : ""}.`
+              : "No matching feature columns."}
           </p>
         )}
 

@@ -255,3 +255,13 @@ describe("CommonFeatureConfig", () => {
   })
 
 })
+
+describe("CommonFeatureConfig before the columns load", () => {
+  afterEach(cleanup)
+
+  it("keeps saved exclusions without flagging them as not found", () => {
+    render(<CommonFeatureConfig config={{ target: "target", exclude: ["age", "region"] }} onUpdate={vi.fn(() => ({ ok: true as const }))} columns={[]} />)
+    expect(screen.queryByText(/not found/)).toBeNull()
+    expect(screen.getByText("The upstream columns are not known yet; 2 saved exclusions will apply.")).toBeInTheDocument()
+  })
+})

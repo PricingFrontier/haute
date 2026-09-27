@@ -261,7 +261,6 @@ _BROWSER_OPTIMISER_CONFIG = """{
   "scenario_value": "scenario_value",
   "max_iter": 20,
   "tolerance": 0.0001,
-  "frontier_enabled": true,
   "frontier_steps": 5,
   "frontier_ranges": {
     "volume": {
@@ -297,8 +296,7 @@ _BROWSER_RATEBOOK_CONFIG = """{
   "max_iter": 20,
   "tolerance": 0.0001,
   "max_cd_iterations": 3,
-  "cd_tolerance": 0.001,
-  "frontier_enabled": false
+  "cd_tolerance": 0.001
 }
 """
 _BROWSER_RATEBOOK_BANDING_CONFIG = """{

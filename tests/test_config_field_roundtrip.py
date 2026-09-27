@@ -90,7 +90,6 @@ def _examples():
     optimiser.data.config.update(
         {
             "mlflow_destination": "databricks",
-            "frontier_enabled": True,
             "frontier_ranges": {"_premium": {"min": 10.0, "max": 20.0}},
             "frontier_steps": 7,
             "factor_columns": [["_age", "region"]],

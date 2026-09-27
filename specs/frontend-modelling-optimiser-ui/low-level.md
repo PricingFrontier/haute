@@ -22,11 +22,11 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab; `validationMetricsLead` (a validation fit ran and the diagnostics are in-sample) and `headlineMetrics` (test metrics, else the validation selection means when they lead, else the diagnostics), shared by the Summary's first card and the collapsed bar. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
-| `frontend/src/panels/optimiser/OptimiserAnalysisColumns.tsx` | The Data pane's Analysis columns section: the Analysis input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), the capped column multi-select from the chosen frame's schema, the switch-time removal of columns the new frame lacks, and the missing-input and missing-column flags. |
-| `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list per mode (Factors only in ratebook) and resolution of a remembered pane the mode lacks to Data. |
-| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: result-type choice, one card per constraint holding its column, remove action and either its bound or its frontier range, then auto range and steps. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
+| `frontend/src/panels/optimiser/OptimiserFactorsTable.tsx` | The Factors pane's factor table: the Validation input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), a search, one row per rating factor or validation-frame column with Ratebook (`factor_columns`, ratebook mode and source factors only) and Validation (`analysis_columns`, capped, frame columns only) checkboxes, the switch-time removal of validation factors the new frame lacks, and the missing-input and missing-column flags. |
+| `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list (the same in both modes) and resolution of a remembered pane, Data when none. |
+| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: the Result line, then one card per constraint holding its column and remove action, then its at least / at most bound type, Fixed | Sweep switch and either its fixed value or its from/to range, then, when any constraint is swept, the Frontier section with points per swept constraint. Each swept card has its own Auto range button and error. It composes one `useOptimiserAutoRange` for the pane, running it for one constraint at a time and merging the filled range over the latest `frontier_ranges` (read through a ref when the run completes), keeping request state out of the parent form. |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. Its convergence result is the as-solved result (`originalResult`), never the frontier point the preview shows. |
-| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. |
+| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. `run(targets)` names the constraints a run fills and the state reports them (`autoRangeTargets`), so a pane can show the run on the card that asked; the caller's `writeRanges` merges the result. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), the provenance strip, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
 | `frontend/src/panels/optimiser/resultViews.ts`, `frontend/src/panels/optimiser/resultProvenance.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`); and `optimiserResultProvenance`: the provenance strip's segments (mode, grid shape, the data source from the result's `input_summary`, as solved or frontier point i of N, and the expected-values statement). An unknown mode or a selected point outside the points returned throws. A failed solve with no earlier result has no result, so no preview and no strip. |
 | `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
@@ -55,7 +55,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute, and for a CatBoost model with String or Categorical features the categorical encoding: one-hot up to `one_hot_max_size` levels with target statistics above, tuned when the search space holds it, or CatBoost's default) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
 | `frontend/src/panels/modelling/EvaluationAllocation.tsx`, `frontend/src/panels/modelling/evaluationPreview.ts` | The Split pane's training/validation/test allocation bar and per-fit row ranges, showing exact rows only from an evaluation preview whose strategy and validation method match the current editor (`compatibleEvaluationPreview`), and target fractions otherwise. |
 | `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but other evaluation previews as the in-flight holders (`refusedByEvaluationPreviews`); every other failure, including a running training job, is returned at once. |
-| `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice. |
+| `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice, and is flagged unavailable only once the columns are known. |
 | `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE, PDP and the optimiser Rates tab share (`FeatureDiagnosticLayout`: a ranked browser beside the selected item's chart, with empty states for no rows and for a selection without a row; `FeatureDiagnosticTab` ranks model features by importance through it); and the results workspace's container-query layout styles, imported by `frontend/src/panels/ResultsWorkspace.tsx` so the optimiser is styled even when no model result has been opened. Accent-coloured rules read `--results-accent`/`--results-accent-soft`, which the shell sets per workspace; the optimiser Frontier tab's stacking rules live here too. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or record it as expired in the results store with `markTrainResultExpired`). |
@@ -151,7 +151,10 @@ Only a current, accepted save response may acknowledge this revision transition.
    level and Levels, which replace each other. Terms on role, missing, or unsupported columns,
    expressions outside the grammar (`__tests__/fixtures/glmExpressionGrammar.json`) or over
    non-numeric columns, and malformed entries are listed under Unresolved terms with the reason,
-   the saved fit, and removal; an unresolved expression stays editable, and a malformed entry
+   the saved fit, and removal. Before the upstream columns are known (`ColumnContext.known` is
+   false), the same entries are listed under a neutral Saved terms group with the reason
+   "Waiting for the upstream columns", and GLM interaction slots, EBM pairs and `ColumnSelector`
+   show saved values without an unavailable flag. An unresolved expression stays editable, and a malformed entry
    keyed by an eligible column offers a type select that writes a valid spec. Lookups use
    own-property checks, so a `constructor` column is ordinary. Rows are tagged "Main effect from
    Interaction N (fit)" when Include main effects materialises one, "Target encoding from
@@ -908,10 +911,9 @@ Shared `NodePanel`, tab-control, API/parser, and store interactions are recorded
 The behavioural contract is defined in
 [the high-level specification](high-level.md#optimiser-config-panes).
 
-- `frontend/src/panels/optimiser/optimiserPanes.ts` exports `optimiserPanesFor(mode)` (Data,
-  Factors, Constraints, Solve, Export in ratebook mode; Factors omitted otherwise) and
-  `resolveOptimiserPane(mode, remembered)`, which returns the remembered pane when the mode has it
-  and Data otherwise. `NodePanel` and `OptimiserConfig` both resolve through it, so the selected
+- `frontend/src/panels/optimiser/optimiserPanes.ts` exports `OPTIMISER_PANES` (Data,
+  Factors, Constraints, Solve, Export, in both modes) and `resolveOptimiserPane(remembered)`,
+  which returns the remembered pane, or Data when there is none. `NodePanel` and `OptimiserConfig` both resolve through it, so the selected
   tab and the rendered body never disagree.
 - `OptimiserConfig.tsx` keeps every derivation and effect above the pane branch: input and
   banding-source resolution, the atomic ratebook-default writes, the solve estimate and solve
@@ -929,9 +931,9 @@ The behavioural contract is defined in
 - `resolveOptimiserInputs` also resolves `analysis_input` (`analysisInput`,
   `selectedAnalysisInput`, `missingExplicitAnalysisInput`, `malformedAnalysisInput`, and
   `analysisUsesDataInput` when it is unset or names the data input), and
-  `optimiserSolveReadiness` adds the Data-pane issues for a disconnected or malformed analysis
+  `optimiserSolveReadiness` adds the Factors-pane issues for a disconnected or malformed analysis
   input, more than `MAX_ANALYSIS_COLUMNS` (12) columns, and a column the analysis frame's known
-  columns lack. `OptimiserAnalysisColumns` prunes columns only in response to a user switch of
+  columns lack. `OptimiserFactorsTable` prunes columns only in response to a user switch of
   the analysis input (a pending prune applied once the new frame's columns arrive), never on
   load, so a temporarily unavailable schema never rewrites the configuration.
 - `useUIStore.ts` remembers `optimiserPanes` per node. `NodePanel.tsx` selects only the Boolean
@@ -939,8 +941,8 @@ The behavioural contract is defined in
   configuration warning descriptors.
 
 Verification: `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` covers each pane's
-content, Factors gating by mode, the constraint cards for both result types, the solve-blocking
-alert and its navigation, and the Analysis columns section (only connected inputs listed, the
-column choices following the chosen frame's schema, switch-time pruning, the cap); `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
+content, the Factors table in both modes (ratebook choices greyed out online), the constraint cards for both result types, the solve-blocking
+alert and its navigation, and the factor table (only connected inputs listed, rating factors first with both choices, the
+validation choices following the chosen frame's schema, search, switch-time pruning, the cap); `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
 the pane list and resolution; `NodePanel.test.tsx` and `useUIStore.test.ts` cover strip gating,
 per-node memory and the active-solve indicator.

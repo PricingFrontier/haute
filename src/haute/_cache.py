@@ -838,7 +838,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "chunk_size",
                 "constraints",
                 "factor_columns",
-                "frontier_enabled",
                 "frontier_ranges",
                 "frontier_steps",
                 "max_cd_iterations",

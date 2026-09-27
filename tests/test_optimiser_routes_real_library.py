@@ -996,7 +996,7 @@ class TestEffectiveBoundsContract:
 
         monkeypatch.setattr(
             _optimiser_solver,
-            "_auto_frontier_ranges_from_config",
+            "swept_frontier_ranges",
             lambda _config: {"volume": (5.0, 6.0)},
         )
         path = tmp_path / "two_constraints.parquet"
@@ -1005,7 +1005,6 @@ class TestEffectiveBoundsContract:
             str(path),
             {
                 "constraints": _TWO_CONSTRAINTS,
-                "frontier_enabled": True,
                 "frontier_steps": 3,
                 "frontier_ranges": {
                     "volume": {"min": 5.0, "max": 6.0},

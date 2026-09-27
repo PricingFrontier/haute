@@ -1642,7 +1642,6 @@ class TestResultDiagnostics:
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 2,
                 },

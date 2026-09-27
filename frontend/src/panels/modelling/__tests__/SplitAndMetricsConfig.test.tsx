@@ -565,3 +565,15 @@ describe("SplitAndMetricsConfig", () => {
     expect(screen.queryByRole("heading", { name: "Exact evaluation" })).not.toBeInTheDocument()
   })
 })
+
+describe("SplitAndMetricsConfig saved columns", () => {
+  it("shows the saved group column before the columns load", () => {
+    render(<SplitAndMetricsConfig {...makeProps({ columns: [], evaluation: { ...DEFAULT_EVALUATION, strategy: "group", group_column: "group_id" } })} />)
+    expect(screen.getByRole("combobox", { name: "Group column" })).toHaveValue("group_id")
+  })
+
+  it("marks a saved date column the loaded columns lack", () => {
+    render(<SplitAndMetricsConfig {...makeProps({ evaluation: { ...DEFAULT_EVALUATION, strategy: "temporal", date_column: "gone" } })} />)
+    expect(screen.getByDisplayValue("gone (not in input)")).toBeInTheDocument()
+  })
+})
