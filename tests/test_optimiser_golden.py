@@ -93,7 +93,6 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
             "quote_id": "quote_id",
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
-            "chunk_size": 4096,
         },
         "selected_frontier_point": 0,
         "frontier_data": {
@@ -148,7 +147,6 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
             "quote_id": "policy_id",
             "scenario_index": "scenario_idx",
             "scenario_value": "scenario_value",
-            "chunk_size": 100000,
             "max_cd_iterations": 6,
         },
         "input_provenance": {

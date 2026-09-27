@@ -368,7 +368,6 @@ def _capstone_root_graph(
                     "constraints": {"loss_ratio": {"max": 0.65}},
                     "max_iter": 7,
                     "tolerance": 0.001,
-                    "chunk_size": 128,
                 }
             ),
             description="optimiser " + description,

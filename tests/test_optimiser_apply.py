@@ -38,7 +38,6 @@ def _make_online_artifact(
         "quote_id": "quote_id",
         "scenario_index": "scenario_index",
         "scenario_value": "scenario_value",
-        "chunk_size": 500_000,
     }
 
 

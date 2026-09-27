@@ -145,7 +145,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
     """Build the grid, solve and finalize; keep the native state here, return the rest."""
     from haute._sandbox import set_project_root
     from haute.routes._job_store import get_job_store
-    from haute.routes._optimiser_input import forecast_resident_grid_bytes, grid_chunk_decision
+    from haute.routes._optimiser_input import forecast_resident_grid_bytes, pipeline_chunk_decision
     from haute.routes._optimiser_outcomes import require_one_row_per_solved_quote
     from haute.routes._optimiser_service import (
         OptimiserSolveService,
@@ -197,7 +197,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
                 columns,
                 qid_col,
                 len(request.constraint_cols),
-                grid_chunk_decision(config, request.input_path).chunk_size,
+                pipeline_chunk_decision("optimiser_grid").chunk_size,
             )
             quote_grid = service._build_grid_from_parquet(
                 request.input_path,

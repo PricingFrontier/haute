@@ -434,11 +434,12 @@ Pane ownership:
   bound value restores its stored value on commit, so a constraint is never silently relaxed to
   0; clearing a sweep range field removes that end of the range, which the field and the Solve
   issue list then flag as missing.
-- **Solve** — the stale-result banner, source-size estimate, **Optimise** action, progress with a
-  **Stop** action, failure card and convergence result, followed by a **Solver settings** section
-  holding maximum iterations and tolerance, chunk size and, in ratebook mode, the
-  coordinate-descent iterations and tolerance. There is no history toggle: every solve records
-  its convergence history. **Stop** cancels the running solve job (including
+- **Solve** — a **Solver settings** section first, holding maximum iterations and tolerance and,
+  in ratebook mode, the coordinate-descent iterations and tolerance; then the stale-result banner,
+  source-size estimate, **Optimise** action, progress with a **Stop** action, failure card and
+  convergence result, so the action follows the settings it runs with. There is no chunk size:
+  the solve reads its inputs in chunks of the Pipeline Settings streaming chunk size. There is no
+  history toggle: every solve records its convergence history. **Stop** cancels the running solve job (including
   its efficient-frontier phase) through the existing cancel route and records the returned
   terminal state the way modelling's Cancel does. The size estimate is requested only when an
   input that changes it changes (the Objectives & Constraints input, mode, the Row ID / Scenario

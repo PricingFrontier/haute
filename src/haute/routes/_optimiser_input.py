@@ -10,7 +10,6 @@ publication; the solve service orchestrates these steps.
 from __future__ import annotations
 
 import contextlib
-import math
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -22,13 +21,11 @@ from fastapi import HTTPException
 from haute._config_validation import RESERVED_ANALYSIS_COLUMN_PREFIX
 from haute._execution_admission import (
     ExecutionAdmissionError,
-    execution_budget_for_profile,
 )
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
-    ExecutionProfile,
 )
 from haute._graph_utils import (
     incoming_edge_bindings,
@@ -38,6 +35,7 @@ from haute._graph_utils import (
 from haute._logging import get_logger
 from haute._polars_utils import (
     bounded_sink,
+    current_streaming_chunk_size,
     read_parquet_metadata,
     streaming_collect,
 )
@@ -68,9 +66,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(component="server")
 
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR = 16
 
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
 _NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
@@ -322,74 +317,17 @@ def _admit_resident_grid(
         )
 
 
-def _explicit_chunk_size_from_config(config: Mapping[str, Any]) -> int | None:
-    if "chunk_size" not in config:
-        return None
-    return _positive_int(config["chunk_size"], field="chunk_size")
+def pipeline_chunk_decision(source: str) -> _ChunkSizeDecision:
+    """Optimiser setup reads its parquet inputs in chunks of the pipeline's streaming chunk size.
 
-
-def _optimiser_setup_target_chunk_bytes() -> int:
-    budget = execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP)
-    budget_scaled = max(
-        1,
-        budget.memory_limit_bytes // _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR,
-    )
-    return min(
-        _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES,
-        max(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES, budget_scaled),
-    )
-
-
-def _chunk_size_decision_for_parquet(
-    config: Mapping[str, Any],
-    parquet_path: Path,
-    *,
-    source: str,
-) -> _ChunkSizeDecision:
-    import polars as pl
-
-    from haute._ram_estimate import decoded_frame_row_width_bytes
-
-    explicit_chunk_size = _explicit_chunk_size_from_config(config)
-    if explicit_chunk_size is not None:
-        return _ChunkSizeDecision(
-            chunk_size=explicit_chunk_size,
-            provenance={
-                "policy": "explicit_rows",
-                "chunk_size": explicit_chunk_size,
-                "target_chunk_bytes": None,
-                "estimated_row_bytes": None,
-                "row_count": None,
-                "size_bytes": None,
-                "uncompressed_size_bytes": None,
-                "source": source,
-            },
-        )
-
-    metadata = read_parquet_metadata(parquet_path)
-    row_count = _positive_int(int(metadata["row_count"]), field="parquet row_count")
-    row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-    row_bytes_basis = _positive_int(row_bytes_basis, field="parquet byte size")
-    target_chunk_bytes = _optimiser_setup_target_chunk_bytes()
-    sample = streaming_collect(pl.scan_parquet(parquet_path).head(512))
-    estimated_row_bytes = max(
-        1,
-        math.ceil(row_bytes_basis / row_count),
-        math.ceil(decoded_frame_row_width_bytes(sample)),
-    )
-    chunk_size = max(1, target_chunk_bytes // estimated_row_bytes)
+    One setting (Pipeline Settings) sizes every chunked read, so the grid and
+    ratebook factor contexts follow it like auto-range and the rest of the
+    engine; *source* names the read in the job's ``setup_chunking`` record.
+    """
+    chunk_size = current_streaming_chunk_size()
     return _ChunkSizeDecision(
         chunk_size=chunk_size,
-        provenance={
-            "policy": "byte_budget",
-            "chunk_size": chunk_size,
-            "target_chunk_bytes": target_chunk_bytes,
-            "estimated_row_bytes": estimated_row_bytes,
-            "row_count": int(metadata["row_count"]),
-            "size_bytes": int(metadata["size_bytes"]),
-            "uncompressed_size_bytes": int(metadata.get("uncompressed_size_bytes") or 0),
-            "source": source,
-        },
+        provenance={"policy": "pipeline_setting", "chunk_size": chunk_size, "source": source},
     )
 
 
@@ -1156,14 +1094,6 @@ def write_solver_input(
             return str(borrowed_path)
         bounded_sink(scored_lf, output_path)
         return output_path
-
-
-def grid_chunk_decision(config: Mapping[str, Any], input_path: str) -> _ChunkSizeDecision:
-    """The chunk size for building the quote grid from *input_path*, with its provenance."""
-    try:
-        return _chunk_size_decision_for_parquet(config, Path(input_path), source="optimiser_grid")
-    except ValueError as exc:
-        raise OptimiserSetupError(400, f"Grid construction failed: {exc}") from exc
 
 
 def build_quote_grid(

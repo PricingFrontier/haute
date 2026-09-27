@@ -3301,7 +3301,6 @@ class OptimiserSolverSettings(BaseModel):
 
     max_iter: int
     tolerance: float
-    chunk_size: int | None
     # Ratebook only.
     max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
     cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)

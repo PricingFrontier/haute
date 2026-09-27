@@ -2896,7 +2896,6 @@ class TestEstimateRoute:
                                 "scenario_index": "scenario_index",
                                 "scenario_value": "premium_multiplier",
                                 "data_input": "optimiser_input",
-                                "chunk_size": 2,
                             },
                         },
                     },
@@ -2959,22 +2958,6 @@ class TestEstimateRoute:
         assert prepared["required_columns_by_node"] == _optimiser_solve_required_columns_by_node(
             body.graph, "opt", node.data.config
         )
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_rejects_invalid_chunk_size(
-        self,
-        client,
-        scored_data,
-    ):
-        graph = _make_optimiser_graph(scored_data, config={"chunk_size": 0})
-
-        resp = client.post(
-            "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
-        )
-
-        assert resp.status_code == 400
-        assert "chunk_size must be a positive integer" in resp.json()["detail"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_runtime_projects_contract_free_fan_in(
@@ -3080,7 +3063,7 @@ class TestEstimateRoute:
         )
         path = tmp_path / "auto_range_null_quote.parquet"
         df.write_parquet(path)
-        graph = _make_optimiser_graph(str(path), config={"chunk_size": 1})
+        graph = _make_optimiser_graph(str(path))
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
@@ -5259,45 +5242,12 @@ class TestBuildArtifactPayload:
 
         assert "chunk_size" not in payload
 
-    def test_explicit_chunk_size_is_serialized(self):
-        """Explicit row chunking remains part of the optimiser artifact contract."""
-        job = with_solve_summary(
-            {
-                "node_label": "my_opt",
-                "config": {
-                    "mode": "online",
-                    "constraints": {"volume": {"min": 0.9}},
-                    "objective": "income",
-                    "chunk_size": 123,
-                },
-            }
-        )
-        solve_result = SimpleNamespace(
-            lambdas={"volume": 0.5},
-            total_objective=1000.0,
-            baseline_objective=950.0,
-            total_constraints={"volume": 0.92},
-            constraint_bounds={"volume": 0.9},
-            baseline_constraints={"volume": 0.88},
-            converged=True,
-            iterations=10,
-        )
-
-        payload = _build_artifact_payload(job, solve_result)
-
-        assert payload["chunk_size"] == 123
-
     def test_setup_chunking_provenance_is_serialized(self):
         """Saved artifacts preserve the physical chunking provenance used by setup."""
         setup_chunking = {
             "optimiser_grid": {
-                "policy": "byte_budget",
-                "chunk_size": 4096,
-                "target_chunk_bytes": 67_108_864,
-                "estimated_row_bytes": 128,
-                "row_count": 1_000_000,
-                "size_bytes": 64_000_000,
-                "uncompressed_size_bytes": 128_000_000,
+                "policy": "pipeline_setting",
+                "chunk_size": 500_000,
                 "source": "optimiser_grid",
             }
         }
@@ -5456,7 +5406,6 @@ class TestBuildArtifactPayload:
                     "constraints": {"volume": {"min": 0.9}},
                     "max_iter": 80,
                     "cd_tolerance": 0.01,
-                    "chunk_size": 5000,
                     "frontier_ranges": {"volume": {"min": 0.8, "max": 1.0}},
                 },
                 "base_result": {"n_quotes": 12, "n_steps": 3},
@@ -5486,7 +5435,6 @@ class TestBuildArtifactPayload:
         assert payload["solver_settings"] == {
             "max_iter": 80,
             "tolerance": 1e-6,
-            "chunk_size": 5000,
             "max_cd_iterations": 10,
             "cd_tolerance": 0.01,
             "frontier_steps": 15,
@@ -5517,7 +5465,6 @@ class TestBuildArtifactPayload:
         assert payload["solver_settings"] == {
             "max_iter": 50,
             "tolerance": 1e-6,
-            "chunk_size": None,
         }
         assert payload["input_summary"]["n_quotes"] is None
 
@@ -7003,6 +6950,9 @@ class TestBuildGridBoundedSink:
 
     def test_build_grid_uses_bounded_sink(self, tmp_path):
         """The optimiser staging write must not use the fallback-capable sink."""
+        from haute._polars_utils import set_streaming_chunk_size
+
+        set_streaming_chunk_size(1_000)
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -7043,7 +6993,6 @@ class TestBuildGridBoundedSink:
             "quote_id": "quote_id",
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
-            "chunk_size": 1_000,
         }
 
         def patched_bounded_sink(lf, path, **kw):
@@ -7999,19 +7948,6 @@ class TestValidateConfig:
             OptimiserSolveService._validate_config({"objective": ""})
         assert exc_info.value.status_code == 400
         assert "objective" in exc_info.value.detail.lower()
-
-    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
-    def test_invalid_explicit_chunk_size_raises_400_synchronously(self, chunk_size):
-        from fastapi import HTTPException
-
-        from haute.routes._optimiser_service import OptimiserSolveService
-
-        with pytest.raises(HTTPException) as exc_info:
-            OptimiserSolveService._validate_config(
-                {"objective": "income", "chunk_size": chunk_size}
-            )
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "chunk_size must be a positive integer."
 
 
 # ---------------------------------------------------------------------------
@@ -10518,7 +10454,6 @@ class TestBuildArtifactPayloadExtended:
                     "quote_id": "qid",
                     "scenario_index": "step",
                     "scenario_value": "sv",
-                    "chunk_size": 100_000,
                 },
             }
         )
@@ -10537,7 +10472,7 @@ class TestBuildArtifactPayloadExtended:
         assert payload["quote_id"] == "qid"
         assert payload["scenario_index"] == "step"
         assert payload["scenario_value"] == "sv"
-        assert payload["chunk_size"] == 100_000
+        assert "chunk_size" not in payload
         assert payload["iterations"] == 10
         assert payload["cd_iterations"] is None
 
@@ -11250,7 +11185,6 @@ class TestSolveOnlineUnit:
             "objective": "expected_income",
             "constraints": {"volume": {"min": 0.9}},
             "max_iter": 20,
-            "chunk_size": 1000,
             "tolerance": 1e-4,
         }
 
@@ -12986,6 +12920,10 @@ class TestBuildGrid:
 
     def test_build_grid_creates_temp_file_and_cleans_up(self, tmp_path):
         """_build_grid creates temp parquet, builds grid, and cleans up."""
+        from haute._polars_utils import set_streaming_chunk_size
+
+        set_streaming_chunk_size(1_024)
+
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
@@ -13015,7 +12953,6 @@ class TestBuildGrid:
             "quote_id": "quote_key",
             "scenario_index": "scenario_step",
             "scenario_value": "price_factor",
-            "chunk_size": 1_024,
         }
 
         mock_grid = MagicMock(scenario_values=[0.9, 1.1])
@@ -13048,9 +12985,9 @@ class TestBuildGrid:
 
         assert not Path(parquet_path).exists()
 
-    def test_build_grid_without_chunk_size_uses_default_chunked_builder(self, tmp_path):
-        """Without explicit chunk_size, derive rows from the setup byte budget."""
-        from haute._polars_utils import read_parquet_metadata
+    def test_build_grid_reads_in_the_pipeline_chunk_size(self, tmp_path):
+        """The grid is built in chunks of the Pipeline Settings streaming chunk size."""
+        from haute._polars_utils import set_streaming_chunk_size
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
 
@@ -13064,7 +13001,6 @@ class TestBuildGrid:
                 "config": {},
             }
         )
-
         scored_lf = pl.LazyFrame(
             {
                 "quote_key": pl.Series(["q1", "q2", "q1", "q2"], dtype=pl.Utf8),
@@ -13074,7 +13010,6 @@ class TestBuildGrid:
                 "vol": pl.Series([0.9, 0.95, 0.85, 0.90], dtype=pl.Float32),
             }
         )
-
         config = {
             "objective": "income",
             "constraints": {"vol": {"min": 0.9}},
@@ -13082,118 +13017,28 @@ class TestBuildGrid:
             "scenario_index": "scenario_step",
             "scenario_value": "price_factor",
         }
-
-        mock_grid = MagicMock(scenario_values=[0.9, 1.1])
-        expected_chunk_size = None
-
-        def patched_bounded_sink(lf, path, **kw):
-            nonlocal expected_chunk_size
-            lf.collect().write_parquet(path)
-            metadata = read_parquet_metadata(Path(path))
-            row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-            estimated_row_bytes = max(
-                1,
-                -(-row_bytes_basis // max(1, int(metadata["row_count"]))),
-            )
-            expected_chunk_size = max(1, 256 // estimated_row_bytes)
+        set_streaming_chunk_size(3)
 
         with (
             patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
-                return_value=mock_grid,
+                return_value=MagicMock(scenario_values=[0.9, 1.1]),
             ) as mock_build,
-            patch(
-                "haute.routes._optimiser_input._optimiser_setup_target_chunk_bytes",
-                return_value=256,
-            ),
         ):
-            mock_sink.side_effect = patched_bounded_sink
+            mock_sink.side_effect = lambda lf, path, **_kw: lf.collect().write_parquet(path)
+            service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
 
-            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id).grid
-
-        assert result is mock_grid
-        mock_build.assert_called_once()
-        assert mock_build.call_args.args[2] == expected_chunk_size
-        assert mock_build.call_args.kwargs["quote_id"] == "quote_key"
-        assert mock_build.call_args.kwargs["scenario_index"] == "scenario_step"
-        assert mock_build.call_args.kwargs["scenario_value"] == "price_factor"
-        assert mock_build.call_args.kwargs["objective"] == "income"
-        assert "scenario_value_col" not in mock_build.call_args.kwargs
-        provenance = store.get_job(job_id)["setup_chunking"]["optimiser_grid"]
-        assert provenance["policy"] == "byte_budget"
-        assert provenance["target_chunk_bytes"] == 256
-        assert provenance["chunk_size"] == expected_chunk_size
-        assert provenance["source"] == "optimiser_grid"
-
-    def test_build_grid_explicit_chunk_size_preserves_row_semantics(self, tmp_path):
-        """Explicit chunk_size remains a user row-count override."""
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job(
-            {
-                "input_provenance": SOLVE_PROVENANCE,
-                "scenario_grid": SOLVE_SCENARIO_GRID,
-                "status": "running",
-                "config": {"chunk_size": 7},
-            }
-        )
-        scored_lf = pl.LazyFrame(
-            {
-                "quote_id": pl.Series(["q1", "q2"], dtype=pl.Utf8),
-                "scenario_index": pl.Series([0, 0], dtype=pl.Int32),
-                "scenario_value": pl.Series([1.0, 1.0], dtype=pl.Float32),
-                "expected_income": pl.Series([10.0, 20.0], dtype=pl.Float32),
-                "volume": pl.Series([0.9, 1.1], dtype=pl.Float32),
-            }
-        )
-        config = {
-            "objective": "expected_income",
-            "constraints": {"volume": {"min": 0.9}},
-            "chunk_size": 7,
+        assert mock_build.call_args.args[2] == 3
+        assert store.get_job(job_id)["setup_chunking"]["optimiser_grid"] == {
+            "policy": "pipeline_setting",
+            "chunk_size": 3,
+            "source": "optimiser_grid",
         }
 
-        with (
-            patch(
-                "haute.routes._optimiser_input.bounded_sink",
-                side_effect=lambda lf, path, **kw: lf.collect().write_parquet(path),
-            ),
-            patch(
-                "price_contour.build_grid_from_parquet_chunked",
-                return_value=MagicMock(scenario_values=[1.0]),
-            ) as mock_build,
-        ):
-            service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
-
-        assert mock_build.call_args.args[2] == 7
-        provenance = store.get_job(job_id)["setup_chunking"]["optimiser_grid"]
-        assert provenance["policy"] == "explicit_rows"
-        assert provenance["chunk_size"] == 7
-        assert provenance["source"] == "optimiser_grid"
-
-    def test_byte_budget_chunk_size_rejects_empty_parquet(self, tmp_path: Path) -> None:
-        """Byte-budgeted setup chunking fails loudly when no rows exist to size."""
-        from haute.routes._optimiser_input import _chunk_size_decision_for_parquet
-
-        empty_path = tmp_path / "empty.parquet"
-        pl.DataFrame({"quote_id": pl.Series([], dtype=pl.Utf8)}).write_parquet(empty_path)
-
-        with pytest.raises(ValueError, match="parquet row_count"):
-            _chunk_size_decision_for_parquet(
-                {},
-                empty_path,
-                source="optimiser_grid",
-            )
-
-    def test_ratebook_factor_context_chunk_size_uses_byte_policy_when_unspecified(
-        self,
-        tmp_path,
-    ) -> None:
-        """Ratebook factor contexts follow byte-aware setup chunking when possible."""
-        from haute._polars_utils import read_parquet_metadata
+    def test_ratebook_factor_contexts_read_in_the_pipeline_chunk_size(self, tmp_path) -> None:
+        """Ratebook factor contexts are built in chunks of the pipeline's streaming chunk size."""
+        from haute._polars_utils import set_streaming_chunk_size
         from haute.routes._optimiser_artifacts import (
             _cleanup_ratebook_factors_artifact,
             _persist_ratebook_factors_artifact,
@@ -13208,27 +13053,14 @@ class TestBuildGrid:
         )
         handle = _persist_ratebook_factors_artifact(factors_df)
         assert handle is not None
-        factors_path = Path(handle["path"])
-        metadata = read_parquet_metadata(factors_path)
-        row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-        estimated_row_bytes = max(
-            1,
-            -(-row_bytes_basis // max(1, int(metadata["row_count"]))),
-        )
-        expected_chunk_size = max(1, 128 // estimated_row_bytes)
         quote_grid = SimpleNamespace(quote_ids=["q1", "q2", "q3", "q4"], n_quotes=4)
+        set_streaming_chunk_size(2)
 
         try:
-            with (
-                patch(
-                    "price_contour.build_ratebook_factor_contexts_from_parquet_chunked",
-                    return_value=MagicMock(),
-                ) as mock_build,
-                patch(
-                    "haute.routes._optimiser_input._optimiser_setup_target_chunk_bytes",
-                    return_value=128,
-                ),
-            ):
+            with patch(
+                "price_contour.build_ratebook_factor_contexts_from_parquet_chunked",
+                return_value=MagicMock(),
+            ) as mock_build:
                 _build_ratebook_factor_contexts(
                     handle,
                     quote_grid,
@@ -13238,49 +13070,9 @@ class TestBuildGrid:
         finally:
             _cleanup_ratebook_factors_artifact(handle)
 
-        assert mock_build.call_args.args[2] == expected_chunk_size
+        assert mock_build.call_args.args[2] == 2
 
-    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
-    def test_build_grid_rejects_invalid_chunk_size(self, chunk_size):
-        """Invalid chunk sizes fail loudly instead of silently selecting another path."""
-        from fastapi import HTTPException
-
-        from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import OptimiserSolveService
-
-        store = JobStore()
-        service = OptimiserSolveService(store)
-        job_id = store.create_job(
-            {
-                "input_provenance": SOLVE_PROVENANCE,
-                "scenario_grid": SOLVE_SCENARIO_GRID,
-                "status": "running",
-            }
-        )
-        scored_lf = pl.LazyFrame(
-            {
-                "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
-                "scenario_index": pl.Series([0], dtype=pl.Int32),
-                "scenario_value": pl.Series([1.0], dtype=pl.Float32),
-                "expected_income": pl.Series([100.0], dtype=pl.Float32),
-            }
-        )
-        config = {
-            "objective": "expected_income",
-            "constraints": {},
-            "quote_id": "quote_id",
-            "scenario_index": "scenario_index",
-            "scenario_value": "scenario_value",
-            "chunk_size": chunk_size,
-        }
-
-        with pytest.raises(HTTPException) as exc_info:
-            service._build_grid(scored_lf, [], config, "opt", job_id)
-
-        assert exc_info.value.status_code == 400
-        assert "chunk_size must be a positive integer" in exc_info.value.detail
-
-    @pytest.mark.parametrize("chunk_size", [None, 2])
+    @pytest.mark.parametrize("chunk_size", [500_000, 2])
     def test_build_grid_accepts_categorical_quote_id_with_real_price_contour(
         self,
         chunk_size,
@@ -13305,8 +13097,10 @@ class TestBuildGrid:
             "scenario_index": "scenario_step",
             "scenario_value": "price_factor",
         }
-        if chunk_size is not None:
-            config["chunk_size"] = chunk_size
+        from haute._polars_utils import set_streaming_chunk_size
+
+        # One pipeline chunk holds the whole grid; two rows split every quote.
+        set_streaming_chunk_size(chunk_size)
 
         scored_lf = pl.LazyFrame(
             {

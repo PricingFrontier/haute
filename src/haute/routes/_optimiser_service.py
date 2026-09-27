@@ -112,7 +112,6 @@ from haute.routes._optimiser_input import (
     AutoRangeValueCheck,
     OptimiserSetupError,
     _execution_stage,
-    _explicit_chunk_size_from_config,
     _find_optimiser_node,
     _optimiser_side_input_ids,
     _optimiser_solve_required_columns_by_node,
@@ -122,8 +121,8 @@ from haute.routes._optimiser_input import (
     build_quote_grid,
     estimate_input_metrics,
     extract_ratebook_factors,
-    grid_chunk_decision,
     grid_construction_failures,
+    pipeline_chunk_decision,
     resolve_analysis_frame,
     resolve_analysis_plan,
     resolve_data_input_frame,
@@ -3216,7 +3215,6 @@ class OptimiserSolveService:
 
         try:
             _solve_timeout_from_config(config)
-            _explicit_chunk_size_from_config(config)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
@@ -3720,7 +3718,7 @@ class OptimiserSolveService:
             grid_construction_failures(node_id),
             _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
         ):
-            decision = grid_chunk_decision(config, input_path)
+            decision = pipeline_chunk_decision("optimiser_grid")
             self._record_setup_chunking(job_id, "optimiser_grid", decision.provenance)
             grid = build_quote_grid(
                 input_path,

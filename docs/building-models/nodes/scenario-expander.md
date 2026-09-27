@@ -34,7 +34,7 @@ BEFORE                        AFTER
 In the example above, `column_name` is set to `"scenario_value"` and `step_column` is set to `"scenario_index"`. Both endpoints are inclusive.
 
 !!! warning "Row multiplication"
-    The output has `rows × steps` records. 1,000 rows with 50 steps produces 50,000 rows. With large datasets, use the Optimiser's `chunk_size` to process in batches rather than expanding the full dataset at once.
+    The output has `rows × steps` records. 1,000 rows with 50 steps produces 50,000 rows. Large expanded frames are streamed in batches of the Pipeline Settings chunk size, which the optimiser uses too.
 
 **See also:**
 

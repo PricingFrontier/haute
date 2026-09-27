@@ -1611,7 +1611,6 @@ export interface OptimiserInputSummary {
  */
 export interface OptimiserSolverSettings {
   cd_tolerance?: number;
-  chunk_size: number | null;
   frontier_ranges?: {
     [k: string]: unknown;
   };

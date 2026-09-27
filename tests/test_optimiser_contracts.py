@@ -652,7 +652,6 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
                             "data_input": "scored",
                             "banding_source": "banding_transform",
                             "factor_columns": [["region"]],
-                            "chunk_size": 4,
                         },
                     },
                 },
@@ -957,7 +956,6 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
                             "quote_id": "quote_id",
                             "scenario_index": "scenario_index",
                             "scenario_value": "scenario_value",
-                            "chunk_size": 10,
                         },
                     },
                 },
@@ -1004,7 +1002,6 @@ def test_build_grid_sanitises_unknown_interleaved_quote_failure() -> None:
                 "quote_id": "quote_id",
                 "scenario_index": "scenario_index",
                 "scenario_value": "scenario_value",
-                "chunk_size": 10,
             },
             "opt",
             job_id,
@@ -1124,7 +1121,6 @@ def test_real_solve_apply_totals_match_selected_rows(
                             "quote_id": "quote_id",
                             "scenario_index": "scenario_index",
                             "scenario_value": "scenario_value",
-                            "chunk_size": 6,
                             "max_iter": 50,
                             "tolerance": 1e-6,
                         },
@@ -1404,7 +1400,7 @@ class TestSolveResultContract:
         [
             {"graph_fingerprint": None},
             {"extra": "x"},
-            {"solver_settings": {"max_iter": 50, "tolerance": 1e-6, "chunk_size": None, "x": 1}},
+            {"solver_settings": {"max_iter": 50, "tolerance": 1e-6, "x": 1}},
         ],
     )
     def test_the_input_summary_is_strict(self, change: dict) -> None:
@@ -1680,7 +1676,6 @@ class TestInputSummary:
             "solver_settings": {
                 "max_iter": 12,
                 "tolerance": 1e-6,
-                "chunk_size": None,
             },
         }
         OptimiserSolveResult.model_validate(job["result"])
@@ -1697,14 +1692,14 @@ class TestInputSummary:
 
         summary = make_input_summary(
             data_source="scenario_b",
-            solver_settings={"max_iter": 9, "tolerance": 0.1, "chunk_size": 64},
+            solver_settings={"max_iter": 9, "tolerance": 0.1},
         )
         result = make_solved_result(input_summary=summary, n_quotes=10, n_steps=3)
         job = make_completed_job(result=result, config={"mode": "online", "max_iter": 50})
 
         payload = _build_artifact_payload(job, _summary_solve_result(result))
 
-        assert payload["solver_settings"] == {"max_iter": 9, "tolerance": 0.1, "chunk_size": 64}
+        assert payload["solver_settings"] == {"max_iter": 9, "tolerance": 0.1}
         assert payload["input_summary"] == {
             "n_quotes": 10,
             "n_steps": 3,
