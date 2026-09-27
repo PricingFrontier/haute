@@ -176,19 +176,27 @@ describe("resolveContributionFeatureValue", () => {
 
 describe("modelScoreLinkedPrediction", () => {
   it.each([
-    [{ link: "logit", prediction_value: 0.25 }, { inverseLink: "inverse logit", isProbability: false, value: 0.25 }],
-    [{ link: "log", prediction_value: 120 }, { inverseLink: "exp", isProbability: false, value: 120 }],
+    [{ link: "logit", prediction_value: 0.25 }, { inverseLink: "inverse logit", isProbability: false, sumLabel: "Linear predictor", value: 0.25 }],
+    [{ link: "log", prediction_value: 120 }, { inverseLink: "exp", isProbability: false, sumLabel: "Linear predictor", value: 120 }],
     [
       { link_function: "probit", model_prediction_value: 0.4 },
-      { inverseLink: "inverse probit", isProbability: false, value: 0.4 },
+      { inverseLink: "inverse probit", isProbability: false, sumLabel: "Linear predictor", value: 0.4 },
     ],
     [
       { link: "logit", prediction_space: "probability", prediction_value: 1, model_prediction_value: 0.73 },
-      { inverseLink: "inverse logit", isProbability: true, value: 0.73 },
+      { inverseLink: "inverse logit", isProbability: true, sumLabel: "Linear predictor", value: 0.73 },
     ],
     [
       { link: "logit", prediction_space: "probability", prediction_value: "accepted", model_prediction_value: 0.73 },
-      { inverseLink: "inverse logit", isProbability: true, value: 0.73 },
+      { inverseLink: "inverse logit", isProbability: true, sumLabel: "Linear predictor", value: 0.73 },
+    ],
+    [
+      { link: "log", output_space: "raw_formula_val", prediction_value: 377.21, model_prediction_value: 377.21 },
+      { inverseLink: "exp", isProbability: false, sumLabel: "Raw score", value: 377.21 },
+    ],
+    [
+      { link: "logit", output_space: "log_odds", prediction_space: "probability", model_prediction_value: 0.2 },
+      { inverseLink: "inverse logit", isProbability: true, sumLabel: "Log-odds", value: 0.2 },
     ],
   ])("names the inverse link of %o", (explanation, expected) => {
     expect(modelScoreLinkedPrediction(explanation as ModelScoreExplanationDetail)).toEqual(expected)

@@ -169,7 +169,7 @@ export function ModelScoreDetailBlock({ detail }: {
                 style={{ borderColor: "var(--border)" }}
                 data-testid="model-score-ladder-row"
               >
-                <span style={{ color: "var(--text-primary)" }}>Linear predictor</span>
+                <span style={{ color: "var(--text-primary)" }}>{linkedPrediction.sumLabel}</span>
                 <span />
                 <span />
                 <span className="text-right" style={{ color: "var(--text-primary)" }}>{formatValue(predictionFromLadder)}</span>

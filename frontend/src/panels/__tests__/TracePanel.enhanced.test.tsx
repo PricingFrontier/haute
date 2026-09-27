@@ -770,6 +770,66 @@ describe("TracePanel - Node Detail", () => {
     expect(rows[3]).toHaveTextContent("0.57")
   })
 
+  it("ends a log-link CatBoost ladder at the raw score, then applies exp for the prediction", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "competitor_scoring",
+          column: "competitor_premium",
+          output_value: 377.2116,
+          steps: [
+            makeStep({
+              node_id: "competitor_scoring",
+              node_name: "competitor_scoring",
+              node_type: "modelScore",
+              schema_diff: {
+                columns_added: ["competitor_premium"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["year_of_manufacture"],
+              },
+              input_values: { year_of_manufacture: 2024 },
+              output_values: { year_of_manufacture: 2024, competitor_premium: 377.2116 },
+              node_detail: {
+                detail_type: "model_score",
+                prediction_value: 377.2116,
+                prediction_column: "competitor_premium",
+                feature_columns: ["year_of_manufacture"],
+                feature_values: { year_of_manufacture: 2024 },
+                explanation: {
+                  method: "catboost_shap",
+                  status: "ok",
+                  link: "log",
+                  output_space: "raw_formula_val",
+                  prediction_space: "prediction",
+                  base_value: 5.7313,
+                  prediction_from_shap: 5.9328,
+                  model_output_value: 5.9328,
+                  model_prediction_value: 377.2116,
+                  prediction_value: 377.2116,
+                  contributions: [
+                    { feature: "year_of_manufacture", feature_value: 2024, shap_value: 0.2015, rank: 1 },
+                  ],
+                },
+              },
+            }),
+          ] as TraceStep[],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const ladder = screen.getByLabelText("Model score contribution ladder")
+    const rows = within(ladder).getAllByTestId("model-score-ladder-row")
+    expect(rows).toHaveLength(4)
+    expect(rows[2]).toHaveTextContent("Raw score")
+    expect(rows[2]).toHaveTextContent("5.9328")
+    expect(rows[3]).toHaveTextContent("Prediction")
+    expect(rows[3]).toHaveTextContent("competitor_premium")
+    expect(rows[3]).toHaveTextContent("exp")
+    expect(rows[3]).toHaveTextContent("377.2116")
+  })
+
   it("keeps an identity-link GLM ladder ending at the prediction", () => {
     render(
       <TracePanel

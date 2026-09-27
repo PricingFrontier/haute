@@ -84,6 +84,9 @@ def test_catboost_shap_contributions_sum_to_prediction(catboost_scoring_model: A
     ]
     assert explanation["status"] == "ok"
     assert explanation["output_space"] == "prediction"
+    # An identity loss predicts in the space its contributions sum in.
+    assert explanation["link"] == "identity"
+    assert explanation["model_prediction_value"] == pytest.approx(explanation["prediction_value"])
     assert explanation["truncated"] is False
     assert explanation["omitted_count"] == 0
     assert shap_prediction == pytest.approx(explanation["prediction_value"], abs=1e-6)
@@ -198,6 +201,9 @@ def test_catboost_classifier_shap_labels_raw_formula_output_space() -> None:
         explanation["model_output_value"],
         abs=1e-6,
     )
+    # A classifier's label is not a transform of its raw score: no link is claimed.
+    assert "link" not in explanation
+    assert "model_prediction_value" not in explanation
 
 
 def _train_catboost_link_loss_model(loss_function: str) -> Any:
@@ -299,6 +305,9 @@ def test_catboost_link_loss_shap_reconciles_in_raw_formula_space(loss_function: 
     )
     assert explanation["prediction_value"] == pytest.approx(response_prediction)
     assert explanation["output_difference"] == pytest.approx(0.0, abs=1e-6)
+    # The link names the transform from the raw score to the prediction.
+    assert explanation["link"] == "log"
+    assert explanation["model_prediction_value"] == pytest.approx(response_prediction)
 
 
 def test_catboost_poisson_without_traced_value_reports_response_prediction() -> None:

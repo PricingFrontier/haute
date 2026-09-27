@@ -436,7 +436,11 @@ final exponential transform, so the function reports both an
 `output_space` (where the returned contributions live) and a
 `prediction_space` (where `prediction_value` and the traced-output check
 live), and re-predicts in both `RawFormulaVal` and default spaces to
-reconcile them. RustyStats returns the same shape of information
+reconcile them. A regression also reports its `link` (`log` for Poisson/Tweedie,
+`identity` otherwise) and the response-space `model_prediction_value`, so a
+consumer can show the transform from the summed raw score to the prediction; a
+classifier reports neither, since its label is not a transform of its raw score.
+RustyStats returns the same shape of information
 natively via `output_space`/`prediction_space` fields in its own
 response. Both raise `ModelExplanationError` if the reconstructed sum
 disagrees with the independently-computed prediction beyond
@@ -935,7 +939,8 @@ to a live MLflow tracking server.
   in the explanation payload, missing-feature and prediction-mismatch
   failures, the raw-formula-vs-response space reconciliation for
   Poisson/Tweedie losses (parametrized across link-loss variants) both
-  with and without a traced prediction value, and the equivalent RustyStats
+  with and without a traced prediction value, the `link` each regression loss
+  reports (none for a classifier), and the equivalent RustyStats
   GLM contribution suite (shared-contract mapping, missing features,
   prediction mismatch, additivity-break detection, a real RustyStats
   model's `predict_contributions` contract, and config-driven explanation
