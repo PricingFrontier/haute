@@ -168,13 +168,18 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // record in the results store, the training poller's progress key and the
 // panel's openNode wiring. The expired-result panel itself stays lazy. The
 // merged initial bundle is 294.2 KiB; 296 KiB restores ~1.8 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 296
+// The trace panel (every step card, detail and derivation tree, ~20 KiB) now
+// loads lazily, fetched when a trace request starts; the always-needed request
+// surface (TraceStatePanel), trace store state and canvas projection stay eager.
+// The merged initial bundle is 279.5 KiB; 281 KiB keeps ~1.5 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 281
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ensureInputSnapshots",
+  "TracePanel",
   "ModellingPreview",
   "PipelineRepairDialog",
   "CodeMirrorEditor",

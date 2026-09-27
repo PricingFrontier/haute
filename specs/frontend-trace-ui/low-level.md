@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/TracePanel.tsx` | Ready/loading/error panel shell, trace header, focused/full story state, omissions, correlation diagnostics, export controls, and card list. |
+| `frontend/src/panels/TracePanel.tsx` | Ready panel: trace header, focused/full story state, omissions, correlation diagnostics, export controls, and card list. `App.tsx` loads it lazily (its chunk kept out of startup preloads by `check-bundle-size.mjs` and guarded by `frontend/src/__tests__/App.tracePanelLazy.test.ts`) and fetches the chunk when a trace request starts. |
+| `frontend/src/panels/TraceStatePanel.tsx` | The request's loading/error surface, eager so a request's progress and errors never wait for the panel's chunk. |
 | `frontend/src/panels/trace/traceGrouping.ts`, `frontend/src/panels/trace/traceStoryView.ts` | Target selection, pass-through collapsing and dependency/default-expansion sets. |
 | `frontend/src/hooks/useTracing.ts` | Semantic-context-bound trace request state (`idle/loading/ready/error`), delayed progress, cancellation/recovery, and canvas trace/hover projection. |
 | `frontend/src/trace/traceExport.ts` | Lazily loaded deterministic projection of a validated `TraceResult` into Markdown and CSV, reused by download, clipboard, and print without adding export-only code to the initial application bundle. |
