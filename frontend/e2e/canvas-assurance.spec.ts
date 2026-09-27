@@ -466,18 +466,18 @@ test.describe("frontend canvas assurance", () => {
     )
     await page.setViewportSize(desktopViewport)
 
-    // The frontier detail card and Summary judge the selected point alike.
-    const detailCard = optimiserPreview.locator(".optimiser-frontier-detail")
-    await expect(detailCard.getByText("Point 2", { exact: true })).toBeVisible()
-    const detailAttainment = await attainmentRows(detailCard)
-    expect(detailAttainment.rows).toHaveLength(1)
-    expectAttainmentRowConsistent(detailAttainment.rows[0])
+    // The points table beside the chart highlights the selected point, and
+    // Summary judges it.
+    const pointsTable = optimiserPreview.getByRole("table", { name: "Frontier slice points" })
+    await expect(pointsTable.locator('tr[aria-current="true"]').getByRole("rowheader"))
+      .toHaveText("Point 2")
     await openResultPane(page, "Summary")
     await expect(
       optimiserPreview.getByText("Frontier point 2's adjustments load in the Adjustments tab."),
     ).toBeVisible()
     const summaryAttainment = await attainmentRows(optimiserPreview)
-    expect(summaryAttainment.rows).toEqual(detailAttainment.rows)
+    expect(summaryAttainment.rows).toHaveLength(1)
+    expectAttainmentRowConsistent(summaryAttainment.rows[0])
 
     // Adjustments: one bar per grid value and the base-price line at 1.0.
     await openResultPane(page, "Adjustments")

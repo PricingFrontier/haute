@@ -177,9 +177,8 @@ describe("Optimiser workspace", () => {
     expect(screen.queryByText(/not observed outcomes/)).not.toBeInTheDocument()
   })
 
-  it("introduces every tab, stating clamp rate as a search-space diagnostic", () => {
+  it("introduces every tab but Frontier, stating clamp rate as a search-space diagnostic", () => {
     const expected: Record<string, string> = {
-      Frontier: "Efficient frontier",
       Summary: "Solve summary",
       Adjustments: "Adjustments",
       Segments: "Segments",
@@ -187,6 +186,8 @@ describe("Optimiser workspace", () => {
       Convergence: "Convergence",
     }
     renderPreview()
+    fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
+    expect(within(activePane()).queryByRole("heading", { level: 3 })).not.toBeInTheDocument()
     for (const [tab, title] of Object.entries(expected)) {
       fireEvent.click(screen.getByRole("tab", { name: tab }))
       const pane = activePane()
@@ -238,22 +239,22 @@ describe("Optimiser workspace", () => {
     }
   })
 
-  it("stacks the frontier chart above the detail card at a narrow container width", () => {
+  it("stacks the frontier chart above its points table at a narrow container width", () => {
     renderPreview(makeData({ selectedPointIndex: 0 }))
     const pane = activePane()
     const layout = pane.querySelector(".optimiser-frontier-layout")
     expect(layout).not.toBeNull()
     const chart = layout!.querySelector(".optimiser-frontier-chart")
-    const detail = layout!.querySelector(".optimiser-frontier-detail")
+    const table = layout!.querySelector(".optimiser-frontier-points")
     expect(chart).not.toBeNull()
-    expect(within(detail as HTMLElement).getByTestId("frontier-detail-card")).toBeInTheDocument()
-    // Chart first in reading order, so stacking puts it above the card.
-    expect(chart!.compareDocumentPosition(detail!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(table as HTMLElement).getByRole("table", { name: "Frontier slice points" })).toBeInTheDocument()
+    // Chart first in reading order, so stacking puts it above the table.
+    expect(chart!.compareDocumentPosition(table!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     const narrow = /@container\s*\(max-width:\s*640px\)\s*\{([\s\S]*)\}\s*$/.exec(VALIDATION_CSS)
     expect(narrow).not.toBeNull()
     expect(narrow![1]).toMatch(/\.optimiser-frontier-layout\s*\{[^}]*flex-direction:\s*column/)
-    expect(narrow![1]).toMatch(/\.optimiser-frontier-detail\s*\{[^}]*max-width:\s*none/)
+    expect(narrow![1]).toMatch(/\.optimiser-frontier-points\s*\{[^}]*max-width:\s*none/)
   })
 
   it("labels the frontier axis picker in the workspace type scale", () => {

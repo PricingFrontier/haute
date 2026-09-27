@@ -118,9 +118,34 @@
   flex: 1 1 0;
   min-width: 0;
 }
-.optimiser-frontier-detail {
+.optimiser-frontier-points {
   flex: 1 1 0;
   min-width: 0;
+  max-height: 420px;
+  overflow: auto;
+}
+.optimiser-frontier-points thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+}
+.optimiser-frontier-points tbody tr {
+  cursor: pointer;
+}
+.optimiser-frontier-points tbody tr:hover {
+  background: var(--chrome-hover);
+}
+.optimiser-frontier-points tbody tr[aria-current="true"] {
+  background: var(--optimiser-accent-soft);
+  box-shadow: inset 3px 0 0 var(--optimiser-accent);
+}
+.optimiser-frontier-points button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
 }
 @container (max-width: 640px) {
   .validation-coefficient-reference > span:first-child,
@@ -153,7 +178,7 @@
     flex-direction: column;
   }
   .optimiser-frontier-chart,
-  .optimiser-frontier-detail {
+  .optimiser-frontier-points {
     flex: none;
     width: 100%;
     min-width: 0;

@@ -32,11 +32,9 @@ import type { SimpleEdge, SimpleNode } from "./editors"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
-import DetailCard from "./optimiser/DetailCard"
 import {
   assessFrontierPoint,
   asSolvedOnSlice,
-  discreteTradeOff,
   displayedSlicePosition,
   frontierConstraintKinds,
   sliceFrontier,
@@ -45,7 +43,6 @@ import {
   type FrontierSlicing,
 } from "./optimiser/frontierSlices"
 import { effectiveConstraintBounds } from "../stores/useNodeResultsStore"
-import { ChartValuesTable } from "./modelling/ChartScaffold"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { frontierGenerationMismatch } from "./optimiser/optimiserHelpers"
@@ -604,7 +601,6 @@ export default function OptimiserPreview({
       {activeTab === "frontier" && frontierWithPoints && slicing && (
         <FrontierTab
           frontier={frontierWithPoints}
-          result={result}
           solvedResult={solvedResult}
           selectedIdx={selectedIdx}
           xConstraintIdx={xConstraintIdx}
@@ -706,8 +702,6 @@ export default function OptimiserPreview({
 
 interface FrontierTabProps {
   frontier: FrontierData
-  /** The displayed result, for the selected point's detail card. */
-  result: OptimiserSolveResult
   /** The as-solved result, which anchors the chart's as-solved marker. */
   solvedResult: OptimiserSolveResult
   selectedIdx: number | null
@@ -735,7 +729,6 @@ function formatFrontierValue(value: number): string {
 
 function FrontierTab({
   frontier,
-  result,
   solvedResult,
   selectedIdx,
   xConstraintIdx,
@@ -777,7 +770,11 @@ function FrontierTab({
   const totalPointCount = frontier.n_points || points.length
   const iterationsLabel = points[0].mode === "ratebook" ? "CD passes" : "Iterations"
 
-  const selectedPoint = selectedIdx != null ? points[selectedIdx] : undefined
+  // Picking a point on the chart brings its row into view in the points table.
+  const selectedRowRef = useRef<HTMLTableRowElement>(null)
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView?.({ block: "nearest" })
+  }, [selectedIdx, slicePosition])
 
   return (
     <div className="optimiser-frontier-layout">
@@ -845,39 +842,48 @@ function FrontierTab({
           </p>
         )}
 
-        <ChartValuesTable
-          summary="View slice values"
-          ariaLabel="Frontier slice values"
-          headers={["Point", `${xName} bound`, `${xName} achieved`, objectiveName, "Converged", iterationsLabel, "Status"]}
-          rows={slice.indices.map((index) => {
-            const point = points[index]
-            return [
-              `Point ${index + 1}`,
-              formatFrontierValue(point.bounds[xName]),
-              formatFrontierValue(point.totals[xName]),
-              formatFrontierValue(point.total_objective),
-              point.converged ? "Yes" : "No",
-              point.iterations.toLocaleString(),
-              STATUS_LABELS[assessments[index].status],
-            ]
-          })}
-        />
       </div>
 
-      {selectedIdx != null && selectedPoint && (
-        <div className="optimiser-frontier-detail">
-          <DetailCard
-            result={result}
-            frontierPoint={{
-              index: selectedIdx,
-              point: selectedPoint,
-              xName,
-              assessment: assessments[selectedIdx],
-              tradeOff: discreteTradeOff({ points, slicing, assessments, kinds, index: selectedIdx }),
-            }}
-          />
-        </div>
-      )}
+      <div className="optimiser-frontier-points">
+        <table className="validation-value-table" aria-label="Frontier slice points">
+          <thead>
+            <tr>
+              {["Point", `${xName} bound`, `${xName} achieved`, objectiveName, "Converged", iterationsLabel, "Status"].map(
+                (header) => <th key={header} scope="col">{header}</th>,
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {slice.indices.map((index) => {
+              const point = points[index]
+              const isSelected = index === selectedIdx
+              return (
+                <tr
+                  key={index}
+                  ref={isSelected ? selectedRowRef : undefined}
+                  aria-current={isSelected ? "true" : undefined}
+                  onClick={() => onPointClick(index)}
+                >
+                  <th scope="row">
+                    <button type="button" aria-pressed={isSelected} onClick={(event) => {
+                      event.stopPropagation()
+                      onPointClick(index)
+                    }}>
+                      Point {index + 1}
+                    </button>
+                  </th>
+                  <td>{formatFrontierValue(point.bounds[xName])}</td>
+                  <td>{formatFrontierValue(point.totals[xName])}</td>
+                  <td>{formatFrontierValue(point.total_objective)}</td>
+                  <td>{point.converged ? "Yes" : "No"}</td>
+                  <td>{point.iterations.toLocaleString()}</td>
+                  <td>{STATUS_LABELS[assessments[index].status]}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

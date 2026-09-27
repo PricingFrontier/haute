@@ -25,16 +25,11 @@ export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
   statistics: "Statistics",
 }
 
-/** Every view's intro. Clamp rate is price-contour's search-space diagnostic
- *  (see the optimiser-validation roadmap's price-contour contract). */
-export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWorkspaceIntro> = {
-  frontier: {
-    title: "Efficient frontier",
-    description:
-      "Each point is a solve at a different constraint target: the highest expected objective "
-      + "found at that level. Select a point to inspect it; the selected point is the Export "
-      + "pane's publish target.",
-  },
+/** Every view's intro; the Frontier pane has none, its chart and points table speak for it.
+ *  Clamp rate is price-contour's search-space diagnostic (see the optimiser-validation
+ *  roadmap's price-contour contract). */
+export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWorkspaceIntro | null> = {
+  frontier: null,
   summary: {
     title: "Solve summary",
     description:

@@ -76,7 +76,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares, and `rangeEdgeShare`, the union of the minimum and maximum edge shares, counted once on a one-step grid). |
 | `frontend/src/panels/optimiser/SegmentsTab.tsx` | The Segments view (see Control flow): the result's segment keys in the per-feature diagnostic layout, ranked by the index's adjustment spread (unranked while it loads), the selected key's per-level mean scenario value as `RelativityBars` around 1.0 with an aligned quote strip, a `ChartFocusDetail` line, a values table, the Weight by switch, and the review-owned caches of loaded breakdowns and indexes. |
 | `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
-| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and strict frontier-point detail display. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and, while no point is selected, reports the hovered or focused point through `ChartFocusDetail`; its ticks span `chartTickSpan`, so a flat series spreads them over its padded axis. `DetailCard` (values only, at `text-sm`, beside the chart at equal width) shows the point's number and the displayed result's objective (grouped, six decimals), the point's feasibility in short form, `converged` and iterations, the discrete trade-off row, and the attainment table at its `size="sm"`. Both charts scale through the shared `chartDomain`/`chartTicks`; their axes are labelled by `formatChartTicks` (through `ChartValueGrid`, and directly for the frontier's x axis) and single values by `formatChartNumber`. |
+| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and the Frontier tab's points table, which the result preview draws beside it. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and, while no point is selected, reports the hovered or focused point through `ChartFocusDetail`; its ticks span `chartTickSpan`, so a flat series spreads them over its padded axis. Both charts scale through the shared `chartDomain`/`chartTicks`; their axes are labelled by `formatChartTicks` (through `ChartValueGrid`, and directly for the frontier's x axis) and single values by `formatChartNumber`. |
 | `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), and `discreteTradeOff` (Δobjective / Δrelaxation to the next point in the relaxing direction of the same slice, `bound_next − bound` for max and `bound − bound_next` for min, only between two feasible points with different bounds). |
 | `frontend/src/panels/ChartFocusDetail.tsx` | The polite `role="status"` line under a chart that states the hovered or focused item's exact values, or a placeholder; AvE bins and frontier points use it. |
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
@@ -500,8 +500,10 @@ without broadening the exactly-one-direct fallback.
   equals the slice's bound exactly, and otherwise is drawn hollow with the legend
   entry "As solved (different slice)". The y axis is named by the node's
   objective column while the result is not stale, else "Objective". A
-  `ChartValuesTable` ("View slice values") lists the slice's points: Point,
-  <x> bound, <x> achieved, Objective, Converged, Iterations, Status.
+  table ("Frontier slice points", always open beside the chart) lists the slice's points: Point,
+  <x> bound, <x> achieved, Objective, Converged, Iterations, Status; the selected point's row is
+  `aria-current`, highlighted in the optimiser accent and scrolled into view, and each row's
+  "Point N" button (or the row) selects that point.
 - `/apply` responses are cached in `useNodeResultsStore` under their full request identity
   `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
   index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
@@ -518,8 +520,8 @@ without broadening the exactly-one-direct fallback.
   drops a response whose query is no longer its current query. A cache hit makes no request and
   marks the entry most recently used. `completeSolveJob` throws when the result's frontier
   carries a different `frontier_generation` from the result itself.
-- The Frontier tab lays the chart beside the detail card and stacks the chart above
-  it when the workspace container is at most 640px wide. Its labels and footnote use
+- The Frontier tab lays the chart beside its points table at equal widths and stacks the
+  chart above it when the workspace container is at most 640px wide. Its labels and footnote use
   the workspace type scale (12-13px, sentence case), not 9-11px uppercase labels.
 - Each non-summary modelling view has a heading and explanatory sentence above its existing
   diagnostic component. The scrollable body remounts on view changes so a new view
@@ -619,11 +621,11 @@ the extracted `HistogramChart` unchanged, and
 its truncation note, the values table and the "live solves only" state.
 `frontend/src/panels/optimiser/__tests__/frontierSlices.test.ts` covers slicing a 2×3 grid,
 the single-constraint identity, feasibility (non-converged, converged-but-breached including
-an unswept breach) and the hand-calculated trade-off sign for min and max constraints;
+an unswept breach);
 `frontend/src/panels/optimiser/__tests__/FrontierChart.test.tsx` the axes, legend, markers, the
 feasible-only line and the as-solved anchor;
-`frontend/src/panels/optimiser/__tests__/DetailCard.test.tsx` the reasons, λ sign and trade-off
-row; and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching,
+and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching, the points
+table's highlighted and clickable rows,
 global-index selection, the in-slice stepper, and the Curves and Statistics panes after a solve
 (quote navigation replacing the point stepper, no panes without preview rows or an objective). Modelling subcomponents have suites
 under `frontend/src/panels/modelling/__tests__/`:
@@ -660,8 +662,8 @@ fields, selects and applies the backend `point_index`, and intercepts the
 MLflow API to assert request/result identity without contacting a live service.
 After its solve it walks every online pane: the Solve pane's status against the
 as-solved result, the tablist, the Summary attainment row
-(Bound, Slack, Status consistent with each other), frontier point 2's attainment
-identical in the detail card and Summary, the Adjustments bars and base-price
+(Bound, Slack, Status consistent with each other), frontier point 2's row highlighted in the
+points table and its attainment on Summary, the Adjustments bars and base-price
 line, a Segments level of the fixture's `region` analysis column, the Quotes
 "Highest adjustment" preset's descending order, the Convergence axes, and the
 Focus view closing on Escape with its tab kept. A second journey solves the

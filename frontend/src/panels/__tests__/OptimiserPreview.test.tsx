@@ -749,20 +749,35 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Optimised")).toBeInTheDocument()
     })
 
-    it("shows detail card content when a point is selected", () => {
+    it("highlights the selected point's row in the points table beside the chart", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
           selectedPointIndex: 2,
         }),
       })
-      expect(screen.getByText("Feasibility", { selector: "dt" })).toBeInTheDocument()
-      expect(screen.getAllByText("Point 3").length).toBeGreaterThan(0)
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      const current = within(table).getAllByRole("row").filter((row) => row.getAttribute("aria-current") === "true")
+      expect(current.map((row) => within(row).getByRole("rowheader").textContent)).toEqual(["Point 3"])
+      expect(within(table).getByRole("button", { name: "Point 3" })).toHaveAttribute("aria-pressed", "true")
     })
 
-    it("offers no publish actions on the detail card", () => {
+    it("selects a point from its table row as a chart click does", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
-      expect(screen.getByText("Feasibility", { selector: "dt" })).toBeInTheDocument()
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      fireEvent.click(within(table).getByRole("button", { name: "Point 5" }))
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 4)
+    })
+
+    it("has no intro or point details card: the chart and points table carry the values", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
+      expect(screen.queryByText("Feasibility")).not.toBeInTheDocument()
+      expect(screen.queryByText(/Objective per unit/)).not.toBeInTheDocument()
+    })
+
+    it("offers no publish actions on the Frontier pane", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
       expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: /Log to MLflow/ })).not.toBeInTheDocument()
     })
@@ -799,11 +814,12 @@ describe("OptimiserPreview", () => {
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("detail card states the point's attainment against its own bound in text", () => {
+    it("Summary states the selected point's attainment against its own bound in text", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
+      fireEvent.click(screen.getByText("Summary"))
       expect(attainmentCells("loss_ratio")).toEqual(["max", "0.58", "0.55", "+0.03 (+5.17%)", "Met", "0.001000"])
     })
 
@@ -827,11 +843,12 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/120\.0%/)).not.toBeInTheDocument()
     })
 
-    it("detail card shows lambda values", () => {
+    it("Summary shows the selected point's lambda values", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
+      fireEvent.click(screen.getByText("Summary"))
       expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
       expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
     })
@@ -1074,17 +1091,9 @@ describe("OptimiserPreview", () => {
         .toBeInTheDocument()
     })
 
-    it("shows the selected point's trade-off to its slice neighbour in the detail card", () => {
-      renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
-      const term = screen.getByText("Objective per unit volume", { selector: "dt" })
-      // (130 − 120) / (5.5 − 5) to point 1, in point 3's slice.
-      expect(term.nextElementSibling).toHaveTextContent("+20 (to point 1)")
-    })
-
     it("lists the slice's points in a values table", () => {
       renderPreview({ data: gridData() })
-      fireEvent.click(screen.getByText("View slice values"))
-      const table = screen.getByRole("table", { name: "Frontier slice values" })
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
       const rows = within(table).getAllByRole("row").slice(1)
       expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
         "Point 1",
@@ -1388,17 +1397,15 @@ describe("OptimiserPreview", () => {
   })
 
   describe("constraint attainment across panes (G03)", () => {
-    it("prints the selected point's own bound and status on Summary and the detail card alike", () => {
+    it("prints the selected point's own bound and status on Summary", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 4, result: pointResult(frontier, 4) }),
       })
 
-      const detail = attainmentCells("loss_ratio")
       fireEvent.click(screen.getByText("Summary"))
       const summary = attainmentCells("loss_ratio")
 
-      expect(summary).toEqual(detail)
       // The point's swept 0.62 breaches; the configured and as-solved 1.05 would not.
       expect(summary.slice(0, 3)).toEqual(["max", "0.62", "0.63"])
       expect(summary[4]).toBe("Breached")

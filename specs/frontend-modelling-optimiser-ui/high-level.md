@@ -496,15 +496,15 @@ count, and the point stepper which frontier point is shown. When a diagnostic co
 or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
 each one and why, in the same form as model validation. A failed solve with no earlier result
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
-never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
-side at equal widths, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
+never the warning colour the stale strip uses. The Frontier pane has no intro; its chart and
+the slice's points table sit side by side at equal widths, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
 Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence, then the
 pre-solve input's Curves and Statistics (the data preview's per-quote chart and per-scenario
 statistics, from the node's preview rows, while they hold an objective and scenario rows) so a
 solve never hides them; on Curves the header's point stepper gives way to the quote navigation. It has no
 Export tab and no publish actions — publishing belongs only to the Export pane. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
-target choice returns to the solved result). Summary and the detail card show the same
+target choice returns to the solved result). Summary shows the
 constraint-attainment table for the displayed result (the selected point, else the solve): every
 constraint, swept or not, as Constraint | Kind | Bound | Achieved | Slack | Status | λ, e.g.
 "min 1,000,000 · achieved 1,012,400 · slack +12,400 (+1.24%) · Met · λ 0.0031". The bound is
@@ -553,16 +553,13 @@ rather than a projected cloud; every point keeps its global number wherever it i
 stepped or published, and selecting a point elsewhere brings its slice into view. The line joins
 only feasible points — converged and meeting every bound, judged by haute in both modes because
 a converged ratebook point can still breach a bound; a non-converged point is hollow and a
-converged-but-breached one a cross labelled "breached", both still selectable, with the reason in
-the detail card. The as-solved marker is hollow, labelled "As solved (different slice)", when the
-solve lies off the displayed slice. The detail card carries values only, no guidance (the reading
-is documented): the point's number and objective, its feasibility (with the unmet convergence or
-the breached bounds), converged and iterations, the attainment table (whose λ column shows each
-multiplier), and a discrete trade-off, the objective change per unit of the x bound relaxed to the
-next point in the slice, shown only between two feasible neighbours with different bounds. While a
-point is selected the chart drops its hover detail, which would repeat the card, and the chart
-carries no caption beyond the slice and response-cap facts. A values table lists the slice's
-points. Convergence draws the solve's history as small multiples, each on its own real
+converged-but-breached one a cross labelled "breached", both still selectable, with its status in
+the points table. The as-solved marker is hollow, labelled "As solved (different slice)", when the
+solve lies off the displayed slice. There is no point details card: the points table beside the
+chart (Point | <x> bound | <x> achieved | objective | Converged | Iterations | Status) highlights
+the selected point's row and scrolls it into view, and clicking a row selects its point as a chart
+click does; Summary carries the selected point's attainment. While a point is selected the chart
+drops its hover detail, and it carries no caption beyond the slice and response-cap facts. Convergence draws the solve's history as small multiples, each on its own real
 axis with tick values: the objective; the largest λ change on a log axis (an iteration with no
 change, 0, is drawn at the axis floor and a note says how many); each constraint's total with
 its bound (the solve's `effective_bounds`) as a dashed line and a marker at the first iteration
