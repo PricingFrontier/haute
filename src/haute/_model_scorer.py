@@ -1333,6 +1333,7 @@ def _run_score_pipeline(
     extra_dfs: tuple[_Frame, ...] = (),
     source: str = "live",
     row_limit: int | None = None,
+    schema_only: bool = False,
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
@@ -1358,6 +1359,11 @@ def _run_score_pipeline(
         ``"live"`` → eager path; anything else → batched path.
     row_limit
         When set, forces the eager path regardless of source.
+    schema_only
+        The caller only needs the scored frame's schema
+        (``execute_lazy_graph(schema_only=True)``): score through the lazy
+        row-local scan, which reads no input rows until collected, never the
+        batched path that sinks and scores the whole input at build time.
     offset_column
         Offset column from the feature contract, when the caller has one.
         Authoritative over the model's self-description — the only offset
@@ -1397,7 +1403,7 @@ def _run_score_pipeline(
 
     # A captured scorer scores every row whatever the preview limit; the
     # batched path keeps that to one batch in memory at a time.
-    if row_limit and not (source != "live" and _score_whole_output.get()):
+    if schema_only or (row_limit and not (source != "live" and _score_whole_output.get())):
         result_lf = _score_row_local_scan(
             scoring_model,
             lf,
@@ -1549,6 +1555,9 @@ class ModelScorer:
         else uses the batched parquet path.
     row_limit : int | None
         When set (preview/trace), forces the eager path regardless of source.
+    schema_only : bool
+        The build only needs the scored schema: score through the lazy
+        row-local scan, never the batched path that scores the whole input.
     feature_contract_path : str | None
         Optional train-time feature contract. When it declares categorical
         value domains, runtime declarations must match and observed values
@@ -1577,6 +1586,7 @@ class ModelScorer:
         source_names: list[str] | None = None,
         source: str = "live",
         row_limit: int | None = None,
+        schema_only: bool = False,
         required_output_columns: frozenset[str] | set[str] | None = None,
         feature_contract_path: str | None = None,
         categorical_levels: _CategoricalLevels = None,
@@ -1598,6 +1608,7 @@ class ModelScorer:
         self.source_names = list(source_names) if source_names else []
         self.source = source
         self.row_limit = row_limit
+        self.schema_only = schema_only
         self.required_output_columns = (
             frozenset(str(c) for c in required_output_columns)
             if required_output_columns is not None
@@ -1734,6 +1745,7 @@ class ModelScorer:
             extra_dfs=dfs[1:],
             source=self.source,
             row_limit=self.row_limit,
+            schema_only=self.schema_only,
             required_output_columns=self.required_output_columns,
             categorical_levels=categorical_levels,
             offset_column=offset_column,

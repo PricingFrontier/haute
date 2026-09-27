@@ -2172,7 +2172,12 @@ present a structural or schema result as execution evidence.
 - **Node builders receive the schema-only declaration.** `execute_lazy_graph`
   forwards its `schema_only` value to every builder through
   `NodeBuildContext.schema_only`, so a builder that would otherwise materialise
-  while the graph is being built honours it. The only such builder is OUTPUT:
+  while the graph is being built honours it. There are two such builders.
+  MODEL_SCORE passes it to `ModelScorer(schema_only=...)`, and `_run_score_pipeline`
+  then scores through the lazy row-local scan (`_score_row_local_scan`), never the
+  batched path, which sinks and scores the whole input at build time; the scan
+  reads no input row until collected, and resolves output dtypes from declared model
+  metadata or a one-row probe. OUTPUT:
   under the declaration `assemble_output_from_config` returns
   `pl.LazyFrame(schema=output_document_schema(source_schemas, mapping))` and the
   document is never assembled. `output_document_schema` is the **single schema

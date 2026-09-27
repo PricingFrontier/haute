@@ -1283,6 +1283,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
+        schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
         feature_contract_path=config.get("feature_contract_path") or None,
         categorical_levels=declared_categorical_levels,
