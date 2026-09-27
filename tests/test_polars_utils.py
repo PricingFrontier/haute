@@ -438,7 +438,7 @@ def test_bounded_collect_batches_streams_ordered_chunks_of_the_real_query() -> N
 def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
     context = ExecutionContext(
         operation="chunked",
-        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_sampler=lambda: 1_000,
     )
 
@@ -468,7 +468,7 @@ def test_bounded_collect_batches_shrinks_a_sliceable_wide_source_under_budget(
     frame = pl.scan_parquet(path).with_columns(wide=pl.lit("x" * 4096))
     context = ExecutionContext(
         operation="wide-batches",
-        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_limit_bytes=8 * 1024 * 1024,
         memory_sampler=lambda: 0,
     )
@@ -703,7 +703,7 @@ def test_bounded_collect_batches_restores_a_parked_python_scan_failure() -> None
 def test_bounded_collect_batches_runs_the_query_in_the_caller_context() -> None:
     context = ExecutionContext(
         operation="chunked",
-        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_sampler=lambda: 1_000,
     )
     seen: list[ExecutionContext | None] = []

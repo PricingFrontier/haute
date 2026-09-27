@@ -335,7 +335,7 @@ model enforces
 one invariant on construction: a `polars` config that carries `steps` always carries the
 rendering of those steps as its `code`, or an empty `code` plus an editor-state
 `_steps_error` message when they cannot be rendered, so every consumer that reads
-transform code (execution, chunk planning, projection, estimation, tracing, codegen)
+transform code (execution, chunk-local classification, projection, estimation, tracing, codegen)
 sees the same program without knowing about steps and a stale `code` in a browser
 payload is overwritten on ingress; in-process config replacement uses the validated
 `GraphNode.with_config` helper rather than an unvalidated model copy so the invariant

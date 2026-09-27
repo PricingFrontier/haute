@@ -360,7 +360,7 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   pipeline file.
 - **Class mappings.** `snapshot_write_class(profile, preview_admitted=...)` returns
   `bounded` for every bounded profile (`TRAINING_PREP`, `OPTIMISER_SETUP`,
-  `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `LAZY_SINK`, `CHUNKED_MAP_REDUCE`, `NODE_SNAPSHOT`) and
+  `OPTIMISER_SOLVE`, `EXPLORE_ANALYSIS`, `LAZY_SINK`, `NODE_SNAPSHOT`) and
   `None` for deploy profiles; `snapshot_read_classes(profile)` returns `{bounded}` for the
   same profiles. `PREVIEW_EAGER` reads `bounded`, and writes it when `preview_admitted`,
   because `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true; the execution-profile semantics proof

@@ -63,7 +63,6 @@ type AutoRangeAction =
       type: "completed"
       generation: number
       scopeKey: string
-      warning: string | null
     }
 
 const initialState: AutoRangeState = {
@@ -117,7 +116,6 @@ function reducer(state: AutoRangeState, action: AutoRangeAction): AutoRangeState
         generation: action.generation,
         scopeKey: action.scopeKey,
         targets: state.targets,
-        error: action.warning,
       }
   }
 }
@@ -338,7 +336,6 @@ export function useOptimiserAutoRange({
         type: "completed",
         generation: active.generation,
         scopeKey: publishedScopeKey,
-        warning: status.result?.warning ?? null,
       })
     } catch (error) {
       if (!isCurrent(active)) return

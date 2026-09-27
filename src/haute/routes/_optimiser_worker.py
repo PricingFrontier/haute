@@ -150,18 +150,19 @@ class SolveInputWorkerOutcome:
 class FrontierAutoRangeWorkerRequest:
     """Everything the auto-range child needs, as picklable plain data.
 
-    ``chunked`` is the parent's structural plan decision; the child re-plans
-    (a chunk plan is not picklable) and sizes the chunks, which samples rows,
-    so the server process never reads them. Sizing can lose a chunked plan:
-    the child then reports the fallback without computing anything, because
-    the parent opened the seed plan for the chunked execution target. Any
-    other disagreement fails loudly.
+    The parent resolved the job's config and demand once; the child runs the
+    solve setup's pipeline stage under the parent's seed plan and never
+    re-plans.
     """
 
     body: OptimiserFrontierAutoRangeRequest
+    config: dict[str, Any]
+    mode: str
+    partition_count: int
+    timeout: int
+    required_columns_by_node: dict[str, frozenset[str]]
     project_root: str
     seed_plan: SeedPlanHandoff
-    chunked: bool
     scratch_dir: str
 
 
@@ -172,8 +173,6 @@ class FrontierAutoRangeWorkerOutcome:
     ranges: dict[str, dict[str, float]] | None = None
     execution_metrics: dict[str, Any] | None = None
     failure: OptimiserWorkerFailure | None = None
-    # Set when sizing the chunks lost the parent's chunked plan.
-    chunk_fallback: dict[str, Any] | None = None
 
 
 @contextlib.contextmanager
@@ -233,7 +232,6 @@ def _private_auto_range_job(store: JobStore, request: FrontierAutoRangeWorkerReq
         "progress": 0.0,
         "config": {},
         "node_label": request.body.node_id,
-        "chunk_fallback": None,
     }
     job_id = store.create_job(job)
     store.atomic_update(job_id, {"start_time": time.monotonic()})
@@ -363,28 +361,17 @@ def frontier_auto_range_worker(
     try:
         context = create_isolated_execution_context(budget)
         with _temporary_files_in(request.scratch_dir):
-            prepared = service._prepare_frontier_auto_range(
-                request.body,
-                prepare_snapshot_inputs=False,
-            )
-            planned_chunked = prepared["streaming_plan"] is not None
-            if request.chunked and not planned_chunked and prepared["chunk_fallback"]:
-                return FrontierAutoRangeWorkerOutcome(
-                    execution_metrics=context.metrics_payload(status="completed"),
-                    chunk_fallback=prepared["chunk_fallback"],
-                )
-            if planned_chunked != request.chunked:
-                raise RuntimeError(
-                    "Auto-range chunk planning changed between the request and its worker; "
-                    "start auto-range again."
-                )
             response = service._run_frontier_auto_range_job(
                 request.body,
                 job_id,
+                config=request.config,
+                mode=request.mode,
+                partition_count=request.partition_count,
+                timeout=request.timeout,
+                required_columns_by_node=request.required_columns_by_node,
                 execution_context=context,
                 seed_plan=request.seed_plan,
                 isolate=False,
-                **prepared,
             )
         return FrontierAutoRangeWorkerOutcome(
             ranges={

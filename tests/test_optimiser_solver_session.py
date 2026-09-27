@@ -228,9 +228,7 @@ class TestSessionSolve:
         graph = (
             _ratebook_graph(scored, _banding_for(scored))
             if mode == "ratebook"
-            else _online_graph(
-                scored, frontier_ranges={"volume": {"min": 0.5, "max": 2.0}}
-            )
+            else _online_graph(scored, frontier_ranges={"volume": {"min": 0.5, "max": 2.0}})
         )
         status = _solve(client, graph)
         assert status["status"] == "completed", status.get("message")

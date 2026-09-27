@@ -33,10 +33,8 @@ const PROFILE_LABELS: Record<string, string> = {
   optimiser_setup: "optimiser",
   optimiser_solve: "optimiser",
   optimiser_solve_worker: "optimiser",
-  auto_range: "auto-range",
   lazy_sink: "sink",
   deploy_batch: "deploy",
-  chunked_map_reduce: "chunked execution",
 }
 
 function profileLabel(profile: string): string {

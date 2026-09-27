@@ -16,8 +16,8 @@ ancestor/cycle detection), the two execution strategies (eager-with-caching for
 interactive preview, lazy-with-parquet-checkpointing for sinks/scoring/training), the shared
 per-node building block both strategies call through (`_build_funcs`), column-contract
 enforcement at node boundaries, execution contexts that route/service call sites admit
-with profile-specific memory budgets, a bounded chunked map-reduce mode for datasets too
-large to hold as a single Polars plan, and a small process-isolation primitive for
+with profile-specific memory budgets, the chunk-local classifiers that decide when user
+code may run on row slices of a frame, and a small process-isolation primitive for
 running heavy work in a child process the parent can kill on timeout or memory limit.
 
 ## Scope
@@ -43,12 +43,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
   memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
   by route/service long-running operations (preview, sink, training prep, optimiser
-  setup, deploy, chunked map-reduce). Low-level callers may omit a context or construct
+  setup, deploy). Low-level callers may omit a context or construct
   one without admission limits.
-- Bounded chunked execution (`chunking.py`): proving a graph's suffix is safe to run
-  chunk-by-chunk (an AST whitelist for user Polars code, per-`NodeType` capability
-  declarations), sizing chunks, and streaming chunk batches through the same node
-  builder functions the eager/lazy paths use.
+- Chunk-local classification (`chunking.py`): an AST whitelist that proves a node's
+  user Polars code, or an expression, row-local, so running it on row slices of a frame
+  gives the same rows as running it on the whole frame. Bounded input-sliced writes,
+  the expression parser, and trace correlation rely on it.
 - Process isolation (`_worker_isolation.py`) for running a function in a spawned child
   process with an optional address-space cap, timeout, and cooperative-stop support.
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
@@ -106,8 +106,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   aborting the whole preview. Once
   a display walk is running, every `HauteError` with a stable public
   `error_code`, cancellation, and memory-limit exhaustion is always raised. This includes
-  `ContractResolutionError`,
-  `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`, and
+  `ContractResolutionError`, `GroupByExecutionUnsupportedError`, and
   `LiveSwitchScenarioError`. `ContractMismatchError` and the base
   `SchemaMismatchError` have no public `error_code`, so the walk re-raises
   both through one explicit mismatch branch. The preview HTTP adapter converts
@@ -172,21 +171,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   establishes only that pipeline's parent as its root. The eager/lazy cores also
   scope the final builder read to the same root. Named database/Databricks/provider
   identifiers are not local paths and retain their external-resource semantics.
-- **Chunked map-reduce execution** (`chunking.chunk_plan` / `iter_chunked_frames`)
-  proves, ahead of running anything, that a graph's tail from a chosen `chunk_start`
-  node to the target is chunk-safe — a single-parent chain of node types whose
-  transforms are provably row-local — and then streams bounded batches through it,
-  never holding more than one chunk's worth of intermediate rows. Any node or user-code
-  construct outside the proven-safe set fails chunk *planning*, not execution, so
-  callers can fall back to the always-correct full executor. User code is classified
-  by a receiver-aware AST walk alone: comments and string literals cannot affect
+- **Chunk-local classification** (`chunking.classify_chunk_local_polars_code`,
+  `classify_row_local_expression`) decides, before anything runs, whether a node's user
+  Polars code or an expression is provably row-local. User code is classified by a
+  receiver-aware AST walk alone: comments and string literals cannot affect
   eligibility, a same-named method on another namespace does not inherit an
   admission, and every rejection is a structured decision naming the blocking
-  operator, a closed reason code, and the source line. The shipped runner is
-  deliberately serial (`max_in_flight_chunks=1`); it does not execute chunks in
-  parallel. A non-root `chunk_start_node_id` requires the caller to supply a
-  `start_frame`; the runner bounds the suffix from that frame onward and does not
-  claim that producing or retaining the caller-owned start frame was bounded.
+  operator, a closed reason code, and the source line. A rejection never fails the
+  pipeline; its consumer takes its whole-frame path (a write that is not input-sliced,
+  an expression value not computed from one row, or a trace edge that is not
+  row-aligned).
+  There is no chunked map-reduce runner: every execution runs the whole graph through
+  the one engine.
 - **Strategy decisions use one versioned public vocabulary.** The shared planner
   reports version 1 as `projected`, `schema-all-except`,
   `full-width-admitted-eager`, `unprojected-streaming-boundary`,
@@ -200,13 +196,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - **Group-by is an admitted global boundary in every materialising workflow.** No
   execution profile rejects a graph merely because its relevant lineage contains a
   group-by. Preview, lazy sinks, training, optimiser setup and auto-range, Explore,
-  assistant value profiling, live and batch deploy, and chunk-orchestrated work all use
+  assistant value profiling, and live and batch deploy all use
   the same boundary contract: a present positive admission plus an available estimate
   that fits both memory limit and headroom. Runtime-injected deploy inputs contribute
   request-local row-count, schema, and width metadata to that estimate instead of
-  depending on a stale or absent source path. A chunk runner never evaluates the global
-  aggregation independently per chunk; the group-by is executed once under admission
-  before a proven row-local suffix is chunked. Missing admission and excess headroom
+  depending on a stale or absent source path. A bounded write never evaluates the global
+  aggregation independently per slice; the group-by is executed once under admission.
+  Missing admission and excess headroom
   remain distinct typed failures. An unavailable estimate has exactly two outcomes.
   When the planner runs inside a worker whose native memory cap is active, which is
   how Data Output writes, preview and trace, Explore, API Input table builds, training
@@ -242,8 +238,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   whether that policy rests on a memory measurement or on none, its
   materialisation memory factor, whether it has a chunked-equals-full proof, and
   whether lineage has a transfer for it. Lineage, cardinality, projection, and
-  chunk planning derive their
-  vocabularies from that table: chunk planning admits only registered row-local
+  chunk-local classification derive their
+  vocabularies from that table: chunk-local classification admits only registered row-local
   operations that carry a proof, cardinality treats registered unbounded-expansion
   expressions as unavailable, and the planner's materialisation boundaries are
   every registered frame method whose policy is a materialisation boundary --
@@ -418,8 +414,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   recent successful same-scale workflow, so the monthly baseline does not disappear
   merely because cache eviction is shorter than its schedule.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
-  to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
-  live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory
+  to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup and
+  solve, deploy live/batch, ...). An admitted context enforces a resident-memory
   growth budget resolved from that profile (fixed default, environment override, or
   an adaptive fraction of currently-available system RAM), samples RSS at stage
   boundaries, and raises after a sampled boundary crosses the limit. Low-level APIs
@@ -487,7 +483,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   reordering can never re-mean a name.
 
 **Stepped transforms.** A stepped transform reaches the executor with its `code` already
-materialised from `steps` by the node data model, so chunk planning, projection, and every
+materialised from `steps` by the node data model, so chunk-local classification, projection, and every
 other reader classify the rendered program. The transform builder additionally validates
 the steps against the input names the code will execute with (the bound source names plus
 the original names an instance aliases) and builds the same incomplete function that a
@@ -529,8 +525,8 @@ successful run does no extra work.
 - **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
   `CollectPolicy` that says what the walk collects and how it treats each node's frame.
   The Data Output sink, every lazy execution (`execution.execute_lazy_graph`: deploy
-  scoring, training, the optimiser, node data, the assistant), the preview, the trace and
-  the chunked runner (a chunk walk per batch) run on it. Two decisions
+  scoring, training, the optimiser, node data, the assistant), the preview and the trace
+  run on it. Two decisions
   bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
   C901 rule scoped to the walker module only; the rest of the package is not held to
   that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over
@@ -570,7 +566,7 @@ successful run does no extra work.
 - **Profile-scoped memory budgets, not one global limit.** A preview click and a
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
-  training service, optimiser service, chunked runner) get its own default budget,
+  training service, optimiser service) get its own default budget,
   its own environment-variable override, and — for the "heavy" batch-shaped profiles —
   a process-wide in-flight reservation so several concurrent heavy jobs cannot each
   assume the full adaptive budget and collectively overrun the host.
@@ -578,9 +574,10 @@ successful run does no extra work.
   failure: a `fill_null(strategy="forward")` or `is_in(full_column)` inside chunked
   user code would produce *different, wrong* numbers per chunk boundary rather than an
   error. `chunking.py` only admits constructs it has a hypothesis-based proof for
-  (`test_chunk_whitelist_proofs.py`: chunked output == full-execution output on
-  randomised boundary-heavy frames); anything else fails chunk planning loudly and the
-  caller falls back to the always-correct full executor.
+  (`test_chunk_whitelist_proofs.py`: the code run on row slices of a frame and
+  concatenated == the code run on the whole frame, on randomised boundary-heavy
+  frames); the classifier rejects anything else and its consumer takes the
+  always-correct whole-frame path.
 - **Process isolation via `spawn`, not `fork`.** The child worker in
   `_worker_isolation.py` is started with `multiprocessing`'s `spawn` context
   specifically so it does not inherit the parent's already-large native heaps
@@ -727,16 +724,11 @@ successful run does no extra work.
   context's cancellation token has been set; the engine does not poll independently,
   so cancellation latency is bounded by the distance between checkpoints, not
   instantaneous.
-- **Chunk planning fails loudly, never silently downgrades.** Any node type, user-code
-  construct, or graph shape the chunk contract does not have a proof for raises
-  `ChunkPlanUnsupportedError` at *plan* time; there is no silent fallback to full
-  materialisation inside the chunk runner itself — callers choose the full executor
-  explicitly. A user-code rejection is the `ChunkUserCodeUnsupportedError` subclass,
-  whose public payload names the node, the blocking operator, the closed reason code,
-  and the source line and column. Chunk ineligibility changes the physical strategy,
-  never the validity of the pipeline: the frontier auto-range surface routes an
-  ineligible or unplannable suffix to its classic full-lazy path and reports the lost
-  chunk optimisation as a result warning instead of an HTTP 422.
+- **Chunk-local ineligibility is a decision, not an error.** A construct the
+  classifier has no proof for yields an ineligible `ChunkLocalDecision` naming the
+  blocking operator, the closed reason code, and the source line and column; nothing
+  raises. Ineligibility changes the physical strategy, never the validity of the
+  pipeline.
 - **Isolated-worker failures are reclassified into typed errors** rather than leaking
   raw `multiprocessing` exit codes: a remote Python exception becomes
   `IsolatedWorkerRemoteError`, a process that exits without a result payload becomes

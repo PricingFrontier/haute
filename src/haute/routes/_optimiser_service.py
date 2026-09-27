@@ -23,16 +23,13 @@ if TYPE_CHECKING:
     import polars as pl
     from price_contour import QuoteGrid
 
-    from haute.chunking import ChunkPlan
 
 from haute._config_validation import validate_optimiser_analysis_config
-from haute._contracts import Contract, get_column_contract
 from haute._env import int_env, optional_int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     admit_growth_grant,
     create_admitted_execution_context,
-    execution_budget_for_profile,
     isolated_execution_budget,
 )
 from haute._execution_context import (
@@ -43,7 +40,6 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._graph_utils import (
-    _sanitize_func_name,
     upstream_node_ids,
 )
 from haute._interactive_workers import (
@@ -55,6 +51,7 @@ from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
 from haute._polars_utils import (
     bounded_collect_batches,
+    current_streaming_chunk_size,
     streaming_collect,
 )
 from haute._sandbox import _get_project_root
@@ -75,17 +72,14 @@ from haute._worker_isolation import (
 )
 from haute.errors import (
     BoundedMemoryUnsupportedError,
-    ChunkPlanUnsupportedError,
     ConfigError,
     ContractMismatchError,
     SchemaMismatchError,
 )
 from haute.execution import (
     execute_lazy_graph,
-    prune_source_switch_edges,
 )
-from haute.executor import _build_node_fn
-from haute.graph_utils import NodeType, flatten_graph, graph_fingerprint
+from haute.graph_utils import flatten_graph, graph_fingerprint
 from haute.routes import _optimiser_artifacts
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
@@ -115,7 +109,6 @@ from haute.routes._job_store import (
 from haute.routes._optimiser_input import (
     _NULL_QUOTE_ID_DETAIL_PREFIX,
     OptimiserSetupError,
-    _data_source_feeds_optimiser_through_parallel_edges,
     _execution_stage,
     _explicit_chunk_size_from_config,
     _find_optimiser_node,
@@ -124,7 +117,6 @@ from haute.routes._optimiser_input import (
     _positive_int,
     _resolve_optimiser_data_input_id,
     _setup_execution_target_node_id,
-    _solve_columns_by_node,
     build_quote_grid,
     estimate_input_metrics,
     extract_ratebook_factors,
@@ -179,7 +171,6 @@ from haute.routes._optimiser_worker import (
     worker_scratch_directory,
 )
 from haute.schemas import (
-    OptimiserChunkFallback,
     OptimiserEstimateRequest,
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeResponse,
@@ -223,18 +214,11 @@ def _default_auto_range_timeout() -> int:
     return int_env("HAUTE_AUTO_RANGE_TIMEOUT", 1800)
 
 
-def _default_auto_range_chunk_size() -> int:
-    return int_env("HAUTE_AUTO_RANGE_CHUNK_SIZE", 2_000_000)
-
-
 def _default_auto_range_partitions() -> int:
     # disk buckets for chunked auto-range aggregation
     return int_env("HAUTE_AUTO_RANGE_PARTITIONS", 16)
 
 
-_DEFAULT_AUTO_RANGE_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
-_DEFAULT_AUTO_RANGE_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
-_DEFAULT_AUTO_RANGE_TARGET_CHUNK_BUDGET_DIVISOR = 16
 _JOB_TYPE_KEY = "job_type"
 
 
@@ -291,7 +275,6 @@ class _FrontierAutoRangeRunningJob(RunningJobFields):
     progress: float
     config: dict[str, Any]
     node_label: str
-    chunk_fallback: dict[str, Any] | None
 
 
 _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
@@ -483,80 +466,6 @@ def solve_failure_transition(
     )
 
 
-_STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES = frozenset(
-    {
-        NodeType.SCENARIO_EXPANDER,
-        NodeType.POLARS,
-        NodeType.MODEL_SCORE,
-    }
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _StreamingAutoRangePlan:
-    base_node_id: str
-    scenario_node_id: str
-    chain_node_ids: tuple[str, ...]
-    required_output_columns_by_node: Mapping[str, frozenset[str] | set[str] | None]
-    base_required_columns: frozenset[str] | None
-    chunk_plan: ChunkPlan
-    # False for a structural plan (no row was sampled): it fixes the base
-    # node and its columns, but its chunk size is a placeholder.
-    sized: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class _ChunkFallback:
-    """A lost chunk optimisation recorded on an auto-range job.
-
-    Chunk ineligibility never fails the request: the classic full-lazy path
-    produces identical results, so the job records why chunking was lost and
-    the completed result carries the message as a warning.
-    """
-
-    code: Literal[
-        "chunk_user_code_ineligible",
-        "model_score_ineligible",
-        "chunk_plan_unsupported",
-    ]
-    node_id: str | None
-    operator: str | None
-    reason: str | None
-    line: int | None
-    column: int | None
-    message: str
-
-    def payload(self) -> dict[str, Any]:
-        return {
-            "code": self.code,
-            "node_id": self.node_id,
-            "operator": self.operator,
-            "reason": self.reason,
-            "line": self.line,
-            "column": self.column,
-            "message": self.message,
-        }
-
-
-def _chunk_fallback_message(
-    *,
-    reason: str | None,
-    node_id: str | None,
-    operator: str | None,
-    line: int | None,
-) -> str:
-    detail = reason or "chunking unavailable"
-    if node_id:
-        detail = f"{detail} at node '{node_id}'"
-    qualifiers = [part for part in (operator, f"line {line}" if line is not None else None) if part]
-    if qualifiers:
-        detail = f"{detail} ({', '.join(qualifiers)})"
-    return (
-        f"Auto-range ran without chunking: {detail}; "
-        "results are identical but memory use may be higher."
-    )
-
-
 def _optional_positive_int(value: object, *, field: str) -> int | None:
     if value is None or value == "":
         return None
@@ -567,110 +476,6 @@ def _solve_timeout_from_config(config: Mapping[str, Any]) -> int | None:
     if "timeout" not in config:
         return _default_solver_timeout()
     return _optional_positive_int(config.get("timeout"), field="timeout")
-
-
-def _auto_range_chunk_size_from_config(config: dict[str, Any]) -> int:
-    if "auto_range_chunk_size" in config:
-        return _positive_int(
-            config["auto_range_chunk_size"],
-            field="auto_range_chunk_size",
-        )
-    return _positive_int(
-        config.get("chunk_size", _default_auto_range_chunk_size()),
-        field="chunk_size",
-    )
-
-
-def _auto_range_explicit_chunk_size_from_config(config: dict[str, Any]) -> int | None:
-    if "auto_range_chunk_size" in config:
-        return _positive_int(
-            config["auto_range_chunk_size"],
-            field="auto_range_chunk_size",
-        )
-    if "chunk_size" in config:
-        return _positive_int(config["chunk_size"], field="chunk_size")
-    return None
-
-
-def _auto_range_target_chunk_bytes() -> int:
-    budget = execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
-    budget_scaled = max(
-        1,
-        budget.memory_limit_bytes // _DEFAULT_AUTO_RANGE_TARGET_CHUNK_BUDGET_DIVISOR,
-    )
-    return min(
-        _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MAX_BYTES,
-        max(_DEFAULT_AUTO_RANGE_TARGET_CHUNK_MIN_BYTES, budget_scaled),
-    )
-
-
-def _auto_range_input_required_columns(
-    config: dict[str, Any],
-    *,
-    include_objective: bool = False,
-) -> frozenset[str]:
-    """Return optimiser input columns needed to validate auto-range data."""
-    objective = str(config["objective"])
-    qid_col = str(config.get("quote_id", "quote_id"))
-    constraints = config.get("constraints") or {}
-    constraint_cols = [str(cname) for cname in constraints]
-    required = {qid_col, *constraint_cols}
-    if include_objective:
-        required.add(objective)
-    return frozenset(required)
-
-
-def _node_contract_outputs_column(node: GraphNode, column: str) -> bool:
-    declared_raw = node.data.config.get("contract")
-    if declared_raw is not None:
-        try:
-            declared = Contract.from_user_declared(declared_raw)
-        except ValueError:
-            return False
-        if declared is not None and declared.outputs is not None:
-            return column in declared.outputs
-
-    try:
-        outputs, _inputs = get_column_contract(node.data.nodeType, node.data.config)
-    except (KeyError, ValueError):
-        return False
-    return outputs is not None and column in outputs
-
-
-def _data_input_schema_has_column(node: GraphNode, column: str) -> bool:
-    if node.data.nodeType != NodeType.DATA_INPUT:
-        return False
-    config = node.data.config
-    try:
-        from haute._builders import _configured_pipeline_dir
-        from haute._input_providers import resolve_data_input
-
-        lf = resolve_data_input(
-            config,
-            base_dir=_configured_pipeline_dir(),
-            profile=ExecutionProfile.AUTO_RANGE,
-        )
-        return column in set(lf.collect_schema().names())
-    except PUBLIC_CONTRACT_ERROR_TYPES:
-        raise
-    except (OSError, ValueError, BoundedMemoryUnsupportedError, SchemaMismatchError):
-        return False
-
-
-def _auto_range_data_input_has_objective(
-    graph: PipelineGraph,
-    data_input_id: str | None,
-    objective: str,
-) -> bool:
-    if not data_input_id:
-        return False
-    node = graph.node_map.get(data_input_id)
-    if node is None:
-        return False
-    return _data_input_schema_has_column(node, objective) or _node_contract_outputs_column(
-        node,
-        objective,
-    )
 
 
 def _auto_range_partition_count_from_config(config: dict[str, Any]) -> int:
@@ -684,315 +489,6 @@ def _auto_range_timeout_from_config(config: dict[str, Any]) -> int:
     return _positive_int(
         config.get("auto_range_timeout", _default_auto_range_timeout()),
         field="auto_range_timeout",
-    )
-
-
-def _auto_range_required_columns_by_node(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    *,
-    mode: str,
-) -> dict[str, frozenset[str]]:
-    """Return lazy projection seeds for frontier auto-range.
-
-    Auto-range consumes quote IDs plus constrained columns for range math. It
-    also keeps the configured objective for input-contract validation when the
-    data input is known to produce that column, then drops it before range
-    derivation. When a configured ``data_input`` is a direct optimiser parent,
-    seed that node so other optimiser parents do not inherit the projection.
-    Ratebook factor-side requirements are routed by the shared optimiser
-    parent-demand projection rule.
-    """
-    if mode not in {"online", "ratebook"}:
-        return {}
-
-    data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
-    required = _auto_range_input_required_columns(
-        config,
-        include_objective=_auto_range_data_input_has_objective(
-            graph,
-            data_input_id,
-            str(config["objective"]),
-        ),
-    )
-    if (
-        isinstance(data_input_id, str)
-        and data_input_id
-        and not _data_source_feeds_optimiser_through_parallel_edges(graph, node_id, data_input_id)
-    ):
-        return {data_input_id: required}
-    return {node_id: required}
-
-
-def _resolve_online_auto_range_data_input_id(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-) -> str | None:
-    """Return the optimiser input node id that online auto-range consumes."""
-    return _resolve_optimiser_data_input_id(graph, node_id, config)
-
-
-def _looks_chunk_local_user_code(
-    code: object,
-    *,
-    frame_names: Iterable[str],
-) -> bool:
-    """Return whether user code is eligible for chunk-local execution.
-
-    The streaming path only uses code that can be proven row-local by a small
-    AST allow-list.  Anything global, order-sensitive, or custom falls back to
-    the existing full lazy path where Polars can execute the graph as authored.
-    """
-    from haute.chunking import is_chunk_local_polars_code
-
-    return is_chunk_local_polars_code(code, frame_names=frame_names)
-
-
-def _streaming_auto_range_node_is_eligible(
-    node: GraphNode,
-    *,
-    frame_names: Iterable[str],
-    selector_aliases: frozenset[str] = frozenset(),
-) -> tuple[bool, _ChunkFallback | None]:
-    """Return chunk eligibility for one node plus any lost-optimisation record.
-
-    Structural rejections (a node type the streaming path never handles) are
-    silent; a node whose user code cannot be proven chunk-local reports the
-    classifier decision so the job can warn about the lost optimisation.
-    """
-    from haute.chunking import classify_chunk_local_polars_code
-
-    node_type = node.data.nodeType
-    config = node.data.config
-    if node_type not in _STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES:
-        return False, None
-    if node_type == NodeType.MODEL_SCORE:
-        # Model-score post-processing and column renames can be arbitrary
-        # user-defined transforms; keep them on the full lazy path for now.
-        # Each ineligibility has its own stable reason so the warning names the
-        # actual blocker rather than a blanket "post-processing" label.
-        if (config.get("code") or "").strip():
-            model_score_reason = "post_processing_code"
-        elif config.get("column_renames"):
-            model_score_reason = "column_renames"
-        else:
-            return True, None
-        return False, _ChunkFallback(
-            code="model_score_ineligible",
-            node_id=node.id,
-            operator="modelScore",
-            reason=model_score_reason,
-            line=None,
-            column=None,
-            message=_chunk_fallback_message(
-                reason=model_score_reason,
-                node_id=node.id,
-                operator="modelScore",
-                line=None,
-            ),
-        )
-    decision = classify_chunk_local_polars_code(
-        config.get("code"),
-        frame_names=("df",) if node_type == NodeType.SCENARIO_EXPANDER else frame_names,
-        selector_aliases=selector_aliases,
-    )
-    if decision.eligible:
-        return True, None
-    return False, _ChunkFallback(
-        code="chunk_user_code_ineligible",
-        node_id=node.id,
-        operator=decision.blocking_operator,
-        reason=decision.reason,
-        line=decision.line,
-        column=decision.column,
-        message=_chunk_fallback_message(
-            reason=decision.reason,
-            node_id=node.id,
-            operator=decision.blocking_operator,
-            line=decision.line,
-        ),
-    )
-
-
-def _chunked_base_required_columns(
-    streaming_plan: _StreamingAutoRangePlan,
-) -> dict[str, frozenset[str]] | None:
-    """The column demand a chunked auto-range executes its base node with."""
-    if streaming_plan.base_required_columns is None:
-        return None
-    return {streaming_plan.base_node_id: streaming_plan.base_required_columns}
-
-
-def _upstream_slice_contains_node_type(
-    graph: PipelineGraph,
-    node_id: str,
-    node_type: NodeType,
-    *,
-    resolve_node: Callable[[GraphNode, dict[str, GraphNode]], GraphNode],
-) -> bool:
-    node_map = graph.node_map
-    for current_id in (node_id, *upstream_node_ids(node_id, graph.parents_of)):
-        raw_node = node_map.get(current_id)
-        if raw_node is not None and resolve_node(raw_node, node_map).data.nodeType == node_type:
-            return True
-    return False
-
-
-def _build_streaming_auto_range_plan(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    *,
-    mode: str,
-    required_columns_by_node: Mapping[str, Iterable[str]],
-    sample_row_widths: bool = True,
-) -> tuple[_StreamingAutoRangePlan | None, _ChunkFallback | None]:
-    """Build a strict online auto-range plan that chunks before expansion.
-
-    The streaming plan is returned only when the shared chunk planner can prove
-    the scenario suffix.  Structural mismatches fall back silently; a lost
-    chunk optimisation is returned as a fallback record so the job can warn.
-
-    Without *sample_row_widths* and without a configured chunk size, the plan
-    is structural: byte-budget sizing, which samples rows of the target
-    plan, is left to the worker that runs the job, and the plan is unsized.
-    """
-    from haute._builders import resolve_instance_node
-
-    if mode != "online":
-        return None, None
-
-    try:
-        data_input_id = _resolve_online_auto_range_data_input_id(graph, node_id, config)
-    except HTTPException:
-        return None, None
-    if not isinstance(data_input_id, str) or not data_input_id:
-        return None, None
-
-    from haute._polars_selectors import preamble_selector_aliases
-
-    node_map = graph.node_map
-    selector_aliases = preamble_selector_aliases(graph.preamble or "")
-    downstream_to_upstream: list[str] = []
-    current_id = data_input_id
-    seen: set[str] = set()
-    base_node_id: str | None = None
-    scenario_node_id: str | None = None
-    while True:
-        if current_id in seen:
-            return None, None
-        seen.add(current_id)
-
-        raw_node = node_map.get(current_id)
-        if raw_node is None:
-            return None, None
-        node = resolve_instance_node(raw_node, node_map)
-        parent_ids = graph.parents_of.get(current_id, [])
-        if len(parent_ids) != 1:
-            return None, None
-        frame_names = [
-            _sanitize_func_name(node_map[parent_id].data.label)
-            for parent_id in parent_ids
-            if parent_id in node_map
-        ]
-        eligible, fallback = _streaming_auto_range_node_is_eligible(
-            node, frame_names=frame_names, selector_aliases=selector_aliases
-        )
-        if not eligible:
-            return None, fallback
-
-        downstream_to_upstream.append(current_id)
-        if node.data.nodeType == NodeType.SCENARIO_EXPANDER:
-            base_node_id = parent_ids[0]
-            scenario_node_id = current_id
-            break
-        current_id = parent_ids[0]
-
-    if base_node_id is None or scenario_node_id is None:
-        return None, None
-    if _upstream_slice_contains_node_type(
-        graph,
-        base_node_id,
-        NodeType.SCENARIO_EXPANDER,
-        resolve_node=resolve_instance_node,
-    ):
-        return None, None
-
-    chain_node_ids = tuple(reversed(downstream_to_upstream))
-    try:
-        from haute.chunking import ChunkPlanRequest, chunk_plan
-        from haute.executor import _resolve_batch_scenario
-
-        explicit_chunk_size = _auto_range_explicit_chunk_size_from_config(config)
-        sized = explicit_chunk_size is not None or sample_row_widths
-        structural_chunk_size = explicit_chunk_size if sized else 1
-        generic_chunk_plan = chunk_plan(
-            ChunkPlanRequest(
-                graph=graph,
-                target_node_id=data_input_id,
-                chunk_start_node_id=base_node_id,
-                chunk_size=structural_chunk_size,
-                target_chunk_bytes=(
-                    None if structural_chunk_size is not None else _auto_range_target_chunk_bytes()
-                ),
-                required_columns_by_node=required_columns_by_node,
-                # The pipeline's own batch scenario, as the unchunked path routes:
-                # a source switch without a "batch" input would fail to plan.
-                source=_resolve_batch_scenario(graph) or "batch",
-            )
-        )
-    except ChunkPlanUnsupportedError as exc:
-        logger.info(
-            "frontier_auto_range_generic_chunk_plan_unsupported",
-            error=str(exc),
-            node_id=node_id,
-            data_input_id=data_input_id,
-        )
-        payload = exc.to_payload() if exc.error_code is not None else {}
-        # A generic chunk-plan rejection still names the node it rejected in
-        # its context; never substitute the optimiser node for it.
-        context_node = exc.context.get("node_id") or exc.context.get("target_node_id")
-        fallback_node_id = (
-            payload.get("node_id") or (str(context_node) if context_node else None) or node_id
-        )
-        operator = payload.get("blocking_operator") or (
-            None if payload else exc.context.get("node_type")
-        )
-        reason = payload.get("reason") if payload else exc.message
-        line = payload.get("line")
-        return None, _ChunkFallback(
-            code="chunk_plan_unsupported",
-            node_id=fallback_node_id,
-            operator=operator,
-            reason=reason,
-            line=line,
-            column=payload.get("column"),
-            message=_chunk_fallback_message(
-                reason=reason,
-                node_id=fallback_node_id,
-                operator=operator,
-                line=line,
-            ),
-        )
-    needed_by_node = generic_chunk_plan.required_columns_by_node
-    base_needed = needed_by_node.get(base_node_id)
-
-    required_output_columns_by_node = {
-        chain_id: needed_by_node.get(chain_id) for chain_id in chain_node_ids
-    }
-    return (
-        _StreamingAutoRangePlan(
-            base_node_id=base_node_id,
-            scenario_node_id=scenario_node_id,
-            chain_node_ids=chain_node_ids,
-            required_output_columns_by_node=required_output_columns_by_node,
-            base_required_columns=(frozenset(base_needed) if base_needed is not None else None),
-            chunk_plan=generic_chunk_plan,
-            sized=sized,
-        ),
-        None,
     )
 
 
@@ -1159,7 +655,7 @@ def _add_frontier_range_batch(
 class FrontierAutoRangeContext:
     """Per-job context for frontier auto-range estimation."""
 
-    chunk_size: int = dataclasses.field(default_factory=_default_auto_range_chunk_size)
+    chunk_size: int = dataclasses.field(default_factory=current_streaming_chunk_size)
     partition_count: int = dataclasses.field(default_factory=_default_auto_range_partitions)
     execution_context: ExecutionContext | None = None
 
@@ -1758,6 +1254,45 @@ class OptimiserSolveService:
                 self._store.update_job(job_id, solver_session_command=dict(session.last_command))
             self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
 
+    def _run_optimiser_input_stage(
+        self,
+        body: OptimiserSolveRequest | OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None,
+        check_stopped: Callable[[], None],
+    ) -> tuple[dict[str, Any], Any]:
+        """The optimiser's pipeline stage, shared by solve setup and auto-range.
+
+        Executes the pipeline under the setup seed plan with the solve's
+        demand, then resolves the data-input frame. Both jobs run exactly this,
+        so the shared cache decides what is seeded, rebuilt and captured the
+        same way for either. Returns the lazy outputs and the data-input frame,
+        valid while *resources* holds the plan.
+        """
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+            seed_plan=seed_plan,
+        )
+        check_stopped()
+        source_lf = self._resolve_data_input_frame(
+            lazy_outputs,
+            body.graph,
+            config,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+        )
+        return lazy_outputs, source_lf
+
     def _prepare_solver_frame(
         self,
         body: OptimiserSolveRequest,
@@ -1781,22 +1316,17 @@ class OptimiserSolveService:
         run's seed plan.
         """
         analysis_plan = resolve_analysis_plan(body.graph, body.node_id, config)
-        lazy_outputs = self._execute_pipeline(
+        lazy_outputs, source_lf = self._run_optimiser_input_stage(
             body,
             job_id,
             resources,
+            config=config,
             required_columns_by_node=required_columns_by_node,
             execution_context=execution_context,
             seed_plan=seed_plan,
-        )
-        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-        source_lf = self._resolve_data_input_frame(
-            lazy_outputs,
-            body.graph,
-            config,
-            body.node_id,
-            job_id,
-            execution_context=execution_context,
+            check_stopped=lambda: self._raise_if_solve_stopped(
+                job_id, execution_context=execution_context
+            ),
         )
         constraint_cols, scored_lf = self._validate_and_project(
             source_lf,
@@ -2214,18 +1744,7 @@ class OptimiserSolveService:
         body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
         job_key = self._frontier_auto_range_job_key(body)
         setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
-        # Preparation may build a snapshot and plan chunking, so an already
-        # running job for this node answers before that work starts; the same
-        # check repeats under the creation lock to close the race.
-        with self._start_lock:
-            active = self._active_frontier_auto_range_start(setup_job_key)
-            if active is not None:
-                return active
-        prepared = self._prepare_frontier_auto_range(
-            body,
-            sample_row_widths=resolve_interactive_execution_mode() != "process",
-        )
-        node = prepared["node"]
+        node, prepared = self._prepare_frontier_auto_range(body)
         config = prepared["config"]
         with self._start_lock:
             active = self._active_frontier_auto_range_start(setup_job_key)
@@ -2238,30 +1757,9 @@ class OptimiserSolveService:
                 "message": "Estimating frontier range",
                 "config": dict(config),
                 "node_label": node.data.label,
-                "chunk_fallback": prepared.get("chunk_fallback"),
             }
             job_id = self._store.create_job(initial_job)
             execution_token = ExecutionCancellationToken()
-            try:
-                execution_context = create_admitted_execution_context(
-                    operation="frontier_auto_range",
-                    profile=ExecutionProfile.AUTO_RANGE,
-                    job_id=job_id,
-                    cancellation_token=execution_token,
-                )
-                bind_running_execution_metrics_publisher(
-                    self._store,
-                    job_id,
-                    execution_context,
-                )
-            except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-                http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    message=str(http_exc.detail),
-                )
-                raise http_exc from None
             self._graph_node_setup_singleflight.acquire(
                 setup_job_key,
                 job_id=job_id,
@@ -2283,11 +1781,10 @@ class OptimiserSolveService:
                 body,
                 job_id,
                 setup_singleflight_key=setup_job_key,
-                execution_context=execution_context,
+                execution_token=execution_token,
                 **prepared,
             )
         except Exception:
-            execution_context.release_admission()
             self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
             raise
         return OptimiserFrontierAutoRangeStartResponse(status="started", job_id=job_id)
@@ -2628,170 +2125,115 @@ class OptimiserSolveService:
     def _prepare_frontier_auto_range(
         self,
         body: OptimiserFrontierAutoRangeRequest,
-        *,
-        prepare_snapshot_inputs: bool = True,
-        sample_row_widths: bool = True,
-    ) -> dict[str, Any]:
-        """Validate an auto-range request and plan it, chunked when the chain allows.
+    ) -> tuple[GraphNode, dict[str, Any]]:
+        """Validate an auto-range request and resolve the solve's demand for it.
 
-        An auto-range worker re-plans with ``prepare_snapshot_inputs=False``:
-        its parent prepared the inputs and holds the plan's leases. A parent
-        that runs the job in a worker plans with ``sample_row_widths=False``,
-        so no row is read in the server process; the worker sizes the chunks.
+        Auto-range runs the solve setup's pipeline stage, so it asks the
+        pipeline for exactly what the solve asks for: the cache decision is the
+        solve's, and a capture it publishes serves the next solve unchanged.
+        Returns the optimiser node and the job's keyword arguments.
         """
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
         mode = self._validate_config(config)
         try:
-            chunk_size = _auto_range_chunk_size_from_config(config)
             partition_count = _auto_range_partition_count_from_config(config)
             timeout = _auto_range_timeout_from_config(config)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        required_columns_by_node = _auto_range_required_columns_by_node(
-            body.graph,
-            body.node_id,
-            config,
-            mode=mode,
-        )
-        if prepare_snapshot_inputs:
-            self._prepare_auto_range_snapshot_inputs(body.graph, body.node_id)
-        streaming_plan, chunk_fallback = _build_streaming_auto_range_plan(
-            body.graph,
-            body.node_id,
-            config,
-            mode=mode,
-            required_columns_by_node=required_columns_by_node,
-            sample_row_widths=sample_row_widths,
-        )
-        return {
-            "node": node,
+        return node, {
             "config": config,
             "mode": mode,
-            "chunk_size": chunk_size,
             "partition_count": partition_count,
             "timeout": timeout,
-            "required_columns_by_node": required_columns_by_node,
-            "streaming_plan": streaming_plan,
-            "chunk_fallback": (chunk_fallback.payload() if chunk_fallback is not None else None),
+            "required_columns_by_node": _optimiser_solve_required_columns_by_node(
+                body.graph,
+                body.node_id,
+                config,
+            ),
         }
-
-    @staticmethod
-    def _prepare_auto_range_snapshot_inputs(graph: PipelineGraph, node_id: str) -> None:
-        """Prepare snapshot-backed inputs before chunk planning runs schema-only.
-
-        Chunk planning executes the engine under the schema-only declaration,
-        which never builds a snapshot, so a missing or stale generation would
-        otherwise cost the first run its chunk plan. Preparation needs an
-        admitted context to spawn a hard-capped build, and the job's own
-        admission does not exist yet, so a scoped admission covers exactly this
-        step and is released before the job admits.
-        """
-        from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
-        from haute._path_resolution import runtime_project_root_scope
-        from haute._topo import ancestors
-        from haute.executor import _resolve_batch_scenario
-
-        scenario = _resolve_batch_scenario(graph) or "batch"
-        node_map = graph.node_map
-        edges = prune_source_switch_edges(
-            graph.edges,
-            node_map,
-            scenario,
-            submodels=graph.submodels,
-        )
-        order = sorted(ancestors(node_id, edges, set(node_map)))
-        try:
-            execution_context = create_admitted_execution_context(
-                operation="frontier_auto_range_preparation",
-                profile=ExecutionProfile.AUTO_RANGE,
-                wait_out_holders=ESTIMATE_HOLDERS,
-                wait_seconds=ESTIMATE_WAIT_SECONDS,
-            )
-        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise memory_limit_http_exception(exc, operation_noun="Auto-range") from None
-        try:
-            with runtime_project_root_scope(graph.source_file):
-                prepare_input_snapshots(
-                    order,
-                    node_map,
-                    profile=ExecutionProfile.AUTO_RANGE,
-                    execution_context=execution_context,
-                    base_dir=preparation_base_dir(graph),
-                    schema_only=False,
-                )
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            raise contract_error_http_exception(exc) from None
-        finally:
-            execution_context.release_admission(preserve_primary_error=True)
 
     def _run_frontier_auto_range_job(
         self,
         body: OptimiserFrontierAutoRangeRequest,
         job_id: str,
         *,
-        node: GraphNode,
         config: dict[str, Any],
         mode: str,
-        chunk_size: int,
         partition_count: int,
         timeout: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
-        streaming_plan: _StreamingAutoRangePlan | None,
-        chunk_fallback: dict[str, Any] | None = None,
         execution_context: ExecutionContext | None = None,
+        execution_token: ExecutionCancellationToken | None = None,
         seed_plan: SeedPlanHandoff | None = None,
         isolate: bool = True,
     ) -> OptimiserFrontierAutoRangeResponse:
-        """Run one auto-range job: chunk by chunk when a plan was proven, else whole-frame.
+        """Run one auto-range job: the solve setup's pipeline stage, then the range reducer.
 
-        Both paths feed the same range reducer; the job owns admission,
-        cancellation, completion and failure classification for either. In
-        process mode an isolated worker computes the ranges (*isolate* is
-        false only inside that worker, which passes the *seed_plan* handoff).
+        The job owns admission, cancellation, completion and failure
+        classification. Without a caller-owned *execution_context* it admits
+        exactly as solve setup does (a growth grant under the solve profile,
+        after waiting out a running estimate) and returns the grant on every
+        exit. In process mode an isolated worker computes the ranges
+        (*isolate* is false only inside that worker, which passes the
+        *seed_plan* handoff).
         """
-        del node, mode
+        job_kwargs: dict[str, Any] = {
+            "config": config,
+            "mode": mode,
+            "partition_count": partition_count,
+            "timeout": timeout,
+            "required_columns_by_node": required_columns_by_node,
+            "seed_plan": seed_plan,
+            "isolate": isolate,
+        }
         if execution_context is not None:
             return self._run_admitted_frontier_auto_range_job(
                 body,
                 job_id,
                 execution_context=execution_context,
-                config=config,
-                chunk_size=chunk_size,
-                partition_count=partition_count,
-                timeout=timeout,
-                required_columns_by_node=required_columns_by_node,
-                streaming_plan=streaming_plan,
-                chunk_fallback=chunk_fallback,
-                seed_plan=seed_plan,
-                isolate=isolate,
+                **job_kwargs,
             )
-        # A job entered without a caller-owned context still runs under
-        # admission: a materialising boundary is never admitted bare. The job
-        # owns that admission and returns it on every exit, rather than leaving
-        # the memory reservation to garbage collection.
-        owned_context = create_admitted_execution_context(
-            operation="frontier_auto_range",
-            profile=ExecutionProfile.AUTO_RANGE,
-            job_id=job_id,
-        )
+        try:
+            owned_context = admit_growth_grant(
+                operation="frontier_auto_range",
+                profile=ExecutionProfile.OPTIMISER_SOLVE,
+                job_id=job_id,
+                cancellation_token=execution_token,
+                wait_out_holders=ESTIMATE_HOLDERS,
+                wait_seconds=ESTIMATE_WAIT_SECONDS,
+            )
+        except ExecutionCancelledError as exc:
+            reason = self._jobs.cancellation_reason(job_id) or "cancelled"
+            raise BackgroundJobStoppedError(job_id, reason) from exc
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                message=str(http_exc.detail),
+            )
+            raise http_exc from None
         try:
             bind_running_execution_metrics_publisher(self._store, job_id, owned_context)
             return self._run_admitted_frontier_auto_range_job(
                 body,
                 job_id,
                 execution_context=owned_context,
-                config=config,
-                chunk_size=chunk_size,
-                partition_count=partition_count,
-                timeout=timeout,
-                required_columns_by_node=required_columns_by_node,
-                streaming_plan=streaming_plan,
-                chunk_fallback=chunk_fallback,
-                seed_plan=seed_plan,
-                isolate=isolate,
+                **job_kwargs,
             )
         finally:
+            try:
+                stored_reason = self._store.require_job(job_id).get("terminal_reason")
+            except HTTPException:
+                stored_reason = None
+            self._record_execution_metrics(
+                job_id,
+                owned_context,
+                terminal_reason=(
+                    stored_reason if isinstance(stored_reason, str) and stored_reason else None
+                ),
+            )
             owned_context.release_admission(preserve_primary_error=True)
 
     def _run_admitted_frontier_auto_range_job(
@@ -2801,12 +2243,10 @@ class OptimiserSolveService:
         *,
         execution_context: ExecutionContext,
         config: dict[str, Any],
-        chunk_size: int,
+        mode: str,
         partition_count: int,
         timeout: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
-        streaming_plan: _StreamingAutoRangePlan | None,
-        chunk_fallback: dict[str, Any] | None,
         seed_plan: SeedPlanHandoff | None,
         isolate: bool,
     ) -> OptimiserFrontierAutoRangeResponse:
@@ -2816,41 +2256,28 @@ class OptimiserSolveService:
             status = str(self._store.require_job(job_id).get("status", "running"))
             raise BackgroundJobStoppedError(job_id, status) from exc
         self._raise_if_frontier_auto_range_stopped(job_id)
-        chunked = streaming_plan is not None
         worker_metrics: Mapping[str, Any] | None = None
 
         # The seed plan entered on this stack is released on every exit.
         try:
             with contextlib.ExitStack() as resources:
                 if isolate and resolve_interactive_execution_mode() == "process":
-                    ranges, worker_metrics, worker_fallback = self._frontier_ranges_in_worker(
+                    ranges, worker_metrics = self._frontier_ranges_in_worker(
                         body,
                         job_id,
-                        streaming_plan=streaming_plan,
+                        config=config,
+                        mode=mode,
+                        partition_count=partition_count,
                         required_columns_by_node=required_columns_by_node,
                         timeout=timeout,
                         execution_context=execution_context,
                     )
-                    if worker_fallback is not None:
-                        chunk_fallback = worker_fallback
-                elif streaming_plan is not None:
-                    ranges = self._chunked_frontier_ranges(
-                        body,
-                        job_id,
-                        resources,
-                        config=config,
-                        partition_count=partition_count,
-                        streaming_plan=streaming_plan,
-                        execution_context=execution_context,
-                        seed_plan=seed_plan,
-                    )
                 else:
-                    ranges = self._full_frame_frontier_ranges(
+                    ranges = self._frontier_ranges(
                         body,
                         job_id,
                         resources,
                         config=config,
-                        chunk_size=chunk_size,
                         partition_count=partition_count,
                         required_columns_by_node=required_columns_by_node,
                         execution_context=execution_context,
@@ -2863,14 +2290,6 @@ class OptimiserSolveService:
                         name: OptimiserFrontierRange(min=value["min"], max=value["max"])
                         for name, value in ranges.items()
                     },
-                    warning=(
-                        str(chunk_fallback["message"]) if chunk_fallback is not None else None
-                    ),
-                    chunk_fallback=(
-                        OptimiserChunkFallback.model_validate(chunk_fallback)
-                        if chunk_fallback is not None
-                        else None
-                    ),
                 )
                 self._lifecycle.transition(
                     job_id,
@@ -2972,7 +2391,6 @@ class OptimiserSolveService:
                 error=str(exc),
                 node_id=body.node_id,
                 job_id=job_id,
-                chunked=chunked,
             )
             self._lifecycle.transition(
                 job_id,
@@ -3005,7 +2423,6 @@ class OptimiserSolveService:
                 "frontier_auto_range_failed",
                 error=str(exc),
                 node_id=body.node_id,
-                chunked=chunked,
                 exc_info=True,
             )
             self._lifecycle.transition(
@@ -3022,20 +2439,23 @@ class OptimiserSolveService:
                 detail="Frontier auto range failed. Check the server logs for details.",
             ) from exc
 
-    def _full_frame_frontier_ranges(
+    def _frontier_ranges(
         self,
         body: OptimiserFrontierAutoRangeRequest,
         job_id: str,
         resources: contextlib.ExitStack,
         *,
         config: dict[str, Any],
-        chunk_size: int,
         partition_count: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         execution_context: ExecutionContext,
         seed_plan: SeedPlanHandoff | None = None,
     ) -> dict[str, dict[str, float]]:
-        """Execute the whole pipeline to the data input and reduce it in bounded batches."""
+        """Run the solve setup's pipeline stage, then reduce its frame in bounded batches.
+
+        Batches are the pipeline's streaming chunk size, the setting every job
+        inherits.
+        """
         self._store.atomic_update(
             job_id,
             {
@@ -3046,15 +2466,16 @@ class OptimiserSolveService:
             expected_status="running",
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
-        lazy_outputs = self._execute_pipeline(
+        lazy_outputs, source_lf = self._run_optimiser_input_stage(
             body,
             job_id,
             resources,
+            config=config,
             required_columns_by_node=required_columns_by_node,
             execution_context=execution_context,
             seed_plan=seed_plan,
+            check_stopped=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
         )
-        self._raise_if_frontier_auto_range_stopped(job_id)
         self._store.atomic_update(
             job_id,
             {
@@ -3065,14 +2486,6 @@ class OptimiserSolveService:
             expected_status="running",
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
-        source_lf = self._resolve_data_input_frame(
-            lazy_outputs,
-            body.graph,
-            config,
-            body.node_id,
-            job_id,
-            execution_context=execution_context,
-        )
         constraint_cols, scored_lf = self._validate_and_project_auto_range(
             source_lf,
             config,
@@ -3095,7 +2508,7 @@ class OptimiserSolveService:
         self._raise_if_frontier_auto_range_stopped(job_id)
         return _estimate_scenario_frontier_ranges(
             FrontierAutoRangeContext(
-                chunk_size=chunk_size,
+                chunk_size=current_streaming_chunk_size(),
                 partition_count=partition_count,
                 execution_context=execution_context,
             ),
@@ -3105,163 +2518,24 @@ class OptimiserSolveService:
             check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
         )
 
-    def _chunked_frontier_ranges(
-        self,
-        body: OptimiserFrontierAutoRangeRequest,
-        job_id: str,
-        resources: contextlib.ExitStack,
-        *,
-        config: dict[str, Any],
-        partition_count: int,
-        streaming_plan: _StreamingAutoRangePlan,
-        execution_context: ExecutionContext,
-        seed_plan: SeedPlanHandoff | None = None,
-    ) -> dict[str, dict[str, float]]:
-        """Execute to the base node, then expand, score and reduce one base chunk at a time."""
-        import polars as pl
-
-        if not streaming_plan.sized:
-            raise RuntimeError("An unsized auto-range chunk plan cannot run in process.")
-
-        from haute._cache import preamble_execution_fingerprint
-        from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
-        from haute.executor import _compile_preamble, _pipeline_dir
-
-        self._store.atomic_update(
-            job_id,
-            {
-                "message": "Executing base pipeline",
-                "progress": 0.05,
-                "elapsed_seconds": self._job_elapsed(job_id),
-            },
-            expected_status="running",
-        )
-        self._raise_if_frontier_auto_range_stopped(job_id)
-        base_required = _chunked_base_required_columns(streaming_plan)
-        pinned = preamble_execution_fingerprint(
-            body.graph.preamble or "",
-            pipeline_dir=_pipeline_dir(body.graph),
-        )
-        lazy_outputs = self._execute_pipeline(
-            body,
-            job_id,
-            resources,
-            required_columns_by_node=base_required,
-            target_node_id=streaming_plan.base_node_id,
-            execution_context=execution_context,
-            preamble_fingerprint=pinned,
-            seed_plan=seed_plan,
-        )
-        self._raise_if_frontier_auto_range_stopped(job_id)
-        base_lf = lazy_outputs.get(streaming_plan.base_node_id)
-        if base_lf is None:
-            raise ValueError(
-                "Streaming auto-range base node did not produce a dataframe: "
-                f"{streaming_plan.base_node_id!r}."
-            )
-
-        qid_col = str(config.get("quote_id", "quote_id"))
-        constraints = config.get("constraints")
-        constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
-        self._store.atomic_update(
-            job_id,
-            {
-                "message": "Streaming scenario chunks",
-                "progress": 0.30,
-                "elapsed_seconds": self._job_elapsed(job_id),
-            },
-            expected_status="running",
-        )
-        self._raise_if_frontier_auto_range_stopped(job_id)
-        preamble_ns = (
-            _compile_preamble(
-                body.graph.preamble or "",
-                pipeline_dir=_pipeline_dir(body.graph),
-                execution_fingerprint=pinned,
-            )
-            or None
-        )
-        chunk_frames = iter_chunked_frames(
-            ChunkRunnerRequest(
-                graph=body.graph,
-                plan=streaming_plan.chunk_plan,
-                build_node_fn=_build_node_fn,
-                preamble_ns=preamble_ns,
-                execution_context=execution_context,
-                start_frame=(base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()),
-            )
-        )
-
-        def scored_chunk_batches() -> Iterator[pl.DataFrame]:
-            for chunk_index, chunk in enumerate(chunk_frames, start=1):
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                validated_constraints, scored_lf = self._validate_and_project_auto_range(
-                    chunk.frame.lazy(),
-                    config,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                if validated_constraints != constraint_cols:
-                    raise ValueError("Streaming auto-range constraint columns changed.")
-                with execution_context.stage(
-                    "frontier_stream_score_collect",
-                    node_id=streaming_plan.scenario_node_id,
-                ):
-                    batch = streaming_collect(
-                        scored_lf.select(_frontier_range_batch_columns(qid_col, constraint_cols)),
-                        execution_context=execution_context,
-                    )
-                yield batch
-                if chunk_index % 10 == 0:
-                    self._store.atomic_update(
-                        job_id,
-                        {
-                            "message": f"Streaming scenario chunks ({chunk_index})",
-                            "progress": 0.30,
-                            "elapsed_seconds": self._job_elapsed(job_id),
-                        },
-                        expected_status="running",
-                    )
-            self._store.atomic_update(
-                job_id,
-                {
-                    "message": "Combining scenario envelope",
-                    "progress": 0.85,
-                    "elapsed_seconds": self._job_elapsed(job_id),
-                },
-                expected_status="running",
-            )
-            self._raise_if_frontier_auto_range_stopped(job_id)
-
-        return _reduce_frontier_range_batches(
-            scored_chunk_batches(),
-            quote_id_col=qid_col,
-            constraint_cols=constraint_cols,
-            partition_count=partition_count,
-            check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
-            execution_context=execution_context,
-        )
-
     def _frontier_ranges_in_worker(
         self,
         body: OptimiserFrontierAutoRangeRequest,
         job_id: str,
         *,
-        streaming_plan: _StreamingAutoRangePlan | None,
+        config: dict[str, Any],
+        mode: str,
+        partition_count: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         timeout: int,
         execution_context: ExecutionContext,
-    ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None, dict[str, Any] | None]:
+    ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None]:
         """Supervise the hard-capped worker that computes the auto-range totals.
 
-        The seed plan the worker's execution adopts is opened here: at the
-        streaming base for a chunked job, at the data input otherwise. The
-        worker sizes a chunked plan's chunks; when sizing loses the plan it
-        reports the fallback, which is recorded on the job, and a whole-frame
-        worker runs under a whole-frame seed plan. The job's remaining timeout
-        bounds each worker. Returns the totals, the worker's execution metrics
-        and the fallback, if any.
+        The seed plan is opened here exactly as solve setup opens it, and the
+        worker adopts it; the worker receives the demand resolved in the
+        request thread and never re-plans. The job's remaining timeout bounds
+        the worker. Returns the totals and the worker's execution metrics.
         """
         self._store.atomic_update(
             job_id,
@@ -3272,66 +2546,16 @@ class OptimiserSolveService:
             },
             expected_status="running",
         )
-        outcome = self._frontier_ranges_attempt(
-            body,
-            job_id,
-            streaming_plan=streaming_plan,
-            required_columns_by_node=required_columns_by_node,
-            timeout=timeout,
-            execution_context=execution_context,
-        )
-        chunk_fallback = outcome.chunk_fallback
-        if chunk_fallback is not None:
-            self._store.atomic_update(
-                job_id,
-                {"chunk_fallback": chunk_fallback},
-                expected_status="running",
-            )
-            outcome = self._frontier_ranges_attempt(
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        # The seed plan is held until the worker has exited.
+        with contextlib.ExitStack() as resources:
+            handoff = self._open_setup_seed_plan(
                 body,
                 job_id,
-                streaming_plan=None,
+                resources,
                 required_columns_by_node=required_columns_by_node,
-                timeout=timeout,
                 execution_context=execution_context,
             )
-            if outcome.chunk_fallback is not None:
-                raise RuntimeError("A whole-frame auto-range worker reported a chunk fallback")
-        if outcome.ranges is None:
-            raise RuntimeError("Auto-range worker returned neither ranges nor a failure")
-        return outcome.ranges, outcome.execution_metrics, chunk_fallback
-
-    def _frontier_ranges_attempt(
-        self,
-        body: OptimiserFrontierAutoRangeRequest,
-        job_id: str,
-        *,
-        streaming_plan: _StreamingAutoRangePlan | None,
-        required_columns_by_node: Mapping[str, Iterable[str]],
-        timeout: int,
-        execution_context: ExecutionContext,
-    ) -> FrontierAutoRangeWorkerOutcome:
-        """Open one attempt's seed plan and run one auto-range worker under it."""
-        self._raise_if_frontier_auto_range_stopped(job_id)
-        # The attempt's seed plan is held until its worker has exited.
-        with contextlib.ExitStack() as resources:
-            if streaming_plan is not None:
-                handoff = self._open_setup_seed_plan(
-                    body,
-                    job_id,
-                    resources,
-                    required_columns_by_node=_chunked_base_required_columns(streaming_plan),
-                    target_node_id=streaming_plan.base_node_id,
-                    execution_context=execution_context,
-                )
-            else:
-                handoff = self._open_setup_seed_plan(
-                    body,
-                    job_id,
-                    resources,
-                    required_columns_by_node=required_columns_by_node,
-                    execution_context=execution_context,
-                )
             self._raise_if_frontier_auto_range_stopped(job_id)
             remaining = timeout - self._job_elapsed(job_id)
             if remaining <= 0:
@@ -3341,9 +2565,16 @@ class OptimiserSolveService:
                     frontier_auto_range_worker,
                     FrontierAutoRangeWorkerRequest(
                         body=body,
+                        config=dict(config),
+                        mode=mode,
+                        partition_count=partition_count,
+                        timeout=timeout,
+                        required_columns_by_node={
+                            node_id: frozenset(columns)
+                            for node_id, columns in required_columns_by_node.items()
+                        },
                         project_root=str(_get_project_root()),
                         seed_plan=handoff,
-                        chunked=streaming_plan is not None,
                         scratch_dir=scratch_dir,
                     ),
                     job_id=job_id,
@@ -3357,7 +2588,9 @@ class OptimiserSolveService:
             raise RuntimeError(f"Auto-range worker returned {type(outcome).__name__}")
         if outcome.failure is not None:
             raise OptimiserWorkerFailureError(outcome.failure)
-        return outcome
+        if outcome.ranges is None:
+            raise RuntimeError("Auto-range worker returned neither ranges nor a failure")
+        return outcome.ranges, outcome.execution_metrics
 
     def _time_out_frontier_auto_range(
         self,
@@ -3383,6 +2616,7 @@ class OptimiserSolveService:
         job_id: str,
         *,
         setup_singleflight_key: tuple[str, str, str] | None = None,
+        execution_token: ExecutionCancellationToken | None = None,
         **prepared: Any,
     ) -> None:
         start_time = time.monotonic()
@@ -3400,7 +2634,12 @@ class OptimiserSolveService:
                 setup_singleflight_key=setup_singleflight_key,
             ):
                 try:
-                    self._run_frontier_auto_range_job(body, job_id, **prepared)
+                    self._run_frontier_auto_range_job(
+                        body,
+                        job_id,
+                        execution_token=execution_token,
+                        **prepared,
+                    )
                 except BackgroundJobStoppedError:
                     return
                 except HTTPException:
@@ -3412,23 +2651,6 @@ class OptimiserSolveService:
                         node_id=body.node_id,
                         exc_info=True,
                     )
-                finally:
-                    execution_context = prepared.get("execution_context")
-                    if isinstance(execution_context, ExecutionContext):
-                        terminal_reason = None
-                        try:
-                            job: Mapping[str, Any] = self._store.require_job(job_id)
-                        except HTTPException:
-                            job = {}
-                        stored_reason = job.get("terminal_reason")
-                        if isinstance(stored_reason, str) and stored_reason:
-                            terminal_reason = stored_reason
-                        self._record_execution_metrics(
-                            job_id,
-                            execution_context,
-                            terminal_reason=terminal_reason,
-                        )
-                        execution_context.release_admission()
 
         thread = threading.Thread(target=_auto_range_background, daemon=True)
         try:
@@ -3616,11 +2838,9 @@ class OptimiserSolveService:
     ) -> SeedPlanRequest:
         """The seed plan one setup execution runs under.
 
-        The plan decides separately which consumed nodes it can capture.
-        Auto-range captures, at whichever nodes it captures, the columns the
-        following solve reads there — the data input, or the streaming base
-        below the scenario expander — so the solve seeds instead of
-        recomputing. A column a node does not produce is simply not captured.
+        Solve setup and auto-range build it from the same demand, so they make
+        the same cache decision and a capture either publishes serves the
+        other. The plan decides separately which consumed nodes it can capture.
         """
         from haute.executor import _resolve_batch_scenario
 
@@ -3629,19 +2849,6 @@ class OptimiserSolveService:
         execution_target_node_id, _preserved, consumed_node_ids = self._setup_execution_scope(
             body, target_node_id
         )
-        capture_columns_by_node: Mapping[str, frozenset[str]] = {}
-        if (
-            execution_context is not None
-            and execution_context.profile == ExecutionProfile.AUTO_RANGE
-        ):
-            optimiser_node = _find_optimiser_node(body.graph, body.node_id)
-            if str(optimiser_node.data.config.get("mode", "online")) in {"online", "ratebook"}:
-                capture_columns_by_node = _solve_columns_by_node(
-                    body.graph,
-                    body.node_id,
-                    optimiser_node.data.config,
-                    source=scenario,
-                )
         return SeedPlanRequest(
             graph=body.graph,
             target_node_id=execution_target_node_id,
@@ -3653,7 +2860,6 @@ class OptimiserSolveService:
             ),
             consumed_node_ids=consumed_node_ids,
             required_columns_by_node=required_columns_by_node,
-            capture_columns_by_node=capture_columns_by_node,
         )
 
     def _open_setup_seed_plan(

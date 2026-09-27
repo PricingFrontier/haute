@@ -181,9 +181,7 @@ def test_default_memory_budgets_adapt_to_available_ram(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
     ):
         budget = execution_budget_for_profile(profile)
         assert budget.config_key == f"adaptive:{profile.value}"
@@ -272,9 +270,9 @@ def test_adaptive_default_memory_budgets_honor_configured_os_reserve(
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 20 * gib)
 
-    default_budget = execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    default_budget = execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
     monkeypatch.setenv("HAUTE_EXECUTION_OS_RESERVE_MB", str(6 * 1024))
-    reserved_budget = execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    reserved_budget = execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert default_budget.os_reserve_bytes == 2 * gib
     assert reserved_budget.os_reserve_bytes == 6 * gib
@@ -452,9 +450,7 @@ def test_default_execution_budget_is_adaptive_across_local_engine_profiles(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
     }
     for profile in heavy_profiles:
         budget = admission_mod.execution_budget_for_profile(profile)
@@ -485,12 +481,12 @@ def test_explicit_memory_limit_env_still_overrides_adaptive_policy(
 
     _clear_execution_memory_env(monkeypatch)
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_MB", "512")
 
-    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert budget.memory_limit_bytes == 512 * 1024 * 1024
-    assert budget.config_key == "HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB"
+    assert budget.config_key == "HAUTE_EXPLORE_MEMORY_LIMIT_MB"
     assert budget.budget_policy == "explicit_env"
     assert budget.available_ram_bytes is None
 
@@ -578,39 +574,6 @@ def test_training_admission_waits_out_an_evaluation_preview(
     waited = time.monotonic() - started
     training.release_admission()
     # Admitted by the release notification, well before the wait bound.
-    assert 0.15 <= waited < 5.0
-
-
-def test_auto_range_preparation_waits_out_the_panel_estimate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Auto-range started while the config panel's estimate runs waits, not refuses."""
-    from haute._execution_admission import create_admitted_execution_context
-    from haute.routes._optimiser_session import ESTIMATE_HOLDERS
-
-    _pin_ten_gib_host(monkeypatch)
-    # Admitted exactly as the estimate route admits it.
-    estimate = create_admitted_execution_context(
-        operation="optimiser_estimate",
-        profile=ExecutionProfile.OPTIMISER_SETUP,
-        memory_sampler=lambda: 100,
-    )
-    releaser = threading.Timer(0.2, estimate.release_admission)
-    started = time.monotonic()
-    releaser.start()
-    try:
-        admitted = create_admitted_execution_context(
-            operation="frontier_auto_range_preparation",
-            profile=ExecutionProfile.AUTO_RANGE,
-            memory_sampler=lambda: 100,
-            wait_out_holders=ESTIMATE_HOLDERS,
-            wait_seconds=10.0,
-        )
-    finally:
-        releaser.join()
-        estimate.release_admission()
-    waited = time.monotonic() - started
-    admitted.release_admission()
     assert 0.15 <= waited < 5.0
 
 
@@ -1189,13 +1152,13 @@ def test_fixed_memory_policy_uses_profile_defaults(
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "fixed")
 
-    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert (
         budget.memory_limit_bytes
-        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.AUTO_RANGE]
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.EXPLORE_ANALYSIS]
     )
-    assert budget.config_key == "default:auto_range"
+    assert budget.config_key == "default:explore_analysis"
     assert budget.budget_policy == "fixed_default"
     assert budget.available_ram_bytes is None
 
@@ -1209,13 +1172,13 @@ def test_strict_server_memory_policy_uses_profile_defaults(
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "strict_server")
 
-    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert (
         budget.memory_limit_bytes
-        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.AUTO_RANGE]
+        == admission_mod._DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.EXPLORE_ANALYSIS]
     )
-    assert budget.config_key == "default:auto_range"
+    assert budget.config_key == "default:explore_analysis"
     assert budget.budget_policy == "fixed_default"
     assert budget.available_ram_bytes is None
 
@@ -1227,12 +1190,12 @@ def test_adaptive_budget_still_respects_process_rss_cap(
     mib = 1024 * 1024
     gib = 1024 * mib
     monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 16 * gib)
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB", "2048")
+    monkeypatch.setenv("HAUTE_EXPLORE_PROCESS_RSS_LIMIT_MB", "2048")
     samples = iter([1500 * mib, 2100 * mib])
 
     context = create_admitted_execution_context(
-        operation="frontier_auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        operation="explore_analysis",
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
         memory_sampler=lambda: next(samples),
     )
 
@@ -2060,7 +2023,7 @@ def test_execution_context_memory_pressure_events_are_bounded() -> None:
     samples = iter([10, 50, 75, 90, 95])
     context = ExecutionContext(
         operation="auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_limit_bytes=100,
         metrics=ExecutionMetricsRecorder(max_memory_pressure_events=2),
         memory_sampler=lambda: next(samples),
@@ -2088,7 +2051,7 @@ def test_execution_context_memory_pressure_uses_growth_budget_when_baselined() -
     samples = iter([1_000, 1_049, 1_050, 1_075, 1_090, 1_099])
     context = ExecutionContext(
         operation="auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         memory_limit_bytes=100,
         memory_baseline_bytes=1_000,
         memory_sampler=lambda: next(samples),
@@ -2419,7 +2382,7 @@ def test_execution_context_without_memory_limit_records_no_pressure_events() -> 
 def test_execution_context_enforces_memory_budget_at_checkpoint() -> None:
     context = ExecutionContext(
         operation="auto-range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         job_id="job-1",
         memory_limit_bytes=99,
         memory_sampler=lambda: 100,
@@ -2973,14 +2936,14 @@ def test_execution_metrics_summary_caps_stage_payload_without_dropping_rollups()
                 name="chunk",
                 elapsed_ms=float(index + 1),
                 operation="auto_range",
-                profile=ExecutionProfile.AUTO_RANGE,
+                profile=ExecutionProfile.OPTIMISER_SOLVE,
                 node_id=f"node-{index}",
             )
         )
 
     summary = recorder.summary(
         operation="auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         job_id="job-1",
     ).to_dict()
 
@@ -3000,7 +2963,7 @@ def test_background_job_registry_cancels_execution_token_for_superseded_job() ->
 
     context = ExecutionContext(
         operation="frontier_auto_range",
-        profile=ExecutionProfile.AUTO_RANGE,
+        profile=ExecutionProfile.OPTIMISER_SOLVE,
         job_id="job-1",
         cancellation_token=first_token.execution_token,
     )
@@ -4763,13 +4726,28 @@ def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
     assert stored_metrics["job_id"] == job_id
 
 
-def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> None:
+def _auto_range_prepared(node: Any) -> tuple[Any, dict[str, Any]]:
+    """What ``_prepare_frontier_auto_range`` returns: the node and the job's kwargs."""
+    return node, {
+        "config": {"objective": "expected_income", "constraints": {}},
+        "mode": "online",
+        "partition_count": 1,
+        "timeout": 10,
+        "required_columns_by_node": {},
+    }
+
+
+def test_optimiser_auto_range_start_admits_nothing_in_the_request_thread(monkeypatch) -> None:
+    """The background job admits, as solve setup does; the request thread never holds memory."""
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "320")
-    monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 7_000)
+    def refuse(**_kwargs: Any) -> Any:
+        raise AssertionError("auto-range start admitted in the request thread")
+
+    monkeypatch.setattr("haute.routes._optimiser_service.admit_growth_grant", refuse)
+    monkeypatch.setattr("haute.routes._optimiser_service.create_admitted_execution_context", refuse)
     graph = make_graph(
         {
             "nodes": [
@@ -4778,7 +4756,7 @@ def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> Non
                     "data": {
                         "label": "opt",
                         "nodeType": NodeType.OPTIMISER.value,
-                        "config": {"objective": "profit", "constraints": {}},
+                        "config": {"objective": "expected_income", "constraints": {}},
                     },
                 },
             ],
@@ -4787,27 +4765,19 @@ def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> Non
     )
     body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
     service = OptimiserSolveService(JobStore())
-    prepared = {
-        "node": graph.node_map["opt"],
-        "config": {"objective": "profit", "constraints": {}},
-        "mode": "online",
-        "chunk_size": 10,
-        "partition_count": 2,
-        "timeout": 30,
-        "required_columns_by_node": None,
-        "streaming_plan": None,
-    }
     with (
-        patch.object(service, "_prepare_frontier_auto_range", return_value=prepared),
+        patch.object(
+            service,
+            "_prepare_frontier_auto_range",
+            return_value=_auto_range_prepared(graph.node_map["opt"]),
+        ),
         patch.object(service, "_launch_frontier_auto_range_background") as launch,
     ):
         started = service.start_frontier_auto_range(body)
 
     assert started.status == "started"
-    background_context = launch.call_args.kwargs["execution_context"]
-    assert background_context.profile == ExecutionProfile.AUTO_RANGE
-    assert background_context.memory_limit_bytes == 320 * 1024 * 1024
-    assert background_context.admission is not None
+    assert "execution_context" not in launch.call_args.kwargs
+    assert launch.call_args.kwargs["execution_token"] is not None
 
 
 def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> None:
@@ -5575,18 +5545,11 @@ def test_optimiser_build_grid_preserves_memory_limit_error() -> None:
             )
 
 
-def test_auto_range_start_admits_before_registering_latest_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_auto_range_cancel_reaches_the_background_jobs_execution_token() -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
-    monkeypatch.setattr(
-        "haute._execution_admission.current_rss_bytes",
-        lambda: 64 * 1024 * 1024,
-    )
     graph = make_graph(
         {
             "nodes": [
@@ -5603,24 +5566,14 @@ def test_auto_range_start_admits_before_registering_latest_job(
         }
     )
     body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-    node = graph.nodes[0]
     service = OptimiserSolveService(JobStore())
-    captured = {}
+    captured: dict[str, Any] = {}
 
     with (
         patch.object(
             service,
             "_prepare_frontier_auto_range",
-            return_value={
-                "node": node,
-                "config": {"objective": "expected_income"},
-                "mode": "online",
-                "chunk_size": 100,
-                "partition_count": 1,
-                "timeout": 10,
-                "required_columns_by_node": {},
-                "streaming_plan": None,
-            },
+            return_value=_auto_range_prepared(graph.nodes[0]),
         ),
         patch.object(
             service,
@@ -5631,27 +5584,17 @@ def test_auto_range_start_admits_before_registering_latest_job(
         response = service.start_frontier_auto_range(body)
 
     assert response.status == "started"
-    context = captured["execution_context"]
-    assert context.profile == ExecutionProfile.AUTO_RANGE
-    assert context.admission is not None
+    token = captured["execution_token"]
+    assert not token.cancelled
     service.cancel_frontier_auto_range(response.job_id)
-    assert context.cancellation_token.cancelled
+    assert token.cancelled
 
 
-def test_auto_range_duplicate_start_reuses_running_job_without_readmitting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_auto_range_duplicate_start_reuses_running_job_without_relaunching() -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB", "1024")
-    samples = iter([64 * 1024 * 1024, 2 * 1024 * 1024 * 1024])
-    monkeypatch.setattr(
-        "haute._execution_admission.current_rss_bytes",
-        lambda: next(samples),
-    )
     graph = make_graph(
         {
             "nodes": [
@@ -5668,32 +5611,20 @@ def test_auto_range_duplicate_start_reuses_running_job_without_readmitting(
         }
     )
     body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-    node = graph.nodes[0]
     store = JobStore()
     service = OptimiserSolveService(store)
-    captured_contexts = []
+    captured_tokens = []
 
     with (
         patch.object(
             service,
             "_prepare_frontier_auto_range",
-            return_value={
-                "node": node,
-                "config": {"objective": "expected_income", "constraints": {}},
-                "mode": "online",
-                "chunk_size": 100,
-                "partition_count": 1,
-                "timeout": 10,
-                "required_columns_by_node": {},
-                "streaming_plan": None,
-            },
+            return_value=_auto_range_prepared(graph.nodes[0]),
         ),
         patch.object(
             service,
             "_launch_frontier_auto_range_background",
-            side_effect=lambda *_args, **kwargs: captured_contexts.append(
-                kwargs["execution_context"]
-            ),
+            side_effect=lambda *_args, **kwargs: captured_tokens.append(kwargs["execution_token"]),
         ),
     ):
         first = service.start_frontier_auto_range(body)
@@ -5701,8 +5632,8 @@ def test_auto_range_duplicate_start_reuses_running_job_without_readmitting(
 
     assert second.job_id == first.job_id
     assert store.require_job(first.job_id)["status"] == "running"
-    assert not captured_contexts[0].cancellation_token.cancelled
-    assert len(captured_contexts) == 1
+    assert len(captured_tokens) == 1
+    assert not captured_tokens[0].cancelled
 
 
 def test_auto_range_background_memory_limit_status_exposes_typed_error(
@@ -5712,7 +5643,7 @@ def test_auto_range_background_memory_limit_status_exposes_typed_error(
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     graph = make_graph(
         {
@@ -5745,16 +5676,7 @@ def test_auto_range_background_memory_limit_status_exposes_typed_error(
         patch.object(
             service,
             "_prepare_frontier_auto_range",
-            return_value={
-                "node": node,
-                "config": {"objective": "expected_income", "constraints": {}},
-                "mode": "online",
-                "chunk_size": 100,
-                "partition_count": 1,
-                "timeout": 10,
-                "required_columns_by_node": {},
-                "streaming_plan": None,
-            },
+            return_value=_auto_range_prepared(node),
         ),
         patch.object(service, "_execute_pipeline", side_effect=memory_error),
     ):
@@ -5824,14 +5746,7 @@ def test_auto_range_background_preserves_typed_memory_http_exception_status() ->
             service._run_frontier_auto_range_job(
                 body,
                 job_id,
-                node=graph.nodes[0],
-                config={"objective": "expected_income", "constraints": {}},
-                mode="online",
-                chunk_size=100,
-                partition_count=1,
-                timeout=10,
-                required_columns_by_node={},
-                streaming_plan=None,
+                **_auto_range_prepared(graph.nodes[0])[1],
             )
 
     assert exc_info.value.status_code == 507

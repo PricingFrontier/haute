@@ -154,11 +154,10 @@ def test_preview_contract_resolution_reports_opaque_degradation() -> None:
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.OPTIMISER_SOLVE,
         ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.DEPLOY_LIVE,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
         ExecutionProfile.NODE_SNAPSHOT,
     ],
 )

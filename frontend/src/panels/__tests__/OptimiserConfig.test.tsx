@@ -2338,7 +2338,6 @@ describe("OptimiserConfig", () => {
           status: "ok",
           ranges: { loss_ratio: { min: 11, max: 39 } },
           method: "scenario_envelope",
-          warning: null,
         },
       })
       const props = makeProps({
@@ -2386,7 +2385,6 @@ describe("OptimiserConfig", () => {
           // The job ranges every constraint; only the clicked one is written.
           ranges: { loss_ratio: { min: 11, max: 39 }, volume: { min: 1, max: 2 } },
           method: "scenario_envelope",
-          warning: null,
         },
       })
       const props = makeProps({
@@ -2455,7 +2453,6 @@ describe("OptimiserConfig", () => {
             status: "ok",
             ranges: { loss_ratio: { min: 10, max: 40 } },
             method: "scenario_envelope",
-            warning: null,
           },
         })
       const props = makeProps({
@@ -2500,7 +2497,7 @@ describe("OptimiserConfig", () => {
         error_code: "contract_error",
         http_status_code: 422,
         execution_metrics: makeExecutionMetricsFixture({
-          profile: "auto_range",
+          profile: "optimiser_solve",
           status: "running",
           terminal_reason: null,
         }),
@@ -2577,7 +2574,7 @@ describe("OptimiserConfig", () => {
         terminal_reason: "memory_limited",
         error_code: "memory_limited",
         http_status_code: 507,
-        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range" }),
+        execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_solve" }),
       })
       const props = makeProps({
         config: {
@@ -2593,7 +2590,7 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
       expect(screen.getByText("During: Collecting results")).toBeInTheDocument()
@@ -2615,7 +2612,7 @@ describe("OptimiserConfig", () => {
         terminal_reason: "memory_limited",
         error_code: "memory_limit",
         http_status_code: 507,
-        execution_metrics: makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+        execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: "memory_limited" }),
       })
       const props = makeProps({
         config: {
@@ -2631,14 +2628,14 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
     })
 
     it("auto range preserves structured metrics from admission failures before a job starts", async () => {
       const executionMetrics = makeExecutionMetricsFixture({
-        profile: "auto_range",
+        profile: "optimiser_solve",
         terminal_reason: null,
       })
       mockStartOptimiserFrontierAutoRange.mockRejectedValue(Object.assign(new Error("HTTP 507"), {
@@ -2671,7 +2668,7 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       expect(await screen.findByText(
-        "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+        "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )).toBeInTheDocument()
       expect(screen.getByText("Technical details")).toBeInTheDocument()
       expect(screen.getByText("During: Collecting results")).toBeInTheDocument()

@@ -657,7 +657,7 @@ class TestBuildApiInput:
         )
         _, fn, _ = _build_node_fn(
             node,
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
@@ -688,7 +688,7 @@ class TestBuildApiInput:
         )
         _, fn, _ = _build_node_fn(
             node,
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         result = fn().collect()
@@ -749,7 +749,7 @@ class TestBuildApiInput:
         _, fn, _ = _build_node_fn(
             node,
             required_output_columns=frozenset({"quote_id", "premium"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         fn()
@@ -800,7 +800,7 @@ class TestBuildApiInput:
         _, fn, _ = _build_node_fn(
             node,
             required_output_columns=frozenset({"x"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         fn()
@@ -831,7 +831,7 @@ class TestBuildApiInput:
         columns_by_profile = {}
         for profile in (
             ExecutionProfile.PREVIEW_EAGER.value,
-            ExecutionProfile.AUTO_RANGE.value,
+            ExecutionProfile.OPTIMISER_SOLVE.value,
         ):
             _, fn, _ = _build_node_fn(
                 node,
@@ -841,7 +841,7 @@ class TestBuildApiInput:
             frame = _apply_selected_columns(fn(), config)
             columns_by_profile[profile] = frame.collect_schema().names()
 
-        assert columns_by_profile[ExecutionProfile.AUTO_RANGE.value] == ["quote_id"]
+        assert columns_by_profile[ExecutionProfile.OPTIMISER_SOLVE.value] == ["quote_id"]
         assert columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == ["quote_id"]
 
     def test_source_projection_rejects_demand_excluded_by_selected_columns(
@@ -867,7 +867,7 @@ class TestBuildApiInput:
         _, fn, _ = _build_node_fn(
             node,
             required_output_columns=frozenset({"premium"}),
-            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
         with pytest.raises(ValueError, match="excluded by selected_columns"):

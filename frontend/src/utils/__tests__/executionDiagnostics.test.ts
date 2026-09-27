@@ -173,12 +173,12 @@ describe("executionDiagnostics", () => {
   it("derives a useful memory-limited failure message from execution metrics", () => {
     const message = buildExecutionFailureMessage(
       "Stopped",
-      makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+      makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: "memory_limited" }),
       { prefix: "Auto range failed" },
     )
 
     expect(message).toBe(
-      "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+      "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
     )
   })
 

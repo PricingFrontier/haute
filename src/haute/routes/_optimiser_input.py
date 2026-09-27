@@ -49,8 +49,6 @@ from haute._types import (
 )
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.execution import (
-    ProjectionRequest,
-    plan_projection,
     ratebook_factor_required_columns,
 )
 from haute.graph_utils import NodeType
@@ -438,7 +436,10 @@ def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
 
     A separate analysis input sits outside the data input's lineage, so setup
     then executes the Optimiser itself in online mode too, which runs every
-    branch it consumes.
+    branch it consumes. So does a data source that feeds the Optimiser through
+    parallel edges: its demand is keyed on the Optimiser
+    (``_optimiser_solve_required_columns_by_node``), which lies outside the
+    data input's lineage.
     """
     optimiser_node = _find_optimiser_node(graph, node_id)
     configured_data_input = optimiser_node.data.config.get("data_input")
@@ -454,39 +455,15 @@ def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
             node_id,
             optimiser_node.data.config,
         )
-        if isinstance(data_input_id, str) and data_input_id:
+        if (
+            isinstance(data_input_id, str)
+            and data_input_id
+            and not _data_source_feeds_optimiser_through_parallel_edges(
+                graph, node_id, data_input_id
+            )
+        ):
             return data_input_id
     return node_id
-
-
-def _solve_columns_by_node(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    *,
-    source: str,
-) -> dict[str, frozenset[str]]:
-    """The columns the solve's setup reads at every node it executes.
-
-    A node the solve reads whole (no concrete demand) is left out: a capture
-    cannot promise it, so the solve recomputes that node as before.
-    """
-    projection = plan_projection(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id=_setup_execution_target_node_id(graph, node_id),
-            profile=ExecutionProfile.OPTIMISER_SETUP,
-            required_columns_by_node=_optimiser_solve_required_columns_by_node(
-                graph, node_id, config
-            ),
-            source=source,
-        )
-    )
-    return {
-        needed_node_id: frozenset(columns)
-        for needed_node_id, columns in projection.needed_by_node.items()
-        if columns is not None
-    }
 
 
 def _quote_id_column(config: Mapping[str, Any]) -> str:

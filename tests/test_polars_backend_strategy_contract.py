@@ -14,9 +14,7 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._ram_estimate import MaterialisationEstimate, estimate_materialisation_boundaries
-from haute.chunking import ChunkPlanRequest, chunk_plan
 from haute.errors import (
-    ChunkPlanUnsupportedError,
     ContractMismatchError,
     GroupByExecutionUnsupportedError,
 )
@@ -1375,32 +1373,6 @@ def _context(
         config_key="test",
     )
     return ExecutionContext(operation="test", profile=profile, admission=admission)
-
-
-def test_group_by_in_chunk_suffix_is_rejected_as_a_physical_plan_constraint() -> None:
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        chunk_plan(
-            ChunkPlanRequest(
-                graph=_group_by_graph(),
-                target_node_id="out",
-                chunk_size=10,
-            )
-        )
-
-
-def test_group_by_is_allowed_in_a_pre_chunk_materialisation_prefix() -> None:
-    plan = chunk_plan(
-        ChunkPlanRequest(
-            graph=_group_by_graph(),
-            target_node_id="out",
-            chunk_start_node_id="agg",
-            chunk_size=10,
-        )
-    )
-
-    assert plan.pre_chunk_node_ids == ("source",)
-    assert plan.chunk_node_ids == ("agg", "out")
-    assert plan.chunk_start_node_id == "agg"
 
 
 def test_automatic_group_by_estimate_targets_the_boundary_node(

@@ -2703,7 +2703,7 @@ def test_node_data_materialises_code_from_steps() -> None:
     assert "_steps_error" not in replaced.data.config
 
 
-def test_chunk_planning_sees_materialised_code() -> None:
+def test_chunk_local_classifier_sees_materialised_code() -> None:
     stale = "df = quotes.with_columns((pl.col('a') * 2).alias('b'))"
     node = _stepped(
         "t",

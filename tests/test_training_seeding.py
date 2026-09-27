@@ -1104,7 +1104,7 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         return path
 
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    for profile in ("TRAINING", "OPTIMISER_SETUP", "AUTO_RANGE", "LAZY_SINK"):
+    for profile in ("TRAINING", "OPTIMISER_SETUP", "OPTIMISER_SOLVE", "LAZY_SINK"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     # The optimiser reads its own scored quotes, beside the training data.
     optimiser_project = project / "optimiser"
@@ -1128,7 +1128,8 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
     )
     optimiser_graph = _online_chain(optimiser_project)
     _setup(monkeypatch, optimiser_graph, read=("D",))
-    _setup(monkeypatch, optimiser_graph, read=("D",), profile=ExecutionProfile.AUTO_RANGE)
+    # Solve setup and auto-range run the same stage under the solve's profile.
+    _setup(monkeypatch, optimiser_graph, read=("D",), profile=ExecutionProfile.OPTIMISER_SOLVE)
     output_graph = PipelineGraph.model_validate(
         {
             **training_graph,
