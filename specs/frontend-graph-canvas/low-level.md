@@ -1735,7 +1735,7 @@ again through the editor and save paths.
   drill into an unsaved whole-graph submodel with that API Input and its
   authoritative frame handle rendered; and a
   downstream trace retaining both Edge Join ancestors — as steps, or the one
-  above a join read from its shared snapshot as a `snapshot_seed` omission —
+  above a join read from its shared snapshot as an omission naming that seed —
   leaving them undimmed,
   and highlighting their connecting path while reserving node-active styling
   for column-relevant steps. All

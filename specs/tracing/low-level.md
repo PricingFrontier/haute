@@ -84,7 +84,7 @@
   reconciliation.
 - **Trace execution cache** (`trace.py`) — `_cache`, a module-level
   `LRUCache[str, dict[str, Any]]`; each value contains `eager_outputs`, `order`,
-  `parents_of`, `node_map`, and `source_ids`. `TRACE_CACHE_MAX_BYTES` defaults to
+  `parents_of`, and `node_map`; source ids are derived per request. `TRACE_CACHE_MAX_BYTES` defaults to
   `PREVIEW_CACHE_MAX_BYTES` (see [caching](../caching/high-level.md)), overridable
   via `HAUTE_TRACE_CACHE_MAX_BYTES`. Both values are parsed into module constants
   at import time by canonical fail-fast `_env.int_env`; a malformed, zero, or
@@ -136,23 +136,55 @@ seeds nothing (every listed generation lacking columns the trace reads, or dropp
 one) is closed and the trace runs with no plan; otherwise `_execute_trace_core` runs under
 it for the whole trace. Under a plan: input preparation is the plan's; strategy
 planning admits and estimates only what the plan builds, estimating from its seeds'
-generations (`_planned_strategy_scope`), so cached work that could not be admitted if
-recomputed never is; the cache key carries the seeded generations
+generations (`_planned_strategy_scope`); the cache key carries the seeded generations
 (`_seeded_fingerprint`); `_materialize_eager_outputs` and `_build_trace_plans` execute
-under the plan, so nodes above a seed are never built and a seeded point's frame and
-uncapped plan are its generation; a seeded point has no parents for the rest of the
-trace and is a source (`_trace_source_ids`), so correlation, steps, and relevance stop
-there and an ancestor shared with an executed branch is correlated through that branch;
-each seeded step carries `snapshot_generation_id` and stays in the step list as the end
-of downstream provenance, but it has no input row, so enrichment never reconstructs its
-expression or calculation from its own output, an input source traced to it reports the
-value it held there with its `snapshot_generation_id` and nothing above it, and a
-pass-through target whose value is followed back to it borrows no formula; steps and
-omissions are ranked by position in the whole lineage; and every lineage node skipped because of a seed
-(`_snapshot_seed_skips`) is an omission with reason `snapshot_seed`, linked to a
-correlation diagnostic (`code`/`reason` `snapshot_seed`, severity `info`) whose
-`seed_node_ids` names the seeds below it. It never ran, so no schema says whether it
-bears on a traced column: it is always reported, never pruned for column relevance.
+under the plan, so they build nothing above a seed and a seeded point's frame and
+uncapped plan are its generation; the seeded correlation treats each seeded point as a
+source (its parents emptied), so an ancestor shared with an executed branch is correlated
+through that branch; each seeded step carries `snapshot_generation_id`; and steps and
+omissions are ranked by position in the whole lineage.
+
+**Above a seed (`_continue_above_seed`).** After the seeded correlation, each seed whose
+row resolved is continued on its own, never as a union with another seed's ancestry:
+
+1. Its ancestors are the seed's own lineage (`prepare_graph(graph, seed)`). With an
+   admitted context their snapshot-backed inputs are prepared (`prepare_input_snapshots`);
+   when that did anything, the identity the graph now produces at the seed
+   (`node_output_identity` in `_seed_plans.py`) must equal the leased one, else
+   `seed_inputs_changed`.
+2. `plan_execution_strategy` admits the recompute of the seed and its ancestors on the
+   real graph (`materialising_node_ids` = the seed and its ancestors, no estimation
+   graph). A `BoundedMemoryUnsupportedError` is `seed_recompute_refused`, carrying its
+   `reason_code`. Planning writes `execution_context.projection_plan`, so the continuation
+   saves it first and restores it when it ends.
+3. `_build_trace_plans(target=seed, snapshot_plan=None)` builds the ancestors' uncapped
+   plans and the recomputed seed plan in the continuation's own provider; the recomputed
+   seed plan serves only the proof and never replaces the generation's.
+4. The proof looks the recomputed seed plan up by every value of the snapshot row
+   (`_lookup_clicked_row`): exactly one row proves it, none is `seed_row_not_reproduced`,
+   and two are `seed_row_ambiguous`.
+5. `_correlate_rows_posthoc` correlates the ancestors from the proven row with a
+   `RowScopeResolver` over the continuation's plans, with no head frames and the proven row
+   recorded as unique. Its rows, positions, looked-up frames, multi-frame `row_frames`,
+   diagnostics, and unresolved nodes (ordinary correlation omissions) merge into the trace
+   for ancestors only. An ancestor another path already resolved must hold the same row;
+   otherwise it is an `ancestor_row_conflict` omission.
+
+Any other exception in these steps is `seed_recompute_failed`, logged with its traceback,
+with its type and message in the diagnostic; `ExecutionCancelledError` and
+`ExecutionMemoryLimitExceededError` propagate. A proven seed regains its parents for steps,
+relevance, enrichment, and the waterfall, is not a source, and its step is marked
+`snapshot_reproduced` (not serialised): enrichment explains it from its traced input row,
+and input sources and pass-through origins continue above it. An unproven seed keeps its
+emptied parents: enrichment never reconstructs its expression or calculation from its own
+output, an input source traced to it reports the value it held there with its
+`snapshot_generation_id` and nothing above it, and a pass-through target whose value is
+followed back to it borrows no formula. Each of its ancestors that no proven continuation
+resolved is an omission with its continuation's reason, linked to a diagnostic (severity
+`info`, `warning` for `seed_recompute_failed` and `ancestor_row_conflict`) whose
+`seed_node_ids` names the seed; with no schema to judge it by, it is never pruned for
+column relevance. Source ids are computed per request from these final parents. The
+continuation is never cached: every click proves again.
 
 1. Validate `nodes` non-empty; resolve `target_node_id` (defaults to the last
    node in topological order, computed from the node list in *declared* order —
@@ -171,7 +203,7 @@ bears on a traced column: it is always reported, never pruned for column relevan
    node's prefix length with `trace_head_prefixes` (see
    [Limited-preview lineage](#limited-preview-lineage-tracecorrelationpy) below).
    On a trace-cache hit (`_cache.get(fp)`), reuse the cached head frames
-   (`eager_outputs`) and `order`/`parents_of`/`node_map`/`source_ids`. On a miss, call
+   (`eager_outputs`) and `order`/`parents_of`/`node_map`. On a miss, call
    `_materialize_eager_outputs()` (below) and store the result under `fp`. Uncapped
    lineage plans are never cached: they hold Python scans bound to this request's
    execution context, so `_build_trace_plans` builds them at most once per request, and
@@ -553,7 +585,7 @@ its public facade.
    step that added or last modified it. When no parent or more than one does —
    a join whose sides both hold the column — or a parent missing from the steps
    might (its materialised frame, when there is one, has the column), or the
-   value reached a seeded step, the origin is unproven and nothing is borrowed:
+   value reached a seeded step no recompute reproduced, the origin is unproven and nothing is borrowed:
    another branch's formula would explain a value the target never had.
    **Call-phase rule** (`_assignment_values`/`_assignment_row`, for the step's
    own assignment, a borrowed one, an input source's derivation and each chain
@@ -836,23 +868,29 @@ Tests live in `tests/`, one focused file per concern plus several broad
 integration/regression suites:
 
 - **`tests/test_trace_snapshot_seeding.py`** — traces over the generations their preview
-  read: a trace of a seeded preview stopping at the join step read from the snapshot and
-  reporting both sources as `snapshot_seed` omissions naming it; a first preview's
-  capture traced back to the identical row over a shuffled source, building nothing
-  above it; a diamond with one cached branch keeping the shared ancestor traceable
-  through the other; a snapshot published after an unseeded preview leaving its trace
-  unseeded; a refresh while another job leases the preview's generation still tracing
-  it; a clear with and without another lease; a graph edit answering 409
-  `preview_seed_plan_expired`; a column-projected capture recomputed; a trace reusing
-  the preview entry stored under its plan; a worker's expired plan mapped to 409; a
-  column trace never calculating a seeded step from its own output; downstream provenance
-  ending at the seeded step with the value it held there; a pass-through target explained
-  from the seed on its path rather than an executed creator on another, and never from
-  the other side of a join whose sides both hold its column — explained, without seeds,
-  by the join side that supplied it and by the last assignment rather than the first,
-  and given no formula when both join sides hold its value; an ancestor
-  correlated through the uncached branch when the cached one is ambiguous; and cached
-  work that could not be admitted if recomputed traced from its snapshot.
+  read: a trace of a seeded preview reading the join from the snapshot and, a recompute
+  reproducing its row, tracing both sources above it; a first preview's capture traced
+  back to the preview's row over a shuffled source; a diamond with one cached branch
+  whose shared ancestor both paths reach as one row; a snapshot published after an
+  unseeded preview leaving its trace unseeded; a refresh while another job leases the
+  preview's generation still tracing it; a clear with and without another lease; a graph
+  edit answering 409 `preview_seed_plan_expired`; a column-projected capture recomputed; a
+  trace reusing the preview entry stored under its plan; a worker's expired plan mapped to
+  409; a reproduced seed explained from its traced input, and a seed no recompute
+  reproduces never given a calculation, its source a `seed_row_not_reproduced` omission;
+  downstream provenance and a pass-through target's borrowed formula continuing above a
+  seed only when it was reproduced; a pass-through target never explained from the other
+  side of a join whose sides both hold its column — explained, without seeds, by the join
+  side that supplied it and by the last assignment rather than the first, and given no
+  formula when both join sides hold its value; an ancestor correlated through the
+  uncached branch when the cached one is ambiguous; cached work that could not be admitted
+  if recomputed traced from its snapshot with its ancestors `seed_recompute_refused`; a
+  recompute holding the snapshot row twice (`seed_row_ambiguous`); a seed whose inputs
+  moved (`seed_inputs_changed`); a seed whose own row is unresolved building nothing above
+  it; one refused seed not hiding what another seed's recompute traced; the context's
+  projection plan left in place after a reproduced, refused, and failed recompute; and the
+  merge never overwriting a row another path resolved (`ancestor_row_conflict`) while
+  dropping the evidence of the attempt a continuation superseded.
 
 - **`tests/test_trace.py`** — core unit coverage of `execute_trace`,
   `SchemaDiff`/`TraceResult`/`TraceStep`, and `_find_matching_row` directly

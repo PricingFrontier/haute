@@ -197,7 +197,7 @@ Out of scope (owned elsewhere, linked where relevant):
   followed back through the single parent holding it with that same value to the step that
   added or last modified it, and evaluated on the value from before that assignment. A join
   whose sides both hold the value, a parent whose row is unknown, or a snapshot on the way
-  leaves no formula rather than another branch's.
+  that no recompute reproduced leaves no formula rather than another branch's.
 - **A trace reads what its preview read.** A trace request carries the `seed_plan` of the
   preview it explains, possibly empty: every snapshot generation that preview read, whether it
   seeded it or captured it itself. Each listed generation is checked against the signature the
@@ -207,13 +207,26 @@ Out of scope (owned elsewhere, linked where relevant):
   rows even for a preview that computed and captured a join for the first time. A listed
   generation lacking columns the trace reads there is recomputed instead, with every listed
   seed built from it, and a plan that ends up seeding nothing runs the trace as without one.
-  Correlation stops at each seeded point: a step whose row comes from the snapshot, carrying
-  its `snapshot_generation_id`, never given a calculation reconstructed from its own output,
-  and where downstream provenance ends with the value it held. Every node the execution
-  skipped because of a seed is reported as a `snapshot_seed` omission naming the seeds below
-  it, whatever column is traced; a node that still executed for another branch stays
-  traceable through that branch. A preview whose lineage was not admitted carries an empty
-  plan, and its traces seed nothing.
+  At and below each seeded point the trace reads the generation: the seeded step's row comes
+  from the snapshot and carries its `snapshot_generation_id`. A preview whose lineage was
+  not admitted carries an empty plan, and its traces seed nothing.
+- **Above a snapshot, the trace proves before it traces.** For each seed whose row
+  resolved, the trace recomputes that point on the real graph, in the same request and
+  execution context: it prepares the inputs above the seed, checks that the seed's identity
+  has not moved, admits the recompute of the seed and its ancestors, and looks the recompute
+  up by every value of the snapshot row. Only when exactly one recomputed row equals the
+  snapshot row are the seed's ancestors correlated, as steps like any other, and the seeded
+  step gains its input row and formula. Otherwise every ancestor the seed would have explained
+  is an omission naming the seed and why: informational `seed_inputs_changed`,
+  `seed_recompute_refused`, `seed_row_not_reproduced` (a sample, a shuffle, changed data), or
+  `seed_row_ambiguous`; a recompute that errors is a `seed_recompute_failed` gap, and an
+  ancestor two paths give different rows is an `ancestor_row_conflict` gap. Cancellation and
+  the memory limit still abort the trace. A seeded step whose snapshot was not reproduced is
+  where provenance ends: it is never given a calculation reconstructed from its own output,
+  and downstream provenance ends there with the value it held. A node that still executed for
+  another branch stays traceable through that branch. An equal recomputed row proves the
+  lineage of that row; the seed's identity signs its lineage and inputs, so for a
+  deterministic pipeline that lineage is the one the snapshot was computed from.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
   trace tags every step by whether it touches that column, then keeps: (a) for a
   pass-through column, only the nodes whose output actually carries it; (b) for a

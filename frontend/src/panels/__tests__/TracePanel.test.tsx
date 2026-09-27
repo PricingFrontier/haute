@@ -279,6 +279,18 @@ describe("TracePanel", () => {
       label: "aggregated",
       summary: "This row aggregates rows of this input grouped by quote_id: 3 of them share its key values.",
     },
+    {
+      reason: "seed_row_not_reproduced",
+      matchedRowCount: 0,
+      label: "snapshot",
+      summary: "Not traced above the snapshot the preview read: recomputing it does not reproduce the snapshot's row.",
+    },
+    {
+      reason: "seed_recompute_refused",
+      matchedRowCount: 0,
+      label: "snapshot",
+      summary: "Not traced above the snapshot the preview read: recomputing it was not admitted.",
+    },
   ])("shows a $reason omission as a note rather than a trace gap", ({ reason, matchedRowCount, label, summary }) => {
     render(
       <TracePanel

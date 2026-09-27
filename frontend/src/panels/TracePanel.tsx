@@ -41,11 +41,31 @@ function loadTraceExport() {
 const NOTE_LABELS: Readonly<Record<string, string>> = {
   join_no_match: "no match",
   aggregated_rows: "aggregated",
+  seed_inputs_changed: "snapshot",
+  seed_recompute_refused: "snapshot",
+  seed_row_not_reproduced: "snapshot",
+  seed_row_ambiguous: "snapshot",
+}
+
+/** Why a node above a snapshot the preview read was not traced. */
+const SNAPSHOT_REASONS: Readonly<Record<string, string>> = {
+  seed_inputs_changed: "its inputs changed since the preview read it",
+  seed_recompute_refused: "recomputing it was not admitted",
+  seed_recompute_failed: "recomputing it failed",
+  seed_row_not_reproduced: "recomputing it does not reproduce the snapshot's row",
+  seed_row_ambiguous: "recomputing it gives several rows equal to the snapshot's",
 }
 
 function omissionSummary(reason: string, diagnostic: TraceCorrelationDiagnostic | undefined): string {
   if (reason === "join_no_match") {
     return "No row from this input joined the traced row: the join found no match."
+  }
+  const snapshotReason = SNAPSHOT_REASONS[reason]
+  if (snapshotReason) {
+    return `Not traced above the snapshot the preview read: ${snapshotReason}.`
+  }
+  if (reason === "ancestor_row_conflict") {
+    return "Two traced paths reach different rows of this node, so neither is shown."
   }
   if (reason === "aggregated_rows") {
     const count = diagnostic?.matched_row_count

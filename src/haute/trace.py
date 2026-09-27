@@ -50,7 +50,7 @@ from haute._cache import GraphFingerprintMemo
 from haute._env import int_env
 from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import ExecutionCancelledError, ExecutionContext, ExecutionProfile
 from haute._expression_parser import (
     evaluate_expression,
     parse_expression,
@@ -64,7 +64,13 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._path_resolution import runtime_project_root_scope
 from haute._polars_selectors import preamble_selector_aliases
-from haute._seed_plans import ListedSeed, SeedPlan, SeedPlanRequest, open_listed_seed_plan
+from haute._seed_plans import (
+    ListedSeed,
+    SeedPlan,
+    SeedPlanRequest,
+    node_output_identity,
+    open_listed_seed_plan,
+)
 from haute._trace_correlation import (
     CorrelationWork,
     RowScopeResolver,
@@ -91,7 +97,7 @@ from haute._trace_enrichment import (
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
-from haute.errors import TraceCorrelationUnsupportedError
+from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
     _build_node_fn,
@@ -164,6 +170,10 @@ class TraceStep:
     # The shared-snapshot generation this step's row was read from, when the
     # trace was seeded there instead of computing the node.
     snapshot_generation_id: str | None = None
+    # A seeded step whose snapshot row a recompute reproduced exactly, so the
+    # rows above it are traced and it is explained from its input row. Not
+    # serialised.
+    snapshot_reproduced: bool = False
 
     # How many candidate rows, identical in every column, this step's row is
     # one of; ``None`` when correlation identified the row itself.
@@ -508,33 +518,350 @@ def _open_trace_seed_plan(
     return open_listed_seed_plan(request, seed_plan)
 
 
-def _snapshot_seed_skips(prepared_lineage: Any, plan: SeedPlan) -> dict[str, list[str]]:
-    """Each lineage node the trace skipped because of a seed, with the seeds below it."""
-    decision = plan.decision
-    ran = set(decision.executed_node_ids) | set(decision.seeds)
-    children: dict[str, set[str]] = {}
-    for edge in prepared_lineage.relevant_edges:
-        children.setdefault(edge.source, set()).add(edge.target)
-    position = {node_id: index for index, node_id in enumerate(prepared_lineage.order)}
-    skips: dict[str, list[str]] = {}
-    for node_id in prepared_lineage.order:
-        if node_id in ran:
-            continue
-        seeds: set[str] = set()
-        seen: set[str] = set()
-        stack = [node_id]
-        while stack:
-            for child in children.get(stack.pop(), ()):
-                if child in seen:
+#: Why the ancestors of a seed are not traced, completing "Not traced above the
+#: snapshot of <seed>: ...".
+_SEED_REASON_MESSAGES = {
+    "seed_inputs_changed": "its inputs changed since the preview read it",
+    "seed_recompute_refused": "recomputing it was not admitted",
+    "seed_recompute_failed": "recomputing it failed",
+    "seed_row_not_reproduced": "a recompute holds no row equal to the snapshot's",
+    "seed_row_ambiguous": "a recompute holds several rows equal to the snapshot's",
+}
+# A recompute that errored is a gap; every other reason is a fact about the data.
+_SEED_GAP_REASONS = frozenset({"seed_recompute_failed"})
+
+
+@dataclass
+class _SeedContinuation:
+    """The trace above one seed, once a recompute reproduced the seed's snapshot row.
+
+    ``reason`` is ``None`` for a proven seed and names why its ancestors are
+    not traced otherwise. Rows, positions, frames and diagnostics cover the
+    seed's ancestors as correlation read them from the recompute's plans.
+    """
+
+    seed_id: str
+    ancestors: tuple[str, ...]
+    parents_of: dict[str, list[str]]
+    reason: str | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
+    rows: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+    positions: dict[str, int] = field(default_factory=dict)
+    frames: dict[str, Any] = field(default_factory=dict)
+    row_frames: dict[str, str] = field(default_factory=dict)
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    unresolved: dict[str, tuple[str, int]] = field(default_factory=dict)
+    plans: dict[str, Any] = field(default_factory=dict)
+
+
+def _above_seed_inputs_moved(
+    graph: PipelineGraph,
+    seed_id: str,
+    *,
+    source: str,
+    execution_context: ExecutionContext,
+    leased_identity_digest: str,
+) -> bool:
+    """Prepare the snapshot-backed inputs above a seed; say whether its identity moved.
+
+    Only an admitted context prepares inputs, as a cold trace does. Preparation
+    that reused every input cannot move the identity the seed was leased under.
+    """
+    if execution_context.admission is None:
+        return False
+    with runtime_project_root_scope(graph.source_file):
+        records = prepare_input_snapshots(
+            [
+                node_id
+                for node_id in lineage_preparation_order(graph, seed_id, source)
+                if node_id != seed_id
+            ],
+            graph.node_map,
+            profile=execution_context.profile,
+            execution_context=execution_context,
+            base_dir=preparation_base_dir(graph),
+            schema_only=False,
+        )
+        if all(record.action == "reused" for record in records):
+            return False
+        return node_output_identity(graph, seed_id, source=source).digest != leased_identity_digest
+
+
+def _continue_above_seed(
+    seed_id: str,
+    *,
+    seed_row: Mapping[str, Any],
+    leased_identity_digest: str,
+    graph: PipelineGraph,
+    source: str,
+    row_limit: int,
+    preamble_ns: dict[str, Any] | None,
+    execution_context: ExecutionContext,
+    node_map: dict[str, Any],
+    edge_metadata: Mapping[tuple[str, str], Sequence[tuple[str | None, str | None]]],
+    alignments: Mapping[TraceEdgeKey, TraceEdgeAlignment],
+    input_names: Mapping[TraceEdgeKey, str],
+    child_input_names: Mapping[str, tuple[str, ...]],
+    child_input_aliases: Mapping[str, Mapping[str, str]],
+    selector_aliases: frozenset[str],
+    column: str | None,
+    work: CorrelationWork,
+) -> _SeedContinuation:
+    """Prove a recompute reproduces a seed's snapshot row, then trace its ancestors.
+
+    The recompute runs on the real graph in the trace's own execution context:
+    its inputs are prepared and its identity checked, it is admitted like any
+    execution, and its plans are built only for the seed's lineage. The seed is
+    proven when exactly one recomputed row equals every value of the snapshot
+    row; only then are its ancestors correlated. Every other outcome is a
+    reason on the continuation. Cancellation and the memory limit propagate.
+    """
+    lineage = execution_facade.prepare_graph(graph, seed_id, source=source)
+    ancestors = tuple(node_id for node_id in lineage.order if node_id != seed_id)
+    continuation = _SeedContinuation(
+        seed_id=seed_id,
+        ancestors=ancestors,
+        parents_of={node_id: list(parents) for node_id, parents in lineage.parents_of.items()},
+    )
+    if not ancestors:
+        return continuation
+    # Planning replaces the context's projection plan with the seed lineage's;
+    # the rest of the trace reads the trace's own.
+    trace_plan = execution_context.projection_plan
+    try:
+        if _above_seed_inputs_moved(
+            graph,
+            seed_id,
+            source=source,
+            execution_context=execution_context,
+            leased_identity_digest=leased_identity_digest,
+        ):
+            continuation.reason = "seed_inputs_changed"
+            return continuation
+        execution_facade.plan_execution_strategy(
+            execution_facade.ProjectionRequest(
+                graph=graph,
+                target_node_id=seed_id,
+                profile=execution_context.profile,
+                source=source,
+            ),
+            execution_context=execution_context,
+            materialising_node_ids=(*ancestors, seed_id),
+        )
+        plans = _build_trace_plans(
+            graph=graph,
+            target_node_id=seed_id,
+            row_limit=row_limit,
+            source=source,
+            preamble_ns=preamble_ns,
+            execution_context=execution_context,
+        )
+        resolver = RowScopeResolver(
+            node_map=node_map,
+            prefixes={},
+            alignments=alignments,
+            edge_metadata=edge_metadata,
+            input_names=input_names,
+            child_input_names=child_input_names,
+            plans=lambda: plans,
+            frames={},
+            head_resolved=set(),
+            execution_context=execution_context,
+            selector_aliases=selector_aliases,
+            child_input_aliases=child_input_aliases,
+        )
+        proof = _lookup_clicked_row(resolver, seed_id, seed_row)
+        if proof is None:
+            raise ValueError(
+                f"the snapshot row of {seed_id!r} cannot be compared with its recompute"
+            )
+        if proof.height != 1:
+            continuation.reason = (
+                "seed_row_not_reproduced" if proof.height == 0 else "seed_row_ambiguous"
+            )
+            return continuation
+        resolver.frames[seed_id] = proof
+        resolver.record_unique_row(seed_id, proof)
+        rows = _correlate_rows_posthoc(
+            resolver.frames,
+            list(lineage.order),
+            continuation.parents_of,
+            seed_id,
+            0,
+            node_map=node_map,
+            diagnostics=continuation.diagnostics,
+            unresolved=continuation.unresolved,
+            edge_metadata=edge_metadata,
+            traced_column=column,
+            work=work,
+            row_scope=resolver,
+            row_positions=continuation.positions,
+        )
+    except (ExecutionCancelledError, MemoryError):
+        raise
+    except BoundedMemoryUnsupportedError as exc:
+        continuation.reason = "seed_recompute_refused"
+        continuation.detail = {
+            "reason_code": getattr(exc, "reason_code", None) or exc.error_code,
+            "error": str(exc),
+        }
+        return continuation
+    except Exception as exc:  # noqa: BLE001 - the ancestors become a visible, logged gap
+        logger.warning(
+            "trace_seed_recompute_failed",
+            seed=seed_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+            exc_info=True,
+        )
+        continuation.reason = "seed_recompute_failed"
+        continuation.detail = {"error_type": type(exc).__name__, "error": str(exc)}
+        return continuation
+    finally:
+        execution_context.projection_plan = trace_plan
+    continuation.rows = {node_id: rows.get(node_id) for node_id in ancestors}
+    continuation.frames = {
+        node_id: resolver.frames[node_id] for node_id in ancestors if node_id in resolver.frames
+    }
+    continuation.row_frames = {
+        node_id: handle for node_id, handle in resolver.row_frames.items() if node_id in ancestors
+    }
+    continuation.plans = {node_id: plans[node_id] for node_id in ancestors if node_id in plans}
+    return continuation
+
+
+def _merge_seed_continuations(
+    continuations: Sequence[_SeedContinuation],
+    *,
+    node_map: Mapping[str, Any],
+    cached_rows: dict[str, dict[str, Any] | None],
+    row_positions: dict[str, int],
+    frames: dict[str, Any],
+    row_frames: dict[str, str],
+    diagnostics: list[dict[str, Any]],
+    unresolved: dict[str, tuple[str, int]],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Fold each seed's continuation into the trace, in place.
+
+    Proven continuations go first, so an ancestor one of them traced is never
+    reported for another seed's failure. An ancestor another path already
+    resolved must hold the same row, else neither is shown. The evidence of a
+    failed attempt a continuation superseded is dropped with it. Returns the
+    proven seeds and the ancestors reported for an unproven seed, which have no
+    schema to judge column relevance by.
+    """
+    proven: set[str] = set()
+    reported: set[str] = set()
+    superseded: set[str] = set()
+    trace_evidence = len(diagnostics)
+    for continuation in sorted(continuations, key=lambda item: item.reason is not None):
+        seed_id = continuation.seed_id
+        if continuation.reason is None:
+            proven.add(seed_id)
+            taken: set[str] = set()
+            for node_id in continuation.ancestors:
+                row = continuation.rows.get(node_id)
+                existing = cached_rows.get(node_id)
+                if row is None:
+                    if (
+                        existing is None
+                        and node_id not in unresolved
+                        and node_id in continuation.unresolved
+                    ):
+                        taken.add(node_id)
                     continue
-                seen.add(child)
-                if child in decision.seeds:
-                    seeds.add(child)
-                elif child not in ran:
-                    stack.append(child)
-        if seeds:
-            skips[node_id] = sorted(seeds, key=lambda seed: position.get(seed, 0))
-    return skips
+                if existing is not None:
+                    if existing != row:
+                        cached_rows[node_id] = None
+                        row_positions.pop(node_id, None)
+                        diagnostics.append(
+                            _ancestor_conflict_diagnostic(node_map, node_id, seed_id)
+                        )
+                        unresolved[node_id] = ("ancestor_row_conflict", len(diagnostics) - 1)
+                    continue
+                if node_id in unresolved:
+                    superseded.add(node_id)
+                    del unresolved[node_id]
+                cached_rows[node_id] = row
+                if node_id in continuation.positions:
+                    row_positions[node_id] = continuation.positions[node_id]
+                if node_id in continuation.row_frames:
+                    row_frames[node_id] = continuation.row_frames[node_id]
+                taken.add(node_id)
+            index_of: dict[int, int] = {}
+            for index, diagnostic in enumerate(continuation.diagnostics):
+                if diagnostic.get("node_id") in taken:
+                    index_of[index] = len(diagnostics)
+                    diagnostics.append(diagnostic)
+            for node_id in taken:
+                if node_id in continuation.frames:
+                    frames[node_id] = continuation.frames[node_id]
+                if cached_rows.get(node_id) is None:
+                    reason, index = continuation.unresolved[node_id]
+                    unresolved[node_id] = (reason, index_of[index])
+            continue
+        reason = continuation.reason
+        label = node_map[seed_id].data.label
+        for node_id in continuation.ancestors:
+            if cached_rows.get(node_id) is not None or node_id in unresolved:
+                continue
+            diagnostics.append(
+                {
+                    "code": reason,
+                    "severity": "warning" if reason in _SEED_GAP_REASONS else "info",
+                    "reason": reason,
+                    "message": (
+                        f"Not traced above the snapshot of {label}: "
+                        f"{_SEED_REASON_MESSAGES[reason]}."
+                    ),
+                    "node_id": node_id,
+                    "seed_node_ids": [seed_id],
+                    **continuation.detail,
+                }
+            )
+            unresolved[node_id] = (reason, len(diagnostics) - 1)
+            reported.add(node_id)
+    if superseded:
+        _drop_superseded_diagnostics(diagnostics, unresolved, superseded, before=trace_evidence)
+    return frozenset(proven), frozenset(reported)
+
+
+def _ancestor_conflict_diagnostic(
+    node_map: Mapping[str, Any], node_id: str, seed_id: str
+) -> dict[str, Any]:
+    label = node_map[seed_id].data.label
+    return {
+        "code": "ancestor_row_conflict",
+        "severity": "warning",
+        "reason": "ancestor_row_conflict",
+        "message": (
+            f"Tracing above the snapshot of {label} reached another row of node "
+            f"{node_id!r} than the trace did through its other children; neither is shown."
+        ),
+        "node_id": node_id,
+        "seed_node_ids": [seed_id],
+    }
+
+
+def _drop_superseded_diagnostics(
+    diagnostics: list[dict[str, Any]],
+    unresolved: dict[str, tuple[str, int]],
+    node_ids: set[str],
+    *,
+    before: int,
+) -> None:
+    """Remove the trace's failed-attempt evidence (entries before *before*) for
+    nodes a continuation resolved, keeping every omission's link valid."""
+    kept: list[dict[str, Any]] = []
+    index_of: dict[int, int] = {}
+    for index, diagnostic in enumerate(diagnostics):
+        if index < before and diagnostic.get("node_id") in node_ids:
+            continue
+        index_of[index] = len(kept)
+        kept.append(diagnostic)
+    diagnostics[:] = kept
+    for node_id, (reason, index) in list(unresolved.items()):
+        unresolved[node_id] = (reason, index_of[index])
 
 
 def _execute_trace_core(
@@ -645,7 +972,6 @@ def _execute_trace_core(
         order = cached["order"]
         parents_of = cached["parents_of"]
         node_map = cached["node_map"]
-        source_ids = cached["source_ids"]
         plans = None
     else:
         cache_hit = False
@@ -662,7 +988,6 @@ def _execute_trace_core(
             order,
             parents_of,
             node_map,
-            source_ids,
             plans,
         ) = _materialize_eager_outputs(
             graph=graph,
@@ -683,7 +1008,6 @@ def _execute_trace_core(
                 "order": order,
                 "parents_of": parents_of,
                 "node_map": node_map,
-                "source_ids": source_ids,
             },
         )
 
@@ -691,8 +1015,8 @@ def _execute_trace_core(
         frozenset(snapshot_plan.decision.seeds) if snapshot_plan is not None else frozenset()
     )
     if seeded_ids:
-        # A seeded point's row is read, not derived: correlation, steps, and
-        # relevance never look above it, as at any other source.
+        # A seeded point's row is read, not derived: correlation below it stops
+        # there, as at any other source, until a recompute proves the row.
         parents_of = {
             node_id: ([] if node_id in seeded_ids else list(parent_ids))
             for node_id, parent_ids in parents_of.items()
@@ -871,10 +1195,67 @@ def _execute_trace_core(
             ambiguity_count=correlation_work.ambiguity_count,
         )
 
+    # ---------- Above each seed: prove the snapshot row, then trace ----------
+    continuations: list[_SeedContinuation] = []
+    if snapshot_plan is not None and isinstance(target_output, pl.DataFrame):
+        for seed_id, seed_decision in snapshot_plan.decision.seeds.items():
+            seed_row = cached_rows.get(seed_id)
+            if not seed_row:
+                continue
+            continuation_started = time.perf_counter()
+            continuation_work = CorrelationWork()
+            continuation = _continue_above_seed(
+                seed_id,
+                seed_row=seed_row,
+                leased_identity_digest=seed_decision.identity.digest,
+                graph=graph,
+                source=source,
+                row_limit=row_limit,
+                preamble_ns=preamble_ns,
+                execution_context=execution_context,
+                node_map=node_map,
+                edge_metadata=edge_metadata,
+                alignments=alignments,
+                input_names=lineage_input_names,
+                child_input_names=child_input_names,
+                child_input_aliases=child_input_aliases,
+                selector_aliases=selector_aliases,
+                column=column,
+                work=continuation_work,
+            )
+            logger.info(
+                "trace_seed_continued",
+                seed=seed_id,
+                reason=continuation.reason,
+                ancestors=len(continuation.ancestors),
+                duration_ms=max(0.0, (time.perf_counter() - continuation_started) * 1000),
+                match_scans=continuation_work.match_scans,
+                rows_scanned=continuation_work.rows_scanned,
+            )
+            continuations.append(continuation)
+    reproduced_seeds, reported_above_seeds = _merge_seed_continuations(
+        continuations,
+        node_map=node_map,
+        cached_rows=cached_rows,
+        row_positions=row_positions,
+        frames=frames,
+        row_frames=row_scope.row_frames,
+        diagnostics=correlation_diagnostics,
+        unresolved=unresolved_rows,
+    )
+    # A proven seed regains its parents; the ancestors traced above it bring
+    # theirs. Source ids follow from these final parents.
+    for continuation in continuations:
+        if continuation.reason is not None:
+            continue
+        for node_id in (*continuation.ancestors, continuation.seed_id):
+            parents_of[node_id] = list(continuation.parents_of.get(node_id, ()))
+
     # ---------- Build trace steps from cached rows ----------
     # Ranks are positions in the whole lineage, so a node a seed skipped keeps
     # its place among the steps that did run.
     rank_order = list(prepared_lineage.order) if snapshot_plan is not None else order
+    source_ids = {node_id for node_id in rank_order if not parents_of.get(node_id)}
     steps = _assemble_steps(
         order=rank_order,
         source_ids=source_ids,
@@ -895,6 +1276,7 @@ def _execute_trace_core(
             seed = snapshot_plan.decision.seeds.get(step.node_id)
             if seed is not None:
                 step.snapshot_generation_id = seed.generation_id
+                step.snapshot_reproduced = step.node_id in reproduced_seeds
     identical_row_counts = {
         diagnostic["node_id"]: diagnostic["candidate_count"]
         for diagnostic in correlation_diagnostics
@@ -904,10 +1286,21 @@ def _execute_trace_core(
         step.identical_row_count = identical_row_counts.get(step.node_id)
 
     # ---------- Enrich steps with expression/detail data ----------
-    # A seeded step stays in the list — it is where downstream provenance
-    # ends — but enrichment never reconstructs its own calculation. Formulas
-    # are evaluated with the names the node code ran with: the compiled
-    # preamble (cached per process), then any caller-supplied names.
+    # A seeded step no recompute reproduced stays in the list — it is where
+    # downstream provenance ends — but enrichment never reconstructs its own
+    # calculation. Formulas are evaluated with the names the node code ran
+    # with: the compiled preamble (cached per process), then any
+    # caller-supplied names.
+    above_seed_plans = {
+        node_id: plan
+        for continuation in continuations
+        if continuation.reason is None
+        for node_id, plan in continuation.plans.items()
+    }
+
+    def _enrichment_plans() -> dict[str, Any]:
+        return {**above_seed_plans, **_lineage_plans()}
+
     formula_names = {
         **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
         **(preamble_ns or {}),
@@ -922,33 +1315,15 @@ def _execute_trace_core(
         preamble_ns=formula_names,
         source_frames_of=source_frames_of,
         incoming_edges_of=incoming_edges_of,
-        lineage_plans=_lineage_plans,
+        lineage_plans=_enrichment_plans,
     )
 
     # ---------- Column relevance: tag then prune irrelevant ancestors ----------
     if column:
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map)
 
-    # A node the trace skipped because a seed below it was read instead is
-    # an omission naming that seed. It never ran, so no schema says whether it
-    # bears on a traced column: it is always reported.
-    seeded_skips = (
-        _snapshot_seed_skips(prepared_lineage, snapshot_plan) if snapshot_plan is not None else {}
-    )
-    for skipped_id, seed_ids in seeded_skips.items():
-        labels = ", ".join(node_map[seed_id].data.label for seed_id in seed_ids)
-        correlation_diagnostics.append(
-            {
-                "code": "snapshot_seed",
-                "severity": "info",
-                "reason": "snapshot_seed",
-                "message": f"Not computed: the trace read the snapshot of {labels}.",
-                "node_id": skipped_id,
-                "seed_node_ids": seed_ids,
-            }
-        )
-        unresolved_rows[skipped_id] = ("snapshot_seed", len(correlation_diagnostics) - 1)
-
+    # A node not traced above a seed was never computed for this trace, so no
+    # schema says whether it bears on a traced column: it is always reported.
     omissions = _build_trace_omissions(
         unresolved_rows=unresolved_rows,
         order=rank_order,
@@ -956,7 +1331,7 @@ def _execute_trace_core(
         eager_outputs=frames,
         steps=steps,
         column=column,
-        always_relevant=frozenset(seeded_skips),
+        always_relevant=reported_above_seeds,
     )
 
     # ---------- Output value (already in cache from batch collect) ----------
@@ -1046,7 +1421,6 @@ def _materialize_eager_outputs(
     list[str],
     dict[str, list[str]],
     dict[str, Any],
-    set[str],
     dict[str, Any],
 ]:
     """Execute the trace lineage for the trace cache.
@@ -1057,8 +1431,8 @@ def _materialize_eager_outputs(
     relocates the target row before correlation so the trace stays anchored
     to the preview row the user clicked.
 
-    Returns ``(eager_outputs, order, parents_of, node_map, source_ids,
-    plans)``, where ``plans`` holds every lineage node's uncapped runtime plan.
+    Returns ``(eager_outputs, order, parents_of, node_map, plans)``, where
+    ``plans`` holds every lineage node's uncapped runtime plan.
     """
     compiled_preamble_ns = _compile_preamble(
         graph.preamble or "",
@@ -1093,13 +1467,11 @@ def _materialize_eager_outputs(
     order = result.run_order
     parents_of = result.parents_of
     node_map = result.node_map
-    source_ids = _trace_source_ids(order, parents_of, snapshot_plan)
     return (
         eager_outputs,
         order,
         parents_of,
         node_map,
-        source_ids,
         dict(result.frames),
     )
 
@@ -1151,18 +1523,6 @@ def _planned_order(order: Sequence[str], snapshot_plan: SeedPlan | None) -> list
         return list(order)
     ran = set(snapshot_plan.decision.executed_node_ids) | set(snapshot_plan.decision.seeds)
     return [node_id for node_id in order if node_id in ran]
-
-
-def _trace_source_ids(
-    order: Sequence[str],
-    parents_of: Mapping[str, Sequence[str]],
-    snapshot_plan: SeedPlan | None,
-) -> set[str]:
-    """Where the trace's correlation stops: sources, and every seeded point."""
-    sources = {node_id for node_id in order if not parents_of.get(node_id)}
-    if snapshot_plan is not None:
-        sources |= set(snapshot_plan.decision.seeds)
-    return sources
 
 
 def _trace_lineage_alignments(

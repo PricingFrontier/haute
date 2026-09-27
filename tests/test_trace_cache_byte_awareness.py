@@ -42,7 +42,6 @@ def _trace_entry(eager_outputs: dict[str, Any]) -> dict[str, Any]:
         "order": order,
         "parents_of": {nid: [] for nid in order},
         "node_map": {},
-        "source_ids": set(order),
     }
 
 
@@ -230,7 +229,7 @@ class TestTraceEntryByteEstimation:
     def test_entry_size_counts_only_materialized_frames(self) -> None:
         df = pl.DataFrame({"x": [1, 2, 3]})
         entry = _trace_entry({"t": df})
-        # Metadata slots (order/parents_of/node_map/source_ids) carry no
+        # Metadata slots (order/parents_of/node_map) carry no
         # byte weight — only the materialized frames are budgeted.
         entry["node_map"] = {"t": object()}
 

@@ -1141,14 +1141,30 @@ describe("useTracing validity across shared snapshots", () => {
     expect(result.current.traceResult).toBeNull()
   })
 
-  it("keeps a node skipped for a snapshot on the canvas trace path, without a traced value", async () => {
+  it("keeps a node not traced above a snapshot on the canvas trace path, without a traced value", async () => {
+    const diagnostic = (nodeId: string, reason: string, seedNodeIds: string[]) => ({
+      code: reason,
+      severity: "info",
+      reason,
+      message: "Backend detail.",
+      node_id: nodeId,
+      child_node_id: null,
+      match_columns: [],
+      ignored_columns: [],
+      matched_row_indices: [],
+      seed_node_ids: seedNodeIds,
+    })
     mockTraceCell.mockResolvedValue({
       status: "ok",
       trace: {
         ...makeTrace(["n2"]),
         omissions: [
-          { node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "snapshot_seed", diagnostic_index: 0 },
+          { node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "seed_row_not_reproduced", diagnostic_index: 0 },
           { node_id: "n0", node_name: "n0", node_type: "polars", topological_rank: 0, reason: "ambiguous_match", diagnostic_index: 1 },
+        ],
+        correlation_diagnostics: [
+          diagnostic("n1", "seed_row_not_reproduced", ["n2"]),
+          diagnostic("n0", "ambiguous_match", []),
         ],
       },
     })

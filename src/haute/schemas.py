@@ -997,7 +997,7 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
-    # For a ``snapshot_seed`` omission: the seeded nodes it was skipped through.
+    # For a node not traced above a snapshot: the seeded node it lies above.
     seed_node_ids: list[str] = Field(default_factory=list)
 
 

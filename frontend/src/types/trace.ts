@@ -324,7 +324,7 @@ export interface TraceCorrelationDiagnostic {
   ignored_columns: string[]
   matched_row_count?: number | null
   matched_row_indices: number[]
-  /** For a `snapshot_seed` omission: the seeded nodes it was skipped through. */
+  /** For a node not traced above a snapshot: the seeded node it lies above. */
   seed_node_ids: string[]
   [metadata: string]: unknown
 }

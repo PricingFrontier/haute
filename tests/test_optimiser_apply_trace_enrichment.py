@@ -672,7 +672,6 @@ def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path, monkeypa
             list(prepared.order),
             prepared.parents_of,
             prepared.node_map,
-            {"request"},
             None,
         )
 
