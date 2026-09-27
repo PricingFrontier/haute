@@ -793,6 +793,9 @@ def test_ratebook_execute_trace_explains_composite_factor_ladder(tmp_path):
 
     ladder = detail["factor_ladder"]
     assert [step["factor"] for step in ladder] == ["channel:age_band", "region"]
+    assert [step["input_columns"] for step in ladder] == [["channel", "age_band"], ["region"]]
+    # The factor columns are what the traced value was computed from.
+    assert _step_by_id(result, "banded").contributed_columns == ["age_band", "channel", "region"]
     composite = ladder[0]
     assert composite["input_value"] == {"channel": "phone", "age_band": "18-25"}
     assert composite["factor_value"] == pytest.approx(0.98)

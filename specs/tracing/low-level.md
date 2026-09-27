@@ -8,6 +8,7 @@
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
+| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance) and the columns each step contributes. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -15,7 +16,10 @@
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
   `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
   `output_values` (column → value dicts), `topological_rank`,
-  `column_relevant: bool` (default `True`), `identical_row_count` (the number of
+  `column_relevant: bool` (default `True`; in a column trace, whether the step is on
+  the traced value's lineage), `contributed_columns: list[str]` (in a column trace,
+  the columns the step computes that the traced value depends on, sorted; empty for a
+  step that only carries them and for a trace with no column), `identical_row_count` (the number of
   identical candidates when the step's row is one of several identical rows,
   else `None`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
@@ -251,10 +255,14 @@ continuation is never cached: every click proves again.
    ratio constraint's whole-frame baseline lie outside the head rows — while a
    ratebook-mode apply, which is row-local, explains from the frames that produced the
    clicked row.
-10. If `column` is set, `_prune_to_column_relevance()` tags and filters steps.
+10. If `column` is set, `trace_value_lineage()` (`src/haute/_trace_lineage.py`) walks
+    the traced value's lineage over the enriched steps, and
+    `_prune_to_column_relevance()` filters steps and tags each kept step's
+    `column_relevant` and `contributed_columns` from that lineage.
 11. `_build_trace_omissions()` turns attempted, unresolved correlations on the
     retained value path into diagnostic-linked `TraceOmission` entries; benign
-    graph/column pruning remains absent.
+    graph/column pruning remains absent. In a column trace an unresolved node is on
+    the value path when the lineage reaches it.
 12. Resolve `output_value` from the target row (whole row dict if `column` is
     `None`, else the single value). Resolve `row_id_column`/`row_id_value` by
     scanning `nodes` for an `apiInput` node with a `row_id_column` config entry.
@@ -802,12 +810,42 @@ snapshot deterministically.
   handle(s) before these rules inspect its columns. No selectable frame raises a
   message-bearing `ValueError` naming the edge join and base parent.
 - **Column relevance pruning has two distinct cases**, both anchored on
-  `_tag_column_relevance` tagging every step first: a pass-through column keeps
+  `_carries_column` (whether a step's output holds the traced column): a pass-through column keeps
   only nodes whose *output* actually carries it (pruning unrelated source
   branches); a calculated/modified column keeps its origin node(s) plus every
   ancestor that produces a column its formula's `referenced_columns` actually
   names (falling back to keeping *all* ancestors when no expression info is
-  available, e.g. an opaque node).
+  available, e.g. an opaque node). Pruning decides which steps are returned; the
+  lineage decides which of them are relevant.
+- **The value lineage is a backward demand walk** (`trace_value_lineage`). Each node
+  gets the set of its output columns the value depends on (or "every column"), seeded
+  with the traced column at the target and visited in reverse topological order over
+  the graph's parents. At a step, a demanded column it produced (`columns_added` ∪
+  `columns_modified`) is contributed and replaced by its dependencies; a demanded
+  column it did not produce is carried to its parents. A pure router (`edgeJoin`,
+  `liveSwitch`, `dataOutput`) produces nothing: every column is carried, including one
+  its schema diff shows as added because the parent holding it was not correlated.
+  A source produces its columns from nothing. Dependencies of a contributed column
+  come, in order, from: the node's
+  generated columns (scenario expander `column_name`/`step_column`: none); its
+  `node_detail` (model score `prediction_column` → `feature_columns`; online optimiser
+  apply `output_column` → objective, constraint keys, quote id, scenario index and
+  value columns; ratebook `output_column` → every factor's `input_columns`; rating
+  table `output_column` → its factor columns and a combined output → its table
+  columns; banding `output_column` → `input_column`); then the node's effective code
+  (`parse_expression` on the instance-aware wrapped code). A detail carrying `error`,
+  code that assigns the column in a form the parser cannot read, or a produced column
+  no rule explains (an `output` node's mapping) depends on every input column. A referenced column the node itself produced is read as the node's own
+  assignment when `assignment_phases` places it in an earlier call (its dependencies
+  are followed within the node), as the input value when the same or a later call
+  assigns it, and as both when the order is unknown; a formula reading its own column
+  reads the input value. A column no step produced and no parent carries ends there.
+  Carried columns are routed to the parents that were correlated or attempted: an
+  Edge Join sends a colliding `<col><suffix>` to the join side as `<col>`, base-side
+  columns and join keys to the base, and join-only columns to the join side (a
+  `right`/`full`/`cross` join sends a key to both); other nodes send a column to every
+  such parent whose output has it. An unresolved node that the walk reaches depends on
+  every input column, so every attempted ancestor above it stays relevant.
 - **`instanceOf` code resolution appears in three independent places**
   (`enrich_steps`, `_build_input_sources`, `_build_rename_chain`) — a cloned
   node instance whose own code lacks `.with_columns(` borrows the *original*
@@ -904,6 +942,14 @@ integration/regression suites:
   against `haute._trace_correlation`; includes the fail-loud duplicate-match
   regression for `_find_target_row_index` (ambiguous relocation raises
   `ValueError` rather than returning the first matching index).
+- **`tests/test_trace_value_lineage.py`** — the value lineage end to end on a
+  demo-shaped pricing pipeline (joined-in data off the lineage, a join-side
+  premium, a competitor price two steps above the constraint it feeds, a cost, a
+  scenario expander's code and generated columns, an online apply, and an unsold
+  quote's join that no omission reports), a join that found no row reported only
+  when the value reads it, the model-score rule (a feature leads to the model
+  that predicted it; a failed explanation depends on every input), and the rating
+  table, combined-output and banding rules.
 - **`tests/test_trace_api.py`** — the `POST /api/pipeline/trace` HTTP layer via
   FastAPI `TestClient`: request validation, response shape, serialisation, and
   error-status mapping. Explicitly deferred to `test_trace_integration.py` for

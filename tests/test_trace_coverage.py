@@ -18,9 +18,9 @@ from haute.trace import (
     SchemaDiff,
     TraceResult,
     TraceStep,
+    _carries_column,
     _compute_schema_diff,
     _jsonify_row,
-    _tag_column_relevance,
     execute_trace,
     trace_result_to_dict,
 )
@@ -169,11 +169,11 @@ class TestComputeSchemaDiffExtended:
 
 
 # ===========================================================================
-# _tag_column_relevance — coverage for standalone function
+# _carries_column — coverage for standalone function
 # ===========================================================================
 
 
-class TestTagColumnRelevance:
+class TestCarriesColumn:
     def _make_step(self, node_id, added=None, modified=None, passed=None, output=None):
         return TraceStep(
             node_id=node_id,
@@ -191,37 +191,29 @@ class TestTagColumnRelevance:
 
     def test_tags_added(self):
         s = self._make_step("a", added=["x"])
-        _tag_column_relevance([s], "x")
-        assert s.column_relevant is True
+        assert _carries_column(s, "x") is True
 
     def test_tags_modified(self):
         s = self._make_step("a", modified=["x"])
-        _tag_column_relevance([s], "x")
-        assert s.column_relevant is True
+        assert _carries_column(s, "x") is True
 
     def test_tags_passed(self):
         s = self._make_step("a", passed=["x"])
-        _tag_column_relevance([s], "x")
-        assert s.column_relevant is True
+        assert _carries_column(s, "x") is True
 
     def test_tags_in_output_values(self):
         s = self._make_step("a", output={"x": 1})
-        _tag_column_relevance([s], "x")
-        assert s.column_relevant is True
+        assert _carries_column(s, "x") is True
 
     def test_tags_irrelevant(self):
         s = self._make_step("a", added=["y"])
-        _tag_column_relevance([s], "x")
-        assert s.column_relevant is False
+        assert _carries_column(s, "x") is False
 
     def test_multiple_steps_mixed(self):
         s1 = self._make_step("a", added=["x"])
         s2 = self._make_step("b", added=["y"])
         s3 = self._make_step("c", passed=["x"])
-        _tag_column_relevance([s1, s2, s3], "x")
-        assert s1.column_relevant is True
-        assert s2.column_relevant is False
-        assert s3.column_relevant is True
+        assert [_carries_column(s, "x") for s in (s1, s2, s3)] == [True, False, True]
 
 
 # ===========================================================================

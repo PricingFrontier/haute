@@ -96,6 +96,7 @@ from haute._trace_enrichment import (
     enrich_scenario_expansion,
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
+from haute._trace_lineage import ValueLineage, trace_value_lineage
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute.errors import BoundedMemoryUnsupportedError, TraceCorrelationUnsupportedError
 from haute.executor import (
@@ -158,8 +159,11 @@ class TraceStep:
     # Stable position in the target ancestor graph's topological order.
     topological_rank: int = 0
 
-    # True if this node adds/modifies/passes the traced column
+    # In a column trace, whether this node is on the traced value's lineage:
+    # it computes or carries a column the value depends on.
     column_relevant: bool = True
+    # In a column trace, the columns this node computes that the value depends on.
+    contributed_columns: list[str] = field(default_factory=list)
 
     # Expression parsing and enrichment, populated by _enrich_steps.
     expression: dict[str, Any] | None = None
@@ -1327,9 +1331,21 @@ def _execute_trace_core(
         lineage_plans=_enrichment_plans,
     )
 
-    # ---------- Column relevance: tag then prune irrelevant ancestors ----------
+    # ---------- Column relevance: the value's lineage, then prune ----------
+    lineage: ValueLineage | None = None
     if column:
-        steps = _prune_to_column_relevance(steps, column, parents_of, node_map)
+        lineage = trace_value_lineage(
+            column=column,
+            target_node_id=target_node_id,
+            steps=steps,
+            order=rank_order,
+            parents_of=parents_of,
+            node_map=node_map,
+            attempted=unresolved_rows.keys(),
+            output_columns=lambda node_id: _known_output_columns(frames.get(node_id)),
+            edge_join_roles=edge_join_roles,
+        )
+        steps = _prune_to_column_relevance(steps, column, parents_of, node_map, lineage)
 
     # A node not traced above a seed was never computed for this trace, so no
     # schema says whether it bears on a traced column: it is always reported.
@@ -1337,9 +1353,7 @@ def _execute_trace_core(
         unresolved_rows=unresolved_rows,
         order=rank_order,
         node_map=node_map,
-        eager_outputs=frames,
-        steps=steps,
-        column=column,
+        lineage=lineage,
         always_relevant=reported_above_seeds,
     )
 
@@ -1775,7 +1789,8 @@ def _assemble_steps(
     return steps
 
 
-def _materialized_output_columns(output: Any) -> set[str]:
+def _known_output_columns(output: Any) -> set[str] | None:
+    """A materialised node output's columns (every frame's), or ``None`` when unknown."""
     if isinstance(output, pl.DataFrame):
         return set(output.columns)
     if isinstance(output, dict):
@@ -1785,7 +1800,7 @@ def _materialized_output_columns(output: Any) -> set[str]:
             if isinstance(frame, pl.DataFrame)
             for column in frame.columns
         }
-    return set()
+    return None
 
 
 def _build_trace_omissions(
@@ -1793,50 +1808,22 @@ def _build_trace_omissions(
     unresolved_rows: dict[str, tuple[str, int]],
     order: list[str],
     node_map: dict[str, Any],
-    eager_outputs: dict[str, Any],
-    steps: list[TraceStep],
-    column: str | None,
+    lineage: ValueLineage | None,
     always_relevant: frozenset[str] = frozenset(),
 ) -> list[TraceOmission]:
     """Build evidence entries only for unresolved nodes relevant to the trace.
 
-    Successful column pruning is deliberately not represented as a gap. For a
-    column trace, observed output schemas and authoritative expression
-    references identify which failed ancestors could have contributed. When an
-    assigning expression cannot identify its inputs, the existing conservative
-    relevance fallback keeps all attempted unresolved ancestors.
+    Successful column pruning is deliberately not represented as a gap. In a
+    column trace an unresolved node is relevant when the traced value's
+    *lineage* reaches it; the lineage treats an unresolved node's derivation as
+    unknown, so every attempted ancestor above one it reaches stays relevant.
     """
     if not unresolved_rows:
         return []
 
     relevant_node_ids = set(unresolved_rows)
-    if column is not None:
-        referenced_columns: set[str] = set()
-        origin_found = False
-        origin_without_references = False
-        for step in steps:
-            diff = step.schema_diff
-            is_origin = column in diff.columns_added or column in diff.columns_modified
-            if not is_origin:
-                continue
-            origin_found = True
-            references = (
-                step.expression.get("referenced_columns", [])
-                if isinstance(step.expression, dict)
-                else []
-            )
-            if references:
-                referenced_columns.update(str(name) for name in references)
-            else:
-                origin_without_references = True
-
-        if origin_found and not origin_without_references:
-            relevant_columns = {column, *referenced_columns}
-            relevant_node_ids = {
-                node_id
-                for node_id in unresolved_rows
-                if _materialized_output_columns(eager_outputs.get(node_id)) & relevant_columns
-            }
+    if lineage is not None:
+        relevant_node_ids &= lineage.reached
     relevant_node_ids |= always_relevant & set(unresolved_rows)
 
     ranks = {node_id: rank for rank, node_id in enumerate(order)}
@@ -1866,8 +1853,9 @@ def _prune_to_column_relevance(
     column: str,
     parents_of: dict[str, list[str]],
     node_map: dict[str, Any],
+    lineage: ValueLineage,
 ) -> list[TraceStep]:
-    """Tag column relevance and prune steps that don't contribute to *column*.
+    """Prune steps that don't contribute to *column*, and tag the kept ones from *lineage*.
 
     Two cases:
       1. Pass-through column (e.g. VehGas): exists in multiple nodes' output.
@@ -1878,8 +1866,11 @@ def _prune_to_column_relevance(
          traced column define the value seen downstream.  Their referenced
          inputs must stay in the trace even when they live on branches that do
          not themselves carry the traced column.
+
+    A kept step is ``column_relevant`` when the value's lineage reaches it, and
+    its ``contributed_columns`` are the columns it computes for the value.
     """
-    _tag_column_relevance(steps, column)
+    carrier_ids = {s.node_id for s in steps if _carries_column(s, column)}
 
     # Find nodes where the traced value is assigned.  Later modifications are
     # origins for the downstream value just as much as the first creation is.
@@ -1890,14 +1881,15 @@ def _prune_to_column_relevance(
     }
 
     # Also check for nodes whose code creates the column (for failed-execution cases)
+    code_origin_ids: set[str] = set()
     for s in steps:
         nd = node_map.get(s.node_id)
         if nd:
             cfg = nd.data.config if isinstance(nd.data.config, dict) else {}
             rc = cfg.get("code", "") or ""
             if rc and ".with_columns(" in rc and re.search(rf"\b{re.escape(column)}\s*=", rc):
-                origin_ids.add(s.node_id)
-                s.column_relevant = True
+                code_origin_ids.add(s.node_id)
+    origin_ids |= code_origin_ids
 
     # Collect ancestors that actually contribute to the formula.
     # If the expression tells us which columns are referenced (e.g.
@@ -1948,31 +1940,25 @@ def _prune_to_column_relevance(
                         queue.append(pid)
 
     # Also keep contributing nodes (those that produce referenced columns)
-    keep_ids = ancestor_ids | origin_ids
+    keep_ids = ancestor_ids | origin_ids | carrier_ids
     if contributing_ids:
         keep_ids |= contributing_ids
-    return [s for s in steps if s.column_relevant or s.node_id in keep_ids]
+    kept = [s for s in steps if s.node_id in keep_ids]
+    for s in kept:
+        s.column_relevant = s.node_id in lineage.reached or s.node_id in code_origin_ids
+        s.contributed_columns = lineage.contributed_columns(s.node_id)
+    return kept
 
 
-# ---------------------------------------------------------------------------
-# Column relevance tagging
-# ---------------------------------------------------------------------------
-
-
-def _tag_column_relevance(steps: list[TraceStep], column: str) -> None:
-    """Tag each step with whether its output contains the target column.
-
-    After tagging, the caller filters steps — see execute_trace() for the
-    two-case logic (pass-through vs calculated columns).
-    """
-    for step in steps:
-        sd = step.schema_diff
-        step.column_relevant = (
-            column in sd.columns_added
-            or column in sd.columns_modified
-            or column in sd.columns_passed
-            or column in step.output_values
-        )
+def _carries_column(step: TraceStep, column: str) -> bool:
+    """Whether *step*'s output holds the traced column."""
+    sd = step.schema_diff
+    return (
+        column in sd.columns_added
+        or column in sd.columns_modified
+        or column in sd.columns_passed
+        or column in step.output_values
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2002,6 +1988,7 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                 "output_values": s.output_values,
                 "topological_rank": s.topological_rank,
                 "column_relevant": s.column_relevant,
+                "contributed_columns": s.contributed_columns,
                 "expression": s.expression,
                 "calculation": s.calculation,
                 "node_detail": s.node_detail,

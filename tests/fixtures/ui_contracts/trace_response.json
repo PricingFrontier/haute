@@ -26,6 +26,9 @@
         },
         "topological_rank": 0,
         "column_relevant": true,
+        "contributed_columns": [
+          "base_rate"
+        ],
         "expression": null,
         "calculation": null,
         "node_detail": null,

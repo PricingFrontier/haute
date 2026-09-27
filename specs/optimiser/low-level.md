@@ -1083,7 +1083,8 @@ whether the table is a composite (joins on multiple columns, split via
 `_split_ratebook_level`) or single-column table, looks up the matching entry via
 `_match_ratebook_entry` (keys normalised through the same dtype descriptor and
 `normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
-`unique(keep="last")` deduplication), applies the multiplicative neutral element `1.0` and marks
+`unique(keep="last")` deduplication; each ladder entry names the input columns the table
+joined on as `input_columns`), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
 an error), and accumulates a running product. After the ladder it applies the artifact's
 `combined_factor_bounds` exactly as `_apply_ratebook` does and reports it as `collar`

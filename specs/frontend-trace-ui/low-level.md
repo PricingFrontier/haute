@@ -46,7 +46,12 @@
    changed. That notice belongs to the context without the seed plan and the
    epoch, so it outlives the refresh it started — which replaces the seed plan
    and may raise the epoch — and is hidden only by a change of node, graph,
-   source, or row limit. On the canvas a node the trace could not follow above a
+   source, or row limit. On the canvas a step on the traced value's lineage
+   (`column_relevant`) is active and shows the traced column's value, or in a column
+   trace whose step does not hold it, the value of its first `contributed_columns`
+   entry — a step that only carries the value's inputs (a join) shows none; a kept
+   step off the lineage is neither active nor dimmed. A node the trace could not
+   follow above a
    shared snapshot (an omission whose diagnostic names `seed_node_ids`) stays on the
    trace path — not dimmed, its connecting edges highlighted — without the
    active styling or value of a traced step; other omissions are dimmed like
@@ -62,7 +67,15 @@
 2. `frontend/src/panels/TracePanel.tsx` derives the story key used for card
    identity, finds the last applicable producer for the traced column,
    calculates dependency-preservation/default-expansion sets, and chooses a
-   focused or full sequence. It interleaves typed omissions by topological
+   focused or full sequence. The focused story keeps the producer and every step
+   whose `contributed_columns` is non-empty — every step computing a column the
+   traced value depends on, however far upstream — and hides steps that only carry
+   those columns; default expansion covers the producer and the non-bulk steps
+   creating its direct inputs. The correlation-warning banner lists the diagnostics
+   no omission card shows whose `severity` is not `info`: an informational diagnostic
+   (a join that found no row, an aggregate, identical rows) appears only as its
+   omission note or step label, and not at all for a node off the traced value's
+   lineage. It interleaves typed omissions by topological
    rank: an omission that is a fact about the data is a neutral `role="note"` card —
    `join_no_match` (the join found no row) labelled "no match", and `aggregated_rows`
    (the row aggregates several input rows) labelled "aggregated" with its diagnostic's
@@ -74,7 +87,9 @@
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
-4. `frontend/src/trace/StepCard.tsx` renders schema/value context, labels a step whose
+4. `frontend/src/trace/StepCard.tsx` renders schema/value context — collapsed, the traced
+   column's value, else the first two `contributed_columns`, else the first added and
+   modified columns — dims a step whose `column_relevant` is false, labels a step whose
    `identical_row_count` is set "One of N identical rows" (the panel does not repeat its
    `identical_row_match` diagnostic as a correlation warning), and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the

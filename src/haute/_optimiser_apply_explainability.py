@@ -421,6 +421,7 @@ def _explain_ratebook(
             {
                 "factor": factor_name,
                 "name": factor_name,
+                "input_columns": list(join_columns),
                 "input_value": input_value_payload,
                 "factor_value": to_json_safe(factor_value),
                 "factor_column": factor_col,

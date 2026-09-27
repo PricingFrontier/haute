@@ -119,6 +119,7 @@ function makeTrace(nodeIds: string[]): TraceResult {
       output_values: {},
       topological_rank: topologicalRank,
       column_relevant: true,
+      contributed_columns: [],
     })),
     target_node_id: nodeIds.at(-1) ?? "",
     row_index: 0,
@@ -252,7 +253,7 @@ describe("useTracing", () => {
 
   it("handleCellClick calls traceCell and sets result on success", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -627,7 +628,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -654,8 +655,8 @@ describe("useTracing", () => {
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -681,7 +682,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus preserves transition on style", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -707,8 +708,8 @@ describe("useTracing", () => {
   it("edgesWithTrace highlights edges between traced nodes", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true },
+        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] },
+        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [] },
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -912,7 +913,7 @@ describe("useTracing", () => {
 
   it("_hoverDimmed is false when trace is active (trace takes priority)", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],
+      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [] }],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -1183,6 +1184,39 @@ describe("useTracing validity across shared snapshots", () => {
     const edge = (source: string) => result.current.edgesWithTrace.find((candidate) => candidate.source === source)!
     expect(edge("n1").style?.strokeWidth).toBe(2.5)
     expect(edge("n0").style?.strokeWidth).toBe(1)
+  })
+
+  it("lights every step on the traced value's lineage with what it computed for the value", async () => {
+    const base = makeTrace(["model", "side", "join", "apply"])
+    const diff = (added: string[]) => ({ columns_added: added, columns_removed: [], columns_modified: [], columns_passed: [] })
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: {
+        ...base,
+        column: "optimal_premium",
+        steps: [
+          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"] },
+          { ...base.steps[1], schema_diff: diff(["market_note"]), output_values: { market_note: "y" }, column_relevant: false },
+          { ...base.steps[2], schema_diff: diff(["sale_flag"]), output_values: { sale_flag: null } },
+          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"] },
+        ],
+      },
+    })
+    const nodes = ["model", "side", "join", "apply"].map((id) => makeNode(id)) as Node[]
+    const edges = [makeEdge("model", "join"), makeEdge("side", "join"), makeEdge("join", "apply")] as Edge[]
+    const { result } = renderHook(() => useTracing(makeParams({ nodes, edges, selectedNode: makeNode("apply") })))
+    await act(async () => { result.current.handleCellClick(0, "optimal_premium") })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    const data = (id: string) => result.current.nodesWithStatus.find((node) => node.id === id)!.data
+    expect(data("apply")).toMatchObject({ _traceActive: true, _traceValue: 1.5 })
+    // Upstream of the target, a step shows what it computed for the value.
+    expect(data("model")).toMatchObject({ _traceActive: true, _traceValue: 377.2 })
+    // A join that only carries the value's inputs is lit but shows no value.
+    expect(data("join")._traceActive).toBe(true)
+    expect(data("join")._traceValue).toBeUndefined()
+    // Joined-in data the value never reads is on the path, not lit.
+    expect(data("side")).toMatchObject({ _traceActive: false, _traceDimmed: false })
   })
 
   it("refreshes the preview when the generations it read have expired", async () => {

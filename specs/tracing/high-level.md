@@ -230,11 +230,27 @@ Out of scope (owned elsewhere, linked where relevant):
   lineage of that row; the seed's identity signs its lineage and inputs, so for a
   deterministic pipeline that lineage is the one the snapshot was computed from.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
-  trace tags every step by whether it touches that column, then keeps: (a) for a
-  pass-through column, only the nodes whose output actually carries it; (b) for a
-  calculated/modified column, the node(s) that assign it plus every ancestor that
-  contributes a column its formula actually references (falling back to keeping
-  all ancestors if no expression info is available).
+  trace keeps: (a) for a pass-through column, only the nodes whose output actually
+  carries it; (b) for a calculated/modified column, the node(s) that assign it plus
+  every ancestor that contributes a column its formula actually references (falling
+  back to keeping all ancestors if no expression info is available).
+- **Relevance follows the value's whole lineage.** Walking back from the target, the
+  trace asks of each node which of its output columns the traced value depends on,
+  starting from the traced column. A node that computes such a column passes on what
+  that column was computed from: a formula's referenced columns (a formula reading a
+  column its own node assigned earlier reads that assignment), a model's features, an
+  online optimiser apply's objective, constraints, quote id and scenario columns, a
+  ratebook apply's factor columns, a rating table's factors, a banding factor's input,
+  and nothing for a scenario expander's generated columns or a source's own columns. A
+  node that only carries a column passes the column on to the parent it came from: an
+  Edge Join routes it to the side whose value the output holds (join keys to the base),
+  so a joined-in table whose columns the value never reads is not on the lineage. A
+  column whose derivation cannot be read (an opaque formula, an enrichment error) makes
+  every input column relevant. A step is `column_relevant` when it is on this lineage —
+  it computes or carries a column the value depends on — and its `contributed_columns`
+  name the columns it computes for the value. A kept step off the lineage (an ancestor
+  whose data never reaches the value) is not relevant, and an unresolved node is
+  reported as an omission only when the lineage reaches it.
 - **Enrichment is best-effort per step.** Expression parsing/evaluation, chain
   analysis, input-source derivation, rename detection, node-type enrichment, and
   row-lineage classification are each wrapped independently; a failure in one

@@ -962,6 +962,9 @@ class TraceStepResponse(BaseModel):
     output_values: dict[str, Any] = Field(default_factory=dict)
     topological_rank: int = Field(ge=0)
     column_relevant: bool = True
+    # In a column trace, the columns this step computes that the traced value
+    # depends on; empty for a step that only carries them.
+    contributed_columns: list[str]
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None

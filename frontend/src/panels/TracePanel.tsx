@@ -131,18 +131,18 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     () => new Set(trace.omissions.map((omission) => omission.diagnostic_index)),
     [trace.omissions],
   )
-  // Omission diagnostics render as omission cards and identical-row matches as
-  // the step's own label; the rest are warnings.
+  // Omission diagnostics render as omission cards. An informational diagnostic
+  // (a join that found no row, an aggregate, identical rows) is shown only
+  // through its omission or step label — none when its node is off the traced
+  // value's lineage; the rest are warnings.
   const correlationDiagnostics = trace.correlation_diagnostics.filter(
-    (diagnostic, index) => (
-      !omittedDiagnosticIndices.has(index) && diagnostic.code !== "identical_row_match"
-    ),
+    (diagnostic, index) => !omittedDiagnosticIndices.has(index) && diagnostic.severity !== "info",
   )
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
   const preserveStepIds = useMemo(
-    () => traceStoryPreserveStepIds(trace.steps, targetStep, trace.column),
-    [trace.steps, targetStep, trace.column],
+    () => traceStoryPreserveStepIds(trace.steps, targetStep),
+    [trace.steps, targetStep],
   )
   const expandedStepIds = useMemo(
     () => defaultExpandedStepIds(trace.steps, targetStep, trace.column),

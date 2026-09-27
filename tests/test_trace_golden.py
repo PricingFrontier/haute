@@ -36,6 +36,7 @@ def _make_trace_result() -> TraceResult:
                 output_values={"base_rate": 10.0},
                 topological_rank=0,
                 column_relevant=True,
+                contributed_columns=["base_rate"],
                 expression=None,
                 calculation=None,
                 node_detail=None,
