@@ -37,31 +37,19 @@ interface ConstraintAttainmentTableProps {
   bounds: Record<string, OptimiserEffectiveBound>
   achieved: Record<string, number>
   lambdas: Record<string, number>
-  /** "sm" for a card read on its own (the frontier point details); "xs" beside other results. */
-  size?: "xs" | "sm"
 }
 
-const HEADER_CLASS = "px-1.5 py-1 text-left font-bold uppercase tracking-[0.06em] whitespace-nowrap"
-const SIZE_CLASSES = {
-  xs: { table: "text-xs", header: "text-[10px]" },
-  sm: { table: "text-sm", header: "text-[11px]" },
-} as const
+const HEADER_CLASS = "px-1.5 py-1 text-left text-[10px] font-bold uppercase tracking-[0.06em] whitespace-nowrap"
 const CELL_CLASS = "px-1.5 py-0.5 whitespace-nowrap"
 
-export default function ConstraintAttainmentTable({
-  bounds,
-  achieved,
-  lambdas,
-  size = "xs",
-}: ConstraintAttainmentTableProps) {
+export default function ConstraintAttainmentTable({ bounds, achieved, lambdas }: ConstraintAttainmentTableProps) {
   const rows = constraintAttainmentRows({ bounds, achieved, lambdas })
   if (rows.length === 0) return null
-  const sizing = SIZE_CLASSES[size]
 
   return (
     <div className="overflow-x-auto">
-      <table aria-label="Constraint attainment" className={`${sizing.table} font-mono border-collapse`}>
-        <thead className={sizing.header} style={{ color: "var(--text-muted)" }}>
+      <table aria-label="Constraint attainment" className="text-xs font-mono border-collapse">
+        <thead style={{ color: "var(--text-muted)" }}>
           <tr>
             <th scope="col" className={HEADER_CLASS}>Constraint</th>
             <th scope="col" className={HEADER_CLASS}>Kind</th>
