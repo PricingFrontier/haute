@@ -667,7 +667,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
 Editor-local API failures are rendered as their respective lookup/action error state. Invalid
 input is marked by the control or rejected at its parse/normalisation point. Unknown node types,
 broken instance configuration and unrecognised IO options are surfaced visibly by panel/editor
-diagnostics; no generic editor fabricates a replacement config.
+diagnostics; no generic editor fabricates a replacement config. The unknown-node-type banner
+links to the published node reference, which opens in a new tab; the editor's server does not
+serve the documentation.
 
 ## Testing
 

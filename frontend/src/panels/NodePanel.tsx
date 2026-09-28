@@ -32,6 +32,7 @@ import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { buildGraph } from "../utils/buildGraph"
+import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
   useNodePanelSession,
@@ -624,7 +625,9 @@ function UnknownNodeTypeDiagnostic({
           Node type <code className="font-mono">{nodeType}</code> is not registered in this UI build. This node is shown as a diagnostic only so its config is not edited through the wrong editor.
         </p>
         <a
-          href="/docs/building-models/nodes/"
+          href={NODE_REFERENCE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
           className="text-[12px] font-semibold underline underline-offset-2 w-fit"
           style={{ color: 'var(--text-accent)' }}
         >

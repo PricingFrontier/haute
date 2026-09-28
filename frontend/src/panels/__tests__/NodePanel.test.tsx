@@ -2301,10 +2301,11 @@ describe("NodePanel", () => {
     const banner = screen.getByRole("alert")
     expect(banner).toHaveTextContent("Unknown node type")
     expect(banner).toHaveTextContent("unknownType")
-    expect(screen.getByRole("link", { name: /node documentation/i })).toHaveAttribute(
-      "href",
-      "/docs/building-models/nodes/",
-    )
+    // The editor's server does not serve the docs: the link opens the published node reference.
+    const docs = screen.getByRole("link", { name: /node documentation/i })
+    expect(docs).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/building-models/nodes/")
+    expect(docs).toHaveAttribute("target", "_blank")
+    expect(docs).toHaveAttribute("rel", "noopener noreferrer")
 
     const diagnostic = screen.getByTestId("unknown-node-config-diagnostic")
     expect(diagnostic.tagName).toBe("PRE")
