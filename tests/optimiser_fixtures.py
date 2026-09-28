@@ -241,7 +241,6 @@ def make_input_summary(**overrides: Any) -> dict[str, Any]:
         "solver_settings": {
             "max_iter": 50,
             "tolerance": 1e-6,
-            "chunk_size": None,
         },
     }
     summary.update(overrides)

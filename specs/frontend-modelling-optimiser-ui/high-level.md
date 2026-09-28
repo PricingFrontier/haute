@@ -434,11 +434,12 @@ Pane ownership:
   bound value restores its stored value on commit, so a constraint is never silently relaxed to
   0; clearing a sweep range field removes that end of the range, which the field and the Solve
   issue list then flag as missing.
-- **Solve** — the stale-result banner, source-size estimate, **Optimise** action, progress with a
-  **Stop** action, failure card and convergence result, followed by a **Solver settings** section
-  holding maximum iterations and tolerance, chunk size and, in ratebook mode, the
-  coordinate-descent iterations and tolerance. There is no history toggle: every solve records
-  its convergence history. **Stop** cancels the running solve job (including
+- **Solve** — a **Solver settings** section first, holding maximum iterations and tolerance and,
+  in ratebook mode, the coordinate-descent iterations and tolerance; then the stale-result banner,
+  source-size estimate, **Optimise** action, progress with a **Stop** action, failure card and
+  convergence result, so the action follows the settings it runs with. There is no chunk size:
+  the solve reads its inputs in chunks of the Pipeline Settings streaming chunk size. There is no
+  history toggle: every solve records its convergence history. **Stop** cancels the running solve job (including
   its efficient-frontier phase) through the existing cancel route and records the returned
   terminal state the way modelling's Cancel does. The size estimate is requested only when an
   input that changes it changes (the Objectives & Constraints input, mode, the Row ID / Scenario
@@ -489,21 +490,22 @@ needs attention"), so the reason Optimise is disabled is visible from every pane
 
 **Result preview.** The optimiser result preview uses the same results workspace as model
 validation: a Focus view that fills the viewport and keeps the active tab (Escape returns), a
-docked height remembered for the session, results-style tabs, a short introduction on every
-tab, and a provenance strip on every tab naming the mode, the grid solved (quotes × scenario
-steps), the data the solve ran on (the scenario and the pipeline file), whether the figures are
-as solved or a frontier point (i of N), and that they are expected values from the scoring
-models, not observed outcomes. When a diagnostic could not be produced (the adjustment report,
-or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
+docked height remembered for the session and results-style tabs. No tab has an introduction:
+each opens on its values, and the reading of them is documented. It has no provenance strip: the header already states convergence, iterations and the quote
+count, and the point stepper which frontier point is shown. When a diagnostic could not be produced (the adjustment report,
+or the efficient frontier), the summary says so in a "Diagnostics Issues" alert naming
 each one and why, in the same form as model validation. A failed solve with no earlier result
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
-never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
-side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence; it has no
-Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
-detail card says so. Clicking a frontier point selects it
+never the warning colour the stale strip uses. The Frontier pane's chart and the slice's points
+table (never wrapping a cell; it scrolls sideways instead) sit side by side at equal widths,
+stacking when the workspace is narrow, and the Summary numbers follow them in the same pane. It
+offers Frontier when the solve produced one, else Summary, then Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence, then the
+pre-solve input's Curves and Statistics (the data preview's per-quote chart and per-scenario
+statistics, from the node's preview rows, while they hold an objective and scenario rows) so a
+solve never hides them; on Curves the header's point stepper gives way to the quote navigation. It has no
+Export tab and no publish actions — publishing belongs only to the Export pane. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
-target choice returns to the solved result). Summary and the detail card show the same
+target choice returns to the solved result). Summary shows the
 constraint-attainment table for the displayed result (the selected point, else the solve): every
 constraint, swept or not, as Constraint | Kind | Bound | Achieved | Slack | Status | λ, e.g.
 "min 1,000,000 · achieved 1,012,400 · slack +12,400 (+1.24%) · Met · λ 0.0031". The bound is
@@ -552,13 +554,13 @@ rather than a projected cloud; every point keeps its global number wherever it i
 stepped or published, and selecting a point elsewhere brings its slice into view. The line joins
 only feasible points — converged and meeting every bound, judged by haute in both modes because
 a converged ratebook point can still breach a bound; a non-converged point is hollow and a
-converged-but-breached one a cross labelled "breached", both still selectable, with the reason in
-the detail card. The as-solved marker is hollow, labelled "As solved (different slice)", when the
-solve lies off the displayed slice. The detail card adds converged and iterations, each λ exactly
-as the solver reports it with its sign stated, and a discrete trade-off: the objective change per
-unit of the x bound relaxed to the next point in the slice, shown only between two feasible
-neighbours with different bounds and never presented as a check of λ. A values table lists the
-slice's points. Convergence draws the solve's history as small multiples, each on its own real
+converged-but-breached one a cross labelled "breached", both still selectable, with its status in
+the points table. The as-solved marker is hollow, labelled "As solved (different slice)", when the
+solve lies off the displayed slice. There is no point details card: the points table beside the
+chart (Point | <x> bound | <x> achieved | objective | Converged | Iterations | Status) highlights
+the selected point's row and scrolls it into view, and clicking a row selects its point as a chart
+click does; Summary carries the selected point's attainment. While a point is selected the chart
+drops its hover detail, and it carries no caption beyond the slice and response-cap facts. Convergence draws the solve's history as small multiples, each on its own real
 axis with tick values: the objective; the largest λ change on a log axis (an iteration with no
 change, 0, is drawn at the axis floor and a note says how many); each constraint's total with
 its bound (the solve's `effective_bounds`) as a dashed line and a marker at the first iteration

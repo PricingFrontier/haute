@@ -337,7 +337,7 @@ describe("OptimiserPreview", () => {
       const { rerender } = renderPreview({
         data: makeData({ frontier: makeFrontier() }),
       })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
@@ -678,11 +678,10 @@ describe("OptimiserPreview", () => {
 
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      // Chart info text is visible by default
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
-    it("keeps frontier point navigation available on the Summary tab", () => {
+    it("keeps frontier point navigation available on another tab", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -690,7 +689,7 @@ describe("OptimiserPreview", () => {
         }),
       })
 
-      fireEvent.click(screen.getByText("Summary"))
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
 
       expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
@@ -702,7 +701,7 @@ describe("OptimiserPreview", () => {
   describe("Frontier tab with data", () => {
     it("renders frontier scatter chart area", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
     })
 
     it("communicates when the frontier payload is capped", () => {
@@ -741,7 +740,7 @@ describe("OptimiserPreview", () => {
 
     it("keeps hook order stable if frontier data disappears while the tab is mounted", () => {
       const { rerender } = renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
 
       rerender(<OptimiserPreview data={makeData({ frontier: null })} nodeId="opt_1" allNodes={[]} edges={[]} />)
 
@@ -750,22 +749,42 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Optimised")).toBeInTheDocument()
     })
 
-    it("shows detail card content when a point is selected", () => {
+    it("highlights the selected point's row in the points table beside the chart", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
           selectedPointIndex: 2,
         }),
       })
-      expect(screen.getByText("Point details")).toBeInTheDocument()
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      const current = within(table).getAllByRole("row").filter((row) => row.getAttribute("aria-current") === "true")
+      expect(current.map((row) => within(row).getByRole("rowheader").textContent)).toEqual(["Point 3"])
+      expect(within(table).getByRole("button", { name: "Point 3" })).toHaveAttribute("aria-pressed", "true")
     })
 
-    it("offers no publish actions on the detail card and points to the Export pane", () => {
+    it("selects a point from its table row as a chart click does", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
-      expect(screen.getByText("Point details")).toBeInTheDocument()
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
+      fireEvent.click(within(table).getByRole("button", { name: "Point 5" }))
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 4)
+    })
+
+    it("has no intro or point details card: the chart and points table carry the values", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByText("Efficient frontier")).not.toBeInTheDocument()
+      expect(screen.queryByText("Feasibility")).not.toBeInTheDocument()
+      expect(screen.queryByText(/Objective per unit/)).not.toBeInTheDocument()
+    })
+
+    it("offers no publish actions on the Frontier pane", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
       expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: /Log to MLflow/ })).not.toBeInTheDocument()
-      expect(screen.getByText("Save or log this point from the node's Export pane.")).toBeInTheDocument()
+    })
+
+    it("drops the chart's hover detail while the card shows the selected point", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.queryByText("Hover or focus a frontier point to inspect its values.")).not.toBeInTheDocument()
     })
 
     it("clicking a scatter point switches locally without a select API call", () => {
@@ -795,11 +814,12 @@ describe("OptimiserPreview", () => {
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("detail card states the point's attainment against its own bound in text", () => {
+    it("the Frontier pane states the selected point's attainment against its own bound in text", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
+      expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument()
       expect(attainmentCells("loss_ratio")).toEqual(["max", "0.58", "0.55", "+0.03 (+5.17%)", "Met", "0.001000"])
     })
 
@@ -823,7 +843,7 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/120\.0%/)).not.toBeInTheDocument()
     })
 
-    it("detail card shows lambda values", () => {
+    it("the Frontier pane shows the selected point's lambda values", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
@@ -1070,20 +1090,9 @@ describe("OptimiserPreview", () => {
         .toBeInTheDocument()
     })
 
-    it("shows the selected point's trade-off to its slice neighbour in the detail card", () => {
-      renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
-      const term = screen.getByText(
-        "Objective change per unit of volume bound relaxed, to the next point in this slice",
-        { selector: "dt" },
-      )
-      // (130 − 120) / (5.5 − 5) to point 1, in point 3's slice.
-      expect(term.nextElementSibling).toHaveTextContent("+20 (to point 1)")
-    })
-
     it("lists the slice's points in a values table", () => {
       renderPreview({ data: gridData() })
-      fireEvent.click(screen.getByText("View slice values"))
-      const table = screen.getByRole("table", { name: "Frontier slice values" })
+      const table = screen.getByRole("table", { name: "Frontier slice points" })
       const rows = within(table).getAllByRole("row").slice(1)
       expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
         "Point 1",
@@ -1173,10 +1182,9 @@ describe("OptimiserPreview", () => {
         adjustments: makeAdjustmentReport({ n_quotes: 50000 }),
       }))
       renderPreview({ data: selectedData(frontier, 2) })
-      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
 
-      expect(screen.getByRole("group", { name: "Adjustments" }))
-        .toHaveTextContent("Frontier point 3's adjustments load in the Adjustments tab.")
+      // The Frontier pane's summary shows no adjustments for a selected point.
+      expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
       expect(adjustmentRequests()).toHaveLength(0)
 
       fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
@@ -1186,7 +1194,7 @@ describe("OptimiserPreview", () => {
       ])
 
       // The loaded report belongs to the review: reopening the tab asks again for nothing.
-      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
       fireEvent.click(screen.getByRole("tab", { name: "Adjustments" }))
       expect(screen.getByText("Frontier point 3: 50,000 quotes")).toBeInTheDocument()
       expect(adjustmentRequests()).toHaveLength(1)
@@ -1387,17 +1395,14 @@ describe("OptimiserPreview", () => {
   })
 
   describe("constraint attainment across panes (G03)", () => {
-    it("prints the selected point's own bound and status on Summary and the detail card alike", () => {
+    it("prints the selected point's own bound and status in the Frontier pane", () => {
       const frontier = makeFrontier()
       renderPreview({
         data: makeData({ frontier, selectedPointIndex: 4, result: pointResult(frontier, 4) }),
       })
 
-      const detail = attainmentCells("loss_ratio")
-      fireEvent.click(screen.getByText("Summary"))
       const summary = attainmentCells("loss_ratio")
 
-      expect(summary).toEqual(detail)
       // The point's swept 0.62 breaches; the configured and as-solved 1.05 would not.
       expect(summary.slice(0, 3)).toEqual(["max", "0.62", "0.63"])
       expect(summary[4]).toBe("Breached")
@@ -1428,8 +1433,10 @@ describe("OptimiserPreview", () => {
 
     it("defaults to Frontier tab when frontier data exists", () => {
       renderPreview({ data: makeData({ frontier: makeFrontier() }) })
-      expect(screen.getByText(/5 frontier points/)).toBeInTheDocument()
-      expect(screen.queryByText("Optimised")).not.toBeInTheDocument()
+      expect(screen.getByRole("group", { name: /Efficient frontier/ })).toBeInTheDocument()
+      // The Summary numbers sit in the Frontier pane, under the chart.
+      expect(screen.getByText("Optimised")).toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument()
     })
   })
 
@@ -1497,6 +1504,66 @@ describe("OptimiserPreview", () => {
       expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
       expect(screen.getAllByText("18-25").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1500").length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("Curves and Statistics panes (the pre-solve input)", () => {
+    const SCENARIO_CONFIG = {
+      objective: "margin",
+      constraints: { volume: { min: 0.9 } },
+      quote_id: "quote_id",
+      scenario_index: "scenario_index",
+      scenario_value: "scenario_value",
+    }
+    const SCENARIO_ROWS = [
+      { quote_id: "Q001", scenario_index: 0, scenario_value: 0.9, margin: 100, volume: 1.0 },
+      { quote_id: "Q001", scenario_index: 1, scenario_value: 1.0, margin: 110, volume: 0.95 },
+      { quote_id: "Q002", scenario_index: 0, scenario_value: 0.9, margin: 200, volume: 1.0 },
+      { quote_id: "Q002", scenario_index: 1, scenario_value: 1.0, margin: 220, volume: 0.93 },
+    ]
+    const scenarioData = {
+      nodeId: "opt_1",
+      nodeLabel: "My Optimiser",
+      status: "ok" as const,
+      row_count: SCENARIO_ROWS.length,
+      column_count: 5,
+      columns: [],
+      preview: SCENARIO_ROWS,
+      error: null,
+    }
+
+    it("keeps the input's quote curves and statistics after a solve", () => {
+      renderPreview({ allNodes: [optimiserNode(SCENARIO_CONFIG)], scenarioData })
+
+      fireEvent.click(screen.getByRole("tab", { name: "Curves" }))
+      expect(screen.getByRole("checkbox", { name: /margin/ })).toBeChecked()
+      expect(screen.getByRole("checkbox", { name: /volume/ })).toBeChecked()
+      // The header describes the sampled input, not the solve.
+      expect(screen.getByText(/^2 quotes \| 2 scenarios/)).toBeInTheDocument()
+      expect(screen.queryByText(/^Converged/)).not.toBeInTheDocument()
+      const navigation = screen.getByTestId("optimiser-quote-navigation")
+      expect(within(navigation).getByText("1/2")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next quote" }))
+      expect(within(navigation).getByText("2/2")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole("tab", { name: "Statistics" }))
+      expect(screen.queryByTestId("optimiser-quote-navigation")).not.toBeInTheDocument()
+      expect(screen.getByText(/^2 quotes \| 2 scenarios/)).toBeInTheDocument()
+      expect(screen.getByText("objective")).toBeInTheDocument()
+      expect(screen.getAllByRole("table")).toHaveLength(2)
+    })
+
+    it("offers no input panes without the node's preview rows", () => {
+      renderPreview({ allNodes: [optimiserNode(SCENARIO_CONFIG)], scenarioData: null })
+
+      expect(screen.queryByRole("tab", { name: "Curves" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Statistics" })).not.toBeInTheDocument()
+    })
+
+    it("offers no input panes when no objective is configured to chart", () => {
+      renderPreview({ allNodes: [optimiserNode({ ...SCENARIO_CONFIG, objective: "" })], scenarioData })
+
+      expect(screen.queryByRole("tab", { name: "Curves" })).not.toBeInTheDocument()
     })
   })
 })

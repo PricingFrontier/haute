@@ -22,7 +22,6 @@ wrong. Current rating behaviour is specified in
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-07 | Planned | P3 | The Load File picker offers only files a File Type can load. |
 | BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
-| BUG-09 | Planned | P3 | The Optimisation node's Chunk size field shows the chunk size the solve will use. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-11 | Planned | P3 | Setting every Source Switch input back to `-` returns the node to passing through its first input. |
 
@@ -215,24 +214,6 @@ label rule; a frontend test covers the root and a nested table.
 
 **Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx` (`addTable`);
 `specs/json-shredding/high-level.md` (the label rule).
-
-### BUG-09 — The Chunk size field shows the chunk size in effect
-**Why:** The Optimisation node's **Chunk size** field shows 500000 when the
-node has no `chunk_size`, but then the solve sizes its chunks from its memory
-budget instead. The field shows a value that is not in effect until the
-analyst commits one.
-
-**Plan:** Keep the field, and show the automatic sizing when no value is set
-(an empty field reading "Automatic", for example), so a number appears only
-when the analyst chose it.
-
-**Acceptance:** A node without `chunk_size` shows the automatic state; a node
-with one shows that value; a frontend test covers both.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/OptimiserConfig.tsx` (the `chunk_size`
-field default); `src/haute/routes/_optimiser_input.py::_chunk_size_decision_for_parquet`.
 
 ### BUG-10 — A CSV's detected schema uses the node's reader arguments
 **Why:** A CSV Data Input detects its columns through `GET /api/schema`, which

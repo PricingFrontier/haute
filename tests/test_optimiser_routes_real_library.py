@@ -827,7 +827,6 @@ class TestSolveResultContract:
         assert summary["solver_settings"] == {
             "max_iter": 20,
             "tolerance": 1e-4,
-            "chunk_size": None,
         }
         assert result["diagnostics_errors"] == []
         assert result["adjustments"]["n_quotes"] == 5

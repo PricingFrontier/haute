@@ -30,8 +30,7 @@ Python exception class:
 | Valid handle whose artifact is absent | 410 | A fixed “artifact is no longer available; re-run the solve” detail. |
 | Present artifact that cannot be read as its declared format | 500 | A fixed “artifact is corrupt; re-run the solve” detail. |
 
-The known grid chunk-size validation branch remains a 400 because it is an
-explicit configuration/data-contract check. All catch-all branches log the
+All catch-all branches log the
 underlying exception and traceback server-side. A missing artifact is also
 logged with its server-owned path, but no exception text or path is returned to
 the client.
@@ -48,7 +47,7 @@ existed.
   leaks filesystem, library, or implementation details and lets internal
   defects masquerade as user mistakes.
 - **Sanitize every failure.** This discards safe, deliberate validation detail
-  such as the exact missing column or invalid chunk-size field and makes
+  such as the exact missing column and makes
   correctable requests harder to fix.
 - **Return 400/404 for invalid server-owned handles.** Clients select a job or
   frontier point; they do not author these handles. An invalid handle is

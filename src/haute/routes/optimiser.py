@@ -658,8 +658,6 @@ def _build_artifact_payload(
         "iterations": getattr(solve_result, "iterations", None),
         "cd_iterations": getattr(solve_result, "cd_iterations", None),
     }
-    if "chunk_size" in job_config:
-        payload["chunk_size"] = job_config["chunk_size"]
     setup_chunking = job.get("setup_chunking")
     if isinstance(setup_chunking, dict):
         payload["setup_chunking"] = setup_chunking

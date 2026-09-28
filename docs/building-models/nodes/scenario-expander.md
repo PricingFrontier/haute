@@ -50,7 +50,7 @@ BEFORE                        AFTER
 The index column keeps its default name, `scenario_index`. Both ends of the range are included.
 
 !!! warning "Row multiplication"
-    The output has `rows × steps` records. 1,000 rows with 50 steps produces 50,000 rows. With large datasets, use the Optimisation node's **Chunk size** to process in batches rather than expanding the full dataset at once.
+    The output has `rows × steps` records. 1,000 rows with 50 steps produces 50,000 rows. Large expanded frames are streamed in batches of **Chunk rows** from Pipeline settings, which the optimiser uses too.
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/expander/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.scenario_expander(config="config/expander/<node name>.json")`. Steps on the **POLARS** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the expanded data as `df`; after **Switch to code**, the body is your code.

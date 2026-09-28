@@ -22,7 +22,6 @@
   "quote_id": "policy_id",
   "scenario_index": "scenario_idx",
   "scenario_value": "scenario_value",
-  "chunk_size": 100000,
   "converged": false,
   "iterations": 11,
   "cd_iterations": 4,
@@ -53,7 +52,6 @@
   "solver_settings": {
     "max_iter": 50,
     "tolerance": 1e-06,
-    "chunk_size": 100000,
     "max_cd_iterations": 6,
     "cd_tolerance": 0.001
   },

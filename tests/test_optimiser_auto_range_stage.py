@@ -222,22 +222,6 @@ def test_auto_range_batches_follow_the_pipeline_streaming_chunk_size(
     assert seven.ranges == fifty.ranges
 
 
-def test_the_optimiser_chunk_size_does_not_size_auto_range_batches(
-    scored: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reads = _recording_batches(monkeypatch)
-    service = OptimiserSolveService(JobStore())
-    set_streaming_chunk_size(11)
-
-    _job, unset = _run(service, _body(scored))
-    _job, tiny = _run(service, _body(scored, chunk_size=2))
-    _job, huge = _run(service, _body(scored, chunk_size=100_000))
-
-    assert [rows for rows, _heights in reads] == [11, 11, 11]
-    assert reads[0][1] == reads[1][1] == reads[2][1]
-    assert unset.ranges == tiny.ranges == huge.ranges
-
-
 def test_optimiser_workers_spawn_with_a_capped_polars_thread_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

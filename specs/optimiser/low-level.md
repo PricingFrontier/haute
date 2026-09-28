@@ -8,7 +8,7 @@
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
@@ -62,8 +62,17 @@ context without the resolved value rather than silently resetting elapsed-time a
 ### Other dataclasses
 
 - `_ChunkSizeDecision` (`src/haute/routes/_optimiser_input.py`, frozen) —
-  `(chunk_size, provenance)` for the solver-input grid build, recording whether a chunk
-  size came from explicit config or a byte-budget policy.
+  `(chunk_size, provenance)` for the solver-input grid build and the ratebook factor contexts.
+  `pipeline_chunk_decision(source)` makes it from `current_streaming_chunk_size()` (the Pipeline
+  Settings value; the optimiser node has no chunk size of its own), recording
+  `{"policy": "pipeline_setting", "chunk_size", "source"}` in the job's `setup_chunking`.
+  The grid build uses `grid_chunk_decision(n_steps)` instead: the builder reads whole quotes,
+  so the setting is raised to `n_steps` rows when it is smaller, and the record adds
+  `pipeline_chunk_size` (the setting) and `n_steps`. `scenario_step_count` reads `n_steps` as one
+  past the largest `scenario_index` in one scan of that column, and the builder receives it
+  explicitly instead of auto-detecting it from its first chunk (which fails below
+  `n_steps + 1` rows). The ratebook factor artifact has one row per quote, so its contexts take
+  the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
   of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)
   and execution context for one auto-range run.
@@ -268,8 +277,8 @@ are held until the grid is built and released on every exit. No checkpoint direc
 7. Writes the scored data to a setup-owned temp parquet, or borrows an unchanged captured
    snapshot under the plan's lease (`_write_solver_input`), and builds the solver's `QuoteGrid`
    from that file via `price_contour.build_grid_from_parquet_chunked`
-   (`_build_grid_from_parquet`), choosing a chunk size from either explicit config or a
-   byte-budget policy against the parquet's own metadata. The builder decodes only the solver
+   (`_build_grid_from_parquet`) in chunks of the Pipeline Settings chunk size raised to one
+   quote's rows (`grid_chunk_decision`), passing the file's `n_steps`. The builder decodes only the solver
    columns, so retained analysis columns never reach it, and `_build_grid_from_parquet` records
    the job's `scenario_grid` as soon as the grid exists. When analysis columns are configured,
    `quote_analysis.parquet` is reduced from the written solver input (or the side-input frame)
@@ -390,8 +399,8 @@ an execution-context stage — calls:
   library's `per_factor_results` (one `PerFactorRecord` per inner grouped solve, in (CD pass,
   factor) order) into `ratebook_cd_trace` (see the result contract below). Like an online
   result, a ratebook result reports the shape of the grid it scored: `n_quotes` and `n_steps`
-  come from the solved `QuoteGrid`, so the result preview's provenance strip and the artifact's
-  `input_summary` name them for both modes. See Runtime ratebook apply below.
+  come from the solved `QuoteGrid`, so the result header and the artifact's `input_summary`
+  name them for both modes. See Runtime ratebook apply below.
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
 `result_dict` (including `effective_bounds`, see Constraint bounds below), optionally computes an efficient frontier inline (non-fatal on failure — a
@@ -406,7 +415,7 @@ names must all agree, see Constraint bounds) the result carries:
 
 - `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
   `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
-  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, `chunk_size`, and
+  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, and
   `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` only
   when the solve swept a constraint). It is built
   once in `_finalize_solve_result` by `solve_input_summary(job)` from the solve-time config
@@ -820,7 +829,7 @@ and the solve's `combined_factor_bounds` — a frontier point shares its solve's
 collar), plus the audit
 trail: `solver_settings` (the result's `input_summary.solver_settings`, built from the solve-time
 config snapshot with the solver defaults applied:
-`max_iter`, `tolerance` and `chunk_size`, plus `max_cd_iterations` and
+`max_iter` and `tolerance`, plus `max_cd_iterations` and
 `cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` when the
 solve swept a constraint), `effective_constraints` (a point's constraint specs with that point's
 thresholds via `_frontier_point_constraints_override`; the configured constraints for the
@@ -1206,8 +1215,7 @@ whose message already names every problem and the remedy.
   token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
   the exclusion lease until it can no longer mutate state.
-- **Generic setup failure detail is boundary-safe.** Explicit grid chunk-size
-  validation remains an actionable 400. Unknown `_execute_pipeline` and
+- **Generic setup failure detail is boundary-safe.** Unknown `_execute_pipeline` and
   `_build_grid` failures are fixed-detail 500s and preserve their raw
   exception only in server logs, as defined by
   [OPT-D01](error-detail-policy.md).
@@ -1557,15 +1565,14 @@ The required behaviour is defined in
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
-## Decoded input widths for setup chunking
+## Decoded input widths for the resident-grid forecast
 
-Automatic optimiser-grid and ratebook-factor chunk sizing uses the larger of
-the existing Parquet page-size estimate and a bounded decoded sample (at most
-512 rows). Each sampled column has an eight-byte minimum, and strings/binary
-use their decoded resident width. Repeated dictionary values must not make a
-large decoded batch look like a tiny encoded page. Explicit positive row
-overrides retain their current meaning. The existing setup execution limits
-remain authoritative: chunked input still builds a resident solver grid.
+Setup chunk sizes are the Pipeline Settings value (see `_ChunkSizeDecision`), not
+a byte budget. The resident-grid forecast (`forecast_resident_grid_bytes`) prices
+each input row from a bounded decoded sample (at most 512 rows), in which strings
+and binary use their decoded resident width, so repeated dictionary values cannot
+make a large decoded batch look like a tiny encoded page. The setup execution
+limits remain authoritative: chunked input still builds a resident solver grid.
 ## Reuse and admit the resident grid input
 
 Grid setup reuses a single local Parquet scan when its optimised plan is only
@@ -1744,7 +1751,7 @@ against 3,282 MiB). The side-input reduction peaks well below the write (1,954 M
 quotes), so the worker's peak does not change on that path; its 5M figure below the
 no-analysis one is run-to-run variation, which is up to 5% at 1M quotes. The server's grid
 build reads fewer rows per chunk from the data-input path's wider file (9.6M against 13.4M rows
-at 1M quotes; the chunk size is a byte budget over the estimated row width), so its peak is
+at 1M quotes; the chunk size was then a byte budget over the estimated row width, since replaced by the pipeline setting), so its peak was
 lower on that path, not higher.
 
 The first V09A figures read `ru_maxrss`. They were not inflated by an inherited peak: each case

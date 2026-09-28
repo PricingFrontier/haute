@@ -10662,17 +10662,6 @@
           "title": "Cd Tolerance",
           "type": "number"
         },
-        "chunk_size": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Chunk Size"
-        },
         "frontier_ranges": {
           "additionalProperties": true,
           "title": "Frontier Ranges",
@@ -10697,8 +10686,7 @@
       },
       "required": [
         "max_iter",
-        "tolerance",
-        "chunk_size"
+        "tolerance"
       ],
       "title": "OptimiserSolverSettings",
       "type": "object"

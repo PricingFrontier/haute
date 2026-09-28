@@ -71,9 +71,9 @@ from haute.routes._job_store import (
 )
 from haute.routes._optimiser_adjustments import adjustment_report
 from haute.routes._optimiser_input import (
-    _chunk_size_decision_for_parquet,
     _ChunkSizeDecision,
     _resolve_optimiser_input_edge,
+    pipeline_chunk_decision,
 )
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
@@ -236,7 +236,6 @@ def solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
     settings: dict[str, Any] = {
         "max_iter": job_config.get("max_iter", _DEFAULT_MAX_ITER),
         "tolerance": job_config.get("tolerance", _DEFAULT_TOLERANCE),
-        "chunk_size": job_config.get("chunk_size"),
     }
     if job_config.get("mode") == "ratebook":
         settings["max_cd_iterations"] = job_config.get(
@@ -714,16 +713,9 @@ def _build_ratebook_factor_contexts(
     )
     # ``QuoteGrid.quote_ids`` is already a fresh ``list[str]`` (a PyO3 ``Vec<String>``).
     quote_ids = quote_grid.quote_ids
-    try:
-        if chunk_decision is None:
-            chunk_decision = _chunk_size_decision_for_parquet(
-                config,
-                artifact_path,
-                source="ratebook_factor_contexts",
-            )
-        chunk_size = chunk_decision.chunk_size
-    except ValueError as exc:
-        raise RuntimeError(f"Ratebook factor context chunk sizing failed: {exc}") from exc
+    if chunk_decision is None:
+        chunk_decision = pipeline_chunk_decision("ratebook_factor_contexts")
+    chunk_size = chunk_decision.chunk_size
     return price_contour().build_ratebook_factor_contexts_from_parquet_chunked(
         str(artifact_path),
         factor_columns,
@@ -1368,11 +1360,7 @@ def _solve_ratebook(
     factor_artifact_path, _factor_artifact_dir = (
         _optimiser_artifacts._validate_ratebook_factors_artifact_handle(ratebook_factors_handle)
     )
-    factor_chunk_decision = _chunk_size_decision_for_parquet(
-        config,
-        factor_artifact_path,
-        source="ratebook_factor_contexts",
-    )
+    factor_chunk_decision = pipeline_chunk_decision("ratebook_factor_contexts")
     try:
         factor_contexts = _build_ratebook_factor_contexts(
             ratebook_factors_handle,

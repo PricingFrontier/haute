@@ -22,7 +22,6 @@
   "quote_id": "quote_id",
   "scenario_index": "scenario_index",
   "scenario_value": "scenario_value",
-  "chunk_size": 4096,
   "converged": true,
   "iterations": 7,
   "cd_iterations": null,
@@ -33,8 +32,7 @@
   },
   "solver_settings": {
     "max_iter": 50,
-    "tolerance": 1e-06,
-    "chunk_size": 4096
+    "tolerance": 1e-06
   },
   "effective_constraints": {
     "loss": {

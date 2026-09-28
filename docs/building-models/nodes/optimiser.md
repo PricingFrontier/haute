@@ -75,7 +75,8 @@ Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios 
 | **Tolerance** | How close to optimal the solution needs to be before stopping. Smaller values give more precise results but take longer. Defaults to `1e-6`. |
 | **CD iterations** | Ratebook mode: maximum coordinate descent iterations. Defaults to 10. |
 | **CD tolerance** | Ratebook mode: coordinate descent convergence tolerance. Defaults to `1e-3`. |
-| **Chunk size** | How many rows of scored scenarios the solver reads at a time while it builds its grid. The box shows 500000 until you change it; until you do, Haute sizes the slices from its memory budget. A smaller value reads fewer rows at once. |
+
+The solver reads the scored scenarios in batches of **Chunk rows** from Pipeline settings, raised when needed to hold at least one whole quote.
 
 ## The EXPORT pane
 
@@ -103,15 +104,16 @@ A ratebook result also states its **Combined factor collar**: the optimiser scor
 
 ## Reading the result
 
-A finished solve opens in a results panel under the canvas with these views:
+A finished solve opens in a results panel under the canvas. Its header shows whether the solve converged, its iterations and its number of quotes. Every figure is an expected value from the scoring models on the solve's quotes, not an observed outcome. The views:
 
-- **Frontier** (when a frontier was computed): one point per solve at a different constraint target: the highest expected objective found at that level. Select a point to inspect it; the selected point is what the **EXPORT** pane publishes. With more than one swept constraint, **X axis:** chooses the constraint to plot against and **Holding … at** chooses the values the others are held at. The arrows in the panel header step to the previous or next point.
-- **Summary**: the expected objective and constraint totals, whether the solver converged, and how many quotes moved up or down.
+- **Frontier** (when a frontier was computed): each point is a solve at a different constraint target, the highest expected objective found at that level. The line joins feasible points (converged, with every bound met); a hollow point did not converge and a cross converged but breaches a bound. The ringed marker is the solve itself. The points table beside the chart lists each point's bound, achieved total, objective and status. Selecting a point in either makes it what the **EXPORT** pane publishes, and the summary under the chart describes it. With more than one swept constraint, **X axis:** chooses the constraint to plot against and **Holding … at** chooses the values the others are held at. The arrows in the panel header step to the previous or next point.
+- **Summary** (under the frontier chart, or a view of its own when nothing was swept): the objective and, per constraint, the bound the result was solved at, the achieved total, the slack, whether the bound is met, and λ, the constraint's multiplier. A min constraint enters each quote's choice as +λ × its column and a max constraint as −λ × its column. In ratebook mode, the clamp rate is the mean, over every grouped solve, of the share of (quote, candidate) targets strictly outside the scenario range; quotes at a grid edge are not counted. For the solve itself, it also shows the shares of quotes adjusted up, down and to the edge of the range, with a link to **Adjustments**.
 - **Rates** (ratebook): the rate chosen for each factor level. A quote's combined factor is the product of its levels' rates, collared to the scenario range the solve scored.
-- **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, where 1.0 is the base price.
+- **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, against 1.0, the base price with no adjustment.
 - **Segments**: the mean chosen scenario value for each level of a validation or rating factor, with the shares adjusted up, down and at the edge of the range.
 - **Quotes**: the scenario value chosen for each quote, with its expected objective and constraint values.
-- **Convergence**: how the objective, the constraint totals and the solver's multipliers settled over the iterations.
+- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes).
+- **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes. On these views the header describes the sampled input instead of the solve.
 
 When the node's settings have changed since the solve, the results panel says so and offers **Re-run**.
 
@@ -148,7 +150,6 @@ To see the trade-off instead, switch `claims` to **Sweep**, fill in **from** and
     | **Tolerance** | `tolerance` (defaults to `1e-6`) |
     | **CD iterations** | `max_cd_iterations` (defaults to 10) |
     | **CD tolerance** | `cd_tolerance` (defaults to `1e-3`) |
-    | **Chunk size** | `chunk_size`; absent lets Haute size the slices |
     | **File path** | `result_export_path`; absent uses the suggested path |
     | MLflow destination | `mlflow_destination`: `"databricks"` or `"server"`; absent for the local folder |
     | **Experiment path** | `mlflow_experiment` |
