@@ -514,6 +514,28 @@ describe("parseExecutionStrategyDiagnostic", () => {
     expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ schema_version: 2 }))).toBeNull()
   })
 
+  it("keeps the projection cause and rejects one without a positive count", () => {
+    const cause = {
+      node_id: "fill_na",
+      operator: "polars",
+      kind: "input",
+      reason_code: "polars_lineage_unsupported",
+      message: "Polars code is outside the closed column-lineage model",
+      total_count: 1,
+      parent_node_id: "SaleJoin",
+      operation: "with_columns",
+    }
+
+    const diagnostic = parseExecutionStrategyDiagnostic(
+      executionStrategyFixture({ projection_cause: { ...cause, future_cause_field: true } }),
+    )
+
+    expect(diagnostic?.projection_cause).toEqual(cause)
+    expect(() => parseExecutionStrategyDiagnostic(
+      executionStrategyFixture({ projection_cause: { ...cause, total_count: 0 } }),
+    )).toThrow(/total_count/i)
+  })
+
   it("detaches retained arrays from the untrusted input", () => {
     const assumptions = ["bounded input"]
     const raw = executionStrategyFixture({ assumptions })

@@ -2096,6 +2096,23 @@ present a structural or schema result as execution evidence.
   topological order and, when truncated, retains the earliest representative of
   every boundary kind present before filling the remaining capacity. A mixed plan
   therefore cannot truncate away its only unprojected-boundary evidence.
+  The additive `projection_cause` names the node that kept part of the plan full width,
+  which is usually not the first boundary: a node whose own demand is concrete but that
+  left an edge from a full-width parent without a demand (kind `input`, with the edge's
+  rule, and `parent_node_id` when exactly one such input exists), or a full-width node
+  none of whose outgoing edges lacks a demand, so its own rule and not a child made it so
+  (kind `node`, with its node rule). An edge whose rule only passes the node's own
+  full-width demand on (`opaque_demand`) names no cause. The furthest-downstream cause by
+  topological rank (node id breaking ties) is reported with `total_count` of all causes,
+  and `operation` carries the frame method the column-lineage model could not follow for
+  `polars_lineage_unsupported` and `builder_post_code`. For an
+  `unprojected-streaming-boundary` the remediation is written for that cause, canvas steps
+  first: code Haute cannot follow is asked to refer to each column by name or move the step
+  into its own node, a source whose code forces a full scan is asked to name the columns
+  it reads, and any other rule points at simplifying the node or declaring its contract.
+  The field is absent when nothing is full width, or when no node can be named (every
+  unnarrowed edge only passes a full-width demand on, as a runtime-refined plan can leave);
+  the remediation then keeps the generic wording.
 - **Boundary admission is profile-independent** (every admitted materialisation
   operator, not only `group_by`):
 

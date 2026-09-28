@@ -1,5 +1,5 @@
 import { AlertCircle, AlertTriangle } from "lucide-react"
-import type { ExecutionMetrics } from "../api/types"
+import type { ExecutionMetrics, ExecutionStrategyProjectionCause } from "../api/types"
 import {
   buildMemoryPressureDiagnostic,
   executionProjectionWarning,
@@ -15,6 +15,20 @@ type IndicatorContent = {
   title: string
   explanation: string
   remediation?: string
+}
+
+/** Names the node that kept part of the pipeline full-width, and which part. */
+function projectionCauseExplanation(cause: ExecutionStrategyProjectionCause): string {
+  const node = `'${cause.node_id}' (${cause.operator})`
+  const others = cause.total_count - 1
+  const elsewhere = others > 0
+    ? ` ${others} other ${others === 1 ? "node" : "nodes"} also kept part of the pipeline full-width.`
+    : ""
+  if (cause.kind === "node") {
+    return `Haute could not narrow the columns ${node} reads, so that part of the pipeline read every column.${elsewhere}`
+  }
+  const parent = cause.parent_node_id ? `'${cause.parent_node_id}'` : null
+  return `${node} stopped Haute narrowing the columns it reads from ${parent ?? "its inputs"}, so ${parent ? `${parent} and the nodes` : "the nodes"} above it read every column.${elsewhere}`
 }
 
 function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
@@ -48,13 +62,16 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
 
   const projectionWarning = executionProjectionWarning(metrics)
   if (!projectionWarning) return null
-  const { boundary: projectionBoundary, nodeId, operator } = projectionWarning
+  const { boundary: projectionBoundary, nodeId, operator, cause } = projectionWarning
   const location = nodeId ? ` at '${nodeId}'${operator ? ` (${operator})` : ""}` : ""
+  const summary = cause
+    ? projectionCauseExplanation(cause)
+    : `Haute could not safely push the requested columns through the pipeline${location}, so that section stayed full-width.`
 
   return {
     severity: "warning",
     title: "Column projection was limited",
-    explanation: `Haute could not safely push the requested columns through the pipeline${location}, so that section stayed full-width. The preview result is still correct, but it may read more columns and use more memory than necessary.`,
+    explanation: `${summary} The preview result is still correct, but it may read more columns and use more memory than necessary.`,
     remediation: projectionBoundary && strategy.strategy === "materialisation-boundary"
       ? "Give this node an explicit column contract, or rewrite the transform so Haute can prove its input columns."
       : strategy.remediation ?? undefined,

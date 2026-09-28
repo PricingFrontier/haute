@@ -139,6 +139,50 @@ describe("executionDiagnostics", () => {
     ).toEqual(["requested", "aggregate"])
   })
 
+  it("marks the node that kept part of the pipeline full-width with the boundaries", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "boundary",
+        strategy: "unprojected-streaming-boundary",
+        profile: "preview_eager",
+        boundedness: "bounded",
+        reason_code: "unprojected_streaming_boundary",
+        detail_state: "available",
+        boundaries: {
+          state: "available",
+          total_count: 1,
+          items: [{
+            topological_rank: 0,
+            node_id: "SaleJoin",
+            operator: "edgeJoin",
+            boundary_kind: "unprojected-streaming-boundary",
+          }],
+        },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "SaleJoin",
+        blocking_operator: "edgeJoin",
+        projection_cause: {
+          node_id: "fill_na",
+          operator: "polars",
+          kind: "input",
+          reason_code: "polars_lineage_unsupported",
+          message: "Polars code is outside the closed column-lineage model",
+          total_count: 1,
+          parent_node_id: "SaleJoin",
+          operation: "with_columns",
+        },
+      },
+    })
+
+    expect(executionWarningNodeIds(metrics, "requested")).toEqual(["requested", "SaleJoin", "fill_na"])
+    expect(buildExecutionStrategyDiagnostic(metrics)?.details).toContain(
+      "Projection cause fill_na (polars) from SaleJoin: polars_lineage_unsupported in with_columns; 1 total",
+    )
+  })
+
   it.each(["contract_error", "timed_out", "cancelled", "superseded"] as const)(
     "does not build a terminal memory-pressure banner for %s failures",
     (terminalReason) => {

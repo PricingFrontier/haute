@@ -957,6 +957,10 @@ group-by estimate was unavailable; it is rendered as a warning, never an error, 
 terminal memory-limit failure or a memory-pressure event on the same run takes precedence
 over the warned strategy in every consumer.
 
+The parser copies the additive `projection_cause` (node, operator, `input`/`node` kind,
+rule, message, positive `total_count`, optional parent and operation) field by field, so
+unknown fields inside it are dropped like any other additive field.
+
 Consumers ignore unknown additive fields only within version 1. Missing or malformed required
 fields and unknown version-1 enum values throw; unsupported higher versions produce diagnostic
 unavailable. Neither path is preserved as an unknown success status. Guard tests pin every mapping,

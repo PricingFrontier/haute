@@ -272,6 +272,49 @@ class BoundedDiagnosticCollection:
         }
 
 
+class ProjectionCauseKind(StrEnum):
+    INPUT = "input"
+    """The node could not narrow what it reads from full-width inputs."""
+
+    NODE = "node"
+    """The node's own rule, not a child's demand, keeps it full width."""
+
+
+@dataclass(frozen=True)
+class ProjectionCause:
+    """The node that kept part of a plan full width, and the rule that did.
+
+    ``total_count`` counts every such node in the plan; this one is the
+    furthest downstream. ``parent_node_id`` names the full-width input when
+    exactly one input was left unnarrowed. ``operation`` is the frame method
+    code the column lineage model could not follow, when it names one.
+    """
+
+    node_id: str
+    operator: str
+    kind: ProjectionCauseKind
+    reason_code: str
+    message: str
+    total_count: int
+    parent_node_id: str | None = None
+    operation: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "node_id": self.node_id,
+            "operator": self.operator,
+            "kind": self.kind.value,
+            "reason_code": self.reason_code,
+            "message": self.message[:_DIAGNOSTIC_MESSAGE_LIMIT],
+            "total_count": self.total_count,
+        }
+        if self.parent_node_id is not None:
+            payload["parent_node_id"] = self.parent_node_id
+        if self.operation is not None:
+            payload["operation"] = self.operation
+        return payload
+
+
 @dataclass(frozen=True)
 class ExecutionStrategyDiagnostic:
     """Versioned JSON-safe strategy diagnostic produced by the shared planner."""
@@ -295,6 +338,7 @@ class ExecutionStrategyDiagnostic:
     estimate_admission_basis: str | None = None
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
+    projection_cause: ProjectionCause | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
@@ -375,6 +419,7 @@ class ExecutionStrategyDiagnostic:
         estimate_admission_basis: str | None = None,
         headroom_bytes: int | None = None,
         assumptions: Iterable[str] = (),
+        projection_cause: ProjectionCause | None = None,
     ) -> ExecutionStrategyDiagnostic:
         detail_state = max(
             (boundaries.state, reasons.state, provenance.state),
@@ -401,6 +446,7 @@ class ExecutionStrategyDiagnostic:
             estimate_admission_basis=estimate_admission_basis,
             headroom_bytes=headroom_bytes,
             assumptions=tuple(str(item) for item in assumptions),
+            projection_cause=projection_cause,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -431,6 +477,8 @@ class ExecutionStrategyDiagnostic:
         payload.update({key: value for key, value in optional.items() if value is not None})
         if self.assumptions:
             payload["assumptions"] = list(self.assumptions)
+        if self.projection_cause is not None:
+            payload["projection_cause"] = self.projection_cause.to_dict()
         canonical_json(payload)
         return payload
 
@@ -807,6 +855,13 @@ def build_execution_strategy_result(
             ExecutionStrategy.NOT_PLANNED: "not_planned",
         }[strategy]
 
+    projection_cause = _projection_cause(projection_plan, node_map, ranks)
+    if (
+        remediation is None
+        and strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+        and projection_cause is not None
+    ):
+        remediation = _projection_cause_remediation(projection_cause, node_map)
     if remediation is None:
         remediation = {
             ExecutionStrategy.PROJECTED: (
@@ -969,8 +1024,113 @@ def build_execution_strategy_result(
         estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
+        projection_cause=projection_cause,
     )
     return ExecutionStrategyResult(projection_plan=projection_plan, diagnostic=diagnostic)
+
+
+# Edge rules that describe a node's own full-width demand passed on to its
+# parents rather than a rule of the node that cut the narrowing short.
+_PASSED_ON_DEMAND_RULES = frozenset({"opaque_demand"})
+
+# Rules under which a node's code is outside the closed column-lineage model.
+_UNREADABLE_CODE_RULES = frozenset({"polars_lineage_unsupported", "builder_post_code"})
+
+
+def _projection_cause(
+    projection_plan: ProjectionPlan,
+    node_map: Mapping[str, GraphNode],
+    ranks: Mapping[str, int],
+) -> ProjectionCause | None:
+    """Return the furthest-downstream node that kept part of the plan full width.
+
+    A full-width node is one with no concrete demand. A node causes that when
+    it could not narrow what it reads from a full-width parent although its
+    own demand is concrete (an input cause, named with the edge's rule), or
+    when it is full width while every one of its outgoing edges has a concrete
+    demand, so its own rule and not a child made it so (a node cause). A node
+    that merely passed its own full-width demand on to its parents is not a
+    cause. ``None`` when nothing is full width.
+    """
+    opaque = projection_plan.opaque_boundaries
+    if not opaque:
+        return None
+    diagnostics = projection_plan.diagnostics
+    unnarrowed = sorted(
+        (key for key in diagnostics.edge_reasons if projection_plan.edge_demands.get(key) is None),
+        key=ProjectionEdgeKey.sort_key,
+    )
+    input_causes: dict[str, list[ProjectionEdgeKey]] = {}
+    for key in unnarrowed:
+        if (
+            key.source in opaque
+            and key.target not in opaque
+            and diagnostics.edge_reasons[key].rule not in _PASSED_ON_DEMAND_RULES
+        ):
+            input_causes.setdefault(key.target, []).append(key)
+    blocked_by_child = {key.source for key in unnarrowed}
+    node_causes = {
+        node_id for node_id in opaque - blocked_by_child if node_id in diagnostics.node_reasons
+    }
+    cause_ids = set(input_causes) | node_causes
+    if not cause_ids:
+        return None
+    node_id = max(cause_ids, key=lambda cause_id: (ranks.get(cause_id, -1), cause_id))
+    node = node_map.get(node_id)
+    operator = node.data.nodeType.value if node is not None else "unknown"
+    edges = input_causes.get(node_id)
+    if edges:
+        reason = diagnostics.edge_reasons[edges[0]]
+        kind = ProjectionCauseKind.INPUT
+        parents = {key.source for key in edges}
+        parent_node_id = next(iter(parents)) if len(parents) == 1 else None
+    else:
+        reason = diagnostics.node_reasons[node_id]
+        kind = ProjectionCauseKind.NODE
+        parent_node_id = None
+    operation = reason.details.get("operation") if reason.rule in _UNREADABLE_CODE_RULES else None
+    return ProjectionCause(
+        node_id=node_id,
+        operator=operator,
+        kind=kind,
+        reason_code=reason.rule,
+        message=reason.message,
+        total_count=len(cause_ids),
+        parent_node_id=parent_node_id,
+        operation=operation if isinstance(operation, str) and operation else None,
+    )
+
+
+def _projection_cause_remediation(
+    cause: ProjectionCause,
+    node_map: Mapping[str, GraphNode],
+) -> str:
+    """Return the suggested action for a projection cause, canvas steps first."""
+    node = f"'{cause.node_id}'"
+    if cause.reason_code in _UNREADABLE_CODE_RULES:
+        where = f" in a {cause.operation} call" if cause.operation else ""
+        return (
+            f"Haute can't follow which columns the code in {node} reads{where}. Refer to "
+            'each column by name, for example pl.col("premium"), or move that step into a '
+            "node of its own. Declaring the node's column contract in the pipeline file "
+            "also works."
+        )
+    source = node_map.get(cause.node_id)
+    if (
+        cause.kind is ProjectionCauseKind.NODE
+        and source is not None
+        and _must_run_source_user_code_unprojected(source, None)
+    ):
+        return (
+            f"The code in {node} runs over the whole source before Haute can narrow it. "
+            'Refer to each column the code reads by name, for example pl.col("premium"), '
+            "so Haute can read only those."
+        )
+    return (
+        f"Haute can't prove which input columns {node} needs, so it keeps them all. "
+        "Simplifying the node, or declaring its column contract in the pipeline file, "
+        "lets Haute narrow it."
+    )
 
 
 def _execution_strategy_provenance_items(
