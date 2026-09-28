@@ -6,6 +6,10 @@ Pure default-value assertions removed (Pydantic guarantees those).
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 from pydantic import ValidationError
 
@@ -23,6 +27,37 @@ from haute.schemas import (
     TraceRequest,
     WriteOutputRequest,
 )
+
+_LIST_UNBUILT_MODELS = textwrap.dedent(
+    """
+    import haute.server
+    from pydantic import BaseModel
+
+    def models(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from models(sub)
+
+    for model in set(models(BaseModel)):
+        if model.__module__.startswith("haute") and not model.__pydantic_complete__:
+            print(f"{model.__module__}.{model.__qualname__}")
+    """
+)
+
+
+def test_every_haute_model_is_built_at_import() -> None:
+    # A model left for pydantic to build lazily is completed by the first request
+    # that uses it, and two request threads doing so at once can leave it without
+    # a validator. A fresh interpreter, because any earlier use in this process
+    # would already have built the model.
+    result = subprocess.run(
+        [sys.executable, "-c", _LIST_UNBUILT_MODELS],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    assert result.stdout.split() == []
 
 
 @pytest.mark.parametrize("created_at", ["2026-09-22T12:00:00", "2026-09-22T12:00:00+01:00"])
