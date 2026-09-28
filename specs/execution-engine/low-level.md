@@ -1163,7 +1163,11 @@ ways:
   once when the cell names the running command. The command decides what cancelling means
   (the optimiser's `apply_point` cancels price-contour's token). A command that registers
   nothing runs to completion, and its value or error returns as usual. Outside a dedicated
-  worker's command, `on_command_cancel` raises.
+  worker's command, `on_command_cancel` raises. The parent's write takes the cell's lock with
+  a bounded acquire and retries on its next poll, so a child that holds the lock, or died
+  holding it, never keeps the parent from its death and deadline checks. The child drops a
+  failed command's exception once the error envelope (text only) is built, so the traceback
+  never keeps that command's frames alive into the next command.
 
 `start(start_timeout_seconds, stop_reason)` registers the worker before spawning, waits for
 `ready` bounded by the timeout and polling `stop_reason`, and fails with the pool's start,

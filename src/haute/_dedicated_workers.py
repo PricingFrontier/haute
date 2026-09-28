@@ -172,13 +172,23 @@ class CommandCancelCell:
         self._buffer: Any = ctx.RawArray("c", _COMMAND_ID_BYTES)
         self._lock: Any = ctx.Lock()
 
-    def request(self, command_id: str) -> None:
-        """Ask the child to stop *command_id* (parent side)."""
+    def request(self, command_id: str) -> bool:
+        """Ask the child to stop *command_id*; False if the lock stayed busy (parent side).
+
+        Bounded, like every parent-side read of child-shared state: a child that
+        holds the lock, or died holding it, must never stall its owner's poll
+        loop before it reaches the worker's death or its deadline.
+        """
         encoded = command_id.encode("ascii")
         if len(encoded) != _COMMAND_ID_BYTES:
             raise ValueError(f"a command id is {_COMMAND_ID_BYTES} characters")
-        with self._lock:
+        if not self._lock.acquire(timeout=_EVIDENCE_READ_TIMEOUT_SECONDS):
+            return False
+        try:
             self._buffer.raw = encoded
+        finally:
+            self._lock.release()
+        return True
 
     def requested(self, command_id: str) -> bool:
         """Whether *command_id* was asked to stop (child side)."""
@@ -351,6 +361,10 @@ def _dedicated_worker_entrypoint(
                         growth, state, charge_bytes=lease.current_charge_bytes()
                     )
                     envelope = _error_envelope(command_id, failure, failed_cap)
+                    # The envelope carries only text; the exception's traceback
+                    # would hold the failed command's frames (a cancelled
+                    # apply's per-quote table) into the next command.
+                    del failure
         try:
             payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
             if max_result_bytes is not None and len(payload) > max_result_bytes:
@@ -598,8 +612,8 @@ class DedicatedWorker:
                 and cancellation_token is not None
                 and cancellation_token.cancelled
             ):
-                cancel_cell.request(command_id)
-                cancel_requested = True
+                # Retried on the next poll when the child holds the cell's lock.
+                cancel_requested = cancel_cell.request(command_id)
             death = self._death
             if death is not None:
                 raise InteractiveWorkerStoppedError(

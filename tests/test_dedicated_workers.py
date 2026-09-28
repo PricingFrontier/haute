@@ -28,6 +28,7 @@ from haute._interactive_workers import (
     InteractiveWorkerRemoteError,
     InteractiveWorkerStartError,
     InteractiveWorkerStoppedError,
+    InteractiveWorkerTimeoutError,
 )
 from haute._native_memory_limit import JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, native_memory_caps_supported
 from haute._process_memory import process_rss_bytes
@@ -99,6 +100,38 @@ def stop_when_cancelled() -> str:
 def ignore_cancel_then_return(seconds: float) -> int:
     time.sleep(seconds)
     return 7
+
+
+class _Held:
+    """A stand-in for a cancelled command's large frame (weak-referenceable)."""
+
+
+_HELD: dict[str, object] = {}
+
+
+def fail_holding_a_frame() -> None:
+    import weakref
+
+    frame = _Held()
+    _HELD["ref"] = weakref.ref(frame)
+    raise RuntimeError("cancelled while holding its frame")
+
+
+def held_frame_is_released() -> bool:
+    import gc
+
+    gc.collect()
+    ref = _HELD["ref"]
+    return ref() is None  # type: ignore[operator]
+
+
+def hang_holding_cancel_lock() -> None:
+    from haute import _dedicated_workers
+
+    bound = _dedicated_workers._child_command  # noqa: SLF001 - simulating a stuck reader
+    assert bound is not None
+    bound[0]._lock.acquire()  # noqa: SLF001
+    block_forever()
 
 
 def report_whether_cancelled(seconds: float) -> bool:
@@ -251,6 +284,41 @@ def test_a_cancel_never_reaches_the_next_command(worker: DedicatedWorker) -> Non
     with pytest.raises(InteractiveWorkerRemoteError):
         _run(worker, stop_when_cancelled, cancellation_token=token)
     assert _run(worker, report_whether_cancelled, 0.3) is False
+
+
+def test_a_failed_command_keeps_nothing_alive_into_the_next(worker: DedicatedWorker) -> None:
+    """The child's loop must drop a failed command's exception once it is sent: its
+    traceback would hold the command's frame (a cancelled apply's per-quote table)."""
+    with pytest.raises(InteractiveWorkerRemoteError):
+        _run(worker, fail_holding_a_frame)
+    assert _run(worker, held_frame_is_released) is True
+
+
+def test_a_child_holding_the_cancel_lock_never_stalls_its_owner(worker: DedicatedWorker) -> None:
+    """A cancel request must not block on the cell's lock: the owner still reaches its
+    deadline (and, likewise, a death) while the child holds it."""
+    token = ExecutionCancellationToken()
+    canceller = _cancel_after(token, 0.5)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            worker.run(
+                hang_holding_cancel_lock,
+                growth_bytes=_GROWTH,
+                required=True,
+                timeout_seconds=2,
+                cancellation_token=token,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    canceller.join()
+    assert not thread.is_alive(), "the owner blocked on the cancel cell's lock"
+    assert errors and isinstance(errors[0], InteractiveWorkerTimeoutError)
 
 
 def test_on_command_cancel_outside_a_worker_command_raises() -> None:

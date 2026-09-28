@@ -1347,8 +1347,9 @@ whose message already names every problem and the remedy.
   library `Cancelled` without a haute cancel stays a 500. `tests/test_dedicated_workers.py`
   covers the worker's cancel cell: a cancelled command stops while the worker lives on, a token
   cancelled before the command starts stops it at once, a command that registers nothing runs
-  to completion, a cancel never reaches the next command, and `on_command_cancel` raises outside
-  a worker.
+  to completion, a cancel never reaches the next command, a failed command keeps nothing alive
+  into the next, a child holding the cell's lock never stalls its owner, and
+  `on_command_cancel` raises outside a worker.
 - `tests/test_optimiser_adjustments.py` covers OPT-V10's statistical contract: bar counts
   against hand counts on a Float32 linspace grid and on `[0.8, 1.0, 1.3]`, zero-count steps kept
   as empty bars; an available but unchosen 1.0 giving a 0 unadjusted share while
