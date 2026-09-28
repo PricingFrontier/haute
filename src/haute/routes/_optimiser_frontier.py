@@ -1237,17 +1237,27 @@ class OptimiserFrontierService:
                 ),
             )
             throw_if_cancelled()
+            library_cancelled = False
             try:
                 frame = compute_frame(native_cancel)
             except pc.Cancelled:
                 # Only haute's own cancel makes this a cancellation; a native
                 # Cancelled without one is a library fault and propagates as is.
+                if not cancellation_token.cancelled:
+                    raise
+                library_cancelled = True
+            # The queue keeps a run's exception in its outcome, so a
+            # cancellation is raised outside the except block (dropping the
+            # library's traceback) and after the frame is released: neither
+            # may outlive admission while the next point runs.
+            if library_cancelled:
                 throw_if_cancelled()
-                raise
-            throw_if_cancelled()
-            new_handle = _persist_apply_frame_artifact(frame)
-            owns_new_handle = True
-            del frame
+            try:
+                throw_if_cancelled()
+                new_handle = _persist_apply_frame_artifact(frame)
+                owns_new_handle = True
+            finally:
+                del frame
             owns_new_handle = self._publish_point_handle(
                 job_id, handle_key, generation, new_handle, throw_if_cancelled
             )

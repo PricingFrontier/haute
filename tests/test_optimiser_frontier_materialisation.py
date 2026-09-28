@@ -899,6 +899,47 @@ def test_a_cancel_racing_the_commit(clean_job_store, moment):
         assert Path(handle["path"]).exists()
 
 
+@pytest.mark.parametrize("moment", ["after the frame", "inside the library"])
+def test_a_cancelled_run_keeps_no_frame_alive(clean_job_store, moment):
+    """The queue stores a run's exception in its outcome, so a cancellation's
+    traceback must not hold the point's frame (or the library's result) past
+    admission release: the next point's apply may already be running."""
+    import gc
+    import weakref
+
+    import price_contour
+
+    from haute._execution_context import ExecutionCancellationToken, ExecutionCancelledError
+    from haute.routes.optimiser import _frontier_service
+
+    job_id = f"no_frame_alive_{moment.replace(' ', '_')}"
+    seed_job(clean_job_store, job_id, _stepping_job(2))
+    token = ExecutionCancellationToken()
+    alive: list[weakref.ref] = []
+
+    def apply_from_grid(_grid, *, lambdas, constraints, cancel):
+        del lambdas, constraints
+        frame = pl.DataFrame({"quote_id": ["q0"], "optimal_step": pl.Series([0], dtype=pl.Int32)})
+        alive.append(weakref.ref(frame))
+        token.cancel()
+        if moment == "inside the library":
+            assert cancel.cancelled
+            raise price_contour.Cancelled("cancelled through its CancelToken")
+        return SimpleNamespace(dataframe=frame)
+
+    gc.disable()
+    try:
+        with patch("price_contour.apply_from_grid", side_effect=apply_from_grid):
+            with pytest.raises(ExecutionCancelledError) as caught:
+                _frontier_service._materialise_point(job_id, 1, 0, token)
+        # Still holding the exception, as a flight's outcome does.
+        assert caught.value is not None
+        (ref,) = alive
+        assert ref() is None
+    finally:
+        gc.enable()
+
+
 def test_a_pre_cancelled_run_never_starts_the_apply(clean_job_store):
     from haute._execution_context import ExecutionCancellationToken, ExecutionCancelledError
     from haute.routes.optimiser import _frontier_service

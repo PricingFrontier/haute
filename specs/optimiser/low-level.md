@@ -212,9 +212,11 @@ Haute depends on these parts of it:
   `RatebookOptimiser.evaluate(..., cancel=)` take a `CancelToken`. Cancelling it from another
   thread makes the call, or a first access to the result's lazily built `dataframe` /
   `quote_results`, raise `Cancelled` (a `RuntimeError`) within milliseconds; nothing partial is
-  returned or cached. Input errors are still `ValueError` on a cancelled token, and an
-  uncancelled token changes no result. Haute passes a grid, never a DataFrame, so the whole
-  call is cancellable (see "Bounded choice queries and point materialisation").
+  returned or cached. Input errors are still `ValueError` on a cancelled token (except a zero
+  baseline under a pct bound, which only the cancellable baseline scan finds), and an
+  uncancelled token changes no result. Only native work polls the token: haute passes the
+  solve's `QuoteGrid` and prepared `RatebookFactorContexts`, never DataFrames, so the whole call
+  is cancellable (see "Bounded choice queries and point materialisation").
 
 ### Solver worker-context guard (`_optimiser_solver.py`)
 
@@ -1286,7 +1288,8 @@ whose message already names every problem and the remedy.
   cancels A, and waiting B is admitted only after A's admission is released; two consumers on
   different points both complete with no 409; returning to a cancelling A queues a fresh A in
   place of B; a cancel during persist removes the written artifact while a cancel inside
-  adoption keeps it; a pre-cancelled run never calls the library; a failure or a library
+  adoption keeps it; a cancelled run's exception keeps neither the frame nor the library's
+  result alive; a pre-cancelled run never calls the library; a failure or a library
   `Cancelled` without a haute cancel reaches the caller unchanged; a retained point answers
   while another point runs, without cancelling it.
   `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly, including
@@ -1897,7 +1900,10 @@ validates the job (completed), the point and captures `frontier_generation`:
   computing and persisting the frame, and under the parent lock at the start of publication.
   Adopting the handle is the one commit point: a cancel seen before it adopts nothing, removes
   the written artifact and ends the run with `ExecutionCancelledError`; admission is released
-  in every case. Cancellation is best-effort and does not take the parent lock, so a cancel that
+  in every case. A cancellation is raised outside the handler that caught the library's
+  `Cancelled` and after the frame is dropped, because the queue keeps a run's exception in its
+  outcome: its traceback must not hold the frame past admission release while the next point
+  runs. Cancellation is best-effort and does not take the parent lock, so a cancel that
   lands after the final check loses the race and the finished point is adopted and retained,
   which is harmless. The library's `Cancelled` becomes `ExecutionCancelledError` only when the
   run's own token is cancelled; any other failure, and a `Cancelled` without a haute cancel,
