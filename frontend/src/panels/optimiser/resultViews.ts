@@ -22,7 +22,7 @@ export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
 }
 
 /** Every view's intro. Clamp rate is price-contour's search-space diagnostic
- *  (see the optimiser-validation roadmap's price-contour contract). */
+ *  (see "The price-contour contract haute relies on" in specs/optimiser/low-level.md). */
 export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWorkspaceIntro> = {
   frontier: {
     title: "Efficient frontier",

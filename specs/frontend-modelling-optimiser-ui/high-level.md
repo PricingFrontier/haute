@@ -531,6 +531,41 @@ for online and ratebook results alike, labelled "λ (multiplier)" and explained 
 Lagrange multiplier on the constraint's term; it is never read as a tightness claim, because in
 this discrete solve a positive λ can sit beside positive slack.
 
+**What does not carry over from model validation.** The optimiser workspace reaches the model
+validation standard, but some modelling views have no optimiser meaning. These are decisions,
+not open work: any comparison with current or deployed pricing, including impact, dislocation
+and uplift (decided 25 September 2026); holdout or robustness validation (Q9); and export
+buttons inside the results panes (Q10).
+
+| Modelling feature | Why it does not carry over |
+|---|---|
+| Double lift, Lorenz, Gini | They measure how a predictor ranks observed outcomes. The optimiser's objective and constraints are model-expected values with no observed outcome. The nearest descriptive analogue is the Adjustments tab's distribution of chosen adjustments; impact analysis is out of scope. |
+| Residual histogram, actual-vs-predicted scatter | There are no actuals. |
+| AvE semantics (A/E ratio) | There are no actuals. The **layout** (feature browser, per-level chart, exposure strip) is reused by the Segments tab. |
+| PDP | There is no fitted model to vary. In ratebook mode the factor tables already are the per-level effect (the Rates tab). |
+| Feature importance / SHAP | There are no learned attributions. The beeswarm's quote-weighted \|log rate\| is the existing analogue. |
+| GLM inference (SE, Wald intervals, significance) | λ is a Lagrange multiplier from a dual solve, not a fitted coefficient, so Wald-style inference does not apply. This says nothing about how the solution varies with the book or the models (see Q9). |
+| EBM terms | Not applicable. |
+| Tuning details / "Use best as fixed parameters" | There is no hyper-parameter search. Picking a frontier point as the publish target is the analogous action, and it lives in the Export pane. |
+| Train vs eval loss with a best-iteration line | No eval set. The Convergence tab is the analogue. |
+| k-fold CV selection spread | Re-solving per fold has no standard interpretation. |
+| **Holdout / robustness validation** | A decision about scope, not a claim that the solve carries no uncertainty. The figures are expected values from scoring models on one fixed book, so model error, mix drift and sampling variation are all real risks. A random holdout alone may not measure them well, and scaling absolute bounds to a sample needs a separate definition. The provenance strip says the figures are model-expected, not observed. See Q9 below. |
+| Modelling's "Training diagnostics are in-sample" wording | The wrong disclaimer for an optimiser. The accurate one is: "Expected values from the scoring models on the solve quotes; not observed outcomes." |
+| **Current vs optimised, dislocation and impact analysis (decided 25 September 2026)** | The optimiser is an adjustment on top of a base price: it reapplies scenarios to that base and never sees the live, currently deployed pricing. A "Current → Optimised → Change" view would compare against something the optimiser does not know. Analysts set up impact analysis elsewhere. The tests pinning the absence of Baseline and Uplift stay. |
+| Export buttons in the results workspace | Modelling excludes them deliberately, and so does the optimiser workspace. Parity means a values-table disclosure under every chart. Any CSV belongs in the Export pane (`OptimiserPublishSection.tsx`), which is Q10. |
+
+**Open questions.** Product questions for this workspace, with no work scheduled:
+
+- **Q9, robustness checks:** out of scope as a scope choice, not a claim that
+  the solve carries no uncertainty. Is any robustness view wanted later: an
+  out-of-time or group split, or a stressed re-score?
+- **Q10, CSV downloads:** should frontier points and per-quote choices be
+  downloadable from the Export pane? The results panes keep the no-export
+  rule either way.
+- **Q11, inputs vs outputs:** the pre-solve `OptimiserDataPreview` becomes
+  unreachable once a result exists. Add an "Inputs" tab to the result
+  workspace?
+
 ## Model family capabilities
 
 - Algorithm names, tasks, losses, feature controls, refit policy, suffixes and tuning support
