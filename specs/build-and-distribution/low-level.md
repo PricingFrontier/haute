@@ -28,6 +28,9 @@
 | `frontend/tsconfig.app.json` | Sets strict browser-source TypeScript compilation and build-info placement. |
 | `frontend/tsconfig.node.json` | Sets strict TypeScript compilation for `frontend/vite.config.ts`. |
 | `mkdocs.yml` | Configures the Material/MkDocs public site, navigation, strict-build plugins, and exclusions for the internal engineering reference documents and dated audit records that remain under `docs/`. |
+| `.github/workflows/release.yml` | Manual-dispatch Release workflow (optional dry run): `check` refuses to run outside `main`, requires `main`'s push CI run for the commit to have succeeded, reads PyPI's release list and runs `scripts/check_release_version.py`, and refuses a version that is already tagged; `build` makes the frontend-inclusive wheel and sdist, checks their file names carry the version, and runs the package smoke check on clean installs of each; `publish` uploads them through PyPI trusted publishing in the `pypi` environment, skipping files PyPI already has so a re-run completes a partial upload; `verify` polls PyPI's JSON for the version until `scripts/verify_pypi_release.py` confirms exactly the built files are served; `github-release` then tags the commit and creates the GitHub release with generated notes and both files. The tag lookup accepts only `git ls-remote --exit-code` exit 2 as untagged. |
+| `scripts/verify_pypi_release.py` | Compares the SHA-256 of every built file with PyPI's JSON for the released version and reports each built file PyPI lacks, each file whose digest differs, and each file PyPI lists that the run did not build; exits non-zero on any difference or an empty build. |
+| `scripts/check_release_version.py` | Reads `[project] version` from `pyproject.toml` and refuses it unless it is `X.Y.Z`, absent from PyPI's releases, and newer than every `X.Y.Z` release there; on success writes `version=` to the given GitHub output file, and on failure prints a `::error::` annotation saying how to bump the version. |
 | `.github/workflows/docs.yml` | Builds public docs strictly and deploys the resulting `site/` artifact to GitHub Pages after `main` pushes affecting `docs/**` or `mkdocs.yml`, or on manual dispatch. |
 
 `src/haute/static/` is a generated build output, not a tracked source module.
@@ -188,6 +191,14 @@ package input validated by `hatch_build.py`, not hand-edited source.
   temporary-file replace raises `RuntimeError` naming the destination, leaves no
   temporary file and leaves an existing manifest unchanged), navigation-link
   exclusion, and coherent post-build readiness.
+- `tests/test_check_release_version.py` covers the release version gate: a newer
+  version passes and is written to the GitHub output file, a first release with
+  no PyPI history passes, a released, older, equal, or malformed version fails
+  with an actionable `::error::` message, and PyPI releases outside `X.Y.Z` do
+  not decide what counts as newer.
+- `tests/test_verify_pypi_release.py` covers the post-upload check: a complete
+  release matches, a partial upload names the missing file, and a file with
+  other content, a file the run did not build, or an empty build is refused.
 - Package smoke jobs exercise the real sdist/wheel and clean-install paths;
   focused hook tests keep failure branches deterministic without invoking npm.
 - `tests/test_docs_accuracy.py` is a repository documentation consistency gate;
