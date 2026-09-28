@@ -4616,3 +4616,12 @@ class IoCapabilityGroup(_StrictIoCapabilitiesModel):
 class IoCapabilitiesResponse(_StrictIoCapabilitiesModel):
     schema_version: Literal[1]
     groups: list[IoCapabilityGroup]
+
+
+# These models name a model defined further down this file, so pydantic leaves
+# them unbuilt until first use. That lazy build is not thread-safe: two request
+# threads completing it at once can leave the class without a validator. Build
+# them at import instead.
+OptimiserFrontierResponse.model_rebuild()
+OptimiserFrontierStatusResponse.model_rebuild()
+GitMilestoneFork.model_rebuild()
