@@ -169,10 +169,14 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   // focused one hides it) and centres its node; pointing at a card or row rings it.
   const setTraceFocusNodeId = useUIStore((s) => s.setTraceFocusNodeId)
   const requestTraceCentre = useUIStore((s) => s.requestTraceCentre)
-  // A request belongs to the story it was made in: a new trace's cards remount, and
+  const [focusRequest, setFocusRequest] = useState<{ nodeId: string; nonce: number } | null>(null)
+  // A new story drops the request before its cards render: they remount, and
   // replaying it would pull the story back from its landing card.
-  const [focusRequest, setFocusRequest] = useState<{ storyKey: string; nodeId: string; nonce: number } | null>(null)
-  const storyFocusRequest = focusRequest?.storyKey === storyKey ? focusRequest : null
+  const [focusStoryKey, setFocusStoryKey] = useState(storyKey)
+  if (focusStoryKey !== storyKey) {
+    setFocusStoryKey(storyKey)
+    setFocusRequest(null)
+  }
   // While the panel scrolls to a linked card, content moves under a still pointer
   // and reports hovers the user never made: they wait until the scroll settles.
   const hoverSettlesAtRef = useRef(0)
@@ -180,7 +184,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     focusStep: (nodeId) => {
       const shown = storyEntries.some((entry) => !("collapsed" in entry) && entry.node_id === nodeId)
       if (!shown && stepIndexById.has(nodeId)) setShowHidden(true)
-      setFocusRequest((previous) => ({ storyKey, nodeId, nonce: (previous?.nonce ?? 0) + 1 }))
+      setFocusRequest((previous) => ({ nodeId, nonce: (previous?.nonce ?? 0) + 1 }))
       hoverSettlesAtRef.current = performance.now() + LINK_SCROLL_SETTLE_MS
       setTraceFocusNodeId(nodeId)
       requestTraceCentre(nodeId)
@@ -189,7 +193,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
       if (performance.now() < hoverSettlesAtRef.current) return
       setTraceFocusNodeId(nodeId)
     },
-  }), [storyEntries, stepIndexById, storyKey, setTraceFocusNodeId, requestTraceCentre])
+  }), [storyEntries, stepIndexById, setTraceFocusNodeId, requestTraceCentre])
   useEffect(() => () => setTraceFocusNodeId(null), [setTraceFocusNodeId])
 
   const outputPresentation = traceValuePresentation(trace.output_value, trace.column ?? "result")
@@ -474,7 +478,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                 tracedColumn={trace.column}
                 isTargetStep={isTargetStep}
                 defaultExpanded={expandedStepIds.has(entry.node_id)}
-                focusNonce={storyFocusRequest?.nodeId === entry.node_id ? storyFocusRequest.nonce : undefined}
+                focusNonce={focusRequest?.nodeId === entry.node_id ? focusRequest.nonce : undefined}
                 isLanding={entry.node_id === landingNodeId}
                 waterfall={isTargetStep ? trace.waterfall : undefined}
               />

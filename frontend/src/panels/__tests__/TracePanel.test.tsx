@@ -934,7 +934,7 @@ describe("TracePanel", () => {
       expect(story.scrollTop).toBe(40)
     })
 
-    it("lands a new trace without replaying the link followed in the previous one", () => {
+    it("lands a new trace, or a return to an earlier one, without replaying a followed link", () => {
       const diff = (added: string[], passed: string[] = []) => ({
         columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
       })
@@ -974,6 +974,13 @@ describe("TracePanel", () => {
         const story = screen.getByTestId("trace-story")
         story.scrollTop = 300
         rerender(<TracePanel trace={linkedTrace(1)} onClose={vi.fn()} />)
+        expect(screen.getByTestId("trace-step-card-src")).not.toHaveAttribute("data-trace-focused")
+        expect(scrollIntoView).toHaveBeenCalledTimes(1)
+        expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+
+        // Returning to the first row does not revive its link either.
+        story.scrollTop = 300
+        rerender(<TracePanel trace={linkedTrace(0)} onClose={vi.fn()} />)
         expect(screen.getByTestId("trace-step-card-src")).not.toHaveAttribute("data-trace-focused")
         expect(scrollIntoView).toHaveBeenCalledTimes(1)
         expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)

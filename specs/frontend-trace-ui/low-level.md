@@ -105,9 +105,9 @@
    top of the view, or the last card shown when the focused story hides that node (a node
    that only carries the traced column). The clicked node is the last step, so the view
    opens at the end of the story; showing or hiding the full trace keeps the position.
-   A step link's request belongs to the story key it was made under, so a new trace that
-   arrives in the open panel neither flashes nor scrolls to the card a link in the previous
-   trace asked for.
+   A new story key drops the step-link request, so a trace that arrives in the open panel,
+   a return to an earlier one included, neither flashes nor scrolls to the card a link in
+   an earlier story asked for.
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
@@ -211,8 +211,8 @@ generated before its node's code, and the depth limit;
 online optimiser card and the "Computed here" list, follows a row's step link to its card
 and the canvas focus, shows the full trace for a link to a card the focused one hides,
 rings a hovered card's node, and opens scrolled to the clicked node's card, or to the last
-card shown when the focused trace hides it, without replaying a link followed in the
-previous trace. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins
+card shown when the focused trace hides it, without replaying a link followed in an
+earlier trace. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins
 one lineage fit per trace and centring at the current zoom;
 `frontend/src/hooks/__tests__/useTracing.test.ts` and
 `frontend/src/nodes/__tests__/PipelineNode.test.tsx` pin the `_traceFocused` projection and
