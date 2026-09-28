@@ -5,7 +5,8 @@
 Defects found outside a component's own roadmap work, kept here until they
 are fixed. These packages came from the 27 September 2026 audit of the
 Getting Started and Building Models documentation, which checked every page
-against the code: each one is a place where the code, not only the page, is
+against the code, and from the review of that documentation on 28 September
+(`BUG-10`, `BUG-11`): each one is a place where the code, not only the page, is
 wrong. Current rating behaviour is specified in
 [the rating specification](../rating/high-level.md).
 
@@ -22,6 +23,8 @@ wrong. Current rating behaviour is specified in
 | BUG-07 | Planned | P3 | The Load File picker offers only files a File Type can load. |
 | BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
 | BUG-09 | Planned | P3 | The Optimisation node's Chunk size field shows the chunk size the solve will use. |
+| BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
+| BUG-11 | Planned | P3 | Setting every Source Switch input back to `-` returns the node to passing through its first input. |
 
 ## Planned improvements
 
@@ -230,3 +233,50 @@ with one shows that value; a frontend test covers both.
 
 **Evidence:** `frontend/src/panels/OptimiserConfig.tsx` (the `chunk_size`
 field default); `src/haute/routes/_optimiser_input.py::_chunk_size_decision_for_parquet`.
+
+### BUG-10 — A CSV's detected schema uses the node's reader arguments
+**Why:** A CSV Data Input detects its columns through `GET /api/schema`, which
+receives only the path and reads the file with the CSV reader's defaults; the
+node's **ARGUMENTS** (a `separator`, a quote character, `has_header`) are never
+sent. For a file that needs one, the detected columns are wrong: a `;` file
+with the header `claim_id;amount` is detected as the single column
+`claim_id;amount`. **Use detected schema** then writes that column into
+`arguments.schema`, and the node's next read fails with Polars' `SchemaError`
+"provided schema does not match number of columns in file (1 != 2 in file)".
+The Data Input page tells analysts to leave the button alone for such a file.
+
+**Plan:** Detect a file input's schema from the node's own reader settings
+(format and arguments, the `schema` argument aside) through the same reader the
+snapshot uses, instead of from the path alone.
+
+**Acceptance:** A CSV Data Input with `separator: ";"` detects its columns split
+on `;`, and **Use detected schema** writes those columns; a backend test on the
+schema request covers the arguments, a frontend test that the editor sends
+them; the Data Input page drops its warning.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/DataInputEditor.tsx` (`useSchemaFetch`
+is given only the path); `src/haute/routes/files.py::get_schema`
+(`graph_utils.read_source` on the path); `docs/building-models/nodes/data-input.md`.
+
+### BUG-11 — Setting every Source Switch input to `-` restores passthrough
+**Why:** Choosing `-` for an input stores it in `input_scenario_map` with an
+empty string instead of removing it. `select_live_switch_input` treats a
+non-empty map as exhaustive and passes through the first input only when the
+map is empty, so once an input has been mapped, setting every input back to
+`-` leaves a map of empty strings and the node fails for every source with
+`LiveSwitchScenarioError`, where a new switch would pass its first input
+through. The Source Switch page documents this.
+
+**Plan:** Make `-` delete the input's key, so a switch whose inputs are all on
+`-` has an empty map and behaves as a new one.
+
+**Acceptance:** A frontend test maps an input, sets it back to `-`, and the
+committed config has no key for it; the Source Switch page drops its note.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/LiveSwitchEditor.tsx` (`setMapping`);
+`src/haute/_node_apply.py::select_live_switch_input`;
+`docs/building-models/nodes/source-switch.md`.

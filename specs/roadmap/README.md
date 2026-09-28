@@ -18,7 +18,7 @@ or maintenance issue; `P3` opportunistic work.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Bugs](bugs.md) | Defects found outside component work: rating misses in the editor, dead optimiser settings, Load File pickles and picker, editor pickers and labels that disagree with the engine | `BUG-01` |
+| [Bugs](bugs.md) | Defects found outside component work: rating misses in the editor, dead optimiser settings, Load File pickles and picker, editor pickers, labels and controls that disagree with the engine | `BUG-01` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
