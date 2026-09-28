@@ -1471,7 +1471,13 @@ present a structural or schema result as execution evidence.
   `selector_dtypes_unknown`, `selector_order_unknown`, `selector_nested`, or the operation's
   `dynamic_<method>` reason for a naming step deeper in the chain. Because the backward pass
   demands every column an expansion references, a projected input always contains the full
-  expansion. The static planner passes column names and the preamble aliases; for a
+  expansion. A `pl.col` that lists plain names (a list, a tuple, or several arguments) is not
+  a selector: the syntax fixes its columns, so a `select`/`with_columns` computation rooted at
+  it, under the same outermost-only naming rule, becomes one output per listed name at parse
+  time, each reading its own column plus the rest of the expression's references, with no
+  input schema needed. An alias or keyword over several names, a regex or wildcard entry, a
+  second multi-column input, or a list inside a horizontal helper keeps the operation's
+  `dynamic_<method>` reason. The static planner passes column names and the preamble aliases; for a
   single-input Polars node whose static lineage fails only with `selector_schema_unknown` or
   `selector_dtypes_unknown`, `_runtime_lineage_demands` resolves the demand from the input
   frame's runtime names and dtypes, projects the input, and records a runtime-inferred
