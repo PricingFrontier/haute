@@ -33,12 +33,14 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal, cast
 
 from haute._cpu_performance import configure_process_high_qos
+from haute._execution_context import ExecutionCancellationToken
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerError,
@@ -81,6 +83,10 @@ DeathKind = Literal["crashed", "stopped", "timed_out", "watchdog", "remote_memor
 _POLL_INTERVAL_SECONDS = 0.05
 _EVIDENCE_READ_TIMEOUT_SECONDS = 0.1
 _REQUEST_POLL_SECONDS = 1.0
+# How often a child command's cancel watcher reads the cancel cell.
+_CANCEL_POLL_SECONDS = 0.005
+# A command id is a uuid4 hex string.
+_COMMAND_ID_BYTES = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +161,80 @@ class LimitEvidenceCounter:
             lock.release()
 
 
+class CommandCancelCell:
+    """The id of the command its owner asked to stop, in shared memory (OPT-PC02).
+
+    The parent writes it; the child's watcher reads it with a bounded lock
+    acquire, so a parent that died holding the lock reads as no request.
+    """
+
+    def __init__(self, ctx: Any) -> None:
+        self._buffer: Any = ctx.RawArray("c", _COMMAND_ID_BYTES)
+        self._lock: Any = ctx.Lock()
+
+    def request(self, command_id: str) -> None:
+        """Ask the child to stop *command_id* (parent side)."""
+        encoded = command_id.encode("ascii")
+        if len(encoded) != _COMMAND_ID_BYTES:
+            raise ValueError(f"a command id is {_COMMAND_ID_BYTES} characters")
+        with self._lock:
+            self._buffer.raw = encoded
+
+    def requested(self, command_id: str) -> bool:
+        """Whether *command_id* was asked to stop (child side)."""
+        if not self._lock.acquire(timeout=_EVIDENCE_READ_TIMEOUT_SECONDS):
+            return False
+        try:
+            raw = bytes(self._buffer.raw)
+        finally:
+            self._lock.release()
+        return raw == command_id.encode("ascii")
+
+
+# The running command's cancel cell and id, bound by the child around each command.
+_child_command: tuple[CommandCancelCell, str] | None = None
+
+
+@contextmanager
+def _bind_command_cancel(cell: CommandCancelCell, command_id: str) -> Iterator[None]:
+    global _child_command
+    _child_command = (cell, command_id)
+    try:
+        yield
+    finally:
+        _child_command = None
+
+
+@contextmanager
+def on_command_cancel(callback: Callable[[], None]) -> Iterator[None]:
+    """Call *callback* once if the owner cancels the running command (child side).
+
+    A watcher thread polls the command's cancel cell while the block runs and
+    stops with it. Outside a dedicated worker's command this raises: there is
+    no owner to cancel it.
+    """
+    bound = _child_command
+    if bound is None:
+        raise RuntimeError("on_command_cancel runs only inside a dedicated worker's command")
+    cell, command_id = bound
+    done = threading.Event()
+
+    def watch() -> None:
+        while not done.is_set():
+            if cell.requested(command_id):
+                callback()
+                return
+            done.wait(_CANCEL_POLL_SECONDS)
+
+    watcher = threading.Thread(target=watch, name=f"command-cancel-{command_id}", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        done.set()
+        watcher.join()
+
+
 def record_job_notification(message_id: int, counter: LimitEvidenceCounter) -> None:
     """Count *message_id* when it is the Job Object's memory-limit notification (child side)."""
     if message_id == JOB_OBJECT_MSG_JOB_MEMORY_LIMIT:
@@ -204,6 +284,7 @@ def _dedicated_worker_entrypoint(
     preload_modules: tuple[str, ...],
     progress_cell: ProgressCell,
     evidence_counter: LimitEvidenceCounter,
+    cancel_cell: CommandCancelCell,
 ) -> None:
     global _child_evidence_counter
     _child_evidence_counter = evidence_counter
@@ -258,7 +339,10 @@ def _dedicated_worker_entrypoint(
         else:
             with native_memory_backend_scope(state.backend, lease):
                 try:
-                    with bind_job_progress(progress_cell, command_id):
+                    with (
+                        bind_job_progress(progress_cell, command_id),
+                        _bind_command_cancel(cancel_cell, command_id),
+                    ):
                         value = function(*args, **kwargs)
                     envelope = ("result", command_id, "ok", value, cap)
                 except BaseException as raised:
@@ -309,6 +393,7 @@ class DedicatedWorker:
         self._result_queue: Any = None
         self._progress: ProgressCell | None = None
         self._evidence: LimitEvidenceCounter | None = None
+        self._cancel_cell: CommandCancelCell | None = None
         self._death: WorkerDeath | None = None
         self._cleaned_up = False
         self._oom_events_before = 0
@@ -344,6 +429,7 @@ class DedicatedWorker:
         self._result_queue = create_worker_queue(self._ctx, 1)
         self._progress = ProgressCell(self._ctx)
         self._evidence = LimitEvidenceCounter(self._ctx)
+        self._cancel_cell = CommandCancelCell(self._ctx)
         process = self._ctx.Process(
             target=_dedicated_worker_entrypoint,
             name=self._process_name,
@@ -354,6 +440,7 @@ class DedicatedWorker:
                 self._preload_modules,
                 self._progress,
                 self._evidence,
+                self._cancel_cell,
             ),
         )
         try:
@@ -418,11 +505,15 @@ class DedicatedWorker:
         stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
         on_progress: Callable[[StepProgress], None] | None = None,
         max_result_bytes: int | None = None,
+        cancellation_token: ExecutionCancellationToken | None = None,
         **kwargs: Any,
     ) -> Any:
         """Run one command under a cap of *growth_bytes* above the child's current charge.
 
-        Returns the command's value. A remote exception is raised as
+        Returns the command's value. A cancelled *cancellation_token* asks the
+        command to stop through the cancel cell and never ends the worker; the
+        command decides what stopping means (see :func:`on_command_cancel`). A
+        remote exception is raised as
         ``InteractiveWorkerRemoteError`` and leaves the worker running, unless it
         is memory-shaped: then the worker's state is suspect and it is
         terminated, recording its death. A crash, stop, timeout or RSS-watchdog
@@ -478,6 +569,7 @@ class DedicatedWorker:
                 timeout_seconds=timeout_seconds,
                 stop_reason=stop_reason,
                 on_progress=on_progress,
+                cancellation_token=cancellation_token,
             )
         finally:
             self._run_lock.release()
@@ -493,11 +585,21 @@ class DedicatedWorker:
         timeout_seconds: float | None,
         stop_reason: Callable[[], WorkerTerminalReason | None] | None,
         on_progress: Callable[[StepProgress], None] | None,
+        cancellation_token: ExecutionCancellationToken | None,
     ) -> Any:
         process = cast(BaseProcess, self._process)
         progress = cast(ProgressCell, self._progress)
+        cancel_cell = cast(CommandCancelCell, self._cancel_cell)
         progress_sequence = 0
+        cancel_requested = False
         while True:
+            if (
+                not cancel_requested
+                and cancellation_token is not None
+                and cancellation_token.cancelled
+            ):
+                cancel_cell.request(command_id)
+                cancel_requested = True
             death = self._death
             if death is not None:
                 raise InteractiveWorkerStoppedError(

@@ -32,6 +32,7 @@ from haute._execution_admission import admit_growth_grant
 from haute._execution_context import ExecutionCancellationToken, ExecutionProfile
 from haute._interactive_workers import (
     InteractiveWorkerError,
+    InteractiveWorkerRemoteError,
     InteractiveWorkerStoppedError,
     InteractiveWorkerTimeoutError,
 )
@@ -60,6 +61,11 @@ ESTIMATE_WAIT_SECONDS: Final = 30.0
 
 _SLOT_POLL_SECONDS = 0.05
 _DEFAULT_RESULT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _is_library_cancel(exc: InteractiveWorkerRemoteError) -> bool:
+    """Whether a remote error is price-contour's ``Cancelled`` (OPT-PC02)."""
+    return exc.remote_type == "Cancelled" and exc.remote_module == "price_contour"
 
 
 def runtime_mode(job: Mapping[str, Any]) -> str:
@@ -245,9 +251,16 @@ class SolverSession:
                     stop_reason=stop_reason,
                     on_progress=forward_progress,
                     max_result_bytes=_session_result_max_bytes(),
+                    cancellation_token=cancellation_token,
                 )
             except (InteractiveWorkerStoppedError, InteractiveWorkerTimeoutError):
                 raise
+            except InteractiveWorkerRemoteError as exc:
+                if _is_library_cancel(exc) and cancellation_token is not None:
+                    if cancellation_token.cancelled:
+                        # The command stopped on its owner's cancel; the session lives on.
+                        cancellation_token.throw_if_cancelled(operation, job_id=self.job_id)
+                raise self._command_failure(exc, operation=operation, grant=grant) from exc
             except InteractiveWorkerError as exc:
                 raise self._command_failure(exc, operation=operation, grant=grant) from exc
             if self._closing:

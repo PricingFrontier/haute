@@ -16,10 +16,12 @@ from haute._dedicated_workers import (
     DedicatedWorker,
     DedicatedWorkerDeadError,
     child_limit_evidence_counter,
+    on_command_cancel,
     open_dedicated_workers,
     record_job_notification,
     shutdown_dedicated_workers,
 )
+from haute._execution_context import ExecutionCancellationToken
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerError,
@@ -83,6 +85,27 @@ def die_holding_evidence_lock() -> None:
 
 def value_error() -> None:
     raise ValueError("a command's own failure")
+
+
+def stop_when_cancelled() -> str:
+    """Wait for its owner's cancel (OPT-PC02), then fail as the command chooses to."""
+    cancelled = threading.Event()
+    with on_command_cancel(cancelled.set):
+        if not cancelled.wait(30):
+            return "never cancelled"
+    raise RuntimeError("stopped on its owner's cancel")
+
+
+def ignore_cancel_then_return(seconds: float) -> int:
+    time.sleep(seconds)
+    return 7
+
+
+def report_whether_cancelled(seconds: float) -> bool:
+    cancelled = threading.Event()
+    with on_command_cancel(cancelled.set):
+        time.sleep(seconds)
+    return cancelled.is_set()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -180,6 +203,60 @@ def test_a_child_dying_holding_the_evidence_lock_never_stalls(worker: DedicatedW
         _run(worker, die_holding_evidence_lock)
     assert time.monotonic() - started < 5
     assert worker.death is not None and worker.death.memory_evidence == "none"
+
+
+def _cancel_after(token: ExecutionCancellationToken, seconds: float) -> threading.Thread:
+    thread = threading.Thread(target=lambda: (time.sleep(seconds), token.cancel()))
+    thread.start()
+    return thread
+
+
+def test_a_cancelled_command_stops_and_the_worker_keeps_running(worker: DedicatedWorker) -> None:
+    token = ExecutionCancellationToken()
+    canceller = _cancel_after(token, 0.3)
+    started = time.monotonic()
+    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+        _run(worker, stop_when_cancelled, cancellation_token=token)
+    canceller.join()
+    assert time.monotonic() - started < 5
+    assert raised.value.remote_type == "RuntimeError"
+    assert "owner's cancel" in raised.value.remote_message
+    assert worker.alive and worker.death is None
+    assert _run(worker, remember, 9) == 9
+
+
+def test_a_token_cancelled_before_the_command_starts_stops_it_at_once(
+    worker: DedicatedWorker,
+) -> None:
+    token = ExecutionCancellationToken()
+    token.cancel()
+    started = time.monotonic()
+    with pytest.raises(InteractiveWorkerRemoteError):
+        _run(worker, stop_when_cancelled, cancellation_token=token)
+    assert time.monotonic() - started < 5
+    assert worker.alive
+
+
+def test_a_command_that_registers_nothing_runs_to_completion(worker: DedicatedWorker) -> None:
+    token = ExecutionCancellationToken()
+    canceller = _cancel_after(token, 0.1)
+    assert _run(worker, ignore_cancel_then_return, 0.5, cancellation_token=token) == 7
+    canceller.join()
+    assert worker.alive
+
+
+def test_a_cancel_never_reaches_the_next_command(worker: DedicatedWorker) -> None:
+    token = ExecutionCancellationToken()
+    token.cancel()
+    with pytest.raises(InteractiveWorkerRemoteError):
+        _run(worker, stop_when_cancelled, cancellation_token=token)
+    assert _run(worker, report_whether_cancelled, 0.3) is False
+
+
+def test_on_command_cancel_outside_a_worker_command_raises() -> None:
+    with pytest.raises(RuntimeError, match="dedicated worker"):
+        with on_command_cancel(lambda: None):
+            pass
 
 
 def test_terminate_stops_a_running_command_promptly(worker: DedicatedWorker) -> None:

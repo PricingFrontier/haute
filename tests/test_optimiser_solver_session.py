@@ -16,7 +16,11 @@ from typing import Any
 
 import pytest
 
-from haute._dedicated_workers import child_limit_evidence_counter, record_job_notification
+from haute._dedicated_workers import (
+    child_limit_evidence_counter,
+    on_command_cancel,
+    record_job_notification,
+)
 from haute._native_memory_limit import JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, native_memory_caps_supported
 from haute._process_memory import process_rss_bytes
 from haute._step_progress import StepProgress, current_job_progress_reporter
@@ -74,6 +78,53 @@ def block_then_return(request: Any) -> Any:
     # Write into the parent-owned directory as the real apply does.
     (Path(request.artifact_dir) / "result.parquet").write_bytes(b"not adopted")
     return {"kind": "never_published", "directory": request.artifact_dir}
+
+
+def apply_until_cancelled(request: Any) -> Any:
+    """``apply_point``'s cancellation shape: a partial artifact, then wait on price-contour's
+    token through the worker's cancel cell and raise the library's ``Cancelled``."""
+    import price_contour
+
+    (Path(request.artifact_dir) / "partial.parquet").write_bytes(b"partial")
+    (_signal_dir() / "artifact_dir").write_text(request.artifact_dir)
+    token = price_contour.CancelToken()
+    with on_command_cancel(token.cancel):
+        (_signal_dir() / "entered").write_text("1")
+        deadline = time.monotonic() + 30
+        while not token.cancelled:
+            if time.monotonic() > deadline:
+                return {"kind": "never_cancelled"}
+            time.sleep(0.01)
+    raise price_contour.Cancelled("cancelled through its CancelToken")
+
+
+def real_apply_after_cancel(request: Any) -> Any:
+    """Wait for the owner's cancel, then run the real ``apply_point``, which must honour it."""
+    import threading
+
+    from haute.routes._optimiser_session_worker import apply_point
+
+    (_signal_dir() / "artifact_dir").write_text(request.artifact_dir)
+    cancelled = threading.Event()
+    with on_command_cancel(cancelled.set):
+        (_signal_dir() / "entered").write_text("1")
+        if not cancelled.wait(30):
+            return {"kind": "never_cancelled"}
+    import price_contour
+
+    try:
+        handle = apply_point(request)
+    except price_contour.Cancelled:
+        (_signal_dir() / "outcome").write_text("cancelled")
+        raise
+    (_signal_dir() / "outcome").write_text("completed")
+    return handle
+
+
+def library_cancelled(_request: Any) -> Any:
+    import price_contour
+
+    raise price_contour.Cancelled("a library Cancelled with no cancel behind it")
 
 
 def notified_memory_error(_request: Any) -> Any:
@@ -399,6 +450,74 @@ class TestSessionLifecycle:
         assert "most likely" in second.json()["detail"]["message"]
         status = client.get(f"/api/optimiser/solve/status/{job_id}").json()
         assert status["status"] == "completed"
+
+    @pytest.mark.parametrize("command", ["stand-in", "real apply_point"])
+    def test_leaving_a_point_cancels_its_apply_in_the_session(
+        self,
+        client,
+        project: Path,
+        process_mode: None,
+        signals: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        command: str,
+    ) -> None:
+        """OPT-PC02 in process mode: the flight's cancel reaches the session's command
+        through the worker's cancel cell; the session and its runtime survive."""
+        from haute.routes.optimiser import _frontier_service
+        from tests.test_optimiser_frontier_materialisation import _leave
+
+        graph = _online_graph(
+            _scored_parquet(project),
+            frontier_ranges={"volume": {"min": 0.5, "max": 2.0}},
+        )
+        job_id = _start(client, graph)
+        assert _poll(client, job_id)["status"] == "completed"
+        session = _session_of(job_id)
+        real_apply_point = _optimiser_frontier.apply_point
+        monkeypatch.setattr(
+            _optimiser_frontier,
+            "apply_point",
+            apply_until_cancelled if command == "stand-in" else real_apply_after_cancel,
+        )
+
+        ticket = _frontier_service.request_point_apply(job_id, 1)
+        deadline = time.monotonic() + 60
+        while not (signals / "entered").exists():
+            assert time.monotonic() < deadline, "the session never entered its command"
+            time.sleep(0.05)
+        artifact_dir = Path((signals / "artifact_dir").read_text())
+        assert artifact_dir.exists()
+
+        started = time.monotonic()
+        _leave(ticket)
+        while artifact_dir.exists():
+            assert time.monotonic() - started < 10, "the cancelled apply was not cleaned up"
+            time.sleep(0.02)
+
+        assert "frontier_apply_result:1" not in _job(job_id)["artifact_handles"]
+        if command == "real apply_point":
+            # The real command stopped on price-contour's token, not merely unadopted.
+            assert (signals / "outcome").read_text() == "cancelled"
+        assert session.alive and _session_of(job_id) is session
+        assert RUNTIME_UNAVAILABLE_KEY not in _job(job_id)
+        monkeypatch.setattr(_optimiser_frontier, "apply_point", real_apply_point)
+        page = _apply_point(client, job_id, 1)
+        assert page.status_code == 200, page.text
+        assert session.alive
+
+    def test_a_library_cancel_without_a_haute_cancel_is_a_failure(
+        self, client, project: Path, process_mode: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        graph = _online_graph(
+            _scored_parquet(project),
+            frontier_ranges={"volume": {"min": 0.5, "max": 2.0}},
+        )
+        job_id = _start(client, graph)
+        assert _poll(client, job_id)["status"] == "completed"
+        monkeypatch.setattr(_optimiser_frontier, "apply_point", library_cancelled)
+        response = _apply_point(client, job_id, 1)
+        assert response.status_code == 500, response.text
+        assert _session_of(job_id).alive
 
     def test_a_point_applies_and_a_recompute_runs_in_the_session(
         self, client, project: Path, process_mode: None, monkeypatch: pytest.MonkeyPatch

@@ -1264,7 +1264,7 @@ class OptimiserFrontierService:
                 compute_frame = self._point_frame_computation(job, point_index)
         if runtime_mode(job) == SESSION_RUNTIME:
             self._materialise_point_in_session(
-                job_id, point_index, generation, handle_key, session, request
+                job_id, point_index, generation, handle_key, session, request, cancellation_token
             )
             return
 
@@ -1364,17 +1364,25 @@ class OptimiserFrontierService:
         handle_key: str,
         session: SolverSession,
         request: SessionPointApplyRequest,
+        cancellation_token: ExecutionCancellationToken,
     ) -> None:
         """Run one point's apply in the solve's session and adopt its artifact under the slot.
 
         The artifact is written into a directory created here and removed unless
-        the job adopted it, so a discarded or killed apply leaves nothing behind.
+        the job adopted it, so a discarded, cancelled or killed apply leaves
+        nothing behind. The flight's *cancellation_token* reaches the running
+        command through the session's worker (OPT-PC02), and adoption checks it
+        under the parent lock, the same commit point as the in-process run.
         """
         artifact_dir = _new_apply_artifact_directory()
         request = dataclasses.replace(request, artifact_dir=str(artifact_dir))
         adopted = False
 
+        def throw_if_cancelled() -> None:
+            cancellation_token.throw_if_cancelled(_POINT_APPLY_OPERATION, job_id=job_id)
+
         def on_slot() -> None:
+            throw_if_cancelled()
             with self.parent_lock(job_id):
                 latest = self._store.require_completed_job(job_id)
                 if _frontier_generation_or_raise(latest) != generation:
@@ -1382,7 +1390,9 @@ class OptimiserFrontierService:
 
         def publish(handle: dict[str, Any]) -> None:
             nonlocal adopted
-            adopted = not self._publish_point_handle(job_id, handle_key, generation, handle)
+            adopted = not self._publish_point_handle(
+                job_id, handle_key, generation, handle, throw_if_cancelled
+            )
 
         try:
             session.run_command(
@@ -1391,6 +1401,7 @@ class OptimiserFrontierService:
                 operation=_POINT_APPLY_OPERATION,
                 stage=f"applying frontier point {point_index}",
                 publish=publish,
+                cancellation_token=cancellation_token,
                 on_slot=on_slot,
             )
         except SessionCommandError as exc:

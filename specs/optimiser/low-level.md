@@ -1340,7 +1340,15 @@ whose message already names every problem and the remedy.
   `Cancelled` without a haute cancel reaches the caller unchanged; a retained point answers
   while another point runs, without cancelling it.
   `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly, including
-  the `cancel_abandoned` mode.
+  the `cancel_abandoned` mode. In process mode, `tests/test_optimiser_solver_session.py` checks
+  that leaving a point cancels its apply inside the session: with a stand-in command and with the
+  real `apply_point`, which must stop on price-contour's token. The artifact directory is
+  removed, nothing is adopted, and the session keeps its runtime and applies the next point. A
+  library `Cancelled` without a haute cancel stays a 500. `tests/test_dedicated_workers.py`
+  covers the worker's cancel cell: a cancelled command stops while the worker lives on, a token
+  cancelled before the command starts stops it at once, a command that registers nothing runs
+  to completion, a cancel never reaches the next command, and `on_command_cancel` raises outside
+  a worker.
 - `tests/test_optimiser_adjustments.py` covers OPT-V10's statistical contract: bar counts
   against hand counts on a Float32 linspace grid and on `[0.8, 1.0, 1.3]`, zero-count steps kept
   as empty bars; an available but unchosen 1.0 giving a 0 unadjusted share while
@@ -1956,7 +1964,10 @@ validates the job (completed), the point and captures `frontier_generation`:
   persists and publishes the handle under the parent's lock (generation fence, heavy
   state present, at most eight point handles). The run never changes the selection; `/apply`
   selects after it has waited.
-- **Cancellation (OPT-PC02).** The run creates a price-contour `CancelToken` and registers its
+- **Cancellation (OPT-PC02).** In process mode the point runs in the job's solver session, and
+  the flight's token reaches the session's `apply_point` through the dedicated worker's cancel
+  cell (see "Solver sessions (OPT-W01)"), with the same commit point and cleanup. In the
+  `thread` mode, and for a job without a session, the run creates a price-contour `CancelToken` and registers its
   `cancel` on the run's `ExecutionCancellationToken` with `on_cancel` (which fires at once when
   the run was already cancelled), then passes it as `cancel=` to `apply_from_grid` or
   `evaluate`; the library polls it through every phase, including the lazily built frame. The
@@ -2467,10 +2478,14 @@ and drops the solve result.
 
 **`apply_point(SessionPointApplyRequest)`**:
 
-1. Runs `apply_from_grid` (online), or `solver.evaluate` plus the exact-totals check against
-   the point's frontier row (ratebook; `expected_totals` is passed in).
-2. Writes the point's apply artifact.
-3. Returns the artifact's handle.
+1. Creates a price-contour `CancelToken` and registers its `cancel` with the dedicated
+   worker's `on_command_cancel` for the whole command (OPT-PC02).
+2. Runs `apply_from_grid(..., cancel=)` (online), or `solver.evaluate(..., cancel=)` plus the
+   exact-totals check against the point's frontier row (ratebook; `expected_totals` is passed
+   in), and reads the per-quote frame, which the token also stops.
+3. Raises the library's `Cancelled` when the token was cancelled; otherwise writes the point's
+   apply artifact.
+4. Returns the artifact's handle.
 
 **Result size.** A returned envelope larger than `HAUTE_OPTIMISER_SESSION_RESULT_MAX_BYTES`
 (default 64 MiB) raises the dedicated worker's `WorkerResultTooLargeError` in the child. The command fails as an
@@ -2553,6 +2568,16 @@ points:
 - before publishing the handle.
 
 A change answers the existing 409 `_FRONTIER_CHANGED_DETAIL`.
+
+The flight's cancellation token (OPT-PC02; see "Bounded choice queries and point
+materialisation") goes to `run_command` as its `cancellation_token`, so it bounds the
+admission wait, and to the dedicated worker, whose cancel cell stops the running
+`apply_point` without ending the session. The flight also checks it after acquiring the slot
+and, under the parent lock, before adopting the handle. A cancelled point apply answers
+`ExecutionCancelledError`; nothing is published, the parent-owned artifact directory is
+removed, admission is released and the session keeps its runtime. A remote `Cancelled` is a
+cancellation only when the flight's token is cancelled, and it is never logged as a solver
+failure. Any other remote error keeps the existing failure mapping.
 
 ### Session death
 
