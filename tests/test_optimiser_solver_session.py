@@ -80,16 +80,22 @@ def block_then_return(request: Any) -> Any:
     return {"kind": "never_published", "directory": request.artifact_dir}
 
 
+def _announce_entry() -> None:
+    reporter = current_job_progress_reporter()
+    assert reporter is not None
+    reporter(StepProgress(done=1, total=1000, label="entered"))
+
+
 def apply_until_cancelled(request: Any) -> Any:
     """``apply_point``'s cancellation shape: a partial artifact, then wait on price-contour's
     token through the worker's cancel cell and raise the library's ``Cancelled``."""
     import price_contour
 
+    # Into the parent-owned directory, as the real apply writes.
     (Path(request.artifact_dir) / "partial.parquet").write_bytes(b"partial")
-    (_signal_dir() / "artifact_dir").write_text(request.artifact_dir)
     token = price_contour.CancelToken()
     with on_command_cancel(token.cancel):
-        (_signal_dir() / "entered").write_text("1")
+        _announce_entry()
         deadline = time.monotonic() + 30
         while not token.cancelled:
             if time.monotonic() > deadline:
@@ -104,21 +110,12 @@ def real_apply_after_cancel(request: Any) -> Any:
 
     from haute.routes._optimiser_session_worker import apply_point
 
-    (_signal_dir() / "artifact_dir").write_text(request.artifact_dir)
     cancelled = threading.Event()
     with on_command_cancel(cancelled.set):
-        (_signal_dir() / "entered").write_text("1")
+        _announce_entry()
         if not cancelled.wait(30):
             return {"kind": "never_cancelled"}
-    import price_contour
-
-    try:
-        handle = apply_point(request)
-    except price_contour.Cancelled:
-        (_signal_dir() / "outcome").write_text("cancelled")
-        raise
-    (_signal_dir() / "outcome").write_text("completed")
-    return handle
+    return apply_point(request)
 
 
 def library_cancelled(_request: Any) -> Any:
@@ -457,7 +454,6 @@ class TestSessionLifecycle:
         client,
         project: Path,
         process_mode: None,
-        signals: Path,
         monkeypatch: pytest.MonkeyPatch,
         command: str,
     ) -> None:
@@ -473,6 +469,26 @@ class TestSessionLifecycle:
         job_id = _start(client, graph)
         assert _poll(client, job_id)["status"] == "completed"
         session = _session_of(job_id)
+
+        artifact_dirs: list[Path] = []
+        real_new_directory = _optimiser_frontier._new_apply_artifact_directory
+
+        def recording_new_directory() -> Path:
+            directory = real_new_directory()
+            artifact_dirs.append(directory)
+            return directory
+
+        library_cancels: list[bool] = []
+        real_is_library_cancel = _optimiser_session._is_library_cancel
+
+        def recording_is_library_cancel(exc: Any) -> bool:
+            library_cancels.append(real_is_library_cancel(exc))
+            return library_cancels[-1]
+
+        monkeypatch.setattr(
+            _optimiser_frontier, "_new_apply_artifact_directory", recording_new_directory
+        )
+        monkeypatch.setattr(_optimiser_session, "_is_library_cancel", recording_is_library_cancel)
         real_apply_point = _optimiser_frontier.apply_point
         monkeypatch.setattr(
             _optimiser_frontier,
@@ -482,10 +498,10 @@ class TestSessionLifecycle:
 
         ticket = _frontier_service.request_point_apply(job_id, 1)
         deadline = time.monotonic() + 60
-        while not (signals / "entered").exists():
+        while session.stage != "entered":
             assert time.monotonic() < deadline, "the session never entered its command"
             time.sleep(0.05)
-        artifact_dir = Path((signals / "artifact_dir").read_text())
+        (artifact_dir,) = artifact_dirs
         assert artifact_dir.exists()
 
         started = time.monotonic()
@@ -495,9 +511,9 @@ class TestSessionLifecycle:
             time.sleep(0.02)
 
         assert "frontier_apply_result:1" not in _job(job_id)["artifact_handles"]
-        if command == "real apply_point":
-            # The real command stopped on price-contour's token, not merely unadopted.
-            assert (signals / "outcome").read_text() == "cancelled"
+        # The command stopped on price-contour's Cancelled (the real one through its
+        # own token), not merely went unadopted.
+        assert library_cancels == [True]
         assert session.alive and _session_of(job_id) is session
         assert RUNTIME_UNAVAILABLE_KEY not in _job(job_id)
         monkeypatch.setattr(_optimiser_frontier, "apply_point", real_apply_point)
