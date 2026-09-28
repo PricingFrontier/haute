@@ -2417,11 +2417,10 @@ class TestScoreGraphOptimiserApplyRemap:
                 "scenario_value": "scenario_value",
             }
 
-        original = tmp_path / "original" / "opt.json"
-        bundled = tmp_path / "bundle" / "opt.json"
-        for path, objective in ((original, "income"), (bundled, "margin")):
-            path.parent.mkdir()
-            path.write_text(json.dumps(artifact(objective)), encoding="utf-8")
+        original = tmp_path / "opt.json"
+        original.write_text(json.dumps(artifact("income")), encoding="utf-8")
+        bundled = tmp_path / "bundled_opt.json"
+        bundled.write_text(json.dumps(artifact("margin")), encoding="utf-8")
         graph = _g(
             {
                 "nodes": [
