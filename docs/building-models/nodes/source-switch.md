@@ -23,7 +23,7 @@ A banner reads "Routes inputs based on the active source". Below it:
 | Field | What it does |
 |---|---|
 | **ACTIVE SOURCE** | Shows the active source, read-only ("Change the active source in the toolbar dropdown"). |
-| **INPUT → SOURCE MAPPING (N)** | One row per connected input, with a list of the pipeline's sources. Choose the source each input serves; `-` leaves the input unmapped. The row mapped to the active source is highlighted and marked **active**. |
+| **INPUT → SOURCE MAPPING (N)** | One row per connected input, with a list of the pipeline's sources. Choose the source each input serves; `-` means the input serves no source. The row mapped to the active source is highlighted and marked **active**. |
 
 ## The COLUMNS tab
 
@@ -38,7 +38,7 @@ The **COLUMNS** tab chooses which columns the node passes on (see [Working with 
 When the active source is `live`, the node outputs data from the `quotes` input. When you switch the toolbar to `batch`, it outputs data from the `batch_data` input.
 
 !!! warning "Unmatched source"
-    If the active source doesn't match any input mapping, the Source Switch node itself fails with an error naming the missing source, such as `Live switch 'switch' has no input for scenario 'batch'`. If no input is mapped at all, the node passes through its first input.
+    If the active source doesn't match any input mapping, the Source Switch node itself fails with an error naming the missing source, such as `Live switch 'switch' has no input for scenario 'batch'`. A new Source Switch, before any input is mapped, passes through its first input. Once an input has been mapped, setting every input back to `-` does not restore that: the node fails for every source.
 
 !!! note "At deployment"
     The deployed pipeline runs with the `live` source active, so one input must be mapped to the source named exactly `live`.
@@ -48,7 +48,7 @@ When the active source is `live`, the node outputs data from the `quotes` input.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **INPUT → SOURCE MAPPING** | `input_scenario_map`: each input's name and the source it serves, e.g. `{"quotes": "live", "batch_data": "batch"}` |
+    | **INPUT → SOURCE MAPPING** | `input_scenario_map`: each input's name and the source it serves, e.g. `{"quotes": "live", "batch_data": "batch"}`; an input set to `-` is stored with `""` |
     | **COLUMNS** tab | `selected_columns` |
 
     With no editor control: `inputs`, the names of the connected inputs, which Haute records from the canvas.

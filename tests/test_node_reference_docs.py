@@ -111,7 +111,7 @@ def _pipeline_file_keys(text: str) -> list[str]:
     keys: list[str] = []
     for table in _SETTINGS_TABLE.findall(body):
         for row in table.splitlines():
-            stored = row.strip().strip("|").rsplit("|", 1)[-1].strip()
+            stored = re.split(r"(?<!\\)\|", row.strip().strip("|"))[-1].strip()
             match = re.match(r"`([^`]+)`", stored)
             if match:
                 keys.append(re.split(r"[\[.]", match.group(1), maxsplit=1)[0])
@@ -160,7 +160,7 @@ def test_the_pipeline_file_table_names_only_accepted_config_keys(
     assert sorted(set(documented) - VALID_KEYS[node_type]) == []
 
 
-def test_a_nested_key_is_checked_by_its_top_level_key_and_prose_cells_are_skipped() -> None:
+def test_the_table_parser_reads_nested_keys_and_escaped_pipes_and_skips_prose() -> None:
     page = (
         "# Example\n\n"
         '??? note "In the pipeline file"\n'
@@ -169,11 +169,12 @@ def test_a_nested_key_is_checked_by_its_top_level_key_and_prose_cells_are_skippe
         "    |---|---|\n"
         "    | **emit** | `tables[].emit` (`true` or `false`) |\n"
         "    | **SUFFIX** | `suffix` |\n"
-        "    | **INPUT** | the `target_port` of each connection |\n\n"
+        "    | **INPUT** | the `target_port` of each connection |\n"
+        "    | **SEPARATOR** | `separator`: `left\\|right` |\n\n"
         "**See also:**\n"
     )
 
-    assert _pipeline_file_keys(page) == ["tables", "suffix"]
+    assert _pipeline_file_keys(page) == ["tables", "suffix", "separator"]
     assert _pipeline_file_keys("| Config | Description |\n|---|---|\n| `path` | x |\n") == []
 
 

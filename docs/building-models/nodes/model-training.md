@@ -598,8 +598,9 @@ A Poisson claim-frequency GLM with an exposure offset:
    decreasing monotonicity, and `area` as **Categorical** with **Reference level** `urban`
    (under **Advanced**).
 4. Under **INTERACTIONS**, click **Add interaction**, pick `driver_age` and `area`, leave
-   **Fit type** on **Product**, set `driver_age`'s fit on the card to **Linear**, and keep
-   **Include main effects** ticked.
+   **Fit type** on **Product**, set `driver_age`'s fit on the card to **Linear** and `area`'s
+   to **Categorical**, and keep **Include main effects** ticked. `area` needs its own fit
+   because its main effect's reference level does not apply inside an interaction.
 5. In the **PARAMETERS** pane, choose **Ridge** with a **Cross-validated** penalty,
    **Folds** 5 and **Selection rule** **Minimum deviance**.
 6. In the **TRAIN** pane, check the run summary and click **Train Model**. The results panel
@@ -735,7 +736,7 @@ A Poisson claim-frequency GLM with an exposure offset:
         "area":         { "type": "categorical", "reference": "urban" }
       },
       "interactions": [
-        { "factors": ["driver_age", "area"], "specs": {"driver_age": {"type": "linear"}}, "include_main": true }
+        { "factors": ["driver_age", "area"], "specs": {"driver_age": {"type": "linear"}, "area": {"type": "categorical"}}, "include_main": true }
       ],
       "intercept": true,
       "regularization": "ridge",

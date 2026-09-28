@@ -81,8 +81,8 @@ haute serve
 
 Pipelines run on a highly optimised execution engine built on Polars, so they're very fast and light on memory, even on large datasets.
 
-- **Quick previews.** Previews reuse cached results from earlier steps, and the cache lives on disk, so it survives a restart. Non-Parquet sources are read once into a Parquet snapshot and reused until they change.
-- **One optimised plan for full runs.** Batch runs, scoring and training compile the whole pipeline into a single lazy Polars plan, so unused columns are never read and filters apply as early as possible. Writes stream to disk in chunks wherever the format allows, and one chunk-size setting trades memory for speed.
+- **Quick previews.** Previews reuse cached results from earlier steps, and the cache lives on disk, so it survives a restart. Non-Parquet sources are read once into a Parquet snapshot and reused: a file's snapshot refreshes when the file changes, and a database, lakehouse or Databricks table's when you import it again.
+- **Lazy plans for full runs.** Batch runs, scoring and training run the pipeline as lazy Polars plans, so Haute reads only the columns later steps need where it can prove them and applies filters as early as possible. Joins, results that several steps share, and steps that need every row are computed once, under a memory check, and the plan continues from them. Writes stream to disk in chunks wherever the format allows, and one chunk-size setting trades memory for speed.
 - **Memory under control.** Heavy work runs in worker processes with hard memory caps that respect container limits. A run that won't fit is refused before it starts instead of running the machine out of memory, and training works out a safe row limit up front.
 - **Visibility.** Per-node timing and memory breakdowns show where a run spends its time.
 

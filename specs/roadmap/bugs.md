@@ -18,7 +18,7 @@ wrong. Current rating behaviour is specified in
 | BUG-03 | Planned | P3 | The ratebook optimiser settings nothing reads are gone. |
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-05 | Planned | P3 | The Data Input editor describes the Databricks query field as the SELECT clause it is. |
-| BUG-06 | Planned | P2 | A Delta or Iceberg table folder can be chosen as a Lakehouse Data Input in the editor. |
+| BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-07 | Planned | P3 | The Load File picker offers only files a File Type can load. |
 | BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
 | BUG-09 | Planned | P3 | The Optimisation node's Chunk size field shows the chunk size the solve will use. |
@@ -154,16 +154,19 @@ editor's test pins the wording.
 Databricks query hint); `src/haute/_databricks_io.py` (the SELECT validation);
 `docs/building-models/nodes/data-input.md`.
 
-### BUG-06 — A lakehouse table folder can be chosen as a Data Input
-**Why:** A Delta or Iceberg table is a folder. The Data Input's path browser
+### BUG-06 — A Delta table folder can be chosen as a Data Input
+**Why:** A Delta table is read from its folder. The Data Input's path browser
 opens a folder when it is clicked and only ever selects a file, and an input
-has no manual path entry (only outputs get one), so a Lakehouse input's
+has no manual path entry (only outputs get one), so a Delta Lakehouse input's
 **TABLE LOCATOR** cannot be set in the editor; only a hand-edited pipeline file
-reaches it.
+reaches it. Iceberg is not affected: `scan_iceberg` reads a table from its
+metadata file (`metadata/<version>.metadata.json`), and for a format without
+extensions the browser lists files with any installed file format's extension,
+`.json` among them, so it can select that file.
 
-**Plan:** Let the browser select a folder for a lakehouse format (a Delta
-folder is recognisable by its `_delta_log`), or give lakehouse inputs the same
-manual path entry outputs have.
+**Plan:** Let the browser select a folder for the Delta format (a Delta folder
+is recognisable by its `_delta_log`), or give lakehouse inputs the same manual
+path entry outputs have.
 
 **Acceptance:** In the editor, a Lakehouse Data Input can be pointed at a Delta
 table folder under the project and previews it; a frontend test covers the
@@ -173,7 +176,8 @@ selection.
 
 **Evidence:** `frontend/src/panels/editors/_IoFormatEditor.tsx`
 (`manualEntry={direction === "output"}`); `frontend/src/panels/editors/_shared.tsx`
-(the browser's folder click); `src/haute/routes/files.py` (directory items).
+(the browser's folder click); `src/haute/routes/files.py` (directory items);
+`src/haute/_polars_io_registry.py` (the `delta` and `iceberg` formats).
 
 ### BUG-07 — The Load File picker offers only loadable files
 **Why:** The Load File path browser lists `.onnx` and `.pmml` files, but no

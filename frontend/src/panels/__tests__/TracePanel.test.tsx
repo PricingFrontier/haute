@@ -933,6 +933,54 @@ describe("TracePanel", () => {
       expect(screen.getByTestId("trace-step-card-out")).toBeInTheDocument()
       expect(story.scrollTop).toBe(40)
     })
+
+    it("lands a new trace without replaying the link followed in the previous one", () => {
+      const diff = (added: string[], passed: string[] = []) => ({
+        columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
+      })
+      const linkedTrace = (rowIndex: number) => makeTrace({
+        row_index: rowIndex,
+        target_node_id: "calc",
+        column: "y",
+        output_value: 2,
+        steps: [
+          makeStep({ node_id: "src", node_name: "src", node_type: "dataInput", schema_diff: diff(["x"]), output_values: { x: 1 }, contributed_columns: ["x"] }),
+          makeStep({
+            node_id: "calc", node_name: "calc", schema_diff: diff(["y"], ["x"]), output_values: { x: 1, y: 2 },
+            contributed_columns: ["y"],
+            derivations: [{
+              column: "y", expression_text: "x * 2", substituted_text: "1 * 2", result_value: 2,
+              not_computable_reason: null, result_source: null, error: null, error_type: null,
+              reads: [{ column: "x", sources: [{ node_id: "src", column: "x", before_code: false }] }],
+            }],
+            node_detail: {
+              detail_type: "optimiser_apply", mode: "online", output_column: "y", output_value: 2,
+              objective_column: "x", candidates: [],
+            },
+          }),
+        ],
+      })
+      // jsdom does not implement scrollIntoView.
+      const scrollIntoView = vi.fn()
+      Element.prototype.scrollIntoView = scrollIntoView
+      try {
+        layOut("calc")
+        const { rerender } = render(<TracePanel trace={linkedTrace(0)} onClose={vi.fn()} />)
+        fireEvent.click(within(screen.getByTestId("trace-step-card-calc")).getByRole("button", { name: "Go to src, step 1" }))
+        expect(screen.getByTestId("trace-step-card-src")).toHaveAttribute("data-trace-focused", "true")
+        expect(scrollIntoView).toHaveBeenCalledTimes(1)
+
+        // A trace fast enough to show no loading state arrives in the same panel.
+        const story = screen.getByTestId("trace-story")
+        story.scrollTop = 300
+        rerender(<TracePanel trace={linkedTrace(1)} onClose={vi.fn()} />)
+        expect(screen.getByTestId("trace-step-card-src")).not.toHaveAttribute("data-trace-focused")
+        expect(scrollIntoView).toHaveBeenCalledTimes(1)
+        expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+      } finally {
+        delete (Element.prototype as Partial<Element>).scrollIntoView
+      }
+    })
   })
 
   it("names the step that loaded a carried key, and never claims a row-changing step left rows unchanged", () => {

@@ -22,7 +22,7 @@ The fields below **PROVIDER** depend on the provider. A field marked **\*** is r
 | **FORMAT** | The file format: **CSV**, **JSON**, **NDJSON** (`.jsonl`/`.ndjson`), **Parquet**, **Arrow IPC / Feather**, **Arrow IPC stream**, **Avro**, **Excel**, **OpenDocument spreadsheet** or **Text lines** (one text line per row). A format Polars marks as unstable says **(unstable)**, and a format whose reader needs a package that is not installed says "needs one of:" and the packages. Changing the format keeps the path and clears **ARGUMENTS**. |
 | **PATH \*** | The file, chosen in the file browser, which lists the folders of your project and the files with the format's extensions. Once a file is chosen, **change** opens the browser again. The path is stored relative to your project folder. |
 
-For a **CSV** file, the tab also shows the columns and types Haute detects in the file. **Use detected schema** copies them into **ARGUMENTS** as the reader's `schema`, which fixes each column's type; until you do, the tab shows "A schema mapping is required for this bounded input." Without a declared schema, Haute infers each column's type from the whole file when it copies the file into its snapshot (see [Snapshots](#in-the-data-preview)). If the file cannot be read, the tab says "Could not detect schema:" with the reason, and **Retry schema** tries again.
+For a **CSV** file, the tab also shows the columns and types Haute detects in the file. **Use detected schema** copies them into **ARGUMENTS** as the reader's `schema`, which fixes each column's type; until you do, the tab shows "A schema mapping is required for this bounded input." Without a declared schema, Haute infers each column's type from the whole file when it copies the file into its snapshot (see [Snapshots](#in-the-data-preview)). Detection reads the file with the CSV reader's defaults and ignores **ARGUMENTS**, so for a file that needs an argument to read, such as a `;` separator, the detected columns are wrong: leave the types to inference, or add the `schema` argument by hand. If the file cannot be read, the tab says "Could not detect schema:" with the reason, and **Retry schema** tries again.
 
 ### Database
 
@@ -38,7 +38,7 @@ For a **CSV** file, the tab also shows the columns and types Haute detects in th
 | Field | What it does |
 |---|---|
 | **FORMAT** | **Delta Lake** or **Iceberg (unstable)**. |
-| **TABLE LOCATOR \*** | The table's location in your project. |
+| **TABLE LOCATOR \*** | The table's location in your project: a Delta table's folder, or an Iceberg table's metadata file (`metadata/<version>.metadata.json`). The file browser selects only files, so a Delta folder is set as `path` in the node's JSON sidecar (see "In the pipeline file" below). |
 
 ### Databricks
 
@@ -78,7 +78,7 @@ The **COLUMNS** tab chooses which of the loaded columns the node passes on (see 
 
 A parquet file is read directly. Every other source - another file format, a database, a lakehouse or Databricks table, inline records - is first copied into a cached parquet snapshot, and the pipeline reads the snapshot. Haute refreshes a snapshot when it detects that the source has changed.
 
-For a snapshot source, **Import** sits beside **Refresh** in the node's data preview. It re-reads the source and caches it as a new snapshot, and its tooltip shows when the source was last imported. Haute cannot detect changes to a database or Databricks table, so for those sources **Import** is the only way to pick up new data. To delete cached snapshots, use **Cached data** in Pipeline settings.
+For a snapshot source, **Import** sits beside **Refresh** in the node's data preview. It re-reads the source and caches it as a new snapshot, and its tooltip shows when the source was last imported. Haute cannot detect changes to a database, lakehouse or Databricks table, so for those sources **Import** is the only way to pick up new data. To delete cached snapshots, use **Cached data** in Pipeline settings.
 
 ## Example
 
@@ -93,7 +93,8 @@ A CSV file that uses `;` as its separator:
 
 1. Choose **CSV** as the **FORMAT**, and `data/claims.csv` as the **PATH**.
 2. Under **ARGUMENTS**, click **Add argument**, type `separator` as the name and `";"` as the value.
-3. Click **Use detected schema** to fix the column types.
+
+Haute infers the column types when it copies the file into its snapshot. Leave **Use detected schema** alone for this file: detection ignores the separator.
 
 A Databricks table:
 
