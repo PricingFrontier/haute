@@ -3899,7 +3899,8 @@ def test_builder_post_code_outputs_are_not_demanded_and_its_inputs_are():
     )
 
 
-def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
+def _featured_post_code_score_graph(tmp_path, code: str, task: str = "regression"):
+    """A Model Score with post-code whose feature contract names f1 and f2."""
     from haute.modelling._feature_contract import build_contract, save_contract
 
     contract_path = tmp_path / "model.feature_contract.json"
@@ -3910,28 +3911,60 @@ def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
             categorical_features=[],
             target_name="target",
             target_type="Float64",
-            task="regression",
+            task=task,
         ),
         contract_path,
     )
-    graph = _post_code_score_graph("df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))")
+    graph = _post_code_score_graph(code)
     config = graph.nodes[1].data.config
     del config["contract"]
     config["feature_contract_path"] = str(contract_path)
+    config["task"] = task
+    return graph
 
+
+def _score_parent_demand(graph, required: set[str]):
     projection = plan(
         ProjectionRequest(
             graph=graph,
             target_node_id="score",
             profile=ExecutionProfile.LAZY_SINK,
-            required_columns_by_node={"score": {"quote_id", "ratio"}},
+            required_columns_by_node={"score": required},
         )
     )
-
     assert not projection.opaque_boundaries
-    assert pair_value(projection.edge_demands, "source", "score") == frozenset(
+    return pair_value(projection.edge_demands, "source", "score")
+
+
+def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))"
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "ratio"}) == frozenset(
         {"quote_id", "premium", "f1", "f2"}
     )
+
+
+def test_model_score_post_code_keeps_the_declared_inputs_the_executor_checks(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(ratio=pl.col('pred') * 2)"
+    )
+    graph.nodes[1].data.config["contract"] = {"inputs": ["f1", "f3"], "outputs": ["pred"]}
+
+    assert _score_parent_demand(graph, {"quote_id", "ratio"}) == frozenset(
+        {"quote_id", "f1", "f2", "f3"}
+    )
+
+
+def test_classifier_post_code_does_not_demand_the_scorers_probability_upstream(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path,
+        "df = df.with_columns(pct=pl.col('pred_proba') * 100)",
+        task="classification",
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "pct"}) == frozenset({"quote_id", "f1", "f2"})
 
 
 def _single_parent_graph(child_type: str, child_config: dict) -> object:
@@ -4026,6 +4059,27 @@ def test_explore_with_an_empty_step_list_passes_its_demand_through():
     assert pair_value(projection.edge_demands, "source", "child") == frozenset(
         {"quote_id", "premium"}
     )
+
+
+def test_builder_post_code_outside_the_lineage_model_names_the_operation():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph(
+                "df = df.with_columns(pl.max_horizontal(pl.col(['pred'])).alias('top'))"
+            ),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id", "top"}},
+        )
+    )
+
+    [reason] = [
+        reason
+        for key, reason in projection.diagnostics.edge_reasons.items()
+        if key.source == "source"
+    ]
+    assert reason.rule == "builder_post_code"
+    assert reason.details["operation"] == "with_columns"
 
 
 def test_builder_post_code_outside_the_lineage_model_keeps_a_full_width_boundary():

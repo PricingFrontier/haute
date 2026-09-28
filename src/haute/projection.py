@@ -16,7 +16,11 @@ from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast
 
 from haute._cache import canonical_json
 from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
-from haute._contracts import Contract, get_column_contract
+from haute._contracts import (
+    _DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY,
+    Contract,
+    get_column_contract,
+)
 from haute._edge_join import (
     build_edge_join_kwargs,
     edge_join_key_columns_by_role,
@@ -3326,16 +3330,33 @@ def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
     cannot fill the builder's own sides. A Rating Step or Scenario Expander
     derives its code-free contract from config alone. A Model Score's scorer
     reads its model's features whatever code runs after it, so its code-free
-    contract resolves them exactly as for a Model Score without code. When that
-    names no features (an unconfigured scorer, or a model without feature
-    names) the registered output stands, with inputs from the declaration.
+    contract resolves them exactly as for a Model Score without code, together
+    with any declared inputs, which the executor still checks. When that names
+    no features (an unconfigured scorer, or a model without feature names) the
+    registered output stands, with inputs from the declaration. A classifier's
+    ``<output>_proba`` counts as scorer output either way.
     """
     if node.data.nodeType is NodeType.MODEL_SCORE:
         scorer_config = {
             key: value for key, value in node.data.config.items() if key not in {"code", "steps"}
         }
         scorer = Contract.from_tuple(get_column_contract(NodeType.MODEL_SCORE, scorer_config))
-        return scorer if scorer.inputs else effective
+        contract = effective
+        if scorer.inputs:
+            # The executor still checks the declared inputs at the node's boundary.
+            contract = Contract(
+                inputs=scorer.inputs | (effective.inputs or frozenset()),
+                outputs=scorer.outputs,
+            )
+        if node.data.config.get("task") == "classification" and contract.outputs is not None:
+            # The scorer adds ``<output>_proba`` whenever the model can predict
+            # probabilities, which the contract does not load the model to tell.
+            output_column = node.data.config.get("output_column", "prediction") or "prediction"
+            contract = Contract(
+                inputs=contract.inputs,
+                outputs=contract.outputs | {f"{output_column}_proba"},
+            )
+        return contract
     config = {key: value for key, value in node.data.config.items() if key != "code"}
     return Contract.from_tuple(get_column_contract(node.data.nodeType, config))
 
@@ -3493,7 +3514,8 @@ class OptimiserApplyParentDemandRule:
     An online apply returns a new frame built only from the columns its saved
     artifact names (quote id, scenario index and value, objective, and
     constraint columns), so its input owes exactly those whatever is demanded
-    downstream. The artifact is loaded as for the apply itself, and cached.
+    downstream. The artifact is loaded as for the apply itself, and cached; a
+    deployed graph names the bundled artifact the served apply reads.
     A ratebook apply, which passes its input through, an apply with several
     inputs, or an artifact that cannot be loaded or names no columns keeps the
     generic rules.
@@ -3511,9 +3533,15 @@ class OptimiserApplyParentDemandRule:
             return None
         from haute._builders import online_apply_input_columns
         from haute._node_apply import load_configured_optimiser_artifact
+        from haute._optimiser_io import load_optimiser_artifact
 
+        deployed = node.data.config.get(_DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY)
         try:
-            artifact = load_configured_optimiser_artifact(node.data.config)
+            artifact = (
+                load_optimiser_artifact(deployed)
+                if isinstance(deployed, str) and deployed
+                else load_configured_optimiser_artifact(node.data.config)
+            )
         except Exception:
             # The apply loads the same artifact when it runs and reports the
             # failure on its own node, so planning keeps the generic rules
@@ -5045,6 +5073,10 @@ def compute_prepared_plan(
                         "builder post-code is outside the closed column-lineage model: "
                         f"{post_code_lineage.reason}"
                     ),
+                    details={
+                        "reason": post_code_lineage.reason,
+                        "operation": post_code_lineage.unsupported_operation,
+                    },
                 )
                 continue
             my_needed = set(post_code_lineage.demands_by_input.get("df", frozenset()))

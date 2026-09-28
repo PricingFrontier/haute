@@ -20,7 +20,10 @@ import polars as pl
 
 import haute.projection as projection
 from haute._cache import canonical_json
-from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
+from haute._contracts import (
+    _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+    _DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY,
+)
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name, upstream_node_ids
@@ -395,6 +398,36 @@ def _attach_bundled_model_contract_inputs(
     return graph.model_copy(update={"nodes": nodes}) if changed else graph
 
 
+def _attach_bundled_optimiser_artifacts(
+    graph: PipelineGraph,
+    remap: dict[str, str],
+) -> PipelineGraph:
+    """Annotate file-sourced optimiserApply nodes with the artifact they serve.
+
+    The deployed apply reads the bundled artifact, which may differ from the
+    file at the graph's original path; projection must plan from the same one.
+    """
+    if not remap:
+        return graph
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        config = node.data.config
+        bundled = (
+            _remap_artifact(node.id, config, remap, "artifact_path")
+            if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file"
+            else None
+        )
+        if bundled is None or config.get(_DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY) == bundled:
+            nodes.append(node)
+            continue
+        nodes.append(
+            node.with_config({**config, _DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY: bundled})
+        )
+        changed = True
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+
+
 def _remap_artifact(
     node_id: str,
     config: dict,
@@ -663,6 +696,7 @@ def _score_graph_lazy(
     """Construct the lazy score plan using an already-admitted context."""
     remap = artifact_paths or {}
     graph = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
+    graph = _attach_bundled_optimiser_artifacts(graph, remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
     _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)

@@ -1382,18 +1382,24 @@ present a structural or schema result as execution evidence.
   the whole node, post-code included, so it never fills these sides), or a Model Score's
   code-free scorer contract, which resolves the model's features (and offset) exactly as
   for a Model Score without code: from `feature_contract_path`, the deploy scorer's
-  annotation, or the loaded model. Only when that names no features (an unconfigured
-  scorer, or a model without feature names) does the registered scorer output stand with
-  its inputs filled from the declared inputs. Columns the code computes are therefore never demanded from the
+  annotation, or the loaded model, together with any declared inputs, which the executor
+  still checks at the node's boundary after edge projection. Only when that names no
+  features (an unconfigured scorer, or a model without feature names) does the registered
+  scorer output stand with its inputs filled from the declared inputs. A classifier's
+  `<output>_proba` counts as scorer output either way, because the scorer adds it whenever
+  the model predicts probabilities, so post-code reading it never demands it upstream. Columns the code computes are therefore never demanded from the
   parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
-  full-width boundary recorded as `builder_post_code`.
+  full-width boundary recorded as `builder_post_code`, with the lineage reason and the
+  frame method it could not follow in the reason's details.
 - **An online Optimiser Apply demands only the columns its artifact names.** The online
   apply returns a new frame built from the quote id, scenario index and value, objective,
   and constraint columns (a ratio constraint's numerator and denominator) its saved
   artifact names (`online_apply_input_columns`, the same list the apply casts), so with one
   input it owes exactly those whatever is demanded downstream
   (`optimiser_apply_parent_demand`). The planner loads the artifact as the apply does
-  (cached). A ratebook apply, which passes its input through, an apply with several
+  (cached); on the deploy scorer's copied graph a file-sourced apply carries the bundled
+  artifact's path under a private config key, so planning reads the artifact the served
+  apply reads rather than the graph's original path. A ratebook apply, which passes its input through, an apply with several
   inputs, and an artifact that cannot be loaded or names no string columns keep the
   generic contract; the apply then reports a load failure on its own node when it runs.
   An Explore node with no code and an empty step list is an empty program and passes its

@@ -37,6 +37,12 @@ OPAQUE_CONTRACT_SENTINEL = "opaque"
 #: MLflow source.
 _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY = "__haute_deploy_model_input_columns"
 
+#: Private config key used only on the scorer's copied deploy graph. It names
+#: the bundled optimiser artifact a file-sourced optimiserApply serves, so
+#: projection plans from the artifact the deployed apply reads rather than the
+#: graph's original path.
+_DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY = "__haute_deploy_optimiser_artifact_path"
+
 
 @dataclass(frozen=True, slots=True)
 class Contract:
