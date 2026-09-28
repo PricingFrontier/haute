@@ -2934,6 +2934,17 @@
           "title": "Profile",
           "type": "string"
         },
+        "projection_cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStrategyProjectionCausePayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "provenance": {
           "$ref": "#/$defs/ExecutionStrategyProvenanceCollectionPayload"
         },
@@ -3147,6 +3158,17 @@
           "title": "Profile",
           "type": "string"
         },
+        "projection_cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStrategyProjectionCausePayloadOutput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "provenance": {
           "$ref": "#/$defs/ExecutionStrategyProvenanceCollectionPayloadOutput"
         },
@@ -3235,9 +3257,152 @@
         "estimate_calibration_factor_basis_points",
         "estimate_admission_basis",
         "headroom_bytes",
-        "assumptions"
+        "assumptions",
+        "projection_cause"
       ],
       "title": "ExecutionStrategyDiagnosticPayloadOutput",
+      "type": "object"
+    },
+    "ExecutionStrategyProjectionCausePayload": {
+      "description": "The furthest-downstream node that kept part of the plan full width.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "input",
+            "node"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 512,
+          "title": "Message",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "parent_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "total_count": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_id",
+        "operator",
+        "kind",
+        "reason_code",
+        "message",
+        "total_count"
+      ],
+      "title": "ExecutionStrategyProjectionCausePayload",
+      "type": "object"
+    },
+    "ExecutionStrategyProjectionCausePayloadOutput": {
+      "description": "The furthest-downstream node that kept part of the plan full width.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "input",
+            "node"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 512,
+          "title": "Message",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "parent_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "total_count": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_id",
+        "operator",
+        "kind",
+        "reason_code",
+        "message",
+        "total_count",
+        "parent_node_id",
+        "operation"
+      ],
+      "title": "ExecutionStrategyProjectionCausePayloadOutput",
       "type": "object"
     },
     "ExecutionStrategyProvenanceCollectionPayload": {

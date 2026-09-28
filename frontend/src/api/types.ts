@@ -38,6 +38,7 @@ import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
   ExecutionStrategyDiagnosticPayload as GeneratedExecutionStrategyDiagnostic,
+  ExecutionStrategyProjectionCausePayload as GeneratedExecutionStrategyProjectionCause,
   ExecutionStrategyProvenancePayload as GeneratedExecutionStrategyProvenance,
   ExecutionStrategyReasonPayload as GeneratedExecutionStrategyReason,
 } from "../generated/api-contracts.generated"
@@ -146,6 +147,8 @@ export type ExecutionStrategyReason = GeneratedExecutionStrategyReason & {
 }
 
 export type ExecutionStrategyProvenance = GeneratedExecutionStrategyProvenance
+
+export type ExecutionStrategyProjectionCause = GeneratedExecutionStrategyProjectionCause
 
 export type ExecutionStrategyBoundedCollection<T> = {
   state: GeneratedExecutionStrategyCollection["state"]

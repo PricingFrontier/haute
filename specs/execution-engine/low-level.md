@@ -1380,10 +1380,34 @@ present a structural or schema result as execution evidence.
   then applies the contract of the builder's output before the code runs: a Rating Step's or
   Scenario Expander's code-free contract derived from config (a declared contract describes
   the whole node, post-code included, so it never fills these sides), or a Model Score's
-  registered scorer output with its unknown model inputs filled from the declared inputs (no
-  model is loaded). Columns the code computes are therefore never demanded from the
+  code-free scorer contract, which resolves the model's features (and offset) exactly as
+  for a Model Score without code: from `feature_contract_path`, the deploy scorer's
+  annotation, or the loaded model, together with any declared inputs, which the executor
+  still checks at the node's boundary after edge projection. Only when that names no
+  features (an unconfigured scorer, or a model without feature names) does the registered
+  scorer output stand with its inputs filled from the declared inputs. A classifier adds
+  `<output>_proba` only when its model predicts probabilities and otherwise keeps an input
+  column of that name, so post-code reading it is planned from the contract only when the
+  contract proves the scorer produces it (a feature contract with class labels); otherwise
+  the scorer's input stays whole. Columns the code computes are therefore never demanded from the
   parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
-  full-width boundary recorded as `builder_post_code`.
+  full-width boundary recorded as `builder_post_code`, with the lineage reason and the
+  frame method it could not follow in the reason's details.
+- **An online Optimiser Apply demands only the columns its artifact names.** The online
+  apply returns a new frame built from the quote id, scenario index and value, objective,
+  and constraint columns (a ratio constraint's numerator and denominator) its saved
+  artifact names (`online_apply_input_columns`, the same list the apply casts), so with one
+  input it owes exactly those whatever is demanded downstream
+  (`optimiser_apply_parent_demand`). The planner loads the artifact as the apply does
+  (cached). On the deploy scorer's copied graph a file-sourced apply instead carries the
+  bundled artifact's input columns under a private config key (an empty list for any
+  other artifact), so planning follows the artifact the served apply reads rather than
+  the graph's original path. The key holds column names, never a path: planning with it
+  loads no file, and a malformed value is a `ConfigError`. A ratebook apply, which passes its input through, an apply with several
+  inputs, and an artifact that cannot be loaded or names no string columns keep the
+  generic contract; the apply then reports a load failure on its own node when it runs.
+  An Explore node with no code and an empty step list is an empty program and passes its
+  demand through like any passthrough; code or a non-empty step list stays opaque.
 - **Data Input post-load code participates in projection planning.** A Data Input's `code`
   runs over its scan as `df`, before `selected_columns` and renames. With a known demand, the
   planner, source builders, and runtime join refinement share one rule
@@ -1471,7 +1495,13 @@ present a structural or schema result as execution evidence.
   `selector_dtypes_unknown`, `selector_order_unknown`, `selector_nested`, or the operation's
   `dynamic_<method>` reason for a naming step deeper in the chain. Because the backward pass
   demands every column an expansion references, a projected input always contains the full
-  expansion. The static planner passes column names and the preamble aliases; for a
+  expansion. A `pl.col` that lists plain names (a list, a tuple, or several arguments) is not
+  a selector: the syntax fixes its columns, so a `select`/`with_columns` computation rooted at
+  it, under the same outermost-only naming rule, becomes one output per listed name at parse
+  time, each reading its own column plus the rest of the expression's references, with no
+  input schema needed. An alias or keyword over several names, a regex or wildcard entry, a
+  second multi-column input, or a list inside a horizontal helper keeps the operation's
+  `dynamic_<method>` reason. The static planner passes column names and the preamble aliases; for a
   single-input Polars node whose static lineage fails only with `selector_schema_unknown` or
   `selector_dtypes_unknown`, `_runtime_lineage_demands` resolves the demand from the input
   frame's runtime names and dtypes, projects the input, and records a runtime-inferred
@@ -2087,6 +2117,23 @@ present a structural or schema result as execution evidence.
   topological order and, when truncated, retains the earliest representative of
   every boundary kind present before filling the remaining capacity. A mixed plan
   therefore cannot truncate away its only unprojected-boundary evidence.
+  The additive `projection_cause` names the node that kept part of the plan full width,
+  which is usually not the first boundary: a node whose own demand is concrete but that
+  left an edge from a full-width parent without a demand (kind `input`, with the edge's
+  rule, and `parent_node_id` when exactly one such input exists), or a full-width node
+  none of whose outgoing edges lacks a demand, so its own rule and not a child made it so
+  (kind `node`, with its node rule). An edge whose rule only passes the node's own
+  full-width demand on (`opaque_demand`) names no cause. The furthest-downstream cause by
+  topological rank (node id breaking ties) is reported with `total_count` of all causes,
+  and `operation` carries the frame method the column-lineage model could not follow for
+  `polars_lineage_unsupported` and `builder_post_code`. For an
+  `unprojected-streaming-boundary` the remediation is written for that cause, canvas steps
+  first: code Haute cannot follow is asked to refer to each column by name or move the step
+  into its own node, a source whose code forces a full scan is asked to name the columns
+  it reads, and any other rule points at simplifying the node or declaring its contract.
+  The field is absent when nothing is full width, or when no node can be named (every
+  unnarrowed edge only passes a full-width demand on, as a runtime-refined plan can leave);
+  the remediation then keeps the generic wording.
 - **Boundary admission is profile-independent** (every admitted materialisation
   operator, not only `group_by`):
 

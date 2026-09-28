@@ -44,6 +44,7 @@ export interface ExecutionStrategyDiagnosticPayload {
     | 'deploy_live'
     | 'deploy_batch'
     | 'node_snapshot';
+  projection_cause?: ExecutionStrategyProjectionCausePayload | null;
   provenance: ExecutionStrategyProvenanceCollectionPayload;
   raw_estimated_peak_bytes?: number | null;
   reason_code: string;
@@ -74,6 +75,19 @@ export interface ExecutionStrategyBoundaryPayload {
   node_id: string;
   operator: string;
   topological_rank: number;
+}
+/**
+ * The furthest-downstream node that kept part of the plan full width.
+ */
+export interface ExecutionStrategyProjectionCausePayload {
+  kind: 'input' | 'node';
+  message: string;
+  node_id: string;
+  operation?: string | null;
+  operator: string;
+  parent_node_id?: string | null;
+  reason_code: string;
+  total_count: number;
 }
 export interface ExecutionStrategyProvenanceCollectionPayload {
   /**
@@ -411,6 +425,7 @@ export interface ExecutionStrategyDiagnosticPayloadOutput {
     | 'deploy_live'
     | 'deploy_batch'
     | 'node_snapshot';
+  projection_cause: ExecutionStrategyProjectionCausePayloadOutput | null;
   provenance: ExecutionStrategyProvenanceCollectionPayloadOutput;
   raw_estimated_peak_bytes: number | null;
   reason_code: string;
@@ -427,6 +442,19 @@ export interface ExecutionStrategyDiagnosticPayloadOutput {
     | 'full-width-conservative'
     | 'unsupported'
     | 'not-planned';
+}
+/**
+ * The furthest-downstream node that kept part of the plan full width.
+ */
+export interface ExecutionStrategyProjectionCausePayloadOutput {
+  kind: 'input' | 'node';
+  message: string;
+  node_id: string;
+  operation: string | null;
+  operator: string;
+  parent_node_id: string | null;
+  reason_code: string;
+  total_count: number;
 }
 export interface ExecutionStrategyProvenanceCollectionPayloadOutput {
   /**

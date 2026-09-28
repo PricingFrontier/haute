@@ -1324,6 +1324,12 @@ def _normalise_expression_outputs(
                 return all(append_expression(element) for element in expression.elts)
         if _may_evaluate_to_python_string(expression):
             return False
+        listed = _name_list_outputs(expression)
+        if listed is not None:
+            listed_outputs, listed_identity = listed
+            outputs.extend(listed_outputs)
+            identity.update(listed_identity)
+            return True
         item = _selector_expression_item(expression, selector_aliases, method=method)
         if isinstance(item, _ParseFailure):
             failure.append(item)
@@ -1356,6 +1362,14 @@ def _normalise_expression_outputs(
         elif _may_evaluate_to_python_string(keyword.value):
             return None
         else:
+            listed = _name_list_outputs(keyword.value)
+            if listed is not None:
+                listed_outputs, _listed_identity = listed
+                if len(listed_outputs) != 1:
+                    # A keyword names one output, so several listed names clash.
+                    return None
+                outputs.append((keyword.arg, listed_outputs[0][1]))
+                continue
             keyword_item = _selector_expression_item(
                 keyword.value, selector_aliases, method=method, keyword=keyword.arg
             )
@@ -3396,6 +3410,42 @@ def _name_list_assignment(argument: ast.AST) -> set[str] | None:
     if inner is root and not (prefix or suffix):
         return set()
     return {f"{prefix}{name}{suffix}" for name in names}
+
+
+def _name_list_outputs(
+    expression: ast.AST,
+) -> tuple[tuple[tuple[str, frozenset[str]], ...], frozenset[str]] | None:
+    """Return ``(outputs, identity)`` for a computation rooted at ``pl.col(<listed names>)``.
+
+    Polars repeats the computation once per listed name, so each output reads
+    its own column plus whatever the rest of the expression reads. The rest is
+    analysed with the root replaced by one placeholder column: it must read only
+    literal columns (a second multi-column ``pl.col`` or a selector fails there)
+    and keep the root's name. ``identity`` holds the names a pure selection
+    passes through unchanged. ``None`` when the expression has no such root,
+    renames it deeper in the chain, or aliases several names to one.
+    """
+    naming = _outermost_naming(expression)
+    if naming is None:
+        return None
+    inner, alias, prefix, suffix = naming
+    root = _unrenamed_root(inner, lambda node: _listed_column_names(node) is not None)
+    if root is None:
+        return None
+    names = _listed_column_names(root)
+    assert names is not None
+    if alias is not None and len(names) != 1:
+        return None
+    substituted = _substitute_selectors(inner, [root])
+    references = _referenced_columns(substituted)
+    if references is None or _expression_output_name(substituted) != _placeholder(0):
+        return None
+    shared = references - {_placeholder(0)}
+    outputs = tuple(
+        (alias or f"{prefix}{name}{suffix}", frozenset({name}) | shared) for name in names
+    )
+    pure = inner is root and alias is None and not (prefix or suffix)
+    return outputs, frozenset(names) if pure else frozenset()
 
 
 def _selector_assignment(

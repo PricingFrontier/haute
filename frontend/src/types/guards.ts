@@ -47,6 +47,7 @@ import type {
   ExecutionStrategyDiagnostic,
   ExecutionStrategyBoundary,
   ExecutionStrategyBoundedCollection,
+  ExecutionStrategyProjectionCause,
   ExecutionStrategyProvenance,
   ExecutionStrategyReason,
   ExecutionStageMetrics,
@@ -1087,6 +1088,19 @@ function parseDiagnosticCollection<TInput, TOutput>(
   return { state, total_count: totalCount, items }
 }
 
+function projectionCause(cause: ExecutionStrategyProjectionCause): ExecutionStrategyProjectionCause {
+  return {
+    node_id: cause.node_id,
+    operator: cause.operator,
+    kind: cause.kind,
+    reason_code: cause.reason_code,
+    message: cause.message,
+    total_count: cause.total_count,
+    ...(cause.parent_node_id === undefined ? {} : { parent_node_id: cause.parent_node_id }),
+    ...(cause.operation === undefined ? {} : { operation: cause.operation }),
+  }
+}
+
 /** Parses the additive V1 strategy diagnostic. Unknown versions are unavailable. */
 export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrategyDiagnostic | null {
   if (value === undefined || value === null) return null
@@ -1163,6 +1177,9 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
     ...(obj.estimate_admission_basis === undefined ? {} : { estimate_admission_basis: obj.estimate_admission_basis }),
     ...(obj.headroom_bytes === undefined ? {} : { headroom_bytes: obj.headroom_bytes }),
     ...(obj.assumptions === undefined ? {} : { assumptions: [...obj.assumptions] }),
+    ...(obj.projection_cause === undefined
+      ? {}
+      : { projection_cause: obj.projection_cause === null ? null : projectionCause(obj.projection_cause) }),
   }
 }
 

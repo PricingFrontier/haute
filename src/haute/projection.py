@@ -16,7 +16,11 @@ from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast
 
 from haute._cache import canonical_json
 from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
-from haute._contracts import Contract, get_column_contract
+from haute._contracts import (
+    _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
+    Contract,
+    get_column_contract,
+)
 from haute._edge_join import (
     build_edge_join_kwargs,
     edge_join_key_columns_by_role,
@@ -48,7 +52,7 @@ from haute._polars_selectors import preamble_selector_aliases
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._topo import CycleError, ancestors, canonical_topological_order, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.errors import ContractMismatchError
+from haute.errors import ConfigError, ContractMismatchError
 
 __all__ = [
     "AllExcept",
@@ -272,6 +276,49 @@ class BoundedDiagnosticCollection:
         }
 
 
+class ProjectionCauseKind(StrEnum):
+    INPUT = "input"
+    """The node could not narrow what it reads from full-width inputs."""
+
+    NODE = "node"
+    """The node's own rule, not a child's demand, keeps it full width."""
+
+
+@dataclass(frozen=True)
+class ProjectionCause:
+    """The node that kept part of a plan full width, and the rule that did.
+
+    ``total_count`` counts every such node in the plan; this one is the
+    furthest downstream. ``parent_node_id`` names the full-width input when
+    exactly one input was left unnarrowed. ``operation`` is the frame method
+    code the column lineage model could not follow, when it names one.
+    """
+
+    node_id: str
+    operator: str
+    kind: ProjectionCauseKind
+    reason_code: str
+    message: str
+    total_count: int
+    parent_node_id: str | None = None
+    operation: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "node_id": self.node_id,
+            "operator": self.operator,
+            "kind": self.kind.value,
+            "reason_code": self.reason_code,
+            "message": self.message[:_DIAGNOSTIC_MESSAGE_LIMIT],
+            "total_count": self.total_count,
+        }
+        if self.parent_node_id is not None:
+            payload["parent_node_id"] = self.parent_node_id
+        if self.operation is not None:
+            payload["operation"] = self.operation
+        return payload
+
+
 @dataclass(frozen=True)
 class ExecutionStrategyDiagnostic:
     """Versioned JSON-safe strategy diagnostic produced by the shared planner."""
@@ -295,6 +342,7 @@ class ExecutionStrategyDiagnostic:
     estimate_admission_basis: str | None = None
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
+    projection_cause: ProjectionCause | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
@@ -375,6 +423,7 @@ class ExecutionStrategyDiagnostic:
         estimate_admission_basis: str | None = None,
         headroom_bytes: int | None = None,
         assumptions: Iterable[str] = (),
+        projection_cause: ProjectionCause | None = None,
     ) -> ExecutionStrategyDiagnostic:
         detail_state = max(
             (boundaries.state, reasons.state, provenance.state),
@@ -401,6 +450,7 @@ class ExecutionStrategyDiagnostic:
             estimate_admission_basis=estimate_admission_basis,
             headroom_bytes=headroom_bytes,
             assumptions=tuple(str(item) for item in assumptions),
+            projection_cause=projection_cause,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -431,6 +481,8 @@ class ExecutionStrategyDiagnostic:
         payload.update({key: value for key, value in optional.items() if value is not None})
         if self.assumptions:
             payload["assumptions"] = list(self.assumptions)
+        if self.projection_cause is not None:
+            payload["projection_cause"] = self.projection_cause.to_dict()
         canonical_json(payload)
         return payload
 
@@ -807,6 +859,13 @@ def build_execution_strategy_result(
             ExecutionStrategy.NOT_PLANNED: "not_planned",
         }[strategy]
 
+    projection_cause = _projection_cause(projection_plan, node_map, ranks)
+    if (
+        remediation is None
+        and strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+        and projection_cause is not None
+    ):
+        remediation = _projection_cause_remediation(projection_cause, node_map)
     if remediation is None:
         remediation = {
             ExecutionStrategy.PROJECTED: (
@@ -969,8 +1028,113 @@ def build_execution_strategy_result(
         estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
+        projection_cause=projection_cause,
     )
     return ExecutionStrategyResult(projection_plan=projection_plan, diagnostic=diagnostic)
+
+
+# Edge rules that describe a node's own full-width demand passed on to its
+# parents rather than a rule of the node that cut the narrowing short.
+_PASSED_ON_DEMAND_RULES = frozenset({"opaque_demand"})
+
+# Rules under which a node's code is outside the closed column-lineage model.
+_UNREADABLE_CODE_RULES = frozenset({"polars_lineage_unsupported", "builder_post_code"})
+
+
+def _projection_cause(
+    projection_plan: ProjectionPlan,
+    node_map: Mapping[str, GraphNode],
+    ranks: Mapping[str, int],
+) -> ProjectionCause | None:
+    """Return the furthest-downstream node that kept part of the plan full width.
+
+    A full-width node is one with no concrete demand. A node causes that when
+    it could not narrow what it reads from a full-width parent although its
+    own demand is concrete (an input cause, named with the edge's rule), or
+    when it is full width while every one of its outgoing edges has a concrete
+    demand, so its own rule and not a child made it so (a node cause). A node
+    that merely passed its own full-width demand on to its parents is not a
+    cause. ``None`` when nothing is full width.
+    """
+    opaque = projection_plan.opaque_boundaries
+    if not opaque:
+        return None
+    diagnostics = projection_plan.diagnostics
+    unnarrowed = sorted(
+        (key for key in diagnostics.edge_reasons if projection_plan.edge_demands.get(key) is None),
+        key=ProjectionEdgeKey.sort_key,
+    )
+    input_causes: dict[str, list[ProjectionEdgeKey]] = {}
+    for key in unnarrowed:
+        if (
+            key.source in opaque
+            and key.target not in opaque
+            and diagnostics.edge_reasons[key].rule not in _PASSED_ON_DEMAND_RULES
+        ):
+            input_causes.setdefault(key.target, []).append(key)
+    blocked_by_child = {key.source for key in unnarrowed}
+    node_causes = {
+        node_id for node_id in opaque - blocked_by_child if node_id in diagnostics.node_reasons
+    }
+    cause_ids = set(input_causes) | node_causes
+    if not cause_ids:
+        return None
+    node_id = max(cause_ids, key=lambda cause_id: (ranks.get(cause_id, -1), cause_id))
+    node = node_map.get(node_id)
+    operator = node.data.nodeType.value if node is not None else "unknown"
+    edges = input_causes.get(node_id)
+    if edges:
+        reason = diagnostics.edge_reasons[edges[0]]
+        kind = ProjectionCauseKind.INPUT
+        parents = {key.source for key in edges}
+        parent_node_id = next(iter(parents)) if len(parents) == 1 else None
+    else:
+        reason = diagnostics.node_reasons[node_id]
+        kind = ProjectionCauseKind.NODE
+        parent_node_id = None
+    operation = reason.details.get("operation") if reason.rule in _UNREADABLE_CODE_RULES else None
+    return ProjectionCause(
+        node_id=node_id,
+        operator=operator,
+        kind=kind,
+        reason_code=reason.rule,
+        message=reason.message,
+        total_count=len(cause_ids),
+        parent_node_id=parent_node_id,
+        operation=operation if isinstance(operation, str) and operation else None,
+    )
+
+
+def _projection_cause_remediation(
+    cause: ProjectionCause,
+    node_map: Mapping[str, GraphNode],
+) -> str:
+    """Return the suggested action for a projection cause, canvas steps first."""
+    node = f"'{cause.node_id}'"
+    if cause.reason_code in _UNREADABLE_CODE_RULES:
+        where = f" in a {cause.operation} call" if cause.operation else ""
+        return (
+            f"Haute can't follow which columns the code in {node} reads{where}. Refer to "
+            'each column by name, for example pl.col("premium"), or move that step into a '
+            "node of its own. Declaring the node's column contract in the pipeline file "
+            "also works."
+        )
+    source = node_map.get(cause.node_id)
+    if (
+        cause.kind is ProjectionCauseKind.NODE
+        and source is not None
+        and _must_run_source_user_code_unprojected(source, None)
+    ):
+        return (
+            f"The code in {node} runs over the whole source before Haute can narrow it. "
+            'Refer to each column the code reads by name, for example pl.col("premium"), '
+            "so Haute can read only those."
+        )
+    return (
+        f"Haute can't prove which input columns {node} needs, so it keeps them all. "
+        "Simplifying the node, or declaring its column contract in the pipeline file, "
+        "lets Haute narrow it."
+    )
 
 
 def _execution_strategy_provenance_items(
@@ -3159,17 +3323,47 @@ def _builder_post_code(node: GraphNode) -> str | None:
     return code or None
 
 
-def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
+def _pre_post_code_contract(
+    node: GraphNode, effective: Contract, demanded: Iterable[str]
+) -> Contract:
     """Return the contract of a builder's output before its post-code runs.
 
     A declared contract describes the whole node, post-code included, so it
     cannot fill the builder's own sides. A Rating Step or Scenario Expander
-    derives its code-free contract from config alone. A Model Score's registered
-    output is already the scorer's, and its unknown model inputs are filled from
-    the declared inputs rather than by loading the model.
+    derives its code-free contract from config alone. A Model Score's scorer
+    reads its model's features whatever code runs after it, so its code-free
+    contract resolves them exactly as for a Model Score without code, together
+    with any declared inputs, which the executor still checks. When that names
+    no features (an unconfigured scorer, or a model without feature names) the
+    registered output stands, with inputs from the declaration. *demanded* is
+    what the post-code reads from the builder output: a classifier's
+    ``<output>_proba`` among it that the contract does not prove the scorer
+    produces leaves the inputs unknown (see below).
     """
     if node.data.nodeType is NodeType.MODEL_SCORE:
-        return effective
+        scorer_config = {
+            key: value for key, value in node.data.config.items() if key not in {"code", "steps"}
+        }
+        scorer = Contract.from_tuple(get_column_contract(NodeType.MODEL_SCORE, scorer_config))
+        contract = effective
+        if scorer.inputs:
+            # The executor still checks the declared inputs at the node's boundary.
+            contract = Contract(
+                inputs=scorer.inputs | (effective.inputs or frozenset()),
+                outputs=scorer.outputs,
+            )
+        output_column = node.data.config.get("output_column", "prediction") or "prediction"
+        probability = f"{output_column}_proba"
+        if (
+            node.data.config.get("task") == "classification"
+            and probability in set(demanded)
+            and probability not in (contract.outputs or frozenset())
+        ):
+            # A classifier adds ``<output>_proba`` only when its model predicts
+            # probabilities, and otherwise keeps an input column of that name.
+            # Without proof of which, the scorer's input stays whole.
+            return Contract(inputs=None, outputs=contract.outputs)
+        return contract
     config = {key: value for key, value in node.data.config.items() if key != "code"}
     return Contract.from_tuple(get_column_contract(node.data.nodeType, config))
 
@@ -3318,6 +3512,68 @@ class OptimiserParentDemandRule:
 
 
 _OPTIMISER_PARENT_DEMAND_RULE = OptimiserParentDemandRule()
+
+
+@dataclass(frozen=True)
+class OptimiserApplyParentDemandRule:
+    """Projection rule for an online optimiser apply with one input.
+
+    An online apply returns a new frame built only from the columns its saved
+    artifact names (quote id, scenario index and value, objective, and
+    constraint columns), so its input owes exactly those whatever is demanded
+    downstream. The artifact is loaded as for the apply itself, and cached; a
+    deployed graph carries the input columns of the bundled artifact the served
+    apply reads instead.
+    A ratebook apply, which passes its input through, an apply with several
+    inputs, or an artifact that cannot be loaded or names no columns keeps the
+    generic rules.
+    """
+
+    name: str = "optimiser_apply_parent_demand"
+
+    def parent_demands(
+        self,
+        node: GraphNode,
+        incoming_edges: Iterable[GraphEdge],
+    ) -> ParentDemandResult | None:
+        incoming = list(incoming_edges)
+        if node.data.nodeType is not NodeType.OPTIMISER_APPLY or len(incoming) != 1:
+            return None
+        from haute._builders import online_apply_input_columns
+        from haute._node_apply import load_configured_optimiser_artifact
+
+        config = node.data.config
+        if _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY in config:
+            deployed = config[_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY]
+            if not isinstance(deployed, list) or not all(
+                isinstance(column, str) and column for column in deployed
+            ):
+                raise ConfigError(
+                    "optimiserApply node has invalid internal deploy input columns",
+                    config_key=_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
+                )
+            columns = frozenset(deployed)
+        else:
+            try:
+                artifact = load_configured_optimiser_artifact(config)
+            except Exception:
+                # The apply loads the same artifact when it runs and reports the
+                # failure on its own node, so planning keeps the generic rules
+                # rather than failing every node in the run.
+                return None
+            if not isinstance(artifact, Mapping) or artifact.get("mode", "online") == "ratebook":
+                return None
+            columns = online_apply_input_columns(artifact)
+        if not columns or not all(isinstance(column, str) and column for column in columns):
+            return None
+        return ParentDemandResult(
+            default=None,
+            by_parent={incoming[0].source: set(columns)},
+            rule_name=self.name,
+        )
+
+
+_OPTIMISER_APPLY_PARENT_DEMAND_RULE = OptimiserApplyParentDemandRule()
 POLARS_COLUMN_LINEAGE_RULE_NAME = "polars_column_lineage"
 
 
@@ -3332,8 +3588,10 @@ def parent_demands_for_node(
 ) -> ParentDemandResult | None:
     """Return node-specific parent demands that the generic algebra cannot infer.
 
-    Return optimiser-specific parent demands when configured.
+    Return optimiser- or online-apply-specific parent demands when configured.
     """
+    if node.data.nodeType is NodeType.OPTIMISER_APPLY:
+        return _OPTIMISER_APPLY_PARENT_DEMAND_RULE.parent_demands(node, incoming_edges)
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
         node,
         incoming_edges,
@@ -3751,6 +4009,7 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             NodeType.OPTIMISER_APPLY: _coverage(
                 NodeType.OPTIMISER_APPLY,
                 _GENERIC_CONTRACT_RULE_NAME,
+                _OPTIMISER_APPLY_PARENT_DEMAND_RULE.name,
             ),
             NodeType.MODEL_SCORE: _coverage(
                 NodeType.MODEL_SCORE,
@@ -4828,10 +5087,14 @@ def compute_prepared_plan(
                         "builder post-code is outside the closed column-lineage model: "
                         f"{post_code_lineage.reason}"
                     ),
+                    details={
+                        "reason": post_code_lineage.reason,
+                        "operation": post_code_lineage.unsupported_operation,
+                    },
                 )
                 continue
             my_needed = set(post_code_lineage.demands_by_input.get("df", frozenset()))
-            contract = _pre_post_code_contract(node, contract)
+            contract = _pre_post_code_contract(node, contract, my_needed)
         produced, referenced = contract.to_tuple()
         if produced is None or referenced is None:
             parent_produced = {edge.source: produced_for_routing(edge) for edge in incoming}

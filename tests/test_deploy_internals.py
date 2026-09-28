@@ -2396,6 +2396,86 @@ class TestScoreGraphOptimiserApplyRemap:
         mock_dispatch.assert_called_once()
         assert mock_dispatch.call_args.args[3] == "selected_factor"
 
+    def test_online_apply_file_remap_plans_from_the_bundled_artifact(self, tmp_path):
+        """Projection reads the columns of the artifact the deployed apply serves.
+
+        The original artifact still exists but maximises ``income``; the bundle
+        maximises ``margin``. Planning from the original would drop ``margin``
+        before the served apply reads it.
+        """
+        from haute.deploy._scorer import score_graph
+
+        def artifact(objective: str) -> dict[str, object]:
+            return {
+                "version": f"{objective}_v1",
+                "mode": "online",
+                "lambdas": {},
+                "objective": objective,
+                "constraints": {},
+                "quote_id": "quote_id",
+                "scenario_index": "scenario_index",
+                "scenario_value": "scenario_value",
+            }
+
+        original = tmp_path / "opt.json"
+        original.write_text(json.dumps(artifact("income")), encoding="utf-8")
+        bundled = tmp_path / "bundled_opt.json"
+        bundled.write_text(json.dumps(artifact("margin")), encoding="utf-8")
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("quote_id", label="src"),
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {
+                            "label": "opt",
+                            "nodeType": "optimiserApply",
+                            "config": {"sourceType": "file", "artifact_path": str(original)},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["quote_id", "optimal_scenario_value"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "opt", "sourceHandle": "src"},
+                    {"id": "e2", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q1", "q2", "q2"],
+                    "scenario_index": [0, 1, 0, 1],
+                    "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                    "income": [10.0, 5.0, 10.0, 5.0],
+                    "margin": [1.0, 9.0, 1.0, 9.0],
+                }
+            ),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"opt__opt.json": str(bundled)},
+        )
+
+        assert result.sort("quote_id")["optimal_scenario_value"].to_list() == pytest.approx(
+            [1.1, 1.1]
+        )
+
     def _ratebook_apply_remap_score(self, tmp_path):
         """Score a deployed ratebook-apply graph and return the result frame."""
         from haute.deploy._scorer import score_graph

@@ -3899,6 +3899,296 @@ def test_builder_post_code_outputs_are_not_demanded_and_its_inputs_are():
     )
 
 
+def _featured_post_code_score_graph(
+    tmp_path, code: str, task: str = "regression", class_labels: tuple[int, int] | None = None
+):
+    """A Model Score with post-code whose feature contract names f1 and f2."""
+    from haute.modelling._feature_contract import ModelIdentity, build_contract, save_contract
+
+    contract_path = tmp_path / "model.feature_contract.json"
+    save_contract(
+        build_contract(
+            features=["f1", "f2"],
+            feature_types={"f1": "Float64", "f2": "Float64"},
+            categorical_features=[],
+            target_name="target",
+            target_type="Float64",
+            task=task,
+            model=None
+            if class_labels is None
+            else ModelIdentity(
+                algorithm="catboost",
+                link="logit",
+                engine_name="catboost",
+                engine_version="1.2.10",
+                haute_version="0.1.0",
+                class_labels=class_labels,
+            ),
+        ),
+        contract_path,
+    )
+    graph = _post_code_score_graph(code)
+    config = graph.nodes[1].data.config
+    del config["contract"]
+    config["feature_contract_path"] = str(contract_path)
+    config["task"] = task
+    return graph
+
+
+def _plan_score(graph, required: set[str]):
+    return plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": required},
+        )
+    )
+
+
+def _score_parent_demand(graph, required: set[str]):
+    projection = _plan_score(graph, required)
+    assert not projection.opaque_boundaries
+    return pair_value(projection.edge_demands, "source", "score")
+
+
+def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))"
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "ratio"}) == frozenset(
+        {"quote_id", "premium", "f1", "f2"}
+    )
+
+
+def test_model_score_post_code_keeps_the_declared_inputs_the_executor_checks(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(ratio=pl.col('pred') * 2)"
+    )
+    graph.nodes[1].data.config["contract"] = {"inputs": ["f1", "f3"], "outputs": ["pred"]}
+
+    assert _score_parent_demand(graph, {"quote_id", "ratio"}) == frozenset(
+        {"quote_id", "f1", "f2", "f3"}
+    )
+
+
+def test_classifier_post_code_does_not_demand_the_scorers_probability_upstream(tmp_path):
+    # A Haute-trained binary classifier always scores its positive-class probability.
+    graph = _featured_post_code_score_graph(
+        tmp_path,
+        "df = df.with_columns(pct=pl.col('pred_proba') * 100)",
+        task="classification",
+        class_labels=(0, 1),
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "pct"}) == frozenset({"quote_id", "f1", "f2"})
+
+
+def test_classifier_post_code_reading_an_unproven_probability_keeps_its_input_whole(tmp_path):
+    # Without class labels the scorer may not predict probabilities, and then it
+    # keeps an input column of that name, so neither dropping nor demanding it
+    # is safe.
+    graph = _featured_post_code_score_graph(
+        tmp_path,
+        "df = df.with_columns(pct=pl.col('pred_proba') * 100)",
+        task="classification",
+    )
+
+    projection = _plan_score(graph, {"quote_id", "pct"})
+
+    assert "source" in projection.opaque_boundaries
+    assert pair_value_or_none(projection.edge_demands, "source", "score") is None
+
+
+def test_classifier_post_code_not_reading_the_probability_is_still_projected(tmp_path):
+    graph = _featured_post_code_score_graph(
+        tmp_path, "df = df.with_columns(half=pl.col('pred') / 2)", task="classification"
+    )
+
+    assert _score_parent_demand(graph, {"quote_id", "half"}) == frozenset({"quote_id", "f1", "f2"})
+
+
+def _single_parent_graph(child_type: str, child_config: dict) -> object:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {"label": "source", "nodeType": "dataInput", "config": {}},
+                },
+                {
+                    "id": "child",
+                    "data": {"label": "child", "nodeType": child_type, "config": child_config},
+                },
+            ],
+            "edges": [make_edge("source", "child").model_dump()],
+        }
+    )
+
+
+_ONLINE_APPLY_ARTIFACT = {
+    "version": "v1",
+    "mode": "online",
+    "lambdas": {"volume": 0.5, "loss_ratio": 0.2},
+    "objective": "income",
+    "constraints": {
+        "volume": {"min": 0.9},
+        "loss_ratio": {"max": 0.6, "numerator": "claims", "denominator": "premium"},
+    },
+    "quote_id": "quote_id",
+    "scenario_index": "step",
+    "scenario_value": "adjustment",
+}
+
+
+@pytest.mark.parametrize(
+    "required", [{"quote_id", "optimal_scenario_value"}, {"quote_id"}, {"optimal_volume"}]
+)
+def test_online_optimiser_apply_demands_exactly_the_columns_its_artifact_reads(tmp_path, required):
+    artifact_path = tmp_path / "optimiser.json"
+    artifact_path.write_text(json.dumps(_ONLINE_APPLY_ARTIFACT), encoding="utf-8")
+    graph = _single_parent_graph(
+        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": required},
+        )
+    )
+
+    assert not projection.opaque_boundaries
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "step", "adjustment", "income", "volume", "claims", "premium"}
+    )
+
+
+def test_deployed_optimiser_apply_plans_from_its_annotated_columns_without_a_load(
+    tmp_path, monkeypatch
+):
+    from haute._contracts import _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("planning must not load an optimiser artifact")
+
+    monkeypatch.setattr("haute._node_apply.load_configured_optimiser_artifact", refuse)
+    monkeypatch.setattr("haute._optimiser_io.load_optimiser_artifact", refuse)
+    graph = _single_parent_graph(
+        "optimiserApply",
+        {
+            "sourceType": "file",
+            "artifact_path": str(tmp_path / "optimiser.json"),
+            _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: ["quote_id", "step", "adjustment", "m"],
+        },
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "step", "adjustment", "m"}
+    )
+
+
+@pytest.mark.parametrize("value", ["../../outside/optimiser.json", ["quote_id", ""], None])
+def test_a_malformed_deploy_optimiser_annotation_is_refused_without_a_load(
+    tmp_path, monkeypatch, value
+):
+    from haute._contracts import _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY
+    from haute.errors import ConfigError
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("planning must not load an optimiser artifact")
+
+    monkeypatch.setattr("haute._node_apply.load_configured_optimiser_artifact", refuse)
+    monkeypatch.setattr("haute._optimiser_io.load_optimiser_artifact", refuse)
+    graph = _single_parent_graph(
+        "optimiserApply",
+        {
+            "sourceType": "file",
+            "artifact_path": str(tmp_path / "optimiser.json"),
+            _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: value,
+        },
+    )
+
+    with pytest.raises(ConfigError, match="invalid internal deploy input columns"):
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="child",
+                profile=ExecutionProfile.LAZY_SINK,
+                required_columns_by_node={"child": {"quote_id"}},
+            )
+        )
+
+
+def test_ratebook_optimiser_apply_keeps_the_generic_rules(tmp_path):
+    artifact_path = tmp_path / "optimiser.json"
+    artifact_path.write_text(
+        json.dumps({**_ONLINE_APPLY_ARTIFACT, "mode": "ratebook"}), encoding="utf-8"
+    )
+    graph = _single_parent_graph(
+        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id"}},
+        )
+    )
+
+    assert "source" in projection.opaque_boundaries
+
+
+def test_explore_with_an_empty_step_list_passes_its_demand_through():
+    projection = plan(
+        ProjectionRequest(
+            graph=_single_parent_graph("explore", {"steps": []}),
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id", "premium"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "premium"}
+    )
+
+
+def test_builder_post_code_outside_the_lineage_model_names_the_operation():
+    projection = plan(
+        ProjectionRequest(
+            graph=_post_code_score_graph(
+                "df = df.with_columns(pl.max_horizontal(pl.col(['pred'])).alias('top'))"
+            ),
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id", "top"}},
+        )
+    )
+
+    [reason] = [
+        reason
+        for key, reason in projection.diagnostics.edge_reasons.items()
+        if key.source == "source"
+    ]
+    assert reason.rule == "builder_post_code"
+    assert reason.details["operation"] == "with_columns"
+
+
 def test_builder_post_code_outside_the_lineage_model_keeps_a_full_width_boundary():
     projection = plan(
         ProjectionRequest(

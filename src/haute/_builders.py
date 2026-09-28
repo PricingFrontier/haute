@@ -421,8 +421,12 @@ def _explore_fn(df: _Frame) -> _Frame:
 
 
 def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
-    """Explore code, or a step list (the same program), derives arbitrary analysis columns."""
-    if (config.get("code") or "").strip() or isinstance(config.get("steps"), list):
+    """Explore code, or a step list (the same program), derives arbitrary analysis columns.
+
+    An empty step list is an empty program: the node passes its input through.
+    """
+    steps = config.get("steps")
+    if (config.get("code") or "").strip() or (isinstance(steps, list) and steps):
         return _OPAQUE_CONTRACT
     return _passthrough_columns(config)
 
@@ -1759,7 +1763,6 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
     objective = artifact.get("objective", "expected_income")
-    constraints = artifact.get("constraints") or {}
 
     # Filter out null quote IDs before casting (null -> "null" would become
     # a real quote identifier and diverge from the optimiser apply path).
@@ -1771,19 +1774,53 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
         pl.col(mult_col).cast(pl.Float32),
         pl.col(objective).cast(pl.Float32),
     ]
-    cast_names = {qid_col, step_col, mult_col, objective}
-    for name, spec in constraints.items():
-        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
-            for col in (spec["numerator"], spec["denominator"]):
-                col_name = str(col)
-                if col_name not in cast_names:
-                    cast_exprs.append(pl.col(col_name).cast(pl.Float32))
-                    cast_names.add(col_name)
-        elif name not in cast_names:
-            cast_exprs.append(pl.col(name).cast(pl.Float32))
-            cast_names.add(name)
+    cast_exprs.extend(
+        pl.col(name).cast(pl.Float32) for name in _online_apply_constraint_columns(artifact)
+    )
 
     return streaming_collect(lf.with_columns(cast_exprs))
+
+
+def _online_apply_constraint_columns(artifact: Mapping[str, Any]) -> tuple[str, ...]:
+    """The constraint columns an online apply casts, beyond its four fixed columns.
+
+    A ratio constraint reads its numerator and denominator; any other
+    constraint reads the column it is named after.
+    """
+    seen = {
+        artifact.get("quote_id", "quote_id"),
+        artifact.get("scenario_index", "scenario_index"),
+        artifact.get("scenario_value", "scenario_value"),
+        artifact.get("objective", "expected_income"),
+    }
+    columns: list[str] = []
+    for name, spec in (artifact.get("constraints") or {}).items():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            candidates = [str(spec["numerator"]), str(spec["denominator"])]
+        else:
+            candidates = [name]
+        for column in candidates:
+            if column not in seen:
+                columns.append(column)
+                seen.add(column)
+    return tuple(columns)
+
+
+def online_apply_input_columns(artifact: Mapping[str, Any]) -> frozenset[str]:
+    """Every input column an online apply reads; its output carries no other.
+
+    The apply builds a new frame from the quote id, scenario index and value,
+    objective, and constraint columns its artifact names.
+    """
+    return frozenset(
+        {
+            artifact.get("quote_id", "quote_id"),
+            artifact.get("scenario_index", "scenario_index"),
+            artifact.get("scenario_value", "scenario_value"),
+            artifact.get("objective", "expected_income"),
+            *_online_apply_constraint_columns(artifact),
+        }
+    )
 
 
 # Composite ratebook factor groups (3b.2): price-contour names a composite

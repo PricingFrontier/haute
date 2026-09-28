@@ -3,6 +3,7 @@ import type {
   ExecutionMetrics,
   ExecutionStrategyBoundary,
   ExecutionStrategyDiagnostic,
+  ExecutionStrategyProjectionCause,
   JobStatus,
 } from "../api/types"
 import { formatBytes } from "./formatBytes"
@@ -75,6 +76,8 @@ export type ExecutionProjectionWarning = {
   boundary: ExecutionStrategyBoundary | null
   nodeId: string | null
   operator: string | null
+  /** The node whose code or contract kept that section full-width, when the planner named one. */
+  cause: ExecutionStrategyProjectionCause | null
 }
 
 /**
@@ -98,6 +101,7 @@ export function executionProjectionWarning(
     boundary,
     nodeId: boundary?.node_id ?? strategy.blocking_node_id ?? null,
     operator: boundary?.operator ?? strategy.blocking_operator ?? null,
+    cause: strategy.projection_cause ?? null,
   }
 }
 
@@ -141,6 +145,14 @@ export function buildExecutionStrategyDiagnostic(
   }
   details.push(`Reason ${strategy.reason_code}`)
   if (strategy.remediation) details.push(`Remediation ${strategy.remediation}`)
+  const cause = strategy.projection_cause
+  if (cause) {
+    const input = cause.parent_node_id ? ` from ${cause.parent_node_id}` : ""
+    const operation = cause.operation ? ` in ${cause.operation}` : ""
+    details.push(
+      `Projection cause ${cause.node_id} (${cause.operator})${input}: ${cause.reason_code}${operation}; ${cause.total_count} total`,
+    )
+  }
   details.push(rawCollectionDetail("Boundaries", strategy.boundaries))
   details.push(rawCollectionDetail("Reasons", strategy.reasons))
   details.push(rawCollectionDetail("Provenance", strategy.provenance))
@@ -378,6 +390,9 @@ export function executionWarningNodeIds(
     }
     if (projectionWarning.nodeId) {
       nodeIds.add(projectionWarning.nodeId)
+    }
+    if (projectionWarning.cause) {
+      nodeIds.add(projectionWarning.cause.node_id)
     }
   }
 

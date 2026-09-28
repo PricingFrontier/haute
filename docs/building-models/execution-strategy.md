@@ -44,6 +44,12 @@ Move simple column selection and filtering upstream, declare the columns a
 custom node needs, or split opaque work into a smaller dedicated branch when a
 boundary is unexpectedly costly.
 
+When a preview warns that column projection was limited, the warning names the
+node that stopped Haute narrowing the columns, which is often below the nodes
+that read every column, and suggests what to change there. For code Haute cannot
+follow, referring to each column by name (for example `pl.col("premium")`) or
+moving that step into a node of its own usually clears it.
+
 ### Global operations
 
 Global operations (group-by, sort, unique, join, join_asof, top_k, bottom_k,

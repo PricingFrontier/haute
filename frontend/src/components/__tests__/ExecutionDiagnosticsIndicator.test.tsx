@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import ExecutionDiagnosticsIndicator from "../ExecutionDiagnosticsIndicator"
+import type { ExecutionStrategyProjectionCause } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 function warnedStrategyMetrics(withPressure: boolean) {
@@ -91,6 +92,26 @@ function projectionBoundaryMetrics() {
   })
 }
 
+function projectionCauseMetrics(cause: ExecutionStrategyProjectionCause) {
+  const strategy = projectionBoundaryMetrics().execution_strategy
+  if (!strategy) throw new Error("the projection fixture has a strategy")
+  return makeExecutionMetricsFixture({
+    memory_pressure_events: [],
+    execution_strategy: { ...strategy, projection_cause: cause },
+  })
+}
+
+const unreadableCodeCause: ExecutionStrategyProjectionCause = {
+  node_id: "fill_na",
+  operator: "polars",
+  kind: "input",
+  reason_code: "polars_lineage_unsupported",
+  message: "Polars code is outside the closed column-lineage model",
+  total_count: 1,
+  parent_node_id: "SaleJoin",
+  operation: "with_columns",
+}
+
 afterEach(cleanup)
 
 describe("ExecutionDiagnosticsIndicator", () => {
@@ -108,6 +129,49 @@ describe("ExecutionDiagnosticsIndicator", () => {
     expect(
       screen.getByLabelText("Preview execution warning details"),
     ).toHaveAttribute("title", "Preview memory pressure")
+  })
+
+  it("names the node that kept its input full-width instead of the first full-width node", () => {
+    render(<ExecutionDiagnosticsIndicator metrics={projectionCauseMetrics(unreadableCodeCause)} />)
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent(
+      "'fill_na' (polars) stopped Haute narrowing the columns it reads from 'SaleJoin', so 'SaleJoin' and the nodes above it read every column.",
+    )
+    expect(status).not.toHaveTextContent("stream_node")
+  })
+
+  it("names a node whose own rule kept it full-width and counts the others", () => {
+    const metrics = projectionCauseMetrics({
+      node_id: "policies",
+      operator: "dataInput",
+      kind: "node",
+      reason_code: "unprojected_streaming_boundary",
+      message: "source user code requires full-width source scan",
+      total_count: 3,
+    })
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Haute could not narrow the columns 'policies' (dataInput) reads, so that part of the pipeline read every column. 2 other nodes also kept part of the pipeline full-width.",
+    )
+  })
+
+  it("refers to a cause's inputs when more than one was left full-width", () => {
+    const metrics = projectionCauseMetrics({ ...unreadableCodeCause, parent_node_id: null, total_count: 2 })
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "'fill_na' (polars) stopped Haute narrowing the columns it reads from its inputs, so the nodes above it read every column. 1 other node also kept part of the pipeline full-width.",
+    )
+  })
+
+  it("falls back to the first full-width node when the planner names no cause", () => {
+    render(<ExecutionDiagnosticsIndicator metrics={projectionBoundaryMetrics()} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Haute could not safely push the requested columns through the pipeline at 'stream_node' (filter), so that section stayed full-width.",
+    )
   })
 
   it("renders nothing for a capture warning without another diagnostic", () => {
