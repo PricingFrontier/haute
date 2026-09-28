@@ -1387,6 +1387,17 @@ present a structural or schema result as execution evidence.
   its inputs filled from the declared inputs. Columns the code computes are therefore never demanded from the
   parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
   full-width boundary recorded as `builder_post_code`.
+- **An online Optimiser Apply demands only the columns its artifact names.** The online
+  apply returns a new frame built from the quote id, scenario index and value, objective,
+  and constraint columns (a ratio constraint's numerator and denominator) its saved
+  artifact names (`online_apply_input_columns`, the same list the apply casts), so with one
+  input it owes exactly those whatever is demanded downstream
+  (`optimiser_apply_parent_demand`). The planner loads the artifact as the apply does
+  (cached). A ratebook apply, which passes its input through, an apply with several
+  inputs, and an artifact that cannot be loaded or names no string columns keep the
+  generic contract; the apply then reports a load failure on its own node when it runs.
+  An Explore node with no code and an empty step list is an empty program and passes its
+  demand through like any passthrough; code or a non-empty step list stays opaque.
 - **Data Input post-load code participates in projection planning.** A Data Input's `code`
   runs over its scan as `df`, before `selected_columns` and renames. With a known demand, the
   planner, source builders, and runtime join refinement share one rule

@@ -3934,6 +3934,100 @@ def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
     )
 
 
+def _single_parent_graph(child_type: str, child_config: dict) -> object:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {"label": "source", "nodeType": "dataInput", "config": {}},
+                },
+                {
+                    "id": "child",
+                    "data": {"label": "child", "nodeType": child_type, "config": child_config},
+                },
+            ],
+            "edges": [make_edge("source", "child").model_dump()],
+        }
+    )
+
+
+_ONLINE_APPLY_ARTIFACT = {
+    "version": "v1",
+    "mode": "online",
+    "lambdas": {"volume": 0.5, "loss_ratio": 0.2},
+    "objective": "income",
+    "constraints": {
+        "volume": {"min": 0.9},
+        "loss_ratio": {"max": 0.6, "numerator": "claims", "denominator": "premium"},
+    },
+    "quote_id": "quote_id",
+    "scenario_index": "step",
+    "scenario_value": "adjustment",
+}
+
+
+@pytest.mark.parametrize(
+    "required", [{"quote_id", "optimal_scenario_value"}, {"quote_id"}, {"optimal_volume"}]
+)
+def test_online_optimiser_apply_demands_exactly_the_columns_its_artifact_reads(tmp_path, required):
+    artifact_path = tmp_path / "optimiser.json"
+    artifact_path.write_text(json.dumps(_ONLINE_APPLY_ARTIFACT), encoding="utf-8")
+    graph = _single_parent_graph(
+        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": required},
+        )
+    )
+
+    assert not projection.opaque_boundaries
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "step", "adjustment", "income", "volume", "claims", "premium"}
+    )
+
+
+def test_ratebook_optimiser_apply_keeps_the_generic_rules(tmp_path):
+    artifact_path = tmp_path / "optimiser.json"
+    artifact_path.write_text(
+        json.dumps({**_ONLINE_APPLY_ARTIFACT, "mode": "ratebook"}), encoding="utf-8"
+    )
+    graph = _single_parent_graph(
+        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id"}},
+        )
+    )
+
+    assert "source" in projection.opaque_boundaries
+
+
+def test_explore_with_an_empty_step_list_passes_its_demand_through():
+    projection = plan(
+        ProjectionRequest(
+            graph=_single_parent_graph("explore", {"steps": []}),
+            target_node_id="child",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"child": {"quote_id", "premium"}},
+        )
+    )
+
+    assert pair_value(projection.edge_demands, "source", "child") == frozenset(
+        {"quote_id", "premium"}
+    )
+
+
 def test_builder_post_code_outside_the_lineage_model_keeps_a_full_width_boundary():
     projection = plan(
         ProjectionRequest(

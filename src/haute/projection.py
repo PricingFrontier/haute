@@ -3484,6 +3484,54 @@ class OptimiserParentDemandRule:
 
 
 _OPTIMISER_PARENT_DEMAND_RULE = OptimiserParentDemandRule()
+
+
+@dataclass(frozen=True)
+class OptimiserApplyParentDemandRule:
+    """Projection rule for an online optimiser apply with one input.
+
+    An online apply returns a new frame built only from the columns its saved
+    artifact names (quote id, scenario index and value, objective, and
+    constraint columns), so its input owes exactly those whatever is demanded
+    downstream. The artifact is loaded as for the apply itself, and cached.
+    A ratebook apply, which passes its input through, an apply with several
+    inputs, or an artifact that cannot be loaded or names no columns keeps the
+    generic rules.
+    """
+
+    name: str = "optimiser_apply_parent_demand"
+
+    def parent_demands(
+        self,
+        node: GraphNode,
+        incoming_edges: Iterable[GraphEdge],
+    ) -> ParentDemandResult | None:
+        incoming = list(incoming_edges)
+        if node.data.nodeType is not NodeType.OPTIMISER_APPLY or len(incoming) != 1:
+            return None
+        from haute._builders import online_apply_input_columns
+        from haute._node_apply import load_configured_optimiser_artifact
+
+        try:
+            artifact = load_configured_optimiser_artifact(node.data.config)
+        except Exception:
+            # The apply loads the same artifact when it runs and reports the
+            # failure on its own node, so planning keeps the generic rules
+            # rather than failing every node in the run.
+            return None
+        if not isinstance(artifact, Mapping) or artifact.get("mode", "online") == "ratebook":
+            return None
+        columns = online_apply_input_columns(artifact)
+        if not all(isinstance(column, str) and column for column in columns):
+            return None
+        return ParentDemandResult(
+            default=None,
+            by_parent={incoming[0].source: set(columns)},
+            rule_name=self.name,
+        )
+
+
+_OPTIMISER_APPLY_PARENT_DEMAND_RULE = OptimiserApplyParentDemandRule()
 POLARS_COLUMN_LINEAGE_RULE_NAME = "polars_column_lineage"
 
 
@@ -3498,8 +3546,10 @@ def parent_demands_for_node(
 ) -> ParentDemandResult | None:
     """Return node-specific parent demands that the generic algebra cannot infer.
 
-    Return optimiser-specific parent demands when configured.
+    Return optimiser- or online-apply-specific parent demands when configured.
     """
+    if node.data.nodeType is NodeType.OPTIMISER_APPLY:
+        return _OPTIMISER_APPLY_PARENT_DEMAND_RULE.parent_demands(node, incoming_edges)
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
         node,
         incoming_edges,
@@ -3917,6 +3967,7 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             NodeType.OPTIMISER_APPLY: _coverage(
                 NodeType.OPTIMISER_APPLY,
                 _GENERIC_CONTRACT_RULE_NAME,
+                _OPTIMISER_APPLY_PARENT_DEMAND_RULE.name,
             ),
             NodeType.MODEL_SCORE: _coverage(
                 NodeType.MODEL_SCORE,
