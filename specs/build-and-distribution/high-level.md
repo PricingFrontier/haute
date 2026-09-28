@@ -103,10 +103,15 @@ Out of scope:
   builds the wheel and sdist with `HAUTE_BUILD_FRONTEND=1` exactly as CI's
   package smoke does, checks their file names carry the version, installs each
   into a clean environment for the package smoke check, publishes both to PyPI
-  through trusted publishing (no stored token; the `pypi` environment), and only
-  then tags `vX.Y.Z` at the released commit and creates a GitHub release with
-  generated notes and the two files attached. A dry run stops after the build
-  and smoke checks. Two runs never overlap.
+  through trusted publishing (no stored token; the `pypi` environment), skipping
+  any file PyPI already has, waits until PyPI lists exactly those two files with
+  the built SHA-256 digests, and only then tags `vX.Y.Z` at the released commit
+  and creates a GitHub release with generated notes and the two files attached.
+  A dry run stops after the build and smoke checks. Two runs never overlap.
+- PyPI's trusted publisher names the repository, workflow file, and environment
+  but cannot restrict the branch, so the `pypi` environment allows deployments
+  from `main` only. Without that rule a copy of the workflow on another branch,
+  with its checks removed, could publish.
 
 ## Design rationale
 
@@ -176,11 +181,14 @@ Out of scope:
 - The Release workflow stops before building when it runs outside `main`, when
   `main`'s CI for the commit is missing, still running, or not successful, when
   PyPI cannot be read, or when the version is malformed, already released, not
-  newer than the latest release, or already tagged; each failure says what to
-  do. A failed build or smoke check publishes nothing. Publishing precedes
-  tagging, so a failed publish leaves no tag and the run can be repeated; a
-  failed tag or GitHub release after a successful publish is repaired by
-  re-running that job alone.
+  newer than the latest release, or already tagged, and when the tag lookup
+  itself fails; each failure says what to do. A failed build or smoke check
+  publishes nothing. Publishing precedes tagging, so a failed or partial upload
+  leaves no tag: re-running the failed jobs uploads only the files PyPI does not
+  have yet from the same built artifact, and the tag waits for PyPI to serve
+  exactly this run's files. A different file under the same name, or a file
+  this run did not build, stops the run before tagging. A failed tag or GitHub
+  release after a verified publish is repaired by re-running that job alone.
 
 ## Model-family engine dependencies
 

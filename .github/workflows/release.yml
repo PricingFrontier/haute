@@ -7,11 +7,17 @@ name: Release
 # run this workflow from the Actions tab (Release -> Run workflow, on main). It
 # never edits or commits to the repository, and it refuses a version PyPI
 # already has, so an unbumped main cannot be released twice. Tick "dry run" to
-# build and smoke-check without publishing.
+# build and smoke-check without publishing. If a run fails after publishing
+# started, use "Re-run failed jobs": the upload skips files PyPI already has, and
+# the tag is created only once PyPI serves exactly this run's files.
 #
-# One-time setup: on PyPI, add a trusted publisher for the haute project
-# (owner PricingFrontier, repository haute, workflow release.yml, environment
-# pypi); in GitHub, create the `pypi` environment (Settings -> Environments).
+# One-time setup, before adding the publisher:
+# 1. GitHub: Settings -> Environments -> `pypi` -> Deployment branches and tags
+#    -> Selected branches and tags -> add the branch rule `main`. PyPI's
+#    trusted publisher cannot restrict the branch, so this rule is what stops a
+#    copy of this workflow on another branch from publishing.
+# 2. PyPI: the haute project -> Publishing -> add a GitHub publisher (owner
+#    PricingFrontier, repository haute, workflow release.yml, environment pypi).
 
 on:
   workflow_dispatch:
@@ -95,10 +101,21 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
-            echo "::error::Tag v$VERSION already exists. Bump [project] version in pyproject.toml in a pull request."
-            exit 1
-          fi
+          # --exit-code exits 2 only when no tag matches; any other failure of the
+          # lookup must not read as "untagged".
+          lookup=0
+          git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null || lookup=$?
+          case "$lookup" in
+            2) echo "v$VERSION is not tagged yet." ;;
+            0)
+              echo "::error::Tag v$VERSION already exists. Bump [project] version in pyproject.toml in a pull request."
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not look up tag v$VERSION (git ls-remote exited $lookup); run Release again."
+              exit 1
+              ;;
+          esac
 
   build:
     name: Build and smoke-check
@@ -165,11 +182,50 @@ jobs:
           name: dist
           path: dist/
 
+      # A re-run after a partial upload completes it rather than failing on the
+      # file that already made it; `verify` then checks the files are this run's.
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  verify:
+    name: Verify PyPI serves this run's files
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Wait for PyPI to list exactly the built files
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # PyPI's JSON API can lag an upload by a few minutes.
+          for attempt in $(seq 1 20); do
+            if curl -sSf -o release.json "https://pypi.org/pypi/haute/$VERSION/json" \
+              && uv run --no-project python scripts/verify_pypi_release.py \
+                --dist dist --pypi-json release.json; then
+              exit 0
+            fi
+            echo "Attempt $attempt: PyPI does not list exactly the built files yet."
+            sleep 30
+          done
+          echo "::error::PyPI does not serve exactly this run's files for haute $VERSION; re-run the failed jobs."
+          exit 1
 
   github-release:
     name: Tag and create the GitHub release
-    needs: [check, publish]
+    needs: [check, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
