@@ -1,6 +1,6 @@
 # Installing Haute
 
-Make sure you've [set up your environment](environment.md) first (VS Code, Python, uv).
+Make sure you've [set up your environment](environment.md) first (VS Code and uv).
 
 ---
 
@@ -12,19 +12,27 @@ Open the VS Code terminal and run these commands one at a time:
 uv init my-pricing-project
 cd my-pricing-project
 uv add haute
-haute init --target databricks
+uv run haute init --target databricks
 ```
 
-This creates a new project folder with everything Haute needs: a `haute.toml` configuration file, test quote templates, CI/CD workflow files, and a `.env.example` credential template.
+`uv run` runs Haute from the project's environment, which you have not activated yet. `--target` names where you will deploy: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs` or `gcp-run`.
+
+This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `data/` folder for your data files, a `haute.toml` configuration file, test quote templates, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
+
+Copy the credential template to `.env` and fill in your values. `.env` is gitignored, so your credentials are never committed:
+
+```powershell
+cp .env.example .env
+```
 
 ---
 
-## Set up a virtual environment and run
+## Activate the environment and run
+
+`uv add` already created the project's virtual environment, `.venv`, and installed Haute into it. Activate it and start the editor:
 
 ```powershell
-uv venv
 .venv\Scripts\activate
-uv sync
 haute serve
 ```
 
@@ -76,7 +84,7 @@ uv sync --no-managed-python --no-python-downloads
 .\.venv\Scripts\python.exe -m haute serve
 ```
 
-Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. You can use the module form for every command, such as `python -m haute init` or `python -m haute lint`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
+Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. The module form works for `haute init` too: `python -m haute init`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
 
 ### macOS: XGBoost or LightGBM will not load
 
@@ -102,5 +110,5 @@ Run `.venv\Scripts\activate`. You need to do this every time you open a new term
 
 You've got Haute running locally. From here:
 
-- **Build a pipeline** - see the **Building Pipelines** guide to create your pricing pipeline
+- **Build a pipeline** - see the [Building Models](../building-models/index.md) guide to create your pricing pipeline
 - **Deploy it** - when you're ready to go live, head to the [Deployment](../deployment/index.md) docs. If you're new to Git, CI/CD, and other deployment concepts, read [Before You Start](../deployment/before-you-start.md) first - it explains everything in plain English.

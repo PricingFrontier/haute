@@ -96,9 +96,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://haute.dev"
+Homepage = "https://pricingfrontier.github.io/haute/"
 Repository = "https://github.com/PricingFrontier/haute"
-Documentation = "https://haute.dev"
+Documentation = "https://pricingfrontier.github.io/haute/"
 
 [project.optional-dependencies]
 databricks = [

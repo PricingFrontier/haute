@@ -103,10 +103,10 @@ browser's copy is written by hand.
 **Plan:** Define one Pydantic model per node type, discriminated by
 `nodeType`, and make it the validation boundary for parse, save, recovery and
 execution. Derive the sidecar allowlist from the models, and generate the
-browser types from them through `API-R03`. Generate the node-reference config
-tables (`docs/building-models/nodes/`) from the models, so
-`tests/test_node_reference_docs.py` checks generated tables instead of
-hand-written ones.
+browser types from them through `API-R03`. Generate the key column of the
+node-reference "In the pipeline file" tables (`docs/building-models/nodes/`)
+from the models, so `tests/test_node_reference_docs.py` checks generated keys
+instead of hand-written ones.
 
 **Acceptance:** Every node type has a model; the scattered per-type
 validators are either deleted or called only from the model's validators; an

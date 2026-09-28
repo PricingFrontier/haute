@@ -37,6 +37,7 @@
 | `frontend/src/utils/objectLiteral.ts` | `isObjectLiteral`: true only for a plain object literal (`{}` or a null-prototype object), the object shape a JSON config holds. |
 | `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`, and owns `formatDuration`, the one seconds formatter (`0.4 s`, `12 s`, `2m 05s`). |
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
+| `frontend/src/utils/documentation.ts` | The published documentation's URLs, which the editor's server does not serve: `DOCUMENTATION_URL` (the site, for the toolbar's Help menu) and `NODE_REFERENCE_URL` (the node reference, for the unknown-node-type banner). |
 | `frontend/src/utils/dtypeColors.ts` | Dtype string → Tailwind text-colour class for column-type badges. |
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. For a chunk-load failure (`isChunkLoadError`), which no retry in the page can recover because the lazy import's rejection is cached and a rebuild has replaced the chunk it names, the fallback reads "Haute has been updated" and its Reload button reloads the page; while `useGraphStore`'s `dirty` is set it asks for a save first and the button reads "Reload without saving". |

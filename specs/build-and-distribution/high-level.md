@@ -79,7 +79,8 @@ Out of scope:
   page for every node type a user can add; a submodel port, created with its
   submodel, is documented on the submodel page. The navigation lists those pages
   and the feature pages (the index and Instances) and nothing else, a page's
-  config table names only keys the config validator accepts for its node type,
+  "In the pipeline file" reference (the node's editor settings mapped to config
+  keys) names only keys the config validator accepts for its node type,
   and no published page uses the vocabulary of a removed node type. A test
   enforces all four, so adding a node type without a page, or keeping a page for
   a removed type or key, fails CI.

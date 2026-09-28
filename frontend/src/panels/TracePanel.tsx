@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { AlertTriangle, Copy, Download, Info, Printer, X, Scan } from "lucide-react"
-import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult } from "../types/trace"
+import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult, TraceStep } from "../types/trace"
 import PanelShell from "./PanelShell"
 import { StepCard } from "../trace/StepCard"
 import { TraceNavigationContext, TraceStepsContext, type TraceNavigation } from "../trace/traceContext"
@@ -90,6 +90,9 @@ function omissionSummary(reason: string, diagnostic: TraceCorrelationDiagnostic 
 /** How long after a derivation link's click hovers are ignored: the scroll to the card. */
 const LINK_SCROLL_SETTLE_MS = 1_000
 
+/** The story's `p-3` padding: a card the trace opens on sits where the first card does. */
+const STORY_PADDING_PX = 12
+
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const storyKey = traceStoryKey(trace)
   const [showHidden, setShowHidden] = useState(false)
@@ -145,11 +148,35 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     () => new Map(trace.steps.map((step, index) => [step.node_id, index])),
     [trace.steps],
   )
+  // A trace opens on the clicked node's card, the last step, rather than at the
+  // pipeline's first; when the focused story hides that node (it only carries the
+  // value), on the last card shown. Only a new trace moves the story, and it moves
+  // nothing else: no smooth scrollIntoView, which would also scroll the panel's parents.
+  const landingNodeId = useMemo(() => {
+    const shownSteps = storyEntries.filter((entry): entry is TraceStep => !("collapsed" in entry))
+    return shownSteps.some((step) => step.node_id === trace.target_node_id)
+      ? trace.target_node_id
+      : shownSteps.at(-1)?.node_id
+  }, [storyEntries, trace.target_node_id])
+  const storyRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const story = storyRef.current
+    const card = story?.querySelector("[data-trace-landing]")
+    if (!story || !card) return
+    story.scrollTop += card.getBoundingClientRect().top - story.getBoundingClientRect().top - STORY_PADDING_PX
+  }, [storyKey])
   // A derivation row's step link opens that step's card (in the full trace when the
   // focused one hides it) and centres its node; pointing at a card or row rings it.
   const setTraceFocusNodeId = useUIStore((s) => s.setTraceFocusNodeId)
   const requestTraceCentre = useUIStore((s) => s.requestTraceCentre)
   const [focusRequest, setFocusRequest] = useState<{ nodeId: string; nonce: number } | null>(null)
+  // A new story drops the request before its cards render: they remount, and
+  // replaying it would pull the story back from its landing card.
+  const [focusStoryKey, setFocusStoryKey] = useState(storyKey)
+  if (focusStoryKey !== storyKey) {
+    setFocusStoryKey(storyKey)
+    setFocusRequest(null)
+  }
   // While the panel scrolls to a linked card, content moves under a still pointer
   // and reports hovers the user never made: they wait until the scroll settles.
   const hoverSettlesAtRef = useRef(0)
@@ -326,6 +353,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         </div>
 
         <div
+          ref={storyRef}
           className="flex-1 overflow-y-auto p-3 space-y-2"
           data-testid="trace-story"
           style={{ background: "var(--bg-panel)" }}
@@ -450,7 +478,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                 tracedColumn={trace.column}
                 isTargetStep={isTargetStep}
                 defaultExpanded={expandedStepIds.has(entry.node_id)}
-              focusNonce={focusRequest?.nodeId === entry.node_id ? focusRequest.nonce : undefined}
+                focusNonce={focusRequest?.nodeId === entry.node_id ? focusRequest.nonce : undefined}
+                isLanding={entry.node_id === landingNodeId}
                 waterfall={isTargetStep ? trace.waterfall : undefined}
               />
             )
