@@ -963,8 +963,8 @@ counted and logged). The per-factor columns are never clamped. Their product bec
 `optimised_factor`, which is then clipped to `[min, max]`: the order is neutral fill → product →
 collar. A product inside the collar, or exactly on an edge, is unchanged bit for bit; a product
 past an edge deploys at that edge, which is the grid-end step the solver evaluated for it. This
-is the Q17 decision in [optimiser validation](../roadmap/optimiser-validation.md): the deployed
-factor never leaves the range the solve scored. Inside the range the deployed factor is the
+is the ratebook collar decision (Q17, 25 September 2026): the deployed factor never leaves the
+range the solve scored. Inside the range the deployed factor is the
 unsnapped product; the solver evaluated the nearest grid step, so the two agree exactly only on
 grid values.
 
@@ -1842,8 +1842,8 @@ validates the job (completed), the point and captures `frontier_generation`:
   `{"error_code": "frontier_point_unavailable", "message": ...}`. A point whose artifact was
   evicted (as the ninth) is therefore re-materialised while the grid lives and a 410 after.
 - Materialisation goes through the job's `LatestWinsQueue`, keyed `(frontier_generation,
-  point_index)`: at most one runs per job, because `apply_from_grid` cannot be interrupted
-  (OPT-PC02). A request for the running or the waiting key subscribes to it. A request for any
+  point_index)`: at most one runs per job, because neither `apply_from_grid` nor the ratebook
+  `evaluate` can be interrupted (OPT-PC02). A request for the running or the waiting key subscribes to it. A request for any
   other key while one runs takes the single waiting slot; the waiter it replaces fails for all of
   its subscribers with 409 `{"error_code": "frontier_point_apply_replaced", "message": ...}`.
   When the running one ends, the waiter starts. A detaching subscriber leaves only itself; a
@@ -2041,7 +2041,7 @@ re-solved.
 
 **Deployed factor differs from evaluated step.** The solve evaluates each quote at its nearest
 step; the Optimiser Apply node deploys the unsnapped product of the factor rates, clipped to
-`combined_factor_bounds` (Q17). They differ only by the rounding to the nearest step inside the
+`combined_factor_bounds` (the ratebook collar, Q17). They differ only by the rounding to the nearest step inside the
 scenario range: a product past a grid edge deploys at that edge, the step the solver evaluated.
 The per-quote flag `deployed_factor_differs` is therefore
 
