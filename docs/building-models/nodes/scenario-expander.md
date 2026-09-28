@@ -20,7 +20,7 @@ A **Min** or **Max** that is not a number is outlined in red and not saved; fix 
 
 ## The POLARS tab
 
-The **POLARS** tab adds optional steps that run after the expansion, on the expanded data as `df` (the tab's hint reads "use df for expanded data"). They are built with the step builder described in [Building the node from steps](polars.md#building-the-node-from-steps).
+See [Polars](polars.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 

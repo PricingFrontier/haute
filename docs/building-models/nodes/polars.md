@@ -130,7 +130,18 @@ On the **POLARS** tab of a Data Input, Load File, Rating Step, Expander or Model
 - **Join another input** and **Append inputs** are offered only on a Load File node, whose other inputs the steps can name. On the other nodes the steps see only `df`.
 - The loaded object of a Load File node, `obj`, is available only in a **Free code** step.
 
-Each node's page says what `df` holds there.
+What `df` holds on each node, and the hint its tab shows:
+
+| Node | `df` holds | Hint |
+|---|---|---|
+| [Data Input](data-input.md) | The loaded data | "df = the opened input snapshot" |
+| [Load File](external-file.md) | The first input; the loaded file is `obj`, which only a **Free code** step or the code after **Switch to code** can use, for example to score with `obj.predict(...)` | "obj = loaded file, assign to df" |
+| [Rating Step](rating-step.md) | The rated data | "use df for rated data" |
+| [Expander](scenario-expander.md) | The expanded data | "use df for expanded data" |
+| [Model Scoring](model-score.md) | The scored data, with the prediction in the node's output column | "Post-processing Code (optional)" |
+| [Explore](explore.md) (**POLARS CODE** pane) | The node's input | "assign to df" |
+
+Steps on these nodes do what a Polars node straight after them would do. Use them to shape the data where the node produces it, such as filtering a Data Input's rows as they load or deriving `expected_claims` from a prediction; use a Polars node when the work combines several inputs.
 
 ## Writing the node as code
 

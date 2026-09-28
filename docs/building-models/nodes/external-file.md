@@ -24,7 +24,7 @@ The **INPUT** chips at the top name the node's connections; the × on a chip rem
 
 ## The POLARS tab
 
-The **POLARS** tab applies the loaded file. Its steps start from the first input as `df`, and the loaded object is `obj` (the tab's hint reads "obj = loaded file, assign to df"). The structured steps work on the data only, so use `obj` in a **Free code** step, or in the node's code after **Switch to code**. The step builder is described in [Building the node from steps](polars.md#building-the-node-from-steps).
+See [Polars](polars.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 

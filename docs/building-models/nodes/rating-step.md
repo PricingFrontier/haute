@@ -60,7 +60,7 @@ A line under the fields shows the formula, such as `location_age_factor = 1.0 ×
 
 ## The POLARS tab
 
-The **POLARS** tab adds optional steps that run after the rating, on the rated data as `df` (the tab's hint reads "use df for rated data"). They are built with the step builder described in [Building the node from steps](polars.md#building-the-node-from-steps).
+See [Polars](polars.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 

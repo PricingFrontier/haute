@@ -74,7 +74,7 @@ listing what is wrong, rather than predicting from mismatched data.
 
 ## The POLARS tab
 
-The **POLARS** tab (hint: **Post-processing Code (optional)**) adds steps that transform the predictions after scoring. The steps start from the scored frame, `df`, where the prediction is already in the output column. For example, an **Add column** step named `expected_claims` that multiplies `predicted_frequency` by `exposure`. See [Building the node from steps](polars.md#building-the-node-from-steps) for the step builder, **Free code** steps and the one-way **Switch to code**.
+See [Polars](polars.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 

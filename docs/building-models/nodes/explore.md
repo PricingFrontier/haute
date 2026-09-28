@@ -13,7 +13,7 @@ The node's panel splits its settings into panes, **POLARS CODE**, **OVERVIEW**, 
 
 ## The POLARS CODE pane
 
-Optional steps that shape the frame being explored, for example to filter it or add a column before you profile it. The steps start from the node's input as `df` (the pane's hint reads **assign to df**) and cannot read other inputs. See [Building the node from steps](polars.md#building-the-node-from-steps) for the step builder, **Free code** steps and the one-way **Switch to code**.
+See [Polars](polars.md#building-the-node-from-steps).
 
 ## The OVERVIEW pane
 

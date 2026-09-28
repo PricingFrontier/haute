@@ -68,10 +68,7 @@ A **CONFIGURATION ERRORS** box at the top of the fields lists anything in the no
 
 ## The POLARS tab
 
-The **POLARS** tab adds optional steps that run on the loaded data, which the steps see as `df` (the tab's hint reads "df = the opened input snapshot"). They are built with the step builder described in [Building the node from steps](polars.md#building-the-node-from-steps).
-
-!!! note "When to use the Polars tab vs a Polars node"
-    Steps and code are optional. You can also add a [Polars](polars.md) node downstream for the same effect. Use the **POLARS** tab here to filter or reshape the data as it loads: add steps, a **Free code** step, or click **Switch to code** to write it all as code.
+See [Polars](polars.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 
