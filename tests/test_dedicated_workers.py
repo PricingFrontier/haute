@@ -16,16 +16,19 @@ from haute._dedicated_workers import (
     DedicatedWorker,
     DedicatedWorkerDeadError,
     child_limit_evidence_counter,
+    on_command_cancel,
     open_dedicated_workers,
     record_job_notification,
     shutdown_dedicated_workers,
 )
+from haute._execution_context import ExecutionCancellationToken
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerStartError,
     InteractiveWorkerStoppedError,
+    InteractiveWorkerTimeoutError,
 )
 from haute._native_memory_limit import JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, native_memory_caps_supported
 from haute._process_memory import process_rss_bytes
@@ -83,6 +86,59 @@ def die_holding_evidence_lock() -> None:
 
 def value_error() -> None:
     raise ValueError("a command's own failure")
+
+
+def stop_when_cancelled() -> str:
+    """Wait for its owner's cancel (OPT-PC02), then fail as the command chooses to."""
+    cancelled = threading.Event()
+    with on_command_cancel(cancelled.set):
+        if not cancelled.wait(30):
+            return "never cancelled"
+    raise RuntimeError("stopped on its owner's cancel")
+
+
+def ignore_cancel_then_return(seconds: float) -> int:
+    time.sleep(seconds)
+    return 7
+
+
+class _Held:
+    """A stand-in for a cancelled command's large frame (weak-referenceable)."""
+
+
+_HELD: dict[str, object] = {}
+
+
+def fail_holding_a_frame() -> None:
+    import weakref
+
+    frame = _Held()
+    _HELD["ref"] = weakref.ref(frame)
+    raise RuntimeError("cancelled while holding its frame")
+
+
+def held_frame_is_released() -> bool:
+    import gc
+
+    gc.collect()
+    ref = _HELD["ref"]
+    return ref() is None  # type: ignore[operator]
+
+
+def hang_holding_cancel_lock() -> None:
+    from haute import _dedicated_workers
+
+    bound = _dedicated_workers._child_command  # noqa: SLF001 - simulating a stuck reader
+    assert bound is not None
+    bound[0]._lock.acquire()  # noqa: SLF001
+    block_forever()
+
+
+def report_whether_cancelled(seconds: float) -> bool:
+    cancelled = threading.Event()
+    with on_command_cancel(cancelled.set):
+        time.sleep(seconds)
+    return cancelled.is_set()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -180,6 +236,95 @@ def test_a_child_dying_holding_the_evidence_lock_never_stalls(worker: DedicatedW
         _run(worker, die_holding_evidence_lock)
     assert time.monotonic() - started < 5
     assert worker.death is not None and worker.death.memory_evidence == "none"
+
+
+def _cancel_after(token: ExecutionCancellationToken, seconds: float) -> threading.Thread:
+    thread = threading.Thread(target=lambda: (time.sleep(seconds), token.cancel()))
+    thread.start()
+    return thread
+
+
+def test_a_cancelled_command_stops_and_the_worker_keeps_running(worker: DedicatedWorker) -> None:
+    token = ExecutionCancellationToken()
+    canceller = _cancel_after(token, 0.3)
+    started = time.monotonic()
+    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+        _run(worker, stop_when_cancelled, cancellation_token=token)
+    canceller.join()
+    assert time.monotonic() - started < 5
+    assert raised.value.remote_type == "RuntimeError"
+    assert "owner's cancel" in raised.value.remote_message
+    assert worker.alive and worker.death is None
+    assert _run(worker, remember, 9) == 9
+
+
+def test_a_token_cancelled_before_the_command_starts_stops_it_at_once(
+    worker: DedicatedWorker,
+) -> None:
+    token = ExecutionCancellationToken()
+    token.cancel()
+    started = time.monotonic()
+    with pytest.raises(InteractiveWorkerRemoteError):
+        _run(worker, stop_when_cancelled, cancellation_token=token)
+    assert time.monotonic() - started < 5
+    assert worker.alive
+
+
+def test_a_command_that_registers_nothing_runs_to_completion(worker: DedicatedWorker) -> None:
+    token = ExecutionCancellationToken()
+    canceller = _cancel_after(token, 0.1)
+    assert _run(worker, ignore_cancel_then_return, 0.5, cancellation_token=token) == 7
+    canceller.join()
+    assert worker.alive
+
+
+def test_a_cancel_never_reaches_the_next_command(worker: DedicatedWorker) -> None:
+    token = ExecutionCancellationToken()
+    token.cancel()
+    with pytest.raises(InteractiveWorkerRemoteError):
+        _run(worker, stop_when_cancelled, cancellation_token=token)
+    assert _run(worker, report_whether_cancelled, 0.3) is False
+
+
+def test_a_failed_command_keeps_nothing_alive_into_the_next(worker: DedicatedWorker) -> None:
+    """The child's loop must drop a failed command's exception once it is sent: its
+    traceback would hold the command's frame (a cancelled apply's per-quote table)."""
+    with pytest.raises(InteractiveWorkerRemoteError):
+        _run(worker, fail_holding_a_frame)
+    assert _run(worker, held_frame_is_released) is True
+
+
+def test_a_child_holding_the_cancel_lock_never_stalls_its_owner(worker: DedicatedWorker) -> None:
+    """A cancel request must not block on the cell's lock: the owner still reaches its
+    deadline (and, likewise, a death) while the child holds it."""
+    token = ExecutionCancellationToken()
+    canceller = _cancel_after(token, 0.5)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            worker.run(
+                hang_holding_cancel_lock,
+                growth_bytes=_GROWTH,
+                required=True,
+                timeout_seconds=2,
+                cancellation_token=token,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    canceller.join()
+    assert not thread.is_alive(), "the owner blocked on the cancel cell's lock"
+    assert errors and isinstance(errors[0], InteractiveWorkerTimeoutError)
+
+
+def test_on_command_cancel_outside_a_worker_command_raises() -> None:
+    with pytest.raises(RuntimeError, match="dedicated worker"):
+        with on_command_cancel(lambda: None):
+            pass
 
 
 def test_terminate_stops_a_running_command_promptly(worker: DedicatedWorker) -> None:

@@ -52,7 +52,7 @@ def _real_module() -> types.ModuleType:
 _FAKE_MODULE_DIR = str(Path("/site-packages/price_contour"))
 
 
-def _fake_package(version: str = "0.5.0", *, drop: tuple[str, ...] = ()) -> types.ModuleType:
+def _fake_package(version: str = "0.6.0", *, drop: tuple[str, ...] = ()) -> types.ModuleType:
     """A package exposing every required top-level symbol of the real library."""
     real = _real_module()
     module = types.ModuleType("price_contour")
@@ -135,7 +135,7 @@ def test_a_verified_install_logs_one_info_line(mp: pytest.MonkeyPatch) -> None:
     mp.setattr(guard.logger, "info", lambda event, **fields: events.append((event, fields)))
     _install(
         mp,
-        distribution=_FakeDistribution("0.5.0"),
+        distribution=_FakeDistribution("0.6.0"),
         module=_fake_package(),
     )
 
@@ -145,7 +145,7 @@ def test_a_verified_install_logs_one_info_line(mp: pytest.MonkeyPatch) -> None:
     assert events == [
         (
             "price_contour_verified",
-            {"version": "0.5.0", "source": "wheel", "path": _FAKE_MODULE_DIR},
+            {"version": "0.6.0", "source": "wheel", "path": _FAKE_MODULE_DIR},
         )
     ]
 
@@ -161,7 +161,7 @@ def test_an_old_version_names_version_specifier_path_source_and_remedy(
         module=_fake_package("0.2.7"),
     )
 
-    assert "version 0.2.7 does not satisfy >=0.5.0,<0.6" in message
+    assert "version 0.2.7 does not satisfy >=0.6.0,<0.7" in message
     assert "Installed version: 0.2.7" in message
     assert f"Required: price-contour{REQUIRED_SPECIFIER}" in message
     assert f"Module path: {_FAKE_MODULE_DIR}" in message
@@ -173,15 +173,15 @@ def test_an_old_version_names_version_specifier_path_source_and_remedy(
 def test_the_next_minor_version_is_rejected(mp: pytest.MonkeyPatch) -> None:
     message = _error(
         mp,
-        distribution=_FakeDistribution("0.6.0"),
-        module=_fake_package("0.6.0"),
+        distribution=_FakeDistribution("0.7.0"),
+        module=_fake_package("0.7.0"),
     )
 
-    assert "version 0.6.0 does not satisfy >=0.5.0,<0.6" in message
+    assert "version 0.7.0 does not satisfy >=0.6.0,<0.7" in message
     assert "Installed from: wheel" in message
 
 
-@pytest.mark.parametrize("prerelease", ["0.5.2rc1", "0.5.2.dev0", "0.5.2a1"])
+@pytest.mark.parametrize("prerelease", ["0.6.2rc1", "0.6.2.dev0", "0.6.2a1"])
 def test_prereleases_inside_the_range_are_rejected(mp: pytest.MonkeyPatch, prerelease: str) -> None:
     message = _error(
         mp,
@@ -196,11 +196,11 @@ def test_prereleases_inside_the_range_are_rejected(mp: pytest.MonkeyPatch, prere
 def test_a_later_patch_release_is_accepted(mp: pytest.MonkeyPatch) -> None:
     _install(
         mp,
-        distribution=_FakeDistribution("0.5.9"),
-        module=_fake_package("0.5.9"),
+        distribution=_FakeDistribution("0.6.9"),
+        module=_fake_package("0.6.9"),
     )
 
-    assert price_contour_install().version == "0.5.9"
+    assert price_contour_install().version == "0.6.9"
 
 
 def test_an_importable_module_without_distribution_metadata_is_rejected(
@@ -218,18 +218,18 @@ def test_a_module_version_that_disagrees_with_the_metadata_is_rejected(
 ) -> None:
     message = _error(
         mp,
-        distribution=_FakeDistribution("0.5.0"),
+        distribution=_FakeDistribution("0.6.0"),
         module=_fake_package("0.0.0+local"),
     )
 
     assert "module __version__ '0.0.0+local' does not match" in message
-    assert "'0.5.0'" in message
+    assert "'0.6.0'" in message
 
 
 def test_every_missing_symbol_is_listed_in_one_error(mp: pytest.MonkeyPatch) -> None:
     message = _error(
         mp,
-        distribution=_FakeDistribution("0.5.0"),
+        distribution=_FakeDistribution("0.6.0"),
         module=_fake_package(drop=("apply_from_grid", "RatebookFactorContexts")),
     )
 
@@ -255,7 +255,7 @@ def test_a_missing_method_is_a_missing_symbol(mp: pytest.MonkeyPatch) -> None:
         def apply(self, df: Any) -> Any: ...
 
     module.ApplyOptimiser = ApplyOptimiser  # type: ignore[attr-defined]
-    message = _error(mp, distribution=_FakeDistribution("0.5.0"), module=module)
+    message = _error(mp, distribution=_FakeDistribution("0.6.0"), module=module)
 
     assert "missing symbol price_contour.ApplyOptimiser.with_explainer_columns" in message
 
@@ -271,7 +271,7 @@ def test_a_removed_keyword_parameter_is_listed(mp: pytest.MonkeyPatch) -> None:
 
     module.apply_from_grid = apply_from_grid  # type: ignore[attr-defined]
     module.build_grid_from_parquet_chunked = build_grid_from_parquet_chunked  # type: ignore[attr-defined]
-    message = _error(mp, distribution=_FakeDistribution("0.5.0"), module=module)
+    message = _error(mp, distribution=_FakeDistribution("0.6.0"), module=module)
 
     assert "missing parameter apply_from_grid(constraints=...)" in message
     assert "missing parameter build_grid_from_parquet_chunked(scenario_index=...)" in message
@@ -287,7 +287,7 @@ def test_a_positional_only_parameter_cannot_take_a_keyword(
     def apply_from_grid(grid: Any, lambdas: Any, constraints: Any, /) -> Any: ...
 
     module.apply_from_grid = apply_from_grid  # type: ignore[attr-defined]
-    message = _error(mp, distribution=_FakeDistribution("0.5.0"), module=module)
+    message = _error(mp, distribution=_FakeDistribution("0.6.0"), module=module)
 
     assert "missing parameter apply_from_grid(lambdas=...)" in message
     assert "missing parameter apply_from_grid(constraints=...)" in message
@@ -315,7 +315,7 @@ def test_a_native_import_failure_is_chained(mp: pytest.MonkeyPatch) -> None:
     _install(
         mp,
         distribution=_FakeDistribution(
-            "0.5.0", {"url": f"file://{CHECKOUT}", "dir_info": {"editable": True}}
+            "0.6.0", {"url": f"file://{CHECKOUT}", "dir_info": {"editable": True}}
         ),
         module=_fake_package(),
         native_error=native,
@@ -337,9 +337,9 @@ def test_a_failed_verification_is_not_cached(mp: pytest.MonkeyPatch) -> None:
     with pytest.raises(PriceContourCompatibilityError):
         price_contour()
 
-    _install(mp, distribution=_FakeDistribution("0.5.0"), module=_fake_package())
+    _install(mp, distribution=_FakeDistribution("0.6.0"), module=_fake_package())
 
-    assert price_contour_install().version == "0.5.0"
+    assert price_contour_install().version == "0.6.0"
 
 
 @pytest.mark.parametrize(
@@ -353,10 +353,10 @@ def test_a_failed_verification_is_not_cached(mp: pytest.MonkeyPatch) -> None:
             f"editable checkout {CHECKOUT}",
         ),
         (
-            {"url": "file:///wheels/price_contour-0.5.0.whl", "archive_info": {}},
+            {"url": "file:///wheels/price_contour-0.6.0.whl", "archive_info": {}},
             "direct_url",
-            "/wheels/price_contour-0.5.0.whl",
-            "direct URL /wheels/price_contour-0.5.0.whl",
+            "/wheels/price_contour-0.6.0.whl",
+            "direct URL /wheels/price_contour-0.6.0.whl",
         ),
         (
             {"url": "https://example.com/pc.git", "vcs_info": {"vcs": "git"}},
@@ -375,7 +375,7 @@ def test_the_install_source_is_classified(
 ) -> None:
     _install(
         mp,
-        distribution=_FakeDistribution("0.5.0", direct_url),
+        distribution=_FakeDistribution("0.6.0", direct_url),
         module=_fake_package(),
     )
 
@@ -399,11 +399,11 @@ def _pinned_container_dependencies() -> list[str]:
 def test_a_wheel_install_pins_the_container_to_its_exact_version(
     mp: pytest.MonkeyPatch,
 ) -> None:
-    _install(mp, distribution=_FakeDistribution("0.5.3"), module=_fake_package("0.5.3"))
+    _install(mp, distribution=_FakeDistribution("0.6.3"), module=_fake_package("0.6.3"))
 
     deps = _pinned_container_dependencies()
 
-    assert [dep for dep in deps if dep.startswith("price-contour")] == ["price-contour==0.5.3"]
+    assert [dep for dep in deps if dep.startswith("price-contour")] == ["price-contour==0.6.3"]
 
 
 @pytest.mark.parametrize(
@@ -414,8 +414,8 @@ def test_a_wheel_install_pins_the_container_to_its_exact_version(
             f"editable checkout {CHECKOUT}",
         ),
         (
-            {"url": "file:///wheels/price_contour-0.5.0.whl", "archive_info": {}},
-            "direct URL /wheels/price_contour-0.5.0.whl",
+            {"url": "file:///wheels/price_contour-0.6.0.whl", "archive_info": {}},
+            "direct URL /wheels/price_contour-0.6.0.whl",
         ),
     ],
 )
@@ -424,13 +424,13 @@ def test_a_build_the_index_cannot_reproduce_refuses_to_deploy(
 ) -> None:
     from haute.errors import DeployError
 
-    _install(mp, distribution=_FakeDistribution("0.5.0", direct_url), module=_fake_package())
+    _install(mp, distribution=_FakeDistribution("0.6.0", direct_url), module=_fake_package())
 
     with pytest.raises(DeployError) as caught:
         _pinned_container_dependencies()
 
     message = str(caught.value)
-    assert f"version 0.5.0 is installed from {described}" in message
+    assert f"version 0.6.0 is installed from {described}" in message
     assert "uv sync --locked" in message
 
 
@@ -445,4 +445,4 @@ def test_an_incompatible_install_refuses_to_deploy_with_the_guard_diagnosis(
         _pinned_container_dependencies()
 
     assert isinstance(caught.value.__cause__, PriceContourCompatibilityError)
-    assert "version 0.2.7 does not satisfy >=0.5.0,<0.6" in str(caught.value)
+    assert "version 0.2.7 does not satisfy >=0.6.0,<0.7" in str(caught.value)

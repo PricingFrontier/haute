@@ -1427,6 +1427,46 @@ def test_cancellation_latency_keeps_the_first_observed_value() -> None:
     assert context.metrics_payload()["cancellation_latency_ms"] == pytest.approx(25.0)
 
 
+def test_on_cancel_runs_each_callback_once_when_the_token_is_cancelled() -> None:
+    token = ExecutionCancellationToken()
+    calls: list[str] = []
+    token.on_cancel(lambda: calls.append("first"))
+    token.on_cancel(lambda: calls.append("second"))
+    assert calls == []
+
+    token.cancel()
+    token.cancel()
+
+    assert calls == ["first", "second"]
+
+
+def test_on_cancel_runs_at_once_on_an_already_cancelled_token() -> None:
+    token = ExecutionCancellationToken()
+    token.cancel()
+    calls: list[str] = []
+
+    token.on_cancel(lambda: calls.append("late"))
+
+    assert calls == ["late"]
+
+
+def test_on_cancel_callbacks_run_outside_the_token_lock() -> None:
+    token = ExecutionCancellationToken()
+    seen: list[bool] = []
+
+    def reads_the_token_from_another_thread() -> None:
+        # A callback that needs the token (here, from another thread) must not
+        # deadlock on the lock cancel() holds while setting the flag.
+        thread = threading.Thread(target=lambda: seen.append(token.cancelled))
+        thread.start()
+        thread.join(5)
+
+    token.on_cancel(reads_the_token_from_another_thread)
+    token.cancel()
+
+    assert seen == [True]
+
+
 def test_terminal_telemetry_skips_live_statuses_and_logs_without_a_sink() -> None:
     telemetry = ExecutionTelemetry(enabled=True)
 

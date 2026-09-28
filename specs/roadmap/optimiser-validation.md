@@ -8,8 +8,9 @@ component specifications, not here:
   [low-level](../optimiser/low-level.md): the result contract, effective
   bounds, typed frontier points, the analysis-column side table, bounded choice
   queries, adjustment reports, segment breakdowns, the Quotes explorer, the
-  ratebook per-quote evaluation and collar, and the price-contour contract
-  haute relies on.
+  ratebook per-quote evaluation and collar, the price-contour contract haute
+  relies on, and the cancellable frontier-point apply (OPT-PC02, price-contour
+  0.6.0).
 - [Modelling and optimiser UI high-level](../frontend-modelling-optimiser-ui/high-level.md)
   and [low-level](../frontend-modelling-optimiser-ui/low-level.md): the shared
   results workspace and every optimiser pane.
@@ -19,8 +20,7 @@ This roadmap keeps only the work still open.
 ## Scope
 
 In scope: forecasting a solve's memory in the Solve panel from a calibrated forecast (OPT-W02),
-and making a frontier point's per-quote apply interruptible, so rapid stepping through frontier
-points stops wasting solver work.
+and recording each frontier point's convergence trace in price_contour's sweep (OPT-PC04).
 
 Out of scope, as decisions rather than open work (see "Out of scope and not
 applicable" below):
@@ -36,7 +36,6 @@ applicable" below):
 |---|---|---:|---|
 | OPT-W02 | Planned | P2 | The Solve panel forecasts the solve's memory against what the machine can give, from a forecast calibrated against measured session peaks. |
 | OPT-PC04 | Planned | P2 | price_contour's frontier sweep records each point's convergence trace, so the Convergence tab charts the selected frontier point's own solve, instantly. |
-| OPT-PC02 | Deferred | P3 | price_contour's point apply can be cancelled or chunked, so rapid frontier stepping stops wasted work. |
 
 ## Planned improvements
 
@@ -87,7 +86,7 @@ from the bisection result at 14 of 15 points, so a replay charts a different alg
 one that produced the point. Re-running a bisection in haute with `apply_from_grid` probes would
 roughly double the frontier's cost and still not match the library's steps.
 
-**Plan:** First price-contour, released as 0.6.0:
+**Plan:** First price-contour, released as 0.7.0 (0.6.0 shipped OPT-PC02's cancellation):
 
 - `OnlineOptimiser.frontier(..., record_history: bool = False)` and
   `sweep_frontier_py(..., record_history=...)`. When set, each point records the steps the sweep
@@ -104,7 +103,7 @@ roughly double the frontier's cost and still not match the library's steps.
 
 Then haute:
 
-- Pin `price-contour>=0.6,<0.7`. `_compute_frontier` asks for the history, the frontier recompute
+- Pin `price-contour>=0.7,<0.8`. `_compute_frontier` asks for the history, the frontier recompute
   path does too, and each generation keeps its points' traces job-side, keyed by
   `(frontier_generation, point_index)`. They stay out of the status payload, whose size is
   unchanged.
@@ -126,7 +125,7 @@ Then haute:
   generation and point with no solver call and refuses a stale generation; the Convergence tab
   charts the selected point's own trace; the canvas-assurance e2e reads point 2's trace.
 
-**Dependencies:** a price-contour 0.6.0 release. Until it lands, the Convergence tab keeps showing
+**Dependencies:** a price-contour 0.7.0 release. Until it lands, the Convergence tab keeps showing
 the base solve's history.
 
 **Evidence:** `src/haute/routes/_optimiser_solver.py::_compute_frontier` and `_solve_online`;
@@ -134,33 +133,6 @@ the base solve's history.
 `frontend/src/panels/optimiser/ConvergenceChart.tsx`; price-contour 0.5.0's
 `OnlineOptimiser.frontier` signature and `sweep_frontier_py` stub (no `record_history`), and its
 `SolverPath` enum (`bisection`, `subgradient`).
-
-### OPT-PC02 — Cancellable or chunked point apply in price_contour
-
-**Why:** `apply_from_grid` is one Rust call with no cancellation argument and
-no slicing API (price-contour `python/price_contour/apply.py`). Nothing in the
-library is cancellable. `apply_lambdas_to_parquet_chunked` streams parquet to
-parquet in chunks and is a possible building block, but it is still one
-uninterruptible call, with no passthrough columns and no ratio constraints. A
-frontier-point materialisation, once started, cannot be stopped. Haute bounds
-the cost (one materialisation per job, a latest-wins waiting slot, admission
-before the call; see the optimiser low-level spec's "Bounded choice queries and
-point materialisation"), but it cannot abort the apply already running.
-
-**Plan:** Add a cancel token (checked between quote chunks in Rust), or a
-chunked apply API that haute can drive and stop between chunks. Haute's
-scheduler then cancels the running apply when a newer point replaces it.
-
-**Acceptance:** Cancelling mid-apply returns promptly, with no partial
-artifact. A chunked apply's concatenated output equals the one-shot output
-exactly. Haute's rapid-stepping test shows at most one apply running, and the
-replaced one stopped.
-
-**Dependencies:** Deferred until real books show that stepping cost matters.
-Haute works correctly without it.
-
-**Evidence:** `src/haute/routes/_optimiser_frontier.py`,
-`src/haute/routes/_optimiser_artifacts.py`.
 
 ## Out of scope and not applicable
 

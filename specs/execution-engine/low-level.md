@@ -1121,7 +1121,7 @@ a reporter reports nothing.
 `DedicatedWorker` (`src/haute/_dedicated_workers.py`) is one long-lived `spawn` worker pinned
 to a single owner — the optimiser's solver session (OPT-W01) — that keeps state between
 requests. It reuses the warm pool's error family (`InteractiveWorker*Error`), exit-code
-memory heuristic, `ProgressCell` and termination helpers, and differs from a pool slot in four
+memory heuristic, `ProgressCell` and termination helpers, and differs from a pool slot in five
 ways:
 
 - **The cap is re-applied per command and never lifted.** Each `run` request carries the
@@ -1154,11 +1154,25 @@ ways:
   record. On Linux cgroup hosts the parent reads the dead child's private group's
   `memory.events.local` before removing it. The owner turns these into the optimiser's
   `memory_evidence` levels.
+- **A command can be cancelled without ending the worker.** `run(..., cancellation_token=)`
+  watches the token while it waits for the result. Once the token is cancelled, the parent
+  writes the command's id into the worker's `CommandCancelCell` (shared memory beside the
+  `ProgressCell`, created at start) and keeps waiting. It never terminates the worker for it.
+  In the child, a command registers a callback with `on_command_cancel(callback)`, a context
+  manager whose watcher thread polls the cell every few milliseconds and calls the callback
+  once when the cell names the running command. The command decides what cancelling means
+  (the optimiser's `apply_point` cancels price-contour's token). A command that registers
+  nothing runs to completion, and its value or error returns as usual. Outside a dedicated
+  worker's command, `on_command_cancel` raises. The parent's write takes the cell's lock with
+  a bounded acquire and retries on its next poll, so a child that holds the lock, or died
+  holding it, never keeps the parent from its death and deadline checks. The child drops a
+  failed command's exception once the error envelope (text only) is built, so the traceback
+  never keeps that command's frames alive into the next command.
 
 `start(start_timeout_seconds, stop_reason)` registers the worker before spawning, waits for
 `ready` bounded by the timeout and polling `stop_reason`, and fails with the pool's start,
 timeout or stopped errors. `run(fn, *args, growth_bytes, required, allowance_bytes, deadline,
-stop_reason, on_progress)` applies the RSS watchdog as the pool does (baseline + growth), forwards
+stop_reason, on_progress, cancellation_token)` applies the RSS watchdog as the pool does (baseline + growth), forwards
 the `ProgressCell` to `on_progress` each poll, terminates on the stop signal or deadline, and
 returns the value or raises; a remote exception with a `to_payload()` carries it as
 `public_payload`.

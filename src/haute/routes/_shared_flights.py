@@ -12,9 +12,12 @@ waiting for.
   once (outcomes are not cached).
 - :class:`LatestWinsQueue` runs at most one flight per group, with one waiting
   slot. A request for another key while one runs takes the slot and fails the
-  waiter it replaces with :class:`FlightReplacedError`. A running flight is
-  never cancelled (the work it wraps cannot be interrupted); a waiter every
-  subscriber left is dropped before it starts.
+  waiter it replaces with :class:`FlightReplacedError`; it never cancels the
+  running flight. A waiter every subscriber left is dropped before it starts.
+  By default a running flight always finishes. With ``cancel_abandoned=True``
+  (OPT-PC02) a running flight whose last subscriber leaves is cancelled: it
+  keeps its group's lane until its run returns, so nothing else starts early,
+  but a new request for its key no longer joins it and queues a fresh flight.
 """
 
 from __future__ import annotations
@@ -50,6 +53,9 @@ class _Flight(Generic[T]):
         self.token = ExecutionCancellationToken()
         self.outcome: Future[T] = Future()
         self.subscribers: set[FlightSubscription[T]] = set()
+        # Set once a running flight is cancelled for want of subscribers; it
+        # accepts no new ones while it winds down.
+        self.cancelling = False
 
     def start(self, on_done: Callable[[_Flight[T]], None]) -> None:
         def target() -> None:
@@ -155,9 +161,10 @@ class _Lane(Generic[T]):
 class LatestWinsQueue(Generic[G, K, T]):
     """At most one run per group; one waiting slot, taken by the latest other request."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, cancel_abandoned: bool = False) -> None:
         self._lock = threading.Lock()
         self._lanes: dict[Hashable, _Lane[T]] = {}
+        self._cancel_abandoned = cancel_abandoned
 
     def subscribe(self, group: G, key: K, run: Run[T]) -> FlightSubscription[T]:
         """Join *group*'s run or waiter for *key*, or queue *run* as the latest request."""
@@ -165,7 +172,7 @@ class LatestWinsQueue(Generic[G, K, T]):
         start: _Flight[T] | None = None
         with self._lock:
             lane = self._lanes.setdefault(group, _Lane())
-            if lane.running is not None and lane.running.key == key:
+            if lane.running is not None and lane.running.key == key and not lane.running.cancelling:
                 flight = lane.running
             elif lane.waiting is not None and lane.waiting.key == key:
                 flight = lane.waiting
@@ -201,7 +208,17 @@ class LatestWinsQueue(Generic[G, K, T]):
         with self._lock:
             flight.subscribers.discard(subscription)
             lane = self._lanes.get(flight.group)
-            if flight.subscribers or lane is None or lane.waiting is not flight:
+            if flight.subscribers or lane is None:
                 return
-            lane.waiting = None
-        flight.outcome.cancel()
+            if lane.waiting is flight:
+                lane.waiting = None
+                abandon_running = False
+            elif self._cancel_abandoned and lane.running is flight and not flight.outcome.done():
+                # The lane stays occupied until the run returns (``_finished``).
+                flight.cancelling = abandon_running = True
+            else:
+                return
+        if abandon_running:
+            flight.token.cancel()
+        else:
+            flight.outcome.cancel()

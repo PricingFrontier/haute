@@ -680,12 +680,29 @@ class ExecutionCancellationToken:
     _event: threading.Event = field(default_factory=threading.Event, init=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False)
     _cancelled_at: float | None = field(default=None, init=False)
+    _callbacks: list[Callable[[], None]] = field(default_factory=list, init=False)
 
     def cancel(self) -> None:
         with self._lock:
             if self._cancelled_at is None:
                 self._cancelled_at = self.monotonic_clock()
             self._event.set()
+            callbacks, self._callbacks = self._callbacks, []
+        for callback in callbacks:
+            callback()
+
+    def on_cancel(self, callback: Callable[[], None]) -> None:
+        """Run *callback* once when this token is cancelled, or now if it already is.
+
+        Callbacks run outside the token's lock, on the thread that cancels. They
+        forward a cancel to work the token cannot poll itself, such as a native
+        library call running with the GIL released.
+        """
+        with self._lock:
+            if not self._event.is_set():
+                self._callbacks.append(callback)
+                return
+        callback()
 
     @property
     def cancelled(self) -> bool:

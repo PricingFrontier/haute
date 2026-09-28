@@ -322,7 +322,13 @@ def sweep(request: SessionSweepRequest) -> SessionSweepOutcome:
 
 
 def apply_point(request: SessionPointApplyRequest) -> dict[str, Any]:
-    """Compute one frontier point's per-quote frame and write its apply artifact."""
+    """Compute one frontier point's per-quote frame and write its apply artifact.
+
+    The owner's cancel (OPT-PC02) reaches price-contour's token through the
+    dedicated worker's cancel cell; a cancelled apply raises the library's
+    ``Cancelled`` and writes nothing.
+    """
+    from haute._dedicated_workers import on_command_cancel
     from haute._price_contour import price_contour
     from haute.routes._optimiser_artifacts import _persist_apply_frame_artifact
     from haute.routes._optimiser_frontier import (
@@ -330,21 +336,33 @@ def apply_point(request: SessionPointApplyRequest) -> dict[str, Any]:
         _require_evaluation_is_the_point,
     )
 
+    pc = price_contour()
     state = _session(request.session_id)
     _report_stage(f"Applying frontier point {request.point_index}", 0.1)
-    if state.mode == "ratebook":
-        if request.factor_tables is None or request.expected_point is None:
-            raise RuntimeError("A ratebook point apply needs the point's tables and frontier row")
-        evaluation = state.solver.evaluate(
-            state.quote_grid, state.factor_contexts, request.factor_tables
-        )
-        _require_evaluation_is_the_point(evaluation, request.expected_point, request.point_index)
-        frame = evaluation.quote_results
-    else:
-        if request.lambdas is None:
-            raise RuntimeError("An online point apply needs the point's lambdas")
-        apply_result = price_contour().apply_from_grid(
-            state.quote_grid, lambdas=request.lambdas, constraints=request.constraints
-        )
-        frame = _dataframe_or_raise(apply_result, context="Apply result")
+    cancel = pc.CancelToken()
+    with on_command_cancel(cancel.cancel):
+        if state.mode == "ratebook":
+            if request.factor_tables is None or request.expected_point is None:
+                raise RuntimeError(
+                    "A ratebook point apply needs the point's tables and frontier row"
+                )
+            evaluation = state.solver.evaluate(
+                state.quote_grid, state.factor_contexts, request.factor_tables, cancel=cancel
+            )
+            _require_evaluation_is_the_point(
+                evaluation, request.expected_point, request.point_index
+            )
+            frame = evaluation.quote_results
+        else:
+            if request.lambdas is None:
+                raise RuntimeError("An online point apply needs the point's lambdas")
+            apply_result = pc.apply_from_grid(
+                state.quote_grid,
+                lambdas=request.lambdas,
+                constraints=request.constraints,
+                cancel=cancel,
+            )
+            frame = _dataframe_or_raise(apply_result, context="Apply result")
+        if cancel.cancelled:
+            raise pc.Cancelled("the point apply was cancelled through its CancelToken")
     return _persist_apply_frame_artifact(frame, artifact_dir=Path(request.artifact_dir))

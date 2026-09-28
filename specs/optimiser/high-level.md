@@ -210,11 +210,13 @@ Invariants:
 - A completed solve retains at most eight per-frontier-point apply artifacts. Materialising a
   ninth point evicts and deletes the oldest point artifact (after any reader still holding it
   finishes); returning to that point recomputes it while the quote grid is alive, and is a named
-  410 once the grid has gone. At most one point materialisation runs per job, because the
-  library's point apply cannot be interrupted: a newer request for another point waits in a
-  single slot and replaces (409) an older waiter, so rapid stepping through points never queues
-  more than one pending apply. Callers asking for the same point share one materialisation, and
-  a caller that disconnects leaves only itself. Handles merge under the frontier-state lock, so
+  410 once the grid has gone. At most one point materialisation runs per job: a newer request
+  for another point waits in a single slot and replaces (409) an older waiter, so rapid stepping
+  through points never queues more than one pending apply. Callers asking for the same point
+  share one materialisation, and a caller that disconnects leaves only itself. A running
+  materialisation that no caller waits for any more is cancelled through price-contour's
+  cancellation token and keeps nothing, so stepping away from a point stops its work; one a
+  caller still waits for always finishes. Handles merge under the frontier-state lock, so
   one handle cannot overwrite and orphan another.
 - Per-quote questions about the chosen scenarios (how many quotes chose each grid step, the
   adjustments by analysis segment, the extreme quotes, a page of quotes) are answered by bounded

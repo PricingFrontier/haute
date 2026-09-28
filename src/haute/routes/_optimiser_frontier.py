@@ -660,8 +660,11 @@ class OptimiserFrontierService:
         self.sweeps = CancellableJobRegistry()
         self._locks_guard = threading.Lock()
         self._parent_locks: dict[str, threading.RLock] = {}
-        # One point apply per job at a time; the latest other request waits.
-        self._point_applies: LatestWinsQueue[str, tuple[int, int], None] = LatestWinsQueue()
+        # One point apply per job at a time; the latest other request waits. A
+        # running apply nobody waits for any more is cancelled (OPT-PC02).
+        self._point_applies: LatestWinsQueue[str, tuple[int, int], None] = LatestWinsQueue(
+            cancel_abandoned=True
+        )
 
     def parent_lock(self, parent_job_id: str) -> threading.RLock:
         """The lock every frontier state change for *parent_job_id* holds."""
@@ -1108,8 +1111,8 @@ class OptimiserFrontierService:
         A retained artifact answers at once. Otherwise the point needs the
         solve's live quote grid (a named 410 without it; a ratebook point also
         its solver and factor contexts, slimmed with the grid) and joins the
-        job's latest-wins queue: at most one point apply runs per job, since
-        neither ``apply_from_grid`` nor ``evaluate`` can be interrupted.
+        job's latest-wins queue: at most one point apply runs per job, and one
+        whose every request has left is cancelled.
         """
         with self.parent_lock(job_id):
             job = self._store.require_completed_job(job_id)
@@ -1134,7 +1137,7 @@ class OptimiserFrontierService:
         subscription = self._point_applies.subscribe(
             job_id,
             (generation, point_index),
-            lambda _token: self._materialise_point(job_id, point_index, generation),
+            lambda token: self._materialise_point(job_id, point_index, generation, token),
         )
         return PointApplyTicket(point_index, generation, handle_key, False, subscription)
 
@@ -1192,12 +1195,13 @@ class OptimiserFrontierService:
 
     def _point_frame_computation(
         self, job: Mapping[str, Any], point_index: int
-    ) -> Callable[[], Any]:
+    ) -> Callable[[Any], Any]:
         """How one point's per-quote frame is computed, from *job* read under the parent lock.
 
         Online, ``apply_from_grid`` with the point's λ; ratebook, price-contour's
         canonical evaluation of the tables the frontier kept for the point, which
-        must reproduce the point's frontier row.
+        must reproduce the point's frontier row. The computation takes a
+        price-contour ``CancelToken``, which also stops the lazily built frame.
         """
         runtime: dict[str, Any] = {}
         for key in _point_runtime_keys(job):
@@ -1214,8 +1218,8 @@ class OptimiserFrontierService:
             tables = _frontier_point_factor_tables_or_raise(job, point_index)
             solver, contexts = runtime["solver"], runtime["ratebook_factor_contexts"]
 
-            def evaluate() -> Any:
-                evaluation = solver.evaluate(quote_grid, contexts, tables)
+            def evaluate(cancel: Any) -> Any:
+                evaluation = solver.evaluate(quote_grid, contexts, tables, cancel=cancel)
                 _require_evaluation_is_the_point(evaluation, point, point_index)
                 return evaluation.quote_results
 
@@ -1223,16 +1227,30 @@ class OptimiserFrontierService:
         lambdas = dict(_frontier_point_result_for_job(job, point_index)["lambdas"])
         constraints = job.get("config", {}).get("constraints", {})
 
-        def apply() -> Any:
+        def apply(cancel: Any) -> Any:
             apply_result = price_contour().apply_from_grid(
-                quote_grid, lambdas=lambdas, constraints=constraints
+                quote_grid, lambdas=lambdas, constraints=constraints, cancel=cancel
             )
             return _dataframe_or_raise(apply_result, context="Apply result")
 
         return apply
 
-    def _materialise_point(self, job_id: str, point_index: int, generation: int) -> None:
-        """Compute one point's per-quote frame and publish its artifact (a queue run)."""
+    def _materialise_point(
+        self,
+        job_id: str,
+        point_index: int,
+        generation: int,
+        cancellation_token: ExecutionCancellationToken,
+    ) -> None:
+        """Compute one point's per-quote frame and publish its artifact (a queue run).
+
+        The queue cancels *cancellation_token* once no request waits for the
+        point. The cancel reaches price-contour through a native token, and the
+        run checks it after admission, between computing and persisting the
+        frame, and under the parent lock just before adopting the handle, which
+        is the one commit point. A cancel that lands after that last check
+        loses the race: the finished point is adopted and kept.
+        """
         handle_key = _frontier_apply_handle_key(point_index)
         with self.parent_lock(job_id):
             job = self._store.require_completed_job(job_id)
@@ -1246,15 +1264,22 @@ class OptimiserFrontierService:
                 compute_frame = self._point_frame_computation(job, point_index)
         if runtime_mode(job) == SESSION_RUNTIME:
             self._materialise_point_in_session(
-                job_id, point_index, generation, handle_key, session, request
+                job_id, point_index, generation, handle_key, session, request, cancellation_token
             )
             return
+
+        pc = price_contour()
+        native_cancel = pc.CancelToken()
+        cancellation_token.on_cancel(native_cancel.cancel)
+
+        def throw_if_cancelled() -> None:
+            cancellation_token.throw_if_cancelled(_POINT_APPLY_OPERATION, job_id=job_id)
 
         context: ExecutionContext | None = None
         new_handle: dict[str, Any] | None = None
         owns_new_handle = False
         try:
-            # Admitted on its own estimate before the uninterruptible apply starts.
+            # Admitted on its own estimate before the apply starts.
             context = create_admitted_execution_context(
                 operation=_POINT_APPLY_OPERATION,
                 profile=ExecutionProfile.EXPLORE_ANALYSIS,
@@ -1265,11 +1290,31 @@ class OptimiserFrontierService:
                     remedy="Raise HAUTE_EXPLORE_MEMORY_LIMIT_MB to inspect this point.",
                 ),
             )
-            frame = compute_frame()
-            new_handle = _persist_apply_frame_artifact(frame)
-            owns_new_handle = True
-            del frame
-            owns_new_handle = self._publish_point_handle(job_id, handle_key, generation, new_handle)
+            throw_if_cancelled()
+            library_cancelled = False
+            try:
+                frame = compute_frame(native_cancel)
+            except pc.Cancelled:
+                # Only haute's own cancel makes this a cancellation; a native
+                # Cancelled without one is a library fault and propagates as is.
+                if not cancellation_token.cancelled:
+                    raise
+                library_cancelled = True
+            # The queue keeps a run's exception in its outcome, so a
+            # cancellation is raised outside the except block (dropping the
+            # library's traceback) and after the frame is released: neither
+            # may outlive admission while the next point runs.
+            if library_cancelled:
+                throw_if_cancelled()
+            try:
+                throw_if_cancelled()
+                new_handle = _persist_apply_frame_artifact(frame)
+                owns_new_handle = True
+            finally:
+                del frame
+            owns_new_handle = self._publish_point_handle(
+                job_id, handle_key, generation, new_handle, throw_if_cancelled
+            )
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise HTTPException(status_code=507, detail=exc.to_payload()) from None
         finally:
@@ -1319,17 +1364,25 @@ class OptimiserFrontierService:
         handle_key: str,
         session: SolverSession,
         request: SessionPointApplyRequest,
+        cancellation_token: ExecutionCancellationToken,
     ) -> None:
         """Run one point's apply in the solve's session and adopt its artifact under the slot.
 
         The artifact is written into a directory created here and removed unless
-        the job adopted it, so a discarded or killed apply leaves nothing behind.
+        the job adopted it, so a discarded, cancelled or killed apply leaves
+        nothing behind. The flight's *cancellation_token* reaches the running
+        command through the session's worker (OPT-PC02), and adoption checks it
+        under the parent lock, the same commit point as the in-process run.
         """
         artifact_dir = _new_apply_artifact_directory()
         request = dataclasses.replace(request, artifact_dir=str(artifact_dir))
         adopted = False
 
+        def throw_if_cancelled() -> None:
+            cancellation_token.throw_if_cancelled(_POINT_APPLY_OPERATION, job_id=job_id)
+
         def on_slot() -> None:
+            throw_if_cancelled()
             with self.parent_lock(job_id):
                 latest = self._store.require_completed_job(job_id)
                 if _frontier_generation_or_raise(latest) != generation:
@@ -1337,7 +1390,9 @@ class OptimiserFrontierService:
 
         def publish(handle: dict[str, Any]) -> None:
             nonlocal adopted
-            adopted = not self._publish_point_handle(job_id, handle_key, generation, handle)
+            adopted = not self._publish_point_handle(
+                job_id, handle_key, generation, handle, throw_if_cancelled
+            )
 
         try:
             session.run_command(
@@ -1346,6 +1401,7 @@ class OptimiserFrontierService:
                 operation=_POINT_APPLY_OPERATION,
                 stage=f"applying frontier point {point_index}",
                 publish=publish,
+                cancellation_token=cancellation_token,
                 on_slot=on_slot,
             )
         except SessionCommandError as exc:
@@ -1375,9 +1431,17 @@ class OptimiserFrontierService:
         handle_key: str,
         generation: int,
         new_handle: dict[str, Any],
+        throw_if_cancelled: Callable[[], None] | None = None,
     ) -> bool:
-        """Adopt *new_handle* into the job; returns whether the caller still owns it."""
+        """Adopt *new_handle* into the job; returns whether the caller still owns it.
+
+        *throw_if_cancelled* (an in-process run's) runs under the parent lock
+        before anything else: a cancel seen here adopts nothing, and adoption is
+        the commit point.
+        """
         with self.parent_lock(job_id):
+            if throw_if_cancelled is not None:
+                throw_if_cancelled()
             latest_job = self._store.require_completed_job(job_id)
             if _frontier_generation_or_raise(latest_job) != generation:
                 raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)

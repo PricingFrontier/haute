@@ -42,7 +42,7 @@ NATIVE_MODULE = "price_contour._price_contour"
 
 # Must equal the ``price-contour`` specifier in pyproject.toml exactly
 # (``tests/test_dependency_contracts.py`` pins the equality).
-REQUIRED_SPECIFIER = ">=0.5.0,<0.6"
+REQUIRED_SPECIFIER = ">=0.6.0,<0.7"
 
 # Prereleases (``0.4.2rc1``, ``0.4.2.dev0``) are rejected even inside the
 # specifier: haute is only verified against released builds.
@@ -76,6 +76,10 @@ REQUIRED_SYMBOLS: tuple[str, ...] = (
     "RatebookFrontierResult.factor_tables",
     # The exact column set of a frontier's points, per mode; haute types the rows from it.
     "frontier_points_schema",
+    # Cooperative cancellation of a frontier point's apply or evaluation (OPT-PC02).
+    "CancelToken",
+    "CancelToken.cancel",
+    "Cancelled",
 )
 
 # Keyword arguments haute passes by name, per Python wrapper. PyO3 builtins
@@ -90,7 +94,7 @@ REQUIRED_PARAMETERS: dict[str, tuple[str, ...]] = {
         "scenario_index",
         "scenario_value",
     ),
-    "apply_from_grid": ("lambdas", "constraints"),
+    "apply_from_grid": ("lambdas", "constraints", "cancel"),
     "build_grid_from_parquet_chunked": (
         "quote_id",
         "scenario_index",
@@ -115,6 +119,7 @@ REQUIRED_PARAMETERS: dict[str, tuple[str, ...]] = {
         "tolerance",
     ),
     "RatebookOptimiser.solve": ("factor_columns", "lambdas"),
+    "RatebookOptimiser.evaluate": ("cancel",),
     "RatebookOptimiser.frontier": (
         "threshold_ranges",
         "n_points_per_dim",
