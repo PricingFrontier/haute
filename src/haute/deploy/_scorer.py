@@ -22,7 +22,7 @@ import haute.projection as projection
 from haute._cache import canonical_json
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
-    _DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY,
+    _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -402,13 +402,18 @@ def _attach_bundled_optimiser_artifacts(
     graph: PipelineGraph,
     remap: dict[str, str],
 ) -> PipelineGraph:
-    """Annotate file-sourced optimiserApply nodes with the artifact they serve.
+    """Annotate file-sourced optimiserApply nodes with their served artifact's inputs.
 
     The deployed apply reads the bundled artifact, which may differ from the
     file at the graph's original path; projection must plan from the same one.
+    An online artifact contributes the columns it reads; any other leaves an
+    empty list, so projection keeps the generic rules without loading a file.
     """
     if not remap:
         return graph
+    from haute._builders import online_apply_input_columns
+    from haute._optimiser_io import load_optimiser_artifact
+
     nodes: list[GraphNode] = []
     changed = False
     for node in graph.nodes:
@@ -418,11 +423,17 @@ def _attach_bundled_optimiser_artifacts(
             if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file"
             else None
         )
-        if bundled is None or config.get(_DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY) == bundled:
+        if bundled is None:
             nodes.append(node)
             continue
+        artifact = load_optimiser_artifact(bundled)
+        columns = (
+            sorted(online_apply_input_columns(artifact))
+            if isinstance(artifact, Mapping) and artifact.get("mode", "online") != "ratebook"
+            else []
+        )
         nodes.append(
-            node.with_config({**config, _DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY: bundled})
+            node.with_config({**config, _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: columns})
         )
         changed = True
     return graph.model_copy(update={"nodes": nodes}) if changed else graph

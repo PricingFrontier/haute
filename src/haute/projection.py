@@ -17,7 +17,7 @@ from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast
 from haute._cache import canonical_json
 from haute._column_lineage import ColumnLineageAnalysis, analyze_polars_lineage
 from haute._contracts import (
-    _DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY,
+    _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
     Contract,
     get_column_contract,
 )
@@ -52,7 +52,7 @@ from haute._polars_selectors import preamble_selector_aliases
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._topo import CycleError, ancestors, canonical_topological_order, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.errors import ContractMismatchError
+from haute.errors import ConfigError, ContractMismatchError
 
 __all__ = [
     "AllExcept",
@@ -3323,7 +3323,9 @@ def _builder_post_code(node: GraphNode) -> str | None:
     return code or None
 
 
-def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
+def _pre_post_code_contract(
+    node: GraphNode, effective: Contract, demanded: Iterable[str]
+) -> Contract:
     """Return the contract of a builder's output before its post-code runs.
 
     A declared contract describes the whole node, post-code included, so it
@@ -3333,8 +3335,10 @@ def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
     contract resolves them exactly as for a Model Score without code, together
     with any declared inputs, which the executor still checks. When that names
     no features (an unconfigured scorer, or a model without feature names) the
-    registered output stands, with inputs from the declaration. A classifier's
-    ``<output>_proba`` counts as scorer output either way.
+    registered output stands, with inputs from the declaration. *demanded* is
+    what the post-code reads from the builder output: a classifier's
+    ``<output>_proba`` among it that the contract does not prove the scorer
+    produces leaves the inputs unknown (see below).
     """
     if node.data.nodeType is NodeType.MODEL_SCORE:
         scorer_config = {
@@ -3348,14 +3352,17 @@ def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
                 inputs=scorer.inputs | (effective.inputs or frozenset()),
                 outputs=scorer.outputs,
             )
-        if node.data.config.get("task") == "classification" and contract.outputs is not None:
-            # The scorer adds ``<output>_proba`` whenever the model can predict
-            # probabilities, which the contract does not load the model to tell.
-            output_column = node.data.config.get("output_column", "prediction") or "prediction"
-            contract = Contract(
-                inputs=contract.inputs,
-                outputs=contract.outputs | {f"{output_column}_proba"},
-            )
+        output_column = node.data.config.get("output_column", "prediction") or "prediction"
+        probability = f"{output_column}_proba"
+        if (
+            node.data.config.get("task") == "classification"
+            and probability in set(demanded)
+            and probability not in (contract.outputs or frozenset())
+        ):
+            # A classifier adds ``<output>_proba`` only when its model predicts
+            # probabilities, and otherwise keeps an input column of that name.
+            # Without proof of which, the scorer's input stays whole.
+            return Contract(inputs=None, outputs=contract.outputs)
         return contract
     config = {key: value for key, value in node.data.config.items() if key != "code"}
     return Contract.from_tuple(get_column_contract(node.data.nodeType, config))
@@ -3515,7 +3522,8 @@ class OptimiserApplyParentDemandRule:
     artifact names (quote id, scenario index and value, objective, and
     constraint columns), so its input owes exactly those whatever is demanded
     downstream. The artifact is loaded as for the apply itself, and cached; a
-    deployed graph names the bundled artifact the served apply reads.
+    deployed graph carries the input columns of the bundled artifact the served
+    apply reads instead.
     A ratebook apply, which passes its input through, an apply with several
     inputs, or an artifact that cannot be loaded or names no columns keeps the
     generic rules.
@@ -3533,24 +3541,30 @@ class OptimiserApplyParentDemandRule:
             return None
         from haute._builders import online_apply_input_columns
         from haute._node_apply import load_configured_optimiser_artifact
-        from haute._optimiser_io import load_optimiser_artifact
 
-        deployed = node.data.config.get(_DEPLOY_OPTIMISER_ARTIFACT_PATH_CONFIG_KEY)
-        try:
-            artifact = (
-                load_optimiser_artifact(deployed)
-                if isinstance(deployed, str) and deployed
-                else load_configured_optimiser_artifact(node.data.config)
-            )
-        except Exception:
-            # The apply loads the same artifact when it runs and reports the
-            # failure on its own node, so planning keeps the generic rules
-            # rather than failing every node in the run.
-            return None
-        if not isinstance(artifact, Mapping) or artifact.get("mode", "online") == "ratebook":
-            return None
-        columns = online_apply_input_columns(artifact)
-        if not all(isinstance(column, str) and column for column in columns):
+        config = node.data.config
+        if _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY in config:
+            deployed = config[_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY]
+            if not isinstance(deployed, list) or not all(
+                isinstance(column, str) and column for column in deployed
+            ):
+                raise ConfigError(
+                    "optimiserApply node has invalid internal deploy input columns",
+                    config_key=_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY,
+                )
+            columns = frozenset(deployed)
+        else:
+            try:
+                artifact = load_configured_optimiser_artifact(config)
+            except Exception:
+                # The apply loads the same artifact when it runs and reports the
+                # failure on its own node, so planning keeps the generic rules
+                # rather than failing every node in the run.
+                return None
+            if not isinstance(artifact, Mapping) or artifact.get("mode", "online") == "ratebook":
+                return None
+            columns = online_apply_input_columns(artifact)
+        if not columns or not all(isinstance(column, str) and column for column in columns):
             return None
         return ParentDemandResult(
             default=None,
@@ -5080,7 +5094,7 @@ def compute_prepared_plan(
                 )
                 continue
             my_needed = set(post_code_lineage.demands_by_input.get("df", frozenset()))
-            contract = _pre_post_code_contract(node, contract)
+            contract = _pre_post_code_contract(node, contract, my_needed)
         produced, referenced = contract.to_tuple()
         if produced is None or referenced is None:
             parent_produced = {edge.source: produced_for_routing(edge) for edge in incoming}
