@@ -1279,7 +1279,7 @@ requires-dist = [
     { name = "packaging", specifier = ">=25.0,<26" },
     { name = "pandas", specifier = ">=2.3,<3" },
     { name = "polars", specifier = ">=1.44.2,<2" },
-    { name = "price-contour", specifier = ">=0.5.0,<0.6" },
+    { name = "price-contour", specifier = ">=0.6.0,<0.7" },
     { name = "psutil", specifier = ">=7.0,<8" },
     { name = "pyarrow", specifier = ">=23.0.1,<25" },
     { name = "pydantic", specifier = ">=2.12.5,<3" },
@@ -2889,18 +2889,18 @@ wheels = [
 
 [[package]]
 name = "price-contour"
-version = "0.5.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "polars" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/d0/ee026b350440174f71ce943c7a4d4fbbff690b17c0d729f532978af425c2/price_contour-0.5.0.tar.gz", hash = "sha256:46ca72e74912b66e897db7b67714acf33e1df5bed9c3ff7e46129ef59beda8ca", size = 212285, upload-time = "2026-09-25T22:30:05.02Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/24/e9563c9685e0c11ee987dffc915f003f427c3a37cb2bff924420c2eabaaa/price_contour-0.6.0.tar.gz", hash = "sha256:5dc83677ac6c1118a4e6278f0190b188f9c4f90950c34b355304506723a37191", size = 220724, upload-time = "2026-09-28T11:31:31.633Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/d5/6505bb0e85df967f32cda93b6e0078525e0d44a4626d8ff99fc26cc1564c/price_contour-0.5.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:56ee02c29e7b02037a59b474f73b095ba8b9fe780a21a7362372b078ffbf368e", size = 7633022, upload-time = "2026-09-25T22:29:59.107Z" },
-    { url = "https://files.pythonhosted.org/packages/38/ab/4aa2a66a4ad22874d58cd287a90be646171fae1f118db87ac3035d757308/price_contour-0.5.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:f3bbef8e44c41e25869b13fc0a780549e8f2779aa36dcb7370ea64c412d34621", size = 7241231, upload-time = "2026-09-25T22:30:00.679Z" },
-    { url = "https://files.pythonhosted.org/packages/51/98/6c20646f49f1589330e63cbdfd5a69cdfd1a69fbc016ecd0edfa958f3fd8/price_contour-0.5.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a8c699afccb07c917d1423d6ea1c1d0ddf1d5502ac18f8370c165411575a0cc9", size = 8379555, upload-time = "2026-09-25T22:30:02.017Z" },
-    { url = "https://files.pythonhosted.org/packages/43/e5/aaa698c1acdb977bb030ac6bb33d3531b517554e9d0387896c9d28a678e8/price_contour-0.5.0-cp310-abi3-win_amd64.whl", hash = "sha256:a46b9949d543d48795436d97faa30eedde158299493a8b9429fee0bdbfcadf03", size = 7488355, upload-time = "2026-09-25T22:30:03.457Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/cd/bb3d4726c790666a3e769f813c2b4abdd217d3fdd705b45da974a3a806a9/price_contour-0.6.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:0f8a6f17ebdef30191d7f2ba7ef6a222cfb7d092b6fa8538044e62fb10ec8fb9", size = 7634868, upload-time = "2026-09-28T11:31:24.74Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/7b/1005f681c2cc814ee3afbc6900044c44903c63b8dc75c197d03200885ab4/price_contour-0.6.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:135720909c20746bd920859babe43ee09ebbbd50baa7d109e427e8c14a8c1de4", size = 7243510, upload-time = "2026-09-28T11:31:26.587Z" },
+    { url = "https://files.pythonhosted.org/packages/96/d7/41be734aa0188feaf7218c7d5dc3cd6dd68ac2582b448ebf795803779b6c/price_contour-0.6.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dd0020576804249f5773ec96bc964a3860e33a59fcc955b6c9c2c8dacaed79d7", size = 8381243, upload-time = "2026-09-28T11:31:28.2Z" },
+    { url = "https://files.pythonhosted.org/packages/26/1a/802bbe327c786076c1b4cffae7f2248d661455eee41a7d5d23df632949cc/price_contour-0.6.0-cp310-abi3-win_amd64.whl", hash = "sha256:d172f14ed5ca46c3a6c5b54b7f3f376aee3ec05c823b364130159874775fe599", size = 7486077, upload-time = "2026-09-28T11:31:30.147Z" },
 ]
 
 [[package]]
