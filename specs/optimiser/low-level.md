@@ -13,7 +13,7 @@
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
 | `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
-| `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`), both handing each caller a `FlightSubscription`. |
+| `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`; with `cancel_abandoned=True`, OPT-PC02, a running flight whose last subscriber leaves is cancelled and becomes *cancelling*), both handing each caller a `FlightSubscription`. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT` (the most rows one Quotes page returns, defined beside the request schema in `haute.schemas` and re-exported here), `QUOTE_PAGE_DEPTH_LIMIT` (the deepest row a Quotes page reaches), `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_frontier_payload`. |
 | `src/haute/routes/_optimiser_quotes.py` | The Quotes explorer (OPT-V12): the page reducers over the choice frame (`QuotePage`, and `AnalysisQuotePage` when the sort or a filter reads an analysis column: sort with the quote-id tie-break, the quote-id prefix search, the scenario-value range, at-range-edge, analysis-equality and deployed-factor filters, the offset and the depth guard), the typed column roles (`quote_columns`) and the route's service (`QuoteQueries.page`). See "Quotes explorer (OPT-V12)" below. |
@@ -156,12 +156,14 @@ its native extension `price_contour._price_contour` and collects **every** probl
 - the module's `__version__` differs from the distribution metadata (a stale or shadowing
   build, such as `0.0.0+local`);
 - the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
-  `price-contour` specifier exactly (`>=0.5.0,<0.6`, pinned by
+  `price-contour` specifier exactly (`>=0.6.0,<0.7`, pinned by
   `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
-- a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls);
+- a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls,
+  including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`);
 - a keyword haute passes by name that a Python wrapper no longer accepts
-  (`REQUIRED_PARAMETERS`, checked with `inspect.signature`; PyO3 classes are covered by the
-  symbol check only);
+  (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
+  `apply_from_grid` and `RatebookOptimiser.evaluate`; PyO3 classes are covered by the symbol
+  check only);
 - a failed import, chained as the error's cause.
 
 The message names the installed version, the required specifier, the module path, the install
@@ -176,9 +178,10 @@ direct-URL install, because the container reinstalls from the package index by v
 cannot reproduce it; an incompatible install raises `DeployError` carrying the guard's
 diagnosis.
 
-### The price-contour contract haute relies on (0.5)
+### The price-contour contract haute relies on (0.6)
 
-The library's own contract is section 13 ("Consumer Contract") of the design-decisions document in the price-contour repository.
+The library's own contract is section 13 ("Consumer Contract") of the design-decisions document
+in the price-contour repository, with cancellation in section 14 (0.6.0).
 Haute depends on these parts of it:
 
 - **Canonical ratebook evaluation.** Every ratebook total (solve result and frontier row) is
@@ -205,6 +208,13 @@ Haute depends on these parts of it:
 - **`clamp_rate`** is a search-space diagnostic (the mean share of candidate targets outside
   the scenario range across the search), not a count of quotes at an edge; that count is
   `n_quotes_clamped_low` / `n_quotes_clamped_high`.
+- **Cancellation (0.6.0).** `apply_from_grid(..., cancel=)` and
+  `RatebookOptimiser.evaluate(..., cancel=)` take a `CancelToken`. Cancelling it from another
+  thread makes the call, or a first access to the result's lazily built `dataframe` /
+  `quote_results`, raise `Cancelled` (a `RuntimeError`) within milliseconds; nothing partial is
+  returned or cached. Input errors are still `ValueError` on a cancelled token, and an
+  uncancelled token changes no result. Haute passes a grid, never a DataFrame, so the whole
+  call is cancellable (see "Bounded choice queries and point materialisation").
 
 ### Solver worker-context guard (`_optimiser_solver.py`)
 
@@ -1267,11 +1277,20 @@ whose message already names every problem and the remedy.
   point, the join-count failure, the 1:1 join to the side table, each reducer's bound and
   validation, admission refusal and single-flight.
 - `tests/test_optimiser_frontier_materialisation.py` covers the point queue: A/B/C rapid
-  stepping (one apply at a time, B replaced with 409, C run after A), shared-subscriber
-  disconnect, admission refusal before `apply_from_grid` (the mock is never called), availability
-  for a retained point, an unmaterialised point after heavy-state expiry and a point evicted as
-  the ninth artifact, and an eviction during a read deferred by the reader's lease.
-  `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly.
+  stepping with A's request still waiting (one apply at a time, B replaced with 409, C run after
+  A), shared-subscriber disconnect, admission refusal before `apply_from_grid` (the mock is never
+  called), availability for a retained point, an unmaterialised point after heavy-state expiry
+  and a point evicted as the ninth artifact, and an eviction during a read deferred by the
+  reader's lease. For OPT-PC02, with a fake `apply_from_grid` that polls the real `CancelToken`
+  it is handed: a client that leaves cancels the apply and nothing is retained; stepping away
+  cancels A, and waiting B is admitted only after A's admission is released; two consumers on
+  different points both complete with no 409; returning to a cancelling A queues a fresh A in
+  place of B; a cancel during persist removes the written artifact while a cancel inside
+  adoption keeps it; a pre-cancelled run never calls the library; a failure or a library
+  `Cancelled` without a haute cancel reaches the caller unchanged; a retained point answers
+  while another point runs, without cancelling it.
+  `tests/test_shared_flights.py` covers `SharedFlights` and `LatestWinsQueue` directly, including
+  the `cancel_abandoned` mode.
 - `tests/test_optimiser_adjustments.py` covers OPT-V10's statistical contract: bar counts
   against hand counts on a Float32 linspace grid and on `[0.8, 1.0, 1.3]`, zero-count steps kept
   as empty bars; an available but unchosen 1.0 giving a 0 unadjusted share while
@@ -1841,19 +1860,26 @@ validates the job (completed), the point and captures `frontier_generation`:
   slimmed together with the grid); when it is not, the answer is the named 410
   `{"error_code": "frontier_point_unavailable", "message": ...}`. A point whose artifact was
   evicted (as the ninth) is therefore re-materialised while the grid lives and a 410 after.
-- Materialisation goes through the job's `LatestWinsQueue`, keyed `(frontier_generation,
-  point_index)`: at most one runs per job, because neither `apply_from_grid` nor the ratebook
-  `evaluate` can be interrupted (OPT-PC02). A request for the running or the waiting key subscribes to it. A request for any
-  other key while one runs takes the single waiting slot; the waiter it replaces fails for all of
-  its subscribers with 409 `{"error_code": "frontier_point_apply_replaced", "message": ...}`.
-  When the running one ends, the waiter starts. A detaching subscriber leaves only itself; a
-  waiter left with no subscriber is dropped before it starts; a running one finishes and keeps
-  its artifact for the next request.
+- Materialisation goes through the job's `LatestWinsQueue(cancel_abandoned=True)`, keyed
+  `(frontier_generation, point_index)`: at most one runs per job, so a point's memory admission
+  and its library call never overlap another's. A request for the running or the waiting key
+  subscribes to it. A request for any other key while one runs takes the single waiting slot and
+  never cancels the running one; the waiter it replaces fails for all of its subscribers with
+  409 `{"error_code": "frontier_point_apply_replaced", "message": ...}`. When the running one
+  ends, the waiter starts. A detaching subscriber leaves only itself; a waiter left with no
+  subscriber is dropped before it starts; a running one whose last subscriber leaves is
+  cancelled (OPT-PC02). The results tabs abort their request when the user steps to another
+  point, so stepping away cancels the point nobody is waiting for, while two views on different
+  points each keep theirs: one finishes and is retained, then the other runs. A cancelled run is
+  *cancelling*: it keeps the lane until its run function returns (after cleanup and admission
+  release), and a new request for its key does not join it but takes the waiting slot like any
+  other key. A request answered from a retained artifact never reaches the queue and cancels
+  nothing.
 - The run re-checks for a handle published meanwhile, reads the grid under the parent's lock
   with the generation fence (409 when a recompute advanced it; the named 410 when the grid is
   gone), then admits an `EXPLORE_ANALYSIS` context (`operation="optimiser_point_apply"`) with
   its own `WorkEstimate` **before** the point's frame is computed, so a refusal (507) never starts
-  the uninterruptible call. The estimate is `estimate_point_apply_peak_bytes` over the as-solved
+  the library call. The estimate is `estimate_point_apply_peak_bytes` over the as-solved
   apply artifact's row count and sampled decoded width, read inside a lease: a point's frame has
   exactly its shape. The frame is the point's apply: online, `apply_from_grid(grid, lambdas=the
   point's λ, constraints=...)`'s `dataframe`; ratebook, `solver.evaluate(grid, factor_contexts,
@@ -1863,6 +1889,19 @@ validates the job (completed), the point and captures `frontier_generation`:
   persists and publishes the handle under the parent's lock (generation fence, heavy
   state present, at most eight point handles). The run never changes the selection; `/apply`
   selects after it has waited.
+- **Cancellation (OPT-PC02).** The run creates a price-contour `CancelToken` and registers its
+  `cancel` on the run's `ExecutionCancellationToken` with `on_cancel` (which fires at once when
+  the run was already cancelled), then passes it as `cancel=` to `apply_from_grid` or
+  `evaluate`; the library polls it through every phase, including the lazily built frame. The
+  run checks its own token after admission (a cancelled run never calls the library), between
+  computing and persisting the frame, and under the parent lock at the start of publication.
+  Adopting the handle is the one commit point: a cancel seen before it adopts nothing, removes
+  the written artifact and ends the run with `ExecutionCancelledError`; admission is released
+  in every case. Cancellation is best-effort and does not take the parent lock, so a cancel that
+  lands after the final check loses the race and the finished point is adopted and retained,
+  which is harmless. The library's `Cancelled` becomes `ExecutionCancelledError` only when the
+  run's own token is cancelled; any other failure, and a `Cancelled` without a haute cancel,
+  propagates unchanged.
 - Evicted and recompute-invalidated point handles are released through
   `JobStore.release_detached_artifact_handles`, so an eviction during a read deletes the file
   only when the reader's lease ends.

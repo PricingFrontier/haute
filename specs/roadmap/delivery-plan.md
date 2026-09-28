@@ -68,7 +68,6 @@ round starts.
 
 Deferred packages start only when their trigger is met: `ROAD-WORKER-04`
 ([background jobs](background-jobs-api.md)) needs versioned solver
-persistence; `OPT-PC02` ([optimiser validation](optimiser-validation.md)) waits
-for real books to show that frontier-point stepping cost matters; `CACHE-S19` ([caching](caching.md)) and `EDA-E18`, `EDA-E23` and
+persistence; `CACHE-S19` ([caching](caching.md)) and `EDA-E18`, `EDA-E23` and
 `EDA-E24` ([Explore and EDA](explore-eda.md)) wait for the evidence their
 entries name.

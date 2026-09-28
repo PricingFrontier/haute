@@ -89,9 +89,9 @@ def test_polars_floor_supports_ordered_and_sliced_streaming_joins() -> None:
 def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     """The runtime guard enforces exactly the range the package metadata declares.
 
-    The floor is 0.5.0: haute materialises ratebook frontier points from the
-    per-point factor tables, and reads the canonical ratebook evaluation, that
-    release introduced.
+    The floor is 0.6.0: haute cancels a frontier point's apply or evaluation
+    through the CancelToken that release introduced (OPT-PC02), on top of the
+    0.5.0 per-point factor tables and canonical ratebook evaluation.
     """
     from haute._price_contour import REQUIRED_SPECIFIER
 
@@ -100,8 +100,8 @@ def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     declared = next(dep for dep in dependencies if Requirement(dep).name == "price-contour")
 
     assert declared == f"price-contour{REQUIRED_SPECIFIER}"
-    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.5.0")
-    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.4.1")
+    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.6.0")
+    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.5.9")
 
 
 def _setup_uv_pins(workflow_text: str) -> list[str | None]:

@@ -284,6 +284,132 @@ class TestLatestWinsQueue:
         assert sub_b.wait(operation="q") == "B"
 
 
+class _Cancellable:
+    """A run that blocks until released or cancelled, then lingers until let go.
+
+    ``linger`` holds a cancelled run in its cancelling state, so a test can act
+    while it has noticed the cancel but not yet returned.
+    """
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+        self.started = threading.Event()
+        self.saw_cancel = threading.Event()
+        self.release = threading.Event()
+        self.linger = threading.Event()
+        self.linger.set()
+        self.returned = threading.Event()
+        self.calls = 0
+
+    def __call__(self, token: ExecutionCancellationToken) -> str:
+        self.calls += 1
+        self.started.set()
+        try:
+            deadline = time.monotonic() + _WAIT
+            while not self.release.is_set():
+                if token.cancelled:
+                    self.saw_cancel.set()
+                    assert self.linger.wait(_WAIT)
+                    token.throw_if_cancelled("q")
+                assert time.monotonic() < deadline
+                time.sleep(0.002)
+            return self.value
+        finally:
+            self.returned.set()
+
+
+class TestLatestWinsQueueCancelAbandoned:
+    """OPT-PC02: a running flight nobody waits for any more is cancelled."""
+
+    def test_the_last_detach_cancels_the_running_flight(self) -> None:
+        queue: LatestWinsQueue[str, str, str] = LatestWinsQueue(cancel_abandoned=True)
+        a = _Cancellable("A")
+        only = queue.subscribe("job", "A", a)
+        assert a.started.wait(_WAIT)
+
+        only.detach()
+
+        assert a.saw_cancel.wait(_WAIT)
+        assert a.returned.wait(_WAIT)
+
+    def test_a_staying_subscriber_keeps_the_flight_running(self) -> None:
+        queue: LatestWinsQueue[str, str, str] = LatestWinsQueue(cancel_abandoned=True)
+        a = _Cancellable("A")
+        leaving = queue.subscribe("job", "A", a)
+        staying = queue.subscribe("job", "A", a)
+        assert a.started.wait(_WAIT)
+
+        leaving.detach()
+        a.release.set()
+
+        assert staying.wait(operation="q") == "A"
+        assert not a.saw_cancel.is_set()
+
+    def test_a_request_for_another_key_never_cancels_the_running_flight(self) -> None:
+        queue: LatestWinsQueue[str, str, str] = LatestWinsQueue(cancel_abandoned=True)
+        a, b = _Cancellable("A"), _Cancellable("B")
+        sub_a = queue.subscribe("job", "A", a)
+        assert a.started.wait(_WAIT)
+        sub_b = queue.subscribe("job", "B", b)
+        b.release.set()
+        a.release.set()
+
+        assert sub_a.wait(operation="q") == "A"
+        assert sub_b.wait(operation="q") == "B"
+        assert not a.saw_cancel.is_set()
+
+    def test_the_waiter_starts_only_after_the_cancelled_flight_returns(self) -> None:
+        queue: LatestWinsQueue[str, str, str] = LatestWinsQueue(cancel_abandoned=True)
+        a, b = _Cancellable("A"), _Cancellable("B")
+        a.linger.clear()
+        sub_a = queue.subscribe("job", "A", a)
+        assert a.started.wait(_WAIT)
+        sub_b = queue.subscribe("job", "B", b)
+
+        sub_a.detach()
+        assert a.saw_cancel.wait(_WAIT)
+        time.sleep(0.05)
+        assert not b.started.is_set()
+
+        a.linger.set()
+        b.release.set()
+        assert sub_b.wait(operation="q") == "B"
+        assert a.returned.is_set()
+
+    def test_a_request_for_the_cancelling_key_queues_a_fresh_flight(self) -> None:
+        queue: LatestWinsQueue[str, str, str] = LatestWinsQueue(cancel_abandoned=True)
+        first_a, b, second_a = _Cancellable("A1"), _Cancellable("B"), _Cancellable("A2")
+        first_a.linger.clear()
+        sub_first = queue.subscribe("job", "A", first_a)
+        assert first_a.started.wait(_WAIT)
+        sub_b = queue.subscribe("job", "B", b)
+        sub_first.detach()
+        assert first_a.saw_cancel.wait(_WAIT)
+
+        # A -> B -> A while A is cancelling: the fresh A replaces waiting B.
+        sub_second = queue.subscribe("job", "A", second_a)
+        with pytest.raises(FlightReplacedError):
+            sub_b.wait(operation="q")
+        assert not second_a.started.is_set()
+
+        first_a.linger.set()
+        second_a.release.set()
+        assert sub_second.wait(operation="q") == "A2"
+        assert b.calls == 0
+        assert first_a.calls == 1
+
+    def test_a_detach_after_the_flight_finished_cancels_nothing(self) -> None:
+        queue: LatestWinsQueue[str, str, str] = LatestWinsQueue(cancel_abandoned=True)
+        gate = _Gate("A")
+        gate.release.set()
+        only = queue.subscribe("job", "A", gate)
+        assert only.wait(operation="q") == "A"
+
+        only.detach()
+
+        assert not gate.tokens[0].cancelled
+
+
 def test_a_sole_waiter_whose_token_fires_cancels_the_run() -> None:
     flights: SharedFlights[str, str] = SharedFlights()
     started = threading.Event()

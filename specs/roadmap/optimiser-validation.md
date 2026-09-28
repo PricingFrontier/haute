@@ -34,7 +34,7 @@ applicable" below):
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-PC02 | Deferred | P3 | A frontier point's apply or evaluation can be cancelled, and haute cancels the running one once no request is waiting for it, so rapid stepping stops wasted work. |
+| OPT-PC02 | In progress | P3 | A frontier point's apply or evaluation can be cancelled, and haute cancels the running one once no request is waiting for it, so rapid stepping stops wasted work. |
 
 ## Planned improvements
 
@@ -62,9 +62,9 @@ materialisation"). But a running computation always finishes, even after
 every request waiting for it has gone. The results tabs already abort their
 request when the user steps to another point, and that abort detaches the
 server-side subscriber (`ticket.wait(cancellation_token)` in
-`_optimiser_outcomes.py` and `_optimiser_quotes.py`). `LatestWinsQueue` then
-does nothing for a running flight, and the run's `ExecutionCancellationToken`
-is ignored by `_materialise_point`.
+`_optimiser_outcomes.py` and `_optimiser_quotes.py`). Before this package,
+`LatestWinsQueue` did nothing for a running flight, and `_materialise_point`
+ignored the run's `ExecutionCancellationToken`.
 
 `apply_lambdas_to_parquet_chunked` is not a building block for this. It
 reads the long quote parquet from disk and builds a small grid per chunk,
@@ -189,9 +189,12 @@ not the difference.)
   - **Retained point:** requesting a retained point while another point is
     running answers at once and leaves the running one untouched.
 
-**Dependencies:** Deferred until real books show that stepping cost matters.
-Haute works correctly without it. Steps 1–3 ship in price-contour first, and
-steps 4–8 follow in one haute PR.
+**Dependencies:** Steps 1–3 ship in price-contour first, and steps 4–8
+follow in one haute PR. Both are built: price-contour branch
+`feat/cancel-token` (version 0.6.0) and this branch, verified locally against
+an editable install of that checkout. The haute PR merges once price-contour
+0.6.0 is published and `uv.lock` is updated to it; that commit also deletes
+this roadmap, moving its open questions and scope decisions to their owners.
 
 **Evidence:** `src/haute/routes/_optimiser_frontier.py`
 (`request_point_apply`, `_point_frame_computation`, `_materialise_point`,

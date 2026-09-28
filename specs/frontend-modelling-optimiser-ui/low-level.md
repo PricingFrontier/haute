@@ -272,7 +272,7 @@ Only a current, accepted save response may acknowledge this revision transition.
    the tab is open, in the Rates flow's pattern: one `AbortController` per request and a
    request sequence, so a reply for a point, job or generation the tab has moved past is
    dropped, and a reply the server answered for another `frontier_generation` than the tab shows
-   is reported (with **Retry**) and never kept; a browser abort (a new point, closing the tab) only discards the reply; a 409 whose
+   is reported (with **Retry**) and never kept; a browser abort (a new point, closing the tab) discards the reply, and the server cancels a point apply no request waits for any more (OPT-PC02); a 409 whose
    `error_code` is `frontier_point_apply_replaced` is not an error, and the tab reissues the
    request while it still shows that point; a 410 shows the server's message with no Retry
    (only a new solve helps); any other failure shows the message with **Retry**. A loaded point

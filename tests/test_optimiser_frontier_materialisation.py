@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import polars as pl
 import pytest
@@ -214,7 +214,11 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
         quote_grid,
         lambdas={"volume": 0.55},
         constraints={"volume": {"min": 0.9}},
+        cancel=ANY,
     )
+    import price_contour
+
+    assert isinstance(apply_from_grid.call_args.kwargs["cancel"], price_contour.CancelToken)
 
     job = clean_job_store.require_job("apply_point")
     assert job["selected_frontier_point"] == 1
@@ -237,8 +241,8 @@ def test_concurrent_frontier_point_materialisations_run_one_at_a_time_and_keep_b
     job = _with_as_solved_artifact(_online_frontier_job(quote_grid=MagicMock()))
     seed_job(clean_job_store, "apply_points_concurrently", job)
 
-    def apply_from_grid(_grid, *, lambdas, constraints):
-        del constraints
+    def apply_from_grid(_grid, *, lambdas, constraints, cancel):
+        del constraints, cancel
         point_value = float(lambdas["volume"])
         with lock:
             running.append(point_value)
@@ -295,8 +299,8 @@ def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
         ),
     )
 
-    def apply_from_grid(_grid, *, lambdas, constraints):
-        del lambdas, constraints
+    def apply_from_grid(_grid, *, lambdas, constraints, cancel):
+        del lambdas, constraints, cancel
         current = clean_job_store.require_job(job_id)
         clean_job_store.atomic_update(
             job_id,
@@ -551,18 +555,27 @@ def _point_of(lambdas: dict) -> int:
 
 
 class _BlockingApply:
-    """A fake ``apply_from_grid`` that records which point it applied and can hold one."""
+    """A fake ``apply_from_grid`` that records which point it applied and can hold one.
+
+    A held point waits for ``release`` while polling the real price-contour
+    ``CancelToken`` it is handed, and raises the library's ``Cancelled`` once
+    that is cancelled, as the real call does.
+    """
 
     def __init__(self, hold: set[int] | None = None) -> None:
         self.hold = hold or set()
         self.applied: list[int] = []
+        self.cancelled: list[int] = []
         self.started = {index: threading.Event() for index in range(16)}
+        self.returned = {index: threading.Event() for index in range(16)}
         self.release = threading.Event()
         self._lock = threading.Lock()
         self._running = 0
         self.max_running = 0
 
-    def __call__(self, _grid, *, lambdas, constraints):
+    def __call__(self, _grid, *, lambdas, constraints, cancel):
+        import price_contour
+
         del constraints
         point = _point_of(lambdas)
         with self._lock:
@@ -572,7 +585,12 @@ class _BlockingApply:
         self.started[point].set()
         try:
             if point in self.hold:
-                assert self.release.wait(10)
+                deadline = time.monotonic() + 10
+                while not self.release.wait(0.005):
+                    if cancel.cancelled:
+                        self.cancelled.append(point)
+                        raise price_contour.Cancelled("cancelled through its CancelToken")
+                    assert time.monotonic() < deadline
             return SimpleNamespace(
                 dataframe=pl.DataFrame(
                     {
@@ -587,6 +605,7 @@ class _BlockingApply:
         finally:
             with self._lock:
                 self._running -= 1
+            self.returned[point].set()
 
 
 def _apply(client, job_id: str, point_index: int):
@@ -657,7 +676,7 @@ def test_a_disconnecting_subscriber_detaches_only_itself(clean_job_store):
     )
 
 
-async def test_a_client_that_leaves_an_apply_request_leaves_the_apply_to_finish(clean_job_store):
+async def test_a_client_that_leaves_an_apply_request_cancels_the_apply(clean_job_store):
     import asyncio
     from typing import cast
 
@@ -680,17 +699,257 @@ async def test_a_client_that_leaves_an_apply_request_leaves_the_apply_to_finish(
                 cast(Request, _LeavingRequest()),
             )
         assert left.value.status_code == 499
-        fake.release.set()
-        for _ in range(200):
-            handles = clean_job_store.require_job("left_point")["artifact_handles"]
-            if "frontier_apply_result:1" in handles:
+        for _ in range(500):
+            if fake.returned[1].is_set():
                 break
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.01)
 
-    # The apply ran to completion and its artifact is kept for the next request.
-    assert "frontier_apply_result:1" in handles
-    assert fake.applied == [1]
+    # Nobody waits for the point any more, so its apply stopped (OPT-PC02).
+    assert fake.cancelled == [1]
+    assert (
+        "frontier_apply_result:1"
+        not in clean_job_store.require_job("left_point")["artifact_handles"]
+    )
     assert clean_job_store.require_job("left_point").get("selected_frontier_point") is None
+
+
+def _leave(ticket) -> None:
+    """Wait on *ticket* from another thread, then leave as a disconnecting client would."""
+    from haute._execution_context import ExecutionCancellationToken, ExecutionCancelledError
+
+    token = ExecutionCancellationToken()
+    outcome: dict = {}
+
+    def wait() -> None:
+        try:
+            ticket.wait(token)
+        except ExecutionCancelledError as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=wait, daemon=True)
+    thread.start()
+    token.cancel()
+    thread.join(10)
+    assert isinstance(outcome.get("error"), ExecutionCancelledError)
+
+
+def _handles(store, job_id: str) -> dict:
+    return store.require_job(job_id)["artifact_handles"]
+
+
+def test_stepping_away_cancels_the_point_and_the_waiter_runs_after_its_cleanup(clean_job_store):
+    import haute.routes._optimiser_frontier as frontier
+    from haute.routes.optimiser import _frontier_service
+
+    seed_job(clean_job_store, "step_away", _stepping_job(2))
+    fake = _BlockingApply(hold={0})
+    events: list[str] = []
+    real_admit = frontier.create_admitted_execution_context
+
+    class _RecordingContext:
+        def __init__(self, context, subject: str) -> None:
+            self._context = context
+            self._subject = subject
+
+        def __getattr__(self, name: str):
+            return getattr(self._context, name)
+
+        def release_admission(self) -> None:
+            self._context.release_admission()
+            events.append(f"release {self._subject}")
+
+    def recording_admit(**kwargs):
+        subject = kwargs["estimate"].subject
+        context = real_admit(**kwargs)
+        events.append(f"admit {subject}")
+        return _RecordingContext(context, subject)
+
+    with (
+        patch("price_contour.apply_from_grid", side_effect=fake),
+        patch.object(frontier, "create_admitted_execution_context", recording_admit),
+    ):
+        ticket_a = _frontier_service.request_point_apply("step_away", 0)
+        assert fake.started[0].wait(10)
+        ticket_b = _frontier_service.request_point_apply("step_away", 1)
+        assert not fake.started[1].is_set()
+
+        _leave(ticket_a)
+        ticket_b.wait()
+
+    assert fake.cancelled == [0]
+    assert fake.applied == [0, 1]
+    assert fake.max_running == 1
+    assert events == [
+        "admit The frontier point apply (point 0)",
+        "release The frontier point apply (point 0)",
+        "admit The frontier point apply (point 1)",
+        "release The frontier point apply (point 1)",
+    ]
+    handles = _handles(clean_job_store, "step_away")
+    assert "frontier_apply_result:0" not in handles
+    assert "frontier_apply_result:1" in handles
+
+
+def test_two_consumers_on_different_points_both_complete(clean_job_store):
+    from haute.routes.optimiser import _frontier_service
+
+    seed_job(clean_job_store, "two_views", _stepping_job(2))
+    fake = _BlockingApply(hold={0})
+    with patch("price_contour.apply_from_grid", side_effect=fake):
+        ticket_a = _frontier_service.request_point_apply("two_views", 0)
+        assert fake.started[0].wait(10)
+        ticket_b = _frontier_service.request_point_apply("two_views", 1)
+        fake.release.set()
+        ticket_a.wait()
+        ticket_b.wait()
+
+    assert fake.cancelled == []
+    assert fake.applied == [0, 1]
+    handles = _handles(clean_job_store, "two_views")
+    assert {"frontier_apply_result:0", "frontier_apply_result:1"} <= set(handles)
+
+
+def test_returning_to_a_cancelling_point_queues_it_afresh(clean_job_store):
+    from fastapi import HTTPException
+
+    from haute.routes.optimiser import _frontier_service
+
+    seed_job(clean_job_store, "back_again", _stepping_job(2))
+    fake = _BlockingApply(hold={0})
+    first_return = threading.Event()
+    real_call = fake.__call__
+
+    def lingering_apply(*args, **kwargs):
+        # Hold the cancelled first A in its cancelling state until the test
+        # has asked for A again.
+        try:
+            return real_call(*args, **kwargs)
+        finally:
+            if not first_return.is_set():
+                first_return.set()
+                assert linger.wait(10)
+
+    linger = threading.Event()
+    with patch("price_contour.apply_from_grid", side_effect=lingering_apply):
+        ticket_a = _frontier_service.request_point_apply("back_again", 0)
+        assert fake.started[0].wait(10)
+        ticket_b = _frontier_service.request_point_apply("back_again", 1)
+        _leave(ticket_a)
+        assert first_return.wait(10)
+
+        # A -> B -> A while the first A is cancelling: a fresh A replaces B.
+        fake.hold.clear()
+        ticket_a_again = _frontier_service.request_point_apply("back_again", 0)
+        with pytest.raises(HTTPException) as replaced:
+            ticket_b.wait()
+        assert replaced.value.detail["error_code"] == "frontier_point_apply_replaced"
+
+        linger.set()
+        ticket_a_again.wait()
+
+    assert fake.cancelled == [0]
+    assert fake.applied == [0, 0]
+    assert "frontier_apply_result:0" in _handles(clean_job_store, "back_again")
+
+
+@pytest.mark.parametrize("moment", ["during persist", "inside adoption"])
+def test_a_cancel_racing_the_commit(clean_job_store, moment):
+    """Before adoption a cancel removes the written artifact; after the final
+    check it loses the race and the finished point is kept."""
+    import haute.routes._optimiser_frontier as frontier
+    from haute._execution_context import ExecutionCancellationToken, ExecutionCancelledError
+    from haute.routes.optimiser import _frontier_service
+
+    job_id = f"commit_race_{moment.replace(' ', '_')}"
+    seed_job(clean_job_store, job_id, _stepping_job(2))
+    token = ExecutionCancellationToken()
+    written: list[dict] = []
+    real_persist = frontier._persist_apply_frame_artifact
+    real_update = clean_job_store.atomic_update_if_heavy_present
+
+    def persist_then_cancel(frame):
+        handle = real_persist(frame)
+        written.append(handle)
+        if moment == "during persist":
+            token.cancel()
+        return handle
+
+    def cancel_inside_adoption(*args, **kwargs):
+        if moment == "inside adoption":
+            token.cancel()
+        return real_update(*args, **kwargs)
+
+    with (
+        patch("price_contour.apply_from_grid", side_effect=_BlockingApply()),
+        patch.object(frontier, "_persist_apply_frame_artifact", persist_then_cancel),
+        patch.object(clean_job_store, "atomic_update_if_heavy_present", cancel_inside_adoption),
+    ):
+        if moment == "during persist":
+            with pytest.raises(ExecutionCancelledError):
+                _frontier_service._materialise_point(job_id, 1, 0, token)
+        else:
+            _frontier_service._materialise_point(job_id, 1, 0, token)
+
+    (handle,) = written
+    if moment == "during persist":
+        assert "frontier_apply_result:1" not in _handles(clean_job_store, job_id)
+        assert not Path(handle["directory"]).exists()
+    else:
+        assert _handles(clean_job_store, job_id)["frontier_apply_result:1"] == handle
+        assert Path(handle["path"]).exists()
+
+
+def test_a_pre_cancelled_run_never_starts_the_apply(clean_job_store):
+    from haute._execution_context import ExecutionCancellationToken, ExecutionCancelledError
+    from haute.routes.optimiser import _frontier_service
+
+    seed_job(clean_job_store, "pre_cancelled", _stepping_job(2))
+    token = ExecutionCancellationToken()
+    token.cancel()
+    with patch("price_contour.apply_from_grid") as apply_from_grid:
+        with pytest.raises(ExecutionCancelledError):
+            _frontier_service._materialise_point("pre_cancelled", 1, 0, token)
+    apply_from_grid.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["error", "library cancel"])
+def test_a_failure_without_a_cancel_keeps_its_identity(clean_job_store, failure):
+    import price_contour
+
+    from haute.routes.optimiser import _frontier_service
+
+    seed_job(clean_job_store, f"fails_{failure.replace(' ', '_')}", _stepping_job(2))
+    raised = (
+        RuntimeError("apply exploded")
+        if failure == "error"
+        else price_contour.Cancelled("cancelled with no haute cancel")
+    )
+    with patch("price_contour.apply_from_grid", side_effect=raised):
+        ticket = _frontier_service.request_point_apply(f"fails_{failure.replace(' ', '_')}", 1)
+        with pytest.raises(type(raised)) as caught:
+            ticket.wait()
+    assert caught.value is raised
+
+
+def test_a_retained_point_answers_while_another_point_runs(clean_job_store):
+    from haute.routes.optimiser import _frontier_service
+
+    seed_job(clean_job_store, "retained_meanwhile", _stepping_job(2))
+    fake = _BlockingApply(hold={0})
+    with patch("price_contour.apply_from_grid", side_effect=fake):
+        _frontier_service.request_point_apply("retained_meanwhile", 1).wait()
+        ticket_a = _frontier_service.request_point_apply("retained_meanwhile", 0)
+        assert fake.started[0].wait(10)
+
+        retained = _frontier_service.request_point_apply("retained_meanwhile", 1)
+        assert retained.from_artifact
+        retained.wait()
+
+        fake.release.set()
+        ticket_a.wait()
+
+    assert fake.cancelled == []
+    assert fake.applied == [1, 0]
 
 
 def test_an_over_budget_point_apply_is_refused_before_apply_from_grid(
