@@ -1380,8 +1380,11 @@ present a structural or schema result as execution evidence.
   then applies the contract of the builder's output before the code runs: a Rating Step's or
   Scenario Expander's code-free contract derived from config (a declared contract describes
   the whole node, post-code included, so it never fills these sides), or a Model Score's
-  registered scorer output with its unknown model inputs filled from the declared inputs (no
-  model is loaded). Columns the code computes are therefore never demanded from the
+  code-free scorer contract, which resolves the model's features (and offset) exactly as
+  for a Model Score without code: from `feature_contract_path`, the deploy scorer's
+  annotation, or the loaded model. Only when that names no features (an unconfigured
+  scorer, or a model without feature names) does the registered scorer output stand with
+  its inputs filled from the declared inputs. Columns the code computes are therefore never demanded from the
   parent, and columns it reads are, even when the declared inputs list only model features. Post-code outside the lineage model keeps a
   full-width boundary recorded as `builder_post_code`.
 - **Data Input post-load code participates in projection planning.** A Data Input's `code`

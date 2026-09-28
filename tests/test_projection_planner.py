@@ -3899,6 +3899,41 @@ def test_builder_post_code_outputs_are_not_demanded_and_its_inputs_are():
     )
 
 
+def test_model_score_post_code_is_planned_from_the_models_features(tmp_path):
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    contract_path = tmp_path / "model.feature_contract.json"
+    save_contract(
+        build_contract(
+            features=["f1", "f2"],
+            feature_types={"f1": "Float64", "f2": "Float64"},
+            categorical_features=[],
+            target_name="target",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_path,
+    )
+    graph = _post_code_score_graph("df = df.with_columns(ratio=pl.col('premium') / pl.col('pred'))")
+    config = graph.nodes[1].data.config
+    del config["contract"]
+    config["feature_contract_path"] = str(contract_path)
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="score",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"score": {"quote_id", "ratio"}},
+        )
+    )
+
+    assert not projection.opaque_boundaries
+    assert pair_value(projection.edge_demands, "source", "score") == frozenset(
+        {"quote_id", "premium", "f1", "f2"}
+    )
+
+
 def test_builder_post_code_outside_the_lineage_model_keeps_a_full_width_boundary():
     projection = plan(
         ProjectionRequest(

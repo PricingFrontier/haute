@@ -3164,12 +3164,18 @@ def _pre_post_code_contract(node: GraphNode, effective: Contract) -> Contract:
 
     A declared contract describes the whole node, post-code included, so it
     cannot fill the builder's own sides. A Rating Step or Scenario Expander
-    derives its code-free contract from config alone. A Model Score's registered
-    output is already the scorer's, and its unknown model inputs are filled from
-    the declared inputs rather than by loading the model.
+    derives its code-free contract from config alone. A Model Score's scorer
+    reads its model's features whatever code runs after it, so its code-free
+    contract resolves them exactly as for a Model Score without code. When that
+    names no features (an unconfigured scorer, or a model without feature
+    names) the registered output stands, with inputs from the declaration.
     """
     if node.data.nodeType is NodeType.MODEL_SCORE:
-        return effective
+        scorer_config = {
+            key: value for key, value in node.data.config.items() if key not in {"code", "steps"}
+        }
+        scorer = Contract.from_tuple(get_column_contract(NodeType.MODEL_SCORE, scorer_config))
+        return scorer if scorer.inputs else effective
     config = {key: value for key, value in node.data.config.items() if key != "code"}
     return Contract.from_tuple(get_column_contract(node.data.nodeType, config))
 
