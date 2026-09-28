@@ -251,3 +251,15 @@ describe("GLMTermsConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("terms", { income: { type: "ns", df: 4 } })
   })
 })
+
+describe("GLMTermsConfig before the columns load", () => {
+  afterEach(cleanup)
+
+  it("lists the saved terms as saved, not unresolved", () => {
+    render(<GLMTermsConfig config={{ target: "target", algorithm: "glm", terms: { age: { type: "linear" } } }} onUpdate={vi.fn<OnUpdateConfig>(() => ({ ok: true as const }))} columns={[]} />)
+    expect(screen.queryByRole("group", { name: "Unresolved terms" })).toBeNull()
+    const saved = screen.getByRole("group", { name: "Saved terms" })
+    expect(within(saved).getByText("age")).toBeInTheDocument()
+    expect(within(saved).getByText("Waiting for the upstream columns")).toBeInTheDocument()
+  })
+})

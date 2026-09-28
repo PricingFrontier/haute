@@ -26,6 +26,22 @@
         },
         "topological_rank": 0,
         "column_relevant": true,
+        "contributed_columns": [
+          "base_rate"
+        ],
+        "derivations": [
+          {
+            "column": "base_rate",
+            "expression_text": null,
+            "substituted_text": null,
+            "result_value": 10.0,
+            "not_computable_reason": null,
+            "result_source": null,
+            "reads": [],
+            "error": null,
+            "error_type": null
+          }
+        ],
         "expression": null,
         "calculation": null,
         "node_detail": null,

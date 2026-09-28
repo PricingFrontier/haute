@@ -1635,6 +1635,23 @@ def _extract_error_line(exc: Exception) -> int | None:
     return None
 
 
+def _located_step_line(
+    fn: Callable[..., Any], inputs: Sequence[_Frame], exc: Exception
+) -> int | None:
+    """The line of the step a recorded plan failure came from, when the node can name it.
+
+    Only a Polars transform authored as closed-vocabulary steps carries
+    ``failed_step_line`` (``_builders._build_transform``), and only a Polars
+    error can be its plan failing to resolve. The builder replays the steps on
+    *inputs*, the frames the run gave the node; the exception is not touched.
+    """
+    locate = getattr(fn, "failed_step_line", None)
+    if locate is None or not isinstance(exc, pl.exceptions.PolarsError):
+        return None
+    line: int | None = locate(*inputs)
+    return line
+
+
 def _declared_api_input_frame_schema_items(
     node: GraphNode,
 ) -> dict[str, list[tuple[str, str]]]:

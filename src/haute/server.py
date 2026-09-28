@@ -33,6 +33,7 @@ from starlette.routing import Route
 
 from haute import __version__
 from haute._cpu_performance import configure_process_high_qos
+from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._interactive_workers import (
@@ -440,6 +441,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # environment is kept; otherwise the default applies.
     set_streaming_chunk_size(current_streaming_chunk_size())
     try:
+        open_dedicated_workers()
         start_interactive_worker_pool()
         _watcher_task = asyncio.create_task(_watcher_forever())
         _artifact_reaper_task = asyncio.create_task(
@@ -460,7 +462,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     _artifact_reaper_task = None
                     await reaper_task
         finally:
-            shutdown_interactive_worker_pool()
+            try:
+                shutdown_dedicated_workers()
+            finally:
+                shutdown_interactive_worker_pool()
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)

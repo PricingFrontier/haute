@@ -1,29 +1,30 @@
-"""Raw authored settings/code evidence and scaffold matching for recovery (no execution)."""
+"""Raw authored settings/code evidence for recovery (no execution)."""
 
 from __future__ import annotations
 
 import ast
 import json
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from haute._artifact_paths import conflict, read_artifact, safe_path
 from haute._ast_helpers import _extract_function_bodies, _get_decorator_kwargs
-from haute._code_extraction import _extract_explore_user_code
-from haute._config_builder import _attach_code_from_body, _reconcile_steps
+from haute._config_builder import (
+    _attach_code_from_body,
+    _reconcile_steps,
+    uncalled_function_body,
+    validate_step_container,
+)
 from haute._config_io import (
     _normalise_loaded_config,
-    config_path_for_node,
-    has_config_folder,
     reject_duplicate_keys_hook,
 )
-from haute._node_config_recovery import node_config_schema
 from haute._pipeline_repair import PipelineRepairError
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
-from haute._types import GraphNode, NodeData, NodeType
-from haute.errors import ConfigError, HauteError
+from haute._standalone_nodes import CODE_NODE_TYPES
+from haute._types import NodeType
+from haute.errors import ConfigError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
 
 
@@ -42,9 +43,7 @@ def read_raw_node_settings(
     root: Path,
     document: PipelineEditorDocument,
     target: RecoveryPipelineNode,
-) -> tuple[
-    NodeType, dict[str, Any], list[RecoveryFieldChange], ast.FunctionDef, list[str], str | None
-]:
+) -> tuple[NodeType, dict[str, Any], list[RecoveryFieldChange]]:
     """Raw authored settings and code for one ordinary node, with provenance notes."""
     if target.node_type not in {kind.value for kind in NodeType}:
         raise conflict(
@@ -106,14 +105,23 @@ def read_raw_node_settings(
                 ) from exc
     params = [arg.arg for arg in (*function.args.posonlyargs, *function.args.args)]
     body = _extract_function_bodies(source, tree=tree)[function.name]
+    keyword_only = [arg.arg for arg in function.args.kwonlyargs]
+    body_dropped = uncalled_function_body(node_type, body, [*params, *keyword_only], params)
+    if body_dropped:
+        # The body has no place under the current contract; moved into a hook,
+        # its old calls would name inputs the hook never binds.
+        changes.append(
+            RecoveryFieldChange(path="/code", outcome="removed", reason=_uncalled_reason(node_type))
+        )
+        body = ""
     raw = _attach_code_from_body(raw, node_type, body, params)
-    if node_type == NodeType.EXPLORE:
-        raw["code"] = _extract_explore_user_code(body, params)
     if node_type in STEPPED_NODE_TYPES and "steps" in raw:
         # The ``.py`` body is the runtime truth here as it is in ordinary
         # parsing: without this, a hand-edited body would be silently
         # regenerated from stale steps when ``NodeData`` materialises the
-        # recovered candidate, losing the authored edit.
+        # recovered candidate, losing the authored edit. A dropped body was
+        # never run, so nothing competes with the steps: they are settings,
+        # kept to regenerate the hook.
         #
         # Recovery never raises on a bad field, so a step list the parser
         # rejects outright (a malformed container, or a list beside an
@@ -122,7 +130,11 @@ def read_raw_node_settings(
         # key is removed, never defaulted to ``[]``, because an empty list
         # would materialise as empty code and discard that body.
         try:
-            reconciled = _reconcile_steps(raw, node_type, params, reference, function.name)
+            if body_dropped:
+                validate_step_container(raw, node_type, reference, function.name)
+                reconciled = raw
+            else:
+                reconciled = _reconcile_steps(raw, node_type, params, reference, function.name)
             reason = str(reconciled.get("_steps_discarded", ""))
         except ConfigError as exc:
             reconciled = {key: value for key, value in raw.items() if key != "steps"}
@@ -139,83 +151,19 @@ def read_raw_node_settings(
                 reason="Known decorator spelling: source_type maps to sourceType.",
             )
         )
-    return node_type, raw, changes, function, params, reference
+    return node_type, raw, changes
 
 
-def require_generated_body(
-    node_type: NodeType,
-    authored_id: str,
-    config: dict[str, Any],
-    function: ast.FunctionDef,
-    *,
-    params: list[str],
-    reference: str | None,
-    receiver: str,
-    config_base_depth: int,
-) -> None:
-    """Only regenerate a non-code node when its body is a recognised template."""
-    from haute.codegen import _node_to_code
-
-    if "code" in node_config_schema(node_type)["properties"]:
-        return
-    problem = (
-        "This node's body is not a recognised generated scaffold. Preserve it through "
-        "a manual source edit, or explicitly choose Reset all settings and code."
+def _uncalled_reason(node_type: NodeType) -> str:
+    """Why recover dropped a function body the decorator never calls, and what to do."""
+    replaced = (
+        "so its decorator never runs this body. Recover replaced the function with the "
+        "node's declaration; the removed lines are in the source diff."
     )
-    if (
-        function.args.defaults
-        or function.args.kwonlyargs
-        or function.args.vararg
-        or function.args.kwarg
-    ):
-        raise conflict(problem)
-    candidate = deepcopy(config)
-    candidate.pop("contract", None)  # Matching a body never derives a runtime column contract.
-    try:
-        generated = _node_to_code(
-            GraphNode(
-                id=authored_id,
-                data=NodeData(label=authored_id, nodeType=node_type, config=candidate),
-            ),
-            source_names=params,
-            contract_source="declared",
-        )
-    except (HauteError, ValueError) as exc:
-        raise conflict(problem) from exc
-    expected = ast.parse(generated).body[0]
-    assert isinstance(expected, ast.FunctionDef)
-    default_reference = (
-        config_path_for_node(node_type, authored_id).as_posix()
-        if has_config_folder(node_type)
-        else None
+    if node_type not in CODE_NODE_TYPES:
+        return f"This node type ({node_type.value}) carries no code, {replaced}"
+    marker = "keyword-only obj" if node_type == NodeType.EXTERNAL_FILE else "first parameter df"
+    return (
+        f"The function is not a hook ({marker}), {replaced} "
+        "Add any custom code back in the node's editor."
     )
-    # Generated syntax contains no user code here; adapt only its known bindings.
-    for part in ast.walk(expected):
-        if isinstance(part, ast.Name) and part.id == "pipeline":
-            part.id = receiver
-        elif isinstance(part, ast.Constant) and reference and part.value == default_reference:
-            part.value = reference
-
-    def statements(body: list[ast.stmt]) -> list[ast.stmt]:
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            return body[1:]
-        return body
-
-    def syntax(body: list[ast.stmt]) -> str:
-        return ast.dump(ast.Module(body=body, type_ignores=[]))
-
-    actual_body = statements(function.body)
-    # Recovery can have installed this exact local config-base binding previously.
-    local_base = ast.parse(
-        "from pathlib import Path as _HauteResetPath\n"
-        f"_HAUTE_CONFIG_BASE = _HauteResetPath(__file__).resolve().parents[{config_base_depth}]\n"
-    ).body
-    if syntax(actual_body[:2]) == syntax(local_base):
-        actual_body = actual_body[2:]
-    if syntax(actual_body) != syntax(statements(expected.body)):
-        raise conflict(problem)

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest"
 
-import { columnsBeforeStep } from "../derivedColumns"
+import { columnNames, columnsBeforeStep, type ColumnSource } from "../derivedColumns"
 import { canonicalStep, stepProblem, variablesBefore } from "../catalogue"
 import { summarizeStep } from "../summary"
 import type { Operand, Step } from "../types"
 
 const col = (name: string) => ({ kind: "column" as const, name })
+/** A frame-mode source over columns a and b. */
+const AB: ColumnSource = { inputs: {}, frame: [{ name: "a", dtype: "Int64" }, { name: "b", dtype: "Int64" }] }
+const namesBefore = (steps: Step[], index: number) => columnNames(columnsBeforeStep(AB, steps, index))
 
 describe("stepProblem", () => {
   it("accepts well-formed steps of every kind", () => {
@@ -99,13 +102,13 @@ describe("stepProblem", () => {
     ]
     for (const step of steps) expect(stepProblem(step)).toBeNull()
     expect(summarizeStep(steps[0])).toBe("region, every Float64, every Int64")
-    expect(summarizeStep(steps[2])).toBe("whole frame: n = count(), *_mean = mean(every Float64)")
+    expect(summarizeStep(steps[2])).toBe("whole frame: n = row count, *_mean = mean of every Float64")
     expect(summarizeStep(steps[3])).toBe("mean of premium by region into web")
-    expect(summarizeStep(steps[4])).toBe("premium, sum_insured into measure/value")
-    expect(columnsBeforeStep(["a", "b"], steps, 5)).toEqual(["quote_id", "measure", "value"])
-    expect(columnsBeforeStep(["a", "b"], [steps[0]], 1)).toEqual(["region", "a", "b"])
-    expect(columnsBeforeStep(["a", "b"], [steps[2]], 1)).toEqual(["n"])
-    expect(columnsBeforeStep(["a", "b"], [steps[3]], 1)).toEqual(["region", "web"])
+    expect(summarizeStep(steps[4])).toBe("premium, sum_insured into measure / value")
+    expect(namesBefore(steps, 5)).toEqual(["quote_id", "measure", "value"])
+    expect(namesBefore([steps[0]], 1)).toEqual(["region", "a", "b"])
+    expect(namesBefore([steps[2]], 1)).toEqual(["n"])
+    expect(namesBefore([steps[3]], 1)).toEqual(["region", "web"])
     expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ dtype: "Float64", agg: "mean", suffix: "_m", name: "x" }] })).toMatch(/mixes a column type/)
     expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "mean", name: "x" }] })).toMatch(/missing "column"/)
     expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [{ value: col("c"), name: "n" }], values: "a", agg: "sum" })).toMatch(/plain value/)
@@ -134,14 +137,14 @@ describe("stepProblem", () => {
   it("summarises the extended vocabulary in plain words", () => {
     expect(
       summarizeStep({ id: "ow", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", column: "", over: ["k"], orderBy: [{ column: "a", descending: true }] } }),
-    ).toBe("rn = row_number over k ordered by a desc")
+    ).toBe("rn = row number over k ordered by a desc")
     expect(summarizeStep({ id: "t", kind: "with_column", name: "tot", expr: { type: "window", agg: "sum", column: "a", over: [] } })).toBe("tot = sum of a over all rows")
     expect(
       summarizeStep({ id: "cc", kind: "with_column", name: "key", expr: { type: "concat", parts: [col("a"), { kind: "literal", type: "null", value: null }], separator: "|" } }),
     ).toBe("key = join(a, null)")
     expect(
       summarizeStep({ id: "g", kind: "group_by", keys: [], aggregations: [{ column: "a", agg: "sum", name: "s", where: { match: "all", conditions: [] } }, { column: "", agg: "len", name: "n" }] }),
-    ).toBe("whole frame: s = sum(a) where …, n = count()")
+    ).toBe("whole frame: s = sum of a where …, n = row count")
     expect(summarizeStep({ id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", validate: "m:1" })).toBe("left join rates on k (m:1)")
   })
 
@@ -186,7 +189,7 @@ describe("stepProblem", () => {
   ])("rejects %s without throwing anywhere downstream", (_label, step, pattern) => {
     expect(stepProblem(step)).toMatch(pattern)
     const steps = [{ id: "s", kind: "source", input: "quotes" } as Step, step as Step, { id: "l", kind: "limit", n: 1 } as Step]
-    expect(() => columnsBeforeStep(["a"], steps, 3)).not.toThrow()
+    expect(() => columnsBeforeStep({ inputs: { quotes: [{ name: "a", dtype: "Int64" }] }, frame: [] }, steps, 3)).not.toThrow()
     expect(() => variablesBefore(steps, 3)).not.toThrow()
     expect(() => summarizeStep(steps[2])).not.toThrow()
   })

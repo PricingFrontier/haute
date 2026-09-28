@@ -113,6 +113,63 @@ describe("SummaryTab", () => {
     expect(within(diagnostics).queryByText("0.4567")).not.toBeInTheDocument()
   })
 
+  it("leads with the validation metrics when a holdout-validated refit has in-sample diagnostics", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      diagnostics_set: "development",
+      diagnostic_metrics: { gini: 0.8963, rmse: 0.0586 },
+      final_test_rows: 0,
+      final_test_metrics: {},
+      evaluation: { ...base.evaluation!, final_test_rows: 0 },
+    })
+
+    render(<SummaryTab result={result} />)
+
+    // The metric cards come first, in reading order.
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)
+    expect(headings.slice(0, 2)).toEqual(["Validation, 2,000 rows", "Training diagnostics"])
+    const validation = screen.getByRole("region", { name: "Validation, 2,000 rows" })
+    expect(within(validation).getByText("0.4500")).toBeInTheDocument()
+    expect(within(validation).getByText("0.1200")).toBeInTheDocument()
+    expect(
+      within(validation).getByText("Out-of-sample performance of the validation fit, used to select the model."),
+    ).toBeInTheDocument()
+    expect(within(validation).queryByText("0.8963")).not.toBeInTheDocument()
+  })
+
+  it("names the fold count of cross-validated metrics that lead", () => {
+    const base = makeTrainResult()
+    const summary = (mean: number) => ({ mean, stddev: 0.01, min: mean, max: mean, fit_count: 5, validation_rows: 8000 })
+    const result = makeTrainResult({
+      diagnostics_set: "development",
+      final_test_rows: 0,
+      final_test_metrics: {},
+      evaluation: {
+        ...base.evaluation!,
+        validation_method: "cross_validation",
+        validation_fit_count: 5,
+        final_test_rows: 0,
+        selection_metrics: { gini: summary(0.41), rmse: summary(0.15) },
+      },
+    })
+
+    render(<SummaryTab result={result} />)
+
+    const validation = screen.getByRole("region", { name: "Validation (5-fold mean), 8,000 rows" })
+    expect(within(validation).getByText("0.4100")).toBeInTheDocument()
+    expect(
+      within(validation).getByText("Out-of-sample performance of the validation fits, used to select the model."),
+    ).toBeInTheDocument()
+  })
+
+  it("keeps test metrics first, and no validation card, when a test set was reserved", () => {
+    render(<SummaryTab result={makeTrainResult({ diagnostics_set: "final_test" })} />)
+
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)
+    expect(headings.slice(0, 2)).toEqual(["Test metrics", "Test diagnostics"])
+    expect(screen.queryByRole("region", { name: /^Validation/ })).toBeNull()
+  })
+
   it("does not imply test performance when none was reserved", () => {
     const result = makeTrainResult({
       final_test_metrics: {},

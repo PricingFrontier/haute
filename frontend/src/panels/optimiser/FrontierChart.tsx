@@ -18,8 +18,9 @@ import { CHART_COLORS } from "../../theme/colors"
 import {
   chartAxisLabel,
   chartDomain,
+  chartTickSpan,
   chartTicks,
-  formatChartNumber,
+  formatChartTicks,
 } from "../../utils/chartHelpers"
 import ChartFocusDetail from "../ChartFocusDetail"
 import {
@@ -248,8 +249,9 @@ export default function FrontierChart({
           const xScale = (v: number) => left + ((v - xLow) / (xHigh - xLow)) * plotWidth
           const yScale = (v: number) => plotBottom - ((v - yLow) / (yHigh - yLow)) * (plotBottom - top)
           const xTickCount = Math.max(2, Math.min(5, Math.floor(plotWidth / 90)))
-          const xTicks = chartTicks(Math.min(...xs), Math.max(...xs), xTickCount)
-          const yTicks = chartTicks(Math.min(...ys), Math.max(...ys), 5)
+          const xTicks = chartTicks(...chartTickSpan(xs), xTickCount)
+          const xLabels = formatChartTicks(xTicks)
+          const yTicks = chartTicks(...chartTickSpan(ys), 5)
           const line = feasibleLine(points, xScale, yScale)
           const solvedX = xScale(asSolved.x)
           const solvedY = yScale(asSolved.y)
@@ -271,7 +273,7 @@ export default function FrontierChart({
                   fontSize={FONT}
                   fill={TEXT}
                 >
-                  {formatChartNumber(tick)}
+                  {xLabels[i]}
                 </text>
               ))}
               <AxisName x={left + plotWidth / 2} y={height - 6} label={xLabel} plotWidth={plotWidth} anchor="middle" />
@@ -314,16 +316,19 @@ export default function FrontierChart({
           )
         }}
       </ResponsiveChart>
-      <ChartFocusDetail placeholder="Hover or focus a frontier point to inspect its values.">
-        {active && (
-          <>
-            <strong>Point {active.index + 1}</strong>
-            <span>{yLabel}: {active.y.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
-            <span>{xLabel}: {active.x.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
-            <span>{STATUS_WORDS[active.status]}</span>
-          </>
-        )}
-      </ChartFocusDetail>
+      {/* A selected point's detail card shows its values; the hover detail would repeat them. */}
+      {selectedIdx == null && (
+        <ChartFocusDetail placeholder="Hover or focus a frontier point to inspect its values.">
+          {active && (
+            <>
+              <strong>Point {active.index + 1}</strong>
+              <span>{yLabel}: {active.y.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
+              <span>{xLabel}: {active.x.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
+              <span>{STATUS_WORDS[active.status]}</span>
+            </>
+          )}
+        </ChartFocusDetail>
+      )}
     </div>
   )
 }

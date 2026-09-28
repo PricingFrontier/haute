@@ -114,11 +114,10 @@ class TestConfigEncodingRobustness:
             b'"assignment": "20\x9627"}], "default": "other"}]}'
         )
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.banding(config="config/banding/bands.json")\n'
-            "def bands(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            "    return df\n"
+            "def bands(df): ...\n"
         )
 
         from haute.parser import parse_pipeline_file
@@ -140,11 +139,10 @@ class TestConfigEncodingRobustness:
         config_dir.mkdir(parents=True)
         (config_dir / "bands.json").write_bytes(b'{\x96: "value"}')
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.banding(config="config/banding/bands.json")\n'
-            "def bands(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            "    return df\n"
+            "def bands(df): ...\n"
         )
 
         from haute.errors import ConfigError

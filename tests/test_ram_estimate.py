@@ -854,6 +854,56 @@ class TestEstimateSafeTrainingRows:
         assert result.probe_columns == 3
         assert result.estimated_bytes == _estimate_peak_bytes(12, 3)
 
+    @pytest.mark.parametrize(
+        ("validate", "rows", "unbounded"), [(None, 400, ("joined",)), ("m:1", 20, ())]
+    )
+    def test_a_join_without_a_key_contract_bounds_rows_without_a_downsample_verdict(
+        self, tmp_path, validate: str | None, rows: int, unbounded: tuple[str, ...]
+    ) -> None:
+        """An undeclared join's row product is a worst case, not a count (MDL-01)."""
+        left_path = tmp_path / "left.parquet"
+        right_path = tmp_path / "right.parquet"
+        pl.DataFrame({"id": range(20), "left_value": range(20)}).write_parquet(left_path)
+        pl.DataFrame({"id": range(20), "right_value": range(20)}).write_parquet(right_path)
+        config: dict[str, object] = {"how": "left", "on": ["id"]}
+        if validate is not None:
+            config["validate"] = validate
+        joined = _make_transform_node(node_id="joined", config=config)
+        joined.data.nodeType = NodeType.EDGE_JOIN
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[
+                _make_source_node(
+                    node_id="left",
+                    node_type="dataInput",
+                    config=_ready_file_input_config(left_path),
+                ),
+                _make_source_node(
+                    node_id="right",
+                    node_type="dataInput",
+                    config=_ready_file_input_config(right_path),
+                ),
+                joined,
+                target,
+            ],
+            edges=[
+                GraphEdge(id="left-join", source="left", target="joined", targetHandle="base"),
+                GraphEdge(id="right-join", source="right", target="joined", targetHandle="join"),
+                GraphEdge(id="join-model", source="joined", target=target.id),
+            ],
+        )
+
+        # Too little RAM for the worst case, so a row limit is needed.
+        with patch("haute._ram_estimate.available_ram_bytes", return_value=1):
+            result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.total_rows == rows
+        assert result.unbounded_join_node_ids == unbounded
+        assert result.safe_row_limit is not None
+        # Only a proven count earns a downsample verdict.
+        assert result.was_downsampled is (not unbounded)
+        assert (result.warning is None) is bool(unbounded)
+
     def test_unproven_target_cardinality_returns_unavailable_training_estimate(
         self,
         tmp_path,
@@ -2376,6 +2426,10 @@ class TestRamEstimateFields:
             ({"estimated_bytes": None}, "requires a row total and memory figures"),
             ({"total_rows": None}, "requires a row total and memory figures"),
             ({"blocking_node_id": "src"}, "names no blocking node"),
+            (
+                {"unbounded_join_node_ids": ("join",), "was_downsampled": True},
+                "worst-case row bound has no downsampling verdict",
+            ),
             (
                 {
                     "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,

@@ -51,6 +51,7 @@ from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
+    constant_frame,
     expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
@@ -420,8 +421,12 @@ def _explore_fn(df: _Frame) -> _Frame:
 
 
 def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
-    """Explore code, or a step list (the same program), derives arbitrary analysis columns."""
-    if (config.get("code") or "").strip() or isinstance(config.get("steps"), list):
+    """Explore code, or a step list (the same program), derives arbitrary analysis columns.
+
+    An empty step list is an empty program: the node passes its input through.
+    """
+    steps = config.get("steps")
+    if (config.get("code") or "").strip() or (isinstance(steps, list) and steps):
         return _OPAQUE_CONTRACT
     return _passthrough_columns(config)
 
@@ -595,23 +600,10 @@ def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(NodeType.CONSTANT, recompute_cost="source", columns=_constant_columns)
 def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    config = ctx.config
-    raw_values = config.get("values", []) or []
+    raw_values = ctx.config.get("values", []) or []
 
     def constant_fn() -> _Frame:
-        data: dict[str, list] = {}
-        for v in raw_values:
-            name = v.get("name", "")
-            if not name:
-                continue
-            val = v.get("value", "")
-            try:
-                data[name] = [float(val)]
-            except (ValueError, TypeError):
-                data[name] = [val]
-        if not data:
-            data = {"constant": [0]}
-        return pl.LazyFrame(data)
+        return constant_frame(raw_values)
 
     return ctx.func_name, constant_fn, True
 
@@ -661,22 +653,16 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if not code:
         return ctx.func_name, _explore_fn, False
 
-    _src_names = list(ctx.source_names)
-    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
-    _in_map = dict(ctx.config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def explore_with_code(df: _Frame) -> _Frame:
-        # Explore's code box operates on the single implicit frame ``df``;
-        # keep that binding explicitly now that _exec_user_code no longer
-        # seeds it for named-input node kinds.
+        # Explore's code runs on its input as ``df`` and sees nothing else by
+        # name, exactly as the saved file's hook does.
         return _exec_user_code(
             code,
-            _src_names,
+            ["df"],
             (df,),
             extra_ns=_preamble,
-            orig_source_names=_orig_src,
-            input_mapping=_in_map,
             alias_first_input_as_df=True,
         )
 
@@ -1301,15 +1287,42 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
+        schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
         feature_contract_path=config.get("feature_contract_path") or None,
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
         mlflow_destination=str(config.get("mlflow_destination", "") or ""),
         alias=str(config.get("alias", "") or ""),
+        input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
     )
 
     return ctx.func_name, scorer.score, False
+
+
+def _upstream_scenario_fanout(
+    upstream_ids: list[str] | None,
+    node_map: dict[str, GraphNode] | None,
+) -> int:
+    """The product of the scenario expanders' step counts above a node.
+
+    An upper bound on how many rows the node's input holds per source row:
+    expanders on separate branches multiply too. A config the expander itself
+    would refuse counts as 1.
+    """
+    from haute._node_apply import scenario_step_count
+    from haute.errors import ConfigError
+
+    fanout = 1
+    for node_id in upstream_ids or ():
+        node = (node_map or {}).get(node_id)
+        if node is None or node.data.nodeType != NodeType.SCENARIO_EXPANDER:
+            continue
+        try:
+            fanout *= scenario_step_count(node.data.config)
+        except (ConfigError, TypeError, ValueError, OverflowError):
+            continue
+    return fanout
 
 
 @_register(NodeType.POLARS, recompute_cost="code", opaque=True)
@@ -1348,19 +1361,30 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     if code:
 
-        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            if dfs_by_name:
-                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
-            else:
-                dfs = dfs_positional
+        def run(program: str, dfs: tuple[_Frame, ...]) -> _Frame:
             return _exec_user_code(
-                code,
+                program,
                 _src_names,
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
                 input_mapping=_in_map,
             )
+
+        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
+            return run(code, dfs)
+
+        if isinstance(steps, list) and not any(s["kind"] == "free_code" for s in steps):
+            # Free code can replace the frame, and replaying it would run
+            # authored code twice, so only closed-vocabulary steps are located.
+            def failed_step_line(*dfs: _Frame) -> int | None:
+                return _failed_step_line(steps, lambda program: run(program, dfs))
+
+            transform_fn.failed_step_line = failed_step_line  # type: ignore[attr-defined]
 
         # A polars node with self-contained code and no upstream wiring
         # is effectively a source: there is no dataframe to receive, so
@@ -1376,6 +1400,36 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # With no upstream, mark the node as a source so the executor invokes the
     # placeholder instead of failing first with its generic no-input guard.
     return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
+
+
+def _failed_step_line(steps: list[dict[str, Any]], run: Callable[[str], _Frame]) -> int | None:
+    """The first line of the step whose lazy plan first fails to resolve, or None.
+
+    A stepped transform's plan errors (a missing column, a type mismatch)
+    surface when its schema is resolved, after its code ran, so no line comes
+    with them. *run* executes a program exactly as the transform ran its code,
+    on the input frames the run built. The node's full plan is resolved first:
+    when it resolves, the failure was not the steps' plan (a strict cast
+    meeting a bad value fails only on data) and no step is named. Otherwise
+    each prefix of the steps is rendered and its schema resolved, which reads
+    no rows; the first prefix that fails names its last step.
+    """
+    rendered = render_polars_steps(steps, start="input")
+    if _plan_resolves(run(rendered.code)):
+        return None
+    for count in range(1, len(steps)):
+        if not _plan_resolves(run(render_polars_steps(steps[:count], start="input").code)):
+            return rendered.step_lines[count - 1][0]
+    # Every shorter prefix resolves, and the whole program does not.
+    return rendered.step_lines[-1][0]
+
+
+def _plan_resolves(frame: _Frame) -> bool:
+    try:
+        frame.collect_schema()
+    except pl.exceptions.PolarsError:
+        return False
+    return True
 
 
 def stepped_code_problem(
@@ -1657,6 +1711,27 @@ def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
     )
 
 
+def online_apply_chosen_row_columns(
+    artifact: dict[str, Any],
+    *,
+    optimised_value_col: str = "",
+) -> dict[str, tuple[str, pl.DataType]]:
+    """Map each online apply output column naming the chosen scenario row to its input.
+
+    The apply emits the chosen row's quote id, scenario index, and scenario
+    value cast to the dtypes it decides in (``_prepare_online_apply_frame``):
+    ``{output column: (input column, dtype)}``.
+    """
+    return {
+        "quote_id": (artifact.get("quote_id", "quote_id"), pl.String()),
+        "optimal_step": (artifact.get("scenario_index", "scenario_index"), pl.Int32()),
+        optimised_value_col or "optimal_scenario_value": (
+            artifact.get("scenario_value", "scenario_value"),
+            pl.Float32(),
+        ),
+    }
+
+
 def online_apply_output_schema(
     artifact: dict[str, Any],
     *,
@@ -1667,11 +1742,12 @@ def online_apply_output_schema(
     """Return the exact schema a sum-constraint online apply emits."""
     constraints = artifact.get("constraints") or {}
     columns: dict[str, pl.DataType] = {
-        "quote_id": pl.String(),
-        "optimal_step": pl.Int32(),
-        optimised_value_col or "optimal_scenario_value": pl.Float32(),
-        "optimal_objective": pl.Float32(),
+        name: dtype
+        for name, (_input, dtype) in online_apply_chosen_row_columns(
+            artifact, optimised_value_col=optimised_value_col
+        ).items()
     }
+    columns["optimal_objective"] = pl.Float32()
     for name in sorted(constraints):
         columns[f"optimal_{name}"] = pl.Float32()
     if version:
@@ -1687,7 +1763,6 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
     objective = artifact.get("objective", "expected_income")
-    constraints = artifact.get("constraints") or {}
 
     # Filter out null quote IDs before casting (null -> "null" would become
     # a real quote identifier and diverge from the optimiser apply path).
@@ -1699,19 +1774,53 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
         pl.col(mult_col).cast(pl.Float32),
         pl.col(objective).cast(pl.Float32),
     ]
-    cast_names = {qid_col, step_col, mult_col, objective}
-    for name, spec in constraints.items():
-        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
-            for col in (spec["numerator"], spec["denominator"]):
-                col_name = str(col)
-                if col_name not in cast_names:
-                    cast_exprs.append(pl.col(col_name).cast(pl.Float32))
-                    cast_names.add(col_name)
-        elif name not in cast_names:
-            cast_exprs.append(pl.col(name).cast(pl.Float32))
-            cast_names.add(name)
+    cast_exprs.extend(
+        pl.col(name).cast(pl.Float32) for name in _online_apply_constraint_columns(artifact)
+    )
 
     return streaming_collect(lf.with_columns(cast_exprs))
+
+
+def _online_apply_constraint_columns(artifact: Mapping[str, Any]) -> tuple[str, ...]:
+    """The constraint columns an online apply casts, beyond its four fixed columns.
+
+    A ratio constraint reads its numerator and denominator; any other
+    constraint reads the column it is named after.
+    """
+    seen = {
+        artifact.get("quote_id", "quote_id"),
+        artifact.get("scenario_index", "scenario_index"),
+        artifact.get("scenario_value", "scenario_value"),
+        artifact.get("objective", "expected_income"),
+    }
+    columns: list[str] = []
+    for name, spec in (artifact.get("constraints") or {}).items():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            candidates = [str(spec["numerator"]), str(spec["denominator"])]
+        else:
+            candidates = [name]
+        for column in candidates:
+            if column not in seen:
+                columns.append(column)
+                seen.add(column)
+    return tuple(columns)
+
+
+def online_apply_input_columns(artifact: Mapping[str, Any]) -> frozenset[str]:
+    """Every input column an online apply reads; its output carries no other.
+
+    The apply builds a new frame from the quote id, scenario index and value,
+    objective, and constraint columns its artifact names.
+    """
+    return frozenset(
+        {
+            artifact.get("quote_id", "quote_id"),
+            artifact.get("scenario_index", "scenario_index"),
+            artifact.get("scenario_value", "scenario_value"),
+            artifact.get("objective", "expected_income"),
+            *_online_apply_constraint_columns(artifact),
+        }
+    )
 
 
 # Composite ratebook factor groups (3b.2): price-contour names a composite

@@ -23,8 +23,8 @@ from haute._types import PipelineGraph
 from haute.routes import _optimiser_artifacts, _optimiser_input, _optimiser_service
 from haute.routes._optimiser_input import (
     OptimiserSetupError,
+    _optimiser_solve_required_columns_by_node,
     _setup_execution_target_node_id,
-    _solve_columns_by_node,
     resolve_analysis_frame,
     resolve_analysis_plan,
 )
@@ -321,7 +321,6 @@ class TestScenarioGrid:
             client,
             _data_graph(
                 _scored(tmp_path),
-                frontier_enabled=True,
                 frontier_steps=3,
                 frontier_ranges={"volume": {"min": 5.0, "max": 7.0}},
             ),
@@ -636,7 +635,7 @@ class TestSideInputPath:
         assert _setup_execution_target_node_id(graph, "opt") == "opt"
         assert "regions" in _optimiser_input._optimiser_side_input_ids(graph, "opt")
         # Only quote_id and the analysis columns are demanded from the frame.
-        demand = _solve_columns_by_node(graph, "opt", dict(config), source="batch")
+        demand = _optimiser_solve_required_columns_by_node(graph, "opt", dict(config))
         assert demand["regions"] == frozenset({"quote_id", "region"})
 
     def test_changing_analysis_input_changes_the_solves_identity(self, tmp_path):
@@ -749,6 +748,30 @@ class _RecordSolverInput:
         monkeypatch.setattr(
             _optimiser_input.price_contour(), "build_grid_from_parquet_chunked", recording
         )
+        # In process mode the solver session builds the grid in its own process, from
+        # the file and the columns its request names.
+        from haute.routes._optimiser_session import SolverSession
+        from haute.routes._optimiser_session_worker import SessionSolveRequest
+
+        real_run = SolverSession.run_command
+
+        def recording_run(session: Any, command: Any, request: Any, **kwargs: Any) -> Any:
+            if isinstance(request, SessionSolveRequest):
+                schema = pl.read_parquet_schema(request.input_path)
+                self.schemas.append({column: schema[column] for column in solver_columns})
+                config = request.config
+                self.calls.append(
+                    {
+                        "constraints": list(request.constraint_cols),
+                        "quote_id": config.get("quote_id", "quote_id"),
+                        "scenario_index": config.get("scenario_index", "scenario_index"),
+                        "scenario_value": config.get("scenario_value", "scenario_value"),
+                        "objective": config["objective"],
+                    }
+                )
+            return real_run(session, command, request, **kwargs)
+
+        monkeypatch.setattr(SolverSession, "run_command", recording_run)
 
 
 _KEY_COLUMNS = ("quote_id", "scenario_index", "scenario_value", "volume")

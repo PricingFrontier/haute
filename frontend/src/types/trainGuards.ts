@@ -365,6 +365,12 @@ function trainResponseFromContract(response: GeneratedTrainResponse): TrainRespo
     ...response,
     feature_importance: parseArray(p, response.feature_importance, "feature_importance", parseFeatureImportanceRow),
     loss_history: parseArray(p, response.loss_history, "loss_history", parseLossHistoryEntry),
+    validation_loss_history: parseArray(
+      p,
+      response.validation_loss_history,
+      "validation_loss_history",
+      parseLossHistoryEntry,
+    ),
     double_lift: parseArray(p, response.double_lift, "double_lift", parseDoubleLiftRow),
     shap_summary: parseArray(p, response.shap_summary, "shap_summary", parseShapSummaryRow),
     feature_importance_loss: parseArray(p, response.feature_importance_loss, "feature_importance_loss", parseFeatureImportanceRow),
@@ -495,6 +501,9 @@ export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
   // An estimate that cannot size its input has no memory figure to misread,
   // and an available one has every figure.
   const figures = [estimate.estimated_mb, estimate.training_mb, estimate.bytes_per_row]
+  if (estimate.unbounded_join_node_ids.length > 0 && (estimate.was_downsampled || estimate.warning !== null)) {
+    throw new Error("parseTrainEstimateResponse: a worst-case row bound has no downsampling verdict or warning")
+  }
   if (estimate.unavailable === null) {
     if (estimate.total_rows === null || figures.some((figure) => figure === null)) {
       throw new Error("parseTrainEstimateResponse: an available estimate requires a row total and memory figures")

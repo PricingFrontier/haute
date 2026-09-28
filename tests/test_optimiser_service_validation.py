@@ -447,8 +447,7 @@ def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
-    prepared = service._prepare_frontier_auto_range(body)
-    prepared["streaming_plan"] = None
+    _node, prepared = service._prepare_frontier_auto_range(body)
 
     with (
         patch.object(service, "_execute_pipeline", side_effect=_group_by_contract_error()),
@@ -691,17 +690,6 @@ def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> Non
         )
 
 
-def test_setup_chunk_size_uses_decoded_dictionary_width(tmp_path, monkeypatch) -> None:
-    from haute.routes import _optimiser_input as optimiser_input
-
-    path = tmp_path / "dictionary.parquet"
-    pl.DataFrame({"label": ["x" * 4096] * 2000}).write_parquet(path)
-    monkeypatch.setattr(optimiser_input, "_optimiser_setup_target_chunk_bytes", lambda: 64 * 1024)
-    decision = optimiser_input._chunk_size_decision_for_parquet({}, path, source="ratebook_factors")
-    assert decision.chunk_size <= 16
-    assert decision.provenance["estimated_row_bytes"] >= 4096
-
-
 def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monkeypatch) -> None:
     import price_contour
 
@@ -733,10 +721,7 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
         "build_grid_from_parquet_chunked",
         lambda path, *_a, **_k: observed.append(Path(path)) or grid,
     )
-    assert (
-        service._build_grid(frame, [], {"objective": "income", "chunk_size": 2}, "opt", job).grid
-        is grid
-    )
+    assert service._build_grid(frame, [], {"objective": "income"}, "opt", job).grid is grid
     assert observed == [path]
     assert path.exists()
 
@@ -779,7 +764,7 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
         assert service._build_grid(
             pl.scan_parquet(path),
             [],
-            {"objective": "income", "chunk_size": 2},
+            {"objective": "income"},
             "opt",
             job,
             execution_context=context,
@@ -790,7 +775,7 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
             service._build_grid(
                 pl.scan_parquet(path),
                 [],
-                {"objective": "income", "chunk_size": 2},
+                {"objective": "income"},
                 "opt",
                 job,
                 execution_context=context,

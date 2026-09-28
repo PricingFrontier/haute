@@ -24,6 +24,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
+    contributed_columns: [], derivations: [],
     ...overrides,
   }
 }
@@ -67,6 +68,22 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
 // findTargetStep
 // ---------------------------------------------------------------------------
 describe("findTargetStep", () => {
+  it("prefers the step the lineage says computed the value over a later table sharing the column", () => {
+    const addsQuoteId = { columns_added: ["quote_id"], columns_removed: [], columns_modified: [], columns_passed: [] }
+    const steps = [
+      makeStep({ node_id: "nb_batch_input", node_type: "dataInput", schema_diff: addsQuoteId, contributed_columns: ["quote_id"] }),
+      // A joined-in table also holds quote_id, but the left join kept the base row's value.
+      makeStep({ node_id: "premiums", node_type: "dataInput", schema_diff: addsQuoteId, column_relevant: false }),
+      makeStep({
+        node_id: "apply",
+        schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["quote_id"] },
+      }),
+    ]
+
+    expect(findTargetStep(steps, "quote_id")?.node_id).toBe("nb_batch_input")
+  })
+
+
   it("finds the step where traced column is in columns_added", () => {
     const steps = [
       makeStep({ node_id: "n1", node_name: "Source", node_type: "dataInput" }),
@@ -1006,18 +1023,21 @@ describe("buildFlowChain", () => {
         node_name: "Source",
         node_type: "dataInput",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
       }),
       makeStep({
         node_id: "irr",
         node_name: "Irrelevant",
         node_type: "polars",
         column_relevant: false,
+        contributed_columns: [], derivations: [],
       }),
       makeStep({
         node_id: "t1",
         node_name: "Target",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -1168,6 +1188,7 @@ describe("buildFlowChain", () => {
         node_name: "Source",
         node_type: "dataInput",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: {
           columns_added: ["premium"],
           columns_removed: [],
@@ -1180,6 +1201,7 @@ describe("buildFlowChain", () => {
         node_name: "Unrelated",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: {
           columns_added: ["other"],
           columns_removed: [],
@@ -1192,6 +1214,7 @@ describe("buildFlowChain", () => {
         node_name: "Final",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: {
           columns_added: [],
           columns_removed: [],
@@ -1233,6 +1256,7 @@ describe("buildFlowChain", () => {
         node_name: "Source",
         node_type: "dataInput",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
       }),
       makeStep({
@@ -1240,6 +1264,7 @@ describe("buildFlowChain", () => {
         node_name: "Irrelevant Modifier",
         node_type: "polars",
         column_relevant: false,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
       }),
       makeStep({
@@ -1247,6 +1272,7 @@ describe("buildFlowChain", () => {
         node_name: "Target",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] },
       }),
     ]
@@ -1263,6 +1289,7 @@ describe("buildFlowChain", () => {
         node_name: "Passthrough",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["premium"] },
       }),
       makeStep({
@@ -1270,6 +1297,7 @@ describe("buildFlowChain", () => {
         node_name: "Creator",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: ["age"] },
       }),
     ]
@@ -1287,6 +1315,7 @@ describe("buildFlowChain", () => {
         node_name: "Creator",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
       }),
       makeStep({
@@ -1294,6 +1323,7 @@ describe("buildFlowChain", () => {
         node_name: "Modifier 1",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] },
       }),
       makeStep({
@@ -1301,6 +1331,7 @@ describe("buildFlowChain", () => {
         node_name: "Modifier 2",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: ["age"] },
       }),
     ]
@@ -1321,6 +1352,7 @@ describe("buildFlowChain", () => {
         node_name: "Only Step",
         node_type: "polars",
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
       }),
     ]

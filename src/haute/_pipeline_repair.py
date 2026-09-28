@@ -572,10 +572,11 @@ def build_remove_unavailable_node_plan(
         target_authored_id=target.authored_id,
     )
     if consumers:
+        names = ", ".join(repr(consumer["function"]) for consumer in consumers)
         raise PipelineRepairError(
             "repair_implicit_consumers",
-            "The node is still named by downstream function parameters and cannot be "
-            "removed safely.",
+            f"{target.authored_id!r} is an input parameter of {names}. Remove those nodes "
+            f"first, or recover {target.authored_id!r} instead.",
             consumers=consumers,
         )
 

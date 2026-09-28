@@ -17,6 +17,38 @@ export interface TraceInputSource {
   input_sources?: Record<string, TraceInputSource> | null
 }
 
+/** A node that computed a value a step read. */
+export interface TraceColumnSource {
+  node_id: string
+  column: string
+  /** The value the node's rule generated before its code rewrote the column,
+   * so the node's row holds a later value. */
+  before_code: boolean
+}
+
+/** A column a computed column read, and the nodes that computed the value read:
+ * none when the trace found none, several when it may have come from any. */
+export interface TraceColumnRead {
+  column: string
+  sources: TraceColumnSource[]
+}
+
+/** How a step computed one column the traced value depends on. */
+export interface TraceColumnDerivation {
+  column: string
+  /** The step's formula, evaluated on the traced row; null for a column a
+   * rule computed (a model, an optimiser) or a source loaded. */
+  expression_text: string | null
+  substituted_text: string | null
+  result_value: unknown
+  not_computable_reason: string | null
+  result_source: string | null
+  /** null when which inputs the column read could not be told apart. */
+  reads: TraceColumnRead[] | null
+  error: string | null
+  error_type: string | null
+}
+
 export interface TraceStep {
   node_id: string
   node_name: string
@@ -25,7 +57,14 @@ export interface TraceStep {
   input_values: Record<string, unknown>
   output_values: Record<string, unknown>
   topological_rank: number
+  /** In a column trace, whether the step is on the traced value's lineage:
+   * it computes or carries a column the value depends on. */
   column_relevant: boolean
+  /** In a column trace, the columns this step computes that the traced value
+   * depends on; empty for a step that only carries them. */
+  contributed_columns: string[]
+  /** How the step computed each contributed column, and what each read. */
+  derivations: TraceColumnDerivation[]
   expression?: {
     expression_text: string
     expression_type: string
@@ -324,7 +363,7 @@ export interface TraceCorrelationDiagnostic {
   ignored_columns: string[]
   matched_row_count?: number | null
   matched_row_indices: number[]
-  /** For a `snapshot_seed` omission: the seeded nodes it was skipped through. */
+  /** For a node not traced above a snapshot: the seeded node it lies above. */
   seed_node_ids: string[]
   [metadata: string]: unknown
 }

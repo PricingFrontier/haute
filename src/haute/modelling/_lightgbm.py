@@ -294,7 +294,7 @@ class LightGBMAlgorithm(BaseAlgorithm):
                 entry[f"{prefix}_{metric_name}"] = float(value)
             loss_history.append(entry)
             if on_iteration is not None:
-                on_iteration(env.iteration + 1, configured, metrics)
+                on_iteration(env.iteration + 1, configured, metrics, entry)
 
         callbacks: list[Any] = [progress]
         # LightGBM treats a non-positive round count as "no early stopping".

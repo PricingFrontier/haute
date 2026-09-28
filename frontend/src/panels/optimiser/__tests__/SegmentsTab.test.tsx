@@ -8,7 +8,7 @@ import type {
   OptimiserSegmentsResponse,
   OptimiserSolveResult,
 } from "../../../api/types"
-import SegmentsTab, { type SegmentResults } from "../SegmentsTab"
+import SegmentsTab, { NO_SEGMENT_KEYS, type SegmentResults } from "../SegmentsTab"
 import { makeOnlineSolveResult } from "./fixtures"
 
 const mockSegments = vi.fn()
@@ -170,10 +170,10 @@ async function flush() {
 }
 
 describe("SegmentsTab: keys and the index", () => {
-  it("says to add analysis columns when the result has no key, and asks for nothing", () => {
+  it("says to tick validation factors when the result has no key, and asks for nothing", () => {
     render(<Harness solvedResult={makeOnlineSolveResult({ segment_keys: [] })} />)
 
-    expect(screen.getByText("Add analysis columns in the optimiser config")).toBeTruthy()
+    expect(screen.getByText(NO_SEGMENT_KEYS)).toBeTruthy()
     expect(mockIndex).not.toHaveBeenCalled()
     expect(mockSegments).not.toHaveBeenCalled()
   })

@@ -24,12 +24,13 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered declared ports, including unrouted ports, into shared source-handle rows and has no creation row; Output renders one shared default-input row and never lists exported frames. |
 | `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only; Output has no editable interface list. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
-| `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
+| `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble, openNode}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. Resolver rejection, malformed output, or graph replacement leaves state untouched. |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion; palette and edge-join nodes resolve identities before any graph/history mutation, with downstream join mappings finalized only from the server result. The hook also owns selection/preview, edge deletion, context menus, and drag/drop. |
 | `frontend/src/components/InitialViewFit.tsx` | Renderless child of the editor's `<ReactFlow>` that fits the graph into view (padding 0.15) once per canvas mount, the first time every node is measured. |
+| `frontend/src/components/TraceViewFit.tsx` | Renderless child of the editor's `<ReactFlow>` that fits the canvas to a trace's lineage steps (padding 0.2) once per trace result and centres the node `useUIStore.traceCentreRequest` names at the current zoom, once per request; runtime trace ids resolve to the canvas nodes showing them through `useTracing`'s `resolveTraceNodeId`. |
 | `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
 | `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline editor-document load-on-mount; recovery-to-React-Flow adaptation; atomic document-status/revision plus graph ingestion; request-facing refs; preview lifecycle; and capability-fenced Save. |
@@ -232,7 +233,8 @@ reconciliation rather than dropping them or committing a second mutation.
   `_columnsSource` (the active source the column stash was captured
   under — set alongside `_columns`/`_availableColumns`/`_schemaWarnings`
   by `usePipelineAPI`, compared against the live active source to decide
-  staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`,
+  staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`, `_traceFocused`
+  (the node a trace card or derivation row points at, drawn with an accent ring),
   `_traceValue`, `_traceMotionDisabled`, `_diffStatus`, plus server-owned
   `_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, and
   `_configReference`. Edges carry transient `_inputName`. These identities are omitted from
@@ -259,7 +261,11 @@ reconciliation rather than dropping them or committing a second mutation.
   per direction, not one per frame. `externalNodeIds` is the ordered, distinct
   set of flat parent node ids whose trace steps collapse onto that card.
 - **`GraphContextValue`** (`useGraph.ts`) —
-  `{ allNodes: SimpleNode[]; edges: SimpleEdge[]; submodels?; preamble? }`.
+  `{ allNodes: SimpleNode[]; edges: SimpleEdge[]; submodels?; preamble?; openNode? }`.
+  `openNode(nodeId)` opens a node on the canvas in the panel exactly as clicking it does
+  (`useEdgeHandlers`'s `openNode`, which `onNodeClick` also calls); App supplies it and throws
+  for an id that is not on the canvas, so a panel offers it only for nodes in `allNodes`
+  (the Train pane's joins without a key contract). Read-only surfaces leave it unset.
 - **`PanelGraphContextSnapshot`** (`usePanelGraphContext.ts`) —
   `{ allNodes, edges, nodeById: Map<string, SimpleNode>, getNode }`, built by
   `toSimpleNode`/`toSimpleEdge`, which strip React-Flow-only fields and
@@ -1635,7 +1641,8 @@ again through the editor and save paths.
     normalised handle fields; non-mutating deselect/select-only-node
     helpers.
   - `frontend/src/utils/__tests__/nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
-    `NODE_TYPE_META` completeness and 1:1 coverage; Explore's one-input
+    `NODE_TYPE_META` completeness and 1:1 coverage; the Model Training description naming
+    the family word of every algorithm in `algorithmCapabilities.json`; Explore's one-input
     sink shape; Data Input/Data Output source/sink and non-singleton
     membership with strict branch-shaped defaults; Edge Join's compact
     centre-origin shape; label/name casing
@@ -1730,7 +1737,7 @@ again through the editor and save paths.
   drill into an unsaved whole-graph submodel with that API Input and its
   authoritative frame handle rendered; and a
   downstream trace retaining both Edge Join ancestors — as steps, or the one
-  above a join read from its shared snapshot as a `snapshot_seed` omission —
+  above a join read from its shared snapshot as an omission naming that seed —
   leaving them undimmed,
   and highlighting their connecting path while reserving node-active styling
   for column-relevant steps. All

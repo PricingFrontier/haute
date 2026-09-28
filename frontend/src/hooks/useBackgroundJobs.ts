@@ -58,6 +58,21 @@ function getJobPollErrorMessage(error: unknown): string | undefined {
   return getMissingJobPollErrorMessage(error)
 }
 
+// What a training status shows moving: its state, phase, message, bar, round
+// and fit counts. `elapsed_seconds` is left out because it moves on every poll.
+function trainProgressKey(status: TrainProgress): string {
+  return JSON.stringify([
+    status.status,
+    status.phase ?? null,
+    status.message,
+    status.progress,
+    status.iteration,
+    status.trial_index ?? null,
+    status.fold_index ?? null,
+    status.completed_fits ?? null,
+  ])
+}
+
 export default function useBackgroundJobs() {
   const addToast = useToastStore((s) => s.addToast)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
@@ -156,6 +171,9 @@ export default function useBackgroundJobs() {
     pollFn: trainPollFn,
     onProgress: updateTrainProgress,
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    // A training's rounds advance quickly, so it polls about once a second
+    // while they do instead of backing off to five seconds.
+    progressKey: trainProgressKey,
     onComplete: trainOnComplete,
     onFail: failTrainJob,
     labelFn: (job) => job.nodeLabel,

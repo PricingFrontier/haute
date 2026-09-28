@@ -36,4 +36,23 @@ describe("main", () => {
     const app = boundary.props.children as ReactElement
     expect(app.type).toBeTypeOf("function")
   })
+
+  it("records Vite's chunk preload failures before anything loads lazily", async () => {
+    const root = document.createElement("div")
+    root.id = "root"
+    document.body.append(root)
+
+    vi.resetModules()
+    vi.doMock("react-dom/client", () => ({ createRoot: vi.fn(() => ({ render: vi.fn() })) }))
+    vi.doMock("../App", () => ({ default: () => <div data-testid="app" /> }))
+    // Start-up waits on the session; the listener must already be in place.
+    vi.doMock("../api/client", () => ({ bootstrapHauteSession: vi.fn(() => new Promise(() => {})) }))
+    const { isChunkLoadError } = await import("../utils/chunkLoadError")
+
+    await import("../main")
+
+    const failure = new Error("Unable to preload CSS for /assets/ModellingPreview-DMczYKmb.css")
+    window.dispatchEvent(Object.assign(new Event("vite:preloadError", { cancelable: true }), { payload: failure }))
+    expect(isChunkLoadError(failure)).toBe(true)
+  })
 })

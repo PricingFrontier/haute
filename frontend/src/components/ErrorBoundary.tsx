@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { isChunkLoadError } from "../utils/chunkLoadError";
+import { ERROR_FALLBACK_BUTTON_STYLE, UpdatedNotice } from "./UpdatedNotice";
 
 interface Props {
   children: ReactNode;
@@ -32,6 +34,9 @@ export class ErrorBoundary extends Component<Props, State> {
   render(): ReactNode {
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback;
+      // A retry cannot load a chunk the rebuilt server no longer has (and the
+      // lazy import's rejection is cached), so only a reload recovers.
+      const updated = isChunkLoadError(this.state.error);
       return (
         <div
           style={{
@@ -44,25 +49,20 @@ export class ErrorBoundary extends Component<Props, State> {
           }}
         >
           <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-primary)" }}>
-            Something went wrong
+            {updated ? "Haute has been updated" : "Something went wrong"}
           </p>
-          <p style={{ margin: "0 0 12px", fontFamily: "var(--font-code)", fontSize: "11px" }}>
-            {this.state.error?.message}
-          </p>
-          <button
-            onClick={() => this.setState({ hasError: false, error: null })}
-            style={{
-              padding: "4px 12px",
-              fontSize: "11px",
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              borderRadius: "4px",
-              color: "var(--text-primary)",
-              cursor: "pointer",
-            }}
-          >
-            Try again
-          </button>
+          {updated ? (
+            <UpdatedNotice />
+          ) : (
+            <>
+              <p style={{ margin: "0 0 12px", fontFamily: "var(--font-code)", fontSize: "11px" }}>
+                {this.state.error?.message}
+              </p>
+              <button onClick={() => this.setState({ hasError: false, error: null })} style={ERROR_FALLBACK_BUTTON_STYLE}>
+                Try again
+              </button>
+            </>
+          )}
         </div>
       );
     }

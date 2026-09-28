@@ -346,11 +346,11 @@ class TestCreateSubmodelGraph:
         assert set(files) == {"main.py", "modules/two_inputs.py"}
         child_source = files["modules/two_inputs.py"]
         assert child_source.count("@submodel.data_input") == 2
-        assert "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parents[1]" in child_source
-        assert child_source.index("submodel = haute.Submodel") < child_source.index(
-            "_HAUTE_CONFIG_BASE ="
-        )
-        assert child_source.count("base_dir=_HAUTE_CONFIG_BASE") == 2
+        # Both sources are declarations whose sidecars live with the pipeline,
+        # one folder up from modules/.
+        assert '    pipeline_dir="..",\n)' in child_source
+        assert "def competitor_premium(): ...\n" in child_source
+        assert "def nb_batch(): ...\n" in child_source
         for source in files.values():
             ast.parse(source)
 

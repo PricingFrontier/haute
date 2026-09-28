@@ -22,11 +22,12 @@ export function GraphProvider({
   edges,
   submodels,
   preamble,
+  openNode,
   children,
 }: GraphContextValue & { children: ReactNode }) {
   const value = useMemo<GraphContextValue>(
-    () => ({ allNodes, edges, submodels, preamble }),
-    [allNodes, edges, submodels, preamble],
+    () => ({ allNodes, edges, submodels, preamble, openNode }),
+    [allNodes, edges, submodels, preamble, openNode],
   )
   return <GraphContext.Provider value={value}>{children}</GraphContext.Provider>
 }

@@ -29,6 +29,8 @@ type Props = {
   onReviewSplit?: () => void
   /** The search space "Tune parameters" starts from; it must use the family's own keys. */
   starterSearchSpace?: Record<string, unknown>
+  /** A one-line note beneath Parameters JSON, such as a parameter that sets training time. */
+  parametersNote?: string
 }
 
 const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
@@ -39,6 +41,7 @@ const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
 
 export function HyperparametersConfig({
   starterSearchSpace = CATBOOST_STARTER_SEARCH_SPACE,
+  parametersNote,
   algorithmLabel,
   params,
   reservedKeys = [],
@@ -144,25 +147,32 @@ export function HyperparametersConfig({
         />
       </div>
       {!tuning ? (
-        <label
-          className="block text-[13px]"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          Parameters JSON
-          <textarea
-            aria-label={`${algorithmLabel} hyperparameters JSON`}
-            aria-invalid={Boolean(fixedError)}
-            value={draft}
-            onChange={(event) => updateFixedDraft(event.target.value)}
-            onBlur={() => {
-              if (projection) setDraft(formatHyperparameters(projection))
-            }}
-            spellCheck={false}
-            rows={Math.min(24, Math.max(6, draft.split("\n").length + 1))}
-            className={`${inputClass} leading-5`}
-            style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
-          />
-        </label>
+        <div>
+          <label
+            className="block text-[13px]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Parameters JSON
+            <textarea
+              aria-label={`${algorithmLabel} hyperparameters JSON`}
+              aria-invalid={Boolean(fixedError)}
+              value={draft}
+              onChange={(event) => updateFixedDraft(event.target.value)}
+              onBlur={() => {
+                if (projection) setDraft(formatHyperparameters(projection))
+              }}
+              spellCheck={false}
+              rows={Math.min(24, Math.max(6, draft.split("\n").length + 1))}
+              className={`${inputClass} leading-5`}
+              style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
+            />
+          </label>
+          {parametersNote && (
+            <p className="mt-1.5 text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+              {parametersNote}
+            </p>
+          )}
+        </div>
       ) : (
         <>
           <div

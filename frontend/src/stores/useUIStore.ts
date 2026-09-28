@@ -81,6 +81,14 @@ interface UIState {
   hoveredNodeId: string | null
   setHoveredNodeId: (id: string | null) => void
 
+  // Trace focus — the node a trace card or derivation row points at: ringed on the
+  // canvas while set, and centred on each request (a new object, so asking for the
+  // same node again centres it again).
+  traceFocusNodeId: string | null
+  setTraceFocusNodeId: (id: string | null) => void
+  traceCentreRequest: { nodeId: string } | null
+  requestTraceCentre: (nodeId: string) => void
+
   // Preview calculation mode. Session-only: every session starts automatic.
   calculationMode: CalculationMode
   setCalculationMode: (mode: CalculationMode) => void
@@ -170,6 +178,12 @@ const useUIStore = create<UIState>()((set) => ({
   // Hover highlight
   hoveredNodeId: null,
   setHoveredNodeId: (id) => set({ hoveredNodeId: id }),
+
+  // Trace focus
+  traceFocusNodeId: null,
+  setTraceFocusNodeId: (id) => set({ traceFocusNodeId: id }),
+  traceCentreRequest: null,
+  requestTraceCentre: (nodeId) => set({ traceCentreRequest: { nodeId } }),
 
   calculationMode: "automatic",
   setCalculationMode: (mode) => set({ calculationMode: mode }),

@@ -19,6 +19,8 @@ from haute._model_explainability import prediction_tolerance
 from haute._model_scorer import score_frame
 from haute.errors import HauteValidationError
 from haute.modelling._training_job import TrainingJob, model_contract_filename
+from haute.routes._training_worker import _training_response_payload
+from tests.conftest import make_ram_estimate
 
 EVALUATION = {
     "schema_version": 1,
@@ -321,7 +323,7 @@ def test_a_native_fit_stops_at_the_first_progress_report_after_cancellation(
     before its fit starts. Nothing is saved from a cancelled fit."""
     reports: list[int] = []
 
-    def cancel_after_first(iteration: int, total: int, metrics: dict) -> None:
+    def cancel_after_first(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
         reports.append(iteration)
         raise _CancelledError
 
@@ -345,6 +347,93 @@ def test_a_native_fit_stops_at_the_first_progress_report_after_cancellation(
 
 # Four real trainings through the service; under CI coverage one CatBoost run
 # (fit, diagnostics, SHAP) takes about 18 s, beyond the 60 s default.
+@pytest.mark.parametrize("family", ["catboost", "lightgbm", "xgboost"])
+@pytest.mark.parametrize("refit", [False, True], ids=["validation-fit", "final-refit"])
+def test_a_boosted_fit_reports_its_loss_history_rows_as_it_trains(
+    tmp_path: Path, family: str, refit: bool
+) -> None:
+    """The live chart reads the same prefixed rows the Loss tab does (MDL-02)."""
+    readouts: list[dict[str, float]] = []
+    rows: list[dict[str, float] | None] = []
+
+    def record(
+        iteration: int, total: int, metrics: dict[str, float], row: dict[str, float] | None
+    ) -> None:
+        readouts.append(metrics)
+        rows.append(row)
+
+    result = TrainingJob(
+        name=family,
+        data=frame(),
+        target="claims",
+        algorithm=family,
+        loss_function="Poisson",
+        params=PARAMS[family],
+        metrics=["poisson_deviance"],
+        output_dir=str(tmp_path),
+        evaluation=EVALUATION,
+        refit_on_development=refit,
+        feature_columns=["region", "age"],
+    ).run(on_iteration=record)
+
+    # A refit trains the validation fit's weighted round count, not the configured 20.
+    assert len(rows) > 1
+    for number, row in enumerate(rows, start=1):
+        assert row is not None
+        assert row["iteration"] == number
+        assert any(key.startswith("train_") for key in row)
+        # Only a fit with an evaluation set (the kept validation fit) has eval rows.
+        assert any(key.startswith("eval_") for key in row) is not refit
+    # The readout keeps each engine's own metric names; only the rows are prefixed.
+    assert not any(key.startswith(("train_", "eval_")) for key in readouts[-1])
+    assert result.loss_history == rows
+
+
+@pytest.mark.parametrize("refit", [True, False], ids=["refit", "no-refit"])
+def test_a_holdout_run_keeps_its_validation_fit_loss_history(
+    tmp_path: Path, refit: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Loss tab can show the fit that chose the tree count (MDL-03)."""
+    result = TrainingJob(
+        name="catboost",
+        data=frame(),
+        target="claims",
+        algorithm="catboost",
+        loss_function="Poisson",
+        params=PARAMS["catboost"],
+        metrics=["poisson_deviance"],
+        output_dir=str(tmp_path),
+        evaluation=EVALUATION,
+        refit_on_development=refit,
+        feature_columns=["region", "age"],
+    ).run()
+
+    if refit:
+        validation = result.validation_loss_history
+        assert len(validation) == 20
+        assert all("train_Poisson" in row and "eval_Poisson" in row for row in validation)
+        # The refit, fitted without an evaluation set, keeps its own training history.
+        assert all(not any(key.startswith("eval_") for key in row) for row in result.loss_history)
+        # The response thins it around the selection fit's best iteration.
+        assert result.evaluation is not None
+        best = result.evaluation["selection_fits"][0]["best_iteration"]
+        monkeypatch.setenv("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "5")
+        response = _training_response_payload(
+            result,
+            job_id="job",
+            model_path=result.model_path,
+            evaluation=result.evaluation,
+            tuning=None,
+        )
+        kept = [row["iteration"] for row in response["validation_loss_history"]]
+        assert response["validation_loss_history_truncated"] is True
+        assert len(kept) <= 5 and {1.0, float(best + 1), 20.0} <= set(kept)
+    else:
+        # Without a refit the validation fit is the model: its history is loss_history.
+        assert result.validation_loss_history == []
+        assert all("eval_Poisson" in row for row in result.loss_history)
+
+
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("family", FAMILIES)
 def test_native_training_lifecycle_keeps_the_last_good_model(
@@ -420,7 +509,7 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
         return str(prepared)
 
     monkeypatch.setattr(service, "_compile_preamble", lambda _graph: None)
-    monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: (None, None, 100, 3))
+    monkeypatch.setattr(service, "_estimate_ram", lambda *a, **k: make_ram_estimate())
     monkeypatch.setattr(service, "_check_gpu_vram_before_launch", lambda *a, **k: None)
     monkeypatch.setattr(service, "_execute_and_sink", execute_and_sink)
 

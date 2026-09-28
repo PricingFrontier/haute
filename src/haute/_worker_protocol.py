@@ -28,6 +28,7 @@ from haute._native_memory_limit import (
     memory_error_for_thread_start_failure,
     native_memory_backend_scope,
 )
+from haute._parent_watch import exit_with_parent
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -555,6 +556,10 @@ def _protocol_entrypoint(
     require_memory_limit: bool = False,
     address_space_allowance_bytes: int = 0,
 ) -> None:
+    from haute._polars_utils import apply_spawned_streaming_chunk_size
+
+    exit_with_parent()
+    apply_spawned_streaming_chunk_size()
     runtime = WorkerRuntime(progress_queue, artifact_root)
     lease = NativeMemoryLease()
     applied = False
@@ -568,7 +573,7 @@ def _protocol_entrypoint(
                 required=require_memory_limit,
                 address_space_allowance_bytes=address_space_allowance_bytes,
             )
-        with native_memory_backend_scope(lease.backend if applied else None):
+        with native_memory_backend_scope(lease.backend if applied else None, lease):
             result = function(runtime, request)
         if isinstance(result, WorkerFailurePayload):
             result_queue.put(("error", result))

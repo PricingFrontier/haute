@@ -47,6 +47,7 @@ import type {
   ExecutionStrategyDiagnostic,
   ExecutionStrategyBoundary,
   ExecutionStrategyBoundedCollection,
+  ExecutionStrategyProjectionCause,
   ExecutionStrategyProvenance,
   ExecutionStrategyReason,
   ExecutionStageMetrics,
@@ -104,6 +105,9 @@ import {
   type PipelineEdge,
 } from "./node"
 import type {
+  TraceColumnDerivation,
+  TraceColumnRead,
+  TraceColumnSource,
   TraceCorrelationDiagnostic,
   TraceInputSource,
   TraceOmission,
@@ -1084,6 +1088,19 @@ function parseDiagnosticCollection<TInput, TOutput>(
   return { state, total_count: totalCount, items }
 }
 
+function projectionCause(cause: ExecutionStrategyProjectionCause): ExecutionStrategyProjectionCause {
+  return {
+    node_id: cause.node_id,
+    operator: cause.operator,
+    kind: cause.kind,
+    reason_code: cause.reason_code,
+    message: cause.message,
+    total_count: cause.total_count,
+    ...(cause.parent_node_id === undefined ? {} : { parent_node_id: cause.parent_node_id }),
+    ...(cause.operation === undefined ? {} : { operation: cause.operation }),
+  }
+}
+
 /** Parses the additive V1 strategy diagnostic. Unknown versions are unavailable. */
 export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrategyDiagnostic | null {
   if (value === undefined || value === null) return null
@@ -1160,6 +1177,9 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
     ...(obj.estimate_admission_basis === undefined ? {} : { estimate_admission_basis: obj.estimate_admission_basis }),
     ...(obj.headroom_bytes === undefined ? {} : { headroom_bytes: obj.headroom_bytes }),
     ...(obj.assumptions === undefined ? {} : { assumptions: [...obj.assumptions] }),
+    ...(obj.projection_cause === undefined
+      ? {}
+      : { projection_cause: obj.projection_cause === null ? null : projectionCause(obj.projection_cause) }),
   }
 }
 
@@ -1545,6 +1565,43 @@ function parseTraceInputSource(value: unknown, field: string): TraceInputSource 
   }
 }
 
+function parseTraceColumnSource(value: unknown, field: string): TraceColumnSource {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  return {
+    node_id: expectString("parseTraceResponse", obj.node_id, `${field}.node_id`),
+    column: expectString("parseTraceResponse", obj.column, `${field}.column`),
+    before_code: expectBoolean("parseTraceResponse", obj.before_code, `${field}.before_code`),
+  }
+}
+
+function parseTraceColumnRead(value: unknown, field: string): TraceColumnRead {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  return {
+    column: expectString("parseTraceResponse", obj.column, `${field}.column`),
+    sources: parseArray("parseTraceResponse", obj.sources, `${field}.sources`, parseTraceColumnSource),
+  }
+}
+
+function parseTraceColumnDerivation(value: unknown, field: string): TraceColumnDerivation {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  if (!("result_value" in obj)) {
+    throw new Error(`parseTraceResponse: expected ${field}.result_value, got missing`)
+  }
+  return {
+    column: expectString("parseTraceResponse", obj.column, `${field}.column`),
+    expression_text: expectNullableString("parseTraceResponse", obj.expression_text, `${field}.expression_text`),
+    substituted_text: expectNullableString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
+    result_value: obj.result_value,
+    not_computable_reason: expectNullableString("parseTraceResponse", obj.not_computable_reason, `${field}.not_computable_reason`),
+    result_source: expectNullableString("parseTraceResponse", obj.result_source, `${field}.result_source`),
+    reads: obj.reads === null
+      ? null
+      : parseArray("parseTraceResponse", obj.reads, `${field}.reads`, parseTraceColumnRead),
+    error: expectNullableString("parseTraceResponse", obj.error, `${field}.error`),
+    error_type: expectNullableString("parseTraceResponse", obj.error_type, `${field}.error_type`),
+  }
+}
+
 function parseTraceStep(value: unknown, field: string): TraceStep {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   const expression = obj.expression === undefined || obj.expression === null ? null : parseTraceExpression(obj.expression, `${field}.expression`)
@@ -1560,6 +1617,8 @@ function parseTraceStep(value: unknown, field: string): TraceStep {
     output_values: obj.output_values === undefined ? {} : expectPlainObject("parseTraceResponse", obj.output_values, `${field}.output_values`),
     topological_rank: expectNonNegativeTraceInteger(obj.topological_rank, `${field}.topological_rank`),
     column_relevant: obj.column_relevant === undefined ? true : expectBoolean("parseTraceResponse", obj.column_relevant, `${field}.column_relevant`),
+    contributed_columns: parseStringArray("parseTraceResponse", obj.contributed_columns, `${field}.contributed_columns`),
+    derivations: parseArray("parseTraceResponse", obj.derivations, `${field}.derivations`, parseTraceColumnDerivation),
     expression,
     calculation,
     node_detail,

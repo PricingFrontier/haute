@@ -646,10 +646,8 @@ class OptimiserConfig(TypedDict, total=False):
     # Solver tuning
     max_iter: int
     tolerance: float
-    chunk_size: int
 
-    # Frontier
-    frontier_enabled: bool
+    # Frontier: the constraints with a range are swept; the others stay at their bound.
     frontier_ranges: dict[str, dict[str, float]]
     frontier_steps: int
 
@@ -860,8 +858,6 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "constraints",
     "max_iter",
     "tolerance",
-    "chunk_size",
-    "frontier_enabled",
     "frontier_ranges",
     "frontier_steps",
     "factor_columns",

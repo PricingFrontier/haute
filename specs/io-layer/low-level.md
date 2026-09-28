@@ -141,7 +141,8 @@ an in-place or non-atomic fallback.
    creates a Parquet scan, and attaches lease release to execution cleanup or an explicit
    callable scan-plan token. A structured API Input's tables are read through the same
    helper (see [JSON shredding](../json-shredding/low-level.md)).
-7. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
+7. `resolve_data_input_from_config()` is the standalone-run sidecar entry point: a Data
+   Input decorator calls it when a saved pipeline file runs on its own.
 
 ### Automatic preparation
 
@@ -359,7 +360,7 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   pipeline file.
 - **Class mappings.** `snapshot_write_class(profile, preview_admitted=...)` returns
   `bounded` for every bounded profile (`TRAINING_PREP`, `OPTIMISER_SETUP`,
-  `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `LAZY_SINK`, `CHUNKED_MAP_REDUCE`, `NODE_SNAPSHOT`) and
+  `OPTIMISER_SOLVE`, `EXPLORE_ANALYSIS`, `LAZY_SINK`, `NODE_SNAPSHOT`) and
   `None` for deploy profiles; `snapshot_read_classes(profile)` returns `{bounded}` for the
   same profiles. `PREVIEW_EAGER` reads `bounded`, and writes it when `preview_admitted`,
   because `PREVIEW_SHARES_BOUNDED_SEMANTICS` is true; the execution-profile semantics proof

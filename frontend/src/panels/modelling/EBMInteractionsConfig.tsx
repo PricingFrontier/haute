@@ -145,7 +145,7 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
                     </option>
                   ))}
                   {pair[position] && !features.includes(pair[position]) && (
-                    <option value={pair[position]}>{pair[position]} (not a feature)</option>
+                    <option value={pair[position]}>{columns.length === 0 ? pair[position] : `${pair[position]} (not a feature)`}</option>
                   )}
                 </select>
               ))}

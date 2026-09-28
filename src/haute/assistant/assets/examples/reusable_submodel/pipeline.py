@@ -1,11 +1,6 @@
 """Import a reusable enrichment submodel behind an explicit boundary port."""
 
-from pathlib import Path
-
-import polars as pl
-
 import haute
-from haute.graph_utils import resolve_data_input_from_config
 
 pipeline = haute.Pipeline(
     "reusable_submodel",
@@ -14,13 +9,11 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/data.json")
-def quotes() -> pl.LazyFrame:
-    return resolve_data_input_from_config("config/data.json", base_dir=Path(__file__).parent)
+def quotes(): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(enriched: pl.LazyFrame) -> pl.LazyFrame:
-    return enriched
+def response(enriched): ...
 
 
 pipeline.submodel("modules/reusable_enrichment.py", "enriched")

@@ -333,6 +333,112 @@ def test_a_display_walk_records_node_failures_when_the_policy_says_so(
         walk_graph(graph, _build_node_fn, policy=CollectPolicy.display())
 
 
+def _expander_graph(root: Path, *consumers: GraphNode, **shaping: object) -> PipelineGraph:
+    """A Scenario Expander whose builder contract promises price_adjustment."""
+    return PipelineGraph(
+        nodes=[
+            _source(root, "src", pl.DataFrame({"quote_id": [1, 2], "premium": [100.0, 200.0]})),
+            _node(
+                "grid",
+                NodeType.SCENARIO_EXPANDER,
+                column_name="price_adjustment",
+                min_value=0.9,
+                max_value=1.1,
+                stepCount=3,
+                **shaping,
+            ),
+            *consumers,
+        ],
+        edges=[_edge("src", "grid"), *(_edge("grid", node.id) for node in consumers)],
+    )
+
+
+_DISPLAY_AND_LAZY_WALKS = pytest.mark.parametrize(
+    "policy",
+    [CollectPolicy.display(), CollectPolicy.sink()],
+    ids=["display", "lazy"],
+)
+
+
+@_DISPLAY_AND_LAZY_WALKS
+@pytest.mark.parametrize(
+    ("shaping", "columns"),
+    [
+        (
+            {"selected_columns": ["quote_id", "premium", "scenario_index"]},
+            ["quote_id", "premium", "scenario_index"],
+        ),
+        (
+            {"column_renames": {"price_adjustment": "adj"}},
+            ["quote_id", "premium", "scenario_index", "adj"],
+        ),
+    ],
+    ids=["deselected", "renamed"],
+)
+def test_a_node_may_deselect_or_rename_a_column_it_creates(
+    haute_scratch: Path, policy: CollectPolicy, shaping: dict[str, object], columns: list[str]
+) -> None:
+    walked = walk_graph(
+        _expander_graph(haute_scratch, **shaping),
+        _build_node_fn,
+        policy=policy,
+        enforce_contracts=True,
+    )
+
+    output = walked.frames["grid"].collect()
+    assert output.columns == columns
+    assert output.height == 6
+
+
+@_DISPLAY_AND_LAZY_WALKS
+def test_a_consumer_of_a_deselected_column_fails_at_its_own_input(
+    haute_scratch: Path, policy: CollectPolicy
+) -> None:
+    consumer = _node(
+        "uses_adj",
+        NodeType.POLARS,
+        code="df = grid.with_columns(scaled=pl.col('premium') * pl.col('price_adjustment'))",
+        contract={"inputs": ["premium", "price_adjustment"], "outputs": ["scaled"]},
+    )
+    graph = _expander_graph(
+        haute_scratch, consumer, selected_columns=["quote_id", "premium", "scenario_index"]
+    )
+
+    with pytest.raises(ContractMismatchError) as raised:
+        walk_graph(graph, _build_node_fn, policy=policy, enforce_contracts=True)
+
+    assert str(raised.value) == (
+        "'uses_adj' needs the column 'price_adjustment', which is not in its input. "
+        "(node_id=uses_adj)"
+    )
+
+
+@_DISPLAY_AND_LAZY_WALKS
+def test_a_shaping_node_that_does_not_create_a_promised_column_still_fails(
+    haute_scratch: Path, policy: CollectPolicy
+) -> None:
+    graph = PipelineGraph(
+        nodes=[
+            _source(haute_scratch, "src", pl.DataFrame({"a": [1, 2], "b": [3, 4]})),
+            _node(
+                "t",
+                NodeType.POLARS,
+                code="df = src.with_columns(c=pl.col('a'))",
+                contract={"inputs": ["a"], "outputs": ["new_col"]},
+                selected_columns=["a", "c"],
+            ),
+        ],
+        edges=[_edge("src", "t")],
+    )
+
+    with pytest.raises(ContractMismatchError) as raised:
+        walk_graph(graph, _build_node_fn, policy=policy, enforce_contracts=True)
+
+    assert str(raised.value) == (
+        "'t' did not create the column 'new_col', which its contract says it outputs. (node_id=t)"
+    )
+
+
 @pytest.mark.parametrize("budgeted", [True, False])
 def test_a_native_allocation_failure_ends_the_walk_as_a_memory_error(
     haute_scratch: Path, budgeted: bool

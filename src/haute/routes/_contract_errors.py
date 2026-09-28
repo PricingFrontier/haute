@@ -11,7 +11,6 @@ from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
-    ChunkMemoryRiskError,
     ContractResolutionError,
     GroupByExecutionUnsupportedError,
     HauteError,
@@ -48,7 +47,6 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     ApiInputSchemaError,
     PreambleError,
     ContractResolutionError,
-    ChunkMemoryRiskError,
     GroupByExecutionUnsupportedError,
     TraceCorrelationUnsupportedError,
     RatingExtremaUndefinedError,

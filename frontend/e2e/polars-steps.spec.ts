@@ -302,7 +302,7 @@ test.describe("Transform step builder journey", () => {
     expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
     expect(sidecar.code).toBeUndefined()
     const main = readFileSync(mainPath, "utf8")
-    expect(main).toContain("def stepped_in() -> pl.LazyFrame")
+    expect(main).toContain("def stepped_in(df: pl.LazyFrame) -> pl.LazyFrame:")
     expect(main).toContain("df = df.head(2)")
 
     // Reopening parses the sidecar back into the step card.
@@ -372,7 +372,7 @@ test.describe("Transform step builder journey", () => {
     expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
     expect(sidecar.code).toBeUndefined()
     const main = readFileSync(mainPath, "utf8")
-    expect(main).toMatch(/def browser_rating\([\s\S]*?apply_rating_step_from_config\([\s\S]*?df = df\.head\(2\)/)
+    expect(main).toMatch(/def browser_rating\(df: pl\.LazyFrame[^)]*\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = df\.head\(2\)/)
 
     // Reopening parses the sidecar back into the same step card.
     await page.reload()
@@ -437,7 +437,7 @@ test.describe("Transform step builder journey", () => {
     expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 4 })])
     expect(sidecar.stepCount).toBe(3)
     expect(readFileSync(mainPath, "utf8")).toMatch(
-      /def browser_grid\([\s\S]*?expand_scenarios_from_config\([\s\S]*?df = df\.head\(4\)/,
+      /def browser_grid\(df: pl\.LazyFrame[^)]*\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = df\.head\(4\)/,
     )
 
     await page.reload()
@@ -499,7 +499,7 @@ test.describe("Transform step builder journey", () => {
     const sidecar = JSON.parse(readFileSync(externalSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>> }
     expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
     expect(readFileSync(mainPath, "utf8")).toMatch(
-      /def browser_external\([\s\S]*?load_external_object_from_config\([\s\S]*?df = df\.head\(2\)/,
+      /def browser_external\([^)]*\*, obj\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = \w+\s+df = df\.head\(2\)/,
     )
 
     await page.reload()

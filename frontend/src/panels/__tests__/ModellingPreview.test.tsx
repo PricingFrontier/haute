@@ -156,6 +156,23 @@ describe("ModellingPreview", () => {
     expect(container.innerHTML).not.toBe("")
   })
 
+  it("summarises a refit run without a test set by its validation metrics when collapsed", () => {
+    const base = makeTrainResult()
+    const result = makeTrainResult({
+      final_test_metrics: {},
+      final_test_rows: 0,
+      diagnostics_set: "development",
+      // In-sample: the rows the final model was refit on.
+      diagnostic_metrics: { gini: 0.8963, rmse: 0.0586 },
+    })
+    render(<ModellingPreview data={makeData({ result: { ...result, evaluation: base.evaluation } })} nodeId="n1" />)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+
+    // The factory's holdout selection metrics: gini 0.45, rmse 0.12.
+    expect(screen.getByText("gini: 0.4500 | rmse: 0.1200")).toBeInTheDocument()
+    expect(screen.queryByText(/0.8963/)).toBeNull()
+  })
+
   it("clicking a tab switches active tab content", () => {
     const result = makeTrainResult({
       feature_importance: [
@@ -170,7 +187,7 @@ describe("ModellingPreview", () => {
   })
 
   it("Loss tab is hidden when result has no loss_history", () => {
-    const result = makeTrainResult({ loss_history: undefined })
+    const result = makeTrainResult({ loss_history: [] })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
     expect(screen.queryByText("Loss")).not.toBeInTheDocument()
   })
@@ -181,6 +198,20 @@ describe("ModellingPreview", () => {
     })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
     expect(screen.queryByText("Loss")).not.toBeInTheDocument()
+  })
+
+  it("offers the Loss tab for a holdout validation fit whose refit kept one tree", () => {
+    const result = makeTrainResult({
+      // The refit trained one tree: one row of its own history.
+      loss_history: [{ iteration: 1, train_rmse: 1.0 }],
+      validation_loss_history: [
+        { iteration: 1, train_rmse: 1.0, eval_rmse: 1.1 },
+        { iteration: 2, train_rmse: 0.9, eval_rmse: 1.2 },
+      ],
+    })
+    render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
+    fireEvent.click(screen.getByRole("tab", { name: "Loss" }))
+    expect(screen.getByText(/^Validation fit: /)).toBeInTheDocument()
   })
 
   it("Features tab shows feature names when clicked", () => {

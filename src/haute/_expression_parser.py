@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, cast
 
+import numpy as np
 import polars as pl
 
 __all__ = [
@@ -1467,7 +1468,9 @@ def _evaluate_expression_impl(
     if is_window:
         substituted_text = _build_window_description(code, target_column, effective_row, parsed)
     else:
-        substituted_text = _substitute_values(parsed.expression_text, input_values)
+        substituted_text = _substitute_values(
+            parsed.expression_text, _display_values(input_values, row)
+        )
 
     # Resolve preamble constants in substituted text
     if preamble_ns:
@@ -1575,6 +1578,23 @@ def _replace_column_name(text: str, col_name: str, replacement: str) -> str:
     else:
         # For names with spaces/special chars, do exact replacement
         return text.replace(col_name, replacement)
+
+
+def _display_values(values: dict[str, Any], row: pl.DataFrame | None) -> dict[str, Any]:
+    """*values* as their columns' dtypes hold them, for display.
+
+    A Float32 value arrives widened to a Python float (``528.0900268554688``);
+    shown with its float32 digits (``528.09``) it reads as the pipeline stored
+    it. Only the text changes: the values computed on stay exact.
+    """
+    if row is None:
+        return values
+    return {
+        name: float(str(np.float32(value)))
+        if isinstance(value, float) and row.schema.get(name) == pl.Float32
+        else value
+        for name, value in values.items()
+    }
 
 
 def _format_value(val: Any) -> str:

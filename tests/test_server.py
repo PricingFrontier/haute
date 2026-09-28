@@ -65,21 +65,15 @@ def pipeline_dir(tmp_path: Path) -> Path:
     build_test_input_snapshot(_file_input_config(data_path), base_dir=tmp_path)
 
     code = f'''\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("test_pipeline", description="A test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.LazyFrame:
+def source():
     """Read data."""
-    from pathlib import Path
-    from haute.graph_utils import resolve_data_input_from_config
-    df = resolve_data_input_from_config(
-        "{source_config}", base_dir=Path(__file__).parent
-    )
-    return df
 
 
 @pipeline.polars
@@ -739,8 +733,13 @@ class TestSavePipeline:
         py_file = pipeline_dir / data["file"]
         assert py_file.exists()
         content = py_file.read_text()
-        assert "import polars as pl" in content
+        assert "import haute\n" in content
+        # Polars is imported only when the module refers to it.
+        assert "import polars as pl" not in content
         assert 'Pipeline("saved_pipe"' in content
+        assert (
+            '@pipeline.data_input(config="config/data_input/Source.json")\ndef Source(): ...\n'
+        ) in content
 
         # Sidecar should exist too
         sidecar = py_file.with_suffix(".haute.json")
@@ -3482,7 +3481,7 @@ class TestFileWatcherRecoverySidecars:
         child = modules / "shared.py"
         child.write_text(
             'import haute\nsubmodel = haute.Submodel("shared", definition_id="shared", '
-            "input_ports=[], output_ports=[])\n",
+            'input_ports=[], output_ports=[], pipeline_dir="..")\n',
             encoding="utf-8",
         )
         owner = tmp_path / "owner.py"
@@ -4792,14 +4791,13 @@ class TestSubmodelEdgeRewiring:
         # Create a 3-node pipeline: source -> transform -> transform2
         source_config = write_data_input_config(pipeline_dir, "source", "data/input.parquet")
         code = f"""\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("rewire_test", description="Rewire test")
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.LazyFrame:
-    return pl.scan_parquet("data/input.parquet")
+def source(): ...
 
 @pipeline.polars
 def middle(source: pl.LazyFrame) -> pl.LazyFrame:

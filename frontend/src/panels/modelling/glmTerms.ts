@@ -141,6 +141,8 @@ export type ColumnContext = {
   unsupported: readonly ModellingColumn[]
   /** Every upstream column name; generated term names avoid them. */
   upstreamNames: ReadonlySet<string>
+  /** Whether the upstream columns have arrived; they come with the first preview. */
+  known: boolean
 }
 
 export function columnContext(columns: readonly ModellingColumn[], roles: ReadonlyMap<string, string>): ColumnContext {
@@ -154,13 +156,17 @@ export function columnContext(columns: readonly ModellingColumn[], roles: Readon
     eligibleNames: new Set(eligible.map((column) => column.name)),
     unsupported: candidates.filter((column) => glmDtypeClass(column.dtype) === "unsupported"),
     upstreamNames: new Set(columns.map((column) => column.name)),
+    known: columns.length > 0,
   }
 }
+
+export const COLUMNS_NOT_KNOWN = "Waiting for the upstream columns"
 
 /** Why a column cannot carry GLM fits, or null when it is eligible. */
 export function columnIssue(column: string, context: ColumnContext): string | null {
   const role = context.roles.get(column)
   if (role !== undefined) return `${column} is the ${role} column`
+  if (!context.known) return COLUMNS_NOT_KNOWN
   const info = context.byName.get(column)
   if (info === undefined) return `${column} is not in the upstream data`
   if (glmDtypeClass(info.dtype) === "unsupported") return `${column} has dtype ${info.dtype}, which GLM fits do not support`

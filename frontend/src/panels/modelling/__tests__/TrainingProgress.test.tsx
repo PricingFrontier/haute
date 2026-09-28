@@ -74,6 +74,24 @@ describe("TrainingProgress", () => {
     ).toBeInTheDocument()
   })
 
+  it("labels no retained window when the history cannot draw a curve", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({
+          // Rows without a train_ key: the shape live progress sent before MDL-02.
+          train_loss_history: [
+            { iteration: 40, rmse: 0.8 },
+            { iteration: 50, rmse: 0.7 },
+          ],
+          train_loss_history_truncated: true,
+        })}
+      />,
+    )
+
+    expect(screen.queryByText("Loss Curve")).toBeNull()
+    expect(screen.queryByText("Showing latest retained loss-history window.")).toBeNull()
+  })
+
   it("does not synthesize a chart from the latest loss poll", () => {
     render(
       <TrainingProgress

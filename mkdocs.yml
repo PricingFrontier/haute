@@ -1,6 +1,6 @@
 site_name: Haute
 site_description: Open-source pricing engine for insurance teams
-site_url: https://haute.dev
+site_url: https://pricingfrontier.github.io/haute/
 repo_url: https://github.com/pricingfrontier/haute
 repo_name: pricingfrontier/haute
 
@@ -92,28 +92,15 @@ plugins:
   - search
 
 nav:
-  - Haute: index.md
+  - Home: index.md
   - Getting Started:
     - getting-started/index.md
     - Setting Up Your Environment: getting-started/environment.md
     - Installing Haute: getting-started/installing-haute.md
     - UI Overview: getting-started/ui-overview.md
     - Polars: getting-started/polars.md
-  - Deployment:
-    - Overview: deployment/index.md
-    - Before You Start: deployment/before-you-start.md
-    - Targets:
-      - Databricks: deployment/targets/databricks.md
-      - Docker: deployment/targets/docker.md
-      - AWS ECS: deployment/targets/aws.md
-      - Azure Container Apps: deployment/targets/azure.md
-    - CI/CD:
-      - GitHub Actions: deployment/ci/github-actions.md
-      - GitLab CI/CD: deployment/ci/gitlab.md
-      - Azure DevOps: deployment/ci/azure-devops.md
   - Building Models:
     - building-models/index.md
-    - Preparing Your Data: building-models/preparing-your-data.md
     - Execution Strategy: building-models/execution-strategy.md
     - Node Types:
       - building-models/nodes/index.md
@@ -126,17 +113,17 @@ nav:
         - Edge Join: building-models/nodes/edge-join.md
         - Banding: building-models/nodes/banding.md
         - Rating Step: building-models/nodes/rating-step.md
-        - Scenario Expander: building-models/nodes/scenario-expander.md
+        - Expander: building-models/nodes/scenario-expander.md
         - Source Switch: building-models/nodes/source-switch.md
       - Models:
         - Model Training: building-models/nodes/model-training.md
-        - Model Score: building-models/nodes/model-score.md
-        - External File: building-models/nodes/external-file.md
+        - Model Scoring: building-models/nodes/model-score.md
+        - Load File: building-models/nodes/external-file.md
       - Optimisation:
-        - Optimiser: building-models/nodes/optimiser.md
-        - Optimiser Apply: building-models/nodes/optimiser-apply.md
+        - Optimisation: building-models/nodes/optimiser.md
+        - Apply Optimisation: building-models/nodes/optimiser-apply.md
       - Pipeline Outputs:
-        - Output: building-models/nodes/output.md
+        - Quote Response: building-models/nodes/output.md
         - Data Output: building-models/nodes/data-output.md
       - Analysis:
         - Explore: building-models/nodes/explore.md
@@ -144,3 +131,15 @@ nav:
         - Submodel: building-models/nodes/submodel.md
         - Instances: building-models/nodes/instances.md
     - Filesystem Portability: building-models/filesystem-portability.md
+  - Deployment:
+    - Overview: deployment/index.md
+    - Before You Start: deployment/before-you-start.md
+    - Targets:
+      - Databricks: deployment/targets/databricks.md
+      - Docker: deployment/targets/docker.md
+      - AWS ECS: deployment/targets/aws.md
+      - Azure Container Apps: deployment/targets/azure.md
+    - CI/CD:
+      - GitHub Actions: deployment/ci/github-actions.md
+      - GitLab CI/CD: deployment/ci/gitlab.md
+      - Azure DevOps: deployment/ci/azure-devops.md

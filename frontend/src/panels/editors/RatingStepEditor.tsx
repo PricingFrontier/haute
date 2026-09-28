@@ -3,6 +3,7 @@ import { GitMerge, Plus, Table2, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import { SavedValueOption } from "../../components/form"
 import SearchableItemList from "./shared/SearchableItemList"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 import { withAlpha } from "../../utils/color"
@@ -577,6 +578,7 @@ export default function RatingStepEditor({
                 className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
                 style={INPUT_STYLE}>
                 <option value="">Select column...</option>
+                <SavedValueOption value={f} options={availableColumns} missingLabel={(name) => `${name} (not a banding factor)`} />
                 {availableColumns.map(c => (
                   <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
                 ))}

@@ -175,7 +175,12 @@ compatibility facade and route own no duplicate state or worker implementation.
   bounded. `schema_unresolvable` means the cardinality is known but the target's schema
   cannot be resolved: the estimate keeps the row total. Either way it has no memory
   figure, no downsampling verdict or warning, and no GPU VRAM figure, so it never
-  reports a size of zero. An exception
+  reports a size of zero. A row total that depends on a join without a key contract (an
+  Edge Join or a Polars join declaring no `validate`) is that join's row product, a
+  worst case rather than a count: the estimate names those joins and gives no downsampling
+  verdict or warning, and the Train pane presents the total as an upper bound. Training
+  decides whether it downsampled from the rows its prepared input actually holds, and
+  records the downsampling warning on the job only when the RAM row limit removed rows. An exception
   raised while estimating is not an unavailable estimate. It propagates as an error
   response and is logged as a failure, never answered with an empty estimate.
   Once the relevant modelling and evaluation fields

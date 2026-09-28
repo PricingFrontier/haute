@@ -233,12 +233,16 @@ def explain_catboost_prediction(
     # raw-formula prediction for every CatBoost loss.
     model_prediction = _catboost_raw_prediction(raw_model, pool)
 
+    # A regression's link names the transform from the raw score its SHAP
+    # values sum to, to the prediction; a classifier's label is no transform.
+    link: str | None = None
     if task == "regression":
         has_link = _catboost_regression_has_link_transform(raw_model)
         response_prediction = (
             _catboost_response_prediction(raw_model, pool) if has_link else model_prediction
         )
         output_space = "raw_formula_val" if has_link else "prediction"
+        link = "log" if has_link else "identity"
     else:
         response_prediction = model_prediction
         output_space = "raw_formula_val"
@@ -297,7 +301,7 @@ def explain_catboost_prediction(
         item["rank"] = rank
         contributions.append(item)
 
-    return {
+    explanation: dict[str, Any] = {
         "type": "catboost_shap",
         "method": "catboost_shap",
         "status": "ok",
@@ -316,6 +320,10 @@ def explain_catboost_prediction(
         "truncated": truncated,
         "omitted_count": omitted_count,
     }
+    if link is not None:
+        explanation["link"] = link
+        explanation["model_prediction_value"] = response_prediction
+    return explanation
 
 
 def _rustystats_frame_for_row(scoring_model: Any, input_row: dict[str, Any]) -> pl.DataFrame:

@@ -1,0 +1,259 @@
+{
+  "_comment": "Output columns of the renderer's join for every kind, from Polars; checked by tests/test_polars_steps_catalogue.py and derivedColumns.test.ts.",
+  "suffix": "_right",
+  "left": [
+    {
+      "name": "quote_id",
+      "dtype": "Int64"
+    },
+    {
+      "name": "x",
+      "dtype": "Int64"
+    },
+    {
+      "name": "v",
+      "dtype": "Float64"
+    }
+  ],
+  "right": [
+    {
+      "name": "quote_id",
+      "dtype": "Int64"
+    },
+    {
+      "name": "rid",
+      "dtype": "Int64"
+    },
+    {
+      "name": "v",
+      "dtype": "Float64"
+    },
+    {
+      "name": "y",
+      "dtype": "String"
+    }
+  ],
+  "cases": [
+    {
+      "how": "inner",
+      "keys": "same",
+      "leftOn": [
+        "quote_id"
+      ],
+      "rightOn": [
+        "quote_id"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "inner",
+      "keys": "different",
+      "leftOn": [
+        "x"
+      ],
+      "rightOn": [
+        "rid"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "quote_id_right",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "left",
+      "keys": "same",
+      "leftOn": [
+        "quote_id"
+      ],
+      "rightOn": [
+        "quote_id"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "left",
+      "keys": "different",
+      "leftOn": [
+        "x"
+      ],
+      "rightOn": [
+        "rid"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "quote_id_right",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "right",
+      "keys": "same",
+      "leftOn": [
+        "quote_id"
+      ],
+      "rightOn": [
+        "quote_id"
+      ],
+      "output": [
+        "x",
+        "v",
+        "quote_id",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "right",
+      "keys": "different",
+      "leftOn": [
+        "x"
+      ],
+      "rightOn": [
+        "rid"
+      ],
+      "output": [
+        "quote_id",
+        "v",
+        "quote_id_right",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "full",
+      "keys": "same",
+      "leftOn": [
+        "quote_id"
+      ],
+      "rightOn": [
+        "quote_id"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "quote_id_right",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "full",
+      "keys": "different",
+      "leftOn": [
+        "x"
+      ],
+      "rightOn": [
+        "rid"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "quote_id_right",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    },
+    {
+      "how": "semi",
+      "keys": "same",
+      "leftOn": [
+        "quote_id"
+      ],
+      "rightOn": [
+        "quote_id"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v"
+      ]
+    },
+    {
+      "how": "semi",
+      "keys": "different",
+      "leftOn": [
+        "x"
+      ],
+      "rightOn": [
+        "rid"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v"
+      ]
+    },
+    {
+      "how": "anti",
+      "keys": "same",
+      "leftOn": [
+        "quote_id"
+      ],
+      "rightOn": [
+        "quote_id"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v"
+      ]
+    },
+    {
+      "how": "anti",
+      "keys": "different",
+      "leftOn": [
+        "x"
+      ],
+      "rightOn": [
+        "rid"
+      ],
+      "output": [
+        "quote_id",
+        "x",
+        "v"
+      ]
+    },
+    {
+      "how": "cross",
+      "keys": "none",
+      "leftOn": [],
+      "rightOn": [],
+      "output": [
+        "quote_id",
+        "x",
+        "v",
+        "quote_id_right",
+        "rid",
+        "v_right",
+        "y"
+      ]
+    }
+  ]
+}

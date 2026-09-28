@@ -198,7 +198,11 @@ public ports and never name internal children. Parse -> codegen -> parse must
 preserve definition identity, occurrence names, labels, positions, ports,
 and independent bindings. Every generated config-backed node resolves its
 sidecar from the owning pipeline directory. A definition emitted under
-`modules/` must not reinterpret `config/...` relative to the module directory.
+`modules/` must not reinterpret `config/...` relative to the module directory:
+its constructor ends with `pipeline_dir=".."` (one `..` per folder between the
+file and the pipeline), which codegen derives from the registration path and
+the parser rejects when it disagrees with where the file sits, so a node of
+the definition run on its own reads the pipeline's sidecars.
 
 Acceptance requires a single file-backed definition instantiated twice with
 different aliases, positions, and bindings to survive save -> reload ->

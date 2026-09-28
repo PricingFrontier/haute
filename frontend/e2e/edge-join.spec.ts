@@ -153,8 +153,6 @@ function seedPipeline(): void {
     [
       '"""Small deterministic pipeline for Edge Join browser coverage."""',
       "",
-      "from pathlib import Path",
-      "",
       "import polars as pl",
       "",
       "import haute",
@@ -162,26 +160,13 @@ function seedPipeline(): void {
       'pipeline = haute.Pipeline("edge_join_e2e")',
       "",
       '@pipeline.data_input(config="config/data_input/raw_rows.json")',
-      "def raw_rows() -> pl.LazyFrame:",
-      "    from haute.graph_utils import resolve_data_input_from_config",
-      "    df = resolve_data_input_from_config(",
-      '        "config/data_input/raw_rows.json",',
-      "        base_dir=Path(__file__).parent,",
-      "    )",
-      "    return df",
+      "def raw_rows(): ...",
       "",
       '@pipeline.data_input(config="config/data_input/lookup_rows.json")',
-      "def lookup_rows() -> pl.LazyFrame:",
-      "    from haute.graph_utils import resolve_data_input_from_config",
-      "    df = resolve_data_input_from_config(",
-      '        "config/data_input/lookup_rows.json",',
-      "        base_dir=Path(__file__).parent,",
-      "    )",
-      "    return df",
+      "def lookup_rows(): ...",
       "",
       '@pipeline.api_input(config="config/quote_input/quotes.json")',
-      "def quotes() -> pl.LazyFrame:",
-      "    return pl.LazyFrame()",
+      "def quotes(): ...",
       "",
       "@pipeline.polars",
       "def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
@@ -330,8 +315,7 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
   }), "utf8")
   const inputFunction = (name: string) => [
     `@pipeline.data_input(config="config/data_input/${name}.json")`,
-    `def ${name}() -> pl.LazyFrame:`,
-    `    return resolve_data_input_from_config("config/data_input/${name}.json", base_dir=Path(__file__).parent)`, "",
+    `def ${name}(): ...`, "",
   ]
   // Renames and category declarations are authored configuration without a
   // dedicated Columns-tab editor. Seed them, then verify real UI selection
@@ -339,16 +323,15 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
   const metadataArgs = `column_renames=${JSON.stringify(columnMetadata.column_renames)}, categorical_levels=${JSON.stringify(columnMetadata.categorical_levels)}, contract="opaque"`
   const subjectFunction = nodeType === "dataInput" ? inputFunction("subject") : nodeType === "edgeJoin" ? [
     `@pipeline.edge_join(how="left", on=["_id"], ${metadataArgs})`,
-    "def subject(raw_rows: pl.LazyFrame, lookup_rows: pl.LazyFrame) -> pl.LazyFrame:",
-    '    return pipeline._apply_edge_join("subject", raw_rows, lookup_rows)', "",
+    "def subject(raw_rows, lookup_rows): ...", "",
   ] : [
     `@pipeline.polars(${metadataArgs})`,
     "def subject(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
     "    return raw_rows", "",
   ]
   writeFileSync(pipelinePath, [
-    '"""Column persistence browser fixture."""', "from pathlib import Path", "import polars as pl", "import haute",
-    "from haute.graph_utils import resolve_data_input_from_config", 'pipeline = haute.Pipeline("columns_e2e")', "",
+    '"""Column persistence browser fixture."""', "import polars as pl", "import haute",
+    'pipeline = haute.Pipeline("columns_e2e")', "",
     ...inputFunction("raw_rows"), ...inputFunction("lookup_rows"), ...subjectFunction,
     ...(nodeType === "dataInput" ? [] : nodeType === "edgeJoin" ? [
       'pipeline.connect("raw_rows", "subject", target_port="base")',
@@ -546,17 +529,20 @@ test.describe("Edge Join insertion workflow", () => {
     const tracePayload = await response.json() as {
       trace?: {
         steps?: Array<{ node_id?: string }>
-        omissions?: Array<{ node_id?: string; reason?: string }>
+        omissions?: Array<{ node_id?: string; reason?: string; diagnostic_index?: number }>
+        correlation_diagnostics?: Array<{ seed_node_ids?: string[] }>
       }
     }
     const tracedNodeIds = tracePayload.trace?.steps?.map((step) => step.node_id) ?? []
     // The previews above captured the joins, so the trace may read one from
-    // its snapshot; a join above that point is reported as skipped for it
-    // rather than recomputed. Either way both joins stay in the trace.
-    const skippedForSnapshot = (tracePayload.trace?.omissions ?? [])
-      .filter((omission) => omission.reason === "snapshot_seed")
+    // its snapshot. It traces above that point when a recompute reproduces the
+    // snapshot's row, and otherwise reports the join above it as not traced
+    // there. Either way both joins stay in the trace.
+    const diagnostics = tracePayload.trace?.correlation_diagnostics ?? []
+    const notTracedAboveSnapshot = (tracePayload.trace?.omissions ?? [])
+      .filter((omission) => (diagnostics[omission.diagnostic_index ?? -1]?.seed_node_ids ?? []).length > 0)
       .map((omission) => omission.node_id)
-    expect([...tracedNodeIds, ...skippedForSnapshot], "trace retains both Edge Join ancestors").toEqual(
+    expect([...tracedNodeIds, ...notTracedAboveSnapshot], "trace retains both Edge Join ancestors").toEqual(
       expect.arrayContaining([finalFirstJoin.id, finalSecondJoin.id]),
     )
     await expect(page.getByRole("complementary", { name: /node properties/i })).toContainText(/Trace:/)

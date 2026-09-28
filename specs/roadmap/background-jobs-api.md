@@ -14,30 +14,9 @@ specifications and their ordinary regression tests.
 
 | Package | State | Priority | Outcome |
 |---|---|---|---|
-| `ROAD-WORKER-04` | Deferred | P1 | Requires versioned solver-specific persistence before optimiser isolation is safe. |
 | `ROAD-WORKER-05` | Planned | P3 | One worker primitive and one worker-failure taxonomy serve one-shot, pooled and job workers. |
 
 ## Planned improvements
-
-### ROAD-WORKER-04 — Isolate optimiser workflows
-
-**Why:** Setup, solve, auto-range, and frontier recomputation retain solver/data-frame state across route threads.
-
-**Plan:** Defer implementation until every supported solver has a stable,
-versioned persistence format. Do not pass live solvers or frames across spawn
-boundaries and do not use unversioned pickles as restart artifacts.
-
-**Activation trigger:** Each supported online and ratebook solver publishes a
-canonical versioned persistence adapter with round-trip, corrupt/unknown-version,
-and restart reconstruction tests. Until that trigger is met this package is
-intentionally non-startable; thread-backed isolation remains the truthful
-runtime contract.
-
-**Acceptance:** Supported workflows share no solver/data-frame state across processes, recover deterministically after cancellation/crash/restart, and leak no reservation or temporary artifact.
-
-**Dependencies:** Canonical execution boundary, lifecycle ownership, and versioned solver-specific persistence contracts.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `src/haute/routes/optimiser.py`; `tests/test_optimiser_routes.py`; `tests/test_optimiser_contracts.py`; `tests/test_streaming_chunk_size_setting.py`.
 
 ### ROAD-WORKER-05 — One worker primitive and one failure taxonomy
 **Why:** Three subprocess mechanisms carry parallel error hierarchies. The
@@ -67,4 +46,6 @@ warm interactive worker pool.
 `src/haute/_interactive_workers.py::InteractiveWorkerPool`;
 `src/haute/_worker_protocol.py::run_worker_protocol`;
 `src/haute/routes/_background_jobs.py::IsolatedJobSupervisor`;
-`src/haute/routes/_isolated_worker_async.py`; `src/haute/routes/_timeouts.py`.
+`src/haute/routes/_isolated_worker_async.py`; `src/haute/routes/_timeouts.py`;
+`src/haute/_dedicated_workers.py::DedicatedWorker` (the optimiser's solver session, OPT-W01,
+which already reuses the warm pool's error family).

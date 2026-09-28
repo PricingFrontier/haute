@@ -319,13 +319,30 @@ def _extract_function_bodies(
     bodies: dict[str, str] = {}
 
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef):
-            if node.body:
-                start = node.body[0].lineno - 1
-                end = node.body[-1].end_lineno or (start + 1)
-                bodies[node.name] = "\n".join(source_lines[start:end])
+        if isinstance(node, ast.FunctionDef) and node.body:
+            bodies[node.name] = _function_body_source(source_lines, node)
 
     return bodies
+
+
+def _function_body_source(
+    source_lines: list[str],
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str:
+    """The source text of *function*'s body, without any of its header.
+
+    Whole lines, except when the body starts on the header's last line
+    (``def f(): ...``): that line is sliced from the first statement's column,
+    which ``ast`` reports in UTF-8 bytes.
+    """
+    first = function.body[0]
+    start = first.lineno - 1
+    end = function.body[-1].end_lineno or first.lineno
+    lines = source_lines[start:end]
+    head = lines[0].encode("utf-8")
+    if head[: first.col_offset].strip():
+        lines[0] = head[first.col_offset :].decode("utf-8")
+    return "\n".join(lines)
 
 
 def _eval_connect_value(receiver: str, role: str, node: ast.expr) -> Any:
@@ -557,26 +574,6 @@ def _slice_without_module_preserve_spans(
     return [lines[index] for index in range(start, stop) if index not in excluded]
 
 
-# Pipelines emit ``.parent``; submodels emit ``.parents[N]`` with N derived
-# from the recorded registration path depth (see codegen).
-_CONFIG_BASE_ASSIGNMENT = re.compile(
-    r"^_HAUTE_CONFIG_BASE=_HautePath\(__file__\)\.resolve\(\)\.(?:parent|parents\[\d+\])$"
-)
-_CONFIG_BASE_IMPORT = "frompathlibimportPathas_HautePath"
-
-
-def _without_config_base_scaffold(lines: list[str]) -> list[str]:
-    """Remove exact generated config-base lines from authored preamble text."""
-    compacted = ["".join(line.split()) for line in lines]
-    if not any(_CONFIG_BASE_ASSIGNMENT.fullmatch(line) for line in compacted):
-        return lines
-    return [
-        line
-        for line, compact in zip(lines, compacted, strict=True)
-        if compact != _CONFIG_BASE_IMPORT and not _CONFIG_BASE_ASSIGNMENT.fullmatch(compact)
-    ]
-
-
 def _extract_preamble_from_ast(
     source: str,
     tree: ast.Module,
@@ -668,7 +665,6 @@ def _extract_preamble_from_ast(
         last_standard_line,
         generated_start_line - 1,
     )
-    preamble_lines = _without_config_base_scaffold(preamble_lines)
     while preamble_lines and not preamble_lines[0].strip():
         preamble_lines.pop(0)
     while preamble_lines and not preamble_lines[-1].strip():
@@ -776,7 +772,6 @@ def _extract_preamble_textual(
         last_standard_idx + 1,
         generated_start_idx,
     )
-    preamble_lines = _without_config_base_scaffold(preamble_lines)
 
     # Strip leading/trailing blank lines
     while preamble_lines and not preamble_lines[0].strip():

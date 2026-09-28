@@ -1,19 +1,19 @@
 """Chunk-local whitelist proofs: every admitted construct must be chunked == full.
 
 PATH_TO_HIGHEST_STANDARD §A3: the chunk-local AST whitelist in
-``haute.chunking`` may only admit constructs backed by a proof that executing
-them through the REAL chunked path (``chunk_plan`` + ``collect_chunked``)
-produces exactly the same frame as full execution (``execute_lazy_graph``).
-A construct without such a proof is not whitelisted — it is rejected at plan
-time (``ChunkPlanUnsupportedError``) so callers route to the existing full
-(non-chunked) executor, which is always correct.
+``haute.chunking`` may only admit constructs backed by a proof that running a
+node's code on row slices of a frame and concatenating the results produces
+exactly the same frame as running it on the whole frame (the definition of
+chunk-local). Both sides execute through the real executor
+(``execute_lazy_graph``); a slice is simply a smaller source. A construct
+without such a proof is not whitelisted: the classifiers reject it.
 
 This module contains:
 
 1. De-whitelist pins for the silent-wrongness constructs cited in
    CODE_REVIEW.md (``fill_null(strategy=...)``, ``is_in`` with a full-column
-   haystack, ``min_horizontal`` over streamed NaN batches): chunk planning must
-   reject them loudly AND the full path must produce the correct values that
+   haystack, ``min_horizontal`` over streamed NaN batches): the classifier must
+   reject them AND whole-frame execution must produce the correct values that
    chunked execution used to corrupt.
 2. AST-level whitelist unit tests for every de-whitelisted call shape.
 3. ``test_whitelisted_construct_chunked_equals_full``: a hypothesis property
@@ -44,14 +44,9 @@ from haute.chunking import (
     _ROW_LOCAL_EXPR_METHOD_NAMES,
     _ROW_LOCAL_NAMESPACE_METHOD_NAMES,
     _ROW_LOCAL_POLARS_FUNCTIONS,
-    ChunkPlanRequest,
-    ChunkRunnerRequest,
-    chunk_plan,
-    collect_chunked,
+    classify_chunk_local_polars_code,
     is_chunk_local_polars_code,
-    iter_chunked_frames,
 )
-from haute.errors import ChunkPlanUnsupportedError
 from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn, _compile_preamble
 from tests.conftest import make_edge, make_graph, make_output_config
@@ -123,24 +118,44 @@ def _xform_graph(
 # chunked != full for reasons unrelated to the construct being proven. Comparing
 # the ``xform`` frame proves exactly the row-locality property this module exists
 # to defend.
-def _chunk_plan(graph, *, chunk_size: int):
-    return chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="xform", chunk_size=chunk_size))
+def _assert_rejected_as_not_row_local(code: str) -> None:
+    """The classifier refuses *code* as chunk-local and names what blocked it."""
+    decision = classify_chunk_local_polars_code(code, frame_names=("source",))
+    assert not decision.eligible
+    assert decision.blocking_operator is not None
 
 
 def _preamble_ns(graph) -> dict[str, object] | None:
     return _compile_preamble(graph.preamble) if graph.preamble else None
 
 
+def _with_source(graph, path: Path):
+    """The same graph, reading its data input from *path*."""
+    document = graph.model_dump()
+    for node in document["nodes"]:
+        if node["id"] == "source":
+            node["data"]["config"]["path"] = str(path)
+    return make_graph(document)
+
+
 def _run_chunked(graph, *, chunk_size: int) -> pl.DataFrame:
-    return collect_chunked(
-        ChunkRunnerRequest(
-            graph=graph,
-            plan=_chunk_plan(graph, chunk_size=chunk_size),
-            build_node_fn=_build_node_fn,
-            preamble_ns=_preamble_ns(graph),
-        ),
-        allow_unbounded=True,
-    )
+    """Run the ``xform`` code on consecutive row slices of the source and concatenate.
+
+    Each slice is written as its own parquet source and executed by the real
+    executor exactly as ``_run_full`` executes the whole frame, so a chunk-local
+    construct cannot tell the two apart. An empty source has no slices: the
+    result is the empty frame.
+    """
+    source = Path(str(graph.node_map["source"].data.config["path"]))
+    frame = pl.read_parquet(source)
+    parts: list[pl.DataFrame] = []
+    for index, offset in enumerate(range(0, frame.height, chunk_size)):
+        slice_path = source.with_name(f"{source.stem}.slice{index}{source.suffix}")
+        frame.slice(offset, chunk_size).write_parquet(slice_path)
+        parts.append(_run_full(_with_source(graph, slice_path)))
+    if not parts:
+        return pl.DataFrame()
+    return pl.concat(parts, how="vertical")
 
 
 def _run_full(graph) -> pl.DataFrame:
@@ -185,8 +200,8 @@ def _assert_chunked_matches_full(graph, *, chunk_size: int, raising_expected: bo
         return
     assert chunked is not None and full is not None
     if full.height == 0:
-        # The runner never emits empty batches; an all-filtered result is the
-        # empty concat.  Schemas cannot be compared against zero batches.
+        # An all-filtered result is compared by height: slices that all filter
+        # to nothing still concatenate, but an empty source has no slices.
         assert chunked.height == 0
         return
     plt.assert_frame_equal(chunked, full, check_exact=True)
@@ -195,16 +210,16 @@ def _assert_chunked_matches_full(graph, *, chunk_size: int, raising_expected: bo
 # ---------------------------------------------------------------------------
 # De-whitelist pins for the cited silent-wrongness constructs.
 #
-# Before the whitelist was tightened these graphs were granted a chunk plan
-# and produced silently wrong values through the real chunked path:
+# Before the whitelist was tightened these graphs were admitted as chunk-local
+# and produced silently wrong values when executed chunk by chunk:
 #   fill_null(strategy='forward'): chunked x == [1.0, 1.0, None, 4.0]
 #                                  full    x == [1.0, 1.0, 1.0,  4.0]
 #   is_in(pl.col('b')):            chunked flag == [F, F, F, F]
 #                                  full    flag == [F, F, T, T]
 #   min_horizontal(i, f):          chunked r == [None, None, None, None, NaN]
 #                                  full    r == [None, None, None, None, 0.0]
-# Now planning must fail loudly (callers fall back to the full executor) and
-# the full path must produce the correct values.
+# Now the classifier must reject them and whole-frame execution must produce
+# the correct values.
 # ---------------------------------------------------------------------------
 
 
@@ -227,8 +242,9 @@ def test_fill_null_strategy_is_de_whitelisted_and_full_path_is_correct(
         contract={"inputs": ["x"], "outputs": []},
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        _chunk_plan(graph, chunk_size=2)
+    _assert_rejected_as_not_row_local(
+        "df = source.with_columns(pl.col('x').fill_null(strategy='forward'))"
+    )
 
     full = _run_full(graph)
     assert full["x"].to_list() == [1.0, 1.0, 1.0, 4.0]
@@ -246,8 +262,7 @@ def test_frame_level_fill_null_strategy_is_de_whitelisted_and_full_path_is_corre
         contract={"inputs": ["x"], "outputs": []},
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        _chunk_plan(graph, chunk_size=2)
+    _assert_rejected_as_not_row_local("df = source.fill_null(strategy='backward')")
 
     full = _run_full(graph)
     assert full["x"].to_list() == [1.0, 4.0, 4.0, 4.0]
@@ -272,8 +287,9 @@ def test_is_in_column_haystack_is_de_whitelisted_and_full_path_is_correct(
         contract={"inputs": ["a", "b"], "outputs": ["flag"]},
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        _chunk_plan(graph, chunk_size=2)
+    _assert_rejected_as_not_row_local(
+        "df = source.with_columns(flag=pl.col('a').is_in(pl.col('b')))"
+    )
 
     full = _run_full(graph)
     assert full["flag"].to_list() == [False, False, True, True]
@@ -284,8 +300,8 @@ def test_is_in_frame_subscript_is_de_whitelisted(tmp_path: Path) -> None:
 
     The batch paths hand user code LazyFrames, so this construct cannot even
     execute there (LazyFrames are not subscriptable) — yet the whitelist used
-    to claim it chunk-safe and grant a plan that exploded mid-chunk.  Planning
-    must reject it up front instead.
+    to claim it chunk-safe, so chunked execution exploded mid-chunk.  The
+    classifier must reject it up front instead.
     """
     source = tmp_path / "quotes.parquet"
     pl.DataFrame({"a": [1, 2, 3, 4], "b": [3, 4, 998, 999]}).write_parquet(source)
@@ -296,8 +312,9 @@ def test_is_in_frame_subscript_is_de_whitelisted(tmp_path: Path) -> None:
         contract={"inputs": ["a", "b"], "outputs": ["flag"]},
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        _chunk_plan(graph, chunk_size=2)
+    _assert_rejected_as_not_row_local(
+        "df = source.with_columns(flag=pl.col('a').is_in(source['b']))"
+    )
 
     with pytest.raises(TypeError, match="not subscriptable"):
         _run_full(graph)
@@ -326,8 +343,9 @@ def test_min_horizontal_nan_stream_batch_is_de_whitelisted_and_full_path_is_corr
         contract={"inputs": ["i", "f"], "outputs": ["r"]},
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        _chunk_plan(graph, chunk_size=2)
+    _assert_rejected_as_not_row_local(
+        "df = source.with_columns(r=pl.min_horizontal(pl.col('i'), pl.col('f')))"
+    )
 
     full = _run_full(graph)
     assert full["r"].to_list() == [None, None, None, None, 0.0]
@@ -1044,9 +1062,9 @@ def test_literal_is_in_chunked_equals_full_across_chunk_boundaries(
     plt.assert_frame_equal(chunked, full, check_exact=True)
 
 
-def test_chunk_runner_emits_no_batches_for_empty_source(tmp_path: Path) -> None:
-    """Empty-source boundary: the runner yields zero batches (it never emits
-    empty frames) while the full path produces a 0-row frame."""
+def test_empty_source_has_no_slices_and_an_empty_full_result(tmp_path: Path) -> None:
+    """Empty-source boundary: slicing yields no parts (the concat is empty)
+    while the full path produces a 0-row frame."""
     source = tmp_path / "quotes.parquet"
     pl.DataFrame(schema={"i": pl.Int64, "f": pl.Float64, "s": pl.String}).write_parquet(source)
     graph = _xform_graph(
@@ -1055,17 +1073,7 @@ def test_chunk_runner_emits_no_batches_for_empty_source(tmp_path: Path) -> None:
         output_fields=["i", "f", "s", "r"],
     )
 
-    batches = list(
-        iter_chunked_frames(
-            ChunkRunnerRequest(
-                graph=graph,
-                plan=_chunk_plan(graph, chunk_size=2),
-                build_node_fn=_build_node_fn,
-            )
-        )
-    )
-
-    assert batches == []
+    assert _run_chunked(graph, chunk_size=2).height == 0
     assert _run_full(graph).height == 0
 
 
@@ -1103,14 +1111,11 @@ def _mixed_format_graph(tmp_path: Path, fragment: str):
         pytest.param("pl.col('s').str.strptime(pl.Date)", id="strptime"),
     ],
 )
-def test_inferred_temporal_format_is_de_whitelisted(tmp_path: Path, fragment: str) -> None:
-    graph = _mixed_format_graph(tmp_path, fragment)
-
+def test_inferred_temporal_format_is_de_whitelisted(fragment: str) -> None:
     assert not is_chunk_local_polars_code(
         f"df = source.with_columns(r={fragment})", frame_names=("source",)
     )
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        _chunk_plan(graph, chunk_size=_MIXED_FORMAT_CHUNK_SIZE)
+    _assert_rejected_as_not_row_local(f"df = source.with_columns(r={fragment})")
 
 
 @pytest.mark.parametrize(

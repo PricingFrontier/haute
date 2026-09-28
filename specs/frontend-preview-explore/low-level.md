@@ -294,7 +294,12 @@ are promoted to the canvas warning state. Cache storage refuses nothing for size
 (automatic captures are evicted rather than refused), so there is no quota-refusal
 diagnostic. Activating the
 icon explains projection limits, correctness, possible I/O/memory cost,
-and remediation without exposing raw bounded-collection JSON.
+and remediation without exposing raw bounded-collection JSON. A projection warning
+names the diagnostic's `projection_cause` when present: an `input` cause as the node
+that stopped Haute narrowing what it reads from its full-width input (or "its inputs"),
+a `node` cause as the node whose columns could not be narrowed, plus how many other
+nodes did the same; without a cause it names the first unprojected boundary as before.
+The cause node joins the requested and boundary nodes in the canvas warning state.
 `ExplorePreview` passes progress or cache-report metrics to
 `ExecutionDiagnosticsSummary`, whose technical detail is disclosed on demand.
 

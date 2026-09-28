@@ -962,3 +962,34 @@ def test_failed_best_effort_apply_after_a_successful_request_leaves_no_evidence(
     with pytest.raises(native.NativeMemoryLimitUnsupportedError):
         lease.apply(10, required=True)
     assert lease.backend is None
+
+
+def test_rlimit_reapplied_without_restore_can_raise_its_ceiling_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dedicated worker re-applies its cap per command and never restores it: each
+    ceiling is clamped against the inherited limits, not the previous command's."""
+    calls: list[tuple[int, int]] = []
+    current = [-1, -1]
+
+    def setrlimit(_limit: int, values: tuple[int, int]) -> None:
+        calls.append(values)
+        current[:] = values
+
+    fake_resource = SimpleNamespace(
+        RLIMIT_AS=9,
+        RLIM_INFINITY=-1,
+        getrlimit=lambda _limit: tuple(current),
+        setrlimit=setrlimit,
+    )
+    monkeypatch.setattr(native, "_rlimit_as_supported", lambda: True)
+    monkeypatch.setattr(native, "_start_polars_thread_pools", lambda: None)
+    monkeypatch.setattr(native, "_native_baseline_bytes", lambda: 100)
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+    lease = native.NativeMemoryLease()
+
+    lease._apply_rlimit(25)
+    lease._apply_rlimit(10)
+    lease._apply_rlimit(50)
+
+    assert calls == [(125, -1), (110, -1), (150, -1)]

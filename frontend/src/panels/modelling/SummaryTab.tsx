@@ -13,10 +13,15 @@ import {
   Target,
   type LucideIcon,
 } from "lucide-react"
-import type { EvaluationMetricSummary, GlmRegularization, TuningReport } from "../../api/types"
+import type {
+  EvaluationMetricSummary,
+  EvaluationReport,
+  GlmRegularization,
+  TuningReport,
+} from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
-import { diagnosticsSetLabel } from "./diagnosticsSet"
+import { diagnosticsSetLabel, validationMetricsLead } from "./diagnosticsSet"
 import DiagnosticsIssues from "../DiagnosticsIssues"
 
 interface SummaryTabProps {
@@ -168,6 +173,29 @@ function MetricsList({
   )
 }
 
+/**
+ * The validation fit's selection metrics (each metric's mean) as a metric card
+ * titled with the validation rows. Every metric's summary covers the same rows.
+ */
+function ValidationMetrics({ evaluation }: { evaluation: EvaluationReport }) {
+  const summaries = Object.entries(evaluation.selection_metrics)
+  if (summaries.length === 0) return null
+  const rows = summaries[0][1].validation_rows.toLocaleString()
+  const crossValidated = evaluation.validation_method === "cross_validation"
+  return (
+    <MetricsList
+      label={
+        crossValidated
+          ? `Validation (${evaluation.validation_fit_count}-fold mean), ${rows} rows`
+          : `Validation, ${rows} rows`
+      }
+      metrics={Object.fromEntries(summaries.map(([name, summary]) => [name, summary.mean]))}
+      description={`Out-of-sample performance of the validation ${crossValidated ? "fits" : "fit"}, used to select the model.`}
+      icon={Target}
+    />
+  )
+}
+
 function validationLabel(method: "none" | "single" | "cross_validation", count: number): string {
   if (method === "none") return "No validation"
   if (method === "single") return "Holdout validation"
@@ -231,6 +259,9 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
   const evaluation = result.evaluation
   const tuning = result.tuning
   const selectionMetricNames = evaluation ? Object.keys(evaluation.selection_metrics).sort() : []
+  // Diagnostics on the rows the final model was refit on are in-sample; with no
+  // test set reserved, the validation fit's out-of-sample metrics lead instead.
+  const validationLeads = validationMetricsLead(result)
   const completedElapsedSeconds =
     typeof elapsedSeconds === "number" && Number.isFinite(elapsedSeconds) && elapsedSeconds >= 0
       ? elapsedSeconds
@@ -269,6 +300,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
       )}
 
       <div className="grid gap-3" style={CARD_GRID_STYLE}>
+        {validationLeads && <ValidationMetrics evaluation={evaluation!} />}
         <MetricsList
           label="Test metrics"
           metrics={result.final_test_metrics}

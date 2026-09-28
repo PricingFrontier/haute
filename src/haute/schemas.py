@@ -953,6 +953,36 @@ class SchemaDiffResponse(BaseModel):
     columns_passed: list[str] = Field(default_factory=list)
 
 
+class TraceColumnSourceResponse(BaseModel):
+    node_id: str
+    column: str
+    # The value a node's rule generated before its code rewrote the column.
+    before_code: bool
+
+
+class TraceColumnReadResponse(BaseModel):
+    column: str
+    # The nodes that computed the value read: none when the walk found none,
+    # several when it may have come from any of them.
+    sources: list[TraceColumnSourceResponse]
+
+
+class TraceColumnDerivationResponse(BaseModel):
+    column: str
+    # The step's formula for the column, evaluated on the traced row; null for
+    # a column a rule computed or a source loaded.
+    expression_text: str | None
+    substituted_text: str | None
+    result_value: Any
+    not_computable_reason: str | None
+    result_source: str | None
+    # null when which inputs the column read could not be told apart.
+    reads: list[TraceColumnReadResponse] | None
+    # Set when evaluating the formula failed; the value is still the row's.
+    error: str | None
+    error_type: str | None
+
+
 class TraceStepResponse(BaseModel):
     node_id: str
     node_name: str
@@ -962,6 +992,11 @@ class TraceStepResponse(BaseModel):
     output_values: dict[str, Any] = Field(default_factory=dict)
     topological_rank: int = Field(ge=0)
     column_relevant: bool = True
+    # In a column trace, the columns this step computes that the traced value
+    # depends on; empty for a step that only carries them.
+    contributed_columns: list[str]
+    # How the step computed each contributed column, and what it read.
+    derivations: list[TraceColumnDerivationResponse]
     expression: dict[str, Any] | None = None
     calculation: dict[str, Any] | None = None
     node_detail: dict[str, Any] | None = None
@@ -997,7 +1032,7 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
-    # For a ``snapshot_seed`` omission: the seeded nodes it was skipped through.
+    # For a node not traced above a snapshot: the seeded node it lies above.
     seed_node_ids: list[str] = Field(default_factory=list)
 
 
@@ -2424,6 +2459,8 @@ class TrainResponse(BaseModel):
     fit_evidence: FitEvidencePayload | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
+    validation_loss_history: list[dict[str, float]] = Field(default_factory=list)
+    validation_loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
@@ -2744,6 +2781,8 @@ class TrainEstimateResponse(BaseModel):
     gpu_warning: str | None = None
     unavailable: TrainEstimateUnavailable | None
     """Set, with the memory figures null, when the estimate cannot size its input."""
+    unbounded_join_node_ids: list[str]
+    """Joins without a key contract that make ``total_rows`` a worst case, in graph order."""
     evaluation_preview: EvaluationPreviewPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -2752,6 +2791,8 @@ class TrainEstimateResponse(BaseModel):
     @model_validator(mode="after")
     def _figures_match_availability(self) -> TrainEstimateResponse:
         figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
+            raise ValueError("a worst-case row bound has no downsampling verdict or warning")
         if self.unavailable is None:
             if self.total_rows is None or any(value is None for value in figures):
                 raise ValueError("an available estimate requires a row total and memory figures")
@@ -3053,33 +3094,10 @@ class OptimiserFrontierRange(BaseModel):
     max: float
 
 
-class OptimiserChunkFallback(BaseModel):
-    """A lost chunk optimisation recorded on an auto-range job.
-
-    Chunk ineligibility never fails the request, so this record is the only
-    place the reason survives; typing it keeps the emitted keys and the three
-    stable codes part of the API contract.
-    """
-
-    code: Literal[
-        "chunk_user_code_ineligible",
-        "model_score_ineligible",
-        "chunk_plan_unsupported",
-    ]
-    node_id: str | None = None
-    operator: str | None = None
-    reason: str | None = None
-    line: int | None = None
-    column: int | None = None
-    message: str
-
-
 class OptimiserFrontierAutoRangeResponse(BaseModel):
     status: str = "ok"
     ranges: dict[str, OptimiserFrontierRange] = Field(default_factory=dict)
     method: str = "scenario_envelope"
-    warning: str | None = None
-    chunk_fallback: OptimiserChunkFallback | None = None
 
 
 class OptimiserFrontierAutoRangeStartResponse(BaseModel):
@@ -3315,12 +3333,10 @@ class OptimiserSolverSettings(BaseModel):
 
     max_iter: int
     tolerance: float
-    chunk_size: int | None
     # Ratebook only.
     max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
     cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
-    # Only when the solve requested a frontier.
-    frontier_enabled: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    # Only when the solve swept a constraint.
     frontier_steps: int | None = Field(default=None, exclude_if=lambda value: value is None)
     frontier_ranges: dict[str, Any] | None = Field(
         default=None, exclude_if=lambda value: value is None

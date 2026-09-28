@@ -216,6 +216,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
+  // The node a trace card or derivation row points at gets an accent ring.
+  const focusShadow = nodeData._traceFocused
+    ? "0 0 0 3px var(--accent), 0 0 18px 4px color-mix(in srgb, var(--accent) 55%, transparent)"
+    : null
   const traceValue = nodeData._traceValue
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const hasWarnings = (nodeData._schemaWarnings?.length ?? 0) > 0
@@ -278,6 +282,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           style={{
             background: markerBackground,
             border: markerBorder,
+            ...(focusShadow ? { boxShadow: focusShadow } : {}),
           }}
         />
         {visualStatus && (
@@ -344,7 +349,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // the full border (where it would otherwise read as a tinted bleed-through).
   const containerStyle: CSSProperties = {
     border,
-    boxShadow: [diffShadow, shadow].filter(Boolean).join(", "),
+    boxShadow: [focusShadow, diffShadow, shadow].filter(Boolean).join(", "),
     ...diffOutline,
     opacity: dimmed ? 0.25 : 1,
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",

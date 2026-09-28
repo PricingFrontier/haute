@@ -266,7 +266,7 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import * as api from "../api/client"
-import { makeGitWorkingBranch } from "../test-utils/factories"
+import { makeGitWorkingBranch, makeTrainResult } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -313,6 +313,7 @@ function resetAllStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    expiredTrainJobs: {},
   })
   useSettingsStore.setState({
     rowLimit: 100,
@@ -920,8 +921,11 @@ describe("App integration - load a pipeline with nodes", () => {
     fireEvent.click(screen.getByRole("button", { name: "Step 1: Add column" }))
     const formula = await screen.findByRole("combobox", { name: "Formula" })
     fireEvent.change(formula, { target: { value: "pre" } })
-    const list = await screen.findByRole("listbox", { name: "Matching columns" })
-    expect(within(list).getAllByRole("option").map((option) => option.textContent)).toEqual(["premium", "premium_net"])
+    const list = await screen.findByRole("listbox", { name: "Matching columns and functions" })
+    // Each row is named by its column; the type beside it is a visual note.
+    expect(within(list).getAllByRole("option")).toHaveLength(2)
+    expect(within(list).getAllByRole("option")[0]).toHaveAccessibleName("premium")
+    expect(within(list).getAllByRole("option")[1]).toHaveAccessibleName("premium_net")
   })
 
   it("keeps an edge drawn into a stepped transform while its editor seeds the start step", async () => {
@@ -2666,5 +2670,45 @@ describe("App integration - panel open/close", () => {
       expect(useUIStore.getState().utilityOpen).toBe(false)
       expect(useUIStore.getState().importsOpen).toBe(false)
     })
+  })
+})
+
+describe("App integration - a Model Training node's results panel", () => {
+  const RESULTS_GONE = /no longer available \(the server restarted or it expired\)\. Training results are not kept across a server restart/
+
+  async function openModelNode(): Promise<void> {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("model", "Claims Model", "modelling")],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("rf__node-model"))
+    await screen.findByTestId("node-panel")
+  }
+
+  it("says why the last training result is gone when the server no longer holds it", async () => {
+    useNodeResultsStore.setState({ expiredTrainJobs: { model: "job_gone" } })
+    await openModelNode()
+
+    const message = await screen.findByText(RESULTS_GONE)
+    expect(message).toHaveTextContent("train this model again to see them, or open its MLflow run if it was logged.")
+  })
+
+  it("shows the results, and no such message, when a result is present", async () => {
+    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    await openModelNode()
+
+    expect(await screen.findByRole("tablist", { name: "Model result panes" }, { timeout: 10_000 })).toBeTruthy()
+    expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+  })
+
+  it("says nothing of lost results when no training was remembered", async () => {
+    await openModelNode()
+
+    // The node's ordinary preview frame is shown instead.
+    await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
+    expect(screen.queryByText(RESULTS_GONE)).toBeNull()
   })
 })

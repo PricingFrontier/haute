@@ -2,8 +2,9 @@
 
 The internal specification corpus has its own accuracy checks; these check the
 user-facing site. Every node type a user can add has exactly one page in the
-node reference, the navigation lists exactly those pages, and a page's config
-table names only keys the config validator accepts for that node type.
+node reference, the navigation lists exactly those pages, and a page's
+"In the pipeline file" table names only keys the config validator accepts for
+that node type.
 """
 
 from __future__ import annotations
@@ -86,14 +87,34 @@ def _published_pages() -> list[Path]:
     return [path for path in DOCS.rglob("*.md") if path.name not in excluded]
 
 
-def _config_table_keys(text: str) -> list[str]:
-    """The backticked keys in the first column of a page's ``| Config |`` tables."""
+_PIPELINE_FILE_SECTION = re.compile(
+    r'^\?\?\? note "In the pipeline file"\n((?:(?:    .*)?\n)+)', re.M
+)
+_SETTINGS_TABLE = re.compile(
+    r"^\| *Setting in the editor *\| *Stored as *\|\n\|[-| :]+\|\n((?:\|.*\n)+)", re.M
+)
+
+
+def _pipeline_file_keys(text: str) -> list[str]:
+    """The top-level config keys a page's "In the pipeline file" table stores settings as.
+
+    The table sits in a closed admonition. A "Stored as" cell that starts with a
+    backticked key names a config key, written with its parent path when nested
+    (``tables[].emit``), so its first segment is the node config's own key. A cell
+    that starts with prose describes where else a setting lives, such as a
+    connection's ``target_port``.
+    """
+    section = _PIPELINE_FILE_SECTION.search(text)
+    if section is None:
+        return []
+    body = "\n".join(line.removeprefix("    ") for line in section.group(1).splitlines()) + "\n"
     keys: list[str] = []
-    for table in re.findall(r"^\| *Config *\|.*\n\|[-| :]+\|\n((?:\|.*\n)+)", text, re.M):
+    for table in _SETTINGS_TABLE.findall(body):
         for row in table.splitlines():
-            match = re.match(r"^\| *`([^`]+)`", row)
+            stored = re.split(r"(?<!\\)\|", row.strip().strip("|"))[-1].strip()
+            match = re.match(r"`([^`]+)`", stored)
             if match:
-                keys.append(match.group(1))
+                keys.append(re.split(r"[\[.]", match.group(1), maxsplit=1)[0])
     return keys
 
 
@@ -130,11 +151,31 @@ def test_a_commented_out_navigation_entry_is_not_listed() -> None:
 @pytest.mark.parametrize(
     ("node_type", "page"), sorted(NODE_REFERENCE_PAGES.items()), ids=lambda value: str(value)
 )
-def test_a_config_table_names_only_accepted_config_keys(node_type: NodeType, page: str) -> None:
-    documented = _config_table_keys((NODE_REFERENCE / page).read_text(encoding="utf-8"))
+def test_the_pipeline_file_table_names_only_accepted_config_keys(
+    node_type: NodeType, page: str
+) -> None:
+    documented = _pipeline_file_keys((NODE_REFERENCE / page).read_text(encoding="utf-8"))
 
-    assert documented, f"{page} has no config table"
+    assert documented, f"{page} has no In the pipeline file table"
     assert sorted(set(documented) - VALID_KEYS[node_type]) == []
+
+
+def test_the_table_parser_reads_nested_keys_and_escaped_pipes_and_skips_prose() -> None:
+    page = (
+        "# Example\n\n"
+        '??? note "In the pipeline file"\n'
+        "    Settings live in a sidecar.\n\n"
+        "    | Setting in the editor | Stored as |\n"
+        "    |---|---|\n"
+        "    | **emit** | `tables[].emit` (`true` or `false`) |\n"
+        "    | **SUFFIX** | `suffix` |\n"
+        "    | **INPUT** | the `target_port` of each connection |\n"
+        "    | **SEPARATOR** | `separator`: `left\\|right` |\n\n"
+        "**See also:**\n"
+    )
+
+    assert _pipeline_file_keys(page) == ["tables", "suffix", "separator"]
+    assert _pipeline_file_keys("| Config | Description |\n|---|---|\n| `path` | x |\n") == []
 
 
 def test_published_pages_use_no_retired_node_vocabulary() -> None:

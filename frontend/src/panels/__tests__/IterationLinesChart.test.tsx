@@ -50,11 +50,21 @@ describe("IterationLinesChart", () => {
 
     const axis = ticks(container)
     // The padded domain [8.4, 31.6] in five even ticks puts 20 on the middle one.
-    expect([...axis.keys()]).toEqual(["8.4", "14.2", "20", "25.8", "31.6"])
+    expect([...axis.keys()]).toEqual(["8.4", "14.2", "20.0", "25.8", "31.6"])
     const [, middle] = pathPoints(seriesPath(container, "Objective"))
-    expect(middle[1]).toBeCloseTo(axis.get("20")!, 1)
+    expect(middle[1]).toBeCloseTo(axis.get("20.0")!, 1)
     expect(screen.getByRole("img", { name: "Objective chart" })).toBeInTheDocument()
     expect(container.querySelector("title")?.textContent).toBe("Objective by iteration")
+  })
+
+  it("labels a narrow value range with distinct numbers at one precision", () => {
+    // A loss near convergence: three significant figures would label every tick "107".
+    const { container } = renderChart({
+      series: [{ label: "Objective", color: "red", values: [107.02, 107.1, 107.28] }],
+    })
+
+    const labels = [...ticks(container).keys()]
+    expect(labels).toEqual(["107.00", "107.07", "107.15", "107.23", "107.30"])
   })
 
   it("labels the x axis with each index's iteration value", () => {

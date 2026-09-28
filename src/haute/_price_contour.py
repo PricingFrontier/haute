@@ -100,6 +100,7 @@ REQUIRED_PARAMETERS: dict[str, tuple[str, ...]] = {
         "scenario_index",
         "scenario_value",
         "objective",
+        "n_steps",
     ),
     "build_ratebook_factor_contexts_from_parquet_chunked": (
         "quote_id",

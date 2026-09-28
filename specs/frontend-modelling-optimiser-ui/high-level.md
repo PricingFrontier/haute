@@ -29,7 +29,11 @@ results are supplied by API and result-store layers.
 - Modelling preview exposes summary unconditionally as the fallback tab whenever a result
   exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
   feature importance, AVE and PDP) only when backed by non-empty result data, and resets
-  selection to summary when the result changes.
+  selection to summary when the result changes. When a node has no result because the one the
+  browser remembered is gone from the server (it restarted, or the job expired), its results
+  panel says so in place of the data preview: training results are not kept across a server
+  restart, so train the model again, or open its MLflow run if it was logged. The Export pane
+  reports the same fact from the same record.
 - Completed training accepts missing categorical PDP levels as JSON `null` and labels
   them `(missing)` in the chart. Numeric PDP levels remain non-null. Invalid status
   responses stop polling with a visible response error for every background job type
@@ -41,7 +45,9 @@ results are supplied by API and result-store layers.
   Diagnostic views introduce their chart or table with a plain-language title and
   short explanation; AvE and PDP are expanded in those introductions.
 - The completed summary uses responsive, themed cards with final-test performance
-  first, separately labelled diagnostics, model information, and optional GLM fit
+  first (without a test set, when a validation fit ran and the reported diagnostics are
+  in-sample, the validation fit's selection metrics lead instead, labelled with their row
+  count), separately labelled diagnostics, model information, and optional GLM fit
   statistics, the regularisation actually applied, and smooth terms. When RustyStats marks a
   GLM's inference invalid (penalties, monotonicity, smoothing), coefficients show dashes and the
   reason instead of statistics. Metric values are prominent. No reserved final test is stated
@@ -172,7 +178,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   the user creates a separate modelling node, preserving the original node and all of its settings.
 - **Features** — CatBoost gets an always-expanded feature-card browser with a
   case-insensitive name-substring search, upstream dtype labels, and the existing explicit
-  not-found treatment/removal for stale exclusions. Each eligible feature has one compact,
+  not-found treatment/removal for stale exclusions, applied only once the upstream columns are
+  known (before then the saved exclusion count is shown instead). Each eligible feature has one compact,
   single-row bordered card: the name and dtype sit on the left, followed by the current-state
   inclusion button and monotonicity selector on the right. The green **Include** or red
   **Exclude** button reports its current state and toggles that state. These are compact,
@@ -203,7 +210,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
   shows only the algorithm-neutral **Parameters JSON** object editor; Tune parameters
   instead shows Trial count, Seed, Selection metric and **Search space JSON**. Neither
-  JSON editor has Apply/Revert controls or an inline explanatory block. A syntactically
+  JSON editor has Apply/Revert controls or an inline explanatory block; CatBoost's
+  Parameters JSON has only a one-line note beneath it naming `one_hot_max_size`: categorical
+  columns with up to that many levels are one-hot encoded, and above it CatBoost uses target
+  statistics, which are much slower to train. A new CatBoost node's starter parameters include
+  `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
+  nodes created earlier keep their parameters. A syntactically
   valid top-level object updates its corresponding config automatically, except that a
   fixed-parameter object containing the Train-owned `task_type` key is rejected. Invalid,
   non-object, or reserved-key drafts remain local for that node and contribute only to the
@@ -239,7 +251,11 @@ strip; it never falls through to CatBoost. Pane ownership:
   limit beside the RAM/VRAM estimate it modulates (an estimate the server cannot size
   shows its reason in place of the missing figures, never a memory verdict),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
-  badge and error card. Its checkbox and text/number controls use the same visible themed borders,
+  badge and error card. Its read-only run summary names, for a CatBoost model whose selected
+  features include String or Categorical columns, their encoding: "One-hot up to N levels,
+  target statistics above" when `one_hot_max_size` is set, "Tuned (one_hot_max_size is in the
+  search space)" when tuning varies it, and otherwise "CatBoost's default (target statistics)",
+  without claiming a level count that differs between CPU and GPU training. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse
   into input placeholders.
 - **Export** — everything that publishes the last trained model, in two sections. **MLflow
@@ -265,7 +281,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   never silently replaces a file: an existing destination shows the server's message with a
   **Replace existing file** confirmation that retries with overwrite. Success names both
   written project-relative paths; a failure shows the server's detail. Both actions act on the node's last completed training result. Without one they stay visible but
-  disabled without a train-first note; while a training job for the node runs they
+  disabled without a train-first note, except that a remembered result gone from the server is
+  reported with a note to train the model again; while a training job for the node runs they
   are disabled beneath a note that export resumes when it completes; and when the training
   configuration has changed since that result, a warning says exports use the last trained
   model. The export fields (`mlflow_destination`, `mlflow_experiment`,
@@ -295,8 +312,12 @@ active-job descriptor, and the Train tab shows that accessible indicator while a
 so progress is visible from any pane. Configuration completeness never changes a tab's visible
 or assistive label.
 
-**Completed results.** Summary shows final-test metrics first when present, then the
-selection score and variability, baseline improvement, winning/final parameters,
+**Completed results.** Summary shows final-test metrics first when present. Without a
+test set, when a validation fit ran and the final model was refit on all development rows,
+so the diagnostics are in-sample, the validation fit's selection metrics (the mean of each
+metric) lead instead, labelled "Validation, N rows" for holdout or "Validation (K-fold mean),
+N rows" for cross-validation, with the in-sample diagnostics beneath; a run without validation
+is unchanged. Then come the selection score and variability, baseline improvement, winning/final parameters,
 fit count/elapsed time and a bounded top-trial table. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
@@ -336,7 +357,8 @@ settings; inline arrow-based, role/final-selection-aware monotonic controls; the
 interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
-draft presentation, invalid/non-object/reserved-key draft persistence without Apply/Revert or
+draft presentation, CatBoost's starter `one_hot_max_size` and its Parameters note, the run
+summary's categorical encoding, invalid/non-object/reserved-key draft persistence without Apply/Revert or
 inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
 labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
 rendering including truncation; Export-pane ownership of the MLflow fields and both export
@@ -356,60 +378,82 @@ The optimiser node panel presents **Data**, **Factors**, **Constraints**, **Solv
 **Export** panes in the same shared equal-width pane-tab strip the modelling and Explore editors
 use, hosted by the node panel
 ([frontend-node-editors](../frontend-node-editors/low-level.md#optimiser-config-panes)).
-**Factors** exists only in ratebook mode. The optimiser is sink-only and emits no output frame,
+Both modes show every pane. The optimiser is sink-only and emits no output frame,
 so like modelling it has no Columns tab: the node panel shows no Config/Columns strip and the pane
-strip sits directly beneath the header. One `optimiserPanesFor(mode)` list drives both the tabs
-and the pane bodies. The active pane is remembered per node in the UI store; a remembered pane
-the current mode lacks (Factors after switching to online) opens Data without discarding the
-stored ratebook source or factor columns, which reappear when ratebook mode is chosen again.
+strip sits directly beneath the header. One `OPTIMISER_PANES` list drives both the tabs
+and the pane bodies. The active pane is remembered per node in the UI store. Switching to online
+mode never discards the stored ratebook source or factor columns, which apply again when ratebook
+mode is chosen again.
 Pane ownership:
 
 - **Data** — the Online/Ratebook mode choice, the Objectives & Constraints input selector with
-  its missing/malformed-input alert, the objective ("Column to maximise"), and the Quote ID,
+  its missing/malformed-input alert, the objective ("Column to maximise"), and the Row ID,
   Scenario Index and Scenario Value column mappings. The objective is chosen here because it
-  is a column of the input selected directly above it. Last comes **Analysis columns**, with
-  help text saying they are used only to break results down and never reach the solver: an
-  **Analysis input** select listing only the optimiser's connected inputs, whose first option
-  is the Objectives & Constraints input (stored as no `analysis_input`), then a multi-select of
-  that frame's columns from its schema (the quote-id column excluded), capped at twelve with
-  the remaining choices disabled at the cap. Switching the analysis input removes the chosen
-  columns the newly selected frame does not have, once its columns are known; a configured
-  column the frame does not have, or a configured analysis input that is no longer connected,
-  is flagged in the pane and blocks the solve.
-- **Factors** — the Rating Factor Source selector, its combined disconnected-source and
-  zero-level warning, and the rating-factor toggles with their level counts.
-- **Constraints** — the constraint count heading with **Add**, then the **Individual point** /
-  **Efficient frontier** result-type choice, then one bordered card per constraint. Each card
-  carries the constraint column selector and remove action, and beneath them the fields for the
-  selected result type: the Minimum/Maximum bound and value for an individual point, or that
-  constraint's required min and max frontier range for an efficient frontier. The frontier's
-  **Auto range** action, **Steps per constraint** field (with the total number of solves it
-  implies) and auto-range error follow the cards, shown only for an efficient frontier. The
-  frontier is a sweep over the constraint bounds, so its settings live with the constraints
-  rather than in a pane of their own; a bound and its range are never listed in separate
-  per-constraint lists. Bound values and frontier range fields commit on blur or Enter, not per
-  keystroke. Clearing a bound value restores its stored value on commit, so a constraint is never
-  silently relaxed to 0; clearing a frontier range field removes that end of the range, which
-  the field and the Solve issue list then flag as missing.
-- **Solve** — the stale-result banner, source-size estimate, **Optimise** action, progress with a
-  **Stop** action, failure card and convergence result, followed by a **Solver settings** section
-  holding maximum iterations and tolerance, chunk size and, in ratebook mode, the
-  coordinate-descent iterations and tolerance. There is no history toggle: every solve records
-  its convergence history. **Stop** cancels the running solve job (including
+  is a column of the input selected directly above it. The input's columns are fetched only
+  after the node's preview settles, so every column field shows its saved value from the config
+  immediately: a saved column absent from the (not yet known) column list is still offered as
+  the selected option, and marked "(not in input)" once the columns are known and lack it.
+- **Factors** — in ratebook mode, the Rating Factor Source selector and its combined
+  disconnected-source and zero-level warning. Then, in both modes, one **Factors** table styled
+  like the modelling Features list: a count (`N ratebook · M of 12 validation`, the ratebook part
+  in ratebook mode only), help text saying validation factors only break results down by segment
+  and never reach the solver, a **Validation input** select listing only the optimiser's connected
+  inputs, whose first option is the Objectives & Constraints input (stored as no
+  `analysis_input`), a factor search, and one row per factor with its name, level count (rating
+  factors), dtype chip, and two checkboxes: **Ratebook** (writes `factor_columns`) and
+  **Validation** (writes `analysis_columns`). In ratebook mode the Rating Factor Source's factors
+  lead, followed by the validation frame's other columns (the quote-id column excluded); online
+  mode lists the frame's columns. The Ratebook box is enabled only in ratebook mode and only for
+  the source's factors; the Validation box only for a column of the validation frame, and not
+  for a new choice once twelve are chosen. Switching the validation input removes the chosen
+  validation factors the newly selected frame does not have, once its columns are known; a
+  configured validation factor the frame does not have, or a configured validation input that is
+  no longer connected, is flagged in the pane and blocks the solve. Until the validation
+  frame's columns are known, the saved validation factors are still listed, ticked, and can be
+  unticked.
+- **Constraints** — the constraint count heading with **Add**, then a **Result** line ("single
+  point", or "frontier over <swept constraints> · N solves", N counting the swept constraints
+  only), then one bordered card per constraint, all laid out the same way so each reads as a
+  sentence. There is no result-type choice: the solve is a single point unless a constraint is
+  swept. A card's first row holds the constraint column selector and the remove action; its
+  second row holds the bound type (**at least** / **at most**, stored as `min` / `max`), a
+  **Fixed | Sweep** switch, and the value area: one value when Fixed, or the **from** and **to**
+  ends of that constraint's frontier range when swept. A swept card shows no fixed value; the
+  solve runs a swept constraint at its range's start, and a fixed constraint is held at its value
+  at every frontier point. Switching to Sweep writes a `frontier_ranges` entry starting at the
+  fixed value; switching back to Fixed removes it, and the saved fixed value applies again. A
+  swept card carries its own **Auto range** button beneath its from/to, which fills that
+  constraint's range only, merged over the other constraints' current ranges; the running card's
+  button reads **Restart auto range**, and a failure shows on the card that asked. One auto-range
+  run exists at a time, so starting another card's supersedes it;
+  clearing both ends keeps the constraint swept. With no constraints the pane says the objective
+  is maximised alone. When any constraint is swept, a **Frontier** section follows the cards with
+  **Points per swept constraint** (`frontier_steps`). The frontier is a sweep over the
+  constraint bounds, so its settings live with the constraints rather than in a pane of their
+  own. Bound values and sweep range fields commit on blur or Enter, not per keystroke. Clearing a
+  bound value restores its stored value on commit, so a constraint is never silently relaxed to
+  0; clearing a sweep range field removes that end of the range, which the field and the Solve
+  issue list then flag as missing.
+- **Solve** — a **Solver settings** section first, holding maximum iterations and tolerance and,
+  in ratebook mode, the coordinate-descent iterations and tolerance; then the stale-result banner,
+  source-size estimate, **Optimise** action, progress with a **Stop** action, failure card and
+  convergence result, so the action follows the settings it runs with. There is no chunk size:
+  the solve reads its inputs in chunks of the Pipeline Settings streaming chunk size. There is no
+  history toggle: every solve records its convergence history. **Stop** cancels the running solve job (including
   its efficient-frontier phase) through the existing cancel route and records the returned
   terminal state the way modelling's Cancel does. The size estimate is requested only when an
-  input that changes it changes (the Objectives & Constraints input, mode, the Quote ID / Scenario
+  input that changes it changes (the Objectives & Constraints input, mode, the Row ID / Scenario
   Index / Scenario Value mappings, the Rating Factor Source and factors, the active source or the
   graph structure), never on objective, constraint, solver or export edits; an estimate the server
   cannot size reads "Size unknown". While the configuration cannot be solved the Optimise action
   stays disabled and one alert beneath it lists every blocking issue, each with a **Go to** link
   that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective; a
-  mapped Quote ID, Scenario Index or Scenario Value column that the input does not have (checked
-  once the input's columns are known); an Analysis input that is not connected, more than twelve
-  analysis columns, or an analysis column the analysis input does not have (checked once its
+  mapped Row ID, Scenario Index or Scenario Value column that the input does not have (checked
+  once the input's columns are known); a Validation input that is not connected, more than twelve
+  validation factors, or a validation factor the validation input does not have (checked once its
   columns are known); in ratebook mode no connected Rating Factor Source or no
-  selected factor; and for an efficient frontier a constraint whose range is missing an end or
-  whose minimum is not below its maximum, or more than 10,000 frontier solves in total. Warnings
+  selected factor; and a swept constraint whose range is missing an end or whose minimum is not
+  below its maximum, or more than 10,000 frontier solves in total over the swept constraints. Warnings
   that do not block — one scenario per quote, or quotes with differing scenario counts — appear
   under the estimate. Ctrl+Enter inside the optimiser editor starts the solve, or re-runs it when
   the result is stale, whenever the configuration can be solved.
@@ -446,21 +490,22 @@ needs attention"), so the reason Optimise is disabled is visible from every pane
 
 **Result preview.** The optimiser result preview uses the same results workspace as model
 validation: a Focus view that fills the viewport and keeps the active tab (Escape returns), a
-docked height remembered for the session, results-style tabs, a short introduction on every
-tab, and a provenance strip on every tab naming the mode, the grid solved (quotes × scenario
-steps), the data the solve ran on (the scenario and the pipeline file), whether the figures are
-as solved or a frontier point (i of N), and that they are expected values from the scoring
-models, not observed outcomes. When a diagnostic could not be produced (the adjustment report,
-or the efficient frontier), Summary says so in a "Diagnostics Issues" alert naming
+docked height remembered for the session and results-style tabs. No tab has an introduction:
+each opens on its values, and the reading of them is documented. It has no provenance strip: the header already states convergence, iterations and the quote
+count, and the point stepper which frontier point is shown. When a diagnostic could not be produced (the adjustment report,
+or the efficient frontier), the summary says so in a "Diagnostics Issues" alert naming
 each one and why, in the same form as model validation. A failed solve with no earlier result
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
-never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
-side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence; it has no
-Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
-detail card says so. Clicking a frontier point selects it
+never the warning colour the stale strip uses. The Frontier pane's chart and the slice's points
+table (never wrapping a cell; it scrolls sideways instead) sit side by side at equal widths,
+stacking when the workspace is narrow, and the Summary numbers follow them in the same pane. It
+offers Frontier when the solve produced one, else Summary, then Rates (ratebook), Adjustments, Segments and Quotes (both modes) and Convergence, then the
+pre-solve input's Curves and Statistics (the data preview's per-quote chart and per-scenario
+statistics, from the node's preview rows, while they hold an objective and scenario rows) so a
+solve never hides them; on Curves the header's point stepper gives way to the quote navigation. It has no
+Export tab and no publish actions — publishing belongs only to the Export pane. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
-target choice returns to the solved result). Summary and the detail card show the same
+target choice returns to the solved result). Summary shows the
 constraint-attainment table for the displayed result (the selected point, else the solve): every
 constraint, swept or not, as Constraint | Kind | Bound | Achieved | Slack | Status | λ, e.g.
 "min 1,000,000 · achieved 1,012,400 · slack +12,400 (+1.24%) · Met · λ 0.0031". The bound is
@@ -509,13 +554,13 @@ rather than a projected cloud; every point keeps its global number wherever it i
 stepped or published, and selecting a point elsewhere brings its slice into view. The line joins
 only feasible points — converged and meeting every bound, judged by haute in both modes because
 a converged ratebook point can still breach a bound; a non-converged point is hollow and a
-converged-but-breached one a cross labelled "breached", both still selectable, with the reason in
-the detail card. The as-solved marker is hollow, labelled "As solved (different slice)", when the
-solve lies off the displayed slice. The detail card adds converged and iterations, each λ exactly
-as the solver reports it with its sign stated, and a discrete trade-off: the objective change per
-unit of the x bound relaxed to the next point in the slice, shown only between two feasible
-neighbours with different bounds and never presented as a check of λ. A values table lists the
-slice's points. Convergence draws the solve's history as small multiples, each on its own real
+converged-but-breached one a cross labelled "breached", both still selectable, with its status in
+the points table. The as-solved marker is hollow, labelled "As solved (different slice)", when the
+solve lies off the displayed slice. There is no point details card: the points table beside the
+chart (Point | <x> bound | <x> achieved | objective | Converged | Iterations | Status) highlights
+the selected point's row and scrolls it into view, and clicking a row selects its point as a chart
+click does; Summary carries the selected point's attainment. While a point is selected the chart
+drops its hover detail, and it carries no caption beyond the slice and response-cap facts. Convergence draws the solve's history as small multiples, each on its own real
 axis with tick values: the objective; the largest λ change on a log axis (an iteration with no
 change, 0, is drawn at the axis floor and a note says how many); each constraint's total with
 its bound (the solve's `effective_bounds`) as a dashed line and a marker at the first iteration
@@ -531,41 +576,6 @@ for online and ratebook results alike, labelled "λ (multiplier)" and explained 
 Lagrange multiplier on the constraint's term; it is never read as a tightness claim, because in
 this discrete solve a positive λ can sit beside positive slack.
 
-**What does not carry over from model validation.** The optimiser workspace reaches the model
-validation standard, but some modelling views have no optimiser meaning. These are decisions,
-not open work: any comparison with current or deployed pricing, including impact, dislocation
-and uplift (decided 25 September 2026); holdout or robustness validation (Q9); and export
-buttons inside the results panes (Q10).
-
-| Modelling feature | Why it does not carry over |
-|---|---|
-| Double lift, Lorenz, Gini | They measure how a predictor ranks observed outcomes. The optimiser's objective and constraints are model-expected values with no observed outcome. The nearest descriptive analogue is the Adjustments tab's distribution of chosen adjustments; impact analysis is out of scope. |
-| Residual histogram, actual-vs-predicted scatter | There are no actuals. |
-| AvE semantics (A/E ratio) | There are no actuals. The **layout** (feature browser, per-level chart, exposure strip) is reused by the Segments tab. |
-| PDP | There is no fitted model to vary. In ratebook mode the factor tables already are the per-level effect (the Rates tab). |
-| Feature importance / SHAP | There are no learned attributions. The beeswarm's quote-weighted \|log rate\| is the existing analogue. |
-| GLM inference (SE, Wald intervals, significance) | λ is a Lagrange multiplier from a dual solve, not a fitted coefficient, so Wald-style inference does not apply. This says nothing about how the solution varies with the book or the models (see Q9). |
-| EBM terms | Not applicable. |
-| Tuning details / "Use best as fixed parameters" | There is no hyper-parameter search. Picking a frontier point as the publish target is the analogous action, and it lives in the Export pane. |
-| Train vs eval loss with a best-iteration line | No eval set. The Convergence tab is the analogue. |
-| k-fold CV selection spread | Re-solving per fold has no standard interpretation. |
-| **Holdout / robustness validation** | A decision about scope, not a claim that the solve carries no uncertainty. The figures are expected values from scoring models on one fixed book, so model error, mix drift and sampling variation are all real risks. A random holdout alone may not measure them well, and scaling absolute bounds to a sample needs a separate definition. The provenance strip says the figures are model-expected, not observed. See Q9 below. |
-| Modelling's "Training diagnostics are in-sample" wording | The wrong disclaimer for an optimiser. The accurate one is: "Expected values from the scoring models on the solve quotes; not observed outcomes." |
-| **Current vs optimised, dislocation and impact analysis (decided 25 September 2026)** | The optimiser is an adjustment on top of a base price: it reapplies scenarios to that base and never sees the live, currently deployed pricing. A "Current → Optimised → Change" view would compare against something the optimiser does not know. Analysts set up impact analysis elsewhere. The tests pinning the absence of Baseline and Uplift stay. |
-| Export buttons in the results workspace | Modelling excludes them deliberately, and so does the optimiser workspace. Parity means a values-table disclosure under every chart. Any CSV belongs in the Export pane (`OptimiserPublishSection.tsx`), which is Q10. |
-
-**Open questions.** Product questions for this workspace, with no work scheduled:
-
-- **Q9, robustness checks:** out of scope as a scope choice, not a claim that
-  the solve carries no uncertainty. Is any robustness view wanted later: an
-  out-of-time or group split, or a stressed re-score?
-- **Q10, CSV downloads:** should frontier points and per-quote choices be
-  downloadable from the Export pane? The results panes keep the no-export
-  rule either way.
-- **Q11, inputs vs outputs:** the pre-solve `OptimiserDataPreview` becomes
-  unreachable once a result exists. Add an "Inputs" tab to the result
-  workspace?
-
 ## Model family capabilities
 
 - Algorithm names, tasks, losses, feature controls, refit policy, suffixes and tuning support
@@ -575,6 +585,11 @@ buttons inside the results panes (Q10).
   for families that support it.
 - The model type is chosen once, when the node is created, and cannot be changed afterwards;
   a different family is a new node.
+- The palette describes the Model Training node by what it trains rather than by engine: "Train
+  a model: gradient boosting, EBM or GLM", where CatBoost, XGBoost and LightGBM are its gradient
+  boosting; the engines are named where the family is chosen. A test maps every family in the
+  capability table to its word in that description, so a new family fails it until the
+  description names it.
 - A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
   field. It is required for a text target and optional for an integer target, whose value is
   saved as a number. Predictions above 0.5 are labelled with the positive class.

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import polars as pl
 import pytest
 from pydantic import ValidationError
 
@@ -979,8 +980,10 @@ def test_flatten_preserves_public_input_label_for_polars_instances() -> None:
     assert copy.data.config["inputMapping"] == {"published": "External_source"}
     generated = graph_to_code_multi(flattened, pipeline_name="main")["main.py"]
     assert "def Original(published: pl.LazyFrame)" in generated
-    assert "def Copy(External_source: pl.LazyFrame)" in generated
-    assert "return Original(published=External_source)" in generated
+    assert (
+        '@pipeline.instance(of="Original", inputMapping={"published": "External_source"})\n'
+        "def Copy(External_source): ...\n"
+    ) in generated
 
 
 def test_stale_schema_declared_node_reference_fails_loudly() -> None:
@@ -1098,6 +1101,7 @@ submodel = haute.Submodel(
     definition_id="definition_scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 """,
         encoding="utf-8",
@@ -1172,7 +1176,10 @@ def test_codegen_emits_definition_once_and_two_stable_registrations() -> None:
     assert 'pipeline.submodel("modules/scoring.py", "scoring_b", instance_of="scoring_a")' in main
 
 
-def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Path) -> None:
+def test_codegen_records_the_owning_pipeline_directory_by_registration_depth(
+    tmp_path: Path,
+) -> None:
+    """A definition below its pipeline says how to reach it: config= paths resolve there."""
     score_config = {
         "sourceType": "run",
         "run_id": "abc123",
@@ -1213,22 +1220,93 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
         return files[file]
 
     depth_cases = {
-        "scoring.py": "parents[0]",
-        "modules/scoring.py": "parents[1]",
-        "modules/nested/scoring.py": "parents[2]",
+        "scoring.py": None,
+        "modules/scoring.py": "..",
+        "modules/nested/scoring.py": "../..",
         # Depth counts real path segments, not raw separators: dot and empty
-        # segments never inflate how far the emitted base climbs.
-        "./modules/scoring.py": "parents[1]",
-        "modules//scoring.py": "parents[1]",
-        "modules/./scoring.py": "parents[1]",
+        # segments never add a level.
+        "./modules/scoring.py": "..",
+        "modules//scoring.py": "..",
+        "modules/./scoring.py": "..",
     }
-    for file, expected_base in depth_cases.items():
+    for file, expected in depth_cases.items():
         child_source = emitted_child(file)
-        assert (
-            f"_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().{expected_base}" in child_source
-        ), file
+        if expected is None:
+            assert "pipeline_dir" not in child_source, file
+        else:
+            assert f'    pipeline_dir="{expected}",\n)' in child_source, file
+        assert "_HAUTE_CONFIG_BASE" not in child_source, file
+        # The parser accepts the value only where it leads to the pipeline.
         reparsed = parse_submodel_source(child_source, source_file=file, _base_dir=tmp_path)
-        assert "_HAUTE_CONFIG_BASE" not in (reparsed.preamble or ""), file
+        assert "pipeline_dir" not in (reparsed.preamble or ""), file
+
+
+def test_parse_rejects_a_pipeline_dir_that_misses_the_registering_pipeline(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "import haute\n\n"
+        "submodel = haute.Submodel(\n"
+        '    "scoring",\n'
+        '    definition_id="scoring",\n'
+        "    input_ports=[],\n"
+        "    output_ports=[],\n"
+        '    pipeline_dir="{value}",\n'
+        ")\n"
+    )
+    parse_submodel_source(
+        source.format(value=".."), source_file="modules/scoring.py", _base_dir=tmp_path
+    )
+    with pytest.raises(ParseError, match="config= paths would resolve in the wrong folder"):
+        parse_submodel_source(
+            source.format(value="../.."), source_file="modules/scoring.py", _base_dir=tmp_path
+        )
+    with pytest.raises(ParseError, match="config= paths would resolve in the wrong folder"):
+        parse_submodel_source(
+            source.replace('    pipeline_dir="{value}",\n', ""),
+            source_file="modules/scoring.py",
+            _base_dir=tmp_path,
+        )
+    with pytest.raises(ParseError, match="once per folder"):
+        parse_submodel_source(
+            source.format(value="../config"), source_file="modules/scoring.py", _base_dir=tmp_path
+        )
+
+
+def test_submodel_node_reads_its_sidecar_from_the_owning_pipeline_directory(
+    tmp_path: Path,
+) -> None:
+    """Calling a definition's node runs it against the pipeline's config/, not modules/."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "haute.toml").write_text('[project]\nname = "owner"\n', encoding="utf-8")
+    pl.DataFrame({"quote_id": [1, 2]}).write_parquet(tmp_path / "quotes.parquet")
+    sidecar = tmp_path / "config" / "data_input" / "quotes.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json.dumps({"inputType": "file", "format": "parquet", "path": "quotes.parquet"}),
+        encoding="utf-8",
+    )
+    child = tmp_path / "modules" / "loader.py"
+    child.parent.mkdir()
+    source = (
+        "import haute\n\n"
+        "submodel = haute.Submodel(\n"
+        '    "loader",\n'
+        '    definition_id="loader",\n'
+        "    input_ports=[],\n"
+        '    output_ports=[{"name": "quotes", "source": {"nodeId": "quotes"}}],\n'
+        '    pipeline_dir="..",\n'
+        ")\n\n\n"
+        '@submodel.data_input(config="config/data_input/quotes.json")\n'
+        "def quotes(): ...\n"
+    )
+    child.write_text(source, encoding="utf-8")
+    namespace: dict[str, object] = {"__file__": str(child)}
+    exec(compile(source, str(child), "exec"), namespace)
+
+    frame = namespace["quotes"]()  # type: ignore[operator]
+
+    assert frame.lazy().collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
 def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_bindings(

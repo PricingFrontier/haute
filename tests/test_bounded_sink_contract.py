@@ -44,10 +44,10 @@ def test_bounded_memory_writers_use_the_canonical_bounded_abstraction(
 def test_generated_data_output_writes_only_through_its_config() -> None:
     """A saved pipeline's Data Output is config-driven, never an inline writer.
 
-    The generated function references its sidecar and passes the frame
-    through; writing happens only through the registry's bounded writer when
-    the user asks for it. An inline ``sink_*``/``write_*`` in generated code
-    would bypass that bounded path.
+    The generated function references its sidecar and is a declaration naming
+    its input, with no body of its own; writing happens only through the
+    registry's bounded writer when the user asks for it. An inline
+    ``sink_*``/``write_*`` in generated code would bypass that bounded path.
     """
     from haute.codegen import _node_to_code
     from tests.conftest import make_node
@@ -61,9 +61,9 @@ def test_generated_data_output_writes_only_through_its_config() -> None:
 
     code = _node_to_code(node, source_names=["scored"], contract_source="declared")
 
-    assert code.startswith(
+    assert code == (
         '@pipeline.data_output(config="config/data_output/Scored_Output.json")\n'
+        "def Scored_Output(scored): ...\n"
     )
-    assert "    return scored\n" in code
     assert ".sink_" not in code
     assert ".write_" not in code

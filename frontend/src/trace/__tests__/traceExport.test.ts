@@ -31,6 +31,7 @@ function traceFixture(): TraceResult {
         input_values: {},
         output_values: { base: 100 },
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         expression: null,
         calculation: null,
         node_detail: null,
@@ -50,6 +51,7 @@ function traceFixture(): TraceResult {
         input_values: { base: 100 },
         output_values: { technical_premium: 123.456789 },
         column_relevant: true,
+        contributed_columns: [], derivations: [],
         expression: null,
         calculation: { substituted_text: "100 * 1.23456789", result_value: 123.456789, input_values: { base: 100 } },
         node_detail: {
@@ -110,10 +112,11 @@ describe("trace export projection", () => {
     const evidence = rows.filter((row) => row.section === "step" || row.section === "omission")
 
     expect(evidence.map((row) => row.topologicalRank)).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0,
       1, 1,
-      2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 2, 2, 2, 2, 2,
     ])
+    expect(rows.filter((row) => row.field === "derivations").map((row) => row.value)).toEqual(["[]", "[]"])
     expect(rows).toContainEqual(expect.objectContaining({
       section: "trace",
       field: "output_value",

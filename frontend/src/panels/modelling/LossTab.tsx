@@ -7,6 +7,7 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import { IterationLinesChart } from "../IterationLinesChart"
 import { ChartEmptyState, ResponsiveChart } from "./ChartScaffold"
+import { shownFit, type ShownFit } from "./lossHistory"
 
 interface LossTabProps {
   result: TrainResult
@@ -23,15 +24,30 @@ const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value)
 
 export function LossTab({ result, width, height = 280 }: LossTabProps) {
+  const fit = shownFit(result)
+  const lastRow = fit.history.at(-1)
   return (
-    <ResponsiveChart width={width}>
-      {(measuredWidth) => <LossTabChart result={result} width={measuredWidth} height={height} />}
-    </ResponsiveChart>
+    <div className="space-y-2">
+      {fit.intro && (
+        <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+          {fit.intro}
+        </p>
+      )}
+      {fit.thinned && lastRow && (
+        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+          {`Thinned to ${fit.history.length.toLocaleString()} of `
+            + `${lastRow.iteration.toLocaleString()} iterations.`}
+        </p>
+      )}
+      <ResponsiveChart width={width}>
+        {(measuredWidth) => <LossTabChart fit={fit} width={measuredWidth} height={height} />}
+      </ResponsiveChart>
+    </div>
   )
 }
 
-function LossTabChart({ result, width, height }: Required<LossTabProps>) {
-  const lossHistory = result.loss_history
+function LossTabChart({ fit, width, height }: { fit: ShownFit; width: number; height: number }) {
+  const lossHistory = fit.history
   if (!lossHistory || lossHistory.length < 2) {
     return <ChartEmptyState>No loss history data available</ChartEmptyState>
   }
@@ -52,7 +68,11 @@ function LossTabChart({ result, width, height }: Required<LossTabProps>) {
   // A non-finite loss (a diverged or skipped eval) is a gap in its curve.
   const lossValues = (key: string) =>
     lossHistory.map((entry) => (isFiniteNumber(entry[key]) ? entry[key] : null))
-  const bestIteration = result.best_iteration
+  const bestIteration = fit.bestIteration
+  // Rows count iterations from one; best_iteration is zero-based.
+  const bestIndex = isFiniteNumber(bestIteration)
+    ? lossHistory.findIndex((entry) => entry.iteration === bestIteration + 1)
+    : -1
 
   return (
     <IterationLinesChart
@@ -62,12 +82,8 @@ function LossTabChart({ result, width, height }: Required<LossTabProps>) {
         ...(evalKey ? [{ label: "Eval", color: EVAL_COLOR, values: lossValues(evalKey) }] : []),
       ]}
       marker={
-        isFiniteNumber(bestIteration)
-          ? {
-              index: Math.min(Math.max(Math.round(bestIteration), 0), lossHistory.length - 1),
-              label: `Best iteration (${bestIteration})`,
-              color: BEST_COLOR,
-            }
+        bestIndex >= 0
+          ? { index: bestIndex, label: `Best iteration (${bestIteration})`, color: BEST_COLOR }
           : null
       }
       width={width}

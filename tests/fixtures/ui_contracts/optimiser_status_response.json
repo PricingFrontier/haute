@@ -223,8 +223,7 @@
       "graph_fingerprint": "3f9a1c",
       "solver_settings": {
         "max_iter": 50,
-        "tolerance": 1e-06,
-        "chunk_size": null
+        "tolerance": 1e-06
       }
     },
     "diagnostics_errors": [],

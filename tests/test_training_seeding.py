@@ -37,6 +37,7 @@ from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
 from haute.routes._training_preparation import prepare_training_data_worker
 from haute.schemas import TrainRequest
+from tests.conftest import make_ram_estimate
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 120
@@ -240,7 +241,9 @@ def _train(
         monkeypatch.setattr(
             TrainService,
             "_estimate_ram",
-            lambda *args, **kwargs: (None, row_limit, _ROWS, 4),
+            lambda *args, **kwargs: make_ram_estimate(
+                total_rows=_ROWS, probe_columns=4, safe_row_limit=row_limit
+            ),
         )
     job_id = store.create_job(
         {
@@ -1101,7 +1104,7 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
         return path
 
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    for profile in ("TRAINING", "OPTIMISER_SETUP", "AUTO_RANGE", "LAZY_SINK"):
+    for profile in ("TRAINING", "OPTIMISER_SETUP", "OPTIMISER_SOLVE", "LAZY_SINK"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     # The optimiser reads its own scored quotes, beside the training data.
     optimiser_project = project / "optimiser"
@@ -1125,7 +1128,8 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
     )
     optimiser_graph = _online_chain(optimiser_project)
     _setup(monkeypatch, optimiser_graph, read=("D",))
-    _setup(monkeypatch, optimiser_graph, read=("D",), profile=ExecutionProfile.AUTO_RANGE)
+    # Solve setup and auto-range run the same stage under the solve's profile.
+    _setup(monkeypatch, optimiser_graph, read=("D",), profile=ExecutionProfile.OPTIMISER_SOLVE)
     output_graph = PipelineGraph.model_validate(
         {
             **training_graph,

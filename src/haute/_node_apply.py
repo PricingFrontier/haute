@@ -5,14 +5,14 @@ here as one ``apply_*_from_config`` / ``expand_*`` / ``select_*`` function so
 that BOTH sides of the system run identical logic:
 
 - the canvas graph executor (:mod:`haute._builders`) delegates to it, and
-- the standalone ``.py`` file emitted by :mod:`haute.codegen` imports and
-  calls it (via the :mod:`haute.graph_utils` facade).
+- a standalone ``pipeline.run()`` / ``pipeline.score()`` of a saved file runs
+  it from the node's decorator (:mod:`haute._standalone_nodes`).
 
-This makes the README "it is just Python" promise real: a saved pipeline's
-``pipeline.run()`` / ``pipeline.score()`` executes the SAME function the
-GUI executor calls, instead of a silent passthrough.  These are the
-optimiser / optimiserApply / scenarioExpander / liveSwitch twins that sit
-beside the banding / rating twins in :mod:`haute._rating`.
+This makes the README "it is just Python" promise real: a saved pipeline
+executes the SAME function the GUI executor calls, instead of a silent
+passthrough.  These are the constant / optimiser / optimiserApply /
+scenarioExpander / liveSwitch twins that sit beside the banding / rating
+twins in :mod:`haute._rating`.
 
 Module-level imports are deliberately minimal (polars + the frame alias);
 executor-side and I/O collaborators are imported lazily inside each
@@ -38,6 +38,28 @@ _EagerOrLazy = TypeVar("_EagerOrLazy", pl.LazyFrame, pl.DataFrame)
 # optimiser-service call sites that import them from there.
 _DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
 _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
+
+
+def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
+    """The one-row frame a Constant node's ``values`` describe.
+
+    Each named value becomes a column, as a number when it reads as one and as
+    the raw value otherwise; an entry without a name is skipped, and a node
+    with no named values yields the single column ``constant``.
+    """
+    data: dict[str, list[Any]] = {}
+    for entry in values:
+        name = entry.get("name", "")
+        if not name:
+            continue
+        value = entry.get("value", "")
+        try:
+            data[name] = [float(value)]
+        except (ValueError, TypeError):
+            data[name] = [value]
+    if not data:
+        data = {"constant": [0]}
+    return pl.LazyFrame(data)
 
 
 def scenario_step_count(config: Mapping[str, Any]) -> int:
@@ -334,6 +356,49 @@ def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
     return path
 
 
+def load_configured_optimiser_artifact(
+    config: Mapping[str, Any],
+    base_dir: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Load the artifact an optimiserApply node applies, or ``None`` without a source.
+
+    A node with no artifact file and no MLflow run or registered model is a
+    passthrough. MLflow sources load from the node's ``mlflow_destination``
+    (absent = auto).
+    """
+    source_type = config.get("sourceType", "")
+    artifact_path = config.get("artifact_path", "")
+    if artifact_path and not source_type:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "optimiserApply node with artifact_path requires sourceType='file'",
+            missing_field="sourceType",
+        )
+    run_id = config.get("run_id", "")
+    registered_model = config.get("registered_model", "")
+    has_file = bool(artifact_path) and source_type == "file"
+    has_mlflow = source_type in ("run", "registered") and (
+        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
+    )
+    if not has_file and not has_mlflow:
+        return None
+    if source_type in ("run", "registered"):
+        from haute._optimiser_io import load_mlflow_optimiser_artifact
+
+        return load_mlflow_optimiser_artifact(
+            source_type=source_type,
+            run_id=run_id,
+            registered_model=registered_model,
+            version=config.get("version", "latest"),
+            alias=str(config.get("alias", "") or ""),
+            destination=str(config.get("mlflow_destination", "") or ""),
+        )
+    from haute._optimiser_io import load_optimiser_artifact
+
+    return load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
+
+
 def apply_optimiser_apply_from_config(
     *dfs: _Frame,
     config: dict[str, Any] | str | PathLike[str],
@@ -354,45 +419,14 @@ def apply_optimiser_apply_from_config(
     their executable incoming-edge names.
     """
     cfg = _resolve_node_config(config, base_dir)
-
-    source_type = cfg.get("sourceType", "")
-    artifact_path = cfg.get("artifact_path", "")
-    if artifact_path and not source_type:
-        from haute.errors import ConfigError
-
-        raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
-        )
-    run_id = cfg.get("run_id", "")
-    registered_model = cfg.get("registered_model", "")
-    has_file = bool(artifact_path) and source_type == "file"
-    has_mlflow = source_type in ("run", "registered") and (
-        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
-    )
-    if not has_file and not has_mlflow:
+    artifact = load_configured_optimiser_artifact(cfg, base_dir)
+    if artifact is None:
         return dfs[0] if dfs else pl.LazyFrame()
 
     version_col = cfg.get("version_column", "__optimiser_version__")
     optimised_value_col = cfg.get("optimised_value_column", "")
     ratebook_input = cfg.get("ratebook_input", "")
     names = list(source_names) if source_names is not None else []
-
-    if source_type in ("run", "registered"):
-        from haute._optimiser_io import load_mlflow_optimiser_artifact
-
-        artifact = load_mlflow_optimiser_artifact(
-            source_type=source_type,
-            run_id=run_id,
-            registered_model=registered_model,
-            version=cfg.get("version", "latest"),
-            alias=str(cfg.get("alias", "") or ""),
-            destination=str(cfg.get("mlflow_destination", "") or ""),
-        )
-    else:
-        from haute._optimiser_io import load_optimiser_artifact
-
-        artifact = load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
 
     # Selection + dispatch live in _builders (widely re-exported); imported
     # lazily to keep this module free of an executor import cycle.

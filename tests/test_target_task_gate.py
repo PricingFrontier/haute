@@ -38,6 +38,7 @@ from haute.modelling._training_job import TrainingJob
 from haute.routes._background_jobs import IsolatedJobSupervisor
 from haute.routes._train_service import TrainService, _worker_failure_payload
 from haute.routes._training_preparation import _validate_target_task_pairing
+from tests.conftest import make_ram_estimate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -728,7 +729,11 @@ class TestPreDispatchServiceGate:
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 3, 2)),
+            patch.object(
+                service,
+                "_estimate_ram",
+                return_value=make_ram_estimate(total_rows=3, probe_columns=2),
+            ),
             patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._training_preparation.execute_lazy_graph",

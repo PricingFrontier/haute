@@ -2925,15 +2925,25 @@
             "lazy_sink",
             "training_prep",
             "optimiser_setup",
+            "optimiser_solve",
             "explore_analysis",
-            "auto_range",
             "deploy_live",
             "deploy_batch",
-            "chunked_map_reduce",
             "node_snapshot"
           ],
           "title": "Profile",
           "type": "string"
+        },
+        "projection_cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStrategyProjectionCausePayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "provenance": {
           "$ref": "#/$defs/ExecutionStrategyProvenanceCollectionPayload"
@@ -3139,15 +3149,25 @@
             "lazy_sink",
             "training_prep",
             "optimiser_setup",
+            "optimiser_solve",
             "explore_analysis",
-            "auto_range",
             "deploy_live",
             "deploy_batch",
-            "chunked_map_reduce",
             "node_snapshot"
           ],
           "title": "Profile",
           "type": "string"
+        },
+        "projection_cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStrategyProjectionCausePayloadOutput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "provenance": {
           "$ref": "#/$defs/ExecutionStrategyProvenanceCollectionPayloadOutput"
@@ -3237,9 +3257,152 @@
         "estimate_calibration_factor_basis_points",
         "estimate_admission_basis",
         "headroom_bytes",
-        "assumptions"
+        "assumptions",
+        "projection_cause"
       ],
       "title": "ExecutionStrategyDiagnosticPayloadOutput",
+      "type": "object"
+    },
+    "ExecutionStrategyProjectionCausePayload": {
+      "description": "The furthest-downstream node that kept part of the plan full width.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "input",
+            "node"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 512,
+          "title": "Message",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "parent_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "total_count": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_id",
+        "operator",
+        "kind",
+        "reason_code",
+        "message",
+        "total_count"
+      ],
+      "title": "ExecutionStrategyProjectionCausePayload",
+      "type": "object"
+    },
+    "ExecutionStrategyProjectionCausePayloadOutput": {
+      "description": "The furthest-downstream node that kept part of the plan full width.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "input",
+            "node"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 512,
+          "title": "Message",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "parent_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "total_count": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_id",
+        "operator",
+        "kind",
+        "reason_code",
+        "message",
+        "total_count",
+        "parent_node_id",
+        "operation"
+      ],
+      "title": "ExecutionStrategyProjectionCausePayloadOutput",
       "type": "object"
     },
     "ExecutionStrategyProvenanceCollectionPayload": {
@@ -8334,95 +8497,6 @@
       "title": "OptimiserApplyResponse",
       "type": "object"
     },
-    "OptimiserChunkFallback": {
-      "description": "A lost chunk optimisation recorded on an auto-range job.\n\nChunk ineligibility never fails the request, so this record is the only\nplace the reason survives; typing it keeps the emitted keys and the three\nstable codes part of the API contract.",
-      "properties": {
-        "code": {
-          "enum": [
-            "chunk_user_code_ineligible",
-            "model_score_ineligible",
-            "chunk_plan_unsupported"
-          ],
-          "title": "Code",
-          "type": "string"
-        },
-        "column": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Column"
-        },
-        "line": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Line"
-        },
-        "message": {
-          "title": "Message",
-          "type": "string"
-        },
-        "node_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Node Id"
-        },
-        "operator": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Operator"
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reason"
-        }
-      },
-      "required": [
-        "code",
-        "node_id",
-        "operator",
-        "reason",
-        "line",
-        "column",
-        "message"
-      ],
-      "title": "OptimiserChunkFallback",
-      "type": "object"
-    },
     "OptimiserCombinedFactorBounds": {
       "description": "The scenario range a ratebook solve scored: the deployed factor's collar.\n\n``min``/``max`` are the solved grid's first and last scenario values\n(Float32 widened). Every apply clips the combined ratebook factor to them.",
       "properties": {
@@ -8611,17 +8685,6 @@
     },
     "OptimiserFrontierAutoRangeResponse": {
       "properties": {
-        "chunk_fallback": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserChunkFallback"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
         "method": {
           "default": "scenario_envelope",
           "title": "Method",
@@ -8638,26 +8701,12 @@
           "default": "ok",
           "title": "Status",
           "type": "string"
-        },
-        "warning": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Warning"
         }
       },
       "required": [
         "status",
         "ranges",
-        "method",
-        "warning",
-        "chunk_fallback"
+        "method"
       ],
       "title": "OptimiserFrontierAutoRangeResponse",
       "type": "object"
@@ -10778,21 +10827,6 @@
           "title": "Cd Tolerance",
           "type": "number"
         },
-        "chunk_size": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Chunk Size"
-        },
-        "frontier_enabled": {
-          "title": "Frontier Enabled",
-          "type": "boolean"
-        },
         "frontier_ranges": {
           "additionalProperties": true,
           "title": "Frontier Ranges",
@@ -10817,8 +10851,7 @@
       },
       "required": [
         "max_iter",
-        "tolerance",
-        "chunk_size"
+        "tolerance"
       ],
       "title": "OptimiserSolverSettings",
       "type": "object"
@@ -11529,6 +11562,13 @@
             }
           ]
         },
+        "unbounded_join_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unbounded Join Node Ids",
+          "type": "array"
+        },
         "warning": {
           "anyOf": [
             {
@@ -11559,7 +11599,8 @@
         "gpu_vram_estimated_mb",
         "gpu_vram_available_mb",
         "gpu_warning",
-        "unavailable"
+        "unavailable",
+        "unbounded_join_node_ids"
       ],
       "title": "TrainEstimateResponse",
       "type": "object"
@@ -11959,6 +12000,21 @@
         "tuning": {
           "$ref": "#/$defs/TuningReportPayload"
         },
+        "validation_loss_history": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Validation Loss History",
+          "type": "array"
+        },
+        "validation_loss_history_truncated": {
+          "default": false,
+          "title": "Validation Loss History Truncated",
+          "type": "boolean"
+        },
         "warning": {
           "anyOf": [
             {
@@ -11990,6 +12046,8 @@
         "fit_evidence",
         "loss_history",
         "loss_history_truncated",
+        "validation_loss_history",
+        "validation_loss_history_truncated",
         "double_lift",
         "shap_summary",
         "feature_importance_loss",

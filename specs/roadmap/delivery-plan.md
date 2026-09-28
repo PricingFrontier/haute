@@ -66,8 +66,6 @@ round starts.
 
 ## Not scheduled
 
-Deferred packages start only when their trigger is met: `ROAD-WORKER-04`
-([background jobs](background-jobs-api.md)) needs versioned solver
-persistence; `CACHE-S19` ([caching](caching.md)) and `EDA-E18`, `EDA-E23` and
+Deferred packages start only when their trigger is met: `CACHE-S19` ([caching](caching.md)) and `EDA-E18`, `EDA-E23` and
 `EDA-E24` ([Explore and EDA](explore-eda.md)) wait for the evidence their
 entries name.

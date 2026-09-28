@@ -408,6 +408,24 @@ describe("useBackgroundJobs", () => {
       expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.3)
     })
 
+    it("polls an advancing training about once a second while the optimiser keeps its backoff", async () => {
+      let iteration = 0
+      vi.mocked(getTrainStatus).mockImplementation(async () => makeTrainProgress({ iteration: ++iteration }))
+      let solved = 0
+      vi.mocked(getOptimiserStatus).mockImplementation(async () => makeSolveProgress({ progress: ++solved / 100 }))
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "Train Node", "th", "live", 0)
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
+      })
+
+      renderHook(() => useBackgroundJobs())
+      await advance(10_000)
+
+      // Training polls at 0.5 s and then every second; the optimiser at 0.5, 1.5, 3.5 and 7.5 s.
+      expect(getTrainStatus).toHaveBeenCalledTimes(10)
+      expect(getOptimiserStatus).toHaveBeenCalledTimes(4)
+    })
+
     it("treats a missing training job as terminal and stops polling", async () => {
       const mockGetStatus = vi.mocked(getTrainStatus)
       mockGetStatus.mockRejectedValue({

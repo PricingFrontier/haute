@@ -8,11 +8,13 @@ parser validate input references through it, and the render endpoint shows
 its output in the editor. Every consumer therefore executes exactly the same
 program.
 
-Rendering is a pure function of ``(steps, input_names)``. Structured steps
-render to one line; free-code steps can span several lines. The renderer
-records each step's inclusive line range. Output is a fixpoint of the polars
-user-code extractor (no node-level ``return``, and the leading
-``df = <input>`` line is authored code).
+Rendering is a pure function of ``(steps, input_names)``. Each structured step
+renders one statement, which :mod:`haute._polars_steps_layout` breaks over
+several lines when it is longer than 88 columns, in a layout ``ruff format``
+keeps; free-code steps keep their authored lines. The renderer records each
+step's inclusive line range. Output is a
+fixpoint of the polars user-code extractor (no node-level ``return``, and the
+leading ``df = <input>`` line is authored code).
 
 Validation fails loudly: any malformed, unknown or incomplete field raises
 :class:`PolarsStepError` carrying the offending step index.
@@ -31,6 +33,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
+from haute._polars_steps_layout import layout_statement
 from haute._types import NodeType
 
 __all__ = [
@@ -366,11 +369,19 @@ def validate_polars_steps(steps: object) -> list[dict[str, Any]]:
     return _Renderer(steps, None, "input").steps
 
 
+#: How the renderer spells its calls: ``current``, or ``earlier`` for the
+#: spelling it used before (lists for keys, aggregations and columns, and
+#: Polars' sort and unique defaults spelled out), which only serves to
+#: recognise a body saved by it.
+StepSpelling = Literal["current", "earlier"]
+
+
 def render_polars_steps(
     steps: object,
     input_names: Sequence[str] | None = None,
     *,
     start: StepStart,
+    spelling: StepSpelling = "current",
 ) -> RenderedSteps:
     """Render ``steps`` into the Polars function body.
 
@@ -378,11 +389,12 @@ def render_polars_steps(
     without it references are rendered as written. ``start`` says where ``df``
     comes from: ``input`` requires a leading ``source`` step (and refuses an
     empty list); ``frame`` refuses a ``source`` step anywhere and renders an
-    empty list to empty code.
+    empty list to empty code. ``spelling`` chooses the call spelling (see
+    :data:`StepSpelling`); the program is the same either way.
     """
     if start not in STEP_STARTS:
         raise ValueError(f"Unknown step start {start!r}; expected one of {STEP_STARTS!r}.")
-    return _Renderer(steps, input_names, start).render()
+    return _Renderer(steps, input_names, start, spelling).render()
 
 
 def referenced_step_inputs(steps: object) -> list[str]:
@@ -457,11 +469,18 @@ def _needs_parentheses(child_op: object, parent: tuple[str, str] | None) -> bool
 
 
 class _Renderer:
-    def __init__(self, steps: object, input_names: Sequence[str] | None, start: StepStart) -> None:
+    def __init__(
+        self,
+        steps: object,
+        input_names: Sequence[str] | None,
+        start: StepStart,
+        spelling: StepSpelling = "current",
+    ) -> None:
         if not isinstance(steps, list):
             raise PolarsStepError("Steps must be a list.")
         self.input_names = None if input_names is None else frozenset(input_names)
         self.start = start
+        self.earlier = spelling == "earlier"
         self.variables: set[str] = set()
         self.index = 0
         self.depth = 0
@@ -520,7 +539,12 @@ class _Renderer:
             elif index > 0 and kind == "source":
                 raise self.fail("Only the first step can choose the input to start from.")
             start = len(lines) + 1
-            lines.extend(getattr(self, f"_render_{kind}")(step).split("\n"))
+            statement = getattr(self, f"_render_{kind}")(step)
+            if kind != "free_code":
+                # Authored code keeps its own layout; a long structured
+                # statement breaks over several lines, as ``ruff format`` keeps it.
+                statement = layout_statement(statement)
+            lines.extend(statement.split("\n"))
             step_lines.append((start, len(lines)))
         code = "\n".join(lines)
         if any(step["kind"] == "free_code" for step in self.steps):
@@ -998,19 +1022,23 @@ class _Renderer:
         selectors = self._dtype_selectors(step, columns)
         if not columns and not selectors:
             raise self.fail("Name at least one column or column type to keep.")
-        if not selectors:
-            return f"df = df.select({columns!r})"
         parts = [repr(c) for c in columns] + selectors
-        return f"df = df.select([{', '.join(parts)}])"
+        if self.earlier:
+            if not selectors:
+                return f"df = df.select({columns!r})"
+            return f"df = df.select([{', '.join(parts)}])"
+        return f"df = df.select({', '.join(parts)})"
 
     def _render_drop(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
         selectors = self._dtype_selectors(step, columns)
         if not columns and not selectors:
             raise self.fail("Name at least one column or column type to drop.")
-        if not selectors:
-            return f"df = df.drop({columns!r})"
-        parts = ([repr(columns)] if columns else []) + selectors
+        if self.earlier:
+            if not selectors:
+                return f"df = df.drop({columns!r})"
+            return f"df = df.drop({', '.join(([repr(columns)] if columns else []) + selectors)})"
+        parts = [repr(c) for c in columns] + selectors
         return f"df = df.drop({', '.join(parts)})"
 
     def _render_rename(self, step: Mapping[str, Any]) -> str:
@@ -1057,13 +1085,26 @@ class _Renderer:
             columns.append(sort_column)
             descending.append(self._bool(entry.get("descending"), f"Sort key {i + 1} descending"))
         nulls_last = self._bool(step["nullsLast"], "Nulls last")
-        return f"df = df.sort({columns!r}, descending={descending!r}, nulls_last={nulls_last!r})"
+        if self.earlier:
+            return (
+                f"df = df.sort({columns!r}, descending={descending!r}, nulls_last={nulls_last!r})"
+            )
+        # Polars' defaults (ascending, nulls first) are left unsaid.
+        options = ""
+        if any(descending):
+            options += f", descending={descending[0] if len(descending) == 1 else descending!r}"
+        if nulls_last:
+            options += ", nulls_last=True"
+        return f"df = df.sort({', '.join(repr(c) for c in columns)}{options})"
 
     def _render_unique(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
         keep = self._choice(step["keep"], ("first", "last", "any", "none"), "Keep")
-        subset = repr(columns) if columns else "None"
-        return f"df = df.unique(subset={subset}, keep={keep!r}, maintain_order=True)"
+        if self.earlier:
+            earlier_subset = repr(columns) if columns else "None"
+            return f"df = df.unique(subset={earlier_subset}, keep={keep!r}, maintain_order=True)"
+        subset = f"subset={columns!r}, " if columns else ""
+        return f"df = df.unique({subset}keep={keep!r}, maintain_order=True)"
 
     def _render_group_by(self, step: Mapping[str, Any]) -> str:
         keys = self._str_list(step["keys"], "Group keys", allow_empty=True)
@@ -1095,10 +1136,18 @@ class _Renderer:
                 where=entry.get("where"),
             )
             rendered.append(f"{aggregate}.alias({name!r})")
+        return self._group_and_aggregate(keys, rendered)
+
+    def _group_and_aggregate(self, keys: list[str], rendered: list[str]) -> str:
+        if self.earlier:
+            if not keys:
+                return f"df = df.select([{', '.join(rendered)}])"
+            return f"df = df.group_by({keys!r}, maintain_order=True).agg([{', '.join(rendered)}])"
         if not keys:
             # A whole-frame summary: one row of aggregates.
-            return f"df = df.select([{', '.join(rendered)}])"
-        return f"df = df.group_by({keys!r}, maintain_order=True).agg([{', '.join(rendered)}])"
+            return f"df = df.select({', '.join(rendered)})"
+        by = ", ".join(repr(k) for k in keys)
+        return f"df = df.group_by({by}, maintain_order=True).agg({', '.join(rendered)})"
 
     def _dtype_aggregate(self, entry: Mapping[str, Any], label: str) -> str:
         """Aggregate every column of one dtype, naming outputs by suffix."""
@@ -1157,7 +1206,7 @@ class _Renderer:
             rendered.append(f"{cell}{call}.alias({name!r})")
         if len(types) != 1:
             raise self.fail("Pivot column values must all be the same type.")
-        return f"df = df.group_by({index!r}, maintain_order=True).agg([{', '.join(rendered)}])"
+        return self._group_and_aggregate(index, rendered)
 
     def _render_unpivot(self, step: Mapping[str, Any]) -> str:
         on = self._str_list(step["on"], "Unpivot columns", allow_empty=False)
@@ -1215,7 +1264,8 @@ class _Renderer:
 
     def _render_fill_null(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
-        target = f"pl.col({columns!r})" if columns else "pl.all()"
+        names = repr(columns) if self.earlier else ", ".join(repr(c) for c in columns)
+        target = f"pl.col({names})" if columns else "pl.all()"
         fill = self._object(step["fill"], "Fill")
         kind = fill.get("kind")
         if kind == "value":

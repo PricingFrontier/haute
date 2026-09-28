@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-li
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
 import { downloadTextFile } from "../editors/shared/tableClipboard"
+import useUIStore from "../../stores/useUIStore"
 
 // The click handler is synchronous, but a whole parallel suite run can starve
 // this worker for longer than waitFor's 1s default before it retries.
@@ -27,6 +28,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     output_values: { age: 25, premium: 100 },
     topological_rank: 0,
     column_relevant: true,
+    contributed_columns: [], derivations: [],
     ...overrides,
   }
 }
@@ -268,6 +270,71 @@ describe("TracePanel", () => {
 
   it.each([
     {
+      reason: "join_no_match",
+      matchedRowCount: 0,
+      label: "no match",
+      summary: "No row from this input joined the traced row",
+    },
+    {
+      reason: "aggregated_rows",
+      matchedRowCount: 3,
+      label: "aggregated",
+      summary: "This row aggregates rows of this input grouped by quote_id: 3 of them share its key values.",
+    },
+    {
+      reason: "seed_row_not_reproduced",
+      matchedRowCount: 0,
+      label: "snapshot",
+      summary: "Not traced above the snapshot the preview read: recomputing it does not reproduce the snapshot's row.",
+    },
+    {
+      reason: "seed_recompute_refused",
+      matchedRowCount: 0,
+      label: "snapshot",
+      summary: "Not traced above the snapshot the preview read: recomputing it was not admitted.",
+    },
+  ])("shows a $reason omission as a note rather than a trace gap", ({ reason, matchedRowCount, label, summary }) => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
+          omissions: [{
+            node_id: "upstream",
+            node_name: "upstream",
+            node_type: "dataInput",
+            topological_rank: 0,
+            reason,
+            diagnostic_index: 0,
+          }],
+          correlation_diagnostics: [{
+            code: reason,
+            severity: "info",
+            reason,
+            message: "Backend detail.",
+            node_id: "upstream",
+            child_node_id: "target",
+            match_columns: ["quote_id"],
+            ignored_columns: [],
+            matched_row_count: matchedRowCount,
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+          nodes_in_trace: 1,
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const note = screen.getByTestId("trace-omission-upstream")
+    expect(note).toHaveAttribute("role", "note")
+    expect(note).toHaveTextContent(label)
+    expect(note).not.toHaveTextContent("trace gap")
+    expect(note).toHaveTextContent(summary)
+  })
+
+  it.each([
+    {
       name: "rich rating",
       step: makeStep({
         node_id: "target",
@@ -340,7 +407,7 @@ describe("TracePanel", () => {
   it("renders step names in order", () => {
     render(<TracePanel trace={makeTrace({
       steps: [
-        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"], derivations: [] }),
         makeStep({
           node_id: "n2",
           node_name: "Calc",
@@ -365,7 +432,7 @@ describe("TracePanel", () => {
   it("renders step indexes starting from 1", () => {
     render(<TracePanel trace={makeTrace({
       steps: [
-        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] } }),
+        makeStep({ node_id: "n1", node_name: "Source", schema_diff: { columns_added: ["age"], columns_removed: [], columns_modified: ["premium"], columns_passed: [] }, contributed_columns: ["age"], derivations: [] }),
         makeStep({
           node_id: "n2",
           node_name: "Calc",
@@ -412,6 +479,7 @@ describe("TracePanel", () => {
               },
               output_values: { driver_age: 22 },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "banding",
@@ -500,6 +568,7 @@ describe("TracePanel", () => {
               },
               expression: null,
               calculation: null,
+              contributed_columns: ["channel_band", "proposer_age_band", "vehicle_age_band"], derivations: [],
               node_detail: {
                 detail_type: "banding",
                 factors: [
@@ -558,6 +627,7 @@ describe("TracePanel", () => {
               },
               expression: null,
               calculation: null,
+              contributed_columns: ["optimised_premium"], derivations: [],
               node_detail: {
                 detail_type: "optimiser_apply",
                 mode: "ratebook",
@@ -617,6 +687,422 @@ describe("TracePanel", () => {
     expect(within(bandingCard).queryByText("noise")).not.toBeInTheDocument()
   })
 
+  it("shows how an online optimiser's objective was calculated, down to the loaded values", () => {
+    const formula = (
+      column: string,
+      expression: string,
+      substituted: string,
+      value: number,
+      reads: Array<[string, string, string]>,
+    ) => ({
+      column,
+      expression_text: expression,
+      substituted_text: substituted,
+      result_value: value,
+      not_computable_reason: null,
+      result_source: null,
+      reads: reads.map(([readColumn, nodeId, sourceColumn]) => ({
+        column: readColumn,
+        sources: [{ node_id: nodeId, column: sourceColumn, before_code: false }],
+      })),
+      error: null,
+      error_type: null,
+    })
+    const loaded = (column: string, value: number) => ({
+      ...formula(column, "", "", value, []),
+      expression_text: null,
+      substituted_text: null,
+    })
+    const diff = (added: string[], modified: string[] = []) => ({
+      columns_added: added, columns_removed: [], columns_modified: modified, columns_passed: [],
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply_optimiser",
+          column: "optimal_premium",
+          output_value: 1.5,
+          steps: [
+            makeStep({
+              node_id: "premiums", node_name: "premiums", node_type: "dataInput",
+              schema_diff: diff(["premium"]), output_values: { premium: 528.09 },
+              contributed_columns: ["premium"], derivations: [loaded("premium", 528.09)],
+            }),
+            makeStep({
+              node_id: "fill_na", node_name: "fill_na", node_type: "polars",
+              schema_diff: diff(["BurnCost"]), output_values: { premium: 528.09, BurnCost: 528.09 },
+              contributed_columns: ["BurnCost"],
+              derivations: [formula("BurnCost", "premium", "528.09", 528.09, [["premium", "premiums", "premium"]])],
+            }),
+            makeStep({
+              node_id: "scenarios", node_name: "scenarios", node_type: "scenarioExpander",
+              schema_diff: diff(["price_adjustment", "profit"], ["premium"]),
+              output_values: { premium: 792.135, BurnCost: 528.09, price_adjustment: 1.5, profit: 264.045 },
+              contributed_columns: ["premium", "price_adjustment", "profit"],
+              derivations: [
+                formula("premium", "premium * price_adjustment", "528.09 * 1.5", 792.135, [
+                  ["premium", "premiums", "premium"],
+                  ["price_adjustment", "scenarios", "price_adjustment"],
+                ]),
+                loaded("price_adjustment", 1.5),
+                formula("profit", "premium - BurnCost", "792.135 - 528.09", 264.045, [
+                  ["BurnCost", "fill_na", "BurnCost"],
+                  ["premium", "scenarios", "premium"],
+                ]),
+              ],
+            }),
+            makeStep({
+              node_id: "apply_optimiser", node_name: "apply_optimiser", node_type: "optimiserApply",
+              schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 },
+              contributed_columns: ["optimal_premium"],
+              derivations: [{
+                ...loaded("optimal_premium", 1.5),
+                reads: [{ column: "profit", sources: [{ node_id: "scenarios", column: "profit", before_code: false }] }],
+              }],
+              node_detail: {
+                detail_type: "optimiser_apply",
+                mode: "online",
+                output_column: "optimal_premium",
+                output_value: 1.5,
+                objective_column: "profit",
+                scenario_value_column: "price_adjustment",
+                candidates: [
+                  { scenario_index: 0, scenario_value: 1, objective: 0, decision_score: 0, selected: false, is_baseline: true },
+                  { scenario_index: 1, scenario_value: 1.5, objective: 264.045, decision_score: 264.045, selected: true, is_baseline: false },
+                ],
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const applyCard = screen.getByTestId("trace-step-card-apply_optimiser")
+    const tree = within(applyCard).getByRole("group", { name: "How profit was calculated" })
+    const rows = within(tree).getAllByTestId("derivation-row")
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["formula", "formula", "loaded", "formula", "loaded", "rule"])
+    expect(rows[5]).toHaveTextContent("price_adjustment = 1.5 (generated by scenarios, step 3)")
+    expect(rows[0]).toHaveTextContent("profit = premium - BurnCost (scenarios, step 3)")
+    expect(rows[0]).toHaveTextContent("264.045 = 792.135 - 528.09")
+    expect(rows[1]).toHaveTextContent("BurnCost = premium (fill_na, step 2)")
+    expect(rows[2]).toHaveTextContent("premium = 528.09 (loaded by premiums, step 1)")
+    // The premium profit read is the one scenarios had already rescaled.
+    expect(rows[3]).toHaveTextContent("premium = premium × price_adjustment (scenarios, step 3)")
+    expect(rows[3]).toHaveTextContent("792.135 = 528.09 × 1.5")
+
+    fireEvent.click(within(rows[0]).getAllByRole("button", { name: "Hide what profit was calculated from" })[0])
+    expect(within(tree).getAllByTestId("derivation-row")).toHaveLength(1)
+
+    const scenariosCard = screen.getByTestId("trace-step-card-scenarios")
+    if (!within(scenariosCard).queryByTestId("trace-computed-here")) {
+      fireEvent.click(within(scenariosCard).getAllByRole("button")[0])
+    }
+    const computedHere = within(scenariosCard).getByTestId("trace-computed-here")
+    expect(computedHere).toHaveTextContent("premium = premium × price_adjustment")
+    expect(computedHere).toHaveTextContent("profit = premium - BurnCost")
+    // A generated column has no formula to show.
+    expect(computedHere).not.toHaveTextContent("price_adjustment =")
+
+    // A row's step link opens that step's card and points the canvas at its node.
+    fireEvent.click(within(applyCard).getAllByRole("button", { name: "Show what profit was calculated from" })[0])
+    useUIStore.setState({ traceFocusNodeId: null, traceCentreRequest: null })
+    fireEvent.click(within(applyCard).getByRole("button", { name: "Go to fill_na, step 2" }))
+    const fillNaCard = screen.getByTestId("trace-step-card-fill_na")
+    expect(fillNaCard).toHaveAttribute("data-trace-focused", "true")
+    expect(within(fillNaCard).getByTestId("trace-step-body-fill_na")).toBeInTheDocument()
+    expect(useUIStore.getState().traceFocusNodeId).toBe("fill_na")
+    expect(useUIStore.getState().traceCentreRequest).toEqual({ nodeId: "fill_na" })
+
+    // A hover while the panel scrolls to the card (content moving under a still
+    // pointer) does not move the ring off it.
+    fireEvent.mouseEnter(scenariosCard)
+    expect(useUIStore.getState().traceFocusNodeId).toBe("fill_na")
+
+    // Once that settles, hovering a card rings its node; leaving clears it.
+    const settled = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 5_000)
+    fireEvent.mouseEnter(scenariosCard)
+    expect(useUIStore.getState().traceFocusNodeId).toBe("scenarios")
+    fireEvent.mouseLeave(scenariosCard)
+    expect(useUIStore.getState().traceFocusNodeId).toBeNull()
+    settled.mockRestore()
+
+    // Following another link moves the flash: the first card does not stay highlighted.
+    fireEvent.click(within(applyCard).getAllByRole("button", { name: "Go to premiums, step 1" })[0])
+    expect(screen.getByTestId("trace-step-card-premiums")).toHaveAttribute("data-trace-focused", "true")
+    expect(fillNaCard).not.toHaveAttribute("data-trace-focused")
+  })
+
+  it("shows the full trace when a derivation link points at a card the focused one hides", () => {
+    const diff = (added: string[], passed: string[] = []) => ({
+      columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "calc",
+          column: "y",
+          output_value: 2,
+          steps: [
+            makeStep({ node_id: "src", node_name: "src", node_type: "dataInput", schema_diff: diff(["x"]), output_values: { x: 1 }, contributed_columns: ["x"] }),
+            // Carries x only: the focused trace hides it.
+            makeStep({ node_id: "carrier", node_name: "carrier", schema_diff: diff([], ["x"]), output_values: { x: 1 } }),
+            makeStep({
+              node_id: "calc", node_name: "calc", schema_diff: diff(["y"], ["x"]), output_values: { x: 1, y: 2 },
+              contributed_columns: ["y"],
+              derivations: [{
+                column: "y", expression_text: "x * 2", substituted_text: "1 * 2", result_value: 2,
+                not_computable_reason: null, result_source: null, error: null, error_type: null,
+                reads: [{ column: "x", sources: [{ node_id: "carrier", column: "x", before_code: false }] }],
+              }],
+              node_detail: {
+                detail_type: "optimiser_apply", mode: "online", output_column: "y", output_value: 2,
+                objective_column: "x", candidates: [],
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId("trace-step-card-carrier")).not.toBeInTheDocument()
+
+    const calc = screen.getByTestId("trace-step-card-calc")
+    fireEvent.click(within(calc).getByRole("button", { name: "Go to carrier, step 2" }))
+
+    expect(screen.getByTestId("trace-step-card-carrier")).toHaveAttribute("data-trace-focused", "true")
+    expect(screen.getByTestId("trace-show-full")).toHaveTextContent("show focused trace")
+  })
+
+  describe("opening position", () => {
+    const STORY_TOP = 100
+    const CARD_TOP = 900
+    // The story's p-3 padding: the landed card sits where the first card does.
+    const CARD_GAP = 12
+
+    /** Lays the story out with only `landingCardId`'s card below the fold, moving with the scroll. */
+    function layOut(landingCardId: string) {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const scrolled = this.closest<HTMLElement>("[data-testid='trace-story']")?.scrollTop ?? 0
+        const top = this.dataset.testid === "trace-story"
+          ? STORY_TOP
+          : this.dataset.testid === `trace-step-card-${landingCardId}` ? CARD_TOP - scrolled : 0
+        return DOMRect.fromRect({ x: 0, y: top, width: 400, height: 50 })
+      })
+    }
+
+    it("opens scrolled to the clicked node's card and lands again for a new trace", () => {
+      layOut("n2")
+      const { rerender } = render(<TracePanel trace={makeTrace()} onClose={vi.fn()} />)
+      const story = screen.getByTestId("trace-story")
+      expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+
+      // A trace fast enough to show no loading state arrives in the scrolled panel.
+      story.scrollTop = 300
+      rerender(<TracePanel trace={makeTrace({ row_index: 1 })} onClose={vi.fn()} />)
+      expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+    })
+
+    it("opens on the last card shown when the focused trace hides the clicked node, and stays there", () => {
+      const diff = (added: string[], passed: string[] = []) => ({
+        columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
+      })
+      layOut("calc")
+      render(
+        <TracePanel
+          trace={makeTrace({
+            target_node_id: "out",
+            column: "y",
+            output_value: 2,
+            steps: [
+              makeStep({ node_id: "src", node_name: "src", node_type: "dataInput", schema_diff: diff(["x"]), output_values: { x: 1 }, contributed_columns: ["x"] }),
+              makeStep({ node_id: "calc", node_name: "calc", schema_diff: diff(["y"], ["x"]), output_values: { x: 1, y: 2 }, contributed_columns: ["y"] }),
+              // The clicked node only carries y: the focused trace hides it.
+              makeStep({ node_id: "out", node_name: "out", node_type: "dataOutput", schema_diff: diff([], ["x", "y"]), output_values: { x: 1, y: 2 } }),
+            ],
+          })}
+          onClose={vi.fn()}
+        />,
+      )
+      expect(screen.queryByTestId("trace-step-card-out")).not.toBeInTheDocument()
+      const story = screen.getByTestId("trace-story")
+      expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+
+      story.scrollTop = 40
+      fireEvent.click(screen.getByTestId("trace-show-full"))
+      expect(screen.getByTestId("trace-step-card-out")).toBeInTheDocument()
+      expect(story.scrollTop).toBe(40)
+    })
+
+    it("lands a new trace, or a return to an earlier one, without replaying a followed link", () => {
+      const diff = (added: string[], passed: string[] = []) => ({
+        columns_added: added, columns_removed: [], columns_modified: [], columns_passed: passed,
+      })
+      const linkedTrace = (rowIndex: number) => makeTrace({
+        row_index: rowIndex,
+        target_node_id: "calc",
+        column: "y",
+        output_value: 2,
+        steps: [
+          makeStep({ node_id: "src", node_name: "src", node_type: "dataInput", schema_diff: diff(["x"]), output_values: { x: 1 }, contributed_columns: ["x"] }),
+          makeStep({
+            node_id: "calc", node_name: "calc", schema_diff: diff(["y"], ["x"]), output_values: { x: 1, y: 2 },
+            contributed_columns: ["y"],
+            derivations: [{
+              column: "y", expression_text: "x * 2", substituted_text: "1 * 2", result_value: 2,
+              not_computable_reason: null, result_source: null, error: null, error_type: null,
+              reads: [{ column: "x", sources: [{ node_id: "src", column: "x", before_code: false }] }],
+            }],
+            node_detail: {
+              detail_type: "optimiser_apply", mode: "online", output_column: "y", output_value: 2,
+              objective_column: "x", candidates: [],
+            },
+          }),
+        ],
+      })
+      // jsdom does not implement scrollIntoView.
+      const scrollIntoView = vi.fn()
+      Element.prototype.scrollIntoView = scrollIntoView
+      try {
+        layOut("calc")
+        const { rerender } = render(<TracePanel trace={linkedTrace(0)} onClose={vi.fn()} />)
+        fireEvent.click(within(screen.getByTestId("trace-step-card-calc")).getByRole("button", { name: "Go to src, step 1" }))
+        expect(screen.getByTestId("trace-step-card-src")).toHaveAttribute("data-trace-focused", "true")
+        expect(scrollIntoView).toHaveBeenCalledTimes(1)
+
+        // A trace fast enough to show no loading state arrives in the same panel.
+        const story = screen.getByTestId("trace-story")
+        story.scrollTop = 300
+        rerender(<TracePanel trace={linkedTrace(1)} onClose={vi.fn()} />)
+        expect(screen.getByTestId("trace-step-card-src")).not.toHaveAttribute("data-trace-focused")
+        expect(scrollIntoView).toHaveBeenCalledTimes(1)
+        expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+
+        // Returning to the first row does not revive its link either.
+        story.scrollTop = 300
+        rerender(<TracePanel trace={linkedTrace(0)} onClose={vi.fn()} />)
+        expect(screen.getByTestId("trace-step-card-src")).not.toHaveAttribute("data-trace-focused")
+        expect(scrollIntoView).toHaveBeenCalledTimes(1)
+        expect(story.scrollTop).toBe(CARD_TOP - STORY_TOP - CARD_GAP)
+      } finally {
+        delete (Element.prototype as Partial<Element>).scrollIntoView
+      }
+    })
+  })
+
+  it("names the step that loaded a carried key, and never claims a row-changing step left rows unchanged", () => {
+    const addsQuoteId = { columns_added: ["quote_id"], columns_removed: [], columns_modified: [], columns_passed: [] }
+    const passesQuoteId = { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: ["quote_id"] }
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply",
+          column: "quote_id",
+          output_value: "Q-1",
+          steps: [
+            makeStep({
+              node_id: "nb_batch_input", node_name: "nb_batch_input", node_type: "dataInput",
+              schema_diff: addsQuoteId, output_values: { quote_id: "Q-1" }, contributed_columns: ["quote_id"],
+            }),
+            makeStep({
+              node_id: "premiums", node_name: "premiums", node_type: "dataInput",
+              schema_diff: addsQuoteId, output_values: { quote_id: "Q-1" }, column_relevant: false,
+            }),
+            makeStep({
+              node_id: "scenarios", node_name: "scenarios", node_type: "scenarioExpander",
+              schema_diff: passesQuoteId, output_values: { quote_id: "Q-1" }, row_lineage_type: "expanded",
+            }),
+            makeStep({
+              node_id: "apply", node_name: "apply", node_type: "optimiserApply",
+              schema_diff: passesQuoteId, output_values: { quote_id: "Q-1" }, row_lineage_type: "aggregated",
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/created by/).textContent).toContain("nb_batch_input")
+    fireEvent.click(screen.getByTestId("trace-show-full"))
+
+    expect(within(screen.getByTestId("trace-step-card-nb_batch_input")).getByText("creates")).toBeInTheDocument()
+    // premiums also holds quote_id, but the value is not its: no relation is claimed.
+    expect(within(screen.getByTestId("trace-step-card-premiums")).queryByText("creates")).not.toBeInTheDocument()
+    expect(within(screen.getByTestId("trace-step-card-scenarios")).getByText("value unchanged")).toBeInTheDocument()
+    expect(screen.queryByText("rows unchanged")).not.toBeInTheDocument()
+  })
+
+  it("lists what a step changed, not the columns it passed through", () => {
+    const burnCost = {
+      column: "BurnCost",
+      expression_text: "premium",
+      substituted_text: "180.0",
+      result_value: 180,
+      not_computable_reason: null,
+      result_source: null,
+      reads: [{ column: "premium", sources: [{ node_id: "quotes", column: "premium", before_code: false }] }],
+      error: null,
+      error_type: null,
+    }
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "fill_na",
+          column: "profit",
+          steps: [
+            makeStep({
+              node_id: "quotes",
+              node_name: "quotes",
+              node_type: "dataInput",
+              schema_diff: { columns_added: ["first_name", "postcode", "premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+              input_values: {},
+              output_values: { first_name: "Finley", postcode: "PO14 3EZ", premium: 180 },
+              contributed_columns: ["premium"],
+            }),
+            makeStep({
+              node_id: "fill_na",
+              node_name: "fill_na",
+              schema_diff: {
+                columns_added: ["BurnCost"],
+                columns_removed: [],
+                columns_modified: ["SaleFlag"],
+                columns_passed: ["first_name", "postcode", "premium"],
+              },
+              input_values: { first_name: "Finley", postcode: "PO14 3EZ", premium: 180, SaleFlag: null },
+              output_values: { first_name: "Finley", postcode: "PO14 3EZ", premium: 180, SaleFlag: 0, BurnCost: 180 },
+              contributed_columns: ["BurnCost"],
+              derivations: [burnCost],
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const expand = (nodeId: string) => {
+      const card = screen.getByTestId(`trace-step-card-${nodeId}`)
+      if (!within(card).queryByTestId(`trace-step-body-${nodeId}`)) {
+        fireEvent.click(within(card).getAllByRole("button")[0])
+      }
+      return within(card).getByTestId(`trace-step-body-${nodeId}`)
+    }
+
+    const fillNa = expand("fill_na")
+    expect(fillNa).toHaveTextContent("SaleFlag")
+    expect(fillNa).toHaveTextContent("3 passed through")
+    expect(within(fillNa).queryByText("first_name")).not.toBeInTheDocument()
+    expect(within(fillNa).queryByText("postcode")).not.toBeInTheDocument()
+    // BurnCost is explained under "Computed here", once, without restating 180.
+    expect(within(fillNa).getAllByText("BurnCost")).toHaveLength(1)
+    expect(within(fillNa).getByTestId("trace-computed-here")).not.toHaveTextContent("180.0")
+
+    // A source shows only the loaded columns the traced value uses.
+    const quotes = expand("quotes")
+    expect(within(quotes).getByText("premium")).toBeInTheDocument()
+    expect(within(quotes).queryByText("first_name")).not.toBeInTheDocument()
+    expect(quotes).toHaveTextContent("+3 added")
+  })
+
   it("omits unrelated optimiser input branches from the focused ratebook trace", () => {
     render(
       <TracePanel
@@ -641,6 +1127,7 @@ describe("TracePanel", () => {
                 unused_constraint: 0.42,
               },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "unused_transform",
@@ -666,6 +1153,7 @@ describe("TracePanel", () => {
                 difference_to_market: 0.21,
               },
               column_relevant: false,
+              contributed_columns: [], derivations: [],
             }),
             makeStep({
               node_id: "banding",
@@ -681,6 +1169,7 @@ describe("TracePanel", () => {
               output_values: { proposer_age: 49, proposer_age_band: "49-55" },
               expression: null,
               calculation: null,
+              contributed_columns: ["proposer_age_band"], derivations: [],
               node_detail: {
                 detail_type: "banding",
                 factors: [
@@ -733,6 +1222,7 @@ describe("TracePanel", () => {
                 },
               },
               expression: null,
+              contributed_columns: ["optimised_premium"], derivations: [],
               node_detail: {
                 detail_type: "optimiser_apply",
                 mode: "ratebook",
@@ -770,6 +1260,118 @@ describe("TracePanel", () => {
     expect(screen.queryByText("difference_to_market")).not.toBeInTheDocument()
   })
 
+  it("keeps every step that computed an input of an optimised value in the focused trace", () => {
+    const diff = (added: string[], modified: string[] = []) => ({
+      columns_added: added,
+      columns_removed: [],
+      columns_modified: modified,
+      columns_passed: [],
+    })
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "apply_optimiser",
+          column: "optimal_premium",
+          output_value: 1.5,
+          steps: [
+            makeStep({
+              node_id: "nb_batch_input",
+              node_name: "nb_batch_input",
+              node_type: "dataInput",
+              schema_diff: diff(["quote_id", "channel", "ncd_years"]),
+              input_values: {},
+              output_values: { quote_id: "Q1", channel: "ctm", ncd_years: 11 },
+              contributed_columns: ["channel", "ncd_years", "quote_id"], derivations: [],
+            }),
+            makeStep({
+              node_id: "competitor_insights",
+              node_name: "competitor_insights",
+              node_type: "dataInput",
+              topological_rank: 1,
+              schema_diff: diff(["quote_id", "avg_cheapest_5"]),
+              input_values: {},
+              output_values: { quote_id: "Q1", avg_cheapest_5: 300 },
+              column_relevant: false,
+            }),
+            makeStep({
+              node_id: "competitor_join",
+              node_name: "competitor_join",
+              node_type: "edgeJoin",
+              topological_rank: 2,
+              schema_diff: diff([]),
+              output_values: { quote_id: "Q1", channel: "ctm", ncd_years: 11 },
+            }),
+            makeStep({
+              node_id: "competitor_scoring",
+              node_name: "competitor_scoring",
+              node_type: "modelScore",
+              topological_rank: 3,
+              schema_diff: diff(["competitor_premium"]),
+              output_values: { quote_id: "Q1", competitor_premium: 377.21 },
+              contributed_columns: ["competitor_premium"], derivations: [],
+            }),
+            makeStep({
+              node_id: "scenarios",
+              node_name: "scenarios",
+              node_type: "scenarioExpander",
+              topological_rank: 4,
+              schema_diff: diff(["price_adjustment", "profit"], ["diff_to_market"]),
+              output_values: { quote_id: "Q1", price_adjustment: 1.5, profit: 400, diff_to_market: 2.1 },
+              contributed_columns: ["diff_to_market", "price_adjustment", "profit"], derivations: [],
+            }),
+            makeStep({
+              node_id: "conversion_scoring",
+              node_name: "conversion_scoring",
+              node_type: "modelScore",
+              topological_rank: 5,
+              schema_diff: diff(["conversion_prediction"]),
+              output_values: { quote_id: "Q1", conversion_prediction: 0.004 },
+              contributed_columns: ["conversion_prediction"], derivations: [],
+            }),
+            makeStep({
+              node_id: "apply_optimiser",
+              node_name: "apply_optimiser",
+              node_type: "optimiserApply",
+              topological_rank: 6,
+              schema_diff: diff(["optimal_premium"]),
+              output_values: { quote_id: "Q1", optimal_premium: 1.5 },
+              contributed_columns: ["optimal_premium"], derivations: [],
+            }),
+          ],
+          // A policy join off the value's lineage found no row: a fact, not a warning.
+          correlation_diagnostics: [{
+            code: "join_no_match",
+            severity: "info",
+            reason: "join_no_match",
+            message: "No row of node 'policies' joined the traced row of 'SaleJoin'.",
+            node_id: "policies",
+            child_node_id: "SaleJoin",
+            match_columns: ["quote_id"],
+            ignored_columns: [],
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    for (const nodeId of ["nb_batch_input", "competitor_scoring", "scenarios", "conversion_scoring", "apply_optimiser"]) {
+      expect(screen.getByTestId(`trace-step-card-${nodeId}`)).toHaveAttribute("data-relevance", "relevant")
+    }
+    // The competitor price two steps above the apply shows what it computed.
+    expect(
+      within(screen.getByTestId("trace-step-card-competitor_scoring")).getByText(/competitor_premium: 377\.21/),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("trace-step-card-competitor_join")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("trace-step-card-competitor_insights")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("trace-correlation-diagnostics")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("trace-show-full"))
+    expect(screen.getByTestId("trace-step-card-competitor_join")).toHaveAttribute("data-relevance", "relevant")
+    expect(screen.getByTestId("trace-step-card-competitor_insights")).toHaveAttribute("data-relevance", "irrelevant")
+  })
+
   it("keeps bulk source-origin rows collapsed by default when they only add fields", () => {
     render(
       <TracePanel
@@ -802,6 +1404,7 @@ describe("TracePanel", () => {
                 business_use: null,
                 cover_type: "comprehensive",
               },
+              contributed_columns: ["annual_mileage"], derivations: [],
             }),
             makeStep({
               node_id: "rating",
@@ -832,8 +1435,11 @@ describe("TracePanel", () => {
     expect(screen.queryByText("business_use")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText("batch_quotes").closest("button") as HTMLElement)
-    expect(screen.getByTestId("trace-step-body-batch_quotes")).toBeInTheDocument()
-    expect(screen.getByText("business_use")).toBeInTheDocument()
+    const body = screen.getByTestId("trace-step-body-batch_quotes")
+    // Expanded, it lists the loaded column the value uses, not every column loaded.
+    expect(within(body).getByText("annual_mileage")).toBeInTheDocument()
+    expect(within(body).queryByText("business_use")).not.toBeInTheDocument()
+    expect(body).toHaveTextContent("+5 added")
   })
 
   it("renders source-origin columns with the source node instead of computed", () => {
@@ -1045,7 +1651,7 @@ describe("TracePanel", () => {
     expect(screen.getByText(/gap.*\+11/)).toBeInTheDocument()
     expect(screen.queryByText("Score calculation")).not.toBeInTheDocument()
     expect(screen.getByLabelText("Optimiser score calculation")).toHaveTextContent(
-      /expected_margin\s*95\s*\+\s*lambda expected_loss\s*-4\s*=\s*score\s*91/,
+      /expected_margin\s*95\s*-\s*lambda expected_loss\s*4\s*=\s*score\s*91/,
     )
     expect(screen.getAllByText("expected_loss").length).toBeGreaterThan(0)
     expect(screen.getByText("-20")).toBeInTheDocument()
@@ -1488,7 +2094,7 @@ describe("TracePanel", () => {
       <TracePanel
         trace={makeTrace({
           steps: [
-            makeStep({ node_id: "n1", node_name: "Irrelevant", column_relevant: false }),
+            makeStep({ node_id: "n1", node_name: "Irrelevant", column_relevant: false, contributed_columns: [], derivations: [] }),
           ],
         })}
         onClose={vi.fn()}
@@ -1508,6 +2114,7 @@ describe("TracePanel", () => {
               node_id: "n1",
               node_name: "Relevant Step",
               column_relevant: true,
+              contributed_columns: [], derivations: [],
               schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
             }),
           ],

@@ -73,8 +73,7 @@ even for a different graph/node. Estimates, auto-range jobs, and frontier recomp
 non-blocking job types and do not reserve that global slot. Separately, a graph/node
 single-flight key prevents a solve setup and a background auto-range setup from overlapping
 for the same graph/node. A repeated background auto-range start with the same node id and graph
-fingerprint returns the active job id (request-only chunk-size differences are not part of that
-identity), while a conflicting operation receives HTTP 409.
+fingerprint returns the active job id, while a conflicting operation receives HTTP 409.
 
 Estimate, solve setup, and auto-range pipeline materialisation all consume the execution
 facade's typed projection/strategy result for their request context. The same bounded
@@ -86,13 +85,19 @@ cap, as training preparation does: the worker writes the projected, validated so
 setup-owned Parquet file (or returns the auto-range totals), and the server process builds the
 quote grid from that file. A setup whose pipeline exceeds its memory budget therefore ends as a
 typed `memory_limited` job instead of growing the server, and cancelling setup terminates the
-worker. The solver itself still runs on a server thread against the grid. The explicit `thread`
-compatibility mode runs the same steps on the job's thread. The input estimate runs on the warm
+worker. The grid build, the solve, the inline frontier, later frontier recomputes and frontier
+point applies then run in the job's *solver session*: one dedicated spawn worker per solve that
+holds the solver and quote grid for as long as the result keeps them, under a native memory cap
+re-sized before every command to what the machine can give at that moment and never lifted
+(OPT-W01). Pressing Solve is never refused on a memory estimate: the solve runs, and only a solve
+that exceeds the cap stops, as `memory_limited`, with the server and other jobs unaffected;
+cancelling a solve terminates its session at once. The explicit `thread` compatibility mode runs
+the same steps on the job's thread and keeps the resident-grid estimate as its gate. The input estimate runs on the warm
 interactive worker pool that preview and trace use, under the estimate's admitted memory caps,
-and a memory-limited estimate answers the typed 507. Auto-range's byte-budgeted chunk sizing,
-which samples rows, also runs in the auto-range worker; the server process decides only from the
-graph's structure whether a job can be chunked. No optimiser path reads pipeline rows in the
-server process in process mode.
+and a memory-limited estimate answers the typed 507. Auto-range runs solve setup's own pipeline
+stage in that worker, in one attempt; the request thread resolves its config, column demand and
+timeout once and the worker receives them, so it never re-plans or loads a model before the
+stage. No optimiser path reads pipeline rows in the server process in process mode.
 
 Once a solve completes, its lambdas, objective/constraint totals, convergence status, and (for
 ratebook) factor tables are available as a job summary. From there a user can:
@@ -282,8 +287,12 @@ request, matching the pattern used by [modelling](../modelling/high-level.md) tr
 solves and ratebook coordinate descent can run long enough that holding an HTTP connection open
 is impractical, and polling lets the UI show live progress.
 
-Heavy runtime objects a solve produces (the solver instance, the built `QuoteGrid`, the raw
-solve result with its dataframe) are kept in the job store only for a short retention window,
+In process mode those heavy objects live only in the job's solver session process, never in
+the server: a native optimiser call cannot be stopped by the server's RSS supervision, so the
+only safe place for one is a process whose kernel cap kills it alone. The job store keeps the
+session handle under the same retention window, and dropping it ends the process. Heavy
+runtime objects a solve produces (the solver instance, the built `QuoteGrid`, the raw
+solve result with its dataframe) are kept only for a short retention window,
 then the job is slimmed to its API-facing summary. Anything a later request might need past
 that window — the per-quote apply dataframe, the ratebook factor source — is persisted to a
 parquet file under a dedicated temp-directory root instead of being kept in memory, and the
@@ -320,19 +329,20 @@ lifetime is the job's (24 hours), not the heavy state's (15 minutes idle), becau
 objects have been released. Readers take a lease instead of copying the file, so a job expiring
 under a reader cannot delete the file mid-read.
 
-Frontier auto-range and frontier compute share the same schema validation and column-projection
-logic as the main solve. One auto-range job produces the estimate. When the upstream pipeline
-chain is provably row-local it runs chunk by chunk: the pipeline executes up to the node below the
-scenario expander, and each base chunk is expanded, scored and reduced before the next, so the
-fully expanded scenario frame is never materialised. Its peak memory follows the chunk size
-rather than the expanded frame: at a fixed chunk size, four times the scenarios raises the job's
-peak memory by at most half, plus 64 MiB. A chain that cannot be proven row-local runs the same
-job over the whole frame in bounded batches and records why chunking was lost. This keeps
-large-scenario-count solves from requiring a full-memory pass just to suggest frontier ranges.
-One streaming `group_by(quote).agg(min, max)` over the whole frame was measured as the
-alternative and rejected: scenario expansion (an `explode`) and batch model scoring materialise
-the expanded frame ahead of it, so its peak grew about threefold with four times the scenarios
-and exceeded the default 2 GiB auto-range budget where the chunked job stayed near 1 GiB.
+Frontier auto-range runs the pipeline exactly as solve setup does: one pipeline stage, shared by
+both jobs, executes with the solve's column demand, execution target, seed-plan request and
+admission (a growth grant under the solve's memory profile, after waiting out a running input
+estimate). The shared cache therefore makes the same seed, rebuild and capture decision for
+either job, and a capture an auto-range publishes is the one the next solve seeds from, and the
+reverse. Auto-range differs only after the stage: it validates and projects the constraint
+columns with the solve's schema validation, then reads the resolved data-input frame in bounded
+batches of the pipeline's streaming chunk size (Pipeline Settings), reduces each batch to
+per-quote extrema, and recombines quotes split across batches through hash-partitioned temporary
+Parquet rather than one global per-quote table. There is no separate chunked auto-range path, no
+auto-range batch-size setting and no auto-range warning: a completed job returns ranges, and
+anything else ends the job in a failure status. Running the solve's stage rather than a path of its own is an
+owner decision (27 Sep 2026): the two paths had drifted in demand, target and capture widening,
+so each job's cache decision missed the other's capture.
 
 Frontier ranges are expressed as absolute threshold values, not multipliers of a baseline —
 multiplier semantics are ambiguous once constraints have different natural scales, and the
@@ -379,8 +389,8 @@ stall discovered later under load.
 ## Interactions
 
 - [execution-engine](../execution-engine/high-level.md) — runs the pipeline graph up to the
-  optimiser node (or, for streaming auto-range, up to an intermediate node) to produce the
-  scored input dataframe and, for ratebook mode, the banding-source factor columns.
+  optimiser's data input (or the optimiser node itself) to produce the scored input dataframe
+  and, for ratebook mode, the banding-source factor columns.
 - [background-jobs](../background-jobs/high-level.md) — provides the job store, lifecycle state
   machine, cancellation registries, and artifact-cleaner/TTL eviction that every solve, apply,
   and frontier operation is built on.
@@ -454,7 +464,9 @@ An optimiser artifact is never written with a non-finite value or (for ratebook)
 factor-table/dtype-contract section or combined-factor collar; the save/log request is rejected before the write, listing
 every offending path in the payload. A valid server-owned handle whose artifact has been
 removed or expired returns 410 with a stable re-run message. A frontier point with neither a
-retained artifact nor a live quote grid is the named 410 `frontier_point_unavailable`, and a
+retained artifact nor a live quote grid is the named 410 `frontier_point_unavailable` (its
+`runtime_reason` says whether the runtime expired, or its solver session ran out of memory —
+worded definitely only when the memory limiter recorded it — or stopped unexpectedly), and a
 point request replaced by a newer one while it waited is the named 409
 `frontier_point_apply_replaced`. An invalid server-owned handle or
 a present-but-corrupt artifact returns a sanitized 500; filesystem and parquet details remain
@@ -490,7 +502,13 @@ The optimiser follows the
 [canonical-only format policy](../README.md#canonical-only-format-policy).
 Every configured constraint range is represented only by
 `frontier_ranges[constraint] = {"min": number, "max": number}`. There is no global-range reader,
-fallback, mirroring, or migration in the service or optimiser UI.
+fallback, mirroring, or migration in the service or optimiser UI. A constraint is swept exactly
+when it has a `frontier_ranges` entry: a solve computes a frontier when any constraint is swept,
+over the swept constraints only, with every other constraint held at its `constraints` bound at
+each point. There is no separate frontier on/off flag. A range naming a constraint that is not
+configured is rejected. A swept constraint's saved `constraints` value is not used while it is
+swept: the solve (and so the as-solved result) runs it at its range's `min`, and the value
+applies again once the constraint is no longer swept.
 
 Tests cover exact per-constraint validation and assert that frontend persistence
 contains `frontier_ranges` only.

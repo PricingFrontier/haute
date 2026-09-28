@@ -1188,7 +1188,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("OptimiserConfig")).toBeInTheDocument()
   })
 
-  it("shows the optimiser panes for the node's mode and resolves a pane the mode lacks to Data", () => {
+  it("shows the same optimiser panes in both modes", () => {
     useUIStore.setState({ optimiserPanes: { opt_panes: "factors" } })
     const optimiserNode = (mode: string) => makeNode({
       id: "opt_panes",
@@ -1208,11 +1208,10 @@ describe("NodePanel", () => {
 
     rendered.unmount()
     renderPanel({ node: optimiserNode("online") })
-    expect(paneKeys()).toEqual(["data", "constraints", "solve", "export"])
-    expect(screen.getByRole("tab", { name: "Data" })).toHaveAttribute("aria-selected", "true")
-    expect(optimiserConfigProps.at(-1)?.activePane).toBe("data")
-    // Resolution never forgets the ratebook choice.
-    expect(useUIStore.getState().optimiserPanes.opt_panes).toBe("factors")
+    // Factors holds the validation factors too, so online mode keeps it.
+    expect(paneKeys()).toEqual(["data", "factors", "constraints", "solve", "export"])
+    expect(screen.getByRole("tab", { name: "Factors" })).toHaveAttribute("aria-selected", "true")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("factors")
   })
 
   it("remembers the active optimiser pane by node and marks Solve while a solve runs", () => {
@@ -2302,10 +2301,11 @@ describe("NodePanel", () => {
     const banner = screen.getByRole("alert")
     expect(banner).toHaveTextContent("Unknown node type")
     expect(banner).toHaveTextContent("unknownType")
-    expect(screen.getByRole("link", { name: /node documentation/i })).toHaveAttribute(
-      "href",
-      "/docs/building-models/nodes/",
-    )
+    // The editor's server does not serve the docs: the link opens the published node reference.
+    const docs = screen.getByRole("link", { name: /node documentation/i })
+    expect(docs).toHaveAttribute("href", "https://pricingfrontier.github.io/haute/building-models/nodes/")
+    expect(docs).toHaveAttribute("target", "_blank")
+    expect(docs).toHaveAttribute("rel", "noopener noreferrer")
 
     const diagnostic = screen.getByTestId("unknown-node-config-diagnostic")
     expect(diagnostic.tagName).toBe("PRE")

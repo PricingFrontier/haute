@@ -179,6 +179,7 @@ def infer_deploy_execution_policy(
     from haute.deploy._scorer import (
         _attach_bundled_feature_contracts,
         _attach_bundled_model_contract_inputs,
+        _attach_bundled_optimiser_artifacts,
         _resolve_runtime_graph_paths,
         admit_deploy_execution,
     )
@@ -189,6 +190,7 @@ def infer_deploy_execution_policy(
     sample = _read_sample_row(graph, input_node_ids)
     remap = artifact_paths or {}
     planned = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
+    planned = _attach_bundled_optimiser_artifacts(planned, remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, planned.parents_of)) | {
         output_node_id
     }

@@ -193,7 +193,7 @@ class _XGBoostProgress:
                             entry[f"{prefix}_{metric}"] = value
                 loss_history.append(entry)
                 if on_iteration is not None:
-                    on_iteration(epoch + 1, total, metrics)
+                    on_iteration(epoch + 1, total, metrics, entry)
                 return False  # False = continue training
 
         self.loss_history = loss_history

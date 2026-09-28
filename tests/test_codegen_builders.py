@@ -2,19 +2,28 @@
 
 Follows the same pattern as test_codegen.py: build a node, call
 _node_to_code (which dispatches to the type-specific builder), then
-verify the generated code compiles and contains expected fragments.
+verify the generated function. A configured node without code is a
+declaration (its inputs and a ``...`` body); one with code is a hook that
+receives the configured result as ``df``. The exec tests run the generated
+function the way a standalone ``pipeline.run()`` runs it: the decorator
+performs the node's configured work.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 import polars as pl
 import pytest
 
+import haute
 from haute._api_input_schema import ApiInputSchemaError
 from haute._codegen_builders import _build_extra_kwargs
+from haute._config_io import collect_node_configs
+from haute._mlflow_io import ScoringModel
 from haute.codegen import _node_to_code, graph_to_code
 from haute.errors import ConfigError, ParseError
 from tests.conftest import compile_node_code as _compile_node_code
@@ -37,6 +46,49 @@ def _make_codegen_node(node_type: str, config: dict, label: str = "TestNode"):
     )
 
 
+def _load_generated(code: str, directory: Path) -> haute.Pipeline:
+    """Exec generated node code as a pipeline module saved at *directory*/main.py.
+
+    A decorator resolves its ``config=`` path against the directory of the
+    file that defines the function, so sidecars are read from *directory*.
+    """
+    namespace: dict = {"__file__": str(directory / "main.py")}
+    exec(
+        f"import polars as pl\nimport haute\npipeline = haute.Pipeline('exec_test')\n\n{code}\n",
+        namespace,
+    )
+    pipeline: haute.Pipeline = namespace["pipeline"]
+    return pipeline
+
+
+def _run_generated(code: str, *inputs: object, directory: Path) -> object:
+    """Run the generated node as a standalone ``pipeline.run()`` runs it."""
+    (node,) = _load_generated(code, directory).nodes
+    return node(*inputs)
+
+
+def _collect(frame: object) -> pl.DataFrame:
+    """Collect a LazyFrame; pass a DataFrame through."""
+    if isinstance(frame, pl.LazyFrame):
+        return frame.collect()
+    assert isinstance(frame, pl.DataFrame)
+    return frame
+
+
+def _stub_scoring_model() -> ScoringModel:
+    """A CatBoost-flavoured model over a mock estimator predicting 0.5 per row."""
+    model = MagicMock()
+    model.feature_names_ = ["a", "b"]
+    model.predict.side_effect = lambda frame: np.full(len(frame), 0.5)
+    del model.predict_proba
+    return ScoringModel(
+        model=model,
+        feature_names=["a", "b"],
+        cat_feature_names=frozenset(),
+        flavor="catboost",
+    )
+
+
 # ---------------------------------------------------------------------------
 # _build_extra_kwargs helper
 # ---------------------------------------------------------------------------
@@ -48,33 +100,32 @@ class TestBuildExtraKwargs:
     def test_includes_present_keys(self) -> None:
         config = {"a": 1, "b": "hello", "c": [1, 2]}
         result = _build_extra_kwargs(config, ("a", "b", "c"))
-        assert "a=1" in result
-        assert "b='hello'" in result
-        assert "c=[1, 2]" in result
+        assert result == [("a", 1), ("b", "hello"), ("c", [1, 2])]
 
     def test_skips_none_values(self) -> None:
         config = {"a": None, "b": 42}
         result = _build_extra_kwargs(config, ("a", "b"))
-        assert len(result) == 1
-        assert "b=42" in result
+        assert result == [("b", 42)]
 
     def test_skips_empty_string(self) -> None:
         config = {"a": "", "b": "val"}
         result = _build_extra_kwargs(config, ("a", "b"))
-        assert len(result) == 1
-        assert "b='val'" in result
+        assert result == [("b", "val")]
 
     def test_skips_empty_list(self) -> None:
         config = {"a": [], "b": [1]}
         result = _build_extra_kwargs(config, ("a", "b"))
-        assert len(result) == 1
-        assert "b=[1]" in result
+        assert result == [("b", [1])]
 
     def test_skips_missing_keys(self) -> None:
         config = {"a": 10}
         result = _build_extra_kwargs(config, ("a", "missing_key"))
-        assert len(result) == 1
-        assert "a=10" in result
+        assert result == [("a", 10)]
+
+    def test_keeps_falsy_values_that_are_not_empty(self) -> None:
+        config = {"a": 0, "b": False, "c": {}}
+        result = _build_extra_kwargs(config, ("a", "b", "c"))
+        assert result == [("a", 0), ("b", False), ("c", {})]
 
     def test_empty_config(self) -> None:
         result = _build_extra_kwargs({}, ("a", "b"))
@@ -96,11 +147,11 @@ class TestGenApiInput:
             label="PolicyData",
         )
         code = _node_to_code(node)
-        assert 'config="config/quote_input/PolicyData.json"' in code
-        assert "def PolicyData()" in code
-        assert "resolve_api_input_from_config" in code
+        assert code == (
+            '@pipeline.api_input(config="config/quote_input/PolicyData.json")\n'
+            "def PolicyData(): ...\n"
+        )
         assert "data/api_input.parquet" not in code
-        assert "base_dir=_HAUTE_CONFIG_BASE" in code
         _compile_node_code(code)
 
     def test_csv_api_input(self) -> None:
@@ -110,10 +161,9 @@ class TestGenApiInput:
             label="CSVInput",
         )
         code = _node_to_code(node)
-        assert 'config="config/quote_input/CSVInput.json"' in code
-        assert "def CSVInput()" in code
-        assert "resolve_api_input_from_config" in code
-        assert "def CSVInput() -> pl.LazyFrame | dict[str, pl.LazyFrame]:" in code
+        assert code == (
+            '@pipeline.api_input(config="config/quote_input/CSVInput.json")\ndef CSVInput(): ...\n'
+        )
         assert "data/input.csv" not in code
         _compile_node_code(code)
 
@@ -129,8 +179,16 @@ class TestGenApiInput:
 
         code = _node_to_code(node)
 
-        assert "resolve_api_input_from_config" in code
-        assert "categorical_levels" not in code
+        # The levels stay in the sidecar the shared reader loads; the
+        # generated function only declares the node.
+        assert code == (
+            '@pipeline.api_input(config="config/quote_input/CategoricalInput.json")\n'
+            "def CategoricalInput(): ...\n"
+        )
+        sidecar = collect_node_configs(_g({"nodes": [node.model_dump()], "edges": []}))
+        assert json.loads(sidecar["config/quote_input/CategoricalInput.json"])[
+            "categorical_levels"
+        ] == {"region": ["north", "south"]}
         _compile_node_code(code)
 
     def test_json_api_input(self) -> None:
@@ -140,11 +198,10 @@ class TestGenApiInput:
             label="JSONInput",
         )
         code = _node_to_code(node)
-        assert 'config="config/quote_input/JSONInput.json"' in code
-        assert "def JSONInput()" in code
-        assert "resolve_api_input_from_config" in code
-        assert "def JSONInput() -> pl.LazyFrame | dict[str, pl.LazyFrame]:" in code
-        assert '"config/quote_input/JSONInput.json"' in code
+        assert code == (
+            '@pipeline.api_input(config="config/quote_input/JSONInput.json")\n'
+            "def JSONInput(): ...\n"
+        )
         assert "data/quotes.json" not in code
         _compile_node_code(code)
 
@@ -155,14 +212,15 @@ class TestGenApiInput:
             label="JSONLInput",
         )
         code = _node_to_code(node)
-        assert "resolve_api_input_from_config" in code
+        assert code == (
+            '@pipeline.api_input(config="config/quote_input/JSONLInput.json")\n'
+            "def JSONLInput(): ...\n"
+        )
         assert "data/quotes.jsonl" not in code
         _compile_node_code(code)
 
     def test_api_input_with_row_id(self) -> None:
-        """row_id_column is included in the inline decorator, but _node_to_code
-        replaces the decorator with a config= ref.  Verify the function is
-        still valid and the config path is present."""
+        """row_id_column lives in the sidecar; the decorator carries only its path."""
         node = _make_codegen_node(
             "apiInput",
             {"path": "data/api.parquet", "row_id_column": "policy_id"},
@@ -170,7 +228,8 @@ class TestGenApiInput:
         )
         code = _node_to_code(node)
         assert 'config="config/quote_input/WithRowID.json"' in code
-        assert "def WithRowID()" in code
+        assert "def WithRowID(): ...\n" in code
+        assert "policy_id" not in code
         _compile_node_code(code)
 
     def test_api_input_no_row_id(self) -> None:
@@ -186,7 +245,7 @@ class TestGenApiInput:
     def test_api_input_empty_path(self) -> None:
         node = _make_codegen_node("apiInput", {"path": ""}, label="Empty")
         code = _node_to_code(node)
-        assert "def Empty()" in code
+        assert "def Empty(): ...\n" in code
         _compile_node_code(code)
 
 
@@ -217,15 +276,15 @@ class TestGenBanding:
             label="AgeBanding",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert 'config="config/banding/AgeBanding.json"' in code
-        assert "def AgeBanding(data: pl.LazyFrame)" in code
-        # The body must APPLY banding from the sidecar config — the same
-        # pattern rating bodies use — so a standalone run of the saved file
-        # actually bands instead of silently passing the frame through.
-        assert "from haute.graph_utils import apply_banding_from_config" in code
-        assert 'apply_banding_from_config(data, "config/banding/AgeBanding.json"' in code
-        assert "base_dir=base" in code
-        assert "return df" in code
+        # A declaration: the decorator applies banding from the sidecar config
+        # (the helper the executor calls), so a standalone run of the saved
+        # file bands instead of passing the frame through. See
+        # TestCodegenExecValidation.test_banding_exec_applies_sidecar_config.
+        assert code == (
+            '@pipeline.banding(config="config/banding/AgeBanding.json")\n'
+            "def AgeBanding(data): ...\n"
+        )
+        assert "age_band" not in code
         _compile_node_code(code)
 
     def test_single_factor_with_default(self) -> None:
@@ -245,8 +304,8 @@ class TestGenBanding:
             label="WithDefault",
         )
         code = _node_to_code(node, source_names=["data"])
-        # The inline decorator should have default kwarg before config replacement
         assert 'config="config/banding/WithDefault.json"' in code
+        assert "unknown" not in code
         _compile_node_code(code)
 
     def test_multi_factor_banding(self) -> None:
@@ -271,16 +330,14 @@ class TestGenBanding:
             label="MultiBand",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert 'config="config/banding/MultiBand.json"' in code
-        assert "def MultiBand(data: pl.LazyFrame)" in code
-        # Multi-factor emission embeds the same apply call as single-factor.
-        assert 'apply_banding_from_config(data, "config/banding/MultiBand.json"' in code
+        # Multi-factor emission is the same declaration as single-factor.
+        assert code == (
+            '@pipeline.banding(config="config/banding/MultiBand.json")\ndef MultiBand(data): ...\n'
+        )
         _compile_node_code(code)
 
     def test_categorical_banding(self) -> None:
-        """The inline decorator contains 'categorical' but _node_to_code
-        replaces it with config=.  Verify the config path and function
-        signature are correct."""
+        """The categorical rules live in the sidecar; the decorator names it."""
         node = _make_codegen_node(
             "banding",
             {
@@ -296,18 +353,20 @@ class TestGenBanding:
             label="CatBand",
         )
         code = _node_to_code(node, source_names=["df_in"])
-        assert 'config="config/banding/CatBand.json"' in code
-        assert "def CatBand(df_in: pl.LazyFrame)" in code
+        assert code == (
+            '@pipeline.banding(config="config/banding/CatBand.json")\ndef CatBand(df_in): ...\n'
+        )
+        assert "categorical" not in code
         _compile_node_code(code)
 
     def test_empty_factors(self) -> None:
         node = _make_codegen_node("banding", {"factors": []}, label="Empty")
         code = _node_to_code(node, source_names=["data"])
         # Still generates a valid function
-        assert "def Empty(" in code
+        assert "def Empty(data): ...\n" in code
         _compile_node_code(code)
 
-    def test_no_sources_uses_df_param(self) -> None:
+    def test_no_sources_declares_no_parameters(self) -> None:
         node = _make_codegen_node(
             "banding",
             {
@@ -323,7 +382,10 @@ class TestGenBanding:
             label="NoSrc",
         )
         code = _node_to_code(node, source_names=[])
-        assert "df: pl.LazyFrame" in code
+        # A disconnected declaration has no inputs, so no parameters: there is
+        # no phantom ``df`` input.
+        assert "def NoSrc(): ...\n" in code
+        assert "df" not in code
         _compile_node_code(code)
 
 
@@ -349,11 +411,12 @@ class TestGenScenarioExpander:
             label="Scenarios",
         )
         code = _node_to_code(node, source_names=["base_data"])
-        assert 'config="config/expander/Scenarios.json"' in code
-        assert "def Scenarios(base_data: pl.LazyFrame)" in code
-        # Body applies the sidecar config via the shared helper (not a no-op
-        # passthrough) so a standalone pipeline.run() expands the grid.
-        assert "expand_scenarios_from_config(base_data" in code
+        # A declaration: the decorator expands the grid from the sidecar (not
+        # a no-op passthrough), so a standalone pipeline.run() expands it.
+        assert code == (
+            '@pipeline.scenario_expander(config="config/expander/Scenarios.json")\n'
+            "def Scenarios(base_data): ...\n"
+        )
         _compile_node_code(code)
 
     def test_includes_extra_kwargs(self) -> None:
@@ -375,23 +438,25 @@ class TestGenScenarioExpander:
     def test_empty_config(self) -> None:
         node = _make_codegen_node("scenarioExpander", {}, label="EmptyExpand")
         code = _node_to_code(node, source_names=["data"])
-        assert "def EmptyExpand(data: pl.LazyFrame)" in code
-        assert "expand_scenarios_from_config(data" in code
+        assert code == (
+            '@pipeline.scenario_expander(config="config/expander/EmptyExpand.json")\n'
+            "def EmptyExpand(data): ...\n"
+        )
         _compile_node_code(code)
 
-    def test_no_sources_uses_df_param(self) -> None:
+    def test_no_sources_declares_no_parameters(self) -> None:
         node = _make_codegen_node(
             "scenarioExpander",
             {"column_name": "sv", "stepCount": 5},
             label="NoSrcExpand",
         )
         code = _node_to_code(node, source_names=[])
-        assert "df: pl.LazyFrame" in code
-        assert "expand_scenarios_from_config(df" in code
+        assert "def NoSrcExpand(): ...\n" in code
+        assert "df" not in code
         _compile_node_code(code)
 
     def test_skips_empty_config_values(self) -> None:
-        """Empty string and None values should not appear as decorator kwargs."""
+        """Empty string and None values never reach the decorator: it names the sidecar only."""
         node = _make_codegen_node(
             "scenarioExpander",
             {
@@ -402,14 +467,13 @@ class TestGenScenarioExpander:
             label="PartialExpand",
         )
         code = _node_to_code(node, source_names=["data"])
-        # The inline decorator (before config replacement) should NOT
-        # emit empty kwargs.  But after config replacement the decorator
-        # is just config="...".
-        assert 'config="config/expander/PartialExpand.json"' in code
+        assert code.startswith(
+            '@pipeline.scenario_expander(config="config/expander/PartialExpand.json")\n'
+        )
         _compile_node_code(code)
 
     def test_with_user_code_explicit(self) -> None:
-        """Scenario expander with explicit assignment Polars code generates sentinel."""
+        """Scenario expander with explicit assignment Polars code is a ``df`` hook."""
         node = _make_codegen_node(
             "scenarioExpander",
             {
@@ -420,12 +484,16 @@ class TestGenScenarioExpander:
             label="FilteredExpand",
         )
         code = _node_to_code(node, source_names=["upstream"])
-        assert '.filter(pl.col("sv") > 0.9)' in code
-        assert "return df" in code
+        assert code == (
+            '@pipeline.scenario_expander(config="config/expander/FilteredExpand.json")\n'
+            "def FilteredExpand(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    df = df.filter(pl.col("sv") > 0.9)\n'
+            "    return df\n"
+        )
         _compile_node_code(code)
 
     def test_with_user_code_assignment(self) -> None:
-        """Scenario expander with assignment-style user code."""
+        """Assignment-style code runs on the expanded frame the decorator hands in as df."""
         node = _make_codegen_node(
             "scenarioExpander",
             {
@@ -436,19 +504,24 @@ class TestGenScenarioExpander:
             label="AssignExpand",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "df = expand_scenarios_from_config(data" in code
-        assert "df = df.with_columns" in code
+        assert "def AssignExpand(df: pl.LazyFrame) -> pl.LazyFrame:\n" in code
+        assert '    df = df.with_columns(pl.col("sv").alias("factor"))\n    return df\n' in code
+        assert "expand_scenarios_from_config" not in code
+        assert "data" not in code
         _compile_node_code(code)
 
-    def test_empty_code_uses_passthrough(self) -> None:
-        """Empty code string produces passthrough (no sentinel)."""
+    def test_empty_code_is_a_declaration(self) -> None:
+        """An empty code string is no code: the node is a declaration, not a hook."""
         node = _make_codegen_node(
             "scenarioExpander",
             {"column_name": "sv", "stepCount": 5, "code": ""},
             label="PassExpand",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "expand_scenarios_from_config(data" in code
+        assert code == (
+            '@pipeline.scenario_expander(config="config/expander/PassExpand.json")\n'
+            "def PassExpand(data): ...\n"
+        )
         _compile_node_code(code)
 
 
@@ -472,9 +545,10 @@ class TestGenOptimiser:
             label="PriceOpt",
         )
         code = _node_to_code(node, source_names=["scenarios"])
-        assert 'config="config/optimisation/PriceOpt.json"' in code
-        assert "def PriceOpt(scenarios: pl.LazyFrame)" in code
-        assert "return scenarios" in code
+        assert code == (
+            '@pipeline.optimiser(config="config/optimisation/PriceOpt.json")\n'
+            "def PriceOpt(scenarios): ...\n"
+        )
         _compile_node_code(code)
 
     def test_optimiser_with_many_kwargs(self) -> None:
@@ -493,13 +567,13 @@ class TestGenOptimiser:
         )
         code = _node_to_code(node, source_names=["expanded"])
         assert 'config="config/optimisation/Optimizer.json"' in code
+        assert "max_iter" not in code
         _compile_node_code(code)
 
     def test_optimiser_empty_config(self) -> None:
         node = _make_codegen_node("optimiser", {}, label="EmptyOpt")
         code = _node_to_code(node, source_names=["data"])
-        assert "def EmptyOpt(data: pl.LazyFrame)" in code
-        assert "return data" in code
+        assert "def EmptyOpt(data): ...\n" in code
         _compile_node_code(code)
 
     def test_optimiser_no_sources(self) -> None:
@@ -509,8 +583,8 @@ class TestGenOptimiser:
             label="NoSrcOpt",
         )
         code = _node_to_code(node, source_names=[])
-        assert "df: pl.LazyFrame" in code
-        assert "return df" in code
+        assert "def NoSrcOpt(): ...\n" in code
+        assert "df" not in code
         _compile_node_code(code)
 
     def test_optimiser_skips_none_kwargs(self) -> None:
@@ -525,7 +599,7 @@ class TestGenOptimiser:
             label="Sparse",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert 'config="config/optimisation/Sparse.json"' in code
+        assert code.startswith('@pipeline.optimiser(config="config/optimisation/Sparse.json")\n')
         _compile_node_code(code)
 
 
@@ -542,9 +616,8 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        assert "@pipeline.explore(" in code
-        assert "def InspectClaims(claims: pl.LazyFrame)" in code
-        assert "return claims" in code
+        # The decorator passes the input through; the function declares it.
+        assert code == "@pipeline.explore\ndef InspectClaims(claims): ...\n"
         assert "config/" not in code
         _compile_node_code(code)
 
@@ -562,12 +635,16 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        assert "@pipeline.explore(" in code
-        assert "def InspectClaims(claims: pl.LazyFrame)" in code
-        assert "df = claims" in code
-        assert ".filter(pl.col('premium') > 0)" in code
-        assert "return df" in code
-        assert "return claims" not in code
+        # A hook: the decorator hands the explored input in as ``df``, so the
+        # body is the user's code verbatim and ``return df`` — no binding line.
+        assert code == (
+            "@pipeline.explore\n"
+            "def InspectClaims(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    df = df.filter(pl.col('premium') > 0)"
+            ".with_columns((pl.col('premium') * 2).alias('double_premium'))\n"
+            "    return df\n"
+        )
+        assert "claims" not in code
         assert "config/" not in code
         _compile_node_code(code)
 
@@ -592,13 +669,12 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        # Decorator must carry the overview kwarg as a literal dict.  Note that
-        # ``_node_to_code`` post-injects ``contract=...`` into the same decorator
-        # call, so we only assert on the overview substring (kwarg ordering is
-        # an implementation detail of contract injection).
-        assert "@pipeline.explore(" in code
-        assert "overview={'dataset_snapshot': True}" in code
-        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        # The decorator carries the overview keyword as a literal dict, and
+        # nothing else: an Explore contract adds no information.
+        assert code == (
+            '@pipeline.explore(overview={"dataset_snapshot": True})\n'
+            "def InspectClaims(claims): ...\n"
+        )
         _compile_node_code(code)
 
     def test_explore_without_overview_emits_bare_decorator(self) -> None:
@@ -606,9 +682,8 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        # No overview = no overview kwarg.  We don't assert ``()`` literally
-        # because ``_node_to_code`` injects ``contract=...`` into the same call.
-        assert "@pipeline.explore(" in code
+        # No overview = no keywords at all: the decorator is bare.
+        assert code.startswith("@pipeline.explore\n")
         assert "overview=" not in code
         _compile_node_code(code)
 
@@ -627,11 +702,12 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        assert "@pipeline.explore(" in code
-        assert "overview={'dataset_snapshot': True}" in code
-        assert "df = claims" in code
-        assert ".filter(pl.col('premium') > 0)" in code
-        assert "return df" in code
+        assert code.startswith(
+            '@pipeline.explore(overview={"dataset_snapshot": True})\n'
+            "def InspectClaims(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        )
+        assert "    df = df.filter(pl.col('premium') > 0)" in code
+        assert code.endswith("    return df\n")
         _compile_node_code(code)
 
     def test_explore_with_empty_overview_omits_decorator_kwarg(self) -> None:
@@ -644,7 +720,7 @@ class TestGenExplore:
         code = _node_to_code(node, source_names=["claims"])
 
         # Empty overview must NOT pollute the decorator.
-        assert "@pipeline.explore(" in code
+        assert code.startswith("@pipeline.explore\n")
         assert "overview=" not in code
         _compile_node_code(code)
 
@@ -657,9 +733,9 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        assert "@pipeline.explore(" in code
-        assert "overview={'schema': True}" in code
-        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        assert code == (
+            '@pipeline.explore(overview={"schema": True})\ndef InspectClaims(claims): ...\n'
+        )
         _compile_node_code(code)
 
     def test_explore_with_both_overview_toggles_emits_decorator_kwarg(self) -> None:
@@ -753,6 +829,54 @@ class TestGenExplore:
 
 
 # ---------------------------------------------------------------------------
+# _gen_data_input
+# ---------------------------------------------------------------------------
+
+
+_PARQUET_INPUT = {
+    "inputType": "file",
+    "format": "parquet",
+    "mode": "scan",
+    "path": "data/policies.parquet",
+    "arguments": {},
+}
+
+
+class TestGenDataInput:
+    """A Data Input is a source: a declaration, or a ``df`` hook over the loaded data."""
+
+    def test_data_input_without_code_is_a_declaration(self) -> None:
+        node = _make_codegen_node("dataInput", _PARQUET_INPUT, label="load_policies")
+
+        code = _node_to_code(node)
+
+        assert code == (
+            '@pipeline.data_input(config="config/data_input/load_policies.json")\n'
+            "def load_policies(): ...\n"
+        )
+        assert "policies.parquet" not in code
+        _compile_node_code(code)
+
+    def test_data_input_with_code_is_a_df_hook(self) -> None:
+        node = _make_codegen_node(
+            "dataInput",
+            {**_PARQUET_INPUT, "code": "df = df.filter(pl.col('policy_id') > 1)"},
+            label="load_policies",
+        )
+
+        code = _node_to_code(node)
+
+        # ``df`` is the loaded data; a Data Input has no other parameters.
+        assert code == (
+            '@pipeline.data_input(config="config/data_input/load_policies.json")\n'
+            "def load_policies(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    df = df.filter(pl.col('policy_id') > 1)\n"
+            "    return df\n"
+        )
+        _compile_node_code(code)
+
+
+# ---------------------------------------------------------------------------
 # Full graph round-trip with these node types
 # ---------------------------------------------------------------------------
 
@@ -794,8 +918,8 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def Source()" in code
-        assert "def Banding(Source: pl.LazyFrame)" in code
+        assert "def Source(): ...\n" in code
+        assert "def Banding(Source): ...\n" in code
         assert 'pipeline.connect("Source", "Banding")' in code
         compile(code, "<test>", "exec")
 
@@ -829,7 +953,7 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def Expand(Data: pl.LazyFrame)" in code
+        assert "def Expand(Data): ...\n" in code
         assert 'pipeline.connect("Data", "Expand")' in code
         compile(code, "<test>", "exec")
 
@@ -861,7 +985,7 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def Optimise(Data: pl.LazyFrame)" in code
+        assert "def Optimise(Data): ...\n" in code
         assert 'pipeline.connect("Data", "Optimise")' in code
         compile(code, "<test>", "exec")
 
@@ -890,7 +1014,7 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def Explore_Claims(Claims: pl.LazyFrame)" in code
+        assert "@pipeline.explore\ndef Explore_Claims(Claims): ...\n" in code
         assert 'pipeline.connect("Claims", "Explore_Claims")' in code
         compile(code, "<test>", "exec")
 
@@ -946,8 +1070,8 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def API()" in code
-        assert "def Process(quotes: pl.LazyFrame)" in code
+        assert "def API(): ...\n" in code
+        assert "def Process(quotes: pl.LazyFrame) -> pl.LazyFrame:" in code
         assert 'pipeline.connect("API", "Process", source_port="quotes")' in code
         compile(code, "<test>", "exec")
 
@@ -973,11 +1097,18 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def Params()" in code
-        # Constant nodes keep the inline decorator (no config folder)
-        # so we check the LazyFrame data dict is present
-        assert '"rate"' in code
-        assert '"cap"' in code
+        # A Constant is config-backed: the values live in its sidecar, which
+        # the decorator reads when the file runs; nothing is copied into source.
+        assert (
+            '@pipeline.constant(config="config/constant/Params.json")\ndef Params(): ...\n' in code
+        )
+        assert '"rate"' not in code
+        assert '"cap"' not in code
+        sidecar = json.loads(collect_node_configs(graph)["config/constant/Params.json"])
+        assert sidecar["values"] == [
+            {"name": "rate", "value": "0.05"},
+            {"name": "cap", "value": "1000"},
+        ]
         compile(code, "<test>", "exec")
 
     def test_full_pricing_pipeline_compiles(self) -> None:
@@ -1053,84 +1184,62 @@ class TestGraphToCodeWithBuilders:
 
 
 # ---------------------------------------------------------------------------
-# Exec-based validation: run generated function bodies against real data
+# Exec-based validation: run generated nodes against real data
 # ---------------------------------------------------------------------------
 
 
 class TestCodegenExecValidation:
-    """Execute generated code against real DataFrames to verify bodies work.
+    """Execute generated code against real DataFrames to verify it runs.
 
-    Goes beyond ``compile()`` (syntax-only) to catch undefined names,
-    wrong column references, and type errors in generated function bodies.
+    Goes beyond ``compile()`` (syntax-only) to catch undefined names, wrong
+    column references and type errors: each test registers the generated
+    node on a pipeline and runs it the way a standalone ``pipeline.run()``
+    does — the decorator's configured work, then the hook or transform body.
     """
-
-    @staticmethod
-    def _exec_generated(code: str, input_df=None):
-        """Exec the pipeline code and call the last defined function.
-
-        Returns the result of calling the function with *input_df*.
-        """
-        ns: dict = {"__file__": str(Path.cwd() / "__exec_test__.py")}
-        exec(
-            "import polars as pl\nimport haute\n"
-            "from pathlib import Path\n"
-            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
-            "pipeline = haute.Pipeline('exec_test')\n\n"
-            f"{code}\n",
-            ns,
-        )
-        # Find all functions defined via @pipeline.<type> decorators
-        func_names = [
-            name
-            for name, obj in ns.items()
-            if callable(obj)
-            and not name.startswith("_")
-            and name
-            not in (
-                "pl",
-                "haute",
-                "pipeline",
-            )
-        ]
-        assert func_names, "No functions found in generated code"
-        fn = ns[func_names[-1]]
-        if input_df is not None:
-            return fn(input_df)
-        return fn()
 
     def test_data_source_exec_produces_lazyframe(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """dataInput code that references a real parquet file executes."""
-        import polars as pl
-
+        """A dataInput declaration loads a real parquet file through its sidecar."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
         (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         pl.DataFrame({"policy_id": [1, 2]}).write_parquet(data_dir / "policies.parquet")
-        config = {
-            "inputType": "file",
-            "format": "parquet",
-            "mode": "scan",
-            "path": "data/policies.parquet",
-            "arguments": {},
-        }
-        node = _make_codegen_node(
-            "dataInput",
-            config,
-            label="load_policies",
-        )
+        node = _make_codegen_node("dataInput", _PARQUET_INPUT, label="load_policies")
         config_dir = tmp_path / "config" / "data_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "load_policies.json").write_text(json.dumps(config))
+        (config_dir / "load_policies.json").write_text(json.dumps(_PARQUET_INPUT))
         code = _node_to_code(node)
-        result = self._exec_generated(code)
+        result = _run_generated(code, directory=tmp_path)
         assert isinstance(result, pl.LazyFrame)
-        assert len(result.collect()) > 0
+        assert result.collect()["policy_id"].to_list() == [1, 2]
+
+    def test_data_input_hook_exec_runs_code_on_the_loaded_frame(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dataInput hook receives the loaded data as ``df`` and returns its result."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        pl.DataFrame({"policy_id": [1, 2]}).write_parquet(data_dir / "policies.parquet")
+        config = {**_PARQUET_INPUT, "code": "df = df.filter(pl.col('policy_id') > 1)"}
+        node = _make_codegen_node("dataInput", config, label="load_policies")
+        config_dir = tmp_path / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "load_policies.json").write_text(json.dumps(_PARQUET_INPUT))
+
+        result = _run_generated(_node_to_code(node), directory=tmp_path)
+
+        assert isinstance(result, pl.LazyFrame)
+        assert result.collect()["policy_id"].to_list() == [2]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_data_source_exec_uses_declared_schema_boundary(
@@ -1138,7 +1247,7 @@ class TestCodegenExecValidation:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Generated dataInput code should honour shared source schema config."""
+        """A generated dataInput honours the shared source schema config."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
         (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
@@ -1169,31 +1278,45 @@ class TestCodegenExecValidation:
 
         code = _node_to_code(node)
 
-        assert "resolve_data_input_from_config" in code
+        assert code == (
+            '@pipeline.data_input(config="config/data_input/load_quotes.json")\n'
+            "def load_quotes(): ...\n"
+        )
         assert "scan_csv" not in code
-        result = self._exec_generated(code)
+        result = _run_generated(code, directory=tmp_path)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
         assert collected["quote_id"].to_list() == ["001"]
         assert collected.schema["quote_id"] == pl.String
 
-    def test_api_input_exec_produces_lazyframe(self) -> None:
-        """apiInput code compiles and delegates through its retained sidecar.
+    def test_api_input_exec_produces_lazyframe(self, haute_scratch: Path) -> None:
+        """An apiInput declaration loads through its retained sidecar.
 
-        This fixture lacks a matching sidecar config, so we verify compilation
-        and config-driven loader markers here; standalone direct-vs-cached execution is
-        covered by ``test_codegen_execution_equivalence.py``.
+        The sidecar, not the codegen-time config, decides what is read:
+        standalone direct-vs-cached execution is covered by
+        ``test_codegen_execution_equivalence.py``.
         """
+        pl.DataFrame({"quote_id": [7, 11]}).write_parquet(haute_scratch / "quotes.parquet")
+        config_dir = haute_scratch / "config" / "quote_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text(
+            json.dumps({"path": "quotes.parquet"}), encoding="utf-8"
+        )
         node = _make_codegen_node(
             "apiInput",
             {"path": "tests/fixtures/data/api_input.json"},
             label="quotes",
         )
         code = _node_to_code(node)
-        _compile_node_code(code)
-        assert "resolve_api_input_from_config" in code
-        assert '"config/quote_input/quotes.json"' in code
+        assert code == (
+            '@pipeline.api_input(config="config/quote_input/quotes.json")\ndef quotes(): ...\n'
+        )
         assert "tests/fixtures/data/api_input.json" not in code
+
+        result = _run_generated(code, directory=haute_scratch)
+
+        assert isinstance(result, pl.LazyFrame)
+        assert result.collect()["quote_id"].to_list() == [7, 11]
 
     def test_json_api_input_exec_fails_loudly_without_v2_schema(
         self,
@@ -1216,18 +1339,9 @@ class TestCodegenExecValidation:
             label="quotes",
         )
         code = _node_to_code(node)
-        ns: dict = {"__file__": str(project / "main.py")}
-        exec(
-            "import polars as pl\nimport haute\n"
-            "from pathlib import Path\n"
-            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
-            "pipeline = haute.Pipeline('exec_test')\n\n"
-            f"{code}\n",
-            ns,
-        )
 
         with pytest.raises(ApiInputSchemaError, match="no v2 schema") as exc_info:
-            ns["quotes"]()
+            _run_generated(code, directory=project)
         assert "Cache as Parquet" not in str(exc_info.value)
 
     def test_json_api_input_exec_fails_loudly_without_selected_columns(
@@ -1267,34 +1381,21 @@ class TestCodegenExecValidation:
             label="quotes",
         )
         code = _node_to_code(node)
-        ns: dict = {"__file__": str(tmp_path / "main.py")}
-        exec(
-            "import polars as pl\nimport haute\n"
-            "from pathlib import Path\n"
-            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
-            "pipeline = haute.Pipeline('exec_test')\n\n"
-            f"{code}\n",
-            ns,
-        )
 
         with pytest.raises(
             RuntimeError, match="emit-true tables but none has any selected columns"
         ) as exc_info:
-            ns["quotes"]()
+            _run_generated(code, directory=tmp_path)
         assert "Cache as Parquet" not in str(exc_info.value)
 
     def test_output_exec_assembles_document(self, tmp_path: Path) -> None:
-        """The generated OUTPUT body assembles the response document.
+        """The generated OUTPUT declaration assembles the response document.
 
-        It routes through the shared ``assemble_output_from_config`` — the
-        same assembler the canvas executor calls — driven by the node's saved
-        schema JSON.  A passthrough body would leak the raw upstream frame
+        Its decorator routes through the shared ``assemble_output_from_config``
+        — the same assembler the canvas executor calls — driven by the node's
+        saved schema JSON.  A passthrough would leak the raw upstream frame
         (all columns, no document shape) from a standalone run.
         """
-        import json
-
-        import polars as pl
-
         node = _make_codegen_node(
             "output",
             {
@@ -1317,19 +1418,14 @@ class TestCodegenExecValidation:
             label="result",
         )
         code = _node_to_code(node, source_names=["upstream"])
+        assert code == (
+            '@pipeline.output(config="config/quote_response/result.json")\n'
+            "def result(upstream): ...\n"
+        )
         cfg_file = tmp_path / "config" / "quote_response" / "result.json"
         cfg_file.parent.mkdir(parents=True)
         cfg_file.write_text(json.dumps(node.data.config))
 
-        ns: dict = {"__file__": str(tmp_path / "__exec_test__.py")}
-        exec(
-            "import polars as pl\nimport haute\n"
-            "from pathlib import Path\n"
-            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
-            "pipeline = haute.Pipeline('exec_test')\n\n"
-            f"{code}\n",
-            ns,
-        )
         input_lf = pl.DataFrame(
             {
                 "premium": [1.0],
@@ -1337,7 +1433,7 @@ class TestCodegenExecValidation:
                 "extra": [99],
             }
         ).lazy()
-        result = ns["result"](input_lf)
+        result = _run_generated(code, input_lf, directory=tmp_path)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
         # The mapped columns survive as document fields; the unmapped one is
@@ -1345,43 +1441,46 @@ class TestCodegenExecValidation:
         assert set(collected.columns) == {"premium", "Area"}
         assert collected.to_dicts() == [{"premium": 1.0, "Area": "A"}]
 
-    def test_multi_frame_output_uses_supplied_frame_params(self) -> None:
-        """OUTPUT receives the distinct frame names already derived per edge."""
-        node = _make_codegen_node(
-            "output",
-            {
-                "outputMapping": [
-                    {
-                        "source_port": "quotes",
-                        "source_column": "quote_id",
-                        "output_path": "$[:].quote_id",
-                        "enabled": True,
-                    },
-                ],
-                "outputFormat": "json",
-            },
-            label="Quote_Response",
-        )
+    def test_multi_frame_output_uses_supplied_frame_params(self, tmp_path: Path) -> None:
+        """OUTPUT's parameters are the distinct frame names already derived per edge.
+
+        The decorator resolves each mapped ``source_port`` against those
+        names, so the second declared frame feeds the ``drivers`` mapping.
+        """
+        config = {
+            "outputMapping": [
+                {
+                    "source_port": "drivers",
+                    "source_column": "driver_id",
+                    "output_path": "$[:].driver_id",
+                    "enabled": True,
+                },
+            ],
+            "outputFormat": "json",
+        }
+        node = _make_codegen_node("output", config, label="Quote_Response")
         frame_names = ["quotes", "drivers", "licences", "vehicles"]
         code = _node_to_code(node, source_names=frame_names)
-        assert "quotes: pl.LazyFrame, drivers: pl.LazyFrame" in code
-        assert "licences: pl.LazyFrame, vehicles: pl.LazyFrame" in code
-        # The body forwards every supplied frame name to the shared assembler.
-        assert "assemble_output_from_config(" in code
-        assert "source_names=['quotes', 'drivers', 'licences', 'vehicles']" in code
+        assert "def Quote_Response(quotes, drivers, licences, vehicles): ...\n" in code
         _compile_node_code(code)
+        cfg_file = tmp_path / "config" / "quote_response" / "Quote_Response.json"
+        cfg_file.parent.mkdir(parents=True)
+        cfg_file.write_text(json.dumps(config), encoding="utf-8")
+
+        frames = [
+            pl.LazyFrame({f"{name[:-1]}_id": [index]}) for index, name in enumerate(frame_names)
+        ]
+        result = _run_generated(code, *frames, directory=tmp_path)
+
+        assert _collect(result).to_dicts() == [{"driver_id": 1}]
 
     def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:
-        """The generated banding body APPLIES the sidecar config when called.
+        """The generated banding declaration APPLIES the sidecar config when run.
 
-        A passthrough body would return the input unchanged — the saved file
-        would silently skip banding on a standalone run.  Calling the
-        generated function directly must produce the banded column.
+        A passthrough would return the input unchanged — the saved file
+        would silently skip banding on a standalone run.  Running the
+        generated node must produce the banded column.
         """
-        import json
-
-        import polars as pl
-
         factors = [
             {
                 "column": "age",
@@ -1398,50 +1497,44 @@ class TestCodegenExecValidation:
         )
 
         node = _make_codegen_node("banding", {"factors": factors}, label="band_age")
-        # No source_names → param is 'df'; the body applies the sidecar to it.
-        code = _node_to_code(node, source_names=[])
-        ns: dict = {"__file__": str(tmp_path / "main.py")}
-        exec(
-            "import polars as pl\nimport haute\n"
-            "from pathlib import Path\n"
-            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
-            "pipeline = haute.Pipeline('exec_test')\n\n"
-            f"{code}\n",
-            ns,
-        )
+        code = _node_to_code(node, source_names=["policies"])
         input_lf = pl.DataFrame({"age": [25, 55]}).lazy()
-        result = ns["band_age"](input_lf)
+        result = _run_generated(code, input_lf, directory=tmp_path)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
         assert collected["age_band"].to_list() == ["young", None], (
-            "generated banding body must apply the sidecar config, not pass through"
+            "generated banding must apply the sidecar config, not pass through"
         )
 
-    def test_model_score_body_references_valid_names(self) -> None:
-        """modelScore generated code compiles and defines a callable function.
-
-        Full exec not possible without a live MLflow backend, but we verify
-        the generated function is syntactically valid and defines the expected
-        function name.
-        """
-        node = _make_codegen_node(
-            "modelScore",
-            {
-                "sourceType": "run",
-                "task": "regression",
-                "output_column": "prediction",
-                "run_id": "abc123",
-            },
-            label="score",
-        )
+    def test_model_score_declaration_scores_through_its_decorator(self, tmp_path: Path) -> None:
+        """A modelScore declaration scores its input with the sidecar's model when run."""
+        config = {
+            "sourceType": "run",
+            "task": "regression",
+            "output_column": "prediction",
+            "run_id": "abc123",
+        }
+        node = _make_codegen_node("modelScore", config, label="score")
         code = _node_to_code(node, source_names=["features"])
-        _compile_node_code(code)
-        assert "def score(features: pl.LazyFrame)" in code
+        assert code == (
+            '@pipeline.model_score(config="config/model_scoring/score.json")\n'
+            "def score(features): ...\n"
+        )
+        cfg_file = tmp_path / "config" / "model_scoring" / "score.json"
+        cfg_file.parent.mkdir(parents=True)
+        cfg_file.write_text(json.dumps(config), encoding="utf-8")
 
-    def test_transform_with_code_exec(self) -> None:
+        features = pl.LazyFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+        with patch(
+            "haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()
+        ) as load_model:
+            scored = _collect(_run_generated(code, features, directory=tmp_path))
+
+        assert scored["prediction"].to_list() == [0.5, 0.5]
+        assert load_model.call_args.kwargs["run_id"] == "abc123"
+
+    def test_transform_with_code_exec(self, tmp_path: Path) -> None:
         """transform code with real Polars expression executes correctly."""
-        import polars as pl
-
         node = _make_codegen_node(
             "polars",
             {"code": 'df = src.with_columns(doubled=pl.col("x") * 2)'},
@@ -1449,8 +1542,8 @@ class TestCodegenExecValidation:
         )
         code = _node_to_code(node, source_names=["src"])
         input_lf = pl.DataFrame({"x": [1.0, 2.0, 3.0]}).lazy()
-        result = self._exec_generated(code, input_df=input_lf)
-        collected = result.collect()
+        result = _run_generated(code, input_lf, directory=tmp_path)
+        collected = _collect(result)
         assert "doubled" in collected.columns
         assert collected["doubled"].to_list() == [2.0, 4.0, 6.0]
 
@@ -1460,27 +1553,32 @@ class TestCodegenExecValidation:
 # ---------------------------------------------------------------------------
 
 
+_PARQUET_OUTPUT = {
+    "outputType": "file",
+    "path": "output/results.parquet",
+    "format": "parquet",
+    "mode": "sink",
+    "arguments": {},
+}
+
+
 class TestGenDataOutput:
     """Data Output codegen carries config but never writes during graph execution."""
 
-    def test_parquet_output_is_a_passthrough(self) -> None:
-        node = _make_codegen_node(
-            "dataOutput",
-            {
-                "outputType": "file",
-                "path": "output/results.parquet",
-                "format": "parquet",
-                "mode": "sink",
-                "arguments": {},
-            },
-            label="WriteResults",
-        )
+    def test_parquet_output_is_a_passthrough(self, tmp_path: Path) -> None:
+        node = _make_codegen_node("dataOutput", _PARQUET_OUTPUT, label="WriteResults")
         code = _node_to_code(node, source_names=["scored"])
-        assert '@pipeline.data_output(config="config/data_output/WriteResults.json"' in code
-        assert "return scored" in code
+        assert code == (
+            '@pipeline.data_output(config="config/data_output/WriteResults.json")\n'
+            "def WriteResults(scored): ...\n"
+        )
         assert "bounded_sink" not in code
         assert ".write_" not in code
         _compile_node_code(code)
+
+        scored = pl.LazyFrame({"premium": [1.0]})
+        assert _run_generated(code, scored, directory=tmp_path) is scored
+        assert not (tmp_path / "output").exists()
 
     def test_csv_output_is_a_passthrough(self) -> None:
         node = _make_codegen_node(
@@ -1495,8 +1593,10 @@ class TestGenDataOutput:
             label="WriteCSV",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert '@pipeline.data_output(config="config/data_output/WriteCSV.json"' in code
-        assert "return data" in code
+        assert code == (
+            '@pipeline.data_output(config="config/data_output/WriteCSV.json")\n'
+            "def WriteCSV(data): ...\n"
+        )
         assert "bounded_sink" not in code
         _compile_node_code(code)
 
@@ -1517,36 +1617,22 @@ class TestGenDataOutput:
         assert "out.parquet" not in code
         _compile_node_code(code)
 
-    def test_sink_returns_first_source(self) -> None:
-        """Sink should return the input LazyFrame for downstream chaining."""
-        node = _make_codegen_node(
-            "dataOutput",
-            {
-                "outputType": "file",
-                "path": "out.parquet",
-                "format": "parquet",
-                "mode": "sink",
-                "arguments": {},
-            },
-            label="SinkNode",
-        )
+    def test_sink_returns_first_source(self, tmp_path: Path) -> None:
+        """A standalone run hands the input frame on for downstream chaining."""
+        node = _make_codegen_node("dataOutput", _PARQUET_OUTPUT, label="SinkNode")
         code = _node_to_code(node, source_names=["input_df"])
-        assert "return input_df" in code
+        assert "def SinkNode(input_df): ...\n" in code
 
-    def test_sink_with_multiple_sources(self) -> None:
-        """Sink with multiple sources uses the first one."""
-        node = _make_codegen_node(
-            "dataOutput",
-            {
-                "outputType": "file",
-                "path": "combined.parquet",
-                "format": "parquet",
-                "mode": "sink",
-                "arguments": {},
-            },
-            label="MultiSink",
-        )
+        input_df = pl.LazyFrame({"x": [1]})
+        assert _run_generated(code, input_df, directory=tmp_path) is input_df
+
+    def test_sink_with_multiple_sources(self, tmp_path: Path) -> None:
+        """Sink with multiple sources hands on the first one."""
+        node = _make_codegen_node("dataOutput", _PARQUET_OUTPUT, label="MultiSink")
         code = _node_to_code(node, source_names=["a", "b", "c"])
         assert "bounded_sink" not in code
-        assert "return a" in code
+        assert "def MultiSink(a, b, c): ...\n" in code
         _compile_node_code(code)
+
+        a, b, c = (pl.LazyFrame({"x": [value]}) for value in (1, 2, 3))
+        assert _run_generated(code, a, b, c, directory=tmp_path) is a

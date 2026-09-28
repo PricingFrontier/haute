@@ -181,7 +181,7 @@ describe("ResidualsTab", () => {
     const svg = screen.getByRole("img", { name: "Residuals distribution histogram" })
     const text = Array.from(svg.querySelectorAll("text")).map((element) => element.textContent)
     expect(new Set(text).size).toBeGreaterThan(4)
-    expect(text).toEqual(expect.arrayContaining(["0", "0.25", "0.5", "0.75", "1"]))
+    expect(text).toEqual(expect.arrayContaining(["0.00", "0.25", "0.50", "0.75", "1.00"]))
     const geometry = Array.from(svg.querySelectorAll("rect"))
       .map((element) =>
         [

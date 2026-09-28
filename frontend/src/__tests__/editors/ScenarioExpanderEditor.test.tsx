@@ -517,3 +517,18 @@ describe("ScenarioExpanderEditor", () => {
     expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
   })
 })
+
+describe("ScenarioExpanderEditor saved quote id", () => {
+  afterEach(cleanup)
+
+  it("marks a saved quote id the upstream columns lack", () => {
+    render(
+      <ScenarioExpanderEditor
+        {...DEFAULT_PROPS}
+        config={{ quote_id: "old_id" }}
+        upstreamColumns={[{ name: "quote_id", dtype: "Utf8" }]}
+      />,
+    )
+    expect(screen.getByDisplayValue("old_id (not in input)")).toBeInTheDocument()
+  })
+})

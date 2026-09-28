@@ -50,6 +50,7 @@ from haute._execute_lazy import (
     _edge_join_recipe,
     _extract_error_line,
     _is_plain_model_score,
+    _located_step_line,
     _pick_source_frame,
     _PlannedCaptures,
     _prepare_execution,
@@ -425,6 +426,9 @@ class _Walk:
         self.collected: dict[str, _Collected] = {}
         self.errors: dict[str, str] = {}
         self.error_lines: dict[str, int] = {}
+        # The input frames of a node that failed while built, kept until its
+        # failure is recorded so a stepped transform can name its failing step.
+        self.failed_inputs: dict[str, list[_Frame]] = {}
         self.timings: dict[str, float] = {}
         self.memory_bytes: dict[str, int] = {}
         self.available_columns: dict[str, _SchemaItems] = {}
@@ -1003,11 +1007,16 @@ class _Walk:
         A chunk walk then narrows the output to its chunk plan's demand.
         """
         with self._stage(_NODE_STAGES.get(self.policy.purpose), node_id):
-            if boundary.is_source:
-                frame = self.boundaries.invoke(boundary)
-            else:
-                frame = self.boundaries.invoke(boundary, self._node_inputs(boundary))
-            built = self._shape_output(boundary, frame)
+            inputs = [] if boundary.is_source else self._node_inputs(boundary)
+            try:
+                frame = self.boundaries.invoke(boundary, inputs)
+                # A display walk resolves the node's schema here, so a lazy
+                # plan's failure surfaces while the inputs are still in hand.
+                built = self._shape_output(boundary, frame)
+            except Exception:
+                if inputs and self.policy.record_failures:
+                    self.failed_inputs[node_id] = inputs
+                raise
             if self.chunk:
                 built.frame = project_output(
                     built.frame,
@@ -1241,7 +1250,7 @@ class _Walk:
     def _shape_output(
         self, boundary: NodeBoundary, result: Any, *, pass_through: bool = False
     ) -> _NodeFrame:
-        """Apply the node's own column selection and renames, then its output contract."""
+        """Check the node's output contract, then apply its own column selection and renames."""
         node_id = boundary.node_id
         frame = self._as_frame(node_id, result)
         if isinstance(frame, dict):
@@ -1251,14 +1260,15 @@ class _Walk:
                 for port, port_frame in frame.items():
                     self.column_cache[(node_id, port)] = _columns_of(port_frame)
             return _NodeFrame(frame=frame, boundary=boundary)
-        if _shapes_output(boundary.node) and not pass_through:
+        shapes = _shapes_output(boundary.node) and not pass_through
+        if shapes:
             # Its columns before its own selection and renames, which a
             # snapshot records so a seeded preview can still report them.
             self.unshaped_frames[node_id] = frame
         config = boundary.node.data.config
         shaped = _lazy(_apply_column_renames(_lazy(_apply_selected_columns(frame, config)), config))
         names = self._describe(node_id, boundary.node, frame, shaped) if self.display else None
-        self._check_output(boundary, shaped, names)
+        self._check_output(boundary, shaped, names, created=frame if shapes else None)
         return _NodeFrame(frame=shaped, boundary=boundary, output_names=names)
 
     def _as_frame(self, node_id: str, result: Any) -> Any:
@@ -1275,8 +1285,20 @@ class _Walk:
         )
 
     def _check_output(
-        self, boundary: NodeBoundary, shaped: pl.LazyFrame, names: list[str] | None
+        self,
+        boundary: NodeBoundary,
+        shaped: pl.LazyFrame,
+        names: list[str] | None,
+        *,
+        created: pl.LazyFrame | None,
     ) -> None:
+        """Assert the output contract; record the shaped columns a sink walk resolved.
+
+        The contract describes what the builder creates, so a node that
+        shapes its output is checked against *created*, its frame before its
+        own selection and renames: deselecting or renaming a column it
+        creates is the author's choice, not a missing output.
+        """
         contract = boundary.contract
         if (
             not boundary.check_contract
@@ -1294,6 +1316,8 @@ class _Walk:
                 self.context.record_column_widths(
                     node_id=boundary.node_id, output_width=len(columns)
                 )
+        if created is not None:
+            columns = _columns_of(created)
         self.boundaries.assert_outputs(boundary, columns)
 
     def _pass_through(self, node_id: str, edge: GraphEdge) -> _NodeFrame:
@@ -1697,6 +1721,10 @@ class _Walk:
         self.collected[node_id] = None
         self.errors[node_id] = str(exc)
         error_line = _extract_error_line(exc)
+        inputs = self.failed_inputs.pop(node_id, None)
+        if error_line is None and inputs is not None:
+            # A lazy plan fails after its code ran, so no line came with it.
+            error_line = _located_step_line(self.funcs[node_id][0], inputs, exc)
         if error_line is not None:
             self.error_lines[node_id] = error_line
 

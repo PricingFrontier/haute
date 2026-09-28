@@ -344,21 +344,13 @@ test.describe("frontend canvas assurance", () => {
       "Optimisation node: browser_optimiser",
     )
     await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
-    await optimiserPanel.getByRole("button", {
-      name: "Individual point",
-      exact: true,
-    }).click()
-    const constraintValue = optimiserPanel.getByRole("spinbutton", {
+    // The fixture sweeps volume: its card shows the range in place of a fixed value.
+    await expect(optimiserPanel.getByRole("radio", { name: "Sweep" })).toBeChecked()
+    await expect(optimiserPanel.getByRole("spinbutton", {
       name: "volume constraint value",
-    })
-    await constraintValue.fill("8.4")
-    await expect(constraintValue).toHaveValue("8.4")
-    await optimiserPanel.getByRole("button", {
-      name: "Efficient frontier",
-      exact: true,
-    }).click()
-    const minRange = optimiserPanel.getByLabel("volume min value")
-    const maxRange = optimiserPanel.getByLabel("volume max value")
+    })).toHaveCount(0)
+    const minRange = optimiserPanel.getByLabel("volume sweep from")
+    const maxRange = optimiserPanel.getByLabel("volume sweep to")
     await minRange.fill("7.8")
     await maxRange.fill("9.2")
     await expect(minRange).toHaveValue("7.8")
@@ -373,7 +365,8 @@ test.describe("frontend canvas assurance", () => {
         range: (config.frontier_ranges as JsonObject).volume,
       }
     }).toEqual({
-      constraint: { min: 8.4 },
+      // The saved bound is kept for switching back to Fixed.
+      constraint: { min: 8.0 },
       range: { min: 7.8, max: 9.2 },
     })
 
@@ -383,19 +376,8 @@ test.describe("frontend canvas assurance", () => {
       "Optimisation node: browser_optimiser",
     )
     await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
-    await optimiserPanel.getByRole("button", {
-      name: "Individual point",
-      exact: true,
-    }).click()
-    await expect(optimiserPanel.getByRole("spinbutton", {
-      name: "volume constraint value",
-    })).toHaveValue("8.4")
-    await optimiserPanel.getByRole("button", {
-      name: "Efficient frontier",
-      exact: true,
-    }).click()
-    await expect(optimiserPanel.getByLabel("volume min value")).toHaveValue("7.8")
-    await expect(optimiserPanel.getByLabel("volume max value")).toHaveValue("9.2")
+    await expect(optimiserPanel.getByLabel("volume sweep from")).toHaveValue("7.8")
+    await expect(optimiserPanel.getByLabel("volume sweep to")).toHaveValue("9.2")
 
     const solveResponsePromise = page.waitForResponse(response => (
       response.url().endsWith("/api/optimiser/solve")
@@ -431,28 +413,21 @@ test.describe("frontend canvas assurance", () => {
     )).toBeVisible()
 
     // The workspace offers every online pane (no Rates: that is ratebook's),
-    // and the provenance strip says what the figures are: a frontier solve
-    // opens on its first point.
+    // and a frontier solve opens on its Frontier pane.
     const optimiserPreview = page.getByTestId("optimiser-preview-frame")
     await expect(resultTabs.getByRole("tab")).toHaveText([
       "Frontier",
-      "Summary",
       "Adjustments",
       "Segments",
       "Quotes",
       "Convergence",
+      "Curves",
+      "Statistics",
     ])
     await expect(resultTabs.getByRole("tab", { name: "Frontier", exact: true }))
       .toHaveAttribute("aria-selected", "true")
-    const provenance = optimiserPreview.getByTestId("optimiser-provenance")
-    await expect(provenance).toHaveText(new RegExp(
-      "^Online · 8 quotes × 5 scenario steps · Data: batch scenario of rating/main\\.py · "
-      + "Frontier point 1 of 5 · "
-      + "Expected values from the scoring models on the solve quotes; not observed outcomes\\.$",
-    ))
 
-    // Summary states each constraint's attainment in words.
-    await openResultPane(page, "Summary")
+    // The Frontier pane's summary states each constraint's attainment in words.
     const solvedAttainment = await attainmentRows(optimiserPreview)
     expect(solvedAttainment.headers).toEqual([
       "Constraint", "Kind", "Bound", "Achieved", "Slack", "Status", "λ (multiplier)",
@@ -473,7 +448,6 @@ test.describe("frontend canvas assurance", () => {
     await expect(
       page.getByTestId("optimiser-preview-frame-header").getByText("Point 2 of 5", { exact: true }),
     ).toBeVisible()
-    await expect(provenance).toContainText("Frontier point 2 of 5")
     await expect(
       page.getByRole("alert").filter({ hasText: /Failed to select frontier point/i }),
     ).toHaveCount(0)
@@ -490,18 +464,14 @@ test.describe("frontend canvas assurance", () => {
     )
     await page.setViewportSize(desktopViewport)
 
-    // The frontier detail card and Summary judge the selected point alike.
-    const detailCard = optimiserPreview.locator(".optimiser-frontier-detail")
-    await expect(detailCard.getByText("Point details", { exact: true })).toBeVisible()
-    const detailAttainment = await attainmentRows(detailCard)
-    expect(detailAttainment.rows).toHaveLength(1)
-    expectAttainmentRowConsistent(detailAttainment.rows[0])
-    await openResultPane(page, "Summary")
-    await expect(
-      optimiserPreview.getByText("Frontier point 2's adjustments load in the Adjustments tab."),
-    ).toBeVisible()
+    // The points table beside the chart highlights the selected point, and
+    // the pane's summary judges it.
+    const pointsTable = optimiserPreview.getByRole("table", { name: "Frontier slice points" })
+    await expect(pointsTable.locator('tr[aria-current="true"]').getByRole("rowheader"))
+      .toHaveText("Point 2")
     const summaryAttainment = await attainmentRows(optimiserPreview)
-    expect(summaryAttainment.rows).toEqual(detailAttainment.rows)
+    expect(summaryAttainment.rows).toHaveLength(1)
+    expectAttainmentRowConsistent(summaryAttainment.rows[0])
 
     // Adjustments: one bar per grid value and the base-price line at 1.0.
     await openResultPane(page, "Adjustments")
@@ -688,9 +658,6 @@ test.describe("frontend canvas assurance", () => {
       "Convergence",
     ])
     const ratebookPreview = page.getByTestId("optimiser-preview-frame")
-    await expect(ratebookPreview.getByTestId("optimiser-provenance")).toHaveText(new RegExp(
-      "^Ratebook · 8 quotes × 5 scenario steps · Data: .+ · As solved · ",
-    ))
 
     await openResultPane(page, "Rates")
     await expect(ratebookPreview.getByRole("heading", { name: "region_band", exact: true })).toBeVisible()

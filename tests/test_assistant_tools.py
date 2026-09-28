@@ -323,17 +323,12 @@ class TestColumnProfiles:
 import polars as pl
 
 import haute
-from haute.graph_utils import resolve_data_input_from_config
 
 pipeline = haute.Pipeline("main", description="group-by fixture")
 
 
 @pipeline.data_input(config="config/data_input/quotes.json")
-def quotes() -> pl.LazyFrame:
-    return resolve_data_input_from_config(
-        "config/data_input/quotes.json",
-        base_dir=".",
-    )
+def quotes(): ...
 
 
 @pipeline.polars

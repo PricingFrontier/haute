@@ -968,6 +968,101 @@ def _effective_node_code(
     return local_code
 
 
+def _formula_fields(
+    step: TraceStep,
+    column: str,
+    code: str,
+    parsed: Any,
+    preamble_ns: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """*code*'s assignment of *column*, evaluated on *step*'s row.
+
+    ``expression_text`` when the parse found the formula, the
+    ``substituted_text`` and ``result_value`` of evaluating it, and
+    ``not_computable_reason``/``result_source`` when one row could not compute it.
+    """
+    fields: dict[str, Any] = {}
+    if parsed and parsed.expression_text:
+        fields["expression_text"] = parsed.expression_text
+    eval_values = _assignment_values(step, column, parsed, code)
+    if eval_values is None:
+        fields["result_value"] = step.output_values.get(column)
+        fields["substituted_text"] = f"{column} = {_quote_trace_value(fields['result_value'])}"
+        return fields
+    ev = evaluate_expression(
+        code,
+        column,
+        eval_values,
+        preamble_ns=preamble_ns,
+        row=_assignment_row(step, column, parsed, code),
+    )
+    if ev is not None:
+        fields["substituted_text"] = ev.substituted_text
+        fields.update(
+            _with_execution_value(
+                {
+                    "result_value": ev.result_value,
+                    "not_computable_reason": ev.not_computable_reason,
+                },
+                step,
+                column,
+            )
+        )
+    return fields
+
+
+def column_derivation(
+    step: TraceStep,
+    column: str,
+    node_map: dict[str, Any],
+    preamble_ns: dict[str, Any] | None,
+    reads: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """How *step* computed *column* for a traced value, and what it read.
+
+    The formula, when the step's code assigns the column, is evaluated on the
+    step's row as the traced column's own is; a column a rule computed (a
+    model's prediction, an optimiser's choice) or a source loaded has none.
+    A step read from a snapshot no recompute reproduced has no row to
+    evaluate on, so only its value is shown.
+    """
+    derivation: dict[str, Any] = {
+        "column": column,
+        "expression_text": None,
+        "substituted_text": None,
+        "result_value": step.output_values.get(column),
+        "not_computable_reason": None,
+        "result_source": None,
+        "reads": reads,
+        "error": None,
+        "error_type": None,
+    }
+    if step.snapshot_generation_id is not None and not step.snapshot_reproduced:
+        return derivation
+    node = node_map.get(step.node_id)
+    config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
+    code = _wrap_node_code(_effective_node_code(config, node_map))
+    if not code.strip():
+        return derivation
+    try:
+        parsed = parse_expression(code, column)
+        if parsed is None or not parsed.expression_text or parsed.expression_type == "opaque":
+            return derivation
+        derivation.update(_formula_fields(step, column, code, parsed, preamble_ns))
+    except Exception as exc:
+        logger.warning(
+            "column_derivation_failed",
+            node_id=step.node_id,
+            column=column,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        derivation["error"] = f"formula evaluation failed: {exc}"
+        derivation["error_type"] = type(exc).__name__
+    return derivation
+
+
 def _build_input_sources(
     ref_cols: list[str],
     current_step: TraceStep,
@@ -1042,9 +1137,12 @@ def _build_input_sources(
                 "node_name": other_step.node_name,
             }
             snapshot_generation_id = getattr(other_step, "snapshot_generation_id", None)
-            if snapshot_generation_id is not None:
-                # Read from a shared snapshot: the input's provenance ends here,
-                # with the value it held, never a formula rebuilt from it.
+            if snapshot_generation_id is not None and not getattr(
+                other_step, "snapshot_reproduced", False
+            ):
+                # Read from a shared snapshot no recompute reproduced: the input's
+                # provenance ends here, with the value it held, never a formula
+                # rebuilt from it.
                 source_info["result_value"] = other_combined.get(ref_col)
                 source_info["snapshot_generation_id"] = snapshot_generation_id
                 result[ref_col] = source_info
@@ -1089,33 +1187,10 @@ def _build_input_sources(
                 if other_code and not banding_lineage_applied:
                     parsed = parse_expression(other_code, ref_col)
                     if parsed and parsed.expression_text:
-                        source_info["expression_text"] = parsed.expression_text
                         parsed_refs = list(parsed.referenced_columns)
-                    eval_values = _assignment_values(other_step, ref_col, parsed, other_code)
-                    if eval_values is None:
-                        source_info["result_value"] = other_step.output_values.get(ref_col)
-                        source_info["substituted_text"] = (
-                            f"{ref_col} = {_quote_trace_value(source_info['result_value'])}"
-                        )
-                    else:
-                        ev = evaluate_expression(
-                            other_code,
-                            ref_col,
-                            eval_values,
-                            preamble_ns=preamble_ns,
-                            row=_assignment_row(other_step, ref_col, parsed, other_code),
-                        )
-                        if ev is not None:
-                            shown = _with_execution_value(
-                                {
-                                    "result_value": ev.result_value,
-                                    "not_computable_reason": ev.not_computable_reason,
-                                },
-                                other_step,
-                                ref_col,
-                            )
-                            source_info["substituted_text"] = ev.substituted_text
-                            source_info.update(shown)
+                    source_info.update(
+                        _formula_fields(other_step, ref_col, other_code, parsed, preamble_ns)
+                    )
             except Exception as exc:
                 # Surface the derivation failure on the source entry so
                 # the caller can see why an input column's value/
@@ -1588,7 +1663,8 @@ def _pass_through_origin(
     that holds the column with that same value, to the step that added or
     last modified it.  When no parent or more than one does — a join whose
     sides each hold the column — or a parent whose row is unknown might, or
-    the value was read from a snapshot, its origin is unproven and ``None``
+    the value was read from a snapshot no recompute reproduced, its origin is
+    unproven and ``None``
     is returned: another branch's formula would explain a value the target
     never had.
     """
@@ -1609,8 +1685,11 @@ def _pass_through_origin(
         if len(carriers) != 1:
             return None
         current = carriers[0]
-        if getattr(current, "snapshot_generation_id", None) is not None:
-            # The value was read from a snapshot: there is no code to show.
+        if getattr(current, "snapshot_generation_id", None) is not None and not getattr(
+            current, "snapshot_reproduced", False
+        ):
+            # The value was read from a snapshot no recompute reproduced: there
+            # is no code to show.
             return None
         diff = current.schema_diff
         if column in diff.columns_added or column in diff.columns_modified:
@@ -1656,9 +1735,11 @@ def enrich_steps(
     frame_identity = _enrichment_frame_identity(eager_outputs)
 
     for step in steps:
-        if getattr(step, "snapshot_generation_id", None) is not None:
-            # Its row was read from a shared snapshot, not computed: there is
-            # no input row to explain it with.
+        if getattr(step, "snapshot_generation_id", None) is not None and not getattr(
+            step, "snapshot_reproduced", False
+        ):
+            # Its row was read from a shared snapshot no recompute reproduced:
+            # there is no input row to explain it with.
             continue
         try:
             node_data = node_map[step.node_id].data

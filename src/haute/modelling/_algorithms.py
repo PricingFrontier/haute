@@ -184,7 +184,7 @@ class _CatBoostProgressCallback:
                         history_entry[f"{prefix}_{metric_name}"] = values[-1]
         self._loss_history.append(history_entry)
         if self._on_iteration:
-            self._on_iteration(it, self._total, metrics)
+            self._on_iteration(it, self._total, metrics, history_entry)
         return True  # True = continue training
 
 
@@ -403,7 +403,7 @@ def _run_gpu_fit_with_metric_polling(
                 continue
             # Outside the parse guard: a cancellation raised by the
             # callback must propagate, never be swallowed as a bad line.
-            on_iteration(iteration, total_iterations, {})
+            on_iteration(iteration, total_iterations, {}, None)
         last_seen = len(data_lines)
 
     try:

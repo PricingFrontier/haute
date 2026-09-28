@@ -9,9 +9,11 @@ loses or reorders an entry the other does not know.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from haute import _polars_steps as steps
@@ -121,3 +123,47 @@ def test_stepped_surface_table_agrees() -> None:
         for node_type, surface in steps.STEPPED_NODE_TYPES.items()
     }
     assert editor == renderer
+
+
+JOIN_OUTPUTS = CATALOGUE.parent / "__tests__" / "fixtures" / "joinOutputs.json"
+
+
+def _polars_dtype(name: str) -> pl.DataType:
+    return getattr(pl, name)()
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(JOIN_OUTPUTS.read_text(encoding="utf-8"))["cases"],
+    ids=lambda case: f"{case['how']}-{case['keys']}",
+)
+def test_join_output_fixture_matches_polars(case: dict[str, object]) -> None:
+    """The editor's join output columns (derivedColumns.ts) are the rendered join's real schema."""
+    fixture = json.loads(JOIN_OUTPUTS.read_text(encoding="utf-8"))
+    join = {
+        "id": "j",
+        "kind": "join",
+        "input": "claims",
+        "how": case["how"],
+        "leftOn": case["leftOn"],
+        "rightOn": case["rightOn"],
+        "suffix": fixture["suffix"],
+    }
+    code = steps.render_polars_steps(
+        [{"id": "s", "kind": "source", "input": "quotes"}, join],
+        ["quotes", "claims"],
+        start="input",
+    ).code
+    scope: dict[str, object] = {
+        "pl": pl,
+        "quotes": pl.LazyFrame(
+            schema={c["name"]: _polars_dtype(c["dtype"]) for c in fixture["left"]}
+        ),
+        "claims": pl.LazyFrame(
+            schema={c["name"]: _polars_dtype(c["dtype"]) for c in fixture["right"]}
+        ),
+    }
+    exec(code, scope)
+    frame = scope["df"]
+    assert isinstance(frame, pl.LazyFrame)
+    assert frame.collect_schema().names() == case["output"]

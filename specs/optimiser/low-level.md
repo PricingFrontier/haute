@@ -8,13 +8,15 @@
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
 | `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
 | `src/haute/routes/_shared_flights.py` | The two schedulers behind OPT-V09B: `SharedFlights` (single-flight by key, one shared run, per-caller detach) and `LatestWinsQueue` (one run per group with a waiting slot of depth one, the replaced waiter refused with `FlightReplacedError`; with `cancel_abandoned=True`, OPT-PC02, a running flight whose last subscriber leaves is cancelled and becomes *cancelling*), both handing each caller a `FlightSubscription`. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
+| `src/haute/routes/_optimiser_session.py` | The parent side of the solver session (OPT-W01): `SolverSession` (one dedicated worker per process-mode solve job, its command slot, pins, per-command growth grants, publication under the slot, and the death record written under `RUNTIME_UNAVAILABLE_KEY`), `SessionCommandError`, and `runtime_mode`, the one dispatch the frontier consumers make between the session and the in-process runtime. See "Solver sessions (OPT-W01)" below. |
+| `src/haute/routes/_optimiser_session_worker.py` | The child side of the solver session: the command functions (`build_and_solve`, `sweep`, `apply_point`), their plain-data requests and outcomes, and the child's session state (solver, quote grid, ratebook factor contexts). |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT` (the most rows one Quotes page returns, defined beside the request schema in `haute.schemas` and re-exported here), `QUOTE_PAGE_DEPTH_LIMIT` (the deepest row a Quotes page reaches), `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_frontier_payload`. |
 | `src/haute/routes/_optimiser_quotes.py` | The Quotes explorer (OPT-V12): the page reducers over the choice frame (`QuotePage`, and `AnalysisQuotePage` when the sort or a filter reads an analysis column: sort with the quote-id tie-break, the quote-id prefix search, the scenario-value range, at-range-edge, analysis-equality and deployed-factor filters, the offset and the depth guard), the typed column roles (`quote_columns`) and the route's service (`QuoteQueries.page`). See "Quotes explorer (OPT-V12)" below. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
@@ -59,22 +61,26 @@ context without the resolved value rather than silently resetting elapsed-time a
 
 ### Other dataclasses
 
-- `_StreamingAutoRangePlan` (`src/haute/routes/_optimiser_service.py`, frozen) — a *proven*
-  streaming/chunked auto-range plan:
-  base node id, scenario-expander node id, the intermediate node chain, required columns, and a
-  `ChunkPlan`. Only constructed when every intermediate node is verified row-local (see
-  Edge cases below).
-- `_ChunkSizeDecision` (`src/haute/routes/_optimiser_service.py`, frozen) —
-  `(chunk_size, provenance)`, recording whether a chunk
-  size came from explicit config or a byte-budget policy.
+- `_ChunkSizeDecision` (`src/haute/routes/_optimiser_input.py`, frozen) —
+  `(chunk_size, provenance)` for the solver-input grid build and the ratebook factor contexts.
+  `pipeline_chunk_decision(source)` makes it from `current_streaming_chunk_size()` (the Pipeline
+  Settings value; the optimiser node has no chunk size of its own), recording
+  `{"policy": "pipeline_setting", "chunk_size", "source"}` in the job's `setup_chunking`.
+  The grid build uses `grid_chunk_decision(n_steps)` instead: the builder reads whole quotes,
+  so the setting is raised to `n_steps` rows when it is smaller, and the record adds
+  `pipeline_chunk_size` (the setting) and `n_steps`. `scenario_step_count` reads `n_steps` as one
+  past the largest `scenario_index` in one scan of that column, and the builder receives it
+  explicitly instead of auto-detecting it from its first chunk (which fails below
+  `n_steps + 1` rows). The ratebook factor artifact has one row per quote, so its contexts take
+  the setting as it is.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
-  of chunk size, partition count, and
-  execution context for one auto-range run.
-- `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — a
-  disk-bucketed accumulator that combines
-  per-quote scenario min/max across many batches by hash-partitioning into parquet parts and
-  combining them in `finish()`, so auto-range estimation never has to hold the full per-quote
-  range set in memory at once.
+  of the reducer's batch rows (`chunk_size`, defaulting to `current_streaming_chunk_size()`)
+  and execution context for one auto-range run.
+- `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — the exact
+  Float64 range reducer (see "Frontier auto-range estimation"): a carry-over path for
+  quote-grouped batches, verified per batch and at the finish, with a bucketed combine over
+  per-batch parquet partials as its exact fallback, so auto-range never holds one global
+  per-quote table.
 
 No `TypedDict`s are defined anywhere in the component; job-store entries and artifact handles
 are plain `dict[str, Any]`, validated defensively at each read site rather than at a type
@@ -261,12 +267,16 @@ The setup thread runs inside a `contextlib.ExitStack` on which `_execute_pipelin
 run's [seed plan](../caching/low-level.md#seed-plans); the plan's seed leases and capture staging
 are held until the grid is built and released on every exit. No checkpoint directory is written.
 
-1. Admits an `ExecutionContext` (profile `OPTIMISER_SETUP`) — an admission failure here is caught
-   by the setup worker and published as the solve job's `memory_limited` terminal status, not
-   returned as a synchronous HTTP 507 from the already-completed `/solve` submission.
+1. Admits an `ExecutionContext` (profile `OPTIMISER_SOLVE`, a growth grant waiting out the
+   panel's `optimiser_setup:optimiser_estimate`; see "Solver sessions (OPT-W01)") — an admission
+   failure here is caught by the setup worker and published as the solve job's `memory_limited`
+   terminal status, not returned as a synchronous HTTP 507 from the already-completed `/solve`
+   submission.
 2. Runs the pipeline up to the optimiser node via `_execute_pipeline` — see below.
 3. Resolves the configured exact `data_input` name to one incoming edge and selects that edge's
-   source frame via `_resolve_data_input_frame`; node-id matching is not accepted.
+   source frame via `_resolve_data_input_frame`; node-id matching is not accepted. Steps 2 and 3
+   are the optimiser's pipeline stage, `_run_optimiser_input_stage`, which frontier auto-range
+   runs too (see "Frontier auto-range estimation").
 4. Validates schema and value contracts and projects/casts to solver dtypes via
    `_validate_and_project`. On the data-input analysis path the configured analysis columns are
    retained, uncast, beside the solver columns (and only those); on the side-input path the
@@ -279,8 +289,8 @@ are held until the grid is built and released on every exit. No checkpoint direc
 7. Writes the scored data to a setup-owned temp parquet, or borrows an unchanged captured
    snapshot under the plan's lease (`_write_solver_input`), and builds the solver's `QuoteGrid`
    from that file via `price_contour.build_grid_from_parquet_chunked`
-   (`_build_grid_from_parquet`), choosing a chunk size from either explicit config or a
-   byte-budget policy against the parquet's own metadata. The builder decodes only the solver
+   (`_build_grid_from_parquet`) in chunks of the Pipeline Settings chunk size raised to one
+   quote's rows (`grid_chunk_decision`), passing the file's `n_steps`. The builder decodes only the solver
    columns, so retained analysis columns never reach it, and `_build_grid_from_parquet` records
    the job's `scenario_grid` as soon as the grid exists. When analysis columns are configured,
    `quote_analysis.parquet` is reduced from the written solver input (or the side-input frame)
@@ -299,7 +309,12 @@ context (`_open_setup_seed_plan`, which prepares inputs and holds the plan's lea
 exits) and runs `materialise_solve_input_worker` through `_run_optimiser_worker`: the admitted
 headroom (`isolated_execution_budget`) is both the child's execution budget and its native cap,
 and the job's cancellation reason is the worker's stop signal, so cancellation or supersession
-terminates the worker. The child adopts the plan (`SeedPlan.adopt`), runs
+terminates the worker. Every optimiser worker (setup and auto-range) spawns with
+`POLARS_MAX_THREADS` set to `resolve_optimiser_polars_threads()` — min(CPU count, 8), overridden
+by `HAUTE_OPTIMISER_POLARS_THREADS` — because Polars bounds a streaming pipeline by morsels per
+thread, so a scenario expander's fan-out multiplies what each thread holds (measured: the
+scorer's input sink on a 10M x 11 pipeline peaked at 5.3 GiB with 22 threads and 1.8 GiB with 8,
+in the same time). The child adopts the plan (`SeedPlan.adopt`), runs
 `_materialise_solve_input` (`_prepare_solver_frame` — steps 2–6 — then `_write_solver_input`
 with borrowing off, then, with analysis columns, `_write_quote_analysis`) against a private job record in the `optimiser_worker` job store,
 deleted when the child finishes, and returns a `SolveInput` (the parent's
@@ -323,36 +338,38 @@ replays the record (terminal reason, message, `error`/`error_code`/`error_detail
 `http_status_code`, and the child's metrics adopted as worker evidence) onto the real job.
 Worker-level failures map as training preparation's do: a stopped worker is the job's stop, a
 memory-shaped worker failure (`isolated_worker_failure_is_memory`) is a 507 `memory_limit` with
-`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then does the parent build
-the grid from the file (step 7). The explicit `thread` compatibility mode runs steps 2–7 on the
+`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
+the file, by the job's solver session (step 7 and step 8 in process mode are the session's
+`build_and_solve` command; see "Solver sessions (OPT-W01)"). The explicit `thread` compatibility mode runs steps 2–7 on the
 setup thread against the real job (`_prepare_solver_frame`, then `_build_grid`), with the same
 failure mapping.
 
 `_execute_pipeline(body, job_id, resources, ...)` opens the run's seed plan on the caller's
 `resources` stack (`open_seed_plan`, which prepares the lineage's snapshot-backed inputs, under
-the job's profile — `OPTIMISER_SETUP` or `AUTO_RANGE`), or adopts the `seed_plan` handoff a
+the job's profile), or adopts the `seed_plan` handoff a
 worker's supervising parent opened from the same `_setup_seed_plan_request`, and executes with
 `prepare_inputs=False`
 and `snapshot_plan=` that plan, passing the required-column seed to the execution facade, whose
 typed strategy result is attached to the admitted context. The plan's consumed nodes are what
-setup reads afterwards: an explicit target alone (the estimate's data input, the streaming
-auto-range base node); otherwise the execution target — the resolved `data_input` in online
-mode without a separate analysis input, or the Optimiser itself (ratebook mode, or any mode
-with a separate analysis input), which resolves along its selected `data_input` edge to its
-producer — and every banding or analysis side input from the Optimiser's own edges that the run
+setup reads afterwards: an explicit target alone (the estimate's data input); otherwise the
+execution target `_setup_execution_target_node_id` selects — the resolved `data_input` in online
+mode without a separate analysis input, or the Optimiser itself (ratebook mode, any mode
+with a separate analysis input, or a data source that feeds the Optimiser through parallel
+edges, whose demand `_optimiser_solve_required_columns_by_node` keys on the Optimiser), which
+resolves along its selected `data_input` edge to its producer — and every banding or analysis
+side input from the Optimiser's own edges that the run
 executes,
 `apiInput` ports included. The plan applies capture eligibility itself: a node-output producer
 is seeded or captured, an `apiInput` is built and never captured (its tables have their own
 store), and the two-input Optimiser is a pass-through, so it is neither a join nor captured and
-its unselected inputs are built only because setup consumes them. Auto-range passes, as the
-plan's `capture_columns_by_node`, the column demand the solve's own setup plans at every node
-(`_solve_columns_by_node`: the execution facade's `plan_projection` for the solve's target and
-`_optimiser_solve_required_columns_by_node`), so whichever node auto-range captures — the data
-input, or the streaming path's base below the scenario expander — carries what the solve reads
-there, and the following solve (and the input estimate, which reads the data input with the
-solve's columns) seeds instead of recomputing. A node the solve reads whole carries no demand
-and is not widened. Auto-range uses that same `_execute_pipeline` boundary and request context;
-there is no second planning policy.
+its unselected inputs are built only because setup consumes them. `_setup_execution_scope` is
+the one target resolution both `_setup_seed_plan_request` and `_execute_pipeline` use. Solve
+setup and auto-range build the request from the same demand
+(`_optimiser_solve_required_columns_by_node`) and the same target, so they make the same seed,
+rebuild and capture decision; no capture widening is passed (`capture_columns_by_node` is
+unset), because a capture made under the solve's demand already carries what the solve reads.
+Auto-range uses that same `_execute_pipeline` boundary and request context; there is no second
+planning policy.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
@@ -360,6 +377,11 @@ transition rather than propagated — nothing in the setup thread's failure path
 caller except through the status-polling endpoint.
 
 ### Solver execution (`_launch_background` → `_optimiser_solver._solve_online` / `_solve_ratebook`)
+
+In process mode these functions run unchanged inside the solver session's `build_and_solve`
+command against a private job record, and the parent publishes the plain completion fields the
+command returns (see "Solver sessions (OPT-W01)"). The description below is of the functions
+themselves and of the thread compatibility mode's `_launch_background`.
 
 The spawned solver thread updates progress to "Solving", then — inside
 an execution-context stage — calls:
@@ -389,8 +411,8 @@ an execution-context stage — calls:
   library's `per_factor_results` (one `PerFactorRecord` per inner grouped solve, in (CD pass,
   factor) order) into `ratebook_cd_trace` (see the result contract below). Like an online
   result, a ratebook result reports the shape of the grid it scored: `n_quotes` and `n_steps`
-  come from the solved `QuoteGrid`, so the result preview's provenance strip and the artifact's
-  `input_summary` name them for both modes. See Runtime ratebook apply below.
+  come from the solved `QuoteGrid`, so the result header and the artifact's `input_summary`
+  name them for both modes. See Runtime ratebook apply below.
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
 `result_dict` (including `effective_bounds`, see Constraint bounds below), optionally computes an efficient frontier inline (non-fatal on failure — a
@@ -405,9 +427,9 @@ names must all agree, see Constraint bounds) the result carries:
 
 - `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
   `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
-  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, `chunk_size`, and
-  `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_enabled`,
-  `frontier_steps` and `frontier_ranges` only when the solve requested a frontier). It is built
+  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, and
+  `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` only
+  when the solve swept a constraint). It is built
   once in `_finalize_solve_result` by `solve_input_summary(job)` from the solve-time config
   snapshot and `input_provenance`; a solve job without `input_provenance` fails loudly. The
   published artifact's `input_summary` and `solver_settings` are read from it (see Save and
@@ -474,66 +496,95 @@ and structured classification layer.
 
 ### Frontier auto-range estimation
 
-`start_frontier_auto_range` uses `_prepare_frontier_auto_range` to validate config/mode, resolve
-chunk size/partition count/timeout, compute the required-column projection, prepare the
-lineage's snapshot-backed Data Inputs (`_prepare_auto_range_snapshot_inputs`: chunk planning
-runs the engine schema-only, which never builds a snapshot, so preparation runs first under a
-scoped `frontier_auto_range_preparation` admission that is released before the job admits, and
-a missing or stale generation never costs the first run its chunk plan; a preparation
-failure answers the typed contract-error status before any job exists), and attempt to
-prove a `_StreamingAutoRangePlan` (`_build_streaming_auto_range_plan`), falling back to
-the classic non-streaming path when the plan cannot be proven. A structural reason (ratebook
-mode, no resolvable data input, no scenario expander on the chain) falls back silently because
-chunking never applied. A lost chunk optimisation is reported: when a chain node's user code is
-chunk-ineligible (`classify_chunk_local_polars_code`), when a model-score node keeps
-post-processing code or renames, or when `chunk_plan` raises `ChunkPlanUnsupportedError`,
-the preparation records a
-`chunk_fallback` payload — the typed `schemas.OptimiserChunkFallback` (`code`, one of
-`chunk_user_code_ineligible` / `model_score_ineligible` / `chunk_plan_unsupported`;
-`node_id`, `operator`, `reason`, `line`, `column`, `message`) — on the job and the completed result's `warning` string names the node and reason.
-The classic path then runs under the same admitted context. Chunk ineligibility is never an
-HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
+Auto-range runs solve setup's pipeline stage and reduces its frame; it has no execution path of
+its own. `start_frontier_auto_range` calls `_prepare_frontier_auto_range` in the request thread,
+which validates config/mode (a 400 before any job exists), resolves `timeout`
+(`auto_range_timeout`, default `HAUTE_AUTO_RANGE_TIMEOUT`, 1800 s), and resolves the solve's
+column demand once (`_optimiser_solve_required_columns_by_node`); the job and its worker take
+these as arguments and never recompute them.
 
 - `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
   already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
-- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission (entered
-  without a context, as the background launcher enters it, it admits its own and releases it on
-  every exit, so a failed job never leaves its memory reservation to garbage collection),
-  cancellation,
-  completion (the result's `warning` and `chunk_fallback` come from the recorded fallback) and a
-  single failure classification, and takes its range batches from one of two sources:
-  `_chunked_frontier_ranges` (execute to the streaming plan's base node, then
-  `iter_chunked_frames` expands and scores one base chunk at a time, each chunk validated,
-  projected and collected before the next; only reached when a streaming plan was proven) or
-  `_full_frame_frontier_ranges` (execute pipeline → resolve source → validate/project →
-  `_estimate_scenario_frontier_ranges`' bounded batches). Both feed
-  `_reduce_frontier_range_batches`, which reduces every batch into
-  `_ScenarioFrontierRangeAccumulator` and calls `finish()`. In process mode the job computes its
-  totals in a hard-capped worker instead (`_frontier_ranges_in_worker`): it opens the seed plan
-  that source would execute under (at the streaming plan's base for a chunked job, at the data
-  input otherwise), runs `frontier_auto_range_worker` through `_run_optimiser_worker` with the
-  job's remaining timeout as the worker's timeout (its expiry publishes the job's `timed_out`),
-  and completes with the returned totals and the worker's metrics adopted as evidence. In process
-  mode `start_frontier_auto_range` plans with `sample_row_widths=False`: without a configured
-  `auto_range_chunk_size` the plan is structural (`_StreamingAutoRangePlan.sized` is false), fixing
-  the base node and its columns without sampling rows, and the in-process chunk runner refuses an
-  unsized plan. The child re-plans (`_prepare_frontier_auto_range(prepare_snapshot_inputs=False)`;
-  a chunk plan is not picklable) and sizes the chunks. When sizing loses the chunked plan the child
-  returns only the `chunk_fallback`; the parent records it on the job, opens a whole-frame seed
-  plan and runs a whole-frame worker (`_frontier_ranges_attempt` opens each attempt's plan and
-  closes it when that worker exits), and the result carries the fallback. A sizing refusal that is
-  not a chunk-plan rejection (`ChunkMemoryRiskError`) is the job's failure, not a start-time 422.
-  Any other difference between the parent's and child's chunk decisions fails. The child runs this
-  same job with
-  `isolate=False` against a private job record and the adopted plan, with its temporary files
-  (the reducer's bucket parts) in a parent-owned scratch directory removed after the worker
-  exits; its terminal failure record is replayed through the job's failure mapping
-  (`OptimiserWorkerFailureError`), and a `MemoryError` behind a failure is a 507 as for setup. Progress
-  messages inside the worker are not relayed; the job reports "Estimating frontier range" until
-  its terminal state.
+- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission, cancellation,
+  completion and a single failure classification. Entered without a context, as the background
+  launcher enters it, it admits exactly as solve setup does —
+  `admit_growth_grant(operation="frontier_auto_range", profile=OPTIMISER_SOLVE,
+  wait_out_holders=ESTIMATE_HOLDERS, wait_seconds=ESTIMATE_WAIT_SECONDS)`, so it waits out a
+  running input estimate inside the background job — and releases the grant on every exit, so a
+  failed job never leaves its memory reservation to garbage collection. An admission refusal is
+  the job's `memory_limited`. In thread mode, or inside the worker, `_frontier_ranges` runs
+  `_run_optimiser_input_stage` (`_execute_pipeline` under the setup seed plan with the solve's
+  demand, then `_resolve_data_input_frame`), checks the schema and projects the quote id, the
+  objective (when present) and the constraints in their source dtypes
+  (`_validate_and_project_auto_range`, returning an `AutoRangeValueCheck`), and passes the
+  projected frame to `_estimate_scenario_frontier_ranges`. Values are checked per batch, not in a
+  whole-frame query: `AutoRangeValueCheck.add` evaluates the solver's value-contract expressions
+  (null quote ids, NaN, infinite and null values, Float32 overflow) on each batch and totals the
+  counts; once a batch fails, later batches are still counted but no longer reduced, and after the
+  last batch `raise_if_invalid` raises the solver's message with whole-frame totals, recorded as
+  setup's refusal. The quote id keeps its dtype (no Categorical round trip); each reduced batch
+  carries it as String and the constraints as Float32 (`_frontier_range_batch_columns`).
+  `_estimate_scenario_frontier_ranges` reads the frame through `bounded_collect_batches` in
+  batches of `current_streaming_chunk_size()` rows (the Pipeline Settings streaming chunk size; a
+  worker inherits it through `POLARS_STREAMING_CHUNK_SIZE`, and optimiser config has no auto-range
+  size key), with `maintain_order=True` so the frame's quote order (the expander emits a quote's
+  scenarios together and captures keep order) reaches `_reduce_frontier_range_batches`, which
+  reduces every batch into `_ScenarioFrontierRangeAccumulator` and calls `finish()`. The
+  completed result is `status`, `ranges` and `method` (`scenario_envelope`); there is no warning
+  or fallback record.
+- **The reducer is exact in Float64.** Only final per-quote extrema are summed; a quote's
+  extrema from several batches are combined (min of mins, max of maxes) first, and nothing is
+  subtracted. Its budget `G_r` is fixed when it starts: `min(512 MiB, headroom // 4)`, where
+  headroom is the smaller of the execution context's `remaining_memory_bytes()` and
+  `native_headroom_bytes()` (the worker call's native cap ceiling minus its current charge;
+  equal grants do not leave equal allowances, since a worker can near its private-byte cap with
+  RSS to spare), and 512 MiB when neither gives a limit; `HAUTE_OPTIMISER_REDUCER_BUDGET_MB`
+  overrides the 512 MiB term.
+  - *Carry path.* Per batch, one group-by gives each quote's Float32 extrema (cast to Float64),
+    first and last row and row count; the batch is contiguous iff `last - first + 1 == n` for
+    every quote. The batch's last quote is held back and combined with the next batch's first
+    quote when their ids are equal; every other quote is finished, its extrema added to running
+    Float64 sums and its `hash(seed=0)` appended to a buffer of at most `G_r / 18` hashes. At the
+    finish the buffer is sorted and any repeat (a quote that reappeared, or a collision) means
+    the sums are discarded.
+  - *Partials.* While the fallback is available every batch also writes its per-quote partial
+    as one lz4 parquet file in a private temporary directory (`_range_parts_directory`),
+    with a 16-bit bucket (`hash // 2**48`), sorted by bucket, in at most 64 row groups of
+    `ceil(n / 64)` rows, because a violation can appear after earlier batches were reduced.
+  - *Fallback.* A non-contiguous batch (`batch_not_contiguous`), a full hash buffer
+    (`hash_buffer_full`) or a repeat at the finish (`quote_reappeared`) turns the carry path off,
+    logged as `auto_range_reducer_fallback` with the reason. The finish then combines the
+    partials by quote value in `P` bucket-range passes (`P` the smallest power of two keeping
+    `N_p * 4 * b_raw` within `G_r / 2`, `N_p` the partial rows written, `b_raw = w_key + 16c +
+    16`, `w_key` the widest view-aware key width seen, `string_view_bytes_per_row`), reading the
+    files one at a time with the bucket filter, merging buffered pieces into the pass state
+    whenever they reach `G_r / 8` and always once more after the last file, then summing the
+    pass state in Float64. Cancellation is checked between batches, passes and files.
+  - *Minimum budget.* `_reducer_min_budget_bytes(c, w_key, R_b)` is the larger of a measured
+    384 MiB and `8 * (64 * (2c + 2) * 440 + 2 * ceil(R_b / 64) * b_raw)`, re-checked with each
+    batch's key width. Below it the fallback is unavailable: no partials are written (any
+    already written are dropped), the carry path still runs, and a violation fails the job as
+    `memory_limited` (`AutoRangeReducerBudgetError`, reason `reducer_budget_below_minimum`,
+    naming the budget, the minimum, the violation and the setting to raise) before any fallback
+    read.
+  - The empty-frame, null-quote-id and non-finite or inverted range errors are unchanged.
+- In process mode the job computes its totals in one hard-capped worker attempt instead
+  (`_frontier_ranges_in_worker`): it opens the seed plan exactly as solve setup opens it
+  (`_open_setup_seed_plan` with the solve's demand, held until the worker exits), runs
+  `frontier_auto_range_worker` through `_run_optimiser_worker` with the job's remaining timeout as
+  the worker's timeout (its expiry publishes the job's `timed_out`), and completes with the
+  returned totals and the worker's metrics adopted as evidence. The
+  `FrontierAutoRangeWorkerRequest` carries the parent-resolved `config`, `mode`,
+  `timeout` and `required_columns_by_node` with the seed-plan handoff; the
+  child runs this same job with `isolate=False` against a private job record and the adopted
+  plan, never re-planning, with its temporary files (the reducer's partial files) in a
+  parent-owned scratch directory removed after the worker exits. Its terminal failure record is
+  replayed through the job's failure mapping (`OptimiserWorkerFailureError`), and a `MemoryError`
+  behind a failure is a 507 as for setup. Progress messages inside the worker are not relayed;
+  the job reports "Estimating frontier range" until its terminal state.
 - `frontier_auto_range_status` enforces the job's timeout lazily, on poll — solve, frontier-sweep,
   and auto-range timeouts are all enforced lazily on their respective status polls (`solve_status`,
   `frontier_status`, `frontier_auto_range_status`), with auto-range additionally checking elapsed
@@ -790,9 +841,9 @@ and the solve's `combined_factor_bounds` — a frontier point shares its solve's
 collar), plus the audit
 trail: `solver_settings` (the result's `input_summary.solver_settings`, built from the solve-time
 config snapshot with the solver defaults applied:
-`max_iter`, `tolerance` and `chunk_size`, plus `max_cd_iterations` and
-`cd_tolerance` for ratebook; `frontier_enabled`, `frontier_steps` and `frontier_ranges` when the
-solve requested a frontier), `effective_constraints` (a point's constraint specs with that point's
+`max_iter` and `tolerance`, plus `max_cd_iterations` and
+`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` when the
+solve swept a constraint), `effective_constraints` (a point's constraint specs with that point's
 thresholds via `_frontier_point_constraints_override`; the configured constraints for the
 anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the provenance fields of the
 result's own `input_summary`), and `stale_at_publish` (the request's `stale` flag, which the UI sets when
@@ -958,7 +1009,10 @@ exposed depends on the artifact's constraints (`has_ratio_constraint`):
   `online_apply_output_schema` derives from the artifact: `quote_id` (`Utf8`), `optimal_step`
   (`Int32`), the optimised value column or its configured rename (`Float32`),
   `optimal_objective` (`Float32`), `optimal_<constraint>` (`Float32`) per sorted constraint,
-  and the version column when configured. A limit Polars pushes to the scan reads only the
+  and the version column when configured. The first three name the chosen scenario row: its
+  quote id, scenario index, and scenario value cast to those dtypes
+  (`online_apply_chosen_row_columns`), which trace correlation reads to find that row in the
+  apply's input (see [tracing](../tracing/low-level.md)). A limit Polars pushes to the scan reads only the
   quote-id column to choose the first quotes in that order — which elides upstream row-local
   scoring for that read — and applies to the input filtered to those quotes, so upstream
   scoring runs only for their scenario rows. Without a limit the apply reads every row.
@@ -1082,7 +1136,8 @@ whether the table is a composite (joins on multiple columns, split via
 `_split_ratebook_level`) or single-column table, looks up the matching entry via
 `_match_ratebook_entry` (keys normalised through the same dtype descriptor and
 `normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
-`unique(keep="last")` deduplication), applies the multiplicative neutral element `1.0` and marks
+`unique(keep="last")` deduplication; each ladder entry names the input columns the table
+joined on as `input_columns`), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
 an error), and accumulates a running product. After the ladder it applies the artifact's
 `combined_factor_bounds` exactly as `_apply_ratebook` does and reports it as `collar`
@@ -1101,10 +1156,10 @@ whose message already names every problem and the remedy.
 
 ## Edge cases and invariants
 
-- **Preamble dependencies are pinned per operation.** Estimate, solve and streaming
-  auto-range resolve `preamble_execution_fingerprint` once when the job starts executing
-  and pass it to every `_compile_preamble` call of that job, so chunks never mix helper
-  versions; a later job resolves a fresh fingerprint and computes with edited helpers. See
+- **Preamble dependencies are pinned per operation.** `_execute_pipeline`, which estimate,
+  solve setup and auto-range each call once, resolves `preamble_execution_fingerprint` once
+  (unless its caller passes one) and passes it to the `_compile_preamble` call of that
+  execution; a later job resolves a fresh fingerprint and computes with edited helpers. See
   the execution-engine `_compile_preamble` contract.
 - **One blocking solve process-wide, plus graph/node setup single-flight.**
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
@@ -1162,24 +1217,17 @@ whose message already names every problem and the remedy.
   precisely because it never reserved a solve slot when frontier computation ran inline, and the
   background offload preserves that semantics — an in-flight frontier sweep never blocks a new
   solve/estimate/auto-range submission for the same graph/node.
-- **Streaming auto-range only engages for provably row-local pipeline chains.**
-  `classify_chunk_local_polars_code` (the shared receiver-aware AST classifier) decides whether
-  user code between the data-input node and the scenario expander is safe to run per-chunk;
-  anything not provably row-local (global state, ordering-sensitive logic, arbitrary custom
-  code) falls back to the full non-streaming estimate path rather than raising, and the lost
-  optimisation is recorded rather than hidden: `_streaming_auto_range_node_is_eligible` returns
-  the classifier decision as a `chunk_user_code_ineligible` fallback, a model-score node reports
-  `model_score_ineligible` with the reason `model_reuse_lifetime`, `post_processing_code`, or
-  `column_renames`, and a `chunk_plan` rejection reports `chunk_plan_unsupported` with the node
-  the planner rejected (from the error's public payload or its `node_id`/`target_node_id`
-  context), never the optimiser node. This is a memory/latency trade-off, not a correctness
-  gate.
+- **Auto-range and solve setup cannot drift.** Both call `_run_optimiser_input_stage` with the
+  demand `_optimiser_solve_required_columns_by_node` resolves and build their seed plan through
+  the one `_setup_seed_plan_request`, whose target comes from `_setup_execution_scope`; a data
+  source feeding the Optimiser through parallel edges targets the Optimiser in both, so the
+  demand keyed on it lies inside the executed lineage. Nothing about the graph's row-locality
+  changes how auto-range executes.
 - **Cancellation and graph/node exclusion have separate owners.** `_jobs` owns one cancellation
   token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
   the exclusion lease until it can no longer mutate state.
-- **Generic setup failure detail is boundary-safe.** Explicit grid chunk-size
-  validation remains an actionable 400. Unknown `_execute_pipeline` and
+- **Generic setup failure detail is boundary-safe.** Unknown `_execute_pipeline` and
   `_build_grid` failures are fixed-detail 500s and preserve their raw
   exception only in server logs, as defined by
   [OPT-D01](error-detail-policy.md).
@@ -1204,7 +1252,7 @@ whose message already names every problem and the remedy.
   already running for the target solve job, or an atomic job-store update losing a race against a
   concurrent state change), 422 (`BoundedMemoryUnsupportedError` from solve setup or a bounded
   streaming collect, and the frontier compute-budget rejection; a projection gap keeps a
-  full-width boundary and an auto-range chunk-plan gap is a recorded fallback, never 422), 410 (a valid
+  full-width boundary, never 422), 410 (a valid
   server-owned handle whose artifact is no longer present), 500 (a background
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
@@ -1221,8 +1269,7 @@ whose message already names every problem and the remedy.
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
   once validation and worker launch succeed, the request returns 200 with a `status: "started"`
   body.
-- **Background-thread paths** (the setup thread, the solver thread, the streaming/non-streaming
-  auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
+- **Background-thread paths** (the setup thread, the solver thread, the auto-range worker, and — since the frontier sweep offload — the frontier sweep worker) never let
   an exception propagate out of the thread; every failure branch is caught and converted into a
   `JobLifecycle.transition(...)` call recording a terminal status, a human message, and (for
   `HTTPException`s specifically) the original status code and detail string in the job for later
@@ -1235,7 +1282,7 @@ whose message already names every problem and the remedy.
   execution-context-driven cancellation (`_coerce_stopped_terminal_reason` maps it to
   `cancelled`/`superseded`/`timed_out` as appropriate).
 - **Domain exception types specifically handled**: `BoundedMemoryUnsupportedError`,
-  `ChunkPlanUnsupportedError`, `ContractMismatchError`,
+  `ContractMismatchError`,
   `SchemaMismatchError` (`haute.errors`); `ExecutionAdmissionError`
   (`haute._execution_admission`); `ExecutionCancelledError`,
   `ExecutionMemoryLimitExceededError` (`haute._execution_context`); `BackgroundJobStoppedError`
@@ -1412,10 +1459,8 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   each node once and captures the data producer and the banding side input — the two-input
   Optimiser is neither checkpointed nor captured — and warm seeds both and builds nothing; a
   banding side input from an `apiInput` port is built on every run but never captured, and
-  factor extraction succeeds cold and warm; auto-range, whose own demand is narrower than the
-  solve's, captures the solve's columns so the following solve seeds, and streaming auto-range
-  does the same at its pre-expansion base, so the solve seeds the base and builds nothing above
-  it; the input estimate seeds
+  factor extraction succeeds cold and warm; auto-range, which plans the solve's own demand,
+  publishes the capture the following solve seeds from; the input estimate seeds
   setup's capture; and a real solve, auto-range, and estimate through the routes create no
   checkpoint directory.
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
@@ -1476,8 +1521,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
 - **`tests/test_optimiser_setup_worker.py`** — process-mode materialisation: real spawn workers
-  produce the same online and ratebook solves and the same chunked and full-frame auto-range
-  totals as the thread path, and remove the setup-owned parquet; an input the thread path would
+  produce the same online and ratebook solves and the same auto-range totals as the thread path, and remove the setup-owned parquet; an input the thread path would
   borrow is written to the parent's file; an auto-range worker stopped mid-reduction leaves no
   scratch files; a stopped setup worker leaves neither scratch, factors nor input files; a
   `MemoryError` behind a setup or auto-range failure is a 507; with an inline stand-in for the
@@ -1488,13 +1532,23 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   never starts its worker, a failed solver-input write removes the ratebook factors the child
   persisted, and a crashed worker, a timed-out setup worker (which has no timeout) and a
   malformed outcome are errors. `OptimiserWorkerFailure` keeps only a record's failure fields,
-  and a child failure before any job mapping (admission, a pre-job HTTP error, a changed chunk
-  plan) is classified in the child.
-- **`tests/performance/test_auto_range_memory.py`** — the chunked auto-range memory bound on the
+  and a child failure before any job mapping (admission, a pre-job HTTP error) is classified in
+  the child.
+- **`tests/test_frontier_range_reducer.py`** — the exact auto-range reducer: carry-path totals
+  against a per-quote reference over split and unsplit quotes (including a Hypothesis property),
+  each fallback reason (a non-contiguous batch, a reappearing quote, a full hash buffer) reaching
+  the same totals through the bucketed Float64 finish (colliding hashes cost speed, not
+  accuracy; partial files are bucket-sorted with at most 64 row groups; cancellation is checked
+  between files), its final flush, the budget rule (the cap
+  or a quarter of the smaller of the RSS and native headroom, `native_headroom_bytes()` inside a
+  capped call) and its typed refusal below the minimum, and `string_view_bytes_per_row` against
+  Arrow's buffer sizes.
+- **`tests/performance/test_auto_range_memory.py`** — the auto-range memory bound on the
   representative fixture (200,000 quotes, a scenario expander and real CatBoost scoring between
-  the base and the optimiser): at a fixed chunk size, 20 scenarios peak within one and a half
-  times the 5-scenario peak plus 64 MiB, each run measured in a fresh interpreter by
-  `tests/performance/_auto_range_memory_probe.py`.
+  the data input and the optimiser, the scored frame never cached), each run measured in a
+  fresh interpreter by `tests/performance/_auto_range_memory_probe.py` with the optimiser
+  workers' Polars thread pool and a 50,000-row chunk: sized to the fixture so its scored frame
+  spans many chunks, as a real pipeline's does at 500,000.
 
 - **`tests/test_optimiser_level_tie_properties.py`** — the generated level-tie family
   (ENG-T11, ledger W09-S03): for generated Int64, Float64, Float32 and String levels, single
@@ -1521,20 +1575,26 @@ families; the dtype agreement matrix in `test_optimiser_ratebook_apply_agreement
 The required behaviour is defined in
 [the optimiser high-level contract](high-level.md#canonical-frontier-ranges).
 
-- `src/haute/routes/_optimiser_solver.py::_auto_frontier_ranges_from_config` resolves ranges
-  exclusively from `frontier_ranges`; it contains no global-range compatibility branch.
+- `src/haute/routes/_optimiser_solver.py::swept_frontier_ranges` resolves ranges exclusively
+  from `frontier_ranges`, in constraint order, for the swept constraints only (empty when none
+  is swept, which skips the frontier); it contains no global-range compatibility branch and
+  rejects a range naming an unconfigured constraint. The library holds each unswept constraint
+  at its constructor bound (`price_contour`'s Python frontier path).
+- `anchor_swept_constraints` (same module) is applied to the node config at solve start
+  (`OptimiserService.start`), before the job records its config: each swept constraint's single
+  bound is replaced by its range's `min`, so the solve, the job snapshot and everything read from
+  it agree. A range without a numeric `min` leaves the bound for validation.
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
-## Decoded input widths for setup chunking
+## Decoded input widths for the resident-grid forecast
 
-Automatic optimiser-grid and ratebook-factor chunk sizing uses the larger of
-the existing Parquet page-size estimate and a bounded decoded sample (at most
-512 rows). Each sampled column has an eight-byte minimum, and strings/binary
-use their decoded resident width. Repeated dictionary values must not make a
-large decoded batch look like a tiny encoded page. Explicit positive row
-overrides retain their current meaning. The existing setup execution limits
-remain authoritative: chunked input still builds a resident solver grid.
+Setup chunk sizes are the Pipeline Settings value (see `_ChunkSizeDecision`), not
+a byte budget. The resident-grid forecast (`forecast_resident_grid_bytes`) prices
+each input row from a bounded decoded sample (at most 512 rows), in which strings
+and binary use their decoded resident width, so repeated dictionary values cannot
+make a large decoded batch look like a tiny encoded page. The setup execution
+limits remain authoritative: chunked input still builds a resident solver grid.
 ## Reuse and admit the resident grid input
 
 Grid setup reuses a single local Parquet scan when its optimised plan is only
@@ -1547,9 +1607,13 @@ file because the installed solver interface accepts one file.
 
 Before constructing the resident grid, estimate numeric vectors, quote IDs,
 sorting/conversion overlap and one reader batch from row count and decoded
-sample widths. Refuse an estimate exceeding the current execution context's
-remaining allowance with the existing typed admission error. The estimate is
-conservative and does not replace runtime limits. The existing solver/frontier
+sample widths. In the thread compatibility mode, refuse an estimate exceeding the
+current execution context's remaining allowance with the existing typed
+admission error, which carries the estimate as `estimated_bytes` so its message
+names both sizes. In process mode the estimate is only recorded
+(`grid_forecast_bytes`): the solver session's native cap bounds the build, and a
+solve is never refused on it. The estimate is conservative and does not replace
+runtime limits. The existing solver/frontier
 work keeps sharing its prepared grid; this change adds no parallel grid copies.
 ## Analysis-column side table and scenario grid
 
@@ -1709,7 +1773,7 @@ against 3,282 MiB). The side-input reduction peaks well below the write (1,954 M
 quotes), so the worker's peak does not change on that path; its 5M figure below the
 no-analysis one is run-to-run variation, which is up to 5% at 1M quotes. The server's grid
 build reads fewer rows per chunk from the data-input path's wider file (9.6M against 13.4M rows
-at 1M quotes; the chunk size is a byte budget over the estimated row width), so its peak is
+at 1M quotes; the chunk size was then a byte budget over the estimated row width, since replaced by the pipeline setting), so its peak was
 lower on that path, not higher.
 
 The first V09A figures read `ru_maxrss`. They were not inflated by an inherited peak: each case
@@ -2315,3 +2379,221 @@ table's recorded `column_stats`). The response is validated where it is built: `
 <= row_count`, `preview_row_count <= preview_row_limit`, and every row's keys are the column
 names.
 
+
+## Solver sessions (OPT-W01)
+
+In process mode (`HAUTE_INTERACTIVE_EXECUTION_MODE=process`, the default), one dedicated spawn
+worker per solve job, the *solver session*, runs every native price-contour call the solve
+makes and every computation over a per-quote solve frame. That covers:
+
+- the grid build and the ratebook factor contexts;
+- the solve, the inline frontier and the summary;
+- the as-solved adjustment report and the apply-artifact write;
+- frontier recompute and point apply/evaluate.
+
+The server makes no price-contour call and holds no native optimiser object. It receives
+bounded plain data, plus parquet artifacts the session wrote.
+
+The explicit `thread` compatibility mode keeps the in-process path described in the sections
+above (`runtime_mode: "in_process"`), including the resident-grid admission gate, because
+nothing else bounds memory there.
+
+### Modules
+
+- `src/haute/routes/_optimiser_session.py` is the parent side: `SolverSession` and
+  `runtime_mode`.
+- `src/haute/routes/_optimiser_session_worker.py` is the child side: the session commands and
+  the child's session state.
+
+The session is a
+[dedicated worker](../execution-engine/low-level.md#dedicated-workers).
+
+### Budget
+
+Every session admission uses `ExecutionProfile.OPTIMISER_SOLVE` through `admit_growth_grant`
+(see the execution-engine admission section) and waits out
+`optimiser_setup:optimiser_estimate`. The profile's settings:
+
+| Setting | Value |
+|---|---|
+| Adaptive share | 10,000 basis points of `usable` |
+| Floor | 4 GiB |
+| Ceiling | none |
+| Fixed default | 4 GiB |
+| Memory-limit env | `HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES` / `_MB` |
+| Process-RSS-limit env | `HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES` / `_MB` |
+
+The setup materialisation worker runs under its own `OPTIMISER_SOLVE` grant, which is released
+when that worker exits. Each session command is then admitted afresh.
+
+### Commands
+
+A command is one of `build_and_solve`, `sweep` or `apply_point`. `SolverSession.run_command`
+runs each command through this sequence:
+
+1. **Acquire the command slot.** The session runs one command at a time. The wait is bounded
+   by the caller's deadline and polls its stop signal, and nothing is reserved while waiting.
+2. **Admit a growth grant `G`.** The in-flight reservation is exactly `G`.
+3. **Send the command with `G`.** Before running it, the child re-applies its native cap as
+   its current backend charge plus `G`.
+4. **Run** the command.
+5. **Publish on the parent side** while the slot is still held: the solve's completion, the
+   sweep's new generation, or the point's handle. Otherwise the result is discarded.
+6. **Release** the reservation, then the slot.
+
+The cap installed for a command stays in place while the session is idle. It is never lifted.
+
+**`build_and_solve(SessionSolveRequest)`**:
+
+1. Builds the grid. It records `grid_forecast_bytes` (the resident-grid estimate) in the
+   command metrics but does not enforce it.
+2. Checks that the quote-analysis table has one row per grid quote.
+3. Runs the unchanged `_solve_online` / `_solve_ratebook` against a private record in the
+   `optimiser_worker` job store (private to the session process). The record is seeded with the parent job's `config`,
+   `input_provenance`, `node_label` and `setup_chunking`, and with the grid's `scenario_grid`.
+4. Returns a `SessionSolveOutcome`. It carries every plain completion field the in-process
+   finalize publishes (result, base result, publish summary, frontier data and factor tables,
+   artifact handles, ratebook level counts/dtypes/level order, setup chunking) and the
+   command's execution metrics.
+
+The child keeps the solver, quote grid and (ratebook) factor contexts in its session state,
+and drops the solve result.
+
+**`sweep(SessionSweepRequest)`** runs `_compute_frontier` against that state. It returns:
+
+- the capped frontier payload, built with generation `0`; the parent stamps the generation it
+  publishes under the parent lock;
+- the ratebook point factor tables.
+
+**`apply_point(SessionPointApplyRequest)`**:
+
+1. Runs `apply_from_grid` (online), or `solver.evaluate` plus the exact-totals check against
+   the point's frontier row (ratebook; `expected_totals` is passed in).
+2. Writes the point's apply artifact.
+3. Returns the artifact's handle.
+
+**Result size.** A returned envelope larger than `HAUTE_OPTIMISER_SESSION_RESULT_MAX_BYTES`
+(default 64 MiB) raises the dedicated worker's `WorkerResultTooLargeError` in the child. The command fails as an
+`error`; the result is never truncated.
+
+### Memory failures are fatal in every stage
+
+The solver, adjustment, inline-frontier and summary catches re-raise, in both modes, when
+`memory_error_in(exc)` finds a `MemoryError` behind the exception. Running out of memory is
+therefore never recorded as a diagnostic on a `completed` solve.
+
+### Job record
+
+| Field | Process mode | Thread mode |
+|---|---|---|
+| `runtime_mode` | `"session"` | `"in_process"` |
+| Heavy state | the `SolverSession`, under the heavy key `solver_session` | the native keys, as before |
+
+Consumers dispatch on `runtime_mode`, never on whether a key is present.
+
+When the session's runtime is gone, the job records `runtime_unavailable: {reason,
+memory_evidence, at}`. `reason` is one of `expired`, `solver_session_memory_limited` or
+`solver_session_crashed`.
+
+Every path that drops heavy state detaches the session and closes it outside the store lock
+(see the background-jobs heavy-object policy).
+
+A running command pins the session. If an expiry or clear happens while the session is pinned,
+it is detached and marked closing. It is terminated once the command returns, and the
+command's result is discarded.
+
+### Solve lifecycle
+
+The solve thread:
+
+1. admits;
+2. runs setup;
+3. starts the session, with a bounded start that polls the job's cancellation reason;
+4. runs `build_and_solve`;
+5. publishes the completion, with `solver_session` and `runtime_mode`, through the same
+   `publish_completion` claim the in-process finalize uses.
+
+**Cancellation and timeout** keep their existing immediate terminal transitions, which
+are the only claim needed against a concurrent completion:
+
+- a later `timed_out` outranks `cancelled` by the store's precedence;
+- a completion publishes only over `running`.
+
+The job's cancellation reason is the session's stop signal, so a cancelled or timed-out solve
+terminates the session at once, mid-native-call.
+
+**Solver input.** The session command owns the solver input. It is removed after
+`build_and_solve` returns, or once the session dies.
+
+**Graph/node single-flight** has two release paths:
+
+- after a successful publication, it is released while the session lives on;
+- after cancellation or failure, it is released only once the session has been terminated and
+  joined, and its inputs and orphan handles removed.
+
+### Frontier recompute and point apply
+
+**Frontier recompute** runs `sweep` as an admitted session command. (The in-process sweep
+stays unadmitted, as before.)
+
+Sweep cancellation stays cooperative:
+
+1. The sweep registry marks the sweep cancelled.
+2. The command runs to completion, holding its slot and reservation.
+3. The result is discarded.
+
+The session survives.
+
+**Point apply** runs `apply_point` inside the existing latest-wins flight. The flight counts as
+running while it waits for the session slot. The frontier generation is checked at three
+points:
+
+- after acquiring the slot;
+- before sending the command;
+- before publishing the handle.
+
+A change answers the existing 409 `_FRONTIER_CHANGED_DETAIL`.
+
+### Session death
+
+A session that dies during a command answers that command:
+
+| Death | Solve job | Request |
+|---|---|---|
+| Memory death | `memory_limited` | 507, with the memory detail below |
+| Any other death | `error` | 500 |
+
+The job then records `runtime_unavailable`.
+
+After that:
+
+- A later request for an unmaterialised frontier point answers 410
+  `frontier_point_unavailable` with `runtime_reason`; a recompute keeps its existing 400
+  ("Solver and quote grid are not available for this job").
+- Retained point artifacts, save and MLflow log keep working.
+
+A server restart loses the job itself, which answers 404.
+
+### Memory evidence
+
+Each memory death records `memory_evidence`:
+
+- **`cap_confirmed`** requires the memory limiter's own record from the command, one of:
+  - the private cgroup's `memory.events.local` `oom` rising since the cap was installed, read
+    before cgroup cleanup;
+  - a Windows `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` notification. The child's completion-port
+    watcher counts it into a parent-owned counter, and the parent reads that counter without
+    blocking. An unreadable counter counts as no record.
+- **`watchdog`**: RSS supervision stopped the process, either the parent watchdog or a sampled
+  `ExecutionMemoryLimitExceededError`.
+- **`suspected`**: a `MemoryError`, or the exit-code heuristic, with no limiter record. A
+  Windows fail-fast abort usually lands here.
+- **`none`**: anything else. An unavailable memory sampler keeps its own message and `error`
+  classification.
+
+Wording and payload:
+
+- The job message and the later 410 wording are definite only for `cap_confirmed`, and hedged
+  otherwise.
+- Near-cap charge is recorded as supporting data. It never promotes the evidence.
+- The 507 / `memory_limit` detail carries `memory_evidence` and `stage`.

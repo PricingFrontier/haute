@@ -4,7 +4,10 @@ import { isTraceSourceNodeType } from "../../trace/traceOrigins"
 /**
  * Find the best step to display expression/calculation for the traced column.
  *
- * Primary: the last step where the column is in columns_added or columns_modified.
+ * Primary: the last step the backend's lineage says computed the traced value
+ * (its `contributed_columns` name the column). A joined-in table that also adds
+ * the column, such as a shared key whose base value the join kept, did not.
+ * Without one: the last step where the column is in columns_added or columns_modified.
  * Fallback: when the primary step has no usable expression (null or opaque),
  * check the final step in the trace - the backend enriches pass-through target
  * steps with the upstream creator's expression, so the final step may carry a
@@ -16,12 +19,15 @@ export function findTargetStep(
 ): TraceStep | null {
   if (!column || steps.length === 0) return null
   let found: TraceStep | null = null
+  let computedBy: TraceStep | null = null
   for (const step of steps) {
     const diff = step.schema_diff
     if (diff.columns_added.includes(column) || diff.columns_modified.includes(column)) {
       found = step
     }
+    if (step.contributed_columns.includes(column)) computedBy = step
   }
+  if (computedBy) found = computedBy
 
   // If the found step has a usable (non-opaque) expression, use it directly.
   const hasUsableExpression = (s: TraceStep | null) =>

@@ -10,6 +10,7 @@
   "gpu_vram_estimated_mb": null,
   "gpu_vram_available_mb": null,
   "gpu_warning": null,
+  "unbounded_join_node_ids": [],
   "unavailable": {
     "reason": "row_count_unprovable",
     "blocking_node_id": "explode_items"

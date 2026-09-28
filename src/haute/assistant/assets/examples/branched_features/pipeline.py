@@ -16,14 +16,8 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.api_input(config="config/request.json")
-def quote() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+def quote():
     """Represent the live quote request source."""
-
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_api_input_from_config
-
-    return resolve_api_input_from_config("config/request.json", base_dir=Path(__file__).parent)
 
 
 @pipeline.polars
@@ -48,10 +42,8 @@ def combined(vehicle_features: pl.LazyFrame, customer_features: pl.LazyFrame) ->
 
 
 @pipeline.output(config="config/output.json")
-def response(combined: pl.LazyFrame) -> pl.LazyFrame:
+def response(combined):
     """Return the combined features for the response."""
-
-    return combined
 
 
 pipeline.connect("quote", "vehicle_features", source_port="quote")

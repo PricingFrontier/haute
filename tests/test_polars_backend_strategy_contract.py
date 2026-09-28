@@ -14,9 +14,7 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._ram_estimate import MaterialisationEstimate, estimate_materialisation_boundaries
-from haute.chunking import ChunkPlanRequest, chunk_plan
 from haute.errors import (
-    ChunkPlanUnsupportedError,
     ContractMismatchError,
     GroupByExecutionUnsupportedError,
 )
@@ -1048,6 +1046,168 @@ def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> 
     } in provenance
 
 
+_UNREADABLE_BURN_COST = "df = df.with_columns(pl.max_horizontal(pl.col(['premium'])).alias('burn'))"
+
+
+def _joined_then_code_parts(code: str, suffix: str = ""):
+    """Two contracted sources, an Edge Join, and a Polars node reading the join."""
+
+    def source(name: str, outputs: list[str]) -> dict[str, object]:
+        node_id = f"{name}{suffix}"
+        return {
+            "id": node_id,
+            "data": {
+                "label": node_id,
+                "nodeType": "polars",
+                "config": {"contract": {"inputs": [], "outputs": outputs}},
+            },
+        }
+
+    joined, filled = f"joined{suffix}", f"filled{suffix}"
+    nodes = [
+        source("quotes", ["quote_id", "premium", "unused"]),
+        source("sales", ["quote_id", "sale_flag"]),
+        {
+            "id": joined,
+            "data": {
+                "label": joined,
+                "nodeType": "edgeJoin",
+                "config": {"how": "left", "leftOn": ["quote_id"], "rightOn": ["quote_id"]},
+            },
+        },
+        {
+            "id": filled,
+            "data": {
+                "label": filled,
+                "nodeType": "polars",
+                "config": {"code": f"df = {joined}\n{code}"},
+            },
+        },
+    ]
+    edges = [
+        make_edge(f"quotes{suffix}", joined, target_handle="base").model_dump(),
+        make_edge(f"sales{suffix}", joined, target_handle="join").model_dump(),
+        make_edge(joined, filled).model_dump(),
+    ]
+    return nodes, edges
+
+
+def _plan_filled(code: str):
+    nodes, edges = _joined_then_code_parts(code)
+    return plan_execution_strategy(
+        ProjectionRequest(
+            graph=make_graph({"nodes": nodes, "edges": edges}),
+            target_node_id="filled",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"filled": {"quote_id", "burn"}},
+        )
+    )
+
+
+def test_projection_cause_names_the_code_that_left_its_input_full_width() -> None:
+    diagnostic = _plan_filled(_UNREADABLE_BURN_COST).diagnostic
+
+    assert diagnostic.strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
+    # The first full-width node is still the blocking node; the cause is below it.
+    assert diagnostic.blocking_node_id == "quotes"
+    assert diagnostic.to_dict()["projection_cause"] == {
+        "node_id": "filled",
+        "operator": "polars",
+        "kind": "input",
+        "reason_code": "polars_lineage_unsupported",
+        "message": "Polars code is outside the closed column-lineage model",
+        "total_count": 1,
+        "parent_node_id": "joined",
+        "operation": "with_columns",
+    }
+    assert diagnostic.remediation is not None
+    assert diagnostic.remediation.startswith(
+        "Haute can't follow which columns the code in 'filled' reads in a with_columns call."
+    )
+    ExecutionStrategyDiagnosticPayload.model_validate(diagnostic.to_dict())
+
+
+def test_projection_cause_is_absent_when_everything_is_projected() -> None:
+    diagnostic = _plan_filled("df = df.with_columns(pl.col('premium').alias('burn'))").diagnostic
+
+    assert diagnostic.strategy is ExecutionStrategy.PROJECTED
+    assert diagnostic.projection_cause is None
+    assert "projection_cause" not in diagnostic.to_dict()
+
+
+def test_projection_cause_names_a_source_whose_code_needs_a_full_scan(tmp_path: Path) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {
+                        "label": "src",
+                        "nodeType": "dataInput",
+                        "config": make_file_input_config(
+                            tmp_path / "src.parquet", code=_UNREADABLE_BURN_COST
+                        ),
+                    },
+                },
+                {
+                    "id": "picked",
+                    "data": {
+                        "label": "picked",
+                        "nodeType": "polars",
+                        "config": {"code": "df = src.select('quote_id')"},
+                    },
+                },
+            ],
+            "edges": [make_edge("src", "picked").model_dump()],
+        }
+    )
+
+    diagnostic = plan_execution_strategy(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="picked",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"picked": {"quote_id"}},
+        )
+    ).diagnostic
+
+    cause = diagnostic.projection_cause
+    assert cause is not None
+    assert (cause.node_id, cause.kind.value, cause.parent_node_id) == ("src", "node", None)
+    assert diagnostic.remediation is not None
+    assert diagnostic.remediation.startswith(
+        "The code in 'src' runs over the whole source before Haute can narrow it."
+    )
+
+
+def test_projection_cause_is_the_furthest_downstream_and_counts_the_rest() -> None:
+    first_nodes, first_edges = _joined_then_code_parts(_UNREADABLE_BURN_COST)
+    second_nodes, second_edges = _joined_then_code_parts(_UNREADABLE_BURN_COST, suffix="_b")
+    graph = make_graph({"nodes": first_nodes + second_nodes, "edges": first_edges + second_edges})
+    order = [node.id for node in graph.nodes]
+    children: dict[str, list[str]] = {node_id: [] for node_id in order}
+    for edge in graph.edges:
+        children[edge.source].append(edge.target)
+    ranks = _canonical_topological_ranks(order, children)
+
+    diagnostic = plan_execution_strategy(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id=None,
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={
+                "filled": {"quote_id", "burn"},
+                "filled_b": {"quote_id", "burn"},
+            },
+        )
+    ).diagnostic
+
+    cause = diagnostic.projection_cause
+    assert cause is not None
+    assert cause.total_count == 2
+    assert cause.node_id == max(("filled", "filled_b"), key=lambda node_id: ranks[node_id])
+
+
 def test_prepared_and_request_planners_return_the_same_contract() -> None:
     graph = _opaque_fan_out_graph()
     request = ProjectionRequest(
@@ -1375,32 +1535,6 @@ def _context(
         config_key="test",
     )
     return ExecutionContext(operation="test", profile=profile, admission=admission)
-
-
-def test_group_by_in_chunk_suffix_is_rejected_as_a_physical_plan_constraint() -> None:
-    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
-        chunk_plan(
-            ChunkPlanRequest(
-                graph=_group_by_graph(),
-                target_node_id="out",
-                chunk_size=10,
-            )
-        )
-
-
-def test_group_by_is_allowed_in_a_pre_chunk_materialisation_prefix() -> None:
-    plan = chunk_plan(
-        ChunkPlanRequest(
-            graph=_group_by_graph(),
-            target_node_id="out",
-            chunk_start_node_id="agg",
-            chunk_size=10,
-        )
-    )
-
-    assert plan.pre_chunk_node_ids == ("source",)
-    assert plan.chunk_node_ids == ("agg", "out")
-    assert plan.chunk_start_node_id == "agg"
 
 
 def test_automatic_group_by_estimate_targets_the_boundary_node(

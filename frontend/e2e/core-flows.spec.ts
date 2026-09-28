@@ -61,9 +61,8 @@ function addModellingNode(name: string, algorithm: string, params: Record<string
   const block = [
     "",
     "",
-    "@pipeline.modelling(config='config/model_training/" + name + ".json')",
-    "def " + name + "(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
-    "    return raw_rows",
+    '@pipeline.modelling(config="config/model_training/' + name + '.json")',
+    "def " + name + "(raw_rows): ...",
     "",
   ].join("\n")
   writeFileSync(gitMainPath, readFileSync(gitMainPath, "utf8").trimEnd() + "\n" + block, "utf8")
@@ -555,7 +554,7 @@ test.describe("core browser flows", () => {
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
     await expect
       .poll(() => readFileSync(browserSubmodelPath, "utf8"))
-      .toContain('submodel = haute.Submodel("browser_group"')
+      .toMatch(/submodel = haute\.Submodel\(\s*"browser_group",/)
 
     await page.reload()
     await expect(submodelNode).toBeVisible()
@@ -610,7 +609,7 @@ test.describe("core browser flows", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
     await expect.poll(() => readFileSync(browserSubmodelPath, "utf8"))
-      .toContain(`'name': '${frameName}'`)
+      .toContain(`"name": "${frameName}"`)
   })
 
   test("renames a submodel occurrence, updating its alias and downstream bindings across preview and save", async ({

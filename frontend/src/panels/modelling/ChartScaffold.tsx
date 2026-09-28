@@ -6,7 +6,7 @@ import {
   type ReactNode,
   type SVGProps,
 } from "react"
-import { formatChartNumber } from "../../utils/chartHelpers"
+import { formatChartNumber, formatChartTicks } from "../../utils/chartHelpers"
 
 export const MODELLING_CHART_GRID_COLOR = "var(--border)"
 export const MODELLING_CHART_AXIS_TEXT_COLOR = "var(--text-muted)"
@@ -271,7 +271,9 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
 
 /**
  * Horizontal gridlines across the plot with each tick's value to the left of
- * the axis: the value axis every validation chart draws.
+ * the axis: the value axis every validation chart draws. A linear axis's
+ * labels are formatted together, so neighbouring ticks never share a label; a
+ * log axis labels each decade on its own.
  */
 export function ChartValueGrid({
   ticks,
@@ -279,6 +281,7 @@ export function ChartValueGrid({
   right,
   y,
   labelGap = 6,
+  scale = "linear",
 }: {
   ticks: number[]
   /** The plot's left edge; labels end `labelGap` pixels before it. */
@@ -287,10 +290,12 @@ export function ChartValueGrid({
   right: number
   y: (value: number) => number
   labelGap?: number
+  scale?: "linear" | "log"
 }) {
+  const labels = scale === "log" ? ticks.map(formatChartNumber) : formatChartTicks(ticks)
   return (
     <>
-      {ticks.map((value) => (
+      {ticks.map((value, index) => (
         <g key={value} data-testid="chart-value-tick">
           <line x1={left} y1={y(value)} x2={right} y2={y(value)} stroke={MODELLING_CHART_GRID_COLOR} />
           <text
@@ -300,7 +305,7 @@ export function ChartValueGrid({
             fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
             fill={MODELLING_CHART_AXIS_TEXT_COLOR}
           >
-            {formatChartNumber(value)}
+            {labels[index]}
           </text>
         </g>
       ))}

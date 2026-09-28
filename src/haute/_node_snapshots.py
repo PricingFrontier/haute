@@ -104,10 +104,9 @@ _BOUNDED_SNAPSHOT_PROFILES = frozenset(
     {
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
+        ExecutionProfile.OPTIMISER_SOLVE,
         ExecutionProfile.EXPLORE_ANALYSIS,
-        ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.LAZY_SINK,
-        ExecutionProfile.CHUNKED_MAP_REDUCE,
         ExecutionProfile.NODE_SNAPSHOT,
     }
 )

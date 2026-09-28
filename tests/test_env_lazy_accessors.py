@@ -120,19 +120,11 @@ _ACCESSOR_CASES = [
     ),
     (
         "haute.routes._optimiser_service",
-        "_default_auto_range_chunk_size",
-        "HAUTE_AUTO_RANGE_CHUNK_SIZE",
-        "111",
-        111,
-        2_000_000,
-    ),
-    (
-        "haute.routes._optimiser_service",
-        "_default_auto_range_partitions",
-        "HAUTE_AUTO_RANGE_PARTITIONS",
-        "8",
-        8,
-        16,
+        "_default_reducer_budget_mb",
+        "HAUTE_OPTIMISER_REDUCER_BUDGET_MB",
+        "64",
+        64,
+        512,
     ),
     (
         "haute.routes._train_service",
@@ -242,17 +234,18 @@ def test_build_timeout_accepts_positive_values_below_old_clamp(module_name, acce
 
 
 def test_auto_range_context_default_reflects_env(monkeypatch):
-    """The frozen dataclass default is a ``default_factory``, so a per-test
-    env override reaches ``FrontierAutoRangeContext()`` — proving the fix also
+    """The frozen dataclass defaults are ``default_factory``s, so a per-test
+    override reaches ``FrontierAutoRangeContext()`` — proving the fix also
     covers the dataclass-default capture, not just the direct accessor call.
+    The batch rows follow the pipeline's streaming chunk size setting.
     """
+    import polars as pl
+
     from haute.routes._optimiser_service import FrontierAutoRangeContext
 
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_CHUNK_SIZE", "333")
-    monkeypatch.setenv("HAUTE_AUTO_RANGE_PARTITIONS", "9")
+    pl.Config.set_streaming_chunk_size(333)
     ctx = FrontierAutoRangeContext()
     assert ctx.chunk_size == 333
-    assert ctx.partition_count == 9
 
 
 DirectEnvRead = tuple[str, str, str, str]

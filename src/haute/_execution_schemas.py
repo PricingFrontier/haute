@@ -40,6 +40,19 @@ class ExecutionStrategyReasonPayload(BaseModel):
     parent_node_id: str | None = None
 
 
+class ExecutionStrategyProjectionCausePayload(BaseModel):
+    """The furthest-downstream node that kept part of the plan full width."""
+
+    node_id: str
+    operator: str
+    kind: Literal["input", "node"]
+    reason_code: str
+    message: str = Field(max_length=512)
+    total_count: Annotated[StrictInt, Field(ge=1, le=MAX_JSON_SAFE_INTEGER)]
+    parent_node_id: str | None = None
+    operation: str | None = None
+
+
 class ExecutionStrategyProvenancePayload(BaseModel):
     column: str
     origin_kind: Literal[
@@ -205,11 +218,10 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
         "lazy_sink",
         "training_prep",
         "optimiser_setup",
+        "optimiser_solve",
         "explore_analysis",
-        "auto_range",
         "deploy_live",
         "deploy_batch",
-        "chunked_map_reduce",
         "node_snapshot",
     ]
     boundedness: Literal["bounded", "unbounded", "unknown"]
@@ -234,6 +246,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
     ) = None
     headroom_bytes: JsonSafeNonNegativeInt | None = None
     assumptions: list[str] = Field(default_factory=list)
+    projection_cause: ExecutionStrategyProjectionCausePayload | None = None
 
     @model_validator(mode="after")
     def _validate_strategy_contract(self) -> ExecutionStrategyDiagnosticPayload:

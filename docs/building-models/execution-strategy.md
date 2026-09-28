@@ -44,6 +44,12 @@ Move simple column selection and filtering upstream, declare the columns a
 custom node needs, or split opaque work into a smaller dedicated branch when a
 boundary is unexpectedly costly.
 
+When a preview warns that column projection was limited, the warning names the
+node that stopped Haute narrowing the columns, which is often below the nodes
+that read every column, and suggests what to change there. For code Haute cannot
+follow, referring to each column by name (for example `pl.col("premium")`) or
+moving that step into a node of its own usually clears it.
+
 ### Global operations
 
 Global operations (group-by, sort, unique, join, join_asof, top_k, bottom_k,
@@ -55,9 +61,9 @@ when its estimate fits the workflow's admitted memory headroom. Deploy estimates
 injected request data directly rather than requiring the original development-time
 source to remain readable.
 
-Haute never computes a global operation independently in each generic chunk. When a
-workflow uses chunking, it executes the global operation once under the same admission
-contract and chunks only a proven row-local suffix. If the estimate is too large,
+Haute never computes a global operation independently in each generic chunk. A bounded
+write slices a node only when its code is proven row-local; a global operation always
+runs once, under the same admission contract. If the estimate is too large,
 Haute returns a typed memory/admission diagnostic rather than producing a partial or
 approximate result.
 
@@ -66,7 +72,8 @@ a hard memory cap. Previews and traces, Data Output writes, Explore, JSON cache 
 training preparation, and multi-row batch scoring in a deployed container all run
 inside a worker with a native memory cap, so Haute runs the operation once under the
 run's full reserved memory envelope and reports the **Warned** outcome naming the
-missing proof. Optimiser stages and single-row live scoring run without that cap, so
+missing proof. A host with no native memory cap (macOS) cannot give that guarantee, so
+there these surfaces return the typed diagnostic instead. Optimiser stages and single-row live scoring run without that cap, so
 they return the typed diagnostic, and its remediation says so. A Databricks deployment
 scores every request in the serving process, so an operation Haute cannot estimate
 fails the bundle at build time with a correction that points at a container target.

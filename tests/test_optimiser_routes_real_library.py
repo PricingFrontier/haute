@@ -827,7 +827,6 @@ class TestSolveResultContract:
         assert summary["solver_settings"] == {
             "max_iter": 20,
             "tolerance": 1e-4,
-            "chunk_size": None,
         }
         assert result["diagnostics_errors"] == []
         assert result["adjustments"]["n_quotes"] == 5
@@ -986,38 +985,24 @@ class TestEffectiveBoundsContract:
     """OPT-V01: every constraint, swept or not, carries the absolute bound its
     result was solved at, read from price-contour and never re-derived."""
 
-    def test_unswept_constraint_survives_the_solve_time_frontier_and_select(
-        self, client, tmp_path, monkeypatch
-    ):
-        """The solve-time frontier sweeps every configured range, so the only
-        way to leave a constraint unswept there is a narrower range set; the
-        patch makes the solve sweep ``volume`` alone."""
-        from haute.routes import _optimiser_solver
-
-        monkeypatch.setattr(
-            _optimiser_solver,
-            "_auto_frontier_ranges_from_config",
-            lambda _config: {"volume": (5.0, 6.0)},
-        )
+    def test_unswept_constraint_survives_the_solve_time_frontier_and_select(self, client, tmp_path):
+        """Only ``volume`` has a range, so only it is swept, and the solve
+        itself runs at its range's start; ``margin`` keeps its fixed bound."""
         path = tmp_path / "two_constraints.parquet"
         _scored_frame(n_quotes=6, n_steps=5, extra_constraint_columns=True).write_parquet(path)
         graph = _online_graph(
             str(path),
             {
                 "constraints": _TWO_CONSTRAINTS,
-                "frontier_enabled": True,
                 "frontier_steps": 3,
-                "frontier_ranges": {
-                    "volume": {"min": 5.0, "max": 6.0},
-                    "margin": {"min": 390.0, "max": 410.0},
-                },
+                "frontier_ranges": {"volume": {"min": 5.0, "max": 6.0}},
             },
         )
         job_id = _solve_completed(client, graph)
         result = _poll_until_done(client, job_id)["result"]
 
         assert result["effective_bounds"] == {
-            "volume": {"kind": "min", "bound": 5.5},
+            "volume": {"kind": "min", "bound": 5.0},
             "margin": {"kind": "max", "bound": 400.0},
         }
         frontier = result["frontier"]

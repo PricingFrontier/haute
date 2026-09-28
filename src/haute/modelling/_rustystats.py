@@ -633,17 +633,16 @@ class GLMAlgorithm(BaseAlgorithm):
         )
 
         if on_iteration:
-            on_iteration(0, 1, {})
+            on_iteration(0, 1, {}, None)
         _mem_checkpoint("glm fitting")
         result = builder.fit(**glm_fit_kwargs(params))
         _mem_checkpoint("glm fit() DONE")
-        if on_iteration:
-            on_iteration(1, 1, {"deviance": float(result.deviance)})
-
         # A GLM converges in a few IRLS steps, not iteratively like a GBM.
         loss_history: list[dict[str, float]] = [
             {"iteration": 1.0, "train_deviance": float(result.deviance)},
         ]
+        if on_iteration:
+            on_iteration(1, 1, {"deviance": float(result.deviance)}, loss_history[0])
 
         del train_df
         gc.collect()

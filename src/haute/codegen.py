@@ -10,21 +10,19 @@ single-node dispatcher that drives the unified
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Mapping
-from dataclasses import replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from haute._codegen_builders import (
-    _build_params,
-    _safe_path,
-    _safe_str,
+    NodeSource,
+    _params,
     _sanitize_description,
+    render_node_source,
 )
 from haute._config_builder import resolve_parse_time_contract
-from haute._config_io import has_config_folder
 from haute._config_validation import reject_removed_config_keys
 from haute._contracts import (
-    OPAQUE_CONTRACT_SENTINEL,
     Contract,
     get_column_contract,
 )
@@ -41,9 +39,10 @@ from haute._graph_utils import (
     resolve_input_mapping_names,
 )
 from haute._logging import get_logger
-from haute._python_syntax import inject_decorator_keyword
 from haute._registry import NODE_REGISTRY
+from haute._source_layout import Doc, arguments, literal, print_doc, quote_string
 from haute._submodel_instances import ResolvedSubmodelInstance, resolve_submodel_instances
+from haute._submodel_paths import definition_pipeline_dir
 from haute._topo import topo_sort_ids
 from haute._types import (
     GraphEdge,
@@ -51,8 +50,6 @@ from haute._types import (
     NodeType,
     PipelineGraph,
     SubmodelDefinition,
-    SubmodelInputPort,
-    SubmodelOutputPort,
 )
 from haute.errors import ConfigError, HauteError, ParseError
 
@@ -103,19 +100,13 @@ def _is_codegen_infra_error(exc: BaseException) -> bool:
     return type(exc).__module__.split(".", 1)[0] == "mlflow"
 
 
-def _format_contract_kwarg(
+def _contract_keyword(
     node: GraphNode,
     parent_name_by_id: dict[str, str] | None = None,
     *,
     contract_source: ContractSource = "builder",
-) -> str | None:
-    """Return the ``contract=...`` decorator kwarg source, or ``None``.
-
-    For concrete contracts, emits
-    ``contract={"inputs": [...], "outputs": [...]}`` with columns sorted
-    for deterministic round-tripping.  For opaque contracts, emits
-    ``contract="opaque"`` — a short string sentinel that both survives
-    JSON config round-tripping and is trivially human-readable.
+) -> dict[str, object] | None:
+    """The ``contract=`` keyword value for *node*, or ``None`` when it adds nothing.
 
     The contract is re-derived from the node's current config on every
     call.  A declared ``config["contract"]`` — usually the annotation the
@@ -125,39 +116,48 @@ def _format_contract_kwarg(
     annotation that the post-save parse check rejects.
 
     *contract_source* picks the derivation (see :data:`ContractSource`).
-    Instance nodes, and ``"declared"`` generation, emit the declaration
-    unchanged: an instance's own config does not describe the columns it
-    references.  An instance with no declaration returns
-    ``None`` because its contract comes from the original node.  A declared
-    ``"opaque"`` is also emitted unchanged: it declares no side, so it can
-    neither go stale against the config nor override the builder.
+    Instance nodes, and ``"declared"`` generation, start from the
+    declaration alone: an instance's own config does not describe the
+    columns it references.
+
+    The keyword is emitted only when it tells the parser something it cannot
+    derive offline from the node's config (:func:`resolve_parse_time_contract`):
+    a concrete side that derivation leaves opaque, or ``inputs_by_parent``.
+    An opaque contract, or one the settings already imply, is left out; no
+    consumer tells it apart from an absent one.
     """
     config = node.data.config
     declared = Contract.from_user_declared(config.get("contract"))
-    if config.get("instanceOf") or contract_source == "declared":
-        if declared is None:
-            return None
-        return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
-    if declared == Contract.opaque():
-        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
-    derived = (
-        _derive_contract_for_codegen(node)
-        if contract_source == "builder"
-        else resolve_parse_time_contract(node.data.nodeType, config)
+    instance = bool(config.get("instanceOf"))
+    if instance or contract_source == "declared":
+        contract = declared
+    else:
+        derived = (
+            _derive_contract_for_codegen(node)
+            if contract_source == "builder"
+            else resolve_parse_time_contract(node.data.nodeType, config)
+        )
+        contract = (
+            derived
+            if declared is None
+            else replace(
+                derived.fill_opaque_sides(declared),
+                inputs_by_parent=declared.inputs_by_parent,
+            )
+        )
+    if contract is None:
+        return None
+    value = _contract_value(contract, parent_name_by_id=parent_name_by_id)
+    # The parser reads an instance as a Polars node, whose contract it cannot derive.
+    offline = (
+        Contract.opaque() if instance else resolve_parse_time_contract(node.data.nodeType, config)
     )
-    if declared is None:
-        # Annotate the builder contract alone, which documents only fully
-        # concrete contracts.
-        if derived.inputs is None or derived.outputs is None:
-            return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
-        inputs_repr = repr(sorted(derived.inputs))
-        outputs_repr = repr(sorted(derived.outputs))
-        return f'contract={{"inputs": {inputs_repr}, "outputs": {outputs_repr}}}'
-    contract = replace(
-        derived.fill_opaque_sides(declared),
-        inputs_by_parent=declared.inputs_by_parent,
+    adds_information = (
+        "inputs_by_parent" in value
+        or (value["inputs"] is not None and offline.inputs is None)
+        or (value["outputs"] is not None and offline.outputs is None)
     )
-    return _format_contract_source(contract, parent_name_by_id=parent_name_by_id)
+    return value if adds_information else None
 
 
 def _derive_contract_for_codegen(node: GraphNode) -> Contract:
@@ -197,16 +197,13 @@ def _derive_contract_for_codegen(node: GraphNode) -> Contract:
     return resolve_parse_time_contract(node_type, config)
 
 
-def _format_contract_source(
+def _contract_value(
     contract: Contract,
     *,
     parent_name_by_id: dict[str, str] | None = None,
-) -> str:
-    """Format a declared contract while preserving fan-in ownership metadata."""
-    if contract.inputs is None and contract.outputs is None and contract.inputs_by_parent is None:
-        return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
-
-    contract_dict: dict[str, object] = {
+) -> dict[str, object]:
+    """A contract as the literal the decorator carries, keeping fan-in ownership metadata."""
+    value: dict[str, object] = {
         "inputs": None if contract.inputs is None else sorted(contract.inputs),
         "outputs": None if contract.outputs is None else sorted(contract.outputs),
     }
@@ -254,10 +251,8 @@ def _format_contract_source(
             )
             inputs_by_parent = {}
         if inputs_by_parent:
-            contract_dict["inputs_by_parent"] = {
-                parent_id: columns for parent_id, columns in sorted(inputs_by_parent.items())
-            }
-    return f"contract={contract_dict!r}"
+            value["inputs_by_parent"] = dict(sorted(inputs_by_parent.items()))
+    return value
 
 
 def _parent_name_by_id(
@@ -272,22 +267,26 @@ def _parent_name_by_id(
     }
 
 
-def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
-    """Insert *contract_kwarg* into the first pipeline/submodel decorator."""
+def _render(
+    node: GraphNode,
+    source: NodeSource,
+    contract: dict[str, object] | None,
+    receiver: str,
+) -> str:
+    """Print one node's function, naming the node in any printing failure."""
+    extra = (("contract", contract),) if contract is not None else ()
     try:
-        return inject_decorator_keyword(
-            code,
-            contract_kwarg,
-            decorator_roots=frozenset({"pipeline", "submodel"}),
+        return render_node_source(
+            source,
+            func_name=_sanitize_func_name(node.data.label),
+            receiver=receiver,
+            extra_keywords=extra,
         )
     except HauteError as exc:
-        if exc.context.get("reason") != "decorator_not_found":
-            raise
-        raise HauteError(
-            "contract injection failed: no @pipeline.* or @submodel.* "
-            "decorator found in generated code — this is a codegen bug",
-            reason="no_decorator",
-        ) from exc
+        exc.context.setdefault("node_id", node.id)
+        exc.context.setdefault("node_label", node.data.label)
+        exc.context.setdefault("node_type", str(node.data.nodeType))
+        raise
 
 
 def _node_to_code(
@@ -296,45 +295,29 @@ def _node_to_code(
     source_ids: list[str] | None = None,
     *,
     contract_source: ContractSource = "builder",
+    receiver: str = "pipeline",
 ) -> str:
-    """Generate code for a single node.
+    """Generate the function for a single node.
 
-    Delegates to :func:`_generate_node_code` for the type-specific code — a
-    config-backed builder already emits its ``config=`` sidecar reference as
-    the decorator — then injects the column contract as an additional
-    decorator kwarg so reviewers and the parser can cross-check it without
-    running the pipeline.
+    Delegates to :func:`_generate_node_code` for the type-specific description
+    — a config-backed builder names its sidecar as the decorator's ``config=``
+    — then adds the column contract as the decorator's last keyword when it
+    carries information the parser cannot derive.
     """
     if source_names is None:
         source_names = []
     if source_ids is None:
         source_ids = []
-
-    code = _generate_node_code(node, source_names)
-
-    if contract_source == "declared" and node.data.config.get("contract") is None:
-        return code
-    contract_kwarg = _format_contract_kwarg(
+    source = _generate_node_code(node, source_names)
+    contract = _contract_keyword(
         node,
         parent_name_by_id=_parent_name_by_id(source_ids, source_names),
         contract_source=contract_source,
     )
-    if contract_kwarg is not None:
-        try:
-            code = _inject_contract_kwarg(code, contract_kwarg)
-        except HauteError as exc:
-            # Enrich the error with the offending node's identity so
-            # the saved-pipeline error message names exactly which node
-            # triggered the codegen bug, not just the shape of the bug.
-            exc.context.setdefault("node_id", node.id)
-            exc.context.setdefault("node_label", node.data.label)
-            exc.context.setdefault("node_type", str(node.data.nodeType))
-            raise
-
-    return code
+    return _render(node, source, contract, receiver)
 
 
-def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) -> str:
+def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) -> NodeSource:
     """Dispatch to the type-specific codegen builder via the unified registry.
 
     Fails loudly if no codegen builder is registered for the node's
@@ -365,26 +348,18 @@ def _instance_to_code(
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
     orig_source_names: list[str] | None = None,
+    *,
+    receiver: str = "pipeline",
 ) -> str:
-    """Generate code for an instance node that delegates to the original function.
+    """Generate the declaration of an instance node.
 
-    When *orig_source_names* is provided the wrapper emits keyword arguments so
-    that each original parameter receives the correct instance input regardless
-    of edge ordering.
+    The decorator names the original node (``of=``) and persists an explicit
+    ``inputMapping``; the executor runs the original's logic on the
+    instance's inputs. An inconsistent mapping fails here rather than later.
     """
     data = node.data
-    label = data.label
-    description = _sanitize_description(data.description or f"Instance of {original_func_name}")
-    func_name = _sanitize_func_name(label)
-
     if source_names is None:
         source_names = []
-    if source_ids is None:
-        source_ids = []
-
-    params = _build_params(source_names)
-
-    # Prefer explicit inputMapping from config (set via the UI).
     explicit_map = data.config.get("inputMapping")
     if explicit_map is not None and not isinstance(explicit_map, dict):
         raise ConfigError(
@@ -392,30 +367,22 @@ def _instance_to_code(
             node_id=node.id,
             input_mapping=explicit_map,
         )
-
     if orig_source_names and source_names:
-        explicit = dict(explicit_map) if explicit_map else None
-        mapping = build_instance_mapping(orig_source_names, source_names, explicit)
-        args = ", ".join(f"{orig}={mapping[orig]}" for orig in orig_source_names if orig in mapping)
-    else:
-        args = ", ".join(source_names) if source_names else "df"
-
-    decorator_args = [f'of="{original_func_name}"']
+        # Stale or ambiguous pairings fail loudly now, not at execution.
+        build_instance_mapping(
+            orig_source_names, source_names, dict(explicit_map) if explicit_map else None
+        )
+    keywords: list[tuple[str, object]] = [("of", original_func_name)]
     if explicit_map is not None:
-        decorator_args.append(f"inputMapping={explicit_map!r}")
-    code = (
-        f"@pipeline.instance({', '.join(decorator_args)})\n"
-        f"def {func_name}({params}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    return {original_func_name}({args})\n"
+        keywords.append(("inputMapping", explicit_map))
+    source = NodeSource(
+        "instance", tuple(keywords), _params(source_names), description=data.description
     )
-    contract_kwarg = _format_contract_kwarg(
+    contract = _contract_keyword(
         node,
-        parent_name_by_id=_parent_name_by_id(source_ids, source_names),
+        parent_name_by_id=_parent_name_by_id(source_ids or [], source_names),
     )
-    if contract_kwarg is not None:
-        code = _inject_contract_kwarg(code, contract_kwarg)
-    return code
+    return _render(node, source, contract, receiver)
 
 
 # ---------------------------------------------------------------------------
@@ -430,15 +397,9 @@ def _topo_sort(nodes: list[GraphNode], edges: list[GraphEdge]) -> list[GraphNode
     return [node_map[nid] for nid in order if nid in node_map]
 
 
-def _emit_preserved_blocks(preserved_blocks: list[str]) -> list[str]:
-    """Wrap each preserved block in start/end markers and return as lines."""
-    lines: list[str] = []
-    for block in preserved_blocks:
-        lines.append("# haute:preserve-start")
-        lines.append(block)
-        lines.append("# haute:preserve-end")
-        lines.append("")
-    return lines
+def _emit_preserved_block(block: str) -> str:
+    """Wrap one preserved block in its start/end markers."""
+    return "\n".join(["# haute:preserve-start", block, "# haute:preserve-end"])
 
 
 def _build_id_to_func(sorted_nodes: list[GraphNode]) -> dict[str, str]:
@@ -601,216 +562,196 @@ def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     return result
 
 
-#: Type alias for a function that generates code for a single node.
-_NodeCodeFn = Callable[
-    [GraphNode, list[str] | None, list[str] | None],
-    str,
-]
 _ConnectPair = tuple[str, str, str | None, str | None]
 
+_WIRE_COMMENT = "# Wire nodes together - edges define data flow"
 
-def _generate_pipeline_lines(
+
+def _emission_order(nodes: list[GraphNode], edges: list[GraphEdge]) -> list[GraphNode]:
+    """*nodes* in topological order, each input-less source just before its first consumer.
+
+    Only edges between *nodes* count. A node with inputs keeps its position;
+    a source that feeds one of *nodes* moves down to directly before the first
+    of them to consume it (the sources of one consumer in its edge order); a
+    source that feeds none of them keeps its topological position.
+    """
+    ids = {node.id for node in nodes}
+    parents: dict[str, list[str]] = {}
+    consumed: set[str] = set()
+    for edge in edges:
+        if edge.source in ids and edge.target in ids:
+            parents.setdefault(edge.target, []).append(edge.source)
+            consumed.add(edge.source)
+    deferred = {node.id for node in nodes if node.id not in parents and node.id in consumed}
+    by_id = {node.id: node for node in nodes}
+    order: list[GraphNode] = []
+    emitted: set[str] = set()
+    for node in nodes:
+        if node.id in deferred:
+            continue
+        for parent in parents.get(node.id, []):
+            if parent in deferred and parent not in emitted:
+                order.append(by_id[parent])
+                emitted.add(parent)
+        order.append(node)
+        emitted.add(node.id)
+    return order
+
+
+def _call(head: str, entries: Sequence[Doc]) -> str:
+    """One call statement, laid out as ruff lays it out."""
+    return print_doc([head, arguments("(", list(entries), ")")])
+
+
+def _keyword(name: str, value: object) -> Doc:
+    return [name, "=", literal(value)]
+
+
+def _connect_call(obj_name: str, pair: _ConnectPair) -> str:
+    src_func, tgt_func, source_port, target_port = pair
+    entries: list[Doc] = [quote_string(src_func), quote_string(tgt_func)]
+    if source_port:
+        entries.append(_keyword("source_port", source_port))
+    if target_port:
+        entries.append(_keyword("target_port", target_port))
+    return _call(f"{obj_name}.connect", entries)
+
+
+@dataclass(frozen=True, slots=True)
+class _Block:
+    """One run of top-level statements, and whether it opens or closes with a definition."""
+
+    text: str
+    starts_def: bool = False
+    ends_def: bool = False
+
+
+def _authored_block(text: str) -> _Block:
+    """Authored module text, with the definition boundaries ruff spaces around."""
+    try:
+        body = ast.parse(text).body
+    except SyntaxError:
+        body = []
+    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    return _Block(
+        text,
+        starts_def=bool(body) and isinstance(body[0], definitions),
+        ends_def=bool(body) and isinstance(body[-1], definitions),
+    )
+
+
+def _join_blocks(blocks: list[_Block]) -> str:
+    """Join blocks with ruff's blank lines: two beside a definition, one otherwise."""
+    out = blocks[0].text
+    for previous, block in zip(blocks, blocks[1:], strict=False):
+        gap = 2 if previous.ends_def or block.starts_def else 1
+        out += "\n" * (gap + 1) + block.text
+    return out + "\n"
+
+
+def _refers_to_pl(text: str) -> bool:
+    """Whether module *text* uses the name ``pl`` (so it needs ``import polars as pl``)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return True
+    return any(isinstance(node, ast.Name) and node.id == "pl" for node in ast.walk(tree))
+
+
+def _node_functions(
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
     *,
-    kind: str,
-    name: str,
-    description: str,
-    preamble: str,
-    sorted_nodes: list[GraphNode],
     id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
-    connect_pairs: list[_ConnectPair],
-    node_source_ids: dict[str, list[str]] | None = None,
-    preserved_blocks: list[str] | None = None,
-    submodel_imports: list[str] | None = None,
-    node_to_code_fn: _NodeCodeFn = _node_to_code,
-    definition_id: str | None = None,
-    input_ports: list[SubmodelInputPort] | None = None,
-    output_ports: list[SubmodelOutputPort] | None = None,
-    config_base_depth: int | None = None,
-    dedup_connects: bool = False,
-    obj_name: str = "pipeline",
+    node_source_ids: dict[str, list[str]] | None,
+    receiver: str,
 ) -> list[str]:
-    """Generate the body of a pipeline or submodel file as a list of lines.
-
-    Shared by the no-submodel and multi-submodel paths in
-    ``graph_to_code_multi`` to eliminate duplicated header / node / connect
-    generation logic.
-    """
-    # Header ----------------------------------------------------------------
-    # The name is user-controlled and lands between the docstring's triple
-    # quotes, so it shares the description sanitizer: one mechanism for
-    # every "text between triple quotes" interpolation.  A name containing
-    # ``"""`` or ending in a backslash must neither break the file nor
-    # escape the docstring into executable module-level code.  The parse
-    # side recovers the exact name from the ``haute.Pipeline``/``Submodel``
-    # constructor literal below, so re-saving is a fixpoint.
-    config_base_import_lines: list[str] = []
-    config_base_assignment: str | None = None
-    if any(has_config_folder(node.data.nodeType) for node in sorted_nodes):
-        if kind == "submodel":
-            if config_base_depth is None or config_base_depth < 0:
-                raise HauteError(
-                    "Submodel codegen requires the registration path depth to "
-                    "emit a correct config base."
-                )
-            # Config paths resolve against the parent pipeline directory, so
-            # the emitted base must climb exactly as many levels as the
-            # recorded registration path descends.
-            config_base_expr = f"_HautePath(__file__).resolve().parents[{config_base_depth}]"
-        else:
-            config_base_expr = "_HautePath(__file__).resolve().parent"
-        config_base_import_lines = [
-            "from pathlib import Path as _HautePath",
-            "",
-        ]
-        config_base_assignment = f"_HAUTE_CONFIG_BASE = {config_base_expr}"
-    if kind == "submodel":
-        if definition_id is None or input_ports is None or output_ports is None:
-            raise HauteError(
-                "Submodel codegen requires definition_id, input_ports, and output_ports."
-            )
-        input_payload = [
-            port.model_dump(mode="python", by_alias=True, exclude_none=False)
-            for port in input_ports
-        ]
-        output_payload = [
-            port.model_dump(mode="python", by_alias=True, exclude_none=False)
-            for port in output_ports
-        ]
-        interface_kwargs = (
-            f", definition_id={_safe_str(definition_id)}, "
-            f"input_ports={input_payload!r}, output_ports={output_payload!r}"
+    """Every node's function: originals in emission order, then instances."""
+    instance_of_map = _build_instance_of_map(nodes)
+    node_by_id = {node.id: node for node in nodes}
+    originals = [n for n in nodes if n.id not in instance_of_map]
+    instances = [n for n in nodes if n.id in instance_of_map]
+    source_ids = node_source_ids or {}
+    functions = [
+        _node_to_code(
+            node,
+            node_sources.get(node.id, []),
+            source_ids.get(node.id, []),
+            receiver=receiver,
         )
-        lines = [
-            f'"""Submodel: {_sanitize_description(name)}"""',
-            "",
-            *config_base_import_lines,
-            "import polars as pl",
-            "import haute",
-        ]
-        if preamble.strip():
-            lines.append("")
-            lines.append(preamble.rstrip())
-        lines += [
-            "",
-            (
-                f"{obj_name} = haute.Submodel({_safe_str(name)}, "
-                f"description={description!r}{interface_kwargs})"
-            ),
-        ]
-        if config_base_assignment is not None:
-            lines += ["", config_base_assignment]
-        lines += ["", ""]
-    else:
-        lines = [
-            f'"""Pipeline: {_sanitize_description(name)}"""',
-            "",
-            *config_base_import_lines,
-            "import polars as pl",
-            "import haute",
-        ]
-        if preamble.strip():
-            lines.append("")
-            lines.append(preamble.rstrip())
-        lines += [
-            "",
-            f"{obj_name} = haute.Pipeline({_safe_str(name)}, description={description!r})",
-        ]
-        if config_base_assignment is not None:
-            lines += ["", config_base_assignment]
-        lines += ["", ""]
-
-    # Preserved blocks ------------------------------------------------------
-    if preserved_blocks:
-        lines.extend(_emit_preserved_blocks(preserved_blocks))
-        lines.append("")
-
-    # Nodes: originals then instances --------------------------------------
-    instance_of_map = _build_instance_of_map(sorted_nodes)
-    node_by_id = {node.id: node for node in sorted_nodes}
-    originals = [n for n in sorted_nodes if n.id not in instance_of_map]
-    instances = [n for n in sorted_nodes if n.id in instance_of_map]
-
-    for node in originals:
-        srcs = node_sources.get(node.id, [])
-        src_ids = (node_source_ids or {}).get(node.id, [])
-        lines.append(node_to_code_fn(node, srcs, src_ids))
-        lines.append("")
-
+        for node in _emission_order(originals, edges)
+    ]
     for node in instances:
-        srcs = node_sources.get(node.id, [])
         orig_id = instance_of_map[node.id]
-        orig_func = id_to_func.get(orig_id, orig_id)
         orig_src = node_sources.get(orig_id, [])
         original = node_by_id.get(orig_id)
         if original is not None and original.data.nodeType == NodeType.POLARS:
             input_mapping = original.data.config.get("inputMapping")
             if input_mapping is not None:
                 orig_src = resolve_input_mapping_names(orig_src, input_mapping)
-        inst_code = _instance_to_code(
-            node,
-            orig_func,
-            source_names=srcs,
-            source_ids=(node_source_ids or {}).get(node.id, []),
-            orig_source_names=orig_src,
+        functions.append(
+            _instance_to_code(
+                node,
+                id_to_func.get(orig_id, orig_id),
+                source_names=node_sources.get(node.id, []),
+                source_ids=source_ids.get(node.id, []),
+                orig_source_names=orig_src,
+                receiver=receiver,
+            )
         )
-        # Inside submodel files the decorator prefix must be @submodel.*
-        if obj_name != "pipeline":
-            inst_code = inst_code.replace("@pipeline.", f"@{obj_name}.", 1)
-        lines.append(inst_code)
-        lines.append("")
+    return functions
 
-    # Submodel imports (pipeline files only) -------------------------------
-    if submodel_imports:
-        for imp in submodel_imports:
-            lines.append(imp)
-        lines.append("")
 
-    # Connect calls --------------------------------------------------------
-    # Each pair carries an optional source_port. When present (non-empty
-    # string), emit the multi-frame form
-    # `pipeline.connect("a", "b", source_port="p")`. Otherwise emit the
-    # single-frame bare form. Per MULTI_FRAME_PLAN.md §6.
-    #
-    # Use ``json.dumps`` for the frame literal so user-controlled labels
-    # containing quotes / backslashes / non-ASCII characters survive
-    # round-trip without producing invalid Python (the adversarial
-    # review's C2 finding — bare f-string interpolation breaks on
-    # ``label = 'a"b'``). Func names are codegen-derived sanitised
-    # identifiers so the bare-string form is safe for those.
-    import json as _json
+def _render_module(
+    *,
+    kind: Literal["pipeline", "submodel"],
+    name: str,
+    description: str,
+    preamble: str,
+    functions: list[str],
+    connect_pairs: list[_ConnectPair],
+    preserved_blocks: list[str] | None = None,
+    registrations: list[str] | None = None,
+    constructor_keywords: Sequence[tuple[str, object]] = (),
+    dedup_connects: bool = False,
+) -> str:
+    """Assemble a pipeline or submodel file, laid out as ``ruff format`` would.
 
-    def _format_connect(
-        src_func: str,
-        tgt_func: str,
-        source_port: str | None,
-        target_port: str | None,
-    ) -> str:
-        kwargs: list[str] = []
-        if source_port:
-            kwargs.append(f"source_port={_json.dumps(source_port)}")
-        if target_port:
-            kwargs.append(f"target_port={_json.dumps(target_port)}")
-        if kwargs:
-            return f'{obj_name}.connect("{src_func}", "{tgt_func}", {", ".join(kwargs)})'
-        return f'{obj_name}.connect("{src_func}", "{tgt_func}")'
+    The header docstring, the imports, the authored preamble, the object's
+    construction, preserved blocks, one function per node, submodel
+    registrations and the connect calls, separated by ruff's blank lines.
+    ``import polars as pl`` is emitted only when the rest of the module
+    refers to ``pl``.
+    """
+    obj_name = "pipeline" if kind == "pipeline" else "submodel"
+    title = "Pipeline" if kind == "pipeline" else "Submodel"
+    # The name lands between the docstring's triple quotes, so it shares the
+    # description sanitizer; the parser recovers it from the constructor.
+    header = _Block(f'"""{title}: {_sanitize_description(name)}"""')
+    constructor: list[Doc] = [quote_string(name)]
+    if description:
+        constructor.append(_keyword("description", description))
+    constructor.extend(_keyword(key, value) for key, value in constructor_keywords)
 
-    if connect_pairs:
-        lines.append("")
-        lines.append("# Wire nodes together - edges define data flow")
-        if dedup_connects:
-            seen: set[_ConnectPair] = set()
-            for src_func, tgt_func, source_port, target_port in connect_pairs:
-                key = (src_func, tgt_func, source_port, target_port)
-                if key not in seen:
-                    seen.add(key)
-                    lines.append(_format_connect(src_func, tgt_func, source_port, target_port))
-        else:
-            for src_func, tgt_func, source_port, target_port in connect_pairs:
-                lines.append(_format_connect(src_func, tgt_func, source_port, target_port))
-        lines.append("")
+    body: list[_Block] = []
+    if preamble.strip():
+        body.append(_authored_block(preamble.strip("\n").rstrip()))
+    body.append(_Block(_call(f"{obj_name} = haute.{title}", constructor)))
+    for block in preserved_blocks or []:
+        shape = _authored_block(block)
+        body.append(_Block(_emit_preserved_block(block), shape.starts_def, shape.ends_def))
+    body.extend(_Block(code.rstrip("\n"), starts_def=True, ends_def=True) for code in functions)
+    if registrations:
+        body.append(_Block("\n".join(registrations)))
+    pairs = list(dict.fromkeys(connect_pairs)) if dedup_connects else connect_pairs
+    if pairs:
+        calls = [_connect_call(obj_name, pair) for pair in pairs]
+        body.append(_Block("\n".join([_WIRE_COMMENT, *calls])))
 
-    return lines
+    uses_pl = _refers_to_pl("\n\n".join(block.text for block in body))
+    imports = "import haute\nimport polars as pl" if uses_pl else "import haute"
+    return _join_blocks([header, _Block(imports), *body])
 
 
 # ---------------------------------------------------------------------------
@@ -877,41 +818,6 @@ def graph_to_code(
             files=sorted(files),
         )
     return next(iter(files.values()))
-
-
-def _submodel_node_to_code(
-    node: GraphNode,
-    source_names: list[str] | None = None,
-    source_ids: list[str] | None = None,
-) -> str:
-    """Generate code for a single node inside a submodel file.
-
-    Identical to ``_node_to_code`` but uses ``@submodel.<type>`` instead of
-    ``@pipeline.<type>``.
-    """
-    code = _node_to_code(
-        node,
-        source_names=source_names,
-        source_ids=source_ids,
-    )
-    code = code.replace("@pipeline.", "@submodel.", 1)
-    if node.data.nodeType == NodeType.EDGE_JOIN:
-        code = code.replace("pipeline._apply_edge_join(", "submodel._apply_edge_join(")
-    return code
-
-
-def _registration_path_depth(recorded_path: str) -> int:
-    """Directory depth of a recorded registration path below the pipeline dir.
-
-    Counts real path segments — dot and empty segments (``./x.py``,
-    ``a//x.py``) must not inflate how far the emitted config base climbs.
-    """
-    segments = [
-        segment
-        for segment in recorded_path.replace("\\", "/").split("/")
-        if segment not in ("", ".")
-    ]
-    return max(len(segments) - 1, 0)
 
 
 def _canonical_port_name(
@@ -1103,25 +1009,45 @@ def _graph_to_code_multi_instances(
             )
             for edge in child_edges
         ]
-        child_lines = _generate_pipeline_lines(
+        constructor_keywords: list[tuple[str, object]] = [
+            ("definition_id", definition_id),
+            (
+                "input_ports",
+                [
+                    port.model_dump(mode="json", by_alias=True, exclude_none=False)
+                    for port in definition.input_ports
+                ],
+            ),
+            (
+                "output_ports",
+                [
+                    port.model_dump(mode="json", by_alias=True, exclude_none=False)
+                    for port in definition.output_ports
+                ],
+            ),
+        ]
+        # Its config= paths belong to the owning pipeline, which a standalone run
+        # finds from this file through pipeline_dir.
+        pipeline_dir = definition_pipeline_dir(definition.file)
+        if pipeline_dir != ".":
+            constructor_keywords.append(("pipeline_dir", pipeline_dir))
+        files[definition.file.replace("\\", "/")] = _render_module(
             kind="submodel",
             name=child_graph.pipeline_name or definition_id,
             description=child_graph.pipeline_description or "",
             preamble=child_graph.preamble or "",
-            sorted_nodes=sorted_child_nodes,
-            id_to_func=child_id_to_func,
-            node_sources=child_node_sources,
+            functions=_node_functions(
+                sorted_child_nodes,
+                child_edges,
+                id_to_func=child_id_to_func,
+                node_sources=child_node_sources,
+                node_source_ids=child_node_source_ids,
+                receiver="submodel",
+            ),
             connect_pairs=child_connect_pairs,
-            node_source_ids=child_node_source_ids,
             preserved_blocks=child_graph.preserved_blocks or None,
-            definition_id=definition_id,
-            input_ports=definition.input_ports,
-            output_ports=definition.output_ports,
-            config_base_depth=_registration_path_depth(definition.file),
-            node_to_code_fn=_submodel_node_to_code,
-            obj_name="submodel",
+            constructor_keywords=constructor_keywords,
         )
-        files[definition.file.replace("\\", "/")] = "\n".join(child_lines)
 
     node_map = {node.id: node for node in graph.nodes}
     for edge in graph.edges:
@@ -1211,7 +1137,7 @@ def _graph_to_code_multi_instances(
             _require_routed_input_port(target_instance, edge, target_port)
         connect_pairs.append((source_func, target_func, source_port, target_port))
 
-    submodel_imports: list[str] = []
+    registrations: list[str] = []
     for node in graph.nodes:
         instance = instances.get(node.id)
         if instance is None:
@@ -1228,33 +1154,51 @@ def _graph_to_code_multi_instances(
                     instance_of=owner_ref,
                 )
             owner_name = owner_instance.config.alias
-            submodel_imports.append(
-                f"pipeline.submodel({_safe_path(instance.definition.file)}, "
-                f"{_safe_str(name)}, "
-                f"instance_of={_safe_str(owner_name)})"
+            registrations.append(
+                _call(
+                    "pipeline.submodel",
+                    [
+                        quote_string(instance.definition.file.replace("\\", "/")),
+                        quote_string(name),
+                        _keyword("instance_of", owner_name),
+                    ],
+                )
             )
         else:
-            submodel_imports.append(
-                f"pipeline.submodel({_safe_path(instance.definition.file)}, {_safe_str(name)})"
+            registrations.append(
+                _call(
+                    "pipeline.submodel",
+                    [
+                        quote_string(instance.definition.file.replace("\\", "/")),
+                        quote_string(name),
+                    ],
+                )
             )
-    main_lines = _generate_pipeline_lines(
+    root_edges = [
+        edge
+        for edge in ordered_parent_edges
+        if edge.source in root_node_ids and edge.target in root_node_ids
+    ]
+    files[source_file or f"{pipeline_name}.py"] = _render_module(
         kind="pipeline",
         name=pipeline_name,
         description=description,
         preamble=preamble,
-        sorted_nodes=sorted_root_nodes,
-        id_to_func=root_id_to_func,
-        node_sources=root_node_sources,
+        functions=_node_functions(
+            sorted_root_nodes,
+            root_edges,
+            id_to_func=root_id_to_func,
+            node_sources=root_node_sources,
+            node_source_ids=root_node_source_ids,
+            receiver="pipeline",
+        ),
         connect_pairs=connect_pairs,
-        node_source_ids=root_node_source_ids,
         preserved_blocks=(
             preserved_blocks if preserved_blocks is not None else graph.preserved_blocks or None
         ),
-        submodel_imports=submodel_imports,
-        node_to_code_fn=_node_to_code,
+        registrations=registrations,
         dedup_connects=True,
     )
-    files[source_file or f"{pipeline_name}.py"] = "\n".join(main_lines)
     logger.info(
         "code_generated",
         pipeline_name=pipeline_name,
@@ -1310,22 +1254,25 @@ def graph_to_code_multi(
         for edge in edges
     ]
     all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
-    lines = _generate_pipeline_lines(
+    code = _render_module(
         kind="pipeline",
         name=pipeline_name,
         description=description,
         preamble=preamble,
-        sorted_nodes=sorted_nodes,
-        id_to_func=id_to_func,
-        node_sources=node_sources,
+        functions=_node_functions(
+            sorted_nodes,
+            edges,
+            id_to_func=id_to_func,
+            node_sources=node_sources,
+            node_source_ids=node_source_ids,
+            receiver="pipeline",
+        ),
         connect_pairs=connect_pairs,
-        node_source_ids=node_source_ids,
         preserved_blocks=all_preserved or None,
-        node_to_code_fn=_node_to_code,
     )
     logger.info(
         "code_generated",
         pipeline_name=pipeline_name,
         node_count=len(sorted_nodes),
     )
-    return _assert_emitted_files_parse({main_key: "\n".join(lines)})
+    return _assert_emitted_files_parse({main_key: code})

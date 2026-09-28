@@ -138,3 +138,20 @@ describe("EBMTermsTab (MOD-F04)", () => {
     expect(screen.getByText("No EBM terms available")).toBeInTheDocument()
   })
 })
+
+describe("EBMInteractionsConfig before the columns load", () => {
+  afterEach(cleanup)
+
+  it("shows a saved pair without calling it not a feature", () => {
+    render(
+      <EBMInteractionsConfig
+        config={{ algorithm: "ebm", target: "claims", params: { interactions: [["age", "region"]] } }}
+        onUpdate={vi.fn(() => ({ ok: true as const }))}
+        columns={[]}
+      />,
+    )
+    const first = screen.getByRole("combobox", { name: "Interaction 1 feature 1" }) as HTMLSelectElement
+    expect(first).toHaveValue("age")
+    expect(first.selectedOptions[0].textContent).toBe("age")
+  })
+})

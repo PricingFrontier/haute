@@ -7,7 +7,7 @@
 | `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_bindings.py` | Strict parameter binding gate (`assert_polars_parameters_bound`): every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files and definition files (public input ports bind the sanitised port ID); any other shape is a `ParseError` with `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation` (F13). |
-| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
+| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph` (`_validate_pipeline_dir` checks the constructor's way back to the pipeline against where the file sits), and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`), and Polars evaluation of the located expression on the traced row (`_locate_defining_expression`, `_row_value`, `_branch_selection`). |
 
 ## Key types and data structures
@@ -161,7 +161,7 @@ no alias or migration shim; direct test callers use the same current contract.
   `None` passed without `row` becomes a `Null`-dtype column, which Polars rejects for numeric,
   temporal and string methods.
 - **Row-local means registered row-local**: `classify_row_local_expression` admits an operation
-  the Polars operation registry classes as row-local, whether or not chunked execution has a
+  the Polars operation registry classes as row-local, whether or not the chunk classifier has a
   proof for it (`pl.min_horizontal`, `pl.format` and a `when` chained on a conditional are
   admitted), and keeps the chunk classifier's argument guards (`fill_null(strategy=...)`,
   format-inferring `str.to_date()`). An operation missing from the registry is not proven
@@ -176,7 +176,10 @@ no alias or migration shim; direct test callers use the same current contract.
   over all identifier-like column names, longest-first, and substitutes in one left-to-right pass —
   so a value inserted for one column can never be re-scanned and corrupted by a shorter column
   name's pattern matching inside the inserted text. Non-identifier column names (spaces/special
-  characters) fall back to literal (non-regex) replacement.
+  characters) fall back to literal (non-regex) replacement. Given the traced row's typed frame,
+  a Float32 column's value is shown with its float32 digits (`528.09`, not the widened
+  `528.0900268554688`) by `_display_values`; only the text changes, and the values computed on
+  stay exact.
 - **BOM handling**: `parse_expression`, `parse_expression_chain`, and
   `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
   inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).

@@ -139,6 +139,50 @@ describe("executionDiagnostics", () => {
     ).toEqual(["requested", "aggregate"])
   })
 
+  it("marks the node that kept part of the pipeline full-width with the boundaries", () => {
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      execution_strategy: {
+        schema_version: 1,
+        status: "boundary",
+        strategy: "unprojected-streaming-boundary",
+        profile: "preview_eager",
+        boundedness: "bounded",
+        reason_code: "unprojected_streaming_boundary",
+        detail_state: "available",
+        boundaries: {
+          state: "available",
+          total_count: 1,
+          items: [{
+            topological_rank: 0,
+            node_id: "SaleJoin",
+            operator: "edgeJoin",
+            boundary_kind: "unprojected-streaming-boundary",
+          }],
+        },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: "SaleJoin",
+        blocking_operator: "edgeJoin",
+        projection_cause: {
+          node_id: "fill_na",
+          operator: "polars",
+          kind: "input",
+          reason_code: "polars_lineage_unsupported",
+          message: "Polars code is outside the closed column-lineage model",
+          total_count: 1,
+          parent_node_id: "SaleJoin",
+          operation: "with_columns",
+        },
+      },
+    })
+
+    expect(executionWarningNodeIds(metrics, "requested")).toEqual(["requested", "SaleJoin", "fill_na"])
+    expect(buildExecutionStrategyDiagnostic(metrics)?.details).toContain(
+      "Projection cause fill_na (polars) from SaleJoin: polars_lineage_unsupported in with_columns; 1 total",
+    )
+  })
+
   it.each(["contract_error", "timed_out", "cancelled", "superseded"] as const)(
     "does not build a terminal memory-pressure banner for %s failures",
     (terminalReason) => {
@@ -173,12 +217,12 @@ describe("executionDiagnostics", () => {
   it("derives a useful memory-limited failure message from execution metrics", () => {
     const message = buildExecutionFailureMessage(
       "Stopped",
-      makeExecutionMetricsFixture({ profile: "auto_range", terminal_reason: "memory_limited" }),
+      makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: "memory_limited" }),
       { prefix: "Auto range failed" },
     )
 
     expect(message).toBe(
-      "Auto range failed: auto-range reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
+      "Auto range failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
     )
   })
 
@@ -239,6 +283,16 @@ describe("executionDiagnostics", () => {
     expect(message).toBe(
       "Optimisation failed: optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
     )
+  })
+
+  it("labels the solver session's profile as the optimiser", () => {
+    const message = buildExecutionFailureMessage(
+      "Stopped",
+      makeExecutionMetricsFixture({ profile: "optimiser_solve", terminal_reason: null }),
+      { prefix: "Optimisation failed", status: "memory_limited" },
+    )
+
+    expect(message).toContain("Optimisation failed: optimiser reached")
   })
 
   it("normalises admission memory_limit details to memory_limited terminal state", () => {
@@ -314,7 +368,28 @@ describe("executionDiagnostics", () => {
       [
         "an admission refused by in-flight work",
         { reason: "in_flight_memory_budget_exceeded", rss_at_admission_bytes: GB },
-        "Other running work holds the memory this needs. Try again when it finishes.",
+        "Another job is running. Try again when it finishes.",
+      ],
+      [
+        "an admission refused by a running auto range",
+        {
+          reason: "in_flight_memory_budget_exceeded",
+          in_flight_operations: ["optimiser_solve:frontier_auto_range"],
+        },
+        "Another job is running (Auto range). Try again when it finishes.",
+      ],
+      [
+        "an admission refused by several jobs, one of them unnamed",
+        {
+          reason: "in_flight_memory_budget_exceeded",
+          in_flight_operations: [
+            "optimiser_solve:optimiser_solve",
+            "training_prep:training_job",
+            "lazy_sink:some_internal_step",
+            "optimiser_solve:optimiser_solve_worker",
+          ],
+        },
+        "Another job is running (Optimisation, Model training). Try again when it finishes.",
       ],
       [
         "an unenforceable native cap",

@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -33,6 +34,7 @@ from haute._execution_context import (
     ExecutionContext,
 )
 from haute._logging import get_logger
+from haute._memory_errors import memory_error_in
 from haute._polars_utils import (
     streaming_collect,
 )
@@ -69,9 +71,9 @@ from haute.routes._job_store import (
 )
 from haute.routes._optimiser_adjustments import adjustment_report
 from haute.routes._optimiser_input import (
-    _chunk_size_decision_for_parquet,
     _ChunkSizeDecision,
     _resolve_optimiser_input_edge,
+    pipeline_chunk_decision,
 )
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
@@ -234,15 +236,13 @@ def solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
     settings: dict[str, Any] = {
         "max_iter": job_config.get("max_iter", _DEFAULT_MAX_ITER),
         "tolerance": job_config.get("tolerance", _DEFAULT_TOLERANCE),
-        "chunk_size": job_config.get("chunk_size"),
     }
     if job_config.get("mode") == "ratebook":
         settings["max_cd_iterations"] = job_config.get(
             "max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS
         )
         settings["cd_tolerance"] = job_config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE)
-    if job_config.get("frontier_enabled") is True:
-        settings["frontier_enabled"] = True
+    if job_config.get("frontier_ranges"):
         settings["frontier_steps"] = job_config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
         settings["frontier_ranges"] = job_config.get("frontier_ranges")
     return settings
@@ -344,27 +344,58 @@ def _compute_frontier(
     return result
 
 
-def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
-    """Build absolute frontier ranges from canonical per-constraint config."""
+def swept_frontier_ranges(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """The absolute frontier ranges of the constraints the config sweeps.
+
+    A constraint is swept when ``frontier_ranges`` holds an entry for it; the
+    others stay at their ``constraints`` bound at every frontier point. The
+    result follows constraint order and is empty when nothing is swept.
+    """
     constraints = config.get("constraints") or {}
-    if not constraints:
-        return {}
-
     configured_ranges = config.get("frontier_ranges")
-    if configured_ranges is not None:
-        if not isinstance(configured_ranges, dict):
-            raise ValueError("frontier_ranges must be an object keyed by constraint name.")
-        ranges: dict[str, tuple[float, float]] = {}
-        for cname in constraints:
-            if cname not in configured_ranges:
-                raise ValueError(f"frontier_ranges is missing a range for constraint {cname!r}.")
-            ranges[str(cname)] = _normalise_frontier_range_pair(
-                configured_ranges[cname],
-                field=f"frontier_ranges.{cname}",
-            )
-        return ranges
+    if not constraints or configured_ranges is None:
+        return {}
+    if not isinstance(configured_ranges, dict):
+        raise ValueError("frontier_ranges must be an object keyed by constraint name.")
+    unknown = [str(name) for name in configured_ranges if name not in constraints]
+    if unknown:
+        raise ValueError(f"frontier_ranges names {', '.join(unknown)}, which are not constraints.")
+    return {
+        str(cname): _normalise_frontier_range_pair(
+            configured_ranges[cname],
+            field=f"frontier_ranges.{cname}",
+        )
+        for cname in constraints
+        if cname in configured_ranges
+    }
 
-    raise ValueError("frontier_ranges must provide min and max for each constraint.")
+
+def anchor_swept_constraints(config: dict[str, Any]) -> dict[str, Any]:
+    """The config a solve runs: each swept constraint is first solved at its range's start.
+
+    A swept constraint shows no bound of its own; its ``constraints`` value is
+    kept so un-sweeping restores it, but the solve, and so the as-solved
+    result, runs at its ``frontier_ranges`` ``min``. Anything malformed is left
+    for validation to report.
+    """
+    constraints = config.get("constraints")
+    ranges = config.get("frontier_ranges")
+    if not isinstance(constraints, dict) or not isinstance(ranges, dict):
+        return config
+    anchored: dict[str, Any] = {}
+    for name, spec in constraints.items():
+        entry = ranges.get(name)
+        start = entry.get("min") if isinstance(entry, dict) else None
+        if (
+            isinstance(spec, dict)
+            and len(spec) == 1
+            and isinstance(start, int | float)
+            and not isinstance(start, bool)
+        ):
+            anchored[name] = {next(iter(spec)): start}
+        else:
+            anchored[name] = spec
+    return {**config, "constraints": anchored}
 
 
 _RATEBOOK_FACTOR_LEVEL_SEPARATOR = "\x1f"
@@ -682,16 +713,9 @@ def _build_ratebook_factor_contexts(
     )
     # ``QuoteGrid.quote_ids`` is already a fresh ``list[str]`` (a PyO3 ``Vec<String>``).
     quote_ids = quote_grid.quote_ids
-    try:
-        if chunk_decision is None:
-            chunk_decision = _chunk_size_decision_for_parquet(
-                config,
-                artifact_path,
-                source="ratebook_factor_contexts",
-            )
-        chunk_size = chunk_decision.chunk_size
-    except ValueError as exc:
-        raise RuntimeError(f"Ratebook factor context chunk sizing failed: {exc}") from exc
+    if chunk_decision is None:
+        chunk_decision = pipeline_chunk_decision("ratebook_factor_contexts")
+    chunk_size = chunk_decision.chunk_size
     return price_contour().build_ratebook_factor_contexts_from_parquet_chunked(
         str(artifact_path),
         factor_columns,
@@ -891,6 +915,8 @@ def _publish_summary(
     try:
         summary = solver.summary(solve_result)
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         logger.warning("publish_summary_failed", error=str(exc), job_id=job_id, exc_info=True)
         return None
     if not isinstance(summary, dict):
@@ -920,6 +946,8 @@ def _finalize_solve_result(
     factor_columns: list[list[str]] | None = None,
     check_cancelled: Callable[[], None] | None = None,
     quote_analysis_handle: dict[str, Any] | None = None,
+    report_stage: Callable[[str, float], None] | None = None,
+    apply_artifact_dir: str | None = None,
 ) -> bool:
     """Build the result dict and update the job with the solve outcome.
 
@@ -964,6 +992,8 @@ def _finalize_solve_result(
             else _ratebook_adjustments(solve_result, job_snapshot)
         )
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         diagnostics_errors.append(_diagnostic_error("adjustments", exc, job_id=job_id))
 
     result_dict: dict[str, Any] = {
@@ -1002,10 +1032,10 @@ def _finalize_solve_result(
     kinds = constraint_kinds(constraints or {})
     # The absolute bounds the library solved at (pct constraints already scaled).
     result_dict["effective_bounds"] = effective_bounds(kinds, solve_result.constraint_bounds)
-    if constraints and config.get("frontier_enabled") is True:
+    if constraints and config.get("frontier_ranges"):
         try:
             frontier_steps = config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
-            ranges = _auto_frontier_ranges_from_config(config)
+            ranges = swept_frontier_ranges(config)
             if ranges:
                 enforce_frontier_compute_budget(
                     n_points_per_dim=frontier_steps,
@@ -1028,6 +1058,8 @@ def _finalize_solve_result(
                     )
                     return False
                 job_snapshot = progress_job
+                if report_stage is not None:
+                    report_stage("Computing efficient frontier", 0.8)
                 frontier_result = _compute_frontier(
                     solver,
                     quote_grid,
@@ -1059,6 +1091,8 @@ def _finalize_solve_result(
         except (BackgroundJobStoppedError, ExecutionCancelledError):
             raise
         except Exception as exc:
+            if memory_error_in(exc) is not None:
+                raise
             frontier_error = f"Frontier unavailable: {exc}"
             diagnostics_errors.append(_diagnostic_error("frontier", exc, job_id=job_id))
 
@@ -1096,11 +1130,14 @@ def _finalize_solve_result(
         artifact_handles: dict[str, Any] = {}
         # The as-solved per-quote frame: the online apply frame, or price-contour's
         # canonical evaluation of the ratebook factor tables (OPT-V09C).
+        artifact_dir = None if apply_artifact_dir is None else Path(apply_artifact_dir)
         apply_result_handle = (
-            _optimiser_artifacts._persist_apply_result_artifact(solve_result)
+            _optimiser_artifacts._persist_apply_result_artifact(
+                solve_result, artifact_dir=artifact_dir
+            )
             if mode == "online"
             else _optimiser_artifacts._persist_apply_frame_artifact(
-                ratebook_quote_results(solve_result)
+                ratebook_quote_results(solve_result), artifact_dir=artifact_dir
             )
         )
         artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
@@ -1213,6 +1250,8 @@ def _solve_online(
     except (BackgroundJobStoppedError, ExecutionCancelledError):
         raise
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
@@ -1246,6 +1285,8 @@ def _solve_online(
         },
         check_cancelled=check_cancelled,
         quote_analysis_handle=quote_analysis_handle,
+        report_stage=ctx.report_stage,
+        apply_artifact_dir=ctx.apply_artifact_dir,
     )
 
 
@@ -1262,6 +1303,12 @@ class SolveContext:
     registration_already_active: bool = False
     start_time: float | None = None
     check_cancelled: Callable[[], None] | None = None
+    # Reports a stage label and progress to whoever supervises the solve (a
+    # solver session forwards it to the parent job).
+    report_stage: Callable[[str, float], None] | None = None
+    # A parent-owned directory the as-solved apply artifact is written into (a
+    # solver session); ``None`` creates one here.
+    apply_artifact_dir: str | None = None
 
 
 @require_solver_worker_context
@@ -1313,11 +1360,7 @@ def _solve_ratebook(
     factor_artifact_path, _factor_artifact_dir = (
         _optimiser_artifacts._validate_ratebook_factors_artifact_handle(ratebook_factors_handle)
     )
-    factor_chunk_decision = _chunk_size_decision_for_parquet(
-        config,
-        factor_artifact_path,
-        source="ratebook_factor_contexts",
-    )
+    factor_chunk_decision = pipeline_chunk_decision("ratebook_factor_contexts")
     try:
         factor_contexts = _build_ratebook_factor_contexts(
             ratebook_factors_handle,
@@ -1343,6 +1386,8 @@ def _solve_ratebook(
     except (BackgroundJobStoppedError, ExecutionCancelledError):
         raise
     except Exception as exc:
+        if memory_error_in(exc) is not None:
+            raise
         raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
@@ -1408,4 +1453,6 @@ def _solve_ratebook(
         },
         check_cancelled=check_cancelled,
         quote_analysis_handle=quote_analysis_handle,
+        report_stage=ctx.report_stage,
+        apply_artifact_dir=ctx.apply_artifact_dir,
     )

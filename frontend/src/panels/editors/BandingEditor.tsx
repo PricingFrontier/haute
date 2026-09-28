@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Plus, AlertTriangle } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
-import { CommittedTextField } from "../../components/form"
+import { CommittedTextField, SavedValueOption } from "../../components/form"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -424,6 +424,7 @@ export default function BandingEditor({
               style={INPUT_STYLE}
             >
               <option value="">Select column...</option>
+              <SavedValueOption value={factor.column} options={upstreamColumns.map(c => c.name)} />
               {upstreamColumns.map(c => (
                 <option key={c.name} value={c.name}>
                   {c.name} ({c.dtype})

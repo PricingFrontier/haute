@@ -3,6 +3,7 @@ import type {
   ExecutionMetrics,
   ExecutionStrategyBoundary,
   ExecutionStrategyDiagnostic,
+  ExecutionStrategyProjectionCause,
   JobStatus,
 } from "../api/types"
 import { formatBytes } from "./formatBytes"
@@ -31,11 +32,10 @@ const PROFILE_LABELS: Record<string, string> = {
   preview_eager: "preview",
   training_prep: "training",
   optimiser_setup: "optimiser",
+  optimiser_solve: "optimiser",
   optimiser_solve_worker: "optimiser",
-  auto_range: "auto-range",
   lazy_sink: "sink",
   deploy_batch: "deploy",
-  chunked_map_reduce: "chunked execution",
 }
 
 function profileLabel(profile: string): string {
@@ -76,6 +76,8 @@ export type ExecutionProjectionWarning = {
   boundary: ExecutionStrategyBoundary | null
   nodeId: string | null
   operator: string | null
+  /** The node whose code or contract kept that section full-width, when the planner named one. */
+  cause: ExecutionStrategyProjectionCause | null
 }
 
 /**
@@ -99,6 +101,7 @@ export function executionProjectionWarning(
     boundary,
     nodeId: boundary?.node_id ?? strategy.blocking_node_id ?? null,
     operator: boundary?.operator ?? strategy.blocking_operator ?? null,
+    cause: strategy.projection_cause ?? null,
   }
 }
 
@@ -142,6 +145,14 @@ export function buildExecutionStrategyDiagnostic(
   }
   details.push(`Reason ${strategy.reason_code}`)
   if (strategy.remediation) details.push(`Remediation ${strategy.remediation}`)
+  const cause = strategy.projection_cause
+  if (cause) {
+    const input = cause.parent_node_id ? ` from ${cause.parent_node_id}` : ""
+    const operation = cause.operation ? ` in ${cause.operation}` : ""
+    details.push(
+      `Projection cause ${cause.node_id} (${cause.operator})${input}: ${cause.reason_code}${operation}; ${cause.total_count} total`,
+    )
+  }
   details.push(rawCollectionDetail("Boundaries", strategy.boundaries))
   details.push(rawCollectionDetail("Reasons", strategy.reasons))
   details.push(rawCollectionDetail("Provenance", strategy.provenance))
@@ -185,6 +196,41 @@ function byteField(fields: Record<string, unknown>, key: string): number | null 
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
 }
 
+/** User-facing names of the jobs whose memory reservation can refuse other work. */
+const RUNNING_JOB_NAMES: Readonly<Record<string, string>> = {
+  frontier_auto_range: "Auto range",
+  optimiser_solve: "Optimisation",
+  optimiser_solve_worker: "Optimisation",
+  optimiser_frontier_recompute: "Frontier recompute",
+  optimiser_estimate: "Solve estimate",
+  training_job: "Model training",
+  training_pipeline: "Model training",
+  training_evaluation_preview: "Training preview",
+  explore_relationships: "Explore",
+  explore_pivot: "Explore",
+  explore_pivot_members: "Explore",
+  node_snapshot: "Data caching",
+  input_snapshot_build: "Data caching",
+  pipeline_write_output: "Data output",
+}
+
+/**
+ * The running jobs named by an in-flight refusal's `in_flight_operations`
+ * (`"<profile>:<operation>"`), deduplicated in order; unknown operations are
+ * left out rather than shown by their internal names.
+ */
+function runningJobNames(detail: Record<string, unknown>): string[] {
+  const holders = detail.in_flight_operations
+  if (!Array.isArray(holders)) return []
+  const names: string[] = []
+  for (const holder of holders) {
+    if (typeof holder !== "string") continue
+    const name = RUNNING_JOB_NAMES[holder.slice(holder.indexOf(":") + 1)]
+    if (name && !names.includes(name)) names.push(name)
+  }
+  return names
+}
+
 /** Plain-language text for a structured `memory_limit` detail, by its closed reason. */
 function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
   const memory = (key: string) => {
@@ -219,8 +265,11 @@ function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
       }
       return ranOutOfMemory(`Haute reached its ${processLimit} while running this.`)
     }
-    case "in_flight_memory_budget_exceeded":
-      return "Other running work holds the memory this needs. Try again when it finishes."
+    case "in_flight_memory_budget_exceeded": {
+      const jobs = runningJobNames(detail)
+      const running = jobs.length ? ` (${jobs.join(", ")})` : ""
+      return `Another job is running${running}. Try again when it finishes.`
+    }
     case "native_memory_cap_unavailable":
       return "This can't run because Haute can't enforce its memory limit on this machine."
     case "memory_sampler_unavailable":
@@ -341,6 +390,9 @@ export function executionWarningNodeIds(
     }
     if (projectionWarning.nodeId) {
       nodeIds.add(projectionWarning.nodeId)
+    }
+    if (projectionWarning.cause) {
+      nodeIds.add(projectionWarning.cause.node_id)
     }
   }
 

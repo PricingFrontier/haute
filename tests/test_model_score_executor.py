@@ -600,3 +600,43 @@ class TestResolveArtifactLocal:
             dst_path=ANY,
             tracking_uri="http://tracking.example.invalid",
         )
+
+
+@pytest.mark.parametrize("task", ["regression", "classification"])
+def test_a_schema_only_build_never_batch_scores_the_input(sample_data, task):
+    """A schema-only build (sizing, training preparation) must not score the whole input.
+
+    With a batch source the scorer's batched path sinks every input row to temp
+    and scores it at build time; under ``schema_only`` the build returns the
+    lazy row-local scan instead, which scores at most a one-row dtype probe.
+    """
+    from haute.execution import execute_lazy_graph
+
+    graph = _make_model_score_graph(data_path=sample_data, task=task)
+    mock_model = _make_mock_model(task=task)
+    with (
+        patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model),
+        patch(
+            "haute._model_scorer._sink_to_temp",
+            side_effect=AssertionError("a schema-only build sank the input"),
+        ) as sink,
+        patch(
+            "haute._model_scorer._score_batched_standalone",
+            side_effect=AssertionError("a schema-only build batch-scored the input"),
+        ) as batched,
+    ):
+        frames, *_ = execute_lazy_graph(
+            graph,
+            _build_node_fn,
+            target_node_id="score",
+            source="batch",
+            schema_only=True,
+        )
+        schema = frames["score"].collect_schema()
+
+    assert sink.call_count == 0
+    assert batched.call_count == 0
+    assert "prediction" in schema.names()
+    # Only a one-row dtype probe may have run.
+    for call in mock_model._model.predict.call_args_list:
+        assert len(call.args[0]) <= 1

@@ -121,6 +121,38 @@ Out of scope (owned elsewhere, linked where relevant):
   The reorder guard reads exact structured Python method-call sites, so words
   inside comments or string literals cannot disable positional correlation and
   an unreadable transform is conservatively treated as potentially reordering.
+- **An online optimiser apply's parent row is the scenario the apply chose.** An
+  online apply collapses each quote's scenario rows into one row, which names the
+  chosen scenario by its quote id, its scenario index (`optimal_step`), and its
+  scenario value (the optimised value column), each in the dtype the apply decided
+  in. Correlation identifies the parent row by whichever of these the node's output
+  keeps, comparing each parent column cast to that dtype, so the step above the
+  apply shows the scenario row the optimiser picked. An output that keeps the quote
+  id but neither the step nor the value cannot name one scenario, and stays an
+  ambiguous omission.
+- **A node is traced through any child that proves its row.** A node read by
+  several traced children is correlated through the first that proves its row —
+  children reading it from head frames first, then the child nearest the target —
+  so an aggregating child (a claims count) does not hide the row a join's base
+  proves. The order is fixed by the graph, never by hash order. A multi-frame
+  source's row comes from one frame, so it is shown as the input only of the
+  children that read that frame.
+- **A join that found no row is a fact, not a gap.** When an Edge Join that keeps
+  unmatched base rows (`left`, `full`, `anti`) found no join-side row for the traced
+  row — no join-side row has the base row's key values, or (for `left` and `anti`,
+  where every base row survives) a key is null — the join
+  side is reported as an informational `join_no_match` omission (an unsold quote's
+  policy, a quote with no claims) rather than as a correlation failure.
+- **A grouped row is an aggregate, not a gap.** Code whose one grouping reads every
+  input row (nothing before it filters, slices, deduplicates, selects, or joins) and
+  keeps every group key unchanged summarises exactly the input rows sharing its keys.
+  When several do, the input is reported as an informational `aggregated_rows` omission
+  naming the keys and how many input rows share them; a group of one input row resolves
+  to that row. Any other grouping leaves the ambiguity a gap.
+- **Head frames are matched on carried values too.** A parent matched in its head
+  frame is matched on the values its child provably carried through unchanged, as a
+  lookup is, so a column the child's code rewrote (`fill_null`) is left out of the
+  match instead of being relaxed around.
 - **Multi-frame sources correlate per edge, not per node pair.** A multi-frame
   source (e.g. a ≥2-table `apiInput`) stores `dict[label, DataFrame]`; each edge
   out of it carries a `sourceHandle` naming the frame that edge consumes, and the
@@ -167,7 +199,7 @@ Out of scope (owned elsewhere, linked where relevant):
   followed back through the single parent holding it with that same value to the step that
   added or last modified it, and evaluated on the value from before that assignment. A join
   whose sides both hold the value, a parent whose row is unknown, or a snapshot on the way
-  leaves no formula rather than another branch's.
+  that no recompute reproduced leaves no formula rather than another branch's.
 - **A trace reads what its preview read.** A trace request carries the `seed_plan` of the
   preview it explains, possibly empty: every snapshot generation that preview read, whether it
   seeded it or captured it itself. Each listed generation is checked against the signature the
@@ -177,19 +209,56 @@ Out of scope (owned elsewhere, linked where relevant):
   rows even for a preview that computed and captured a join for the first time. A listed
   generation lacking columns the trace reads there is recomputed instead, with every listed
   seed built from it, and a plan that ends up seeding nothing runs the trace as without one.
-  Correlation stops at each seeded point: a step whose row comes from the snapshot, carrying
-  its `snapshot_generation_id`, never given a calculation reconstructed from its own output,
-  and where downstream provenance ends with the value it held. Every node the execution
-  skipped because of a seed is reported as a `snapshot_seed` omission naming the seeds below
-  it, whatever column is traced; a node that still executed for another branch stays
-  traceable through that branch. A preview whose lineage was not admitted carries an empty
-  plan, and its traces seed nothing.
+  At and below each seeded point the trace reads the generation: the seeded step's row comes
+  from the snapshot and carries its `snapshot_generation_id`. A preview whose lineage was
+  not admitted carries an empty plan, and its traces seed nothing.
+- **Above a snapshot, the trace proves before it traces.** For each seed whose row
+  resolved, the trace recomputes that point on the real graph, in the same request and
+  execution context: it prepares the inputs above the seed, checks that the seed's identity
+  has not moved, admits the recompute of the seed and its ancestors, and looks the recompute
+  up by every value of the snapshot row. Only when exactly one recomputed row equals the
+  snapshot row are the seed's ancestors correlated, as steps like any other, and the seeded
+  step gains its input row and formula. Otherwise every ancestor the seed would have explained
+  is an omission naming the seed and why: informational `seed_inputs_changed`,
+  `seed_recompute_refused`, `seed_row_not_reproduced` (a sample, a shuffle, changed data), or
+  `seed_row_ambiguous`; a recompute that errors is a `seed_recompute_failed` gap, and an
+  ancestor two paths give different rows is an `ancestor_row_conflict` gap. Cancellation and
+  the memory limit still abort the trace. A seeded step whose snapshot was not reproduced is
+  where provenance ends: it is never given a calculation reconstructed from its own output,
+  and downstream provenance ends there with the value it held. A node that still executed for
+  another branch stays traceable through that branch. An equal recomputed row proves the
+  lineage of that row; the seed's identity signs its lineage and inputs, so for a
+  deterministic pipeline that lineage is the one the snapshot was computed from.
 - **Column-scoped traces prune to relevance.** When a `column` is supplied, the
-  trace tags every step by whether it touches that column, then keeps: (a) for a
-  pass-through column, only the nodes whose output actually carries it; (b) for a
-  calculated/modified column, the node(s) that assign it plus every ancestor that
-  contributes a column its formula actually references (falling back to keeping
-  all ancestors if no expression info is available).
+  trace keeps: (a) for a pass-through column, only the nodes whose output actually
+  carries it; (b) for a calculated/modified column, the node(s) that assign it plus
+  every ancestor that contributes a column its formula actually references (falling
+  back to keeping all ancestors if no expression info is available).
+- **Relevance follows the value's whole lineage.** Walking back from the target, the
+  trace asks of each node which of its output columns the traced value depends on,
+  starting from the traced column. A node that computes such a column — its row shows
+  it changed, its code assigns it, or a rule of the node generates it — passes on what
+  that column was computed from: every column its formula names (a formula reading a
+  column its own node assigned earlier reads that assignment), a model's features, an
+  online optimiser apply's objective, constraints (a ratio's numerator and
+  denominator), quote id and scenario columns, a ratebook apply's factor columns, a
+  rating table's factors, a banding factor's input, and nothing for a scenario
+  expander's generated columns or a source's own columns. A node that only carries a
+  column passes the column on to the parent it came from, judged by the frame that
+  parent's edge reads: an Edge Join routes it to the side whose value the output holds
+  (an inner or left join's keys to the base; a full or right join's to both sides), so
+  a joined-in table whose columns the value never reads is not on the lineage. A column
+  whose derivation cannot be read (an opaque formula, a column read by an unstated
+  name, an assignment the formula may or may not have seen, an enrichment error) makes
+  every input column relevant. A step is `column_relevant` when it is on this lineage —
+  it computes or carries a column the value depends on — and its `contributed_columns`
+  name the columns it computes for the value. Its `derivations` explain each of those
+  columns: the step's formula evaluated on the traced row (none for a column a model,
+  an optimiser or a scenario grid computed, or a source loaded) and, for every column
+  that formula or rule read, the nodes that computed the value it read, so a value can
+  be followed down to what was loaded. A kept step off the lineage (an ancestor
+  whose data never reaches the value) is not relevant, and an unresolved node is
+  reported as an omission only when the lineage reaches it.
 - **Enrichment is best-effort per step.** Expression parsing/evaluation, chain
   analysis, input-source derivation, rename detection, node-type enrichment, and
   row-lineage classification are each wrapped independently; a failure in one
@@ -264,7 +333,8 @@ Out of scope (owned elsewhere, linked where relevant):
   whenever the rows carried a unique key. Ambiguity arose only in two shapes:
   keyless rows whose matched columns are exact duplicates after a step that
   moves rows (sort, filter, `unique()` without a subset), and a traced node
-  above an aggregate, where a summary row has no single source row by design.
+  above an aggregate, where a summary row has no single source row by design
+  (now an informational `aggregated_rows` omission rather than an ambiguity).
   In the duplicate case every candidate is value-identical, so the omission
   is conservative, never wrong. An injected identity cannot be invisible to
   all-column selectors, `unique()` or schema-reading user code, so its cost

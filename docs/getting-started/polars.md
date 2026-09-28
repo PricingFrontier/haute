@@ -1,14 +1,14 @@
 # Polars
 
-Haute uses [Polars](https://pola.rs/) as its data engine. If you've worked with data in Excel, SAS, Emblem, or any other pricing platform, Polars fills the same role - it's the thing that holds your data and does the calculations. The difference is that it's open source, extremely fast, and designed for modern hardware.
+Haute uses [Polars](https://pola.rs/) as its data engine. If you've worked with data in SAS, Emblem, Radar or any other pricing platform, Polars fills the same role - it's the thing that holds your data and does the calculations. The difference is that it's open source, extremely fast, and designed for modern hardware.
 
 ---
 
 ## What Polars actually is
 
-Polars is a dataframe library. A dataframe is a table - rows and columns, like a spreadsheet. When Haute loads your data, transforms it, joins it, filters it, or scores it through a model, Polars is doing that work underneath.
+Polars is a dataframe library. A dataframe is a table - rows and columns. When Haute loads your data, transforms it, joins it, filters it, or scores it through a model, Polars is doing that work underneath.
 
-You don't need to write Polars code to use Haute. The visual editor handles that. But when you open a code node or look at the generated Python file, the expressions you see are Polars expressions. Understanding the basics helps you read what's happening, even if you never write it from scratch.
+You don't need to write Polars code to use Haute. The visual editor handles that: you build each transformation from steps named in plain English, and Haute turns them into Polars code. When you look at the generated code beside the steps, or at the generated Python file, the expressions you see are Polars expressions. Understanding the basics helps you read what's happening, even if you never write it from scratch.
 
 ---
 
@@ -52,42 +52,41 @@ If you're used to building rating structures in proprietary software, most of th
 
 | What you know | What Polars calls it |
 |---|---|
-| A table or worksheet | A DataFrame |
+| A table | A DataFrame |
 | Filtering rows | `.filter()` |
 | Adding or changing a column | `.with_columns()` |
-| A lookup table / VLOOKUP | A join (`.join()`) |
+| A lookup table | A join (`.join()`) |
 | Sorting | `.sort()` |
 | Selecting specific columns | `.select()` |
 | Grouping and summarising | `.group_by().agg()` |
 
-The syntax is different. The concepts are the same. Haute's visual editor means you rarely need to write these expressions yourself, but when you see them in the generated code or in a code node, this is what they mean.
+The syntax is different. The concepts are the same. Haute's visual editor means you rarely need to write these expressions yourself, but when you see them in the generated code, this is what they mean.
 
 ---
 
 ## Memory and large datasets
 
-Polars processes data in chunks when working with large files, so it doesn't need to load everything into memory at once. Haute's batch execution uses this streaming mode automatically. Combined with intermediate checkpoints - where Haute writes partial results to disk at strategic points in the pipeline - this means you can process datasets that are larger than your machine's available memory.
+Polars processes data in chunks when working with large files, so it doesn't need to load everything into memory at once. Haute's batch execution uses this streaming mode automatically when it writes to a file format that supports it; a database output, or a file format that can only be written in one go, loads the result into memory before writing it. At a few points in the pipeline - for example where a node feeds a join or several other nodes - Haute writes the intermediate result to its shared snapshot store and continues from there. Together, this means you can process datasets that are larger than your machine's available memory. The number of rows in each chunk is the **Chunk rows** setting in Pipeline settings (500,000 by default); lower it if a wide dataset runs out of memory.
 
 For preview, Haute caches each node's output based on a fingerprint of your pipeline's structure and configuration. Click between nodes and the data appears instantly - it's already been calculated. Change a node's configuration and the cache refreshes on the next run, but only the work needed for your current view is re-executed.
 
 ---
 
-## Writing code in nodes
+## Steps and code in nodes
 
-Most of the time, the visual editor writes the Polars code for you. But when you open a code node, you're writing Polars expressions directly.
+Most of the time, you don't write Polars code at all. The Polars node, and the **POLARS** tab of the Data Input, Load File, Rating Step, Model Scoring and Expander nodes (the **POLARS CODE** pane on an Explore node), build their transformation from **steps** named in plain English: **Filter rows**, **Add column**, **Keep columns**, **Drop columns**, **Rename columns**, **Change types**, **Sort rows**, **Remove duplicates**, **Group and aggregate**, **Join another input**, **Append inputs**, **Fill missing values**, **Limit rows**, **Define variable**, **Pivot to columns** and **Unpivot to rows**. Each step becomes Polars code, and the **Generated code** panel under the steps shows the code they produce. You can search the **Add step** menu by a step's name or by its Polars method - typing `with_columns` finds **Add column**.
 
-Haute supports a shorthand that makes this easier. Instead of writing a full program, you can start with a `.` and chain operations directly:
+When no step does what you need, add a **Free code** step and write Python statements that assign their result to `df`, the current table:
 
 ```python
-.filter(pl.col("vehicle_age") < 20)
-.with_columns(
+df = df.filter(pl.col("vehicle_age") < 20).with_columns(
     (pl.col("base_premium") * pl.col("area_factor")).alias("adjusted_premium")
 )
 ```
 
-Haute wraps this around your input data automatically. You don't need to assign variables or write boilerplate - just describe the transformation.
+**Switch to code** turns a node's steps into editable code for good: the steps are removed and the generated code becomes editable, and there is no way back to steps. Code always assigns its result to `df`; do not end it with `return`.
 
-For more involved logic, you can write full Python. Your project's `utility/` folder contains helper functions that are available in every code node without needing to import them. These are plain Python functions you can read, modify, and extend.
+For more involved logic, you can write your own Python functions. `haute init` creates a `rating/utility/` folder for them, and the toolbar's **Utility** panel lets you edit its files or create new ones. A utility's functions are available in your code once its import is listed in the toolbar's **Imports** panel, for example `from utility.features import *`. A file you create in the Utility panel gets its import line added automatically; the starter `features.py` does not, so add its import yourself.
 
 ---
 
@@ -95,15 +94,17 @@ For more involved logic, you can write full Python. Your project's `utility/` fo
 
 Two of the most common operations in pricing - rating table lookups and banding - are handled by dedicated node types. Both use Polars under the hood, but you configure them through the visual editor rather than writing code.
 
-**Rating tables** work like VLOOKUP. You define a table of factors and values, and Haute joins it to your data on the factor columns. The join is a standard Polars left join - every row in your data gets matched to the corresponding value in the lookup table. Rows that don't match get a default value. The lookup table is validated before the join runs: entries with NaN or infinite values are rejected, because a silent bad value in a rating table can corrupt an entire book of prices.
+**Rating tables** are lookups. You define a table of factors and values, and Haute joins it to your data on the factor columns. The join is a standard Polars left join - every row in your data gets matched to the corresponding value in the lookup table. Rows that don't match take the table's default value (1.0 for a new table, unless you change it); if you clear the default, a row with no match stops the run with an error that names the missing keys. The lookup table is validated before the join runs: entries with NaN or infinite values are rejected, because a silent bad value in a rating table can corrupt an entire book of prices.
 
-**Banding** maps continuous or categorical values into groups. For continuous variables (like age or sum insured), you define ranges with operators and boundaries. For categorical variables (like vehicle type), you define exact value mappings. Under the hood, continuous banding builds a chain of conditional expressions - the Polars equivalent of nested IF statements - and categorical banding uses strict value replacement. Both produce a new column with the banded result.
+**Banding** maps numeric, date or categorical values into groups. **Numeric** banding (for age, sum insured or a policy start date) uses breakpoints: each has an upper boundary and a band name, and the boundaries are numbers, dates (`YYYY-MM-DD`) or dates and times - one kind per factor. **Generate even bands** fills in evenly spaced breakpoints for you, in calendar steps for a date column. **Categorical** banding (for vehicle type) maps exact values to groups. Under the hood, numeric banding builds a chain of conditional expressions - the Polars equivalent of nested IF statements - and categorical banding uses strict value replacement. Both produce a new column with the banded result.
 
 ---
 
 ## Price tracing
 
-When you click a cell in your output and trace it, Haute runs the full pipeline for that single row and records what happened at every node along the way. This is a separate execution path from preview or batch - it's optimised for showing you the journey of one value through the pipeline.
+When you click a cell in a preview and trace it, Haute explains that value from the same execution the preview used. It finds the clicked row in each upstream node's output and shows what happened to it at every step, so the trace always shows the data you see in the preview. It is not a separate calculation for one row.
+
+The trace panel opens on the clicked node's card and hides steps that only pass the row through; you can reveal them. Each card shows what its step did - the columns it added or changed and the formula evaluated on your row - with extra detail for Banding, Rating Step, Model Scoring, Apply Optimisation, Expander and Source Switch nodes. Derivation rows show how each input the value depends on was calculated. A chain of multiplications and additions is drawn as a waterfall, and a GLM or CatBoost model shows a ladder of contributions up to its linear predictor or raw score, then the prediction. Every card and derivation row links to its step and to its node on the canvas.
 
 The first trace runs through the pipeline and caches the result. Every trace after that on the same pipeline pulls from cache - click a different row, a different column, and the answer appears instantly. The cache is keyed to your pipeline's structure, so it refreshes automatically when you change something.
 
@@ -113,4 +114,4 @@ The first trace runs through the pipeline and caches the result. Every trace aft
 
 Before training a model on a large dataset, Haute reads the file's metadata - row count, column count, file size - without loading any data. It uses this to estimate how much memory the full training run will need, accounting for the overhead of model training, intermediate joins, and data duplication.
 
-If the estimate exceeds your machine's available memory, Haute tells you before you start and suggests a safe dataset size. This works on Windows, macOS, and Linux, and checks GPU memory as well if you're training on a GPU.
+If the estimate exceeds your machine's available memory, Haute trains on as many rows as fit and tells you it did ("Dataset downsampled to ... rows to fit in available RAM"); a smaller row limit you set yourself still wins. When the source sizes cannot be read from metadata, Haute reports the estimate as unavailable rather than guessing. This works on Windows, macOS, and Linux, and checks GPU memory as well if you're training on a GPU.

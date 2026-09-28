@@ -27,11 +27,12 @@ import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDoc
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
-import { optimiserPanesFor, resolveOptimiserPane } from "./optimiser/optimiserPanes"
+import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { buildGraph } from "../utils/buildGraph"
+import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
   useNodePanelSession,
@@ -568,12 +569,14 @@ function inputSourceForEdge(
       || edge.sourceHandle === undefined
       || !authoritativeSourceHandles(sourceNode).includes(edge.sourceHandle))
 
+  const columns = edgeSourceColumns(edge, nodeMap)
   return {
     sourceNodeId: edge.source,
     name,
     sourceLabel,
     edgeId: edge.id,
     ...(frameUnresolved ? { frameUnresolved: true } : {}),
+    ...(columns ? { columns } : {}),
   }
 }
 
@@ -592,6 +595,7 @@ function upstreamInputSourceSignature(
         edge.sourceHandle === undefined ? "<undefined>" : edge.sourceHandle,
         source.name,
         source.frameUnresolved === true,
+        columnsSignature(source.columns),
       ]
     }),
   )
@@ -621,7 +625,9 @@ function UnknownNodeTypeDiagnostic({
           Node type <code className="font-mono">{nodeType}</code> is not registered in this UI build. This node is shown as a diagnostic only so its config is not edited through the wrong editor.
         </p>
         <a
-          href="/docs/building-models/nodes/"
+          href={NODE_REFERENCE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
           className="text-[12px] font-semibold underline underline-offset-2 w-fit"
           style={{ color: 'var(--text-accent)' }}
         >
@@ -1576,13 +1582,12 @@ function NodePanelContent({
         ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
         : undefined,
   }))
-  const optimiserMode = typeof config.mode === "string" ? config.mode : "online"
   const showOptimiserPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.OPTIMISER
-  const activeOptimiserPane = resolveOptimiserPane(optimiserMode, showOptimiserPanes ? rememberedOptimiserPane : undefined)
+  const activeOptimiserPane = resolveOptimiserPane(showOptimiserPanes ? rememberedOptimiserPane : undefined)
   const flaggedOptimiserPanes = showOptimiserPanes && optimiserPaneIssues.nodeId === node.id
     ? optimiserPaneIssues.panes
     : []
-  const optimiserTabs = optimiserPanesFor(optimiserMode).map((pane) => ({
+  const optimiserTabs = OPTIMISER_PANES.map((pane) => ({
     ...pane,
     indicator: pane.key === "solve" && hasActiveSolveJob
       ? { kind: "active" as const, label: "Solve is running" }

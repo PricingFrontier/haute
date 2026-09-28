@@ -468,6 +468,31 @@ class TestSaveSidecar:
         assert "positions" in data
         assert data["positions"]["A"] == {"x": 100.0, "y": 200.0}
 
+    def test_node_order_does_not_change_the_sidecar(self, tmp_path):
+        """A graph reloaded in its source file's order saves the same bytes.
+
+        Codegen places each source just before its first consumer, so the
+        reloaded graph can list nodes in another order than the canvas did;
+        re-saving it must not rewrite the layout sidecar.
+        """
+        nodes = [
+            GraphNode(
+                id=name,
+                position={"x": float(index), "y": 0.0},
+                data=NodeData(label=name, nodeType=NodeType.DATA_INPUT),
+            )
+            for index, name in enumerate(["b_source", "a_source", "consumer"])
+        ]
+        py_path = tmp_path / "pipeline.py"
+        sidecar = tmp_path / "pipeline.haute.json"
+
+        save_sidecar(py_path, PipelineGraph(nodes=nodes, edges=[]))
+        first = sidecar.read_bytes()
+        save_sidecar(py_path, PipelineGraph(nodes=list(reversed(nodes)), edges=[]))
+
+        assert sidecar.read_bytes() == first
+        assert list(json.loads(first)["positions"]) == ["a_source", "b_source", "consumer"]
+
     def test_submodel_node_keyed_by_parser_id(self, tmp_path):
         """Submodel placeholder positions must be keyed by ``submodel__<name>``.
 

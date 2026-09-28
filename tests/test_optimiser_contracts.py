@@ -239,7 +239,13 @@ def test_optimiser_requires_exact_data_input_when_multiple_frames_are_connected(
         _build_node_fn(node, source_names=["quotes_frame", "drivers_frame"])
 
 
-def test_optimiser_codegen_returns_the_exact_selected_api_frame() -> None:
+def test_optimiser_codegen_returns_the_exact_selected_api_frame(tmp_path: Path) -> None:
+    """The optimiser is a declaration naming both API frames; its decorator
+    selects the configured frame when the saved file runs on its own."""
+    import runpy
+
+    from haute._config_io import collect_node_configs
+
     graph = make_graph(
         {
             "nodes": [
@@ -279,8 +285,19 @@ def test_optimiser_codegen_returns_the_exact_selected_api_frame() -> None:
 
     code = graph_to_code(graph, pipeline_name="optimiser_identity")
 
-    assert "def Optimiser(driver_info: pl.LazyFrame, quote_info: pl.LazyFrame)" in code
-    assert "    return quote_info" in code
+    assert (
+        '@pipeline.optimiser(config="config/optimisation/Optimiser.json")\n'
+        "def Optimiser(driver_info, quote_info): ...\n"
+    ) in code
+    (tmp_path / "main.py").write_text(code, encoding="utf-8")
+    for rel_path, content in collect_node_configs(graph).items():
+        sidecar = tmp_path / rel_path
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(content, encoding="utf-8")
+    namespace = runpy.run_path(str(tmp_path / "main.py"))
+    drivers = pl.DataFrame({"driver_id": [1]})
+    quotes = pl.DataFrame({"quote_id": [2]})
+    assert namespace["Optimiser"](drivers, quotes) is quotes
 
 
 def test_optimiser_codegen_rejects_node_id_selector_for_multi_frame_api_input() -> None:
@@ -635,7 +652,6 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
                             "data_input": "scored",
                             "banding_source": "banding_transform",
                             "factor_columns": [["region"]],
-                            "chunk_size": 4,
                         },
                     },
                 },
@@ -940,7 +956,6 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
                             "quote_id": "quote_id",
                             "scenario_index": "scenario_index",
                             "scenario_value": "scenario_value",
-                            "chunk_size": 10,
                         },
                     },
                 },
@@ -987,7 +1002,6 @@ def test_build_grid_sanitises_unknown_interleaved_quote_failure() -> None:
                 "quote_id": "quote_id",
                 "scenario_index": "scenario_index",
                 "scenario_value": "scenario_value",
-                "chunk_size": 10,
             },
             "opt",
             job_id,
@@ -1107,7 +1121,6 @@ def test_real_solve_apply_totals_match_selected_rows(
                             "quote_id": "quote_id",
                             "scenario_index": "scenario_index",
                             "scenario_value": "scenario_value",
-                            "chunk_size": 6,
                             "max_iter": 50,
                             "tolerance": 1e-6,
                         },
@@ -1387,7 +1400,7 @@ class TestSolveResultContract:
         [
             {"graph_fingerprint": None},
             {"extra": "x"},
-            {"solver_settings": {"max_iter": 50, "tolerance": 1e-6, "chunk_size": None, "x": 1}},
+            {"solver_settings": {"max_iter": 50, "tolerance": 1e-6, "x": 1}},
         ],
     )
     def test_the_input_summary_is_strict(self, change: dict) -> None:
@@ -1625,7 +1638,6 @@ class TestResultDiagnostics:
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
-                    "frontier_enabled": True,
                     "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 2,
                 },
@@ -1664,7 +1676,6 @@ class TestInputSummary:
             "solver_settings": {
                 "max_iter": 12,
                 "tolerance": 1e-6,
-                "chunk_size": None,
             },
         }
         OptimiserSolveResult.model_validate(job["result"])
@@ -1681,14 +1692,14 @@ class TestInputSummary:
 
         summary = make_input_summary(
             data_source="scenario_b",
-            solver_settings={"max_iter": 9, "tolerance": 0.1, "chunk_size": 64},
+            solver_settings={"max_iter": 9, "tolerance": 0.1},
         )
         result = make_solved_result(input_summary=summary, n_quotes=10, n_steps=3)
         job = make_completed_job(result=result, config={"mode": "online", "max_iter": 50})
 
         payload = _build_artifact_payload(job, _summary_solve_result(result))
 
-        assert payload["solver_settings"] == {"max_iter": 9, "tolerance": 0.1, "chunk_size": 64}
+        assert payload["solver_settings"] == {"max_iter": 9, "tolerance": 0.1}
         assert payload["input_summary"] == {
             "n_quotes": 10,
             "n_steps": 3,

@@ -39,21 +39,15 @@ def project_dir(tmp_path: Path) -> Path:
     input_path = (data / "input.parquet").as_posix()
     source_config = write_data_input_config(tmp_path, "source", input_path)
     code = f'''\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("test_cli", description="CLI test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
+def source():
     """Read data."""
-    from pathlib import Path
-    from haute.graph_utils import resolve_data_input_from_config
-    df = resolve_data_input_from_config(
-        "{source_config}", base_dir=Path(__file__).parent
-    )
-    return df
 
 
 @pipeline.polars
@@ -459,20 +453,14 @@ class TestRun:
         path = (data / "d.parquet").as_posix()
         source_config = write_data_input_config(tmp_path, "source", path)
         code = f'''\
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("broken")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
-    from pathlib import Path
-    from haute.graph_utils import resolve_data_input_from_config
-    df = resolve_data_input_from_config(
-        "{source_config}", base_dir=Path(__file__).parent
-    )
-    return df
+def source(): ...
 
 
 @pipeline.polars

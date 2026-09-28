@@ -909,16 +909,16 @@ stubbed = []
 tests = [
   "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation",
   "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged",
-  "tests/test_optimiser_routes.py::TestEstimateRoute::test_streaming_auto_range_job_pins_one_preamble_fingerprint",
+  "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint",
   "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation",
   "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim",
 ]
 invariant = "A second optimiser setup, data-output preparation, or auto-range job after a helper edit computes with the new helper value while the first keeps the old one; within one job every preamble compile uses the fingerprint pinned at admission, and an unchanged helper reuses the cached namespace."
 
 [scenarios.evidence]
-commit = "00bbe3ff"
-command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_routes.py::TestEstimateRoute::test_streaming_auto_range_job_pins_one_preamble_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -p no:warnings'
-result = "5 passed; sensitivity replay 2026-09-06 at 9daa4372: the preamble witnesses fail 4 of 13 against src/haute/executor.py and src/haute/routes/_optimiser_service.py from 00bbe3ff^"
+commit = "1777d16b"
+command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -p no:warnings'
+result = "5 passed in 6.15s; auto-range now runs the solve setup's pipeline stage, so its pinned-fingerprint witness moved to tests/test_optimiser_auto_range_stage.py (the streaming auto-range job it replaced is gone)"
 
 [[scenarios]]
 id = "W09-S02"
@@ -931,7 +931,7 @@ lane = "backend"
 real = ["optimiser", "solver", "artifact-store"]
 stubbed = ["mlflow"]
 tests = [
-  "tests/test_optimiser_routes.py::TestExecutePipelineArgs::test_auto_range_required_columns_seed_uses_configured_data_input",
+  "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand",
   "tests/test_optimiser_routes.py::TestSolveOnlineUnit::test_solve_online_initializes_solver_and_records_history",
   "tests/test_optimiser_routes.py::TestRatebookSolve::test_ratebook_solve_completes",
   "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_after_solve",
@@ -964,9 +964,9 @@ tests = [
 invariant = "Estimate, solve, frontier, select, save, apply and trace agree in both online and ratebook modes: non-converged, empty-constraint and non-finite cases have their typed outcomes, factor dtypes and last-duplicate tie resolution are honoured identically by engine and mirror, a stale solve result or stale configured input is never applied, capped previews state their true totals, and heavy solver entrypoints refuse to run outside the worker context."
 
 [scenarios.evidence]
-commit = "80346da2"
-command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" -q -p no:warnings'
-result = "366 passed in 9.71s"
+commit = "1777d16b"
+command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -p no:warnings'
+result = "501 passed in 25.92s; auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
 
 [[scenarios]]
 id = "W09-S03"

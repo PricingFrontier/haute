@@ -135,7 +135,7 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
  * transforms hash their authored steps, excluding generated code and its
  * validation message; refreshing those caches cannot change execution.
  * Result-only keys (_columns, _availableColumns, _schemaWarnings,
- * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue,
+ * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceFocused, _traceValue,
  * _traceMotionDisabled) are ignored.
  *
  * Keys are joined with a non-empty delimiter (``\u0001``) to avoid

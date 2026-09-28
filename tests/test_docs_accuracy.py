@@ -140,11 +140,14 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
+    "bugs",
     "caching",
     "engineering-quality",
     "explore-eda",
     "frontend-shared",
+    "optimiser-validation",
     "pipeline-config",
+    "polars-node-clarity",
     "sandbox-security",
     "server-api",
     "submodels",

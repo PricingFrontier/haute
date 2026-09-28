@@ -32,6 +32,7 @@ test(
         [
           "ExecutionStrategyBoundaryCollectionPayload",
           "ExecutionStrategyBoundaryPayload",
+          "ExecutionStrategyProjectionCausePayload",
           "ExecutionStrategyProvenanceCollectionPayload",
           "ExecutionStrategyProvenancePayload",
           "ExecutionStrategyReasonCollectionPayload",

@@ -17,17 +17,18 @@ Only a current, accepted save response may acknowledge this revision transition.
 | --- | --- |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the `ModalShell` Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title, description}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
-| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
-| `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
+| `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. Its collapsed bar summarises the first two of the metrics the result leads with (`headlineMetrics`). |
+| `frontend/src/panels/modelling/ModellingResultExpired.tsx` | `ModellingResultExpired`: the results panel of a Model Training node whose remembered result is gone from the server. The app shows it in place of the data preview when the active node has no result and the results store records its result as expired: a preview frame with the node's label and the remembered modelling panel height, saying the last training result is no longer available (the server restarted or it expired), that training results are not kept across a server restart, and to train the model again or open its MLflow run if it was logged. |
+| `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab; `validationMetricsLead` (a validation fit ran and the diagnostics are in-sample) and `headlineMetrics` (test metrics, else the validation selection means when they lead, else the diagnostics), shared by the Summary's first card and the collapsed bar. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
-| `frontend/src/panels/optimiser/OptimiserAnalysisColumns.tsx` | The Data pane's Analysis columns section: the Analysis input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), the capped column multi-select from the chosen frame's schema, the switch-time removal of columns the new frame lacks, and the missing-input and missing-column flags. |
-| `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list per mode (Factors only in ratebook) and resolution of a remembered pane the mode lacks to Data. |
-| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: result-type choice, one card per constraint holding its column, remove action and either its bound or its frontier range, then auto range and steps. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
+| `frontend/src/panels/optimiser/OptimiserFactorsTable.tsx` | The Factors pane's factor table: the Validation input select over the connected inputs (the Objectives & Constraints input first, stored as no `analysis_input`), a search, one row per rating factor or validation-frame column with Ratebook (`factorColumns`, ratebook mode and source factors only) and Validation (`analysis_columns`, capped, frame columns only) checkboxes, the switch-time removal of validation factors the new frame lacks, and the missing-input and missing-column flags. |
+| `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list (the same in both modes) and resolution of a remembered pane, Data when none. |
+| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: the Result line, then one card per constraint holding its column and remove action, then its at least / at most bound type, Fixed | Sweep switch and either its fixed value or its from/to range, then, when any constraint is swept, the Frontier section with points per swept constraint. Each swept card has its own Auto range button and error. It composes one `useOptimiserAutoRange` for the pane, running it for one constraint at a time and merging the filled range over the latest `frontier_ranges` (read through a ref when the run completes), keeping request state out of the parent form. |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. Its convergence result is the as-solved result (`originalResult`), never the frontier point the preview shows. |
-| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. |
-| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), per-tab intros (`OPTIMISER_VIEW_INTRODUCTIONS`), the provenance strip, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
-| `frontend/src/panels/optimiser/resultViews.ts`, `frontend/src/panels/optimiser/resultProvenance.ts` | The result views in tab order with their labels and intros (`OPTIMISER_VIEW_INTRODUCTIONS`); and `optimiserResultProvenance`: the provenance strip's segments (mode, grid shape, the data source from the result's `input_summary`, as solved or frontier point i of N, and the expected-values statement). An unknown mode or a selected point outside the points returned throws. A failed solve with no earlier result has no result, so no preview and no strip. |
+| `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. `run(targets)` names the constraints a run fills and the state reports them (`autoRangeTargets`), so a pane can show the run on the card that asked; the caller's `writeRanges` merges the result. |
+| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration on the `ResultsWorkspace` shell (ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", the `--optimiser-accent`/`--optimiser-accent-soft` pair, `optimiserPreviewHeight`, `HeaderPointStepper` as a header action), no tab intros, point selection, the stale-result strip with Re-run, ratebook detail materialisation and the Frontier tab layout; it has no publish actions. |
+| `frontend/src/panels/optimiser/resultViews.ts` | The result views in tab order with their labels; no view has an intro. A failed solve with no earlier result has no result, so no preview. |
 | `frontend/src/panels/DiagnosticsIssues.tsx` | The "Diagnostics Issues" `role="alert"` (accessible name "Diagnostic issues") both result workspaces' Summary tabs show for diagnostics that could not be produced: per issue its label (the caller's `formatLabel`), raw diagnostic id, error type and message. Modelling passes its training result's diagnostics errors (their error text as the message); the optimiser passes its solve result's. |
 | `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
 | `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
@@ -36,7 +37,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
 | `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The Quotes explorer (both modes) for the publish target: a server-sorted, searched and filtered page of the chosen scenarios in `SortableValuesTable`, with the presets, the pager and the analysis-value filters, read through the result store's identity-keyed `/apply` cache (the full canonical query in the identity) with Retry on failure; and the shared λ label and explanation. |
 | `frontend/src/panels/SortableValuesTable.tsx`, `frontend/src/panels/valuesSort.ts` | The shared sortable values table (extracted from the GLM coefficients): column headers as sort buttons with `aria-sort` and a ▲/▼ indicator on the sorted column (a disabled button for a column that cannot be sorted now, plain text for one that never can), the caller's cells and an empty-state `role="status"` message; `ValuesTableSearch`, its labelled search input; and `nextSort` (`valuesSort.ts`, with `SortState`), the one sort cycle (a new column sorts ascending, the sorted column reverses). Sorting itself is the caller's: GLM sorts in the browser, Quotes asks the server. |
-| `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
+| `frontend/src/panels/OptimiserDataPreview.tsx`, `frontend/src/panels/optimiser/useOptimiserScenarioData.ts`, `frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx` | The pre-solve scenario view: the hook groups the bounded preview rows by quote and owns series visibility, quote navigation (reset during render when the series list or quote count changes) and on-demand statistics; the panes (quote navigation, Curves, Statistics, the no-objective/no-data notice) render in the data preview's frame and as the result workspace's Curves and Statistics tabs. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
 | `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers and stale-aware data-input column fetching. |
@@ -46,28 +47,28 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/algorithmCapabilities.ts`, `frontend/src/panels/modelling/algorithmCapabilities.json` | The backend-generated family capability table (`ALGORITHM_CAPABILITIES`, `algorithmCapability`, `supportedLosses`) that the gateway, target pane and tuning readiness read. |
 | `frontend/src/panels/modelling/modelColumns.ts`, `frontend/src/panels/modelling/WeightOffsetFields.tsx` | What the GLM and tree-family target configurations share: the columns each role may take (the target is never the weight or offset; weight and offset are numeric) and the optional weight and offset pickers. |
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | Tree-family target/loss/metric controls with loss-derived task compatibility and the positive-class field, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
-| `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded tuning/search-space editing from each family's starter space, and pure parameter/feature transitions. |
+| `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing with an optional one-line note beneath it (`parametersNote`; the modelling editor passes CatBoost's one_hot_max_size note), optional bounded tuning/search-space editing from each family's starter space, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/EBMInteractionsConfig.tsx`, `frontend/src/panels/modelling/EBMTermsTab.tsx` | The EBM Features-pane pairwise-interaction control (a count EBM chooses from, or explicit feature pairs written to `params.interactions`), and the EBM Terms result tab: importance-ranked terms, main-effect shapes with the missing bin, and interaction score tables, labelled as additive link-scale term scores. |
 | `frontend/src/panels/modelling/GpuTrainingToggle.tsx` | `XGBoostGpuToggle`, the Train-pane GPU checkbox for a GPU-capable family (XGBoost): fetches `GET /api/modelling/gpu` once per mount, enables the box only when the server can train on a CUDA GPU (otherwise shows the server's reason), and always allows switching an existing GPU node back to CPU. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMTermsConfig.tsx`, `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`, `frontend/src/panels/modelling/TermCard.tsx`, `frontend/src/panels/modelling/glmTerms.ts`, `frontend/src/panels/modelling/glmFamilies.ts`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/link/dispersion, feature rows with indented inline term cards, labelled interaction/slot controls, pure editor transitions mirroring the backend term contract, the family/link and solver constants shared with the backend, and regularisation, cross-validation, and solver controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
-| `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
+| `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute, and for a CatBoost model with String or Categorical features the categorical encoding: one-hot up to `one_hot_max_size` levels with target statistics above, tuned when the search space holds it, or CatBoost's default) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
 | `frontend/src/panels/modelling/EvaluationAllocation.tsx`, `frontend/src/panels/modelling/evaluationPreview.ts` | The Split pane's training/validation/test allocation bar and per-fit row ranges, showing exact rows only from an evaluation preview whose strategy and validation method match the current editor (`compatibleEvaluationPreview`), and target fractions otherwise. |
 | `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but other evaluation previews as the in-flight holders (`refusedByEvaluationPreviews`); every other failure, including a running training job, is returned at once. |
-| `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice. |
+| `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice, and is flagged unavailable only once the columns are known. |
 | `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE, PDP and the optimiser Rates tab share (`FeatureDiagnosticLayout`: a ranked browser beside the selected item's chart, with empty states for no rows and for a selection without a row; `FeatureDiagnosticTab` ranks model features by importance through it); and the results workspace's container-query layout styles, imported by `frontend/src/panels/ResultsWorkspace.tsx` so the optimiser is styled even when no model result has been opened. Accent-coloured rules read `--results-accent`/`--results-accent-soft`, which the shell sets per workspace; the optimiser Frontier tab's stacking rules live here too. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
-| `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
+| `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or record it as expired in the results store with `markTrainResultExpired`). |
 | `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling and optimiser export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`, `OPTIMISER_EXPORT_CONFIG_KEYS`, `exportConfigKeysFor`) and `trainingIdentityConfig` / `solveIdentityConfig`, which omit them. |
 | `frontend/src/panels/modelling/modelExport.ts`, `frontend/src/panels/modelling/FieldHelpIcon.tsx` | The model file extension per algorithm and the shared hover-only field help icon. |
-| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence and warnings. |
+| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics (the validation fit's selection metrics lead when the diagnostics are in-sample after a validation fit and no test set was reserved), tuning baseline/winner evidence and warnings. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables, including invalid-inference reasons and robust standard errors. |
 | `frontend/src/panels/RelativityBars.tsx` | The diverging-around-1.0 bar list GLM relativities and the optimiser Rates tab share: one row per item in the caller's order, `--chart-above`/`--chart-below` bars scaled to the largest deviation (confidence whiskers included), theme-token baseline and whiskers, optional focusable rows with an active row, an optional aligned side strip, and, from a caller threshold, compact rows whose labels are thinned with `chartLabelIndices`. A `null` value is unavailable: the row draws no bar, shows "—" and does not set the scale (the Segments tab's zero-weight level); a non-finite value throws. |
 | `frontend/src/panels/modelling/NumberField.tsx` | Numeric input that keeps a draft until a valid, in-range value commits on blur or Enter. |
 | `frontend/src/panels/modelling/modellingPanes.ts` | `modellingPanesFor(algorithm)` and `resolveModellingPane`, the one pane list behind the modelling tabs and pane bodies. |
 | `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. The browser names what it ranks by ("Ranked by importance", "Ranked by rate spread") and what it lists (features or factors), so a non-importance ranking is never presented as importance. An item whose measure is `null` is unranked and draws no bar (the Segments keys while their index loads). |
-| `frontend/src/panels/IterationLinesChart.tsx` | The shared by-iteration line chart: aligned series (a `null` value is a gap the line bridges; a non-finite value throws), a linear or log value axis (a log axis throws on a value at or below 0, so its caller decides how to show zeros), optional horizontal reference lines (dashed, inside the value domain) and an optional dashed vertical marker at an index, optional point markers, the x-axis labelled with each index's iteration value, and a legend built from the series, reference lines and marker. It draws on `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the width it is given; the modelling Loss tab and the optimiser Convergence tab are its adapters. |
-| `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives (responsive width, SVG surface, legend (line, dashed and bar swatches, and dot, ring, hollow and cross point markers), empty state, `ChartValueGrid`, the value axis of gridlines with compact labels that every validation chart draws, `ChartValuesTable`, a chart's raw values behind a native disclosure in the shared `validation-value-table` (the first column is each row's header), which the Lift, AvE, PDP and Convergence tabs use, and `TwoChartLayout`, the two-chart result layout: side by side with a 24 px gap from a caller breakpoint when both charts exist, each chart at least a caller minimum wide, otherwise full width one under the other, with an optional header above) and loss visualisation (`LossTab` adapts the training loss history to `IterationLinesChart`; `LossChart` is the compact inline curve). Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
+| `frontend/src/panels/IterationLinesChart.tsx` | The shared by-iteration line chart: aligned series (a `null` value is a gap the line bridges; a non-finite value throws), a linear or log value axis (a log axis throws on a value at or below 0, so its caller decides how to show zeros, and passes its scale to `ChartValueGrid`), optional horizontal reference lines (dashed, inside the value domain) and an optional dashed vertical marker at an index, optional point markers, the x-axis labelled with each index's iteration value, and a legend built from the series, reference lines and marker. It draws on `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the width it is given; the modelling Loss tab and the optimiser Convergence tab are its adapters. |
+| `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx`, `frontend/src/panels/modelling/lossHistory.ts` | Shared chart primitives (responsive width, SVG surface, legend (line, dashed and bar swatches, and dot, ring, hollow and cross point markers), empty state, `ChartValueGrid`, the value axis of gridlines that every validation chart draws, its linear ticks labelled together by `formatChartTicks` so neighbouring ticks never share a label and a log axis's decades (`scale="log"`) labelled one by one by `formatChartNumber`, `ChartValuesTable`, a chart's raw values behind a native disclosure in the shared `validation-value-table` (the first column is each row's header), which the Lift, AvE, PDP and Convergence tabs use, and `TwoChartLayout`, the two-chart result layout: side by side with a 24 px gap from a caller breakpoint when both charts exist, each chart at least a caller minimum wide, otherwise full width one under the other, with an optional header above) and loss visualisation (`LossTab` adapts the training loss history to `IterationLinesChart`; `LossChart` is the compact inline curve, drawn when `lossHistory.ts`'s `lossCurveKeys` finds a `train_` key in a history of at least two rows). `lossHistory.ts`'s `shownFit` picks the fit `LossTab` draws, and the workspace offers the Loss tab when that fit's history has at least two rows, so a refit that kept one tree still shows its validation fit. `LossTab` draws the validation fit when one ran: after a holdout validation fit and a refit it plots `validation_loss_history`'s train and eval curves with the selection fit's best iteration, and when the refit was skipped `loss_history` is that fit; otherwise it plots `loss_history` with `best_iteration`. The best-iteration marker sits on the row whose `iteration` is `best_iteration + 1` and is labelled with `best_iteration` as the Summary shows it. For a validation fit the intro reads "Validation fit: N training, M validation rows" from the selection fit, followed after a refit by "The final model was refit on all N development rows" (with "for K iterations" when `final_tree_count` is known). A thinned history adds "Thinned to R of S iterations", S being the last row's iteration. Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
 | `frontend/src/panels/modelling/LiftTab.tsx`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/modelling/AveTab.tsx`, `frontend/src/panels/modelling/PdpTab.tsx` | Lift, residual, actual-versus-estimated and partial-dependence result views. Lift and Residuals lay their two charts out with `TwoChartLayout`: Lift side by side from 900 px (charts at least 260 px, a Double lift / Lorenz curve switch in the header when narrower), Residuals from 760 px (at least 280 px, stacked when narrower). |
 | `frontend/src/panels/modelling/FailoverHelp.tsx`, `frontend/src/panels/modelling/OffsetFieldLabel.tsx`, `frontend/src/panels/modelling/styles.ts` | Algorithm help, offset label and modelling visual helpers, including the shared modelling input surface. |
 | `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective, the constraint-attainment table (with λ, for both modes), ratebook-impact state and a compact adjustments summary (up / down / unadjusted / at the range edge) linking to the Adjustments tab. |
@@ -75,13 +76,13 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares, and `rangeEdgeShare`, the union of the minimum and maximum edge shares, counted once on a one-step grid). |
 | `frontend/src/panels/optimiser/SegmentsTab.tsx` | The Segments view (see Control flow): the result's segment keys in the per-feature diagnostic layout, ranked by the index's adjustment spread (unranked while it loads), the selected key's per-level mean scenario value as `RelativityBars` around 1.0 with an aligned quote strip, a `ChartFocusDetail` line, a values table, the Weight by switch, and the review-owned caches of loaded breakdowns and indexes. |
 | `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
-| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and strict frontier-point detail display. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and reports the hovered or focused point through `ChartFocusDetail`. `DetailCard` shows the displayed result's objective and attainment table, the point's feasibility with its reason, `converged` and iterations, each λ exactly as reported with the sign it enters each quote's choice with, and the discrete trade-off row. Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
-| `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), and `discreteTradeOff` (Δobjective / Δrelaxation to the next point in the relaxing direction of the same slice, `bound_next − bound` for max and `bound − bound_next` for min, only between two feasible points with different bounds). |
+| `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and the Frontier tab's points table, which the result preview draws beside it. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and, while no point is selected, reports the hovered or focused point through `ChartFocusDetail`; its ticks span `chartTickSpan`, so a flat series spreads them over its padded axis. Both charts scale through the shared `chartDomain`/`chartTicks`; their axes are labelled by `formatChartTicks` (through `ChartValueGrid`, and directly for the frontier's x axis) and single values by `formatChartNumber`. |
+| `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), `sliceNeighbours`, `displayedSlicePosition` and `asSolvedOnSlice`. |
 | `frontend/src/panels/ChartFocusDetail.tsx` | The polite `role="status"` line under a chart that states the hovered or focused item's exact values, or a placeholder; AvE bins and frontier points use it. |
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
 | `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers, including `frontierGenerationMismatch`, the message for a point reply the server answered for another frontier generation than the result shows. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
-| `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
+| `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, `isStringOrCategoricalDtype` (the String and Categorical dtypes CatBoost trains as categorical features, as the backend detects them; Enum is not one), and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
 
 ## Key types and data structures
 
@@ -150,7 +151,10 @@ Only a current, accepted save response may acknowledge this revision transition.
    level and Levels, which replace each other. Terms on role, missing, or unsupported columns,
    expressions outside the grammar (`__tests__/fixtures/glmExpressionGrammar.json`) or over
    non-numeric columns, and malformed entries are listed under Unresolved terms with the reason,
-   the saved fit, and removal; an unresolved expression stays editable, and a malformed entry
+   the saved fit, and removal. Before the upstream columns are known (`ColumnContext.known` is
+   false), the same entries are listed under a neutral Saved terms group with the reason
+   "Waiting for the upstream columns", and GLM interaction slots, EBM pairs and `ColumnSelector`
+   show saved values without an unavailable flag. An unresolved expression stays editable, and a malformed entry
    keyed by an eligible column offers a type select that writes a valid spec. Lookups use
    own-property checks, so a `constructor` column is ordinary. Rows are tagged "Main effect from
    Interaction N (fit)" when Include main effects materialises one, "Target encoding from
@@ -188,7 +192,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    includes development/final-test rows, validation-fit bounds and strategy-specific group/date
    summaries.
 3. Training records the `POST /api/modelling/train` job handle as soon as it is returned, after
-   which background polling owns preparation/fit progress. `TrainingActionsAndResults` keeps a
+   which background polling owns preparation/fit progress, polling about once a second while that
+   progress moves ([frontend-shared](../frontend-shared/low-level.md)'s progress-aware backoff).
+   `TrainingActionsAndResults` keeps a
    distinct Cancel control visible while that job is active; `ModellingConfig` posts its job ID to
    `/train/cancel`, then immediately stores a returned terminal failure/cancellation or completed
    race winner. Structured execution details and additive `error_code`/`http_status_code`/
@@ -202,7 +208,16 @@ Only a current, accepted save response may acknowledge this revision transition.
    those, and resets the active tab when a new result arrives. `SummaryTab` separates selection
    estimates from final-test metrics, renders ordered validation fits and tuning
    baseline/winner/improvement evidence, and exposes diagnostics rather than suppressing a
-   partially successful training result.
+   partially successful training result. When `diagnostics_set` is `"development"` and
+   `evaluation.validation_method` is not `"none"`, its first metric card is the validation
+   fit's `evaluation.selection_metrics` (each metric's `mean`), titled "Validation, N rows"
+   for holdout or "Validation (K-fold mean), N rows" for cross-validation, N being the
+   summaries' `validation_rows` and K `validation_fit_count`, and described as the
+   out-of-sample performance used to select the model; the in-sample diagnostics card
+   follows. A `"final_test"` result keeps its test metrics first, and a run without
+   validation is unchanged. When the active node has no result and the results store
+   records its remembered result as expired, the app shows `ModellingResultExpired` in place
+   of the data preview.
 5. `parseTrainStatusResponse` preserves explicit `null` values in categorical PDP grids;
    missing value fields, non-scalar values and null numeric grid values remain invalid.
    `PdpTab` displays the null level as `(missing)` without changing its prediction or
@@ -355,8 +370,11 @@ Only a current, accepted save response may acknowledge this revision transition.
    the node does not hold and never changes the selection; its load is identified by
    `(jobId, frontier_generation, target)`, and a reply the server answered for another generation
    than the result shows is reported as the load's error.
-5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
-   orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
+5. `useOptimiserScenarioData` caps rows at 5,000 before grouping by quote, orders scenario rows,
+   and calculates full-preview statistics only while a Statistics pane is open (the data preview's
+   tab, or the result workspace's). `App` passes `OptimiserPreview` the active node's `ok`
+   preview as `scenarioData`; the result workspace offers Curves and Statistics only when those
+   rows hold an objective and scenario rows.
 
 Memory notices use the headline “{Profile} reached {threshold}% of its memory
 allowance.” Their details separately identify memory used, the process limit, and
@@ -378,8 +396,12 @@ or an unknown reason — it ran out of memory before it finished;
 `process_rss_limit_exceeded` — at admission (the detail carries `rss_at_admission_bytes`)
 not enough memory is free to start because Haute already uses that much of its
 `process_rss_limit_bytes` limit, otherwise Haute reached its process limit (the running
-execution's effective `rss_limit_bytes`) while running it; `in_flight_memory_budget_exceeded` — other running work holds the memory it needs,
-so try again when that finishes; `native_memory_cap_unavailable` — Haute cannot enforce
+execution's effective `rss_limit_bytes`) while running it; `in_flight_memory_budget_exceeded` — another job is running,
+named from the detail's `in_flight_operations` (`<profile>:<operation>`) by a fixed map of user-facing job names
+(Auto range, Optimisation, Frontier recompute, Solve estimate, Model training, Training preview, Explore, Data
+caching, Data output; an operation outside the map is left out, never shown by its internal name), so try again
+when it finishes — a solve estimate refused while auto-range runs reads "Solve estimate failed: Another job is
+running (Auto range). Try again when it finishes."; `native_memory_cap_unavailable` — Haute cannot enforce
 its memory limit on this machine; `memory_sampler_unavailable` — Haute stopped it because
 it could not measure its memory use. A byte value missing from the detail is omitted
 from the sentence rather than invented. Each ran-out-of-memory outcome (the first four,
@@ -415,11 +437,14 @@ without broadening the exactly-one-direct fallback.
   `--optimiser-accent-soft`), never a warning colour: the stale strip and breached
   statuses use the warning palette, and a warning accent would make the whole pane
   read as a warning.
-- Every optimiser tab, Summary included, has an intro from
-  `OPTIMISER_VIEW_INTRODUCTIONS`. The Rates intro states clamp rate as the
-  price-contour search-space diagnostic: the mean, over every grouped solve, of the
-  fraction of (quote, candidate) targets strictly outside the scenario range; quotes
-  at a grid edge are not counted in it.
+- No optimiser tab has an intro (`intro={null}`); the clamp-rate definition (the mean,
+  over every grouped solve, of the fraction of (quote, candidate) targets strictly
+  outside the scenario range; quotes at a grid edge not counted) is documented.
+- A frontier result offers no Summary tab: the Frontier pane renders `SummaryTab` below
+  its chart and points table, and materialises a selected ratebook point's rates there
+  as the Summary and Rates tabs do. `SummaryTab` shows no adjustments block for a
+  selected point (its report loads in the Adjustments tab). The points table scrolls
+  itself, not the pane, to bring the selected row into view.
 - The Rates tab uses the per-feature diagnostic layout: a browser of factors ranked by
   rate spread (quote-weighted mean |ln rate|, how far the factor's rates move from 1.0),
   with search, beside the selected factor's `RelativityBars` in banding order and an
@@ -442,14 +467,10 @@ without broadening the exactly-one-direct fallback.
   which a legend note names, and the focus detail says "no value order (categorical
   level)" in words. Every dot is focusable and fills the detail line; a closed values
   table lists Factor | Level | Rate | vs neutral 1.0 (%) | Quotes for the factors shown.
-- The optimiser provenance strip shows on every tab: "Online|Ratebook · N quotes × M
-  scenario steps · Data: <data_source> scenario of <source_file> · As solved|Frontier
-  point i of N · Expected values from the scoring models on the solve quotes; not
-  observed outcomes." The source segment reads the result's `input_summary`, and says
-  "Data: <data_source> scenario" when the graph has no source file. N of the frontier
-  point is the number of points returned, the same count the header stepper uses.
-  A result that does not report its grid shape says so in the strip instead of
-  omitting it.
+- The optimiser result workspace shows no provenance strip (the header and point stepper
+  carry the mode's convergence, the quote count and the point shown). On the Curves
+  and Statistics tabs the header subtitle is the sampled input's metadata instead
+  (quotes, scenarios, and the preview rows used when the sample is truncated).
 - The optimiser Summary shows the result's `diagnostics_errors` in the shared
   `DiagnosticsIssues` alert above its columns ("Scenario-value statistics",
   "Efficient frontier"), so a degraded result says what is missing and why. A
@@ -482,8 +503,10 @@ without broadening the exactly-one-direct fallback.
   equals the slice's bound exactly, and otherwise is drawn hollow with the legend
   entry "As solved (different slice)". The y axis is named by the node's
   objective column while the result is not stale, else "Objective". A
-  `ChartValuesTable` ("View slice values") lists the slice's points: Point,
-  <x> bound, <x> achieved, Objective, Converged, Iterations, Status.
+  table ("Frontier slice points", always open beside the chart) lists the slice's points: Point,
+  <x> bound, <x> achieved, Objective, Converged, Iterations, Status; the selected point's row is
+  `aria-current`, highlighted in the optimiser accent and scrolled into view, and each row's
+  "Point N" button (or the row) selects that point.
 - `/apply` responses are cached in `useNodeResultsStore` under their full request identity
   `(jobId, frontierGeneration, target, query)`: `target` is `"solved"` or the frontier point
   index, `frontierGeneration` is the solve result's backend `frontier_generation`, and `query` is
@@ -500,15 +523,16 @@ without broadening the exactly-one-direct fallback.
   drops a response whose query is no longer its current query. A cache hit makes no request and
   marks the entry most recently used. `completeSolveJob` throws when the result's frontier
   carries a different `frontier_generation` from the result itself.
-- The Frontier tab lays the chart beside the detail card and stacks the chart above
-  it when the workspace container is at most 640px wide. Its labels and footnote use
+- The Frontier tab lays the chart beside its points table at equal widths and stacks the
+  chart above it when the workspace container is at most 640px wide. Its labels and footnote use
   the workspace type scale (12-13px, sentence case), not 9-11px uppercase labels.
 - Each non-summary modelling view has a heading and explanatory sentence above its existing
   diagnostic component. The scrollable body remounts on view changes so a new view
   starts at the top. View availability continues to follow actual result data.
 - `modelling/SummaryTab` groups results into bordered, elevated cards using the
   existing theme tokens and model accent. Performance cards precede model metadata;
-  final-test metrics and diagnostic metrics retain separate names and descriptions.
+  final-test metrics and diagnostic metrics retain separate names and descriptions, and
+  the validation card that leads in-sample diagnostics carries its own row-count title.
   Responsive grids follow the panel's available width. Values use tabular numerals,
   long labels/paths wrap, and detailed tables scroll within their cards. Evaluation,
   tuning ranking, parameter application and MLflow payloads are unchanged.
@@ -555,8 +579,8 @@ Top-level coverage lives in `frontend/src/panels/__tests__/ModellingConfig.test.
 `frontend/src/panels/__tests__/ValidationWorkspace.test.tsx` (the modelling workspace: Focus
 view, remembered height, diagnostics strip; unchanged by the shell extraction, so it guards it),
 `frontend/src/panels/__tests__/OptimiserWorkspace.test.tsx` (the optimiser workspace on the same
-shell: tab/pane ARIA wiring, Focus view Escape keeping the tab, remembered height, the provenance
-strip on every tab, per-tab intros, and the Frontier tab's narrow-width stacking rule),
+shell: tab/pane ARIA wiring, Focus view Escape keeping the tab, remembered height, no
+provenance strip or tab intros, and the Frontier tab's narrow-width stacking rule),
 `frontend/src/panels/__tests__/OptimiserConfig.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`,
 `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`, and
@@ -581,7 +605,8 @@ earlier generation's late reply never installed; a reply from a generation the r
 show reported, not stored), the tab kept across stepper presses and reset on a new job or node, Convergence
 kept after point select, the fixed as-solved marker, the warning strip and
 Retry. `frontend/src/panels/__tests__/IterationLinesChart.test.tsx` covers the shared chart's
-real tick values, log axis, reference lines, marker, gaps and loud failures, and
+real tick values, distinct labels on a narrow value range, log axis, reference lines, marker,
+gaps and loud failures, and
 `frontend/src/panels/optimiser/__tests__/AdjustmentsTab.test.tsx` covers the Adjustments view:
 the axis labels, one bar per grid value with empty bars, the base-price line, the Weight by
 switch, the quantile row and shares, the no-1.0 note, focusable bars with the detail line, the
@@ -599,13 +624,20 @@ the extracted `HistogramChart` unchanged, and
 its truncation note, the values table and the "live solves only" state.
 `frontend/src/panels/optimiser/__tests__/frontierSlices.test.ts` covers slicing a 2×3 grid,
 the single-constraint identity, feasibility (non-converged, converged-but-breached including
-an unswept breach) and the hand-calculated trade-off sign for min and max constraints;
+an unswept breach);
 `frontend/src/panels/optimiser/__tests__/FrontierChart.test.tsx` the axes, legend, markers, the
 feasible-only line and the as-solved anchor;
-`frontend/src/panels/optimiser/__tests__/DetailCard.test.tsx` the reasons, λ sign and trade-off
-row; and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching,
-global-index selection and the in-slice stepper. Modelling subcomponents have suites
-under `frontend/src/panels/modelling/__tests__/`; optimiser helper/frontier coverage is under
+and `frontend/src/panels/__tests__/OptimiserPreview.test.tsx` the slice switching, the points
+table's highlighted and clickable rows,
+global-index selection, the in-slice stepper, and the Curves and Statistics panes after a solve
+(quote navigation replacing the point stepper, no panes without preview rows or an objective). Modelling subcomponents have suites
+under `frontend/src/panels/modelling/__tests__/`:
+`frontend/src/panels/modelling/__tests__/SummaryTab.test.tsx` proves the validation card leads a holdout-validated refit's in-sample diagnostics with its row count
+while test metrics still lead a test-set run, and
+`frontend/src/panels/modelling/__tests__/TrainingRunSummary.test.tsx` the CatBoost
+categorical encoding. `frontend/src/__tests__/App.integration.test.tsx` proves the results
+panel of a Model Training node says why an expired result is gone, and says nothing of it
+when a result is present or no training was remembered; optimiser helper/frontier coverage is under
 `frontend/src/panels/optimiser/__tests__/`. `frontend/src/__tests__/utils/banding.test.ts` covers
 the factor-level and optimiser-source utility. Smaller visual summaries/charts are also exercised
 through their parent preview tests; not every helper has a dedicated test file.
@@ -632,9 +664,9 @@ explicit sources and mixed healthy/zero-level outputs. The deterministic
 fields, selects and applies the backend `point_index`, and intercepts the
 MLflow API to assert request/result identity without contacting a live service.
 After its solve it walks every online pane: the Solve pane's status against the
-as-solved result, the tablist and provenance strip, the Summary attainment row
-(Bound, Slack, Status consistent with each other), frontier point 2's attainment
-identical in the detail card and Summary, the Adjustments bars and base-price
+as-solved result, the tablist, the Summary attainment row
+(Bound, Slack, Status consistent with each other), frontier point 2's row highlighted in the
+points table and its attainment on Summary, the Adjustments bars and base-price
 line, a Segments level of the fixture's `region` analysis column, the Quotes
 "Highest adjustment" preset's descending order, the Convergence axes, and the
 Focus view closing on Escape with its tab kept. A second journey solves the
@@ -692,7 +724,12 @@ The behavioural contract is defined in
   dedicated parameter fields. For CatBoost, a Target-style **Fixed parameters** /
   **Tune parameters** radio group is the first control below the heading. Fixed mode renders only
   Parameters JSON; Tune mode renders only trial count, seed, configured selection metric and
-  Search space JSON.
+  Search space JSON. For CatBoost, `ModellingConfig` passes a one-line note rendered beneath
+  Parameters JSON: `one_hot_max_size` one-hot encodes categorical columns with up to that many
+  levels, and above it CatBoost uses target statistics, which are much slower to train. The
+  gateway's CatBoost starter parameters are `iterations: 1000`, `learning_rate: 0.05`,
+  `depth: 6`, `l2_leaf_reg: 3`, `early_stopping_rounds: 50` and `one_hot_max_size: 10`; the
+  backend applies no default of its own, so a node without the key trains with CatBoost's.
   Each JSON draft autosaves when its frontend parser accepts the top-level object, without
   Apply/Revert controls; invalid syntax, a non-object top level, or a reserved fixed key stays in
   the corresponding per-node draft and contributes a click-time issue to the Train banner only
@@ -784,9 +821,17 @@ The behavioural contract is defined in
   stored config hash and source, with the current structural version when the `trainingLineage`
   of the payload the editor would submit now equals the stored one and `-1` (always stale)
   otherwise, so an upstream or submodel edit saved before the reload still shows the stale
-  warning; a missing job (`404`) or any other status forgets the handle and the
-  Export pane reports "The last training result for this node is no longer available (the server
-  restarted or it expired). Train this model again to export it." Storage failures are tolerated.
+  warning; a missing job (`404`) or any other status forgets the handle and records the node's
+  result as expired in the results store (`markTrainResultExpired`, keyed by node, holding the
+  job ID), unless the node has meanwhile gained a result or a running job. That one record is
+  what both surfaces read, and it lasts for the session until the node starts training or gets
+  a result. The Export pane reports "The last training result for this node is no longer
+  available (the server restarted or it expired). Train this model again to export it." The
+  results panel (`ModellingResultExpired`) reports "The last training result for this node is
+  no longer available (the server restarted or it expired). Training results are not kept
+  across a server restart: train this model again to see them, or open its MLflow run if it
+  was logged." A transient status failure keeps the handle and records nothing. Storage
+  failures are tolerated.
   `ModelFileExportSection` is headed "Model file" with an Info icon tooltip describing the
   action. It mounts the shared `PathPickerField` labelled "Filename or path *", bound to
   `model_export_path`, with manual entry and a browser filtered to the model extension.
@@ -811,8 +856,9 @@ The behavioural contract is defined in
   background, border, text, spacing and monospace-value treatment instead of relying on unstyled
   browser defaults. `TrainingProgress.tsx` renders authoritative planning/trial/fold/final-fit/
   publication phases, bounded fit counts and best objective, plus the final model's bounded
-  `train_loss_history`; it labels a truncated retained window and shows browser-derived ETA only
-  for a valid advancing sample pair.
+  `train_loss_history` through `LossChart`, which draws when at least two rows carry a `train_`
+  key (and an `eval_` curve when they carry one); it labels a truncated retained window only
+  when that chart draws, and shows browser-derived ETA only for a valid advancing sample pair.
 - `trainingObjective.ts` exposes a stable issue-code union and derives the currently applicable
   frontend target, objective, evaluation and bounded-tuning Train-guard issues. `ModellingConfig`
   continuously appends at most the selected CatBoost strategy's current draft issue
@@ -874,10 +920,9 @@ Shared `NodePanel`, tab-control, API/parser, and store interactions are recorded
 The behavioural contract is defined in
 [the high-level specification](high-level.md#optimiser-config-panes).
 
-- `frontend/src/panels/optimiser/optimiserPanes.ts` exports `optimiserPanesFor(mode)` (Data,
-  Factors, Constraints, Solve, Export in ratebook mode; Factors omitted otherwise) and
-  `resolveOptimiserPane(mode, remembered)`, which returns the remembered pane when the mode has it
-  and Data otherwise. `NodePanel` and `OptimiserConfig` both resolve through it, so the selected
+- `frontend/src/panels/optimiser/optimiserPanes.ts` exports `OPTIMISER_PANES` (Data,
+  Factors, Constraints, Solve, Export, in both modes) and `resolveOptimiserPane(remembered)`,
+  which returns the remembered pane, or Data when there is none. `NodePanel` and `OptimiserConfig` both resolve through it, so the selected
   tab and the rendered body never disagree.
 - `OptimiserConfig.tsx` keeps every derivation and effect above the pane branch: input and
   banding-source resolution, the atomic ratebook-default writes, the solve estimate and solve
@@ -895,9 +940,9 @@ The behavioural contract is defined in
 - `resolveOptimiserInputs` also resolves `analysis_input` (`analysisInput`,
   `selectedAnalysisInput`, `missingExplicitAnalysisInput`, `malformedAnalysisInput`, and
   `analysisUsesDataInput` when it is unset or names the data input), and
-  `optimiserSolveReadiness` adds the Data-pane issues for a disconnected or malformed analysis
+  `optimiserSolveReadiness` adds the Factors-pane issues for a disconnected or malformed analysis
   input, more than `MAX_ANALYSIS_COLUMNS` (12) columns, and a column the analysis frame's known
-  columns lack. `OptimiserAnalysisColumns` prunes columns only in response to a user switch of
+  columns lack. `OptimiserFactorsTable` prunes columns only in response to a user switch of
   the analysis input (a pending prune applied once the new frame's columns arrive), never on
   load, so a temporarily unavailable schema never rewrites the configuration.
 - `useUIStore.ts` remembers `optimiserPanes` per node. `NodePanel.tsx` selects only the Boolean
@@ -905,8 +950,8 @@ The behavioural contract is defined in
   configuration warning descriptors.
 
 Verification: `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` covers each pane's
-content, Factors gating by mode, the constraint cards for both result types, the solve-blocking
-alert and its navigation, and the Analysis columns section (only connected inputs listed, the
-column choices following the chosen frame's schema, switch-time pruning, the cap); `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
+content, the Factors table in both modes (ratebook choices greyed out online), the constraint cards for both result types, the solve-blocking
+alert and its navigation, and the factor table (only connected inputs listed, rating factors first with both choices, the
+validation choices following the chosen frame's schema, search, switch-time pruning, the cap); `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
 the pane list and resolution; `NodePanel.test.tsx` and `useUIStore.test.ts` cover strip gating,
 per-node memory and the active-solve indicator.

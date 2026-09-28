@@ -28,9 +28,10 @@ from haute._pipeline_repair import (
 )
 from haute._python_syntax import (
     SourceNodeReplacement,
-    prepend_function_statements,
+    insert_import_after,
     replace_source_nodes,
 )
+from haute._source_layout import quote_string
 from haute._types import GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, HauteError
 from haute.schemas import (
@@ -74,6 +75,27 @@ def _replace_spans(
             )
         )
     return prefix + replace_source_nodes(text, replacements).encode("utf-8")
+
+
+def _with_polars_import(source: bytes) -> bytes:
+    """Add ``import polars as pl`` below ``import haute`` when *source* uses ``pl`` unimported.
+
+    A regenerated function can gain annotations (a hook's ``pl.LazyFrame``) that
+    a module of declarations never needed to import.
+    """
+    prefix, text, _body = _decode_utf8_artifact(source, artifact="Repair source")
+    tree = ast.parse(text)
+    imported = {
+        alias.asname or alias.name.split(".")[0]
+        for statement in tree.body
+        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        for alias in statement.names
+    }
+    uses_pl = any(isinstance(node, ast.Name) and node.id == "pl" for node in ast.walk(tree))
+    if not uses_pl or "pl" in imported:
+        return source
+    added = insert_import_after(text, "import polars as pl", after_module="haute")
+    return prefix + added.encode("utf-8")
 
 
 def _parse(raw: bytes) -> ast.Module:
@@ -128,7 +150,6 @@ def _reset_node(
     replacement_config: dict[str, Any] | None = None,
     shared_config_confirmed: bool = False,
     recover: bool = False,
-    allow_blocked_sources: bool = False,
 ) -> list[RepairArtifactEdit]:
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
@@ -183,25 +204,22 @@ def _reset_node(
     source_names: list[str] = []
     for edge in incoming:
         source = nodes[edge.source_recovery_id]
-        if source.availability != "ready" and not allow_blocked_sources:
-            raise _unsupported("Repair the upstream nodes before resetting this node.")
         if edge.input_name is not None:
             source_names.append(edge.input_name)
             continue
-        if allow_blocked_sources:
-            # A blocked or unavailable upstream still has authored identity;
-            # a scoped save must not depend on it being repaired first.
-            fallback = (
-                source.source_handle_input_names.get(edge.source_handle or "")
-                or source.default_input_name
+        # A blocked or unavailable upstream still has authored identity: a damaged
+        # chain resets, recovers and saves in any order, never upstream first.
+        fallback = (
+            source.source_handle_input_names.get(edge.source_handle or "")
+            or source.default_input_name
+        )
+        if fallback:
+            source_names.append(fallback)
+            continue
+        if source.node_type is None:
+            raise _unsupported(
+                "The upstream node's identity is unknown; repair it before changing this node."
             )
-            if fallback:
-                source_names.append(fallback)
-                continue
-            if source.node_type is None:
-                raise _unsupported(
-                    "The upstream node's identity is unknown; repair it before saving this node."
-                )
         source_names.append(
             executable_input_name(
                 node_type=source.node_type,
@@ -237,7 +255,7 @@ def _reset_node(
         )
     except (HauteError, ValueError) as exc:
         raise _unsupported(
-            f"The current node template cannot use these connections: {exc}"
+            f"This node cannot be generated from these settings and connections: {exc}"
         ) from exc
     edits: list[RepairArtifactEdit] = []
     # A stepped transform owns an optional sidecar; a code-only one owns none.
@@ -287,26 +305,9 @@ def _reset_node(
             if isinstance(literal, ast.Constant) and literal.value == default_reference
         ]
         generated = _replace_spans(
-            generated.encode("utf-8"), [(literal, repr(reference)) for literal in literals]
+            generated.encode("utf-8"),
+            [(literal, quote_string(reference)) for literal in literals],
         ).decode("utf-8")
-        if "_HAUTE_CONFIG_BASE" in generated and not any(
-            isinstance(statement, (ast.Assign, ast.AnnAssign))
-            and any(
-                isinstance(n, ast.Name)
-                and isinstance(n.ctx, ast.Store)
-                and n.id == "_HAUTE_CONFIG_BASE"
-                for n in ast.walk(statement)
-            )
-            for statement in tree.body
-        ):
-            # Bind inside the replacement function, avoiding a module-wide edit.
-            depth = len(path.parent.relative_to(root_path.parent).parts)
-            base_expression = f"_HauteResetPath(__file__).resolve().parents[{depth}]"
-            generated = prepend_function_statements(
-                generated,
-                "from pathlib import Path as _HauteResetPath\n"
-                f"_HAUTE_CONFIG_BASE = {base_expression}\n",
-            )
         # The annotation lives on the decorator; a sidecar copy is what goes stale.
         sidecar_config = {key: value for key, value in config.items() if key != "contract"}
         after = (
@@ -338,7 +339,7 @@ def _reset_node(
             generated.encode("utf-8"), [(name, "submodel") for name in receiver_names]
         ).decode("utf-8")
     # LibCST matches the function's definition span and replaces its decorators too.
-    updated = _replace_spans(before, [(function, generated.rstrip("\n"))])
+    updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(
         0,
         _edit(
@@ -368,27 +369,13 @@ def _recover_node(
 ]:
     """Rebuild one node's settings with the recovery engine and regenerate its source."""
     from haute._node_config_recovery import reconcile_config
-    from haute._recovery_sources import read_raw_node_settings, require_generated_body
+    from haute._recovery_sources import read_raw_node_settings
 
     if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
         raise _unsupported("Only supported ordinary nodes can be recovered.")
-    node_type, raw, raw_changes, function, params, reference = read_raw_node_settings(
-        root, document, target
-    )
+    node_type, raw, raw_changes = read_raw_node_settings(root, document, target)
+    # Engine issues are completeness for a direct recover, never a plan gate.
     result = reconcile_config(node_type, raw)
-    # The guard only decides whether the body is recognised generated
-    # scaffolding; engine issues are completeness for a direct recover, never
-    # a plan gate.
-    require_generated_body(
-        node_type,
-        target.authored_id,
-        result.config,
-        function,
-        params=params,
-        reference=reference,
-        receiver="pipeline" if path == root_path else "submodel",
-        config_base_depth=len(path.parent.relative_to(root_path.parent).parts),
-    )
     edits = _reset_node(
         root,
         root_path,
@@ -397,14 +384,15 @@ def _recover_node(
         document,
         replacement_config=result.config,
         recover=True,
-        # A damaged chain recovers bottom-up or top-down: upstream identities
-        # stay trustworthy through their authored bindings, and the applied
-        # node may legitimately remain blocked by an unrepaired upstream.
-        allow_blocked_sources=True,
     )
+    # A dropped body's report replaces the engine's view of the empty code slot it left.
+    body_dropped = any(change.path == "/code" for change in raw_changes)
+    engine_changes = [
+        change for change in result.changes if not (body_dropped and change.path == "/code")
+    ]
     field_changes = [
         PipelineRepairFieldChange(path=change.path, outcome=change.outcome, reason=change.reason)
-        for change in (*raw_changes, *result.changes)
+        for change in (*raw_changes, *engine_changes)
     ]
     return (
         edits,
@@ -646,7 +634,6 @@ def apply_scoped_node_save(
         document,
         replacement_config=config,
         recover=True,
-        allow_blocked_sources=True,
     )
     if all(edit.before == edit.after for edit in edits):
         return document

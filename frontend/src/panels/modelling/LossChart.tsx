@@ -4,6 +4,7 @@
  */
 import { CHART_COLORS } from "../../theme/colors"
 import { ChartLegend, ChartSvg } from "./ChartScaffold"
+import { lossCurveKeys } from "./lossHistory"
 
 export type LossEntry = { iteration: number; [key: string]: number }
 
@@ -13,13 +14,9 @@ type LossChartProps = {
 }
 
 export function LossChart({ lossHistory, bestIteration }: LossChartProps) {
-  if (!lossHistory || lossHistory.length < 2) return null
-
-  // Find train and eval loss keys
-  const keys = Object.keys(lossHistory[0]).filter(k => k !== "iteration")
-  const trainKey = keys.find(k => k.startsWith("train_"))
-  const evalKey = keys.find(k => k.startsWith("eval_"))
-  if (!trainKey) return null
+  const curveKeys = lossCurveKeys(lossHistory)
+  if (!curveKeys) return null
+  const { trainKey, evalKey } = curveKeys
 
   const w = 280, h = 80, px = 4, py = 4
   const chartW = w - px * 2, chartH = h - py * 2

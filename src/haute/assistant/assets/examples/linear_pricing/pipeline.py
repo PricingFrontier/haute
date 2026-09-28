@@ -16,14 +16,8 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/quotes.json")
-def quotes() -> pl.LazyFrame:
+def quotes():
     """Read the quote rows used by the rating flow."""
-
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    return resolve_data_input_from_config("config/quotes.json", base_dir=Path(__file__).parent)
 
 
 @pipeline.polars
@@ -37,7 +31,5 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
+def priced(enriched):
     """Expose the enriched quote rows as the pipeline output."""
-
-    return enriched

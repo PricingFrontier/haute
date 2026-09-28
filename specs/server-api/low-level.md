@@ -94,8 +94,6 @@ HauteError
 │   ├── LiveSwitchScenarioError
 │   ├── TraceCorrelationUnsupportedError
 │   └── BoundedMemoryUnsupportedError
-│       ├── ChunkPlanUnsupportedError
-│       ├── ChunkMemoryRiskError
 │       └── GroupByExecutionUnsupportedError
 ├── DeployError
 ├── FeatureMismatchError
@@ -173,7 +171,7 @@ request node with non-empty function/default/handle identities and an optional
 config reference. Resolution is pure and performs no project I/O.
 
 **`SidecarModel`** (`haute/_sidecar.py`, re-exported by `routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
-dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
+dict[str, dict[str, float]]` (written in key order, so re-saving a graph reloaded in its source file's node order leaves the file unchanged), `sources: list[str]` (defaults to `["live"]`), `active_source:
 str`, and optional `managed_parent: str | None`. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
 project-relative owner, or when explicit Save derives a new definition from
@@ -920,6 +918,7 @@ later write and cleanup checks still compare against the captured identities.
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
 | `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, input-snapshot and API Input table builds, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
+| Any other remote exception (`InteractiveWorkerRemoteError`) | preview, trace, output-assemble dry-run | 500 | `_raise_interactive_remote_http_error` logs `interactive_worker_remote_failure` with the operation, the remote type and module, and the worker's message and traceback; the client gets only `_INTERNAL_ERROR_DETAIL`. |
 | Any other `Exception` | `_RequestIdMiddleware` | 500 | Logged as `unhandled_exception` with `error_class` and traceback; detail `_INTERNAL_ERROR_DETAIL`. |
 
 The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507, and `SeedPlanExpiredError`, which maps to 409 because the preview a trace explains must be refreshed); background jobs
@@ -931,7 +930,6 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |
-| `ChunkMemoryRiskError` | `chunk_memory_risk` | `target_node_id`, `reason_code`, `estimated_target_row_bytes`, `estimated_minimum_chunk_bytes`, `row_expansion_factor`, `target_chunk_bytes` |
 | `GroupByExecutionUnsupportedError` | `group_by_execution_unsupported` | `node_id`, `operator`, `profile`, `reason_code`, `remediation`, `estimated_peak_bytes`, `headroom_bytes` |
 | `TraceCorrelationUnsupportedError` | `trace_correlation_unsupported` | `node_id`, `key_columns`, `dtypes`, `reason_code` |
 | `RatingExtremaUndefinedError` | `rating_extrema_undefined` | `output_column`, `operation` |

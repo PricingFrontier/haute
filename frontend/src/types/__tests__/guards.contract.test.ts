@@ -514,6 +514,28 @@ describe("parseExecutionStrategyDiagnostic", () => {
     expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ schema_version: 2 }))).toBeNull()
   })
 
+  it("keeps the projection cause and rejects one without a positive count", () => {
+    const cause = {
+      node_id: "fill_na",
+      operator: "polars",
+      kind: "input",
+      reason_code: "polars_lineage_unsupported",
+      message: "Polars code is outside the closed column-lineage model",
+      total_count: 1,
+      parent_node_id: "SaleJoin",
+      operation: "with_columns",
+    }
+
+    const diagnostic = parseExecutionStrategyDiagnostic(
+      executionStrategyFixture({ projection_cause: { ...cause, future_cause_field: true } }),
+    )
+
+    expect(diagnostic?.projection_cause).toEqual(cause)
+    expect(() => parseExecutionStrategyDiagnostic(
+      executionStrategyFixture({ projection_cause: { ...cause, total_count: 0 } }),
+    )).toThrow(/total_count/i)
+  })
+
   it("detaches retained arrays from the untrusted input", () => {
     const assumptions = ["bounded input"]
     const raw = executionStrategyFixture({ assumptions })
@@ -1505,6 +1527,38 @@ describe("API response guards", () => {
     expect(() => parseTraceResponse(withCount(1))).toThrow("identical_row_count")
   })
 
+  it("parses a step's column derivations and rejects a malformed read", () => {
+    const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
+    const [step] = fixture.trace.steps as Record<string, unknown>[]
+    const withDerivations = (derivations: unknown) => ({
+      ...fixture,
+      trace: { ...fixture.trace, steps: [{ ...step, derivations }] },
+    })
+    const profit = {
+      column: "profit",
+      expression_text: "premium - BurnCost",
+      substituted_text: "792.135 - 528.09",
+      result_value: 264.045,
+      not_computable_reason: null,
+      result_source: null,
+      reads: [
+        { column: "BurnCost", sources: [{ node_id: "fill_na", column: "BurnCost", before_code: false }] },
+        { column: "premium", sources: [] },
+      ],
+      error: null,
+      error_type: null,
+    }
+
+    const [parsed] = parseTraceResponse(withDerivations([profit])).trace?.steps[0]?.derivations ?? []
+    expect(parsed).toEqual(profit)
+    expect(parseTraceResponse(withDerivations([{ ...profit, reads: null }])).trace?.steps[0]?.derivations[0]?.reads)
+      .toBeNull()
+    expect(() => parseTraceResponse(withDerivations(undefined))).toThrow("derivations")
+    expect(() => parseTraceResponse(withDerivations([
+      { ...profit, reads: [{ column: "premium", sources: [{ node_id: "prices", column: "premium" }] }] },
+    ]))).toThrow("before_code")
+  })
+
   it("parses where a seeded trace read its rows and what it skipped", () => {
     const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
     const [step] = fixture.trace.steps as Record<string, unknown>[]
@@ -1518,14 +1572,14 @@ describe("API response guards", () => {
           node_name: "policies",
           node_type: "dataInput",
           topological_rank: 0,
-          reason: "snapshot_seed",
+          reason: "seed_row_not_reproduced",
           diagnostic_index: 0,
         }],
         correlation_diagnostics: [{
-          code: "snapshot_seed",
+          code: "seed_row_not_reproduced",
           severity: "info",
-          reason: "snapshot_seed",
-          message: "Not computed: the trace read the snapshot of join.",
+          reason: "seed_row_not_reproduced",
+          message: "Not traced above the snapshot of join: a recompute holds no row equal to the snapshot's.",
           node_id: "policies",
           seed_node_ids: ["join"],
         }],
@@ -1533,7 +1587,7 @@ describe("API response guards", () => {
     })
 
     expect(parsed.trace?.steps[0]?.snapshot_generation_id).toBe("generation-1")
-    expect(parsed.trace?.omissions[0]?.reason).toBe("snapshot_seed")
+    expect(parsed.trace?.omissions[0]?.reason).toBe("seed_row_not_reproduced")
     expect(parsed.trace?.correlation_diagnostics[0]?.seed_node_ids).toEqual(["join"])
   })
 
@@ -2964,7 +3018,7 @@ describe("API response guards", () => {
     const estimate = parseTrainEstimateResponse({
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
@@ -3012,6 +3066,7 @@ describe("API response guards", () => {
       [{ unavailable: undefined }, /unavailable/],
       [{ estimated_mb: null }, /requires a row total and memory figures/],
       [{ total_rows: null }, /requires a row total and memory figures/],
+      [{ unbounded_join_node_ids: ["join"], was_downsampled: true }, /worst-case row bound/],
       [{ estimated_mb: undefined }, /estimated_mb/],
       [{ unavailable: schema }, /has no memory figures/],
       [{ ...blank, unavailable: schema, was_downsampled: true }, /no downsampling verdict or warning/],
@@ -3037,7 +3092,7 @@ describe("API response guards", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
     }
     expect(() => parseTrainEstimateResponse({

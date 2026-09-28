@@ -45,7 +45,7 @@ carrying authored preamble, preserved blocks, comments, and unsupported construc
 | Concern | Owner and representation |
 |---|---|
 | Comments and formatting during a valid-source edit | LibCST in `haute._python_syntax`; all untouched syntax is emitted from the original CST. |
-| Generated source | Per-node string builders create readable source; LibCST performs decorator-keyword injection; the final AST parse gate rejects any invalid emitted module. |
+| Generated source | Per-node builders describe each node and one layout routine prints the module as `ruff format` would; nothing edits generated source afterwards; the final AST parse gate rejects any invalid emitted module. |
 | Strict pipeline parsing and semantic evaluation | Standard-library AST plus the closed parser/evaluator models. AST source locations own valid-source semantic error spans. |
 | Invalid-source recovery | `_pipeline_recovery`, over valid Python only; recovery is read-only evidence for the editor and never becomes execution authority. A syntax-invalid file is a `source_only` document whose span is the Python syntax error's. |
 | Structured rewrite/classifier parse failures | `StructuredSyntaxError` with stable reason, one-based line, and zero-based column; the calling component maps that evidence to its public failure or conservative result. |
@@ -98,3 +98,12 @@ Round-trip tests continue to cover all supported node types, hand-authored forma
 preserved blocks, strict parsing, and editor recovery. The pilot is accepted only when the
 targeted codegen, parser/recovery, trace, registry, and execution-equivalence suites remain
 green.
+
+## Amendment (2026-09-26)
+
+Codegen now describes each node structurally (decorator keywords, parameters, body) and
+prints the module through one layout routine, so a contract keyword is rendered with its
+decorator and no generated source is edited after the fact. The pilot's
+`inject_decorator_keyword` and the repair path's `prepend_function_statements` therefore
+have no callers and were removed. Rule 4 still binds: a future post-generation edit goes
+through the LibCST boundary rather than a token splice or substring mutation.

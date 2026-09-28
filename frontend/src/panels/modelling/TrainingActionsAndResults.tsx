@@ -25,6 +25,12 @@ function unavailableEstimateReason(
     : "The columns reaching this node can't be resolved before it runs, so training memory can't be estimated."
 }
 
+/** Joins named for a sentence: "a", "a" and "b", "a", "b" and "c". */
+function joinNames(nodeIds: readonly string[], nodeLabel: (nodeId: string) => string): string {
+  const names = nodeIds.map((nodeId) => `"${nodeLabel(nodeId)}"`)
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
 export type TrainingActionsAndResultsProps = {
   /** Current readiness issues, shown before submission. */
   validationMessages?: readonly string[]
@@ -39,8 +45,10 @@ export type TrainingActionsAndResultsProps = {
   ramEstimateLoading: boolean
   ramEstimateError?: string | null
   rowLimit: number | null
-  /** Canvas label for a node the estimate names (the blocking node of an unavailable estimate). */
+  /** Canvas label for a node the estimate names (a blocking node, or a join without a key contract). */
   nodeLabel: (nodeId: string) => string
+  /** The action that opens a node the estimate names, or null when it is not on this canvas. */
+  nodeOpener?: (nodeId: string) => (() => void) | null
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
@@ -66,6 +74,7 @@ export function TrainingActionsAndResults({
   ramEstimateError = null,
   rowLimit,
   nodeLabel,
+  nodeOpener,
   terminalMetrics = null,
   terminalStatus = null,
   terminalReason = null,
@@ -109,6 +118,9 @@ export function TrainingActionsAndResults({
 
     return { rows, trainingMb, wasDownsampled, isLimited, gpuVramMb }
   }, [ramEstimate, rowLimit])
+  // A row total resting on a join without a key contract is its worst case,
+  // never a count to call "fits" or "will downsample".
+  const unboundedJoins = ramEstimate && !ramEstimate.unavailable ? ramEstimate.unbounded_join_node_ids : []
 
   const busy = submitting || training
   const trainIcon = submitting
@@ -180,7 +192,49 @@ export function TrainingActionsAndResults({
           </div>
         </div>
       )}
-      {ramEstimate && !ramEstimate.unavailable && !ramEstimateLoading && adjusted && (
+      {ramEstimate && !ramEstimate.unavailable && !ramEstimateLoading && adjusted && unboundedJoins.length > 0 && (
+        <div
+          role="status"
+          className="px-3 py-2.5 rounded-lg text-xs space-y-1.5"
+          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        >
+          <p className="font-medium" style={{ color: "var(--text-primary)" }}>Row count not proven</p>
+          <p className="break-words" style={{ color: "var(--text-secondary)" }}>
+            {`Up to ${ramEstimate.total_rows!.toLocaleString()} rows: ${joinNames(unboundedJoins, nodeLabel)} ${unboundedJoins.length === 1 ? "has" : "have"} no key contract. Declaring ${unboundedJoins.length === 1 ? "the join" : "each join"} many-to-one bounds the rows by its base input.`}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {unboundedJoins.map((nodeId) => {
+              const open = nodeOpener?.(nodeId) ?? null
+              return open && (
+                <button
+                  key={nodeId}
+                  type="button"
+                  onClick={open}
+                  className="px-2 py-0.5 rounded text-[11px] font-medium"
+                  style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
+                >
+                  {`Open "${nodeLabel(nodeId)}"`}
+                </button>
+              )
+            })}
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
+            <span>Rows (upper bound)</span>
+            <span style={{ color: "var(--text-primary)" }}>{ramEstimate.total_rows!.toLocaleString()}</span>
+            <span>RAM at upper bound</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.total_rows! * ramEstimate.bytes_per_row! * TRAINING_OVERHEAD / (1024 * 1024))}</span>
+            {ramEstimate.safe_row_limit != null && (
+              <>
+                <span>Training row limit</span>
+                <span style={{ color: "var(--text-primary)" }}>{ramEstimate.safe_row_limit.toLocaleString()}</span>
+              </>
+            )}
+            <span>Available RAM</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.available_mb)}</span>
+          </div>
+        </div>
+      )}
+      {ramEstimate && !ramEstimate.unavailable && !ramEstimateLoading && adjusted && unboundedJoins.length === 0 && (
         <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{
           background: adjusted.wasDownsampled ? "var(--warning-soft-subtle)" : "var(--train-summary-success-bg)",
           border: `1px solid ${adjusted.wasDownsampled ? "var(--warning-border)" : "var(--train-summary-success-border)"}`,

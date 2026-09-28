@@ -50,8 +50,7 @@ exports stay visible.
 unreferenced production code beyond a reviewed allowlist; the training facade
 is gone; tests import the owning modules.
 
-**Dependencies:** None. The chunked runner stays live (`OPT-P15` kept its
-consumer), so the reviewed allowlist covers it.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
 `src/haute/_rating.py::_rating_table_materialises`;

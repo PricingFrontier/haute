@@ -164,7 +164,8 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
             ? JOINT_ENCODING_CLASSES.has(glmDtypeClass(column.dtype))
             : slotFitOptions(terms, column.name, column.dtype, partners).length > 0
           const saved = factor === "" ? undefined : context.byName.get(factor)
-          const ineligible = factor === "" ? null : columnIssue(factor, context)
+          // Until the upstream columns arrive, a saved factor shows as saved.
+          const ineligible = factor === "" || !context.known ? null : columnIssue(factor, context)
           const incompatible = ineligible === null && saved !== undefined && !fitsSlot(saved)
           const override = slotOverride(interaction, factor)
           return (
@@ -181,6 +182,7 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
                 >
                   <option value="">Select…</option>
                   {(ineligible !== null || incompatible) && <option value={factor} disabled>{factor} (unavailable)</option>}
+                  {!context.known && factor !== "" && <option value={factor}>{factor}</option>}
                   {context.eligible
                     .filter((column) => !others.has(column.name) && fitsSlot(column))
                     .map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type ReactElement } from "react"
-import { Plus, Layers } from "lucide-react"
+import { Plus } from "lucide-react"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "./editors"
 import { estimateOptimiserSolve } from "../api/client"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
@@ -18,7 +18,7 @@ import {
   effectiveMlflowDestination,
   mlflowDestinationConfigValue,
 } from "../utils/mlflowDestinations"
-import { CommittedTextField } from "../components/form"
+import { CommittedTextField, SavedValueOption } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
@@ -28,7 +28,7 @@ import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
 import OptimiserPublishSection from "./optimiser/OptimiserPublishSection"
-import OptimiserAnalysisColumns from "./optimiser/OptimiserAnalysisColumns"
+import OptimiserFactorsTable from "./optimiser/OptimiserFactorsTable"
 import { startOptimiserSolve, stopOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { resolveOptimiserPane } from "./optimiser/optimiserPanes"
@@ -41,7 +41,7 @@ type OptimiserConfigProps = {
   upstreamColumns?: { name: string; dtype: string }[]
   accentColor: string
   deferColumnFetch?: boolean
-  /** The pane the node panel's tab strip selected; a pane the mode lacks shows Data. */
+  /** The pane the node panel's tab strip selected. */
   activePane?: OptimiserPane
   /** Reports the panes holding a blocking Solve issue, for the host's tab indicators. */
   onPaneIssuesChange?: (nodeId: string, panes: readonly OptimiserPane[]) => void
@@ -110,11 +110,9 @@ export default function OptimiserConfig({
   const scenarioValue = configField(config, "scenario_value", "scenario_value")
   const maxIter = configField(config, "max_iter", 50)
   const tolerance = configField(config, "tolerance", 1e-6)
-  const chunkSize = configField(config, "chunk_size", 500_000)
   const maxCdIterations = configField(config, "max_cd_iterations", 10)
   const cdTolerance = configField(config, "cd_tolerance", 1e-3)
   const frontierSteps = configField(config, "frontier_steps", 15)
-  const frontierEnabled = configField(config, "frontier_enabled", false)
   const frontierRanges = configField<Record<string, FrontierRangeConfig>>(config, "frontier_ranges", {})
 
   // Selectors, data-input columns and every reason the solve cannot start,
@@ -268,7 +266,6 @@ export default function OptimiserConfig({
     [allNodes, effectiveBandingNode?.sourceNodeId],
   )
   const bandingLevels = bandingClassification.levels
-  const bandingFactorNames = useMemo(() => Object.keys(bandingLevels).sort(), [bandingLevels])
   const inferredFactorColumns = useMemo(
     () => singleFactorColumnsFromLevels(bandingLevels),
     [bandingLevels],
@@ -371,7 +368,8 @@ export default function OptimiserConfig({
   }
 
   const inputStyle = { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
-  const pane = resolveOptimiserPane(mode, activePane)
+  const dataInputColumnNames = dataInputColumns.map((column) => column.name)
+  const pane = resolveOptimiserPane(activePane)
   let paneBody: ReactElement
 
   if (pane === "data") {
@@ -455,6 +453,7 @@ export default function OptimiserConfig({
               style={inputStyle}
             >
               <option value="">Select objective...</option>
+              <SavedValueOption value={objective} options={dataInputColumnNames} />
               {dataInputColumns.map(c => <option key={c.name} value={c.name}>{c.name} ({c.dtype})</option>)}
             </select>
           </div>
@@ -465,7 +464,7 @@ export default function OptimiserConfig({
           <label className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>Column Mappings</label>
           <div className="mt-1.5 space-y-2">
             {[
-              { key: "quote_id", label: "Quote ID", value: quoteId, default: "quote_id" },
+              { key: "quote_id", label: "Row ID", value: quoteId, default: "quote_id" },
               { key: "scenario_index", label: "Scenario Index", value: scenarioIndex, default: "scenario_index" },
               { key: "scenario_value", label: "Scenario Value", value: scenarioValue, default: "scenario_value" },
             ].map(field => (
@@ -478,113 +477,91 @@ export default function OptimiserConfig({
                   style={inputStyle}
                 >
                   <option value="">Select {field.label.toLowerCase()}...</option>
+                  <SavedValueOption value={field.value} options={dataInputColumnNames} />
                   {dataInputColumns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
               </div>
             ))}
           </div>
         </div>
-
-        <OptimiserAnalysisColumns
-          inputs={resolvedInputs}
-          frameColumns={analysisFrameColumns}
-          quoteIdColumn={quoteId}
-          analysisColumns={analysisColumns}
-          onUpdate={onUpdate}
-          labelClassName={SECTION_LABEL_CLASS}
-          inputStyle={inputStyle}
-        />
       </>
     )
   } else if (pane === "factors") {
     paneBody = (
       <>
-        {/* Banding source selector */}
-        <div>
-          <label className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
-            Rating Factor Source
-          </label>
-          {bandingNodes.length > 0 ? (
-            <select
-              aria-label="Rating Factor Source"
-              value={bandingSource}
-              onChange={(e) => handleBandingSourceChange(e.target.value)}
-              className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs"
-              style={inputStyle}
-            >
-              <option value="">Select input...</option>
-              {missingExplicitBandingSource && bandingSource && (
-                <option value={bandingSource}>Missing input</option>
+        {mode === "ratebook" && (
+          <>
+            {/* Banding source selector */}
+            <div>
+              <label className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
+                Rating Factor Source
+              </label>
+              {bandingNodes.length > 0 ? (
+                <select
+                  aria-label="Rating Factor Source"
+                  value={bandingSource}
+                  onChange={(e) => handleBandingSourceChange(e.target.value)}
+                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs"
+                  style={inputStyle}
+                >
+                  <option value="">Select input...</option>
+                  {missingExplicitBandingSource && bandingSource && (
+                    <option value={bandingSource}>Missing input</option>
+                  )}
+                  {bandingNodes.map(bn => (
+                    <option key={bn.name} value={bn.name}>{bn.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <div className="mt-1 text-[11px] py-2 text-center" style={{ color: "var(--text-muted)" }}>
+                  No Banding nodes found. Add a Banding node to define rating factors.
+                </div>
               )}
-              {bandingNodes.map(bn => (
-                <option key={bn.name} value={bn.name}>{bn.label}</option>
-              ))}
-            </select>
-          ) : (
-            <div className="mt-1 text-[11px] py-2 text-center" style={{ color: "var(--text-muted)" }}>
-              No Banding nodes found. Add a Banding node to define rating factors.
             </div>
-          )}
-        </div>
 
-        {!missingExplicitBandingSource && !bandingSource && bandingNodes.length > 1 && (
-          <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            Select a Rating Factor Source to enable solving.
-          </div>
-        )}
-        {(missingExplicitBandingSource || bandingClassification.zeroLevelOutputs.length > 0) && (
-          <div
-            role="alert"
-            className="px-3 py-2 rounded-lg text-xs"
-            style={{
-              background: "var(--warning-soft)",
-              border: "1px solid var(--warning-border)",
-            }}
-          >
-            {[
-              missingExplicitBandingSource
-                ? malformedBandingSource
-                  ? "The configured Rating Factor Source must be an input name."
-                  : `Selected Banding source ${bandingSource} is no longer directly connected.`
-                : null,
-              bandingClassification.zeroLevelOutputs.length > 0
-                ? `Banding outputs ${bandingClassification.zeroLevelOutputs.join(", ")} have no valid levels. Add labelled rules before selecting them.`
-                : null,
-            ].filter(Boolean).join(" ")}
-          </div>
+            {!missingExplicitBandingSource && !bandingSource && bandingNodes.length > 1 && (
+              <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                Select a Rating Factor Source to enable solving.
+              </div>
+            )}
+            {(missingExplicitBandingSource || bandingClassification.zeroLevelOutputs.length > 0) && (
+              <div
+                role="alert"
+                className="px-3 py-2 rounded-lg text-xs"
+                style={{
+                  background: "var(--warning-soft)",
+                  border: "1px solid var(--warning-border)",
+                }}
+              >
+                {[
+                  missingExplicitBandingSource
+                    ? malformedBandingSource
+                      ? "The configured Rating Factor Source must be an input name."
+                      : `Selected Banding source ${bandingSource} is no longer directly connected.`
+                    : null,
+                  bandingClassification.zeroLevelOutputs.length > 0
+                    ? `Banding outputs ${bandingClassification.zeroLevelOutputs.join(", ")} have no valid levels. Add labelled rules before selecting them.`
+                    : null,
+                ].filter(Boolean).join(" ")}
+              </div>
+            )}
+          </>
         )}
 
-        {/* Factor toggles from selected banding node */}
-        {bandingFactorNames.length > 0 && (
-          <div>
-            <label className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
-              <Layers size={10} className="inline mr-1" />
-              Rating Factors ({factorColumns.length} selected)
-            </label>
-            <div className="mt-1.5 space-y-1">
-              {bandingFactorNames.map(name => {
-                const levels = bandingLevels[name] || []
-                const selected = factorColumns.some(g => g.length === 1 && g[0] === name)
-                return (
-                  <button
-                    key={name}
-                    onClick={() => handleToggleFactor(name)}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors"
-                    style={{
-                      background: selected ? withAlpha(accentColor, 0.1) : "var(--bg-panel)",
-                      border: `1px solid ${selected ? withAlpha(accentColor, 0.3) : "var(--border)"}`,
-                    }}
-                  >
-                    <span className="font-mono" style={{ color: selected ? accentColor : "var(--text-primary)" }}>{name}</span>
-                    <span className="text-[10px]" style={{ color: selected ? withAlpha(accentColor, 0.7) : "var(--text-muted)" }}>
-                      {levels.length} levels
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
+        <OptimiserFactorsTable
+          mode={mode}
+          inputs={resolvedInputs}
+          frameColumns={analysisFrameColumns}
+          quoteIdColumn={quoteId}
+          bandingLevels={bandingLevels}
+          factorColumns={factorColumns}
+          analysisColumns={analysisColumns}
+          onToggleRatebookFactor={handleToggleFactor}
+          onUpdate={onUpdate}
+          accentColor={accentColor}
+          labelClassName={SECTION_LABEL_CLASS}
+          inputStyle={inputStyle}
+        />
       </>
     )
   } else if (pane === "constraints") {
@@ -605,12 +582,12 @@ export default function OptimiserConfig({
         <OptimiserConstraintSettings
           constraints={constraints}
           frontierRanges={frontierRanges}
-          frontierEnabled={frontierEnabled}
           frontierSteps={frontierSteps}
           dataInputColumns={dataInputColumns}
           objective={objective}
           canAutoRange={canAutoRange}
           accentColor={accentColor}
+          labelClassName={SECTION_LABEL_CLASS}
           buildGraph={buildGraphCb}
           nodeId={nodeId}
           onUpdate={onUpdate}
@@ -623,28 +600,8 @@ export default function OptimiserConfig({
   } else if (pane === "solve") {
     paneBody = (
       <>
-        <OptimiserSolveStatus
-          isStale={isStale}
-          onSolve={handleSolve}
-          onStop={solveJob ? handleStop : undefined}
-          stopping={stopping}
-          solving={solving}
-          canSolve={canSolve}
-          issues={solveIssues}
-          warnings={solveWarnings}
-          onReviewPane={(target) => setOptimiserPane(nodeId, target)}
-          accentColor={accentColor}
-          estimate={solveEstimate}
-          progress={solveProgress}
-          error={solveError}
-          terminalMetrics={solveTerminalMetrics}
-          terminalStatus={solveTerminalStatus}
-          result={solveResult}
-          iterationSummary={solveIterationSummary}
-        />
-
         {/* Solver settings */}
-        <section className="space-y-2 pt-2" style={{ borderTop: "1px solid var(--border)" }} aria-labelledby="optimiser-solver-settings-heading">
+        <section className="space-y-2" aria-labelledby="optimiser-solver-settings-heading">
           <h3 id="optimiser-solver-settings-heading" className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             Solver settings
           </h3>
@@ -694,17 +651,28 @@ export default function OptimiserConfig({
               </div>
             </div>
           )}
-          <div>
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Chunk size</label>
-            <CommittedTextField
-              type="number" min={1000} step={10000}
-              value={String(chunkSize)}
-              onCommit={(v) => onUpdate("chunk_size", safeParseInt(v, 500_000))}
-              className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-              style={inputStyle}
-            />
-          </div>
         </section>
+
+        {/* The estimate, readiness and the Optimise button follow the settings they run with */}
+        <OptimiserSolveStatus
+          isStale={isStale}
+          onSolve={handleSolve}
+          onStop={solveJob ? handleStop : undefined}
+          stopping={stopping}
+          solving={solving}
+          canSolve={canSolve}
+          issues={solveIssues}
+          warnings={solveWarnings}
+          onReviewPane={(target) => setOptimiserPane(nodeId, target)}
+          accentColor={accentColor}
+          estimate={solveEstimate}
+          progress={solveProgress}
+          error={solveError}
+          terminalMetrics={solveTerminalMetrics}
+          terminalStatus={solveTerminalStatus}
+          result={solveResult}
+          iterationSummary={solveIterationSummary}
+        />
       </>
     )
   } else {

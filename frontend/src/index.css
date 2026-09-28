@@ -960,6 +960,27 @@ html, body, #root {
   border-left: 2px solid var(--accent);
 }
 
+/* Polars step card header (panels/editors/polarsSteps/StepCard.tsx): a quiet
+   lift on hover, so the whole header reads as the card's handle. */
+.step-card-header:hover {
+  background: var(--chrome-active);
+}
+
+/* Quiet text action in the step forms ("+ Add condition"): accent text that
+   underlines on hover, so secondary actions do not read as more fields. */
+.quiet-action {
+  color: var(--accent);
+}
+.quiet-action:hover {
+  text-decoration: underline;
+}
+
+/* Generated-code line of the step being pointed at (GeneratedCodePanel.tsx). */
+.generated-code-line--active {
+  background: var(--accent-soft-subtle);
+  box-shadow: inset 2px 0 0 var(--accent-ring);
+}
+
 /* Algorithm gateway button (panels/ModellingConfig.tsx) — the large
    card-style button picking between GLM / XGBoost / CatBoost / etc.
    Rests on chrome-hover with a muted border; hover flips to accent-soft

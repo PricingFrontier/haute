@@ -18,7 +18,7 @@ import {
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   type ChartLegendItem,
 } from "./modelling/ChartScaffold"
-import { chartLabelIndices, chartTicks, formatChartNumber } from "../utils/chartHelpers"
+import { chartLabelIndices, chartTicks, formatChartTicks } from "../utils/chartHelpers"
 
 export type HistogramBar = {
   key: string
@@ -138,7 +138,7 @@ export default function HistogramChart({
               fontSize={axisFontSize}
               fill={axisTextColor}
             >
-              {formatChartNumber(value)}
+              {formatChartTicks(all)[index]}
             </text>
           ))
           : (() => {

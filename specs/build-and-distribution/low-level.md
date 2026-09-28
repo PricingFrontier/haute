@@ -194,8 +194,11 @@ package input validated by `hatch_build.py`, not hand-edited source.
   it is not a substitute for MkDocs's strict render/build validation.
 - `tests/test_node_reference_docs.py` checks the published node reference: every
   node type but the submodel port maps to one page, the MkDocs navigation lists
-  exactly those pages plus the index and Instances pages, each page's `Config`
-  table keys are accepted by `haute._config_validation.VALID_KEYS` for its type,
+  exactly those pages plus the index and Instances pages, each page's
+  "In the pipeline file" table (a closed admonition whose `Setting in the editor |
+  Stored as` table maps editor labels to config keys, nested keys written with
+  their parent path such as `tables[].emit`) names only top-level keys accepted by
+  `haute._config_validation.VALID_KEYS` for its type,
   and no published page (outside `exclude_docs`) uses retired node vocabulary
   such as Data Source, Data Sink or `flat_file`.
 - Package/install smoke coverage is defined and run by

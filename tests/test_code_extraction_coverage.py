@@ -2,18 +2,20 @@
 
 The headline target is the parse choke-point ``_parse_user_code`` — every
 user-code rewrite in this module funnels through it, so the ``SyntaxError``
-→ :class:`_UserCodeParseError` conversion (file ``_code_extraction.py:106-111``)
-is the single most load-bearing failure path.  We assert it fails LOUDLY
-with an actionable, context-tagged diagnostic and preserves the original
-``SyntaxError`` via ``__cause__`` chaining (per CLAUDE.md "let code fail
-loudly").
+→ :class:`_UserCodeParseError` conversion is the single most load-bearing
+failure path.  We assert it fails LOUDLY with an actionable, context-tagged
+diagnostic and preserves the original ``SyntaxError`` via ``__cause__``
+chaining (per CLAUDE.md "let code fail loudly").
 
-The remaining cases pin a handful of cheap, otherwise-uncovered defensive
-branches in the surrounding helpers (bare-``return`` rewrites, empty-input
-guards, no-match matcher results, passthrough finalisers, the unknown-kind
-``KeyError`` in :func:`extract_user_code`).  All exercise the module's own
-internal API directly so the contract is pinned regardless of how the
-parser modules call in.
+The remaining cases pin the generated-statement rules and a handful of cheap
+defensive branches in the surrounding helpers: declaration bodies (``...``,
+``pass``, a docstring alone), the hook and External File matchers (only the
+External File's ``df = <first input>`` binding is generated before the code),
+bare-``return`` rewrites, empty-input guards, the finaliser, and the
+unknown-kind ``KeyError`` in :func:`extract_user_code` and
+:func:`normalise_user_code`.  All exercise the module's own internal API
+directly so the contract is pinned regardless of how the parser modules
+call in.
 """
 
 from __future__ import annotations
@@ -21,30 +23,30 @@ from __future__ import annotations
 import pytest
 
 from haute._code_extraction import (
+    INCOMPLETE_STEPS_BODY,
     _df_alias_target,
-    _extract_user_code,
-    _finalise_external,
     _finalise_polars,
-    _finalise_source,
     _is_empty_chain_assignment,
     _match_external,
-    _match_model_score,
-    _match_scenario_expander,
+    _match_hook,
+    _match_polars,
     _parse_user_code,
-    _rewrite_identifier_tokens,
     _rewrite_outer_returns_as_assignment,
     _statement_end_index,
-    _strip_generated_passthrough_from_code,
     _strip_outer_trailing_return,
     _strip_redundant_rhs_wrapper_once,
     _strip_trailing_return,
     _UserCodeParseError,
     extract_user_code,
+    is_declaration_body,
+    normalise_user_code,
 )
 from haute.errors import ParseError
 
+_KINDS = ("polars", "hook", "external")
+
 # ---------------------------------------------------------------------------
-# _parse_user_code — the parse choke-point (file lines 106-111)
+# _parse_user_code — the parse choke-point
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +95,7 @@ class TestParseUserCode:
 
 
 # ---------------------------------------------------------------------------
-# _rewrite_outer_returns_as_assignment — bare-``return`` rewrites (174, 177)
+# _rewrite_outer_returns_as_assignment — bare-``return`` rewrites
 # ---------------------------------------------------------------------------
 
 
@@ -116,7 +118,7 @@ class TestRewriteBareReturn:
 
 
 # ---------------------------------------------------------------------------
-# _strip_outer_trailing_return — empty / no-return guards (197)
+# _strip_outer_trailing_return — empty / no-return guards
 # ---------------------------------------------------------------------------
 
 
@@ -148,7 +150,7 @@ class TestStripOuterTrailingReturn:
 
 
 # ---------------------------------------------------------------------------
-# _df_alias_target — non-alias / unparseable lines (297)
+# _df_alias_target — non-alias / unparseable lines
 # ---------------------------------------------------------------------------
 
 
@@ -171,129 +173,207 @@ class TestDfAliasTarget:
 
 
 # ---------------------------------------------------------------------------
-# Empty-input guards (314, 345) and trailing-return empty list (595)
+# Empty-input guards
 # ---------------------------------------------------------------------------
 
 
 class TestEmptyInputGuards:
-    def test_passthrough_empty_code(self) -> None:
-        """Blank code strips to the empty string."""
-        assert _strip_generated_passthrough_from_code("", ("df",)) == ""
+    def test_finalise_blank_code_is_empty(self) -> None:
+        """Blank code finalises to the empty string."""
+        assert _finalise_polars("   \n  ") == ""
 
     def test_strip_trailing_return_empty_list(self) -> None:
         """No lines in → empty list out."""
         assert _strip_trailing_return([], ("df",)) == []
 
+    @pytest.mark.parametrize("kind", _KINDS)
+    def test_extract_blank_body_is_empty(self, kind: str) -> None:
+        """A blank body holds no code, whatever the kind."""
+        assert extract_user_code("  \n\n  ", kind=kind, param_names=("up",)) == ""
+
 
 # ---------------------------------------------------------------------------
-# Boilerplate matchers — empty / no-match results (455, 497, 515)
+# Declaration bodies — nothing but ``...``, ``pass`` or a docstring
+# ---------------------------------------------------------------------------
+
+_DECLARATION_BODIES = [
+    pytest.param("    ...", id="ellipsis"),
+    pytest.param("    pass", id="pass"),
+    pytest.param('    """Loads the quotes."""', id="docstring-only"),
+    pytest.param('    """Loads the quotes."""\n    ...', id="docstring-then-ellipsis"),
+    pytest.param('    """Loads the quotes."""\n    pass', id="docstring-then-pass"),
+    pytest.param("\n\n    ...\n\n", id="surrounding-blank-lines"),
+    pytest.param("...", id="unindented"),
+]
+
+
+class TestDeclarationBodies:
+    """A configured node without code is a declaration; its body holds no code."""
+
+    @pytest.mark.parametrize("body", _DECLARATION_BODIES)
+    def test_declaration_bodies_are_recognised(self, body: str) -> None:
+        assert is_declaration_body(body) is True
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("    return None", id="return-none"),
+            pytest.param("    x = 1", id="assignment"),
+            pytest.param("    ...\n    ...", id="two-ellipses"),
+            pytest.param("    df = df.head()\n    return df", id="hook-code"),
+            pytest.param('    """Doc."""\n    return df', id="docstring-then-code"),
+            pytest.param("    x = (", id="unparseable"),
+        ],
+    )
+    def test_code_bodies_are_not_declarations(self, body: str) -> None:
+        assert is_declaration_body(body) is False
+
+    @pytest.mark.parametrize("kind", _KINDS)
+    @pytest.mark.parametrize("body", _DECLARATION_BODIES)
+    def test_declaration_body_extracts_to_empty_code(self, body: str, kind: str) -> None:
+        assert extract_user_code(body, kind=kind, param_names=("up",)) == ""
+
+
+# ---------------------------------------------------------------------------
+# Matchers — where the user code starts
 # ---------------------------------------------------------------------------
 
 
 class TestMatcherEdgeCases:
-    def test_scenario_expander_empty_cleaned(self) -> None:
+    def test_hook_empty_cleaned(self) -> None:
         """No cleaned lines → start at 0, return var ``df``."""
-        result = _match_scenario_expander([], ())
+        result = _match_hook([], ())
         assert result.start_idx == 0
         assert result.return_vars == ("df",)
 
-    def test_model_score_no_call_yields_out_of_range_start(self) -> None:
-        """No ``score_from_config`` call → start index past the body end."""
-        cleaned = ["x = 1"]
-        result = _match_model_score(cleaned, ())
-        assert result.start_idx > len(cleaned)
+    def test_hook_keeps_every_line(self) -> None:
+        """A hook generates nothing before its code: every line is user code."""
+        result = _match_hook(["x = 1", "df = df.head(x)"], ("df",))
+        assert result.start_idx == 0
+        assert result.return_vars == ("df",)
 
     def test_external_empty_cleaned(self) -> None:
         """No cleaned lines → start at 0."""
         result = _match_external([], ())
         assert result.start_idx == 0
 
+    def test_polars_output_declaration_is_skipped(self) -> None:
+        """The generated ``df: pl.LazyFrame`` declaration is not user code."""
+        result = _match_polars(["df: pl.LazyFrame", "df = source.head()"], ("source",))
+        assert result.start_idx == 1
 
-# ---------------------------------------------------------------------------
-# _rewrite_identifier_tokens — parse failure / no-edit passthrough (661-662, 675)
-# ---------------------------------------------------------------------------
-
-
-class TestRewriteIdentifierTokens:
-    def test_unparseable_source_with_token_passthrough(self) -> None:
-        """Invalid Python containing the token is returned unchanged."""
-        src = "result = ="
-        assert _rewrite_identifier_tokens(src, old="result", new="df", context="x") == src
-
-    def test_token_only_in_string_literal_not_rewritten(self) -> None:
-        """A bare token appearing only inside a string is left alone."""
-        src = 'x = "result"'
-        assert _rewrite_identifier_tokens(src, old="result", new="df", context="x") == src
-
-    def test_token_absent_returns_source(self) -> None:
-        """When the token is not present at all, source is returned verbatim."""
-        src = "x = 1"
-        assert _rewrite_identifier_tokens(src, old="result", new="df", context="x") == src
-
-    def test_name_token_is_rewritten(self) -> None:
-        """A genuine ``Name`` occurrence is rewritten."""
-        assert _rewrite_identifier_tokens("y = result", old="result", new="df", context="x") == (
-            "y = df"
-        )
+    def test_polars_other_annotation_is_user_code(self) -> None:
+        """A user's own, different annotation of ``df`` stays user code."""
+        result = _match_polars(["df: pl.DataFrame", "df = source.collect()"], ("source",))
+        assert result.start_idx == 0
 
 
-# ---------------------------------------------------------------------------
-# _finalise_external — empty / invalid / lone-return / multi (725, 729-731, 735-741)
-# ---------------------------------------------------------------------------
+class TestExternalBindingMatcher:
+    """An External File hook's only generated leading statement is ``df = <first input>``."""
 
+    def test_binding_to_the_first_input_is_skipped(self) -> None:
+        result = _match_external(["df = quotes", "df = df.head()"], ("quotes", "regions"))
+        assert result.start_idx == 1
+        assert result.return_vars == ("df",)
 
-class TestFinaliseExternal:
-    def test_blank_code_passthrough(self) -> None:
-        """Whitespace-only code is returned unchanged."""
-        assert _finalise_external("   ", ()) == "   "
+    def test_binding_to_another_input_is_user_code(self) -> None:
+        result = _match_external(["df = regions"], ("quotes", "regions"))
+        assert result.start_idx == 0
 
-    def test_invalid_python_passthrough(self) -> None:
-        """Invalid Python defers the error to the caller (passthrough)."""
-        src = "return df\nx = ="
-        assert _finalise_external(src, ()) == src
+    def test_binding_after_a_user_import_is_user_code(self) -> None:
+        """The binding is generated only as the first statement."""
+        result = _match_external(["import numpy as np", "df = quotes"], ("quotes",))
+        assert result.start_idx == 0
 
-    def test_lone_outer_return_df_wiped(self) -> None:
-        """A body that is only a lone outer ``return df`` collapses to empty."""
-        assert _finalise_external("return df", ()) == ""
-
-    def test_multi_statement_preserved(self) -> None:
-        """More than one outer statement → leave the body intact."""
-        src = "x = 1\nreturn df"
-        assert _finalise_external(src, ()) == src
+    def test_without_inputs_nothing_is_skipped(self) -> None:
+        """A disconnected External File has no binding line."""
+        result = _match_external(["df = quotes"], ())
+        assert result.start_idx == 0
 
 
 # ---------------------------------------------------------------------------
-# _finalise_polars / _finalise_source (628, 638, 649-650)
+# No identifier rewrites — extraction carries no aliases for retired names
+# ---------------------------------------------------------------------------
+
+
+class TestNoIdentifierRewrites:
+    def test_a_result_variable_is_not_renamed(self) -> None:
+        """A name the retired scoring scaffold used (``result``) is ordinary user code."""
+        body = "    result = df.head()\n    df = result\n    return df"
+        assert extract_user_code(body, kind="hook") == "result = df.head()\ndf = result"
+
+
+# ---------------------------------------------------------------------------
+# External File extraction — blank / invalid / lone-return / multi
+# ---------------------------------------------------------------------------
+
+
+class TestExternalKindEdgeCases:
+    def test_blank_body_is_empty(self) -> None:
+        """Whitespace-only body holds no code."""
+        assert extract_user_code("   ", kind="external", param_names=("up",)) == ""
+
+    def test_invalid_python_fails_loudly(self) -> None:
+        """Invalid Python after the binding raises instead of passing through."""
+        body = "    df = up\n    return df\n    x = ="
+        with pytest.raises(_UserCodeParseError):
+            extract_user_code(body, kind="external", param_names=("up",))
+
+    def test_lone_return_df_is_empty(self) -> None:
+        """A body that is only the closing ``return df`` holds no code."""
+        assert extract_user_code("    return df", kind="external", param_names=("up",)) == ""
+
+    def test_code_before_the_return_is_kept(self) -> None:
+        """Code between the binding and the closing return is the user's."""
+        body = "    df = up\n    x = 1\n    return df"
+        assert extract_user_code(body, kind="external", param_names=("up",)) == "x = 1"
+
+    def test_steps_placeholder_after_the_binding_is_generated(self) -> None:
+        """An unrenderable step list reloads as empty code after the binding."""
+        body = "    df = up\n" + INCOMPLETE_STEPS_BODY
+        assert extract_user_code(body, kind="external", param_names=("up",)) == ""
+
+
+# ---------------------------------------------------------------------------
+# _finalise_polars and the per-kind generated statements
 # ---------------------------------------------------------------------------
 
 
 class TestFinalisers:
     def test_polars_alias_line_is_authored_code(self) -> None:
         """A ``df = <param>`` line is user code, never strippable scaffold —
-        polars codegen no longer prepends an input alias, and legacy modules'
-        alias line must round-trip into visible code to keep working."""
-        assert _finalise_polars("df = source", ("source",)) == "df = source"
+        polars codegen never prepends an input alias."""
+        assert _finalise_polars("df = source") == "df = source"
 
-    def test_explore_kind_strips_alias_scaffold(self) -> None:
-        """The explore kind still treats a leading ``df = <param>`` as its
-        generated binding scaffold and strips exactly that line."""
+    def test_external_kind_strips_its_binding_line(self) -> None:
+        """The External File kind treats a leading ``df = <first input>`` as its
+        generated binding and strips exactly that line."""
         body = "    df = source\n    df = df.filter(x)\n    return df"
         assert (
-            extract_user_code(body, kind="explore", param_names=("source",)) == "df = df.filter(x)"
+            extract_user_code(body, kind="external", param_names=("source",)) == "df = df.filter(x)"
         )
 
-    def test_explore_kind_keeps_non_param_first_line(self) -> None:
+    def test_external_kind_keeps_a_binding_to_another_name(self) -> None:
         """A first line binding df from a non-parameter name is user code."""
         body = "    df = other\n    return df"
-        assert extract_user_code(body, kind="explore", param_names=("source",)) == "df = other"
+        assert extract_user_code(body, kind="external", param_names=("source",)) == "df = other"
+
+    def test_hook_kind_keeps_a_leading_alias(self) -> None:
+        """A hook generates no binding: a leading ``df = <name>`` is the user's."""
+        body = "    df = source\n    df = df.filter(x)\n    return df"
+        assert extract_user_code(body, kind="hook") == "df = source\ndf = df.filter(x)"
 
     def test_polars_empty_chain_collapses_to_empty(self) -> None:
         """An empty chain ``df = (\\n)`` unwraps to the empty string."""
-        assert _finalise_polars("df = (\n)", ("source",)) == ""
+        assert _finalise_polars("df = (\n)") == ""
 
-    def test_source_plain_code_passthrough(self) -> None:
-        """Non-chain source code is returned unchanged."""
-        assert _finalise_source("df.filter(x)", ()) == "df.filter(x)"
+    def test_plain_code_passthrough(self) -> None:
+        """Non-chain code is returned unchanged."""
+        assert _finalise_polars("df.filter(x)") == "df.filter(x)"
+
+    def test_normalise_applies_only_the_finaliser(self) -> None:
+        """A rendering is finalised the way an extracted body is."""
+        assert normalise_user_code("df = (df.head(2))", kind="hook") == "df = df.head(2)"
 
 
 class TestExtractUserCode:
@@ -303,14 +383,33 @@ class TestExtractUserCode:
             extract_user_code("x = 1", kind="nope")
         assert "Unknown boilerplate matcher kind" in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        "kind", ["source", "model_score", "rating_step", "scenario_expander", "explore"]
+    )
+    def test_retired_scaffold_kinds_are_unknown(self, kind: str) -> None:
+        """The per-type scaffold kinds are gone; there is no compatibility alias."""
+        with pytest.raises(KeyError, match="Unknown boilerplate matcher kind"):
+            extract_user_code("    ...", kind=kind)
+
+    def test_normalise_unknown_kind_raises_key_error(self) -> None:
+        with pytest.raises(KeyError, match="Unknown boilerplate matcher kind"):
+            normalise_user_code("df = df.head()", kind="nope")
+
     def test_leading_and_trailing_blank_lines_trimmed(self) -> None:
         """The engine pops leading/trailing blank lines before extraction."""
         body = "\n\n    df = source\n    df = df.filter(x)\n\n\n"
-        assert _extract_user_code(body, ["source"]) == "df = source\ndf = df.filter(x)"
+        assert (
+            extract_user_code(body, kind="polars", param_names=["source"])
+            == "df = source\ndf = df.filter(x)"
+        )
+
+    def test_hook_steps_placeholder_is_generated(self) -> None:
+        """A hook whose steps cannot be rendered reloads as empty code."""
+        assert extract_user_code(INCOMPLETE_STEPS_BODY, kind="hook") == ""
 
 
 # ---------------------------------------------------------------------------
-# _strip_redundant_rhs_wrapper_once — assignment-shape guards (254-280)
+# _strip_redundant_rhs_wrapper_once — assignment-shape guards
 # ---------------------------------------------------------------------------
 
 
@@ -346,7 +445,7 @@ class TestStripRedundantRhsWrapper:
 
 
 # ---------------------------------------------------------------------------
-# _is_empty_chain_assignment — parse / shape guards (375-387)
+# _is_empty_chain_assignment — parse / shape guards
 # ---------------------------------------------------------------------------
 
 
@@ -375,7 +474,7 @@ class TestIsEmptyChainAssignment:
 
 
 # ---------------------------------------------------------------------------
-# _statement_end_index — statement that never closes (496-503)
+# _statement_end_index — statement that never closes
 # ---------------------------------------------------------------------------
 
 
@@ -384,47 +483,46 @@ class TestStatementEndIndex:
 
     def test_balanced_single_line_ends_after_that_line(self) -> None:
         """A self-contained statement ends right after its own line."""
-        assert (
-            _statement_end_index(
-                ["df = resolve_data_input_from_config('config/data_input/a.json')", "df.head()"],
-                0,
-            )
-            == 1
-        )
+        assert _statement_end_index(["df: pl.LazyFrame", "df = source.head()"], 0) == 1
+
+    def test_balanced_multi_line_statement_ends_after_its_close(self) -> None:
+        """The generated placeholder spans three lines and ends after its ``)``."""
+        lines = [line.strip() for line in INCOMPLETE_STEPS_BODY.splitlines()] + ["x = 1"]
+        assert _statement_end_index(lines, 0) == 3
 
     def test_unbalanced_statement_runs_to_end_of_lines(self) -> None:
         """An open paren that never closes consumes every remaining line.
 
         Depth stays positive for the whole scan, so the loop falls through to
         ``return len(lines)`` rather than an early per-statement boundary — the
-        boilerplate skipper treats the malformed tail as one statement.
+        generated-statement recognisers treat the malformed tail as one statement.
         """
-        lines = ["df = resolve_data_input_from_config(", "    'config/data_input/a.json'"]
+        lines = ["raise NotImplementedError(", '    "a message"']
         assert _statement_end_index(lines, 0) == len(lines)
 
 
 # ---------------------------------------------------------------------------
-# _match_scenario_expander — import line mentioning the helper (549-554)
+# A hook generates nothing before its code
 # ---------------------------------------------------------------------------
 
 
-class TestMatchScenarioExpanderImportSkip:
-    """An import that names the expansion helper is not the generated call."""
+class TestHookKeepsEveryStatement:
+    """Nothing but the closing ``return df`` is generated in a hook."""
 
-    def test_import_line_naming_helper_is_skipped(self) -> None:
-        """A ``from ... import`` line textually mentioning ``expand_scenarios_from_config(``
-        must not anchor boilerplate stripping.
+    def test_import_line_naming_a_helper_is_user_code(self) -> None:
+        """An import the user wrote first, naming a retired helper, is kept.
 
-        The scaffold marker is the generated *call*; an import that merely
-        references the helper name (here inside a trailing comment) is skipped
-        via ``continue`` so the user's post-expansion code below it survives.
-        With no real outer-scope call or generated alias, extraction keeps the
-        whole body from index 0.
+        Retired scaffold names anchor nothing: the whole body up to the closing
+        ``return df`` is the user's code.
         """
-        cleaned = [
-            "from helpers import expand_scenarios_from_config  # expand_scenarios_from_config(x)",
-            "df = df.with_columns(pl.lit(1))",
-        ]
-        result = _match_scenario_expander(cleaned, ("df",))
-        assert result.start_idx == 0
-        assert result.generated_scaffold is False
+        body = "\n".join(
+            [
+                "    from helpers import expand_scenarios_from_config  # helper(x)",
+                "    df = df.with_columns(pl.lit(1))",
+                "    return df",
+            ]
+        )
+        assert extract_user_code(body, kind="hook") == (
+            "from helpers import expand_scenarios_from_config  # helper(x)\n"
+            "df = df.with_columns(pl.lit(1))"
+        )

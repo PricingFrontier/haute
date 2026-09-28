@@ -10,7 +10,6 @@ publication; the solve service orchestrates these steps.
 from __future__ import annotations
 
 import contextlib
-import math
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -22,13 +21,11 @@ from fastapi import HTTPException
 from haute._config_validation import RESERVED_ANALYSIS_COLUMN_PREFIX
 from haute._execution_admission import (
     ExecutionAdmissionError,
-    execution_budget_for_profile,
 )
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
-    ExecutionProfile,
 )
 from haute._graph_utils import (
     incoming_edge_bindings,
@@ -38,6 +35,7 @@ from haute._graph_utils import (
 from haute._logging import get_logger
 from haute._polars_utils import (
     bounded_sink,
+    current_streaming_chunk_size,
     read_parquet_metadata,
     streaming_collect,
 )
@@ -49,8 +47,6 @@ from haute._types import (
 )
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.execution import (
-    ProjectionRequest,
-    plan_projection,
     ratebook_factor_required_columns,
 )
 from haute.graph_utils import NodeType
@@ -70,9 +66,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(component="server")
 
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR = 16
 
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
 _NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
@@ -259,16 +252,15 @@ def _positive_int(value: object, *, field: str) -> int:
     return int(value)
 
 
-def _admit_resident_grid(
+def forecast_resident_grid_bytes(
     path: Path,
     columns: list[str],
     quote_id: str,
     constraint_count: int,
     chunk_rows: int,
-    execution_context: ExecutionContext | None,
-) -> None:
-    if execution_context is None or execution_context.remaining_memory_bytes() is None:
-        return
+    execution_context: ExecutionContext | None = None,
+) -> int:
+    """The resident grid's conservative peak, from row count and a decoded sample."""
     import polars as pl
 
     from haute._polars_utils import cancellable_streaming_collect
@@ -278,11 +270,13 @@ def _admit_resident_grid(
     )
 
     row_count = int(read_parquet_metadata(path)["row_count"])
-    sample = cancellable_streaming_collect(
-        pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512),
-        execution_context=execution_context,
+    sample_lf = pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512)
+    sample = (
+        sample_lf.collect()
+        if execution_context is None
+        else cancellable_streaming_collect(sample_lf, execution_context=execution_context)
     )
-    peak_bytes = estimate_optimiser_grid_peak_bytes(
+    return estimate_optimiser_grid_peak_bytes(
         row_count=row_count,
         constraint_count=constraint_count,
         quote_id_width_bytes=decoded_frame_row_width_bytes(
@@ -291,7 +285,22 @@ def _admit_resident_grid(
         input_row_width_bytes=decoded_frame_row_width_bytes(sample),
         chunk_rows=chunk_rows,
     )
-    del sample
+
+
+def _admit_resident_grid(
+    path: Path,
+    columns: list[str],
+    quote_id: str,
+    constraint_count: int,
+    chunk_rows: int,
+    execution_context: ExecutionContext | None,
+) -> None:
+    """Refuse a grid whose forecast exceeds the allowance (thread mode, which has no cap)."""
+    if execution_context is None or execution_context.remaining_memory_bytes() is None:
+        return
+    peak_bytes = forecast_resident_grid_bytes(
+        path, columns, quote_id, constraint_count, chunk_rows, execution_context
+    )
     remaining = execution_context.remaining_memory_bytes()
     assert remaining is not None
     if peak_bytes > remaining:
@@ -301,78 +310,66 @@ def _admit_resident_grid(
             memory_limit_bytes=execution_context.memory_limit_bytes or remaining,
             rss_at_admission_bytes=execution_context.memory_sampler(),
             rss_limit_bytes=execution_context.rss_limit_bytes,
+            estimated_bytes=peak_bytes,
+            allowance_bytes=remaining,
             reason=f"resident optimiser grid needs an estimated {peak_bytes} bytes; "
             f"{remaining} bytes remain in the execution allowance",
         )
 
 
-def _explicit_chunk_size_from_config(config: Mapping[str, Any]) -> int | None:
-    if "chunk_size" not in config:
-        return None
-    return _positive_int(config["chunk_size"], field="chunk_size")
+def pipeline_chunk_decision(source: str) -> _ChunkSizeDecision:
+    """Optimiser setup reads its parquet inputs in chunks of the pipeline's streaming chunk size.
 
-
-def _optimiser_setup_target_chunk_bytes() -> int:
-    budget = execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP)
-    budget_scaled = max(
-        1,
-        budget.memory_limit_bytes // _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR,
-    )
-    return min(
-        _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES,
-        max(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES, budget_scaled),
+    One setting (Pipeline Settings) sizes every chunked read, so the grid and
+    ratebook factor contexts follow it like auto-range and the rest of the
+    engine; *source* names the read in the job's ``setup_chunking`` record.
+    """
+    chunk_size = current_streaming_chunk_size()
+    return _ChunkSizeDecision(
+        chunk_size=chunk_size,
+        provenance={"policy": "pipeline_setting", "chunk_size": chunk_size, "source": source},
     )
 
 
-def _chunk_size_decision_for_parquet(
-    config: Mapping[str, Any],
-    parquet_path: Path,
-    *,
-    source: str,
-) -> _ChunkSizeDecision:
+def scenario_step_count(
+    path: Path, scenario_index: str, execution_context: ExecutionContext | None = None
+) -> int | None:
+    """The grid's per-quote step count, one past the largest ``scenario_index``; None when empty.
+
+    Every quote in a well-formed solver input runs ``scenario_index`` 0..n-1,
+    so one scan of that column fixes the count the builder would otherwise
+    auto-detect from its first chunk. The builder validates the layout itself.
+    """
     import polars as pl
 
-    from haute._ram_estimate import decoded_frame_row_width_bytes
+    from haute._polars_utils import cancellable_streaming_collect
 
-    explicit_chunk_size = _explicit_chunk_size_from_config(config)
-    if explicit_chunk_size is not None:
-        return _ChunkSizeDecision(
-            chunk_size=explicit_chunk_size,
-            provenance={
-                "policy": "explicit_rows",
-                "chunk_size": explicit_chunk_size,
-                "target_chunk_bytes": None,
-                "estimated_row_bytes": None,
-                "row_count": None,
-                "size_bytes": None,
-                "uncompressed_size_bytes": None,
-                "source": source,
-            },
-        )
-
-    metadata = read_parquet_metadata(parquet_path)
-    row_count = _positive_int(int(metadata["row_count"]), field="parquet row_count")
-    row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-    row_bytes_basis = _positive_int(row_bytes_basis, field="parquet byte size")
-    target_chunk_bytes = _optimiser_setup_target_chunk_bytes()
-    sample = streaming_collect(pl.scan_parquet(parquet_path).head(512))
-    estimated_row_bytes = max(
-        1,
-        math.ceil(row_bytes_basis / row_count),
-        math.ceil(decoded_frame_row_width_bytes(sample)),
+    max_lf = pl.scan_parquet(path).select(pl.col(scenario_index).max())
+    frame = (
+        max_lf.collect()
+        if execution_context is None
+        else cancellable_streaming_collect(max_lf, execution_context=execution_context)
     )
-    chunk_size = max(1, target_chunk_bytes // estimated_row_bytes)
+    largest = frame.item()
+    return None if largest is None else int(largest) + 1
+
+
+def grid_chunk_decision(n_steps: int | None) -> _ChunkSizeDecision:
+    """The pipeline chunk size, raised to one quote's rows when it is smaller.
+
+    The grid builder reads whole quotes, so a chunk holds at least ``n_steps``
+    rows whatever Pipeline Settings says; the provenance keeps the setting.
+    """
+    setting = current_streaming_chunk_size()
+    chunk_size = setting if n_steps is None else max(setting, n_steps)
     return _ChunkSizeDecision(
         chunk_size=chunk_size,
         provenance={
-            "policy": "byte_budget",
+            "policy": "pipeline_setting",
             "chunk_size": chunk_size,
-            "target_chunk_bytes": target_chunk_bytes,
-            "estimated_row_bytes": estimated_row_bytes,
-            "row_count": int(metadata["row_count"]),
-            "size_bytes": int(metadata["size_bytes"]),
-            "uncompressed_size_bytes": int(metadata.get("uncompressed_size_bytes") or 0),
-            "source": source,
+            "pipeline_chunk_size": setting,
+            "n_steps": n_steps,
+            "source": "optimiser_grid",
         },
     )
 
@@ -420,7 +417,10 @@ def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
 
     A separate analysis input sits outside the data input's lineage, so setup
     then executes the Optimiser itself in online mode too, which runs every
-    branch it consumes.
+    branch it consumes. So does a data source that feeds the Optimiser through
+    parallel edges: its demand is keyed on the Optimiser
+    (``_optimiser_solve_required_columns_by_node``), which lies outside the
+    data input's lineage.
     """
     optimiser_node = _find_optimiser_node(graph, node_id)
     configured_data_input = optimiser_node.data.config.get("data_input")
@@ -436,39 +436,15 @@ def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
             node_id,
             optimiser_node.data.config,
         )
-        if isinstance(data_input_id, str) and data_input_id:
+        if (
+            isinstance(data_input_id, str)
+            and data_input_id
+            and not _data_source_feeds_optimiser_through_parallel_edges(
+                graph, node_id, data_input_id
+            )
+        ):
             return data_input_id
     return node_id
-
-
-def _solve_columns_by_node(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    *,
-    source: str,
-) -> dict[str, frozenset[str]]:
-    """The columns the solve's setup reads at every node it executes.
-
-    A node the solve reads whole (no concrete demand) is left out: a capture
-    cannot promise it, so the solve recomputes that node as before.
-    """
-    projection = plan_projection(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id=_setup_execution_target_node_id(graph, node_id),
-            profile=ExecutionProfile.OPTIMISER_SETUP,
-            required_columns_by_node=_optimiser_solve_required_columns_by_node(
-                graph, node_id, config
-            ),
-            source=source,
-        )
-    )
-    return {
-        needed_node_id: frozenset(columns)
-        for needed_node_id, columns in projection.needed_by_node.items()
-        if columns is not None
-    }
 
 
 def _quote_id_column(config: Mapping[str, Any]) -> str:
@@ -916,22 +892,70 @@ def resolve_analysis_frame(
     )
 
 
+class AutoRangeValueCheck:
+    """The solver's value contracts, checked on each auto-range batch as it is read.
+
+    Counts are totalled across batches, so a violation is reported with the
+    same message and whole-frame counts as the one-pass check the solver runs
+    (``validate_input_value_contracts``), without a separate whole-frame query.
+    """
+
+    def __init__(self, schema: Any, *, quote_id_col: str, value_check_cols: list[str]) -> None:
+        self._non_finite_check_cols = _non_finite_check_columns(schema, value_check_cols)
+        self._null_check_cols = _null_check_columns(schema, value_check_cols)
+        self._exprs = _value_contract_validation_exprs(
+            quote_id_col=quote_id_col,
+            validate_quote_id_nulls=True,
+            non_finite_check_cols=self._non_finite_check_cols,
+            null_check_cols=self._null_check_cols,
+            cast_to_float32_cols=set(value_check_cols),
+        )
+        self._totals: dict[str, int] = {}
+
+    def add(self, batch: Any) -> bool:
+        """Count one batch's violations; return whether every batch so far was valid."""
+        if batch.height:
+            for alias, count in batch.select(self._exprs).row(0, named=True).items():
+                self._totals[alias] = self._totals.get(alias, 0) + int(count or 0)
+        return not self.violated
+
+    @property
+    def violated(self) -> bool:
+        return any(count > 0 for count in self._totals.values())
+
+    def raise_if_invalid(self) -> None:
+        """Raise the solver's contract error, with whole-frame totals, if any batch failed."""
+        import polars as pl
+
+        if not self.violated:
+            return
+        counts = pl.DataFrame({alias: [self._totals.get(alias, 0)] for alias in self._aliases()})
+        null_count = int(counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
+        if null_count > 0:
+            raise OptimiserSetupError(400, _quote_id_null_detail(null_count))
+        non_finite_detail = _non_finite_detail_from_counts(counts, self._non_finite_check_cols)
+        if non_finite_detail is not None:
+            raise OptimiserSetupError(400, non_finite_detail)
+        null_value_detail = _null_value_detail_from_counts(counts, self._null_check_cols)
+        if null_value_detail is not None:
+            raise OptimiserSetupError(400, null_value_detail)
+
+    def _aliases(self) -> list[str]:
+        return [expr.meta.output_name() for expr in self._exprs]
+
+
 def validate_and_project_auto_range(
     source_lf: Any,
     config: dict[str, Any],
-    *,
-    execution_context: ExecutionContext | None = None,
-) -> tuple[list[str], Any]:
-    """Validate and project only the columns auto-range needs.
+) -> tuple[list[str], Any, AutoRangeValueCheck]:
+    """Check auto-range's schema and project only the columns it reads.
 
-    Auto-range computes per-quote extrema for configured constraints. When the
-    projected input includes the configured objective, it validates the
-    objective for parity with solver input contracts, but it never passes
-    objective, scenario index, or scenario value columns to the range
-    estimator.
+    Returns the constraint columns, the projected frame (the quote id, the
+    objective when the input has it, and the constraints, in their source
+    dtypes) and the value check each batch goes through. The values are
+    checked per batch rather than in a whole-frame query, and the quote id
+    keeps its dtype: no Categorical round trip.
     """
-    import polars as pl
-
     constraints = config["constraints"]
     objective = str(config["objective"])
     qid_col = str(config.get("quote_id", "quote_id"))
@@ -943,29 +967,19 @@ def validate_and_project_auto_range(
     if detail is not None:
         raise OptimiserSetupError(400, detail)
 
-    qid_dtype = schema[qid_col]
     detail = _invalid_quote_id_dtype_detail(schema, qid_col)
     if detail is not None:
         raise OptimiserSetupError(400, detail)
 
     value_check_cols = [*constraint_cols]
-    if objective in available_cols:
+    if objective in available_cols and objective not in value_check_cols:
         value_check_cols.insert(0, objective)
-    validate_input_value_contracts(
-        source_lf,
+    value_check = AutoRangeValueCheck(
         schema,
         quote_id_col=qid_col,
-        validate_quote_id_nulls=True,
-        finite_columns=value_check_cols,
-        cast_to_float32_columns=value_check_cols,
-        execution_context=execution_context,
+        value_check_cols=value_check_cols,
     )
-
-    auto_range_cols = [qid_col, *constraint_cols]
-    cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]
-    if qid_dtype == pl.String:
-        cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
-    return constraint_cols, source_lf.select(auto_range_cols).with_columns(cast_exprs)
+    return constraint_cols, source_lf.select([qid_col, *value_check_cols]), value_check
 
 
 def extract_ratebook_factors(
@@ -1125,20 +1139,13 @@ def write_solver_input(
         return output_path
 
 
-def grid_chunk_decision(config: Mapping[str, Any], input_path: str) -> _ChunkSizeDecision:
-    """The chunk size for building the quote grid from *input_path*, with its provenance."""
-    try:
-        return _chunk_size_decision_for_parquet(config, Path(input_path), source="optimiser_grid")
-    except ValueError as exc:
-        raise OptimiserSetupError(400, f"Grid construction failed: {exc}") from exc
-
-
 def build_quote_grid(
     input_path: str,
     constraint_cols: list[str],
     config: Mapping[str, Any],
     chunk_size: int,
     *,
+    n_steps: int | None,
     execution_context: ExecutionContext | None,
 ) -> QuoteGrid:
     """Admit the resident grid, then build it from the solver-input parquet."""
@@ -1162,6 +1169,7 @@ def build_quote_grid(
         scenario_index=step_col,
         scenario_value=mult_col,
         objective=objective,
+        n_steps=n_steps,
     )
     return grid
 

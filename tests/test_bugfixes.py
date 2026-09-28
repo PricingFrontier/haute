@@ -619,11 +619,10 @@ class TestParserConfigLoadWarning:
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.data_input(config="config/data_input/missing.json")\n'
-            "def missing() -> pl.LazyFrame:\n"
-            '    return pl.scan_parquet("")\n'
+            "def missing(): ...\n"
         )
 
         from haute.errors import ConfigError
@@ -644,11 +643,10 @@ class TestParserConfigLoadWarning:
             '"path":"d.parquet","arguments":{}}'
         )
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.data_input(config="config/data_input/src.json")\n'
-            "def src() -> pl.LazyFrame:\n"
-            '    return pl.scan_parquet("d.parquet")\n'
+            "def src(): ...\n"
         )
 
         from haute.parser import parse_pipeline_file
@@ -672,11 +670,10 @@ class TestParserConfigLoadWarning:
             b'"assignment": "20\x9627"}], "default": "other"}]}'
         )
         (pipeline_dir / "main.py").write_text(
-            "import haute\nimport polars as pl\n\n"
+            "import haute\n\n"
             'pipeline = haute.Pipeline("test")\n\n'
             '@pipeline.banding(config="config/banding/bands.json")\n'
-            "def bands(df: pl.LazyFrame) -> pl.LazyFrame:\n"
-            "    return df\n"
+            "def bands(df): ...\n"
         )
 
         from haute.parser import parse_pipeline_file

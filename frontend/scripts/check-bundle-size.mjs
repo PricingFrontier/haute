@@ -72,7 +72,15 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // frontier point contracts (optimiser validators 21.6 -> 30.8 KiB) and the
 // shared ResultsWorkspace chunk (6.1 KiB, ModellingPreview 16.2 -> 14.2 KiB).
 // The complete production bundle is 1,536.4 KiB; 1,547 KiB restores about 10 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1547
+// Polars node clarity grows the lazy step editor chunk (SteppedCodePane
+// 23.2 -> 32.9 KiB: column completion and model, the formula box, generated
+// code highlighting and the add-step menu) and the entry by 1.2 KiB. The
+// complete production bundle is 1,547.4 KiB; 1,558 KiB restores about 10 KiB.
+// The strategy diagnostic's projection cause is part of the execution-metrics
+// contract, so the four validator modules that carry it (execution, explore,
+// training, optimiser) grow together, with the preview warning that names it.
+// The complete production bundle is 1,558.7 KiB; 1,569 KiB restores about 10 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1569
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -157,13 +165,25 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // preview frame's focus and remembered-height options, and the results tab
 // appearance. The modelling panes themselves stay lazy. The merged initial
 // bundle is 292.3 KiB; 294 KiB restores ~1.7 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 294
+// The modelling-issues fixes add eager code that cannot wait for a lazy chunk:
+// axis ticks formatted together (formatChartTicks, used by the initial
+// histogram's value grid), chunk-load recovery in the root error boundary
+// (it handles a lazy chunk that failed to load), the expired training-result
+// record in the results store, the training poller's progress key and the
+// panel's openNode wiring. The expired-result panel itself stays lazy. The
+// merged initial bundle is 294.2 KiB; 296 KiB restores ~1.8 KiB of headroom.
+// The trace panel (every step card, detail and derivation tree, ~20 KiB) now
+// loads lazily, fetched when a trace request starts; the always-needed request
+// surface (TraceStatePanel), trace store state and canvas projection stay eager.
+// The merged initial bundle is 279.5 KiB; 281 KiB keeps ~1.5 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 281
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
 // reintroduced an eager import path even if the initial gzip budget still fits.
 export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ensureInputSnapshots",
+  "TracePanel",
   "ModellingPreview",
   "PipelineRepairDialog",
   "CodeMirrorEditor",

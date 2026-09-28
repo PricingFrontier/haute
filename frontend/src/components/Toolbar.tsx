@@ -8,6 +8,7 @@ import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 import { formatBytes } from "../utils/formatBytes"
+import { DOCUMENTATION_URL } from "../utils/documentation"
 import MlflowSettingsModal from "./MlflowSettingsModal"
 
 const PipelineSettingsModal = lazy(() => import("./PipelineSettingsModal"))
@@ -19,7 +20,6 @@ function formatTiming(ms: number): string {
   return rounded < 1000 ? `${rounded} ms` : `${(ms / 1000).toFixed(2)} s`
 }
 
-const DOCUMENTATION_URL = "https://pricingfrontier.github.io/haute/"
 const REPORT_BUG_URL = "https://github.com/PricingFrontier/haute/issues/new"
 
 const HELP_ITEM_CLASS =

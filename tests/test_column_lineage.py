@@ -2898,6 +2898,13 @@ def test_cardinality_rejects_a_computed_column_selector() -> None:
             {},
             {"region"},
         ),
+        (
+            "df = src.group_by(['region'], maintain_order=True).agg([pl.len().alias('n')])",
+            ("src",),
+            set(),
+            {},
+            {"region"},
+        ),
     ],
 )
 def test_carried_column_proof_names_every_rewritten_column(
@@ -2942,7 +2949,6 @@ def test_carried_column_proof_names_every_rewritten_column(
         "df = unknown.sort('x')",
         "df = src.with_columns(**exprs)",
         "df = src.with_columns(pl.col(name) * 2)",
-        "df = src.with_columns(pl.col('x', 'y') * 2)",
         "df = src.with_columns(make_expr())",
         "df = src.with_columns(pl.col('x').alias(name))",
         "df = src.with_row_index(name)",
@@ -2958,7 +2964,8 @@ def test_carried_column_proof_names_every_rewritten_column(
         "df = src.join(prices, on=['id', 1])",
         "df = src.group_by('region')",
         "df = src.group_by(keys).agg(pl.col('x').sum())",
-        "df = src.group_by('region', maintain_order=True).agg(pl.len())",
+        "df = src.group_by('region', maintain_order=keep).agg(pl.len())",
+        "df = src.group_by(band=pl.col('x') // 10).agg(pl.len())",
     ],
 )
 def test_carried_column_proof_refuses_programs_whose_rewrites_it_cannot_name(code: str) -> None:
@@ -3372,6 +3379,169 @@ def test_carried_proof_refuses_a_selector_renamed_before_its_last_step() -> None
     )
     assert renamed_last is not None
     assert renamed_last.assigned == {"x"}
+
+
+@pytest.mark.parametrize(
+    ("code", "assigned"),
+    [
+        ("df = src.with_columns(pl.col(['a']).fill_null(0))", {"a"}),
+        ("df = src.with_columns(pl.col(['a', 'x']) * 2)", {"a", "x"}),
+        ("df = src.with_columns(pl.col('a', 'x') * 2)", {"a", "x"}),
+        ("df = src.with_columns(pl.col(('a', 'x')).cast(pl.Float64))", {"a", "x"}),
+        ("df = src.with_columns(-pl.col(['a', 'x']))", {"a", "x"}),
+        (
+            "df = src.with_columns(pl.col(['a', 'x']).fill_null(0).name.suffix('_f'))",
+            {"a_f", "x_f"},
+        ),
+        ("df = src.with_columns(pl.col(['a']).fill_null(0).alias('z'))", {"z"}),
+        ("df = src.select(pl.col(['a', 'x']), 'y')", set()),
+    ],
+)
+def test_carried_proof_names_the_columns_a_literal_name_list_writes(
+    code: str, assigned: set[str]
+) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    src = pl.DataFrame({"a": [1, None], "x": [2.0, 3.0], "y": ["p", "q"]})
+    proof = carried_column_proof(code, ("src",))
+
+    assert proof is not None
+    assert proof.assigned == assigned
+    output = _exec_user_code(code, ["src"], [src.lazy()]).collect()
+    for name in output.columns:
+        if name not in proof.assigned:
+            assert output[name].equals(src[name], check_dtypes=True), name
+
+
+@pytest.mark.parametrize(
+    ("code", "whole_groups"),
+    [
+        ("df = src.group_by('k').agg(pl.col('x').sum())", True),
+        ("df = src.sort('x').with_columns(y=pl.col('x') * 2).group_by('k').agg(pl.len())", True),
+        ("df = src.filter(pl.col('x') > 0).group_by('k').agg(pl.len())", False),
+        ("df = src.unique().group_by('k').agg(pl.len())", False),
+        ("df = src.head(5).group_by('k').agg(pl.len())", False),
+        ("df = src.select('k', 'x').group_by('k').agg(pl.len())", False),
+        ("df = src.join(other, on='k').group_by('k').agg(pl.len())", False),
+        ("df = src.group_by('k').agg(pl.len()).group_by('k').agg(pl.len())", False),
+    ],
+)
+def test_carried_proof_says_whether_its_grouping_reads_every_input_row(
+    code: str, whole_groups: bool
+) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    proof = carried_column_proof(code, ("src", "other"))
+
+    assert proof is not None
+    assert proof.whole_groups is whole_groups
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # A ``.name`` step before the last one renames what the list names.
+        "df = src.with_columns(pl.col(['a']).name.suffix('_z').fill_null(0))",
+        "df = src.with_columns(pl.col(['a']).name.keep())",
+        # A regex, wildcard, or computed entry names no fixed column.
+        "df = src.with_columns(pl.col(['^a.*$']) * 2)",
+        "df = src.with_columns(pl.col(['a', '*']) * 2)",
+        "df = src.with_columns(pl.col(['a', name]) * 2)",
+        "df = src.with_columns(pl.col([]) * 2)",
+    ],
+)
+def test_carried_proof_refuses_a_name_list_it_cannot_name(code: str) -> None:
+    from haute._column_lineage import carried_column_proof
+
+    assert carried_column_proof(code, ("src",)) is None
+
+
+@pytest.mark.parametrize(
+    ("code", "demanded", "added", "demand"),
+    [
+        ("df = rows.with_columns(pl.col(['a']).fill_null(0))", {"a"}, set(), {"a"}),
+        ("df = rows.with_columns(pl.col(['a', 'x']) * 2)", {"a"}, set(), {"a", "x"}),
+        ("df = rows.with_columns(pl.col('a', 'x') * 2)", {"x"}, set(), {"a", "x"}),
+        ("df = rows.with_columns(pl.col(('a', 'x')).cast(pl.Float64))", {"a"}, set(), {"a", "x"}),
+        ("df = rows.with_columns(-pl.col(['a', 'x']))", {"x", "w"}, set(), {"a", "x", "w"}),
+        (
+            "df = rows.with_columns(pl.col(['a', 'x']).fill_null(pl.col('w')))",
+            {"a"},
+            set(),
+            {"a", "x", "w"},
+        ),
+        (
+            "df = rows.with_columns(pl.col(['a', 'x']).fill_null(0).name.suffix('_f'))",
+            {"a_f"},
+            {"a_f", "x_f"},
+            {"a", "x"},
+        ),
+        ("df = rows.with_columns(pl.col(['a']).fill_null(0).alias('z'))", {"z"}, {"z"}, {"a"}),
+        ("df = rows.with_columns(z=pl.col(['a']).fill_null(0))", {"z"}, {"z"}, {"a"}),
+        ("df = rows.with_columns(pl.col(['a', 'x']))", {"w"}, set(), {"a", "x", "w"}),
+    ],
+)
+def test_a_computation_over_a_literal_name_list_has_exact_lineage(
+    code: str, demanded: set[str], added: set[str], demand: set[str]
+) -> None:
+    frame = pl.DataFrame({"a": [1, None], "x": [2.0, None], "w": [5, 6], "unused": ["p", "q"]})
+
+    exact = analyze_polars_lineage(code, {"rows": frozenset(frame.columns)})
+    narrowed = analyze_polars_lineage(code, {"rows": None}, demanded)
+
+    assert exact.supported
+    full = _exec_user_code(code, ["rows"], (frame.lazy(),)).collect()
+    assert exact.exact_output_columns == frozenset(full.columns) == set(frame.columns) | added
+    assert narrowed.supported
+    assert narrowed.demands_by_input == {"rows": frozenset(demand)}
+    projected = _exec_user_code(code, ["rows"], (frame.select(sorted(demand)).lazy(),)).collect()
+    assert_frame_equal(projected.select(sorted(demanded)), full.select(sorted(demanded)))
+
+
+def test_a_listed_name_fill_null_narrows_an_unknown_input() -> None:
+    # The motor demo's fill_na node: before this was proven, every node above
+    # it read full width and the preview warned that projection was limited.
+    code = (
+        "df = rows\n"
+        "df = df.with_columns(pl.col(['SaleFlag']).fill_null(0))\n"
+        "df = df.with_columns((pl.col('premium')).alias('BurnCost'))\n"
+    )
+
+    result = analyze_polars_lineage(code, {"rows": None}, {"quote_id", "SaleFlag", "BurnCost"})
+
+    assert result.supported
+    assert result.demands_by_input == {"rows": frozenset({"quote_id", "SaleFlag", "premium"})}
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        # Several listed names cannot share one output name.
+        "pl.col(['a', 'x']).alias('z')",
+        "z=pl.col(['a', 'x'])",
+        "pl.col(['a', 'a']) * 2",
+        # A ``.name`` step before the last one renames what the list names.
+        "pl.col(['a']).name.suffix('_z').fill_null(0)",
+        "pl.col(['a']).name.keep()",
+        # A regex, wildcard, computed, or missing entry names no fixed column.
+        "pl.col(['^a.*$']) * 2",
+        "pl.col(['a', '*']) * 2",
+        "pl.col(['a', helper]) * 2",
+        "pl.col([]) * 2",
+        # The list is not the root, or another multi-column input joins it.
+        "2 * pl.col(['a', 'x'])",
+        "pl.col(['a', 'x']) * pl.col(['w', 'a'])",
+        "pl.col('a').over(pl.col(['x', 'w']))",
+        "pl.sum_horizontal(pl.col(['a', 'w']))",
+    ],
+)
+def test_a_literal_name_list_the_model_cannot_name_fails_closed(expression: str) -> None:
+    code = f"helper = 'x'\ndf = rows.with_columns({expression})"
+
+    result = analyze_polars_lineage(code, {"rows": frozenset({"a", "x", "w"})})
+
+    assert not result.supported
+    assert result.reason == "dynamic_with_columns"
 
 
 def test_cardinality_does_not_need_selector_output_names() -> None:

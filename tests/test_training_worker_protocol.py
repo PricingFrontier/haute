@@ -290,7 +290,7 @@ class _SuccessfulTrainingJob:
 
     def run(self, progress, on_iteration, **_kwargs):
         progress("Fitting", 0.4)
-        on_iteration(1, 2, {"rmse": 0.5})
+        on_iteration(1, 2, {"rmse": 0.5}, {"iteration": 1.0, "train_rmse": 0.5})
         self.output_dir.mkdir(parents=True, exist_ok=True)
         model_path = self.output_dir / f"{self.name}.cbm"
         model_path.write_bytes(b"model")
@@ -557,6 +557,13 @@ def test_training_entrypoint_stages_complete_evaluation_and_public_response(tmp_
     assert response["evaluation"]["plan_path"] == "output/quoted.evaluation-plan.json"
     assert "tuning" not in response
     assert [event.kind for event in queue.events] == ["progress", "iteration"]
+    # The iteration event carries the engine's readout and its loss-history row.
+    assert queue.events[1].fields == {
+        "iteration": 1,
+        "total": 2,
+        "metrics": {"rmse": 0.5},
+        "history": {"iteration": 1.0, "train_rmse": 0.5},
+    }
 
 
 @pytest.mark.parametrize(

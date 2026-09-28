@@ -5,6 +5,16 @@ export function isNumericDtype(dtype: string): boolean {
 }
 
 /**
+ * Whether a Polars dtype is String or Categorical, as `str(dtype)` renders them
+ * (`String`, `Categorical`, `Categorical(ordering='physical')`): the columns
+ * CatBoost trains as categorical features, as the backend detects them. Enum
+ * is not one of them.
+ */
+export function isStringOrCategoricalDtype(dtype: string): boolean {
+  return /^(?:string|str|utf8|categorical(?:\(.*\))?)$/i.test(dtype.trim())
+}
+
+/**
  * Whether a Polars dtype is Date or Datetime, as `str(dtype)` renders them
  * (`Date`, `Datetime(time_unit='us', time_zone=None)`); Duration and Time are
  * not dates.
