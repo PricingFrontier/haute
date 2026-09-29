@@ -110,31 +110,28 @@ def test_root_array_value_rejects_each_structural_append_beyond_limit(
         )
 
 
-def test_bounded_writer_rejects_unknown_labels_flushes_before_arrow_and_requires_close(
+def test_bounded_writer_rejects_unknown_labels_before_buffering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Direct Arrow writes cannot overtake buffered JSON rows or forge tables."""
+    """A row for a table the writer does not own is never buffered or written."""
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     spec = _shred._emitting_table_specs(config)
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", "2")
     writer = _writer._BoundedParquetRowGroupWriter(tmp_path, spec)
     try:
         with pytest.raises(RuntimeError, match="unknown table 'other'"):
-            writer.emit("other", {"id": 1})
-        with pytest.raises(RuntimeError, match="unknown table 'other'"):
-            writer.write_arrow_table("other", pl.DataFrame({"id": [1]}).to_arrow())
-
-        writer.emit("root", {"id": 1})
-        with pytest.raises(RuntimeError, match="contains 3 rows; configured maximum is 2"):
-            writer.write_arrow_table("root", pl.DataFrame({"id": [2, 3, 4]}).to_arrow())
-
-        writer.write_arrow_table("root", pl.DataFrame({"id": [2]}).to_arrow())
+            writer.emit("other", (1,))
         assert writer.buffered_rows == 0
-        assert writer.row_counts == {"root": 2}
+
+        writer.emit("root", (1,))
+        writer.emit("root", (2,))
+        writer.emit("root", (3,))
+        assert writer.buffered_rows == 1
+        assert writer.row_counts == {"root": 3}
+        writer.flush()
     finally:
         writer.close()
-
-    assert pq.read_table(tmp_path / "root.parquet").to_pydict() == {"id": [1, 2]}
+    assert pq.read_table(tmp_path / "root.parquet").to_pydict() == {"id": [1, 2, 3]}
 
 
 def test_streaming_cache_writer_preserves_primary_failure_and_cleanup_evidence(

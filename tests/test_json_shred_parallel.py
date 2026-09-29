@@ -23,7 +23,7 @@ import orjson
 import polars as pl
 import pytest
 
-from haute._api_input_schema import ApiInputSchemaError, sanitise_label_for_filesystem
+from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _inference, _records, _shred, _writer
 from haute._json_shred._inference import (
     _assemble_inference_schema,
@@ -758,16 +758,14 @@ def _shred_build(
         else []
     )
     if len(ranges) > 1:
-        skip_stats = _writer._write_tables_in_parallel(path, config, table_specs, cache, ranges)
+        shredded = _writer._write_tables_in_parallel(path, config, table_specs, cache, ranges)
     else:
-        skip_stats = _writer._write_tables_streaming(path, config, table_specs, cache)
+        shredded = _writer._write_tables_streaming(path, config, table_specs, cache)
     frames = {
-        spec.label: pl.scan_parquet(
-            cache / f"{sanitise_label_for_filesystem(spec.label)}.parquet"
-        ).collect()
+        spec.label: pl.scan_parquet(list(shredded.files[spec.label])).collect()
         for spec in table_specs
     }
-    return skip_stats, frames
+    return shredded.skip_stats, frames
 
 
 def _build(path: Path, cache: Path) -> tuple[ShredSkipStats, dict[str, pl.DataFrame]]:
@@ -781,7 +779,7 @@ def test_parallel_build_matches_serial_build_exactly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same rows, same ORDER, same manifest. Row order matters: parts are
-    concatenated in chunk order, and a pool that returned out of order would
+    read in chunk order, and a pool that returned out of order would
     scramble it while keeping every count identical. Two claims arrays carry a
     shape-mismatched element so per-TABLE row skips (not just record skips)
     must survive the cross-chunk merge; both intruders sit in different chunks
@@ -1257,7 +1255,7 @@ def _install_static_parallel_results(
     monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", StaticPool)
 
 
-def test_parallel_assembly_rejects_missing_part_and_preserves_cleanup_evidence(
+def test_parallel_assembly_rejects_a_missing_part(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1291,26 +1289,13 @@ def test_parallel_assembly_rejects_missing_part_and_preserves_cleanup_evidence(
         part_paths={},
     )
     _install_static_parallel_results(monkeypatch, [result])
-
-    class FailingCloseWriter:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.row_counts = {"root": 0}
-
-        def close(self) -> None:
-            raise OSError("assembly close failed")
-
-    monkeypatch.setattr(_writer, "_BoundedParquetRowGroupWriter", FailingCloseWriter)
     staging = tmp_path / "staging"
     staging.mkdir()
 
-    with pytest.raises(RuntimeError, match="wrote no part") as exc_info:
+    with pytest.raises(RuntimeError, match="chunk 3 wrote no part for table 'root'"):
         _writer._write_tables_in_parallel(
             tmp_path / "source.jsonl", config, specs, staging, [(0, 1)]
         )
-
-    assert exc_info.value.__notes__ == [
-        "bounded parallel writer cleanup failed: assembly close failed"
-    ]
 
 
 def test_parallel_assembly_rejects_worker_row_count_mismatch(
@@ -1352,12 +1337,13 @@ def test_parallel_assembly_rejects_worker_row_count_mismatch(
     staging = tmp_path / "staging"
     staging.mkdir()
 
-    with pytest.raises(RuntimeError, match="row-count mismatch"):
+    with pytest.raises(
+        RuntimeError,
+        match="row-count mismatch for table 'root' in chunk 0: part holds 1 != worker-reported 2",
+    ):
         _writer._write_tables_in_parallel(
             tmp_path / "source.jsonl", config, specs, staging, [(0, 1)]
         )
-
-    assert not part.exists()
 
 
 def test_failed_parallel_build_leaves_no_staging_directory(

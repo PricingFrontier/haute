@@ -3,12 +3,12 @@
 Targets specific Cosmic Ray SURVIVORS in ``haute._json_shred``:
 the leaf resolver (``_resolve_leaf``), the shred walk
 (``shred_to_buffers`` and its closures), and the typed frame builder
-(``_buffer_to_frame``). Each test is engineered so the named mutation
+(``_rows_to_frame``). Each test is engineered so the named mutation
 flips an OBSERVABLE output; line numbers in comments are Cosmic Ray
 start_pos_row in the current working tree.
 
 These tests intentionally exercise private helpers (``_resolve_leaf``,
-``_buffer_to_frame``, ``_SCALAR_VALUE_LEAF``) and shape-skip accounting
+``_rows_to_frame``, ``_SCALAR_VALUE_LEAF``) and shape-skip accounting
 (``ShredSkipStats``) directly, because that is the only way to pin the
 discriminating operator tightly.
 """
@@ -24,9 +24,9 @@ from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred._inference import _reject_unexpressible_key
 from haute._json_shred._records import ShredSkipStats
 from haute._json_shred._shred import (
-    _buffer_to_frame,
     _reject_reserved_leaf_collision,
     _resolve_leaf,
+    _rows_to_frame,
     shred_to_buffers,
 )
 
@@ -114,8 +114,8 @@ def test_unselected_column_continues_not_breaks() -> None:
     assert buffers["root"] == [{"a": 1, "c": 3}]
 
 
-# ─── _emit_row, line 650: ancestor vs current-node source selection ───
-#   `src = value if src_depth == depth else ancestors[src_depth]`
+# ─── _compile_row_reader: ancestor vs current-node source selection ───
+#   `source = value if is_own else ancestors[depth]`
 
 
 def test_ancestor_column_sourced_from_ancestor_not_current_node() -> None:
@@ -183,8 +183,8 @@ def test_normal_column_sources_current_node_equality_not_neq() -> None:
     assert buffers["drivers"] == [{"driver_id": 9}]
 
 
-# ─── _resolve_leaf via _emit_row: inferred scalar coercion ────────────
-#   `if leaf == _SCALAR_VALUE_LEAF: resolved = _coerce_scalar(...)`
+# ─── _compile_row_reader: inferred scalar coercion ────────────────────
+#   declared-string cells and `$value` cells pass through `_coerce_scalar` rules
 
 
 def test_declared_string_columns_coerce_json_scalars_at_any_depth() -> None:
@@ -304,8 +304,8 @@ def test_null_element_emits_for_scalar_table_counts_for_object_table() -> None:
     assert stats.skipped_rows_by_table == {"objects": 1}
 
 
-# ─── _buffer_to_frame, line 770: date column rejects raw int ──────────
-#   `if col_type == "date" and any(isinstance(v, int) for v in values):`
+# ─── _rows_to_frame: date column rejects raw int ──────────────────────
+#   `if col_type == "date" and any(issubclass(kind, int) for kind in value_types):`
 
 
 def test_date_column_with_int_raises_equality_not_identity() -> None:
@@ -314,9 +314,9 @@ def test_date_column_with_int_raises_equality_not_identity() -> None:
     # column. The 'is' mutant would not match, skip the guard, and let Polars
     # silently reinterpret the int as days-since-epoch (no raise).
     col_type = _noninterned("date")
-    rows = [{"d": 2024}]
+    rows = [(2024,)]
     with pytest.raises(ApiInputSchemaError) as exc:
-        _buffer_to_frame(rows, [("d", "d", col_type)])
+        _rows_to_frame(rows, [("d", "d", col_type)])
     # The date-specific message proves the date guard fired (not the generic
     # strict-build fallback), and names the offending column.
     assert exc.value.context["column"] == "d"
@@ -329,7 +329,7 @@ def test_non_date_int_column_builds_without_date_guard() -> None:
     # must NOT trip the date guard — it builds fine. A NotEq mutant
     # (col_type != "date" True for an int col) would raise the date error on a
     # perfectly valid int column.
-    df = _buffer_to_frame([{"n": 5}], [("n", "n", "int")])
+    df = _rows_to_frame([(5,)], [("n", "n", "int")])
     assert df["n"].to_list() == [5]
 
 
@@ -337,7 +337,7 @@ def test_float_column_with_int_builds_kills_date_guard_gte() -> None:
     # Eq -> GtE: a "float" column with an int builds cleanly (5 -> 5.0). The
     # GtE mutant ("float" >= "date" is True) trips the date guard and raises.
     # "float" is lexically > "date", so only >= (not ==/<=) misfires here.
-    df = _buffer_to_frame([{"x": 5}], [("x", "x", "float")])
+    df = _rows_to_frame([(5,)], [("x", "x", "float")])
     assert df["x"].to_list() == [5.0]
 
 
@@ -348,7 +348,7 @@ def test_bool_column_int_raises_generic_not_date_message_kills_lte() -> None:
     # date-specific message instead. Both raise, so we discriminate on which
     # message: real must NOT mention the days-since-epoch reinterpretation.
     with pytest.raises(ApiInputSchemaError) as exc:
-        _buffer_to_frame([{"b": 5}], [("b", "b", "bool")])
+        _rows_to_frame([(5,)], [("b", "b", "bool")])
     assert "days since 1970-01-01" not in str(exc.value)
 
 
@@ -357,7 +357,7 @@ def test_int_column_with_bool_raises_sibling_guard() -> None:
     # raise (Polars would silently coerce True->1). Confirms the bool guard
     # operator (`col_type in ("int","float")`) stays live.
     with pytest.raises(ApiInputSchemaError) as exc:
-        _buffer_to_frame([{"flag": True}], [("flag", "flag", "int")])
+        _rows_to_frame([(True,)], [("flag", "flag", "int")])
     assert exc.value.context["column"] == "flag"
     assert "boolean values" in str(exc.value)
 

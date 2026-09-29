@@ -19,3 +19,4 @@ tests/test_rating_step_config_coverage.py
 tests/test_save_precondition_properties.py
 tests/test_scoring_metamorphic_properties.py
 tests/test_submodel_endpoint_properties.py
+tests/test_v2_codec_and_shred.py

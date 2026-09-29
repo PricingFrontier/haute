@@ -85,7 +85,7 @@ def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> No
     )
     freshness = _source_proof.Freshness(token=1, reusable=True)
     cached_schema = _inference_cache._CachedSchema(revision=1, payload=b"{}")
-    builder = _snapshots._ParquetFileBuilder(Path("table.parquet"))
+    builder = _snapshots._ParquetFileBuilder((Path("table.parquet"),))
 
     for value, field, replacement in (
         (revision, "size", 99),
@@ -147,7 +147,7 @@ def test_coerce_scalar_str_token_stringifies_non_strings() -> None:
 
 def test_coerce_scalar_float_token_widens_int_but_not_bool() -> None:
     # A float column promotes ints to float, leaves real floats, and explicitly
-    # leaves bools alone (so `_buffer_to_frame` can reject them, not silently 0/1).
+    # leaves bools alone (so `_rows_to_frame` can reject them, not silently 0/1).
     assert _coerce_scalar(3, "float") == 3.0
     assert isinstance(_coerce_scalar(3, "float"), float)
     assert _coerce_scalar(2.5, "float") == 2.5

@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from haute._api_input_schema import (
     ApiInputSchemaError,
@@ -27,9 +29,18 @@ from haute._api_input_schema import (
     parse_table_path,
     validate_v2_schema,
 )
+from haute._json_shred import _shred
 from haute._json_shred._cache import load_v2_api_source
-from haute._json_shred._shred import shred_to_buffers
+from haute._json_shred._shred import (
+    _SCALAR_VALUE_LEAF,
+    _coerce_scalar,
+    _compile_row_reader,
+    _resolve_leaf,
+    _WalkSpec,
+    shred_to_buffers,
+)
 from haute._sandbox import set_project_root
+from tests._property_budget import pr_budget
 from tests.conftest import build_test_api_input_snapshots
 
 # ─── Path helpers ─────────────────────────────────────────────────
@@ -774,3 +785,126 @@ def test_shred_object_table_ignores_ancestor_scalar_value_column() -> None:
     assert shred_to_buffers([{"items": [{"name": "kept"}]}], cfg) == {
         "items": [{"name": "kept", "root_value": None}],
     }
+
+
+# ─── Compiled row readers equal per-column resolution ─────────────
+
+
+def _per_column_row(
+    columns: tuple[_WalkSpec, ...], own_depth: int, value: Any, ancestors: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    """The reference: resolve and coerce each column on its own, in order."""
+    row = []
+    for _name, leaf, type_token, depth in columns:
+        resolved = _resolve_leaf(value if depth == own_depth else ancestors[depth], leaf)
+        if leaf == _SCALAR_VALUE_LEAF or (
+            type_token == "str" and not isinstance(resolved, (dict, list))
+        ):
+            resolved = _coerce_scalar(resolved, type_token)
+        row.append(resolved)
+    return tuple(row)
+
+
+def _assert_reader_matches_per_column(
+    columns: tuple[_WalkSpec, ...], own_depth: int, value: Any, ancestors: tuple[Any, ...]
+) -> None:
+    read_row = _compile_row_reader(columns, own_depth)
+    try:
+        expected = _per_column_row(columns, own_depth, value, ancestors)
+    except ApiInputSchemaError as error:
+        with pytest.raises(ApiInputSchemaError) as actual:
+            read_row(value, ancestors)
+        assert actual.value.message == error.message
+        assert actual.value.context == error.context
+        return
+    actual_row = read_row(value, ancestors)
+    # Compare types as well: True == 1 == 1.0 would hide a coercion difference.
+    assert [(type(cell), cell) for cell in actual_row] == [(type(cell), cell) for cell in expected]
+
+
+_reader_scalars = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**63), max_value=2**63 - 1),
+    st.floats(allow_nan=False, allow_infinity=False),
+    st.text(max_size=4),
+)
+_reader_values = st.recursive(
+    _reader_scalars,
+    lambda children: st.one_of(
+        st.lists(children, max_size=3),
+        st.dictionaries(st.sampled_from(["a", "b", "c", "d", "x", "y"]), children, max_size=4),
+    ),
+    max_leaves=16,
+)
+_reader_records = st.dictionaries(
+    st.sampled_from(["a", "b", "c", "d", "x", "y"]), _reader_values, max_size=5
+)
+
+# A depth-1 object table whose columns share prefixes (``a.*``), include a leaf
+# that is also another column's prefix (``a``), interleave prefixes in declared
+# order (``b.y`` sits between ``a.b.c`` and ``a.b.d``), and read two ancestor
+# columns plus an ancestor ``$value`` from the depth-0 element.
+_OBJECT_TABLE_COLUMNS: tuple[_WalkSpec, ...] = (
+    ("a", "a", "str", 1),
+    ("a_x", "a.x", "int", 1),
+    ("a_y", "a.y", "str", 1),
+    ("a_b_c", "a.b.c", "float", 1),
+    ("b_y", "b.y", "str", 1),
+    ("a_b_d", "a.b.d", "str", 1),
+    ("c", "c", "bool", 1),
+    ("root_a", "a", "str", 0),
+    ("root_a_x", "a.x", "date", 0),
+    ("root_value", _SCALAR_VALUE_LEAF, "str", 0),
+)
+
+
+@given(value=_reader_values, ancestor=_reader_records)
+@pr_budget(400)
+def test_object_table_reader_matches_per_column_resolution(value: Any, ancestor: Any) -> None:
+    _assert_reader_matches_per_column(_OBJECT_TABLE_COLUMNS, 1, value, (ancestor,))
+
+
+@pytest.mark.parametrize("type_token", ["str", "float", "int", "bool", "date"])
+@given(value=_reader_values, ancestor=_reader_records)
+@pr_budget(100)
+def test_scalar_table_reader_matches_per_column_resolution(
+    type_token: str, value: Any, ancestor: Any
+) -> None:
+    columns: tuple[_WalkSpec, ...] = (
+        ("value", _SCALAR_VALUE_LEAF, type_token, 1),
+        ("root_x", "x", "str", 0),
+    )
+    _assert_reader_matches_per_column(columns, 1, value, (ancestor,))
+
+
+def test_reader_names_the_first_crossing_column_in_declared_order() -> None:
+    # ``a.q.z`` shares the ``a`` prefix with the first column, so a reader that
+    # grouped by prefix could meet its list before ``b.y``'s; the error must
+    # still name ``b.y``, the first crossing column in declared order.
+    columns: tuple[_WalkSpec, ...] = (
+        ("p", "a.p.x", "int", 0),
+        ("y", "b.y", "int", 0),
+        ("z", "a.q.z", "int", 0),
+    )
+    read_row = _compile_row_reader(columns, 0)
+    record = {"a": {"p": {"x": 1}, "q": [{"z": 2}]}, "b": [{"y": 3}]}
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        read_row(record, ())
+
+    assert exc_info.value.context == {"column": "b.y"}
+    assert "crosses an array at segment 'y'" in exc_info.value.message
+    assert read_row({"a": {"p": {"x": 1}, "q": []}, "b": []}, ()) == (1, None, None)
+
+
+def test_reader_fails_loud_when_per_column_resolution_does_not_cross(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The reader leaves the crossing error to per-column resolution. Were the
+    # two ever to disagree, the row must fail rather than be emitted.
+    monkeypatch.setattr(_shred, "_resolve_leaf", lambda *_args: None)
+    read_row = _compile_row_reader((("x", "a.x", "int", 0),), 0)
+
+    with pytest.raises(RuntimeError, match="per-column resolution does not cross"):
+        read_row({"a": [{"x": 1}]}, ())

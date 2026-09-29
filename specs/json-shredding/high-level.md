@@ -278,9 +278,16 @@ signature after its shred publishes nothing.
 **Table builds are staged, bounded, and never expose a partial table.** A build
 feeds emitted rows through the same aggregate-bounded row-group writer used by
 standalone spills into a private scratch directory; parallel JSONL workers use that
-writer for bounded parts, and the parent consumes one bounded row group at a time
-when assembling each table. Every table is then published through the store's
-staged generation publication, so a reader sees a complete generation or none.
+writer for bounded parts, and each table is published straight from its parts in
+file order, because publication rewrites the table as the store's own part files
+anyway. Every table is published through the store's staged generation
+publication, so a reader sees a complete generation or none.
+
+**Each row is read by a reader built once per table.** Rows are read by one
+function per table, built from its column specs when the shred starts, that
+fetches each shared object on the columns' paths once per row. Its results and
+errors are those of resolving each column on its own, in declared order; the
+reader only avoids repeating that work, which dominates the cost of a large build.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
