@@ -8,7 +8,8 @@ so editing one table leaves the others' generations current.
 
 A build shreds the source once into a private scratch directory, then publishes
 every requested table through the store's ordinary build, which rewrites each
-table's Parquet as bounded part files and validates it before its pointer moves.
+table's scratch Parquet files as bounded part files and validates them before its
+pointer moves.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from typing import Any, Final
 
 import polars as pl
 
-from haute._api_input_schema import sanitise_label_for_filesystem
 from haute._cache import canonical_json
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._json_shred import _records, _shred, _source_proof, _writer
@@ -189,12 +189,13 @@ def new_table_build_plans(
 class _ParquetFileBuilder:
     """Hand the store one shredded table, which it rewrites as bounded parts."""
 
-    path: Path
+    paths: tuple[Path, ...]
     build_class: str = "bounded"
 
     def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
         context.checkpoint()
-        return pl.scan_parquet(self.path)
+        # A multi-file scan reads the files in the given order: the row order.
+        return pl.scan_parquet(list(self.paths))
 
 
 def _distinct_tables(source: ApiInputSnapshotSource, labels: Sequence[str]) -> list[ApiInputTable]:
@@ -217,7 +218,7 @@ def _shred_into(
     source: ApiInputSnapshotSource,
     tables: Sequence[ApiInputTable],
     scratch: Path,
-) -> None:
+) -> _writer._ShredTables:
     specs = tuple(table.spec for table in tables)
     data_path = source.data_path
     config = dict(source.config)
@@ -227,9 +228,10 @@ def _shred_into(
         else []
     )
     if len(ranges) > 1:
-        skip_stats = _writer._write_tables_in_parallel(data_path, config, specs, scratch, ranges)
+        shredded = _writer._write_tables_in_parallel(data_path, config, specs, scratch, ranges)
     else:
-        skip_stats = _writer._write_tables_streaming(data_path, config, specs, scratch)
+        shredded = _writer._write_tables_streaming(data_path, config, specs, scratch)
+    skip_stats = shredded.skip_stats
     if skip_stats.total:
         logger.warning(
             "json_shred_records_skipped",
@@ -237,6 +239,7 @@ def _shred_into(
             skipped_records=skip_stats.skipped_records,
             skipped_rows_by_table=skip_stats.skipped_rows_by_table,
         )
+    return shredded
 
 
 def scratch_directory(store: SourceCacheStore, token: str) -> Path:
@@ -279,9 +282,9 @@ def build_api_input_tables(
     try:
         if execution_context is not None:
             with execution_context.stage("api_input_shred"):
-                _shred_into(source, tables, scratch)
+                shredded = _shred_into(source, tables, scratch)
         else:
-            _shred_into(source, tables, scratch)
+            shredded = _shred_into(source, tables, scratch)
         if api_input_source_signature(source.data_path) != signature:
             raise SourceChangedDuringCacheBuildError(
                 f"structured source changed while its tables were built: {source.data_path}"
@@ -301,9 +304,7 @@ def build_api_input_tables(
             )
             generations[table.identity.digest] = store.build(
                 table.identity,
-                _ParquetFileBuilder(
-                    scratch / f"{sanitise_label_for_filesystem(table.label)}.parquet"
-                ),
+                _ParquetFileBuilder(shredded.files[table.label]),
                 context=context,
                 source_signature=signature,
                 refresh=True,

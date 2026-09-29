@@ -64,6 +64,8 @@ Submodel graph expansion and boundary rewiring are owned by
 
 - `ShredSkipStats` — dataclass with `skipped_records: int` and
   `skipped_rows_by_table: dict[str, int]`. `.total` sums both; a build logs them.
+- `_ShredTables` — one scratch shred's result: its `ShredSkipStats` and, per emitting
+  table label, that table's Parquet files in row order.
 - `_LeafSpec = tuple[str, str, str]` — `(column_name, leaf_path_dotted, type_token)`,
   used at build time.
 - `_WalkSpec = tuple[str, str, str, int]` — as `_LeafSpec` plus the array-iteration
@@ -264,13 +266,17 @@ defer_retirement)`:
 2. Compute the source signature before reading; an absent source raises
    `FileNotFoundError` before anything is written.
 3. Shred the source once into a private scratch directory,
-   `<inputs root>/.shred/.staging-<token>`, one Parquet per table (named by the
-   sanitised label), inside the `api_input_shred` execution stage when an
-   execution context is given. Two paths produce identical files:
+   `<inputs root>/.shred/.staging-<token>`, inside the `api_input_shred` execution
+   stage when an execution context is given. The shred returns each table's scratch
+   Parquet files in row order (`_ShredTables`). Two paths produce identical tables:
    - **Serial** (default) — `shred_to_buffers(_counted_records(), v2_config,
-     stats=skip_stats, _row_sink=writer.emit)` consumes `_iter_records` directly.
+     stats=skip_stats, _row_sink=writer.emit)` consumes `_iter_records` directly and
+     writes one Parquet per table (named by the sanitised label).
      `_BoundedParquetRowGroupWriter` owns one aggregate row/estimated-byte budget
      across every table and flushes all non-empty buffers when either limit is met.
+     A row's estimated size is the length of its JSON-object encoding (column names
+     and values), computed from the row's values plus a per-table constant for the
+     names.
    - **Parallel** (`_should_shred_in_parallel`: a `.jsonl`/`.ndjson` source of at
      least `_PARALLEL_MIN_BYTES` that splits into more than one range) —
      `_write_tables_in_parallel`, described below. When a managed execution context
@@ -283,7 +289,7 @@ defer_retirement)`:
    The parallel path asserts this per chunk; ranges tile the file exactly, so
    holding it on every chunk holds it on the whole file. Skipped records and rows
    are logged (`json_shred_records_skipped`), not stored with the generation.
-5. The shared writer converts each bounded buffer through `_buffer_to_frame`, writes
+5. The shared writer converts each bounded buffer through `_rows_to_frame`, writes
    it as a zstd Parquet row group with `_per_frame_metadata`, and immediately releases
    the Python rows. Closing the writers also produces valid schema-carrying empty
    parquets.
@@ -291,9 +297,10 @@ defer_retirement)`:
    `SourceChangedDuringCacheBuildError` and nothing is published.
 7. Publish each table through the store's ordinary build
    (`SourceCacheStore.build(identity, builder, refresh=True, source_signature=...)`,
-   build class `bounded`): the builder scans the table's scratch Parquet, the store
-   rewrites it as sliced part files, validates the staged generation, and moves the
-   pointer. A plan names the generation id and staging token. Each table publishes
+   build class `bounded`): the builder scans the table's scratch Parquet files in
+   row order (one file from a serial shred, one part per byte range from a parallel
+   one), the store rewrites them as sliced part files, validates the staged
+   generation, and moves the pointer. A plan names the generation id and staging token. Each table publishes
    on its own, so a table published before a later failure stays current.
 8. Remove the scratch directory whatever happened. A build that dies leaves it for
    the store's stale-staging sweep.
@@ -329,16 +336,18 @@ the skip/conservation accounting.
   `_ChunkResult` rather than raising, so a failure can be re-raised in the
   parent. Rows are written through `_BoundedParquetRowGroupWriter` as compressed
   Parquet parts in the scratch dir, never returned through the pool's result channel.
-- The parent reads one part row group at a time and feeds it into the shared writer
-  **in chunk order** (so row order matches the serial shred exactly), unlinking each
-  part as it is consumed. Parent and child peak memory are therefore bounded by one
-  configured row group plus one logical record, rather than one source range. Disk
-  is the trade: workers may finish writing every part before assembly starts, so the
-  scratch directory transiently holds the part parquets alongside the growing final
-  parquets. Only the final parquets are published, and any failure removes the
-  scratch directory with the parts in it. A chunk that produced
-  no part for an emitting table (worker/parent spec divergence — never legitimate)
-  fails the build rather than publishing a parquet with silently missing rows.
+- The parent never re-reads or rewrites the parts. It checks every successful
+  chunk's evidence, then hands each table's parts to publication **in chunk order**,
+  so the published table's row order matches the serial shred exactly; the store's
+  publication already rewrites a table as its own part files, so a parent merge would
+  only write every row one extra time. The parent holds no rows, and each worker is
+  bounded by one configured row group plus one logical record rather than one source
+  range. Disk is the trade: the scratch directory holds every part until publication
+  has rewritten it, and any failure removes the scratch directory with the parts in
+  it. A chunk that produced no part for an emitting table (worker/parent spec
+  divergence — never legitimate), or a part whose Parquet footer row count differs
+  from the worker-reported count, fails the build before anything is published
+  rather than publishing a table with silently missing or extra rows.
 - `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
   pickling arbitrary exception objects. The envelope carries an
   `ApiInputSchemaError`'s raw `message` plus complete `context`, an
@@ -376,7 +385,9 @@ the skip/conservation accounting.
    table does not change the descendant's shape classification.
 3. Group tables by their full `(key, is_array)` segment position
    (`tables_by_pos`), and compute the object-hop + array-key "descents" needed to
-   reach each child array from its parent position (`descents_by_pos`).
+   reach each child array from its parent position (`descents_by_pos`). Each table
+   gets one row reader, built once per shred by `_compile_row_reader` from its
+   column specs (see *Row readers* below).
 4. Walk: `_emit_at(pos, record, ancestors)` emits a row into every table registered
    at `pos` (skipping — and counting — a shape-mismatched record for that table),
    then descends into each child array via `_walk_array`, which iterates the array
@@ -385,7 +396,21 @@ the skip/conservation accounting.
    shape mismatch, never fabricated as a null scalar row). Declared string columns
    use the shared deterministic JSON-scalar renderer; dict/list values remain
    shape values and are rejected or counted rather than stringified.
-5. Returns `{table_label: [row_dict, ...]}`.
+5. A `_row_sink`, when given, receives each row as a tuple of values in declared
+   column order. Without one, returns `{table_label: [row_dict, ...]}`.
+
+**Row readers** — `_compile_row_reader(columns, own_depth)` returns the function
+that reads one table row. It groups the columns by source depth (the element itself
+or an ancestor element) and, within each source, by shared object prefix, so every
+object on a column's path is fetched once per row however many columns sit below it.
+Its values equal applying `_resolve_leaf` to each column in turn: a non-object source
+or intermediate value gives `None`, an empty list mid-path gives `None`, `$value`
+gives a non-container element itself, and the declared-string and `$value`
+coercions of `_coerce_scalar` follow. A non-empty list mid-path does not choose an
+error itself: the row is resolved again column by column with `_resolve_leaf`, so
+the error names the first crossing column in declared order, exactly as a
+per-column walk reports it. The reader is built from closures over the parsed
+specs; no source text is generated or executed.
 
 **Runtime load** — `load_v2_api_source(data_path, config, *, port_columns=None,
 read_snapshots=False, store=None)`:
@@ -414,7 +439,7 @@ read_snapshots=False, store=None)`:
    `_iter_records` plus the shared shred walker uses only the requested projected
    specs. The same `_BoundedParquetRowGroupWriter` used by builds owns one aggregate
    byte/row-bounded buffer across all requested tables. Crossing either bound
-   flushes every non-empty table buffer through the same strict `_buffer_to_frame`
+   flushes every non-empty table buffer through the same strict `_rows_to_frame`
    conversion into a PyArrow `ParquetWriter` row group, then releases those Python
    rows. The resulting `{label: scan_parquet(...)}` bundle preserves schema order,
    row order, carrier-column cardinality, skip accounting, strict bool/date errors,
@@ -655,7 +680,8 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   "strict" build would accept them** (`bool` is an `int` subclass, so Polars won't
   raise on its own for the first case; a raw JSON int/bool successfully
   reinterprets as a days-since-epoch offset for the second) — both checked
-  explicitly in `_buffer_to_frame` before the Polars build.
+  explicitly in `_rows_to_frame` before the Polars build, once per column from the
+  set of value types it holds.
 - **Table freshness remains content-authoritative.** The source file's complete
   content hash is reused only behind its freshness token: a native revision
   comprising file identity, length, last-write value, and an
@@ -752,7 +778,10 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   nested/null/scalar-array evidence, and full conservation accounting.
 - `tests/test_v2_codec_and_shred.py` — canonical schema validation and layered
   per-port shred behaviour, including that an ancestor `$value` distributed into
-  a descendant object table does not suppress that object's rows.
+  a descendant object table does not suppress that object's rows, and that each
+  compiled row reader equals per-column `_resolve_leaf` resolution (shared prefixes,
+  a leaf that is also another column's prefix, ancestor and `$value` sources,
+  string coercion, and the first crossing column in declared order).
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
   transparency ruling, end to end through inference/shred/grammar agreement.
 - `tests/test_scalar_array_and_inference.py` — scalar-array-as-its-own-child-table
@@ -765,7 +794,9 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   widening, identical frames and row order, identical skip accounting
   (including per-table row skips crossing chunk boundaries and a source without
   a trailing newline), identical typed failures, and the scratch directory
-  cleaned up on failure. Dispatch is witnessed in both directions for inference and build alike:
+  cleaned up on failure. Parallel parts are handed to publication in chunk order
+  without a parent rewrite; a missing part or a part whose footer row count differs
+  from the worker's report fails before publication. Dispatch is witnessed in both directions for inference and build alike:
   an eligible source must actually take the parallel path, and a single-range
   or explicitly sampled source must stay serial.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:

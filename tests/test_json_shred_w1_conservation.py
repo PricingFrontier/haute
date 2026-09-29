@@ -26,7 +26,7 @@ from haute._api_input_schema import ApiInputSchemaError
 from haute._execution_context import ExecutionProfile
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
-from haute._json_shred._shred import _buffer_to_frame, shred_to_buffers
+from haute._json_shred._shred import _rows_to_frame, shred_to_buffers
 from haute._json_shred._snapshots import api_input_snapshot_source
 from haute._json_shred._writer import _write_tables_streaming
 from haute._sandbox import _get_project_root, set_project_root
@@ -152,15 +152,20 @@ def test_shred_frame_conversion_checkpoints_active_execution_context(
     )
 
     with context.stage("api_input"):
-        frame = _buffer_to_frame(
-            [{"id": 1}, {"id": 2}, {"id": 3}],
-            [("id", "$[:].id", "int")],
+        frame = _rows_to_frame(
+            [(1, "a"), (2, "b"), (3, "c")],
+            [("id", "$[:].id", "int"), ("name", "$[:].name", "str")],
         )
 
-    assert frame["id"].to_list() == [1, 2, 3]
-    assert points[0] == "json_shred_frame_before"
-    assert "json_shred_frame_values" in points
-    assert points[-1] == "json_shred_frame_after"
+    assert frame.to_dict(as_series=False) == {"id": [1, 2, 3], "name": ["a", "b", "c"]}
+    # One checkpoint per converted column bounds the work between checks by
+    # one bounded buffer's column, whatever the column count.
+    assert points == [
+        "json_shred_frame_before",
+        "json_shred_frame_column",
+        "json_shred_frame_column",
+        "json_shred_frame_after",
+    ]
 
 
 # ─── F103 — empty array must not poison a later concrete element type ─
@@ -202,7 +207,7 @@ def test_build_conserves_root_rows_and_accounts_skips(tmp_path: Path) -> None:
     source = api_input_snapshot_source(config, p)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    skip_stats = _write_tables_streaming(p, config, (source.tables[0].spec,), scratch)
+    skip_stats = _write_tables_streaming(p, config, (source.tables[0].spec,), scratch).skip_stats
     assert skip_stats.skipped_records == 1
 
     # Row conservation: build the table into the store and read it back.

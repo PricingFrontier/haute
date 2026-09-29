@@ -181,6 +181,7 @@ def test_new_direct_spill_dir_resets_inherited_ownership_for_any_pid_change(
 def _bare_writer(*, max_rows: int, max_bytes: int) -> Any:
     writer = object.__new__(_writer._BoundedParquetRowGroupWriter)
     writer.buffers = {"table": []}
+    writer.name_bytes = {"table": len(orjson.dumps("value")) + 1}
     writer.row_counts = {"table": 0}
     writer.buffered_rows = 0
     writer.buffered_bytes = 0
@@ -192,8 +193,9 @@ def _bare_writer(*, max_rows: int, max_bytes: int) -> Any:
 def test_bounded_writer_emit_flushes_at_exact_row_and_byte_boundaries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    row = {"value": "x"}
-    row_bytes = len(orjson.dumps(row))
+    row = ("x",)
+    # The estimate is the row's JSON-object size, as a dict row would encode.
+    row_bytes = len(orjson.dumps({"value": "x"}))
 
     writer = _bare_writer(max_rows=2, max_bytes=10_000)
     flushed: list[tuple[int, int]] = []

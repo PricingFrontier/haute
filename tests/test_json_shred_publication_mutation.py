@@ -84,47 +84,28 @@ def test_parallel_assembly_rejects_an_underreported_part_row_count(
         )
 
 
-def test_parallel_assembly_tolerates_consumed_part_disappearance_and_logs_elapsed_time(
+def test_parallel_shred_hands_back_worker_parts_in_chunk_order_and_logs_elapsed_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import pyarrow.parquet as pq
-
     config = _config()
     specs = _shred._emitting_table_specs(config)
-    part = tmp_path / "part.parquet"
-    pl.DataFrame({"id": [1]}).write_parquet(part)
-    result = _writer._ChunkResult(
-        index=0,
-        record_count=1,
-        skipped_records=0,
-        skipped_rows_by_table={},
-        row_counts={"root": 1},
-        part_paths={"root": str(part)},
-    )
+    first = tmp_path / "first.parquet"
+    second = tmp_path / "second.parquet"
+    pl.DataFrame({"id": [1]}).write_parquet(first)
+    pl.DataFrame({"id": [2, 3]}).write_parquet(second)
+    results = [
+        _writer._ChunkResult(
+            index=index,
+            record_count=rows,
+            skipped_records=skipped,
+            skipped_rows_by_table={"root": skipped},
+            row_counts={"root": rows},
+            part_paths={"root": str(part)},
+        )
+        for index, (part, rows, skipped) in enumerate(((first, 1, 0), (second, 2, 1)))
+    ]
     shutdowns: list[tuple[bool, bool]] = []
-    _install_static_process_pool(monkeypatch, [result], shutdowns)
-    original_parquet_file = pq.ParquetFile
-
-    class VanishingPart:
-        def __init__(self) -> None:
-            self.inner = original_parquet_file(part)
-            self.num_row_groups = self.inner.num_row_groups
-
-        def __enter__(self) -> VanishingPart:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            self.inner.close()
-            part.unlink()
-
-        def read_row_group(self, index: int) -> Any:
-            return self.inner.read_row_group(index)
-
-    monkeypatch.setattr(
-        pq,
-        "ParquetFile",
-        lambda path: VanishingPart() if Path(path) == part else original_parquet_file(path),
-    )
+    _install_static_process_pool(monkeypatch, results, shutdowns)
     clock = iter((10.0, 12.0))
     monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
     events: list[tuple[str, dict[str, Any]]] = []
@@ -133,10 +114,19 @@ def test_parallel_assembly_tolerates_consumed_part_disappearance_and_logs_elapse
     )
     staging = tmp_path / "staging"
     staging.mkdir()
+    before = {part: part.read_bytes() for part in (first, second)}
 
-    _writer._write_tables_in_parallel(tmp_path / "source.jsonl", config, specs, staging, [(0, 1)])
+    shredded = _writer._write_tables_in_parallel(
+        tmp_path / "source.jsonl", config, specs, staging, [(0, 1), (1, 2)]
+    )
 
-    assert pl.read_parquet(staging / "root.parquet")["id"].to_list() == [1]
+    # The worker parts themselves, in chunk order: nothing is merged or rewritten.
+    assert shredded.files == {"root": (first, second)}
+    assert {part: part.read_bytes() for part in (first, second)} == before
+    assert list(staging.iterdir()) == []
+    assert pl.scan_parquet(list(shredded.files["root"])).collect()["id"].to_list() == [1, 2, 3]
+    assert shredded.skip_stats.skipped_records == 1
+    assert shredded.skip_stats.skipped_rows_by_table == {"root": 1}
     assert shutdowns == [(True, True)]
     complete = next(fields for event, fields in events if event == "json_shred_parallel_complete")
     assert complete["duration_seconds"] == 2.0

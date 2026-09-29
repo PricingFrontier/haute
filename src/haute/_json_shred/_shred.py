@@ -4,8 +4,8 @@ root-conservation accounting, and parallel chunk execution primitives."""
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, NoReturn, cast
 
 import orjson
 import polars as pl
@@ -72,7 +72,7 @@ def _coerce_scalar(value: Any, type_token: str) -> Any:
         return value if isinstance(value, str) else _scalar_to_str(value)
     if type_token == "float":
         if isinstance(value, bool):
-            # Leave bools alone; `_buffer_to_frame` rejects a bool in a numeric
+            # Leave bools alone; `_rows_to_frame` rejects a bool in a numeric
             # column rather than letting Polars silently coerce it to 0.0/1.0.
             return value
         if isinstance(value, int):
@@ -114,12 +114,12 @@ _LeafSpec = tuple[str, str, str]  # (column_name, leaf_path_dotted, type_token)
 _WalkSpec = tuple[str, str, str, int]
 
 
-# As _WalkSpec, plus the two per-column constants the walk would otherwise
-# re-derive on every emitted row: the leaf pre-split into hops, and whether the
-# leaf is the reserved scalar sentinel. Built once per shred in
-# :func:`shred_to_buffers`; never part of a stored config.
-# (column_name, leaf_path_dotted, leaf_parts, type_token, source_depth, is_scalar_leaf)
-_PreparedCol = tuple[str, str, tuple[str, ...], str, int, bool]
+# One emitted row: the table's column values in declared column order.
+_Row = tuple[Any, ...]
+
+# Reads one table row from the element at the table's position and the
+# enclosing ancestor elements (see :func:`_compile_row_reader`).
+_RowReader = Callable[[Any, tuple[Any, ...]], _Row]
 
 
 @dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
@@ -212,6 +212,128 @@ def _resolve_leaf(
     return cur
 
 
+class _LeafCrossesArrayError(Exception):
+    """A row reader met a non-empty list partway along a dotted leaf."""
+
+
+@dataclass  # pragma: no mutate - declaration metadata, not runtime logic
+class _PrefixNode:
+    """The columns found under one object key of a row reader's source."""
+
+    leaf_columns: list[int] = field(default_factory=list)
+    children: dict[str, _PrefixNode] = field(default_factory=dict)
+
+
+def _object_reader(node: _PrefixNode) -> Callable[[dict[str, Any], list[Any]], None]:
+    """Read every column below *node* from one dict into its row slot.
+
+    Each key is fetched once however many columns share it. A value that is
+    not a dict leaves the columns below it ``None``, as does an empty list; a
+    non-empty list raises :class:`_LeafCrossesArrayError` for the caller to report.
+    """
+    leaves = tuple(
+        (key, column) for key, child in node.children.items() for column in child.leaf_columns
+    )
+    nested = tuple(
+        (key, _object_reader(child)) for key, child in node.children.items() if child.children
+    )
+
+    def read(obj: dict[str, Any], row: list[Any]) -> None:
+        get = obj.get
+        for key, column in leaves:
+            row[column] = get(key)
+        for key, read_child in nested:
+            value = get(key)
+            if isinstance(value, dict):
+                read_child(value, row)
+            elif isinstance(value, list) and value:
+                raise _LeafCrossesArrayError
+
+    return read
+
+
+def _compile_row_reader(columns: Sequence[_WalkSpec], own_depth: int) -> _RowReader:
+    """Build the function that reads one row of a table with *columns*.
+
+    Resolving each column with :func:`_resolve_leaf` repeats the same dict
+    lookups for every column under a shared object, and a large build spends
+    most of its time there. The reader groups the columns by source (the
+    element at *own_depth*, or an ancestor element) and by shared object
+    prefix, so every object on the columns' paths is fetched once per row.
+    Its values, and the string and ``$value`` coercions applied to them, are
+    exactly per-column resolution's. A non-empty list crossed by a dotted
+    leaf resolves the row again column by column, so the error names the
+    first such column in declared order.
+    """
+    width = len(columns)
+    sources: list[tuple[bool, int, tuple[int, ...], Callable[..., None] | None]] = []
+    for depth in dict.fromkeys(source_depth for *_spec, source_depth in columns):
+        root = _PrefixNode()
+        scalar_columns: list[int] = []
+        for column, (_name, leaf, _type, source_depth) in enumerate(columns):
+            if source_depth != depth:
+                continue
+            if leaf == _SCALAR_VALUE_LEAF:
+                scalar_columns.append(column)
+                continue
+            node = root
+            for part in _leaf_parts(leaf):
+                node = node.children.setdefault(part, _PrefixNode())
+            node.leaf_columns.append(column)
+        sources.append(
+            (
+                depth == own_depth,
+                depth,
+                tuple(scalar_columns),
+                _object_reader(root) if root.children else None,
+            )
+        )
+    string_columns = tuple(
+        column
+        for column, (_name, leaf, type_token, _depth) in enumerate(columns)
+        if type_token == "str" and leaf != _SCALAR_VALUE_LEAF
+    )
+    scalar_coercions = tuple(
+        (column, type_token)
+        for column, (_name, leaf, type_token, _depth) in enumerate(columns)
+        if leaf == _SCALAR_VALUE_LEAF
+    )
+    per_column = tuple((leaf, _leaf_parts(leaf), depth) for _name, leaf, _type, depth in columns)
+
+    def raise_first_crossing(value: Any, ancestors: tuple[Any, ...]) -> NoReturn:
+        for leaf, parts, depth in per_column:
+            _resolve_leaf(value if depth == own_depth else ancestors[depth], leaf, parts)
+        raise RuntimeError(
+            "json shred row reader met an array that per-column resolution does not cross"
+        )
+
+    def read_row(value: Any, ancestors: tuple[Any, ...]) -> _Row:
+        row: list[Any] = [None] * width
+        try:
+            for is_own, depth, scalar_columns, read_object in sources:
+                source = value if is_own else ancestors[depth]
+                for column in scalar_columns:
+                    row[column] = None if isinstance(source, (dict, list)) else source
+                if read_object is not None and isinstance(source, dict):
+                    read_object(source, row)
+        except _LeafCrossesArrayError:
+            raise_first_crossing(value, ancestors)
+        for column in string_columns:
+            cell = row[column]
+            # Exact ``str`` first: it is by far the most common declared-string value.
+            if (
+                cell is not None
+                and cell.__class__ is not str
+                and not isinstance(cell, (str, dict, list))
+            ):
+                row[column] = _scalar_to_str(cell)
+        for column, type_token in scalar_coercions:
+            row[column] = _coerce_scalar(row[column], type_token)
+        return tuple(row)
+
+    return read_row
+
+
 def _reject_reserved_leaf_collision(label: str, own_depth: int, col_specs: list[_WalkSpec]) -> None:
     """Fail loud if a table mixes the reserved ``$value`` leaf with a real sibling.
 
@@ -281,14 +403,16 @@ def shred_to_buffers(
     *,  # pragma: no mutate
     stats: ShredSkipStats | None = None,  # pragma: no mutate
     _table_specs: tuple[_EmittingTableSpec, ...] | None = None,  # pragma: no mutate
-    _row_sink: Callable[[str, dict[str, Any]], None] | None = None,  # pragma: no mutate
+    _row_sink: Callable[[str, _Row], None] | None = None,  # pragma: no mutate
     _emitted_counts: dict[str, int] | None = None,  # pragma: no mutate
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
     Output is a dict keyed by ``table.label`` (the frame name); each value
     is a list of rows. Each row is a dict mapping ``column.name`` to the
-    extracted value (or ``None`` when the path doesn't resolve).
+    extracted value (or ``None`` when the path doesn't resolve). A
+    ``_row_sink`` instead receives every row as it is read, as a tuple of
+    values in declared column order, and nothing is buffered.
 
     Validates the schema before walking, so a malformed config raises
     upfront rather than silently producing empty buffers.
@@ -317,23 +441,20 @@ def shred_to_buffers(
     # Group tables by their full-segment position — the place the walk emits.
     #
     # Everything constant for a (position, table) pair is derived ONCE here
-    # rather than per emitted row: the leaf path pre-split into hops, whether
-    # the leaf is the scalar sentinel, and whether the table is a scalar child
-    # table. On a large file the walk runs these millions of times, and they
-    # depend only on the spec and the position's array depth (fixed, since the
-    # position is the key) — never on the record being walked.
-    tables_by_pos: dict[tuple[PathSeg, ...], list[tuple[str, bool, list[_PreparedCol]]]] = {}
+    # rather than per emitted row: the table's row reader and whether it is a
+    # scalar child table. On a large file the walk runs these millions of
+    # times, and they depend only on the spec and the position's array depth
+    # (fixed, since the position is the key) — never on the record being walked.
+    tables_by_pos: dict[tuple[PathSeg, ...], list[tuple[str, bool, _RowReader]]] = {}
     for label, segments, col_specs in emit_tables:
         pos_depth = array_depth(segments)
-        prepared: list[_PreparedCol] = [
-            (name, leaf, _leaf_parts(leaf), type_token, source_depth, leaf == _SCALAR_VALUE_LEAF)
-            for name, leaf, type_token, source_depth in col_specs
-        ]
         is_scalar_table = any(
-            is_scalar_leaf and source_depth == pos_depth
-            for _n, _l, _p, _t, source_depth, is_scalar_leaf in prepared
+            leaf == _SCALAR_VALUE_LEAF and source_depth == pos_depth
+            for _name, leaf, _type, source_depth in col_specs
         )
-        tables_by_pos.setdefault(segments, []).append((label, is_scalar_table, prepared))
+        tables_by_pos.setdefault(segments, []).append(
+            (label, is_scalar_table, _compile_row_reader(col_specs, pos_depth))
+        )
 
     # Descents: at each position, the (object-prefix, array-key) hops to reach a
     # child array, with the resulting child position. Object hops between arrays
@@ -360,46 +481,27 @@ def shred_to_buffers(
     # loading supplies a sink, so the walk instead hands each row to its bounded
     # spill bundle immediately and does not accumulate file-sized Python lists.
     buffers: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _ in emit_tables}
+    column_names = {label: [name for name, *_spec in cols] for label, _, cols in emit_tables}
 
-    def _deliver_row(label: str, row: dict[str, Any]) -> None:
+    def _deliver_row(label: str, row: _Row) -> None:
         if _emitted_counts is not None:
             _emitted_counts[label] = _emitted_counts.get(label, 0) + 1
         if _row_sink is None:
-            buffers[label].append(row)
+            buffers[label].append(dict(zip(column_names[label], row, strict=True)))
         else:
             _row_sink(label, row)
+        progress.advance("json_shred_rows")
 
     def _count_row_skip(label: str) -> None:
         if stats is not None:
             stats.count_row_skip(label)
 
-    def _emit_row(
-        col_specs: list[_PreparedCol],
-        value: Any,
-        ancestors: tuple[Any, ...],
-        depth: int,
-    ) -> dict[str, Any]:
-        """Build one output row. Each column's value is sourced at its own
-        depth: the current node when ``source_depth == depth``, else the
-        ancestor dict carried at that shallower depth — the same value
-        distributed across every descendant row (W1)."""
-        row: dict[str, Any] = {}
-        for col_name, leaf, parts, type_token, src_depth, is_scalar_leaf in col_specs:
-            src = value if src_depth == depth else ancestors[src_depth]  # pragma: no mutate
-            resolved = _resolve_leaf(src, leaf, parts)
-            if is_scalar_leaf or (type_token == "str" and not isinstance(resolved, (dict, list))):
-                resolved = _coerce_scalar(resolved, type_token)
-            row[col_name] = resolved
-        progress.advance("json_shred_rows")
-        return row
-
     def _emit_at(pos: tuple[PathSeg, ...], record: Any, ancestors: tuple[Any, ...]) -> None:
         # Process one element located at ``pos`` (a root or array element):
         # emit rows for the tables at ``pos`` and descend into child arrays.
         # ``ancestors[d]`` is the array element at array-depth ``d`` enclosing
-        # this one, so ``len(ancestors) == array_depth(pos)``; a row pulls an
-        # ancestor (W1) column's value from the right enclosing element.
-        depth = array_depth(pos)
+        # this one, so ``len(ancestors) == array_depth(pos)``; a row reader
+        # pulls an ancestor (W1) column's value from the right enclosing element.
         is_dict = isinstance(record, dict)
         is_scalar = not isinstance(record, (dict, list))
 
@@ -407,12 +509,12 @@ def shred_to_buffers(
         # elements; an object table takes only dict records. Skip the mismatched
         # shape — but COUNT it (W2 item 2.7): a mixed array loses that element's
         # row for this table, and the loss must be surfaced, never silent.
-        for label, is_scalar_table, col_specs in tables_by_pos.get(pos, []):
+        for label, is_scalar_table, read_row in tables_by_pos.get(pos, []):
             shape_matches = is_scalar if is_scalar_table else is_dict
             if not shape_matches:
                 _count_row_skip(label)
                 continue
-            _deliver_row(label, _emit_row(col_specs, record, ancestors, depth))
+            _deliver_row(label, read_row(record, ancestors))
 
         if not is_dict:
             return
@@ -433,15 +535,14 @@ def shred_to_buffers(
         # key or non-array value yields nothing.
         if not isinstance(arr, list):
             return
-        depth = array_depth(pos)
         for item in arr:
             if item is None:
                 # A null *element* is a real value for a scalar child table (its
                 # $value resolves to None; ancestor columns still distribute), a
                 # non-record for an object table (counted as a dropped row).
-                for label, is_scalar_table, col_specs in tables_by_pos.get(pos, []):
+                for label, is_scalar_table, read_row in tables_by_pos.get(pos, []):
                     if is_scalar_table:
-                        _deliver_row(label, _emit_row(col_specs, None, ancestors, depth))
+                        _deliver_row(label, read_row(None, ancestors))
                     else:
                         _count_row_skip(label)
                 continue
@@ -505,16 +606,15 @@ def _declared_frame_schema(table_spec: _EmittingTableSpec) -> pl.Schema:
     )
 
 
-def _buffer_to_frame(
-    rows: list[dict[str, Any]],
+def _rows_to_frame(
+    rows: Sequence[_Row],
     col_specs: list[_LeafSpec],
 ) -> pl.DataFrame:
-    """Turn a row buffer into a typed Polars DataFrame.
+    """Turn buffered rows into a typed Polars DataFrame.
 
-    Builds a per-column accumulator from the rows (preserves the
-    declared column order). Empty buffers produce an empty DataFrame
-    with the right schema so downstream readers see a consistent shape.
-    Missing column values are ``None``.
+    Each row holds its values in declared column order. Empty buffers produce
+    an empty DataFrame with the right schema so downstream readers see a
+    consistent shape. Missing column values are ``None``.
     """
     # Build each column as a strictly-typed Series so a value that doesn't
     # match the declared type fails LOUD and SPECIFIC — naming the offending
@@ -523,21 +623,16 @@ def _buffer_to_frame(
     # guaranteed it's one of the five tokens, so the map lookup can't miss.
     progress = _ShredExecutionProgress.current()
     progress.checkpoint("json_shred_frame_before")
+    columns = list(zip(*rows, strict=True)) if rows else [() for _spec in col_specs]
     series_list: list[pl.Series] = []
-    for col_name, _leaf, col_type in col_specs:
+    for (col_name, _leaf, col_type), values in zip(col_specs, columns, strict=True):
         dtype = _POLARS_TYPE_MAP[cast(ColumnType, col_type)]
-        if progress.execution_context is None:
-            values = [row.get(col_name) for row in rows]
-        else:
-            values = []
-            for row in rows:
-                values.append(row.get(col_name))
-                progress.advance("json_shred_frame_values")
+        value_types = set(map(type, values))
         # Polars strict-builds a bool into an int/float column SILENTLY
         # (True → 1/1.0), which would hide a genuine type mismatch — reject it
         # loudly instead. (bool is a subclass of int, so the strict build won't
         # raise on its own here.)
-        if col_type in ("int", "float") and any(isinstance(v, bool) for v in values):
+        if col_type in ("int", "float") and bool in value_types:
             raise ApiInputSchemaError(
                 f"column {col_name!r} is declared {col_type!r} but contains "
                 "boolean values (Polars would silently coerce them to 0/1); "
@@ -550,7 +645,7 @@ def _buffer_to_frame(
         # offset (2024 → 1975-07-18, True → 1970-01-02) — a garbage date from
         # a successful "strict" build. Reject loudly instead. ISO-8601 strings
         # parse correctly and floats already fail loud in the strict build.
-        if col_type == "date" and any(isinstance(v, int) for v in values):
+        if col_type == "date" and any(issubclass(kind, int) for kind in value_types):
             raise ApiInputSchemaError(
                 f"column {col_name!r} is declared 'date' but contains raw JSON "
                 "numbers/booleans (Polars would silently reinterpret them as "
@@ -561,7 +656,7 @@ def _buffer_to_frame(
                 declared_type=col_type,
             )
         try:
-            series_list.append(pl.Series(col_name, values, dtype=dtype, strict=True))
+            series_list.append(pl.Series(col_name, list(values), dtype=dtype, strict=True))
         except (pl.exceptions.PolarsError, TypeError, OverflowError, ValueError) as exc:
             raise ApiInputSchemaError(
                 f"column {col_name!r} has values that don't match its declared "
@@ -570,6 +665,7 @@ def _buffer_to_frame(
                 column=col_name,
                 declared_type=col_type,
             ) from exc
+        progress.checkpoint("json_shred_frame_column")
     frame = pl.DataFrame(series_list)
     progress.checkpoint("json_shred_frame_after")
     return frame
