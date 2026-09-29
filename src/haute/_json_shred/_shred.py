@@ -623,7 +623,9 @@ def _rows_to_frame(
     # guaranteed it's one of the five tokens, so the map lookup can't miss.
     progress = _ShredExecutionProgress.current()
     progress.checkpoint("json_shred_frame_before")
-    columns = list(zip(*rows, strict=True)) if rows else [() for _spec in col_specs]
+    # Transposed lazily: each column is gathered only when its turn comes, so the
+    # work between two checkpoints stays one column of the buffer.
+    columns = zip(*rows, strict=True) if rows else iter([() for _spec in col_specs])
     series_list: list[pl.Series] = []
     for (col_name, _leaf, col_type), values in zip(col_specs, columns, strict=True):
         dtype = _POLARS_TYPE_MAP[cast(ColumnType, col_type)]
