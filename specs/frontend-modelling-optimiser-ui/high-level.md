@@ -135,8 +135,8 @@ local action/result area. Training cancellation posts the active job ID, records
 terminal state immediately, and leaves a terminal race winner intact. Structured training status
 fields (`error_code`, `http_status_code`, `error_detail`) survive runtime parsing so an asynchronous
 GPU-VRAM 507 retains its actionable server message. A failure raised inside the training worker
-also keeps its `worker_remote_traceback`, shown collapsed under **Details** beneath "Training
-failed", since the failure message points the user at the job's error details. The training
+also keeps its `worker_remote_traceback`, shown collapsed under **Error details** beneath
+"Training failed", since the failure message points the user at the job's error details. The training
 memory estimate waits out the pipeline's own input-snapshot build rather than failing while it
 runs. A refusal naming only other evaluation previews keeps its short, silent backoff (a few
 seconds, under the usual estimating indicator); a refusal naming an input-snapshot build, alone

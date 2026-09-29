@@ -200,7 +200,7 @@ Only a current, accepted save response may acknowledge this revision transition.
    race winner. Structured execution details and additive `error_code`/`http_status_code`/
    `error_detail`/`worker_remote_traceback` fields are retained in progress/error state. A
    terminal status with a `worker_remote_traceback` shows it under "Training failed" in a
-   collapsed `<details>` headed **Details**, as preformatted, horizontally scrolling text, so
+   collapsed `<details>` headed **Error details**, as preformatted, horizontally scrolling text, so
    the message's "recorded in the job's error details" has somewhere to point. While the
    estimate waits out an input-snapshot build, `ModellingConfig` holds a waiting flag (set by
    `onWaiting`, cleared when that estimate settles or is aborted) and
@@ -914,7 +914,7 @@ Verification is deliberately assigned to the owning seams:
   training job, a mix with any other holder, a non-507), the two schedules and their limits,
   alternating refusals drawing on budgets that never reset, `onWaiting` firing only for a
   snapshot build, and abort during a wait.
-  `TrainingActionsAndResults.test.tsx` covers the collapsed **Details** traceback under a failure
+  `TrainingActionsAndResults.test.tsx` covers the collapsed **Error details** traceback under a failure
   (absent without a traceback) and the waiting notice with Train and Re-train disabled.
 - `frontend/src/panels/__tests__/NodePanel.test.tsx`,
   `frontend/src/stores/__tests__/useUIStore.test.ts`, and
