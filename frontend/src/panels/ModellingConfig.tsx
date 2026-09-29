@@ -464,8 +464,10 @@ export default function ModellingConfig({
   const estimateEndpoint = useCallback(
     async (_payload: void, context: { signal: AbortSignal }) => {
       // A superseded estimate settles after its replacement starts, so only the
-      // latest may show or clear the waiting notice.
+      // latest may show or clear the waiting notice; the replacement starts
+      // without it, whatever the estimate it replaces was waiting for.
       const run = ++latestEstimate.current
+      setEstimateWaiting(false)
       try {
         return await estimateAfterSupersededPreviews(
           () => estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context),

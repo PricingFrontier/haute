@@ -1439,6 +1439,37 @@ describe("ModellingConfig", () => {
       }
     })
 
+    it("drops the waiting notice when a config change replaces the waiting estimate", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        const snapshotRefusal = Object.assign(new ApiError("HTTP 507", 507), {
+          status: 507,
+          rawDetail: {
+            reason: "in_flight_memory_budget_exceeded",
+            in_flight_operations: ["lazy_sink:input_snapshot_build"],
+          },
+        })
+        mockEstimateTrainingRam.mockReset()
+          .mockRejectedValueOnce(snapshotRefusal)
+          .mockReturnValue(new Promise(() => {}))
+        const { rerender, props } = renderConfig()
+        await waitFor(() => expect(screen.getByText("Waiting for the input snapshot to finish")).toBeTruthy())
+
+        rerender(
+          <GraphProvider allNodes={[]} edges={[]}>
+            <ModellingConfig {...props} config={{ ...props.config, params: { depth: 8 } }} />
+          </GraphProvider>,
+        )
+
+        await waitFor(() => expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(2))
+        expect(screen.queryByText("Waiting for the input snapshot to finish")).toBeNull()
+        expect(screen.getByText("Estimating dataset size...")).toBeTruthy()
+        expect(screen.getByRole("button", { name: /Train Model/ })).not.toBeDisabled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("shows loading state while estimating", () => {
       // The mock returns a never-resolving promise, so loading persists
       renderConfig()
