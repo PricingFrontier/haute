@@ -1399,6 +1399,46 @@ describe("ModellingConfig", () => {
       )
     })
 
+    it("waits out the pipeline's input-snapshot build, holding Train, then shows the estimate", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        const snapshotRefusal = Object.assign(new ApiError("HTTP 507", 507), {
+          status: 507,
+          rawDetail: {
+            reason: "in_flight_memory_budget_exceeded",
+            in_flight_operations: ["lazy_sink:input_snapshot_build"],
+          },
+        })
+        mockEstimateTrainingRam.mockReset().mockRejectedValueOnce(snapshotRefusal).mockResolvedValue({
+          total_rows: 100000,
+          safe_row_limit: null,
+          estimated_mb: 50,
+          training_mb: 67,
+          available_mb: 8192,
+          bytes_per_row: 700,
+          was_downsampled: false,
+          unbounded_join_node_ids: [],
+          warning: null,
+          gpu_vram_estimated_mb: null,
+          gpu_vram_available_mb: null,
+          gpu_warning: null,
+        })
+        renderConfig()
+
+        await waitFor(() => expect(screen.getByText("Waiting for the input snapshot to finish")).toBeTruthy())
+        expect(screen.getByRole("button", { name: /Train Model/ })).toBeDisabled()
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000)
+        })
+        await waitFor(() => expect(screen.getByText("Dataset fits in memory")).toBeTruthy())
+        expect(screen.queryByText("Waiting for the input snapshot to finish")).toBeNull()
+        expect(screen.getByRole("button", { name: /Train Model/ })).not.toBeDisabled()
+        expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("shows loading state while estimating", () => {
       // The mock returns a never-resolving promise, so loading persists
       renderConfig()

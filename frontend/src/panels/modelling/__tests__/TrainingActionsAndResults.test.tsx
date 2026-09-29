@@ -238,6 +238,19 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
   })
 
+  it("says it is waiting for the input snapshot, and holds Train and Re-train until it finishes", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimateLoading: true,
+      estimateWaiting: true,
+      isStale: true,
+    })} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for the input snapshot to finish")
+    expect(screen.queryByText("Estimating dataset size...")).toBeNull()
+    expect(screen.getByRole("button", { name: /Train Model/ })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Re-train" })).toBeDisabled()
+  })
+
   it("shows RAM estimate loading state", () => {
     render(<TrainingActionsAndResults {...makeProps({ ramEstimateLoading: true })} />)
     expect(screen.getByText("Estimating dataset size...")).toBeInTheDocument()

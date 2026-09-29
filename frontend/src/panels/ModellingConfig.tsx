@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
@@ -239,6 +239,7 @@ type TrainPaneProps = {
   trainJob: ReturnType<typeof useNodeResultsStore.getState>["trainJobs"][string] | undefined
   cachedResult: ReturnType<typeof useNodeResultsStore.getState>["trainResults"][string] | undefined
   estimate: UseStaleConfigEstimateResult<TrainEstimate>
+  estimateWaiting: boolean
   nodeLabel: (nodeId: string) => string
   nodeOpener: (nodeId: string) => (() => void) | null
   submitting: boolean
@@ -259,6 +260,7 @@ function TrainPane({
   trainJob,
   cachedResult,
   estimate,
+  estimateWaiting,
   nodeLabel,
   nodeOpener,
   submitting,
@@ -319,6 +321,7 @@ function TrainPane({
         ramEstimate={estimate.estimate}
         ramEstimateLoading={estimate.loading}
         ramEstimateError={estimate.error}
+        estimateWaiting={estimateWaiting}
         rowLimit={rowLimit}
         nodeLabel={nodeLabel}
         nodeOpener={nodeOpener}
@@ -456,11 +459,24 @@ export default function ModellingConfig({
     (id: string) => (openNode && allNodes.some((node) => node.id === id) ? () => openNode(id) : null),
     [allNodes, openNode],
   )
+  const [estimateWaiting, setEstimateWaiting] = useState(false)
+  const latestEstimate = useRef(0)
   const estimateEndpoint = useCallback(
-    (_payload: void, context: { signal: AbortSignal }) => estimateAfterSupersededPreviews(
-      () => estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context),
-      context.signal,
-    ),
+    async (_payload: void, context: { signal: AbortSignal }) => {
+      // A superseded estimate settles after its replacement starts, so only the
+      // latest may show or clear the waiting notice.
+      const run = ++latestEstimate.current
+      try {
+        return await estimateAfterSupersededPreviews(
+          () => estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context),
+          context.signal,
+          undefined,
+          { onWaiting: () => { if (run === latestEstimate.current) setEstimateWaiting(true) } },
+        )
+      } finally {
+        if (run === latestEstimate.current) setEstimateWaiting(false)
+      }
+    },
     [activeSource, graph, nodeId],
   )
   const estimate = useStaleConfigEstimate<TrainEstimate>(
@@ -629,6 +645,7 @@ export default function ModellingConfig({
       trainJob={trainJob}
       cachedResult={cachedResult}
       estimate={estimate}
+      estimateWaiting={estimateWaiting}
       nodeLabel={canvasNodeLabel}
       nodeOpener={canvasNodeOpener}
       submitting={submitting}
