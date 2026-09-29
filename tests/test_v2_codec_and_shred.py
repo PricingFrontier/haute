@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from haute._api_input_schema import (
@@ -29,6 +29,7 @@ from haute._api_input_schema import (
     parse_table_path,
     validate_v2_schema,
 )
+from haute._json_shred import _shred
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._shred import (
     _SCALAR_VALUE_LEAF,
@@ -39,6 +40,7 @@ from haute._json_shred._shred import (
     shred_to_buffers,
 )
 from haute._sandbox import set_project_root
+from tests._property_budget import pr_budget
 from tests.conftest import build_test_api_input_snapshots
 
 # ─── Path helpers ─────────────────────────────────────────────────
@@ -858,14 +860,14 @@ _OBJECT_TABLE_COLUMNS: tuple[_WalkSpec, ...] = (
 
 
 @given(value=_reader_values, ancestor=_reader_records)
-@settings(max_examples=400, deadline=None)
+@pr_budget(400)
 def test_object_table_reader_matches_per_column_resolution(value: Any, ancestor: Any) -> None:
     _assert_reader_matches_per_column(_OBJECT_TABLE_COLUMNS, 1, value, (ancestor,))
 
 
 @pytest.mark.parametrize("type_token", ["str", "float", "int", "bool", "date"])
 @given(value=_reader_values, ancestor=_reader_records)
-@settings(max_examples=100, deadline=None)
+@pr_budget(100)
 def test_scalar_table_reader_matches_per_column_resolution(
     type_token: str, value: Any, ancestor: Any
 ) -> None:
@@ -894,3 +896,15 @@ def test_reader_names_the_first_crossing_column_in_declared_order() -> None:
     assert exc_info.value.context == {"column": "b.y"}
     assert "crosses an array at segment 'y'" in exc_info.value.message
     assert read_row({"a": {"p": {"x": 1}, "q": []}, "b": []}, ()) == (1, None, None)
+
+
+def test_reader_fails_loud_when_per_column_resolution_does_not_cross(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The reader leaves the crossing error to per-column resolution. Were the
+    # two ever to disagree, the row must fail rather than be emitted.
+    monkeypatch.setattr(_shred, "_resolve_leaf", lambda *_args: None)
+    read_row = _compile_row_reader((("x", "a.x", "int", 0),), 0)
+
+    with pytest.raises(RuntimeError, match="per-column resolution does not cross"):
+        read_row({"a": [{"x": 1}]}, ())
