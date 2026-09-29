@@ -470,8 +470,8 @@ continuous proportion target stays legitimate and reachable — setting the repo
 metrics explicitly to regression metrics empties the effective set of classification
 metrics and the gate stands aside, which the rejection message itself points out —
 qualified to objectives that accept a continuous target (a binomial GLM family; a
-CatBoost Logloss/CrossEntropy loss never reaches this branch, since
-`resolve_loss_function` rejects it under a regression task at config time). And
+CatBoost Logloss/CrossEntropy loss never reaches this branch, since the config-time loss
+check rejects it under a regression task). And
 because the fit runs in a spawn child, message
 quality has to survive the process boundary: the child stamps every curated failure
 message on the failure payload's `user_message` field, and the parent supervisor

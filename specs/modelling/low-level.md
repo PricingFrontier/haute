@@ -295,9 +295,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
    the removed `split`/`cross_validation` rejected by the one check
    `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, GLM family/link
-   validity or CatBoost
-   loss validity via `resolve_loss_function`, then `training_objective_issue` for
-   completeness); under
+   validity or, for every other family, loss validity against the selected family's own
+   descriptor (`algorithm_descriptor(algorithm).native_loss(task, loss)`, the check the
+   training builder repeats), so a loss that family supports and CatBoost does not (Gamma for
+   LightGBM, XGBoost and EBM) is not refused in CatBoost's name; then
+   `training_objective_issue` for completeness); under
    `_start_lock`, reject if another job is already `"running"`
    (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
    token; start the owned preparation thread and return `TrainResponse(status="started",
@@ -1524,7 +1526,10 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `tests/test_modelling_routes.py` — HTTP-level integration tests for every route
   in `src/haute/routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
-  validation branch, worker-side failure mapping, cancellation).
+  validation branch, worker-side failure mapping, cancellation). `TestValidateConfig`
+  accepts every loss each non-GLM family's descriptor lists, under its task (a LightGBM
+  Gamma fit reaches training), and refuses one the family lacks in that family's name
+  (CatBoost with Gamma).
 - `tests/test_modelling_export.py` — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules, including
   `mlflow_destination` rendered only for an explicit key, and executed exports
