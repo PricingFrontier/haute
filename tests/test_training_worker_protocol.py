@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -9,10 +10,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._native_memory_limit import NativeMemoryLease, model_thread_address_space_allowance
+from haute._worker_isolation import IsolatedWorkerConfig, IsolatedWorkerError
 from haute._worker_protocol import (
     WorkerFailurePayload,
     WorkerProtocolError,
@@ -21,6 +25,7 @@ from haute._worker_protocol import (
     WorkerResultManifest,
     WorkerRuntime,
     build_artifact_manifest,
+    run_worker_protocol,
     validate_result_manifest,
 )
 from haute.errors import PreambleError
@@ -62,6 +67,7 @@ from haute.routes._train_service import (
     _validate_tuning_artifact_contents,
     _worker_timing,
 )
+from haute.routes._training_artifacts import _TRAINING_ARTIFACT_KINDS, _max_training_artifact_bytes
 from haute.schemas import EvaluationReportPayload, TuningReportPayload
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
@@ -1753,3 +1759,91 @@ def test_publication_rejects_an_evaluation_report_without_its_selection_metrics(
             artifact_paths,
             response_fit_count=expected_evaluation.fit_count,
         )
+
+
+def _train_under_rlimit(runtime: WorkerRuntime, request: WorkerRequest) -> object:
+    """Haute's training entrypoint under the RLIMIT_AS fallback, installed here so a
+    host's delegated cgroup cannot stand in for it."""
+    from haute.modelling._descriptors import training_threads
+
+    preloaded = "catboost" in sys.modules
+    NativeMemoryLease()._apply_rlimit(650 * 1024**2, request.payload["allowance"])
+    result = _run_training_process_job(runtime, request)
+    if isinstance(result, WorkerResultManifest):
+        return replace(
+            result,
+            metadata={
+                **result.metadata,
+                "catboost_preloaded": preloaded,
+                "training_threads": training_threads(),
+            },
+        )
+    return result
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="RLIMIT_AS counts reserved address space only on Linux",
+)
+@pytest.mark.parametrize("allowance", ["model library", "none"])
+def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allowance: str
+) -> None:
+    """The training worker loads CatBoost before its cap and allows for what the fit
+    reserves. On a 4-CPU host the old 192 MiB per CPU failed this fit when CatBoost
+    could not start its threads; with no allowance it fails on any host, which shows
+    the cap binds here."""
+    # The spawned worker inherits this: the suite's default of one thread per job
+    # would not start the threads whose reservations the allowance covers.
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "4")
+    rng = np.random.default_rng(0)
+    rows = 10_000
+    categorical = ["make", "fuel", "cover", "channel", "region"]
+    pl.DataFrame(
+        {name: rng.choice([f"{name}_{i}" for i in range(40)], rows) for name in categorical}
+        | {f"num_{i}": rng.normal(size=rows) for i in range(5)}
+        | {"claims": rng.gamma(2.0, 300.0, rows)}
+    ).write_parquet(tmp_path / "input.parquet")
+    request = WorkerRequest(
+        "job-1",
+        "training",
+        {
+            "job_kwargs": {
+                "name": "quoted",
+                "data": str(tmp_path / "input.parquet"),
+                "target": "claims",
+                "algorithm": "catboost",
+                "params": {"iterations": 50},
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 7,
+                    "validation": {"method": "single", "size": 0.2},
+                },
+            },
+            "profile": ExecutionProfile.TRAINING_PREP.value,
+            "memory_limit_bytes": None,
+            "allowance": (
+                model_thread_address_space_allowance() if allowance == "model library" else 0
+            ),
+        },
+    )
+
+    def run() -> WorkerResultManifest:
+        return run_worker_protocol(
+            _train_under_rlimit,
+            request,
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=_TRAINING_ARTIFACT_KINDS,
+            max_artifact_size_bytes=_max_training_artifact_bytes(),
+            config=IsolatedWorkerConfig(timeout_seconds=120, preload_modules=("catboost",)),
+        )
+
+    if allowance == "none":
+        with pytest.raises(IsolatedWorkerError):
+            run()
+        return
+    result = run()
+    assert result.metadata["catboost_preloaded"] is True
+    assert result.metadata["training_threads"] == 4
+    assert result.metadata["response"]["status"] == "completed"

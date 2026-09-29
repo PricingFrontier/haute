@@ -2290,6 +2290,18 @@ describe("API response guards", () => {
     expect(parsed.error_detail).toEqual(detail)
   })
 
+  it("keeps the worker's remote traceback on a terminal training status", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_status_response")
+    const traceback = "Traceback (most recent call last):\n  ImportError: /opt/lib/_catboost.so"
+
+    expect(parseTrainStatusResponse({
+      ...fixture, status: "error", result: null, worker_remote_traceback: traceback,
+    }).worker_remote_traceback).toBe(traceback)
+    expect(parseTrainStatusResponse({
+      ...fixture, status: "error", result: null, worker_remote_traceback: null,
+    }).worker_remote_traceback).toBeNull()
+  })
+
   it("parses a data-profile response as the statistics of one data version", () => {
     const parsed = parseNodeDataProfileResponse(
       loadUiContractFixture("node_data_profile_response"),

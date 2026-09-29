@@ -190,6 +190,26 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText("Out of memory")).toBeInTheDocument()
   })
 
+  it("shows the worker's traceback collapsed under Error details", () => {
+    const traceback = "Traceback (most recent call last):\n  ImportError: /opt/lib/_catboost.so"
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Training failed with an unexpected internal error" }),
+      terminalTraceback: traceback,
+    })} />)
+
+    const details = screen.getByText("Error details").closest("details")
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute("open")
+    expect(details?.querySelector("pre")?.textContent).toBe(traceback)
+  })
+
+  it("has no Error details without a traceback", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+    })} />)
+    expect(screen.queryByText("Error details")).toBeNull()
+  })
+
   it("shows structured terminal memory diagnostics when training failed", () => {
     render(<TrainingActionsAndResults {...makeProps({
       trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
@@ -216,6 +236,19 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText("Feature contract mismatch")).toBeInTheDocument()
     expect(screen.queryByText("Training reached 75% of its memory allowance.")).not.toBeInTheDocument()
     expect(screen.queryByText("Technical details")).not.toBeInTheDocument()
+  })
+
+  it("says it is waiting for the input snapshot, and holds Train and Re-train until it finishes", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimateLoading: true,
+      estimateWaiting: true,
+      isStale: true,
+    })} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for the input snapshot to finish")
+    expect(screen.queryByText("Estimating dataset size...")).toBeNull()
+    expect(screen.getByRole("button", { name: /Train Model/ })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Re-train" })).toBeDisabled()
   })
 
   it("shows RAM estimate loading state", () => {

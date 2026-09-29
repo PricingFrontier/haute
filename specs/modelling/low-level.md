@@ -257,8 +257,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   (`schemas.py`) — request carries `graph`, `node_id`, `source`, and `param:
   Literal["theta", "var_power"]`; the start response carries only `status`/`job_id`
   (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
-  progress/message/elapsed shape plus the resolved `param`/`value`/`llf`/`n_fits` once
-  complete.
+  progress/message/elapsed shape, including `worker_remote_traceback`, plus the resolved
+  `param`/`value`/`llf`/`n_fits` once complete.
 - **`TrainService`** (`src/haute/routes/_training_lifecycle.py`, re-exported by
   `src/haute/routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
   and `CancellableJobRegistry`; owns the HTTP-facing training lifecycle
@@ -295,9 +295,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
    the removed `split`/`cross_validation` rejected by the one check
    `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, GLM family/link
-   validity or CatBoost
-   loss validity via `resolve_loss_function`, then `training_objective_issue` for
-   completeness); under
+   validity or, for every other family, loss validity against the selected family's own
+   descriptor (`algorithm_descriptor(algorithm).native_loss(task, loss)`, the check the
+   training builder repeats), so a loss that family supports and CatBoost does not (Gamma for
+   LightGBM, XGBoost and EBM) is not refused in CatBoost's name; then
+   `training_objective_issue` for completeness); under
    `_start_lock`, reject if another job is already `"running"`
    (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
    token; start the owned preparation thread and return `TrainResponse(status="started",
@@ -479,7 +481,14 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    skip the recursive walk; a validation failure instead flips the job to `"error"`
    with `result: None`. The response also carries `error_code`, `http_status_code`, and
    structured `error_detail` for terminal preparation failures, including the actionable
-   GPU-VRAM 507 payload.
+   GPU-VRAM 507 payload, and `worker_remote_traceback`: the formatted traceback that
+   `IsolatedJobSupervisor` records on the job when the isolated worker raises
+   (`WorkerRemoteFailureError`), `None` otherwise. It is diagnostic text for the UI's
+   failure details, not a stable contract to parse. It can hold what `_friendly_error` keeps
+   out of the terminal message (internal paths, a third-party message body), which is why
+   the message stays curated and the traceback is a separate field the UI shows only on
+   request: the status is served to the session that owns the local server, the person
+   who ran the job.
 
 ### Canonical `TrainingJob.run()` pipeline
 
@@ -1489,7 +1498,10 @@ rows/features) and retry.
   worker-memory failure is labelled `operation="dispersion_estimate"` on both the 507 and the
   job's `error_detail`, and `TestPreparationTempPathOwnership` proves a setup failure before
   launch (an invalid `HAUTE_WORKER_MEMORY_ENFORCEMENT`) ends the job `error` with no
-  `haute_train_*.parquet` left behind. `tests/test_modelling_routes.py::TestTrainingProjection` covers the child
+  `haute_train_*.parquet` left behind.
+  `tests/test_modelling_routes.py::TestTrainStatusEndpoint` also proves a job whose worker
+  raised returns its `worker_remote_traceback` on `/train/status` (and `None` for a job
+  without one), and the dispersion status does the same. `tests/test_modelling_routes.py::TestTrainingProjection` covers the child
   core directly (projection forwarding, bounded-sink and target/task-gate contract
   failures, memory failures) with `execute_lazy_graph` patched at
   `haute.routes._training_preparation.execute_lazy_graph`.
@@ -1514,7 +1526,10 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `tests/test_modelling_routes.py` — HTTP-level integration tests for every route
   in `src/haute/routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
-  validation branch, worker-side failure mapping, cancellation).
+  validation branch, worker-side failure mapping, cancellation). `TestValidateConfig`
+  accepts every loss each non-GLM family's descriptor lists, under its task (a LightGBM
+  Gamma fit reaches training), and refuses one the family lacks in that family's name
+  (CatBoost with Gamma).
 - `tests/test_modelling_export.py` — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules, including
   `mlflow_destination` rendered only for an explicit key, and executed exports

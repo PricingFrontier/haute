@@ -54,7 +54,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx` | Train action/result summary and progress. |
 | `frontend/src/panels/modelling/TrainingRunSummary.tsx`, `frontend/src/panels/modelling/trainingFitBudget.ts` | The Train pane's read-only run summary (model, target, feature count, evaluation method and allocation, fit budget, compute, and for a CatBoost model with String or Categorical features the categorical encoding: one-hot up to `one_hot_max_size` levels with target statistics above, tuned when the search space holds it, or CatBoost's default) and the pure fit count behind it and the tuning note: selection fits (validation fits × tuning trials) plus the final development refit unless `refit_on_development` is `false`. |
 | `frontend/src/panels/modelling/EvaluationAllocation.tsx`, `frontend/src/panels/modelling/evaluationPreview.ts` | The Split pane's training/validation/test allocation bar and per-fit row ranges, showing exact rows only from an evaluation preview whose strategy and validation method match the current editor (`compatibleEvaluationPreview`), and target fractions otherwise. |
-| `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but other evaluation previews as the in-flight holders (`refusedByEvaluationPreviews`); every other failure, including a running training job, is returned at once. |
+| `frontend/src/panels/modelling/trainingEstimate.ts` | `estimateAfterSupersededPreviews`: the modelling estimate request retried with bounded, abortable backoff only while a 507 names nothing but transient in-flight holders (`transientEstimateHolders`): other evaluation previews (`training_prep:training_evaluation_preview`) and input-snapshot builds (any `<profile>:input_snapshot_build`). A refusal naming only evaluation previews keeps the short `SUPERSEDED_PREVIEW_RETRY_DELAYS_MS` schedule (about 3.5 s); one naming a snapshot build is retried every `INPUT_SNAPSHOT_RETRY_DELAY_MS` (2 s) for up to `INPUT_SNAPSHOT_WAIT_LIMIT_MS` (60 s) of waiting, and reports each wait through the optional `onWaiting` callback so the caller can say what it is waiting for. The two budgets belong to one call and never reset: each preview-only refusal takes the next preview delay and each refusal naming a snapshot build takes 2 s of the 60 s, whatever came before, and a refusal whose own budget is spent is returned. So alternating refusals retry at most 4 + 30 times. Every other failure, including a running training job, is returned at once. |
 | `frontend/src/panels/modelling/ColumnSelector.tsx` | Searchable column-only combobox for target, weight, offset and similar role fields; a saved column that is no longer upstream stays visible but is never offered as a new choice, and is flagged unavailable only once the columns are known. |
 | `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE, PDP and the optimiser Rates tab share (`FeatureDiagnosticLayout`: a ranked browser beside the selected item's chart, with empty states for no rows and for a selection without a row; `FeatureDiagnosticTab` ranks model features by importance through it); and the results workspace's container-query layout styles, imported by `frontend/src/panels/ResultsWorkspace.tsx` so the optimiser is styled even when no model result has been opened. Accent-coloured rules read `--results-accent`/`--results-accent-soft`, which the shell sets per workspace; the optimiser Frontier tab's stacking rules live here too. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
@@ -198,7 +198,15 @@ Only a current, accepted save response may acknowledge this revision transition.
    distinct Cancel control visible while that job is active; `ModellingConfig` posts its job ID to
    `/train/cancel`, then immediately stores a returned terminal failure/cancellation or completed
    race winner. Structured execution details and additive `error_code`/`http_status_code`/
-   `error_detail` fields are retained in progress/error state. Both the estimate warning and the
+   `error_detail`/`worker_remote_traceback` fields are retained in progress/error state. A
+   terminal status with a `worker_remote_traceback` shows it under "Training failed" in a
+   collapsed `<details>` headed **Error details**, as preformatted, horizontally scrolling text, so
+   the message's "recorded in the job's error details" has somewhere to point. While the
+   estimate waits out an input-snapshot build, `ModellingConfig` holds a waiting flag (set by
+   `onWaiting`, cleared when that estimate settles or is aborted) and
+   `TrainingActionsAndResults` shows "Waiting for the input snapshot to finish" in the
+   estimate's place, as a neutral `role="status"` notice rather than a warning, and disables
+   Train and Re-train until it clears. Both the estimate warning and the
    terminal `gpu_vram_limit` message require an explicit CPU selection and retry rather than
    describing an automatic fallback. The optional GLM dispersion action calls the dispersion API
    and writes a successful theta/variance-power estimate through the ordinary editable update
@@ -878,7 +886,7 @@ The behavioural contract is defined in
   ([frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes)).
 - `api/types.ts`, `types/trainGuards.ts`, and the train-progress store type share the backend status
   contract. `parseTrainStatusResponse` requires the history and truncation flag the server
-  always sends. `parseTrainResponse` validates the generated structure, which rejects retired
+  always sends, and keeps an optional string-or-null `worker_remote_traceback`. `parseTrainResponse` validates the generated structure, which rejects retired
   result fields; the evaluation/tuning counts, weighted aggregates, digest links, winner and
   improvement are the server's to check, where the artifacts are produced. `useUIStore.ts` remembers the pane per node.
   `useNodeResultsStore.ts` retains the latest authoritative history snapshot and only the last two
@@ -901,6 +909,13 @@ Verification is deliberately assigned to the owning seams:
   click-time aggregate training-validation presentation, canonical evaluation
   transitions/preview, tuning enablement/search-space drafts, evaluation/result/progress fit
   counts, result labels, and live progress presentation.
+  `trainingEstimate.test.ts` covers which refusals are waited out (evaluation previews and
+  input-snapshot builds of any profile, alone or together) and which fail at once (a running
+  training job, a mix with any other holder, a non-507), the two schedules and their limits,
+  alternating refusals drawing on budgets that never reset, `onWaiting` firing only for a
+  snapshot build, and abort during a wait.
+  `TrainingActionsAndResults.test.tsx` covers the collapsed **Error details** traceback under a failure
+  (absent without a traceback) and the waiting notice with Train and Re-train disabled.
 - `frontend/src/panels/__tests__/NodePanel.test.tsx`,
   `frontend/src/stores/__tests__/useUIStore.test.ts`, and
   `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` cover strip gating, per-node memory,
@@ -909,7 +924,7 @@ Verification is deliberately assigned to the owning seams:
   `frontend/src/api/__tests__/client.contract.test.ts`, and
   `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` cover strict status-history parsing,
   canonical evaluation/tuning response and preview validation, weighted-evidence tampering,
-  truncation retention, latest-snapshot semantics, valid/invalid estimate samples, and new-job
+  `worker_remote_traceback` retention, truncation retention, latest-snapshot semantics, valid/invalid estimate samples, and new-job
   reset.
 
 Shared `NodePanel`, tab-control, API/parser, and store interactions are recorded in

@@ -63,8 +63,9 @@ from haute.execution import (
     AllExceptColumns,
     execute_lazy_graph,
 )
-from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
+from haute.modelling._algorithms import ALGORITHM_REGISTRY
 from haute.modelling._candidate_run import capture_provenance
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import (
     EvaluationConfig,
     generate_evaluation_plan,
@@ -179,6 +180,11 @@ _JOB_TYPE_KEY = "job_type"
 # waits these out rather than being refused because the estimate was refreshing.
 _EVALUATION_PREVIEW_HOLDERS = frozenset({"training_prep:training_evaluation_preview"})
 _EVALUATION_PREVIEW_WAIT_SECONDS = 30.0
+
+
+def _engine_module(config: Mapping[str, Any]) -> str:
+    """The model library a fit imports, loaded before its worker's memory cap."""
+    return algorithm_descriptor(str(config.get("algorithm", "catboost"))).engine_module
 
 
 class _TrainingRunningJob(RunningJobFields):
@@ -1057,6 +1063,7 @@ class TrainService:
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-dispersion-{job_id}",
                 address_space_allowance_bytes=model_thread_address_space_allowance(),
+                preload_modules=(_engine_module(config),),
             )
             return self._supervisor.launch_protocol(
                 job_id,
@@ -1237,18 +1244,18 @@ class TrainService:
 
         # Validity checks first, so a wrong value beats an incomplete one:
         # GLM values (family/link, dispersion ranges, term contract,
-        # regularization and solver settings); CatBoost loss-vs-task. Absent
-        # values are caught by the completeness gate below.
+        # regularization and solver settings); otherwise the loss against the
+        # chosen family's own losses, not CatBoost's (LightGBM, XGBoost and EBM
+        # train Gamma, which CatBoost lacks). Absent values are caught by the
+        # completeness gate below.
         if algorithm == "glm":
             _validate_glm_config_values(config)
         else:
             loss_function = config.get("loss_function")
             if loss_function:
                 try:
-                    resolve_loss_function(
-                        loss_function,
-                        str(config.get("task", "regression")),
-                        config.get("variance_power"),
+                    algorithm_descriptor(str(algorithm)).native_loss(
+                        str(config.get("task", "regression")), str(loss_function)
                     )
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2138,6 +2145,7 @@ class TrainService:
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-training-{job_id}",
                 address_space_allowance_bytes=model_thread_address_space_allowance(),
+                preload_modules=(_engine_module(config),),
             )
             return self._supervisor.launch_protocol(
                 job_id,

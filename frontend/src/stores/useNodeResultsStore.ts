@@ -167,6 +167,7 @@ export type TrainProgress = {
   error_code?: string | null
   http_status_code?: number | null
   error_detail?: unknown
+  worker_remote_traceback?: string | null
   execution_metrics?: ExecutionMetrics | null
   phase?: "planning" | "trial_fit" | "trial_complete" | "final_fit" | "publication" | "completed" | null
   trial_index?: number | null

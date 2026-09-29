@@ -156,7 +156,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   on completion — the full result: metrics, feature importances, and every diagnostic
   chart's underlying data. Terminal preparation failures retain their public
   `error_code`, `http_status_code`, and structured `error_detail` on this status
-  response. Polling also enforces the configured/default training timeout: an overdue
+  response. A failure raised inside the isolated training worker also carries the
+  worker's formatted traceback as `worker_remote_traceback`, so the UI can show what
+  the error message calls "the job's error details". Polling also enforces the configured/default training timeout: an overdue
   running job requests preparation/child termination and atomically transitions to
   `timed_out`.
 - `GET /api/modelling/gpu` reports whether XGBoost can train on a GPU in this server
@@ -468,8 +470,8 @@ continuous proportion target stays legitimate and reachable — setting the repo
 metrics explicitly to regression metrics empties the effective set of classification
 metrics and the gate stands aside, which the rejection message itself points out —
 qualified to objectives that accept a continuous target (a binomial GLM family; a
-CatBoost Logloss/CrossEntropy loss never reaches this branch, since
-`resolve_loss_function` rejects it under a regression task at config time). And
+CatBoost Logloss/CrossEntropy loss never reaches this branch, since the config-time loss
+check rejects it under a regression task). And
 because the fit runs in a spawn child, message
 quality has to survive the process boundary: the child stamps every curated failure
 message on the failure payload's `user_message` field, and the parent supervisor

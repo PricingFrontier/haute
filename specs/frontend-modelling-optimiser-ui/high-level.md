@@ -134,7 +134,17 @@ Training, solve, MLflow, export, auto-range and materialisation failures are dis
 local action/result area. Training cancellation posts the active job ID, records the returned
 terminal state immediately, and leaves a terminal race winner intact. Structured training status
 fields (`error_code`, `http_status_code`, `error_detail`) survive runtime parsing so an asynchronous
-GPU-VRAM 507 retains its actionable server message. A locally aborted/superseded auto-range request
+GPU-VRAM 507 retains its actionable server message. A failure raised inside the training worker
+also keeps its `worker_remote_traceback`, shown collapsed under **Error details** beneath
+"Training failed", since the failure message points the user at the job's error details. The training
+memory estimate waits out the pipeline's own input-snapshot build rather than failing while it
+runs. A refusal naming only other evaluation previews keeps its short, silent backoff (a few
+seconds, under the usual estimating indicator); a refusal naming an input-snapshot build, alone
+or beside evaluation previews, is retried for up to about a minute, with a neutral "Waiting for
+the input snapshot to finish" notice and Train disabled meanwhile. Any other refusal fails at
+once, as before. Train pressed while a snapshot
+build runs is still refused by the server, since training's admission waits out only
+evaluation previews; making it wait for the build too is a follow-up on the server side. A locally aborted/superseded auto-range request
 suppresses an error, while a terminal cancelled/superseded status returned by the server is shown
 in the auto-range error area. Deliberately strict helper parsers throw for malformed numerical
 result contracts rather than silently charting incorrect values.

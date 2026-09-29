@@ -44,6 +44,8 @@ export type TrainingActionsAndResultsProps = {
   ramEstimate: TrainEstimate | null
   ramEstimateLoading: boolean
   ramEstimateError?: string | null
+  /** The estimate is waiting for the pipeline's input-snapshot build to release the budget. */
+  estimateWaiting?: boolean
   rowLimit: number | null
   /** Canvas label for a node the estimate names (a blocking node, or a join without a key contract). */
   nodeLabel: (nodeId: string) => string
@@ -52,6 +54,8 @@ export type TrainingActionsAndResultsProps = {
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
+  /** The training worker's traceback when it raised: the "job's error details" its message names. */
+  terminalTraceback?: string | null
   /** True while the short start request is waiting for its cancellable job handle. */
   submitting?: boolean
   cancelling?: boolean
@@ -72,12 +76,14 @@ export function TrainingActionsAndResults({
   ramEstimate,
   ramEstimateLoading,
   ramEstimateError = null,
+  estimateWaiting = false,
   rowLimit,
   nodeLabel,
   nodeOpener,
   terminalMetrics = null,
   terminalStatus = null,
   terminalReason = null,
+  terminalTraceback = null,
   submitting = false,
   cancelling = false,
   tuningEnabled = false,
@@ -123,6 +129,8 @@ export function TrainingActionsAndResults({
   const unboundedJoins = ramEstimate && !ramEstimate.unavailable ? ramEstimate.unbounded_join_node_ids : []
 
   const busy = submitting || training
+  // Training would be refused while the snapshot build holds the budget.
+  const trainBlocked = busy || estimateWaiting
   const trainIcon = submitting
     ? <Database size={14} className="animate-pulse" />
     : training
@@ -145,7 +153,7 @@ export function TrainingActionsAndResults({
         <span style={{ color: "var(--warning)" }}>Config changed since last training</span>
           <button
             onClick={onTrain}
-            disabled={training || submitting}
+            disabled={trainBlocked}
             className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
             style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
           >
@@ -156,9 +164,15 @@ export function TrainingActionsAndResults({
 
       {/* RAM Estimate */}
       {ramEstimateLoading && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}>
+        <div
+          role={estimateWaiting ? "status" : undefined}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+          style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}
+        >
           <Loader2 size={12} className="animate-spin" style={{ color: MODEL_COLORS.accent }} />
-          <span style={{ color: "var(--text-muted)" }}>Estimating dataset size...</span>
+          <span style={{ color: "var(--text-muted)" }}>
+            {estimateWaiting ? "Waiting for the input snapshot to finish" : "Estimating dataset size..."}
+          </span>
         </div>
       )}
       {ramEstimateError && !ramEstimateLoading && !ramEstimate && (
@@ -290,12 +304,12 @@ export function TrainingActionsAndResults({
       <div className="pt-2" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={onTrain}
-          disabled={busy}
+          disabled={trainBlocked}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
           style={{
-            background: busy ? "var(--chrome-hover)" : MODEL_COLORS.accent,
-            color: busy ? "var(--text-muted)" : "var(--text-on-accent)",
-            opacity: busy ? 0.6 : 1,
+            background: trainBlocked ? "var(--chrome-hover)" : MODEL_COLORS.accent,
+            color: trainBlocked ? "var(--text-muted)" : "var(--text-on-accent)",
+            opacity: trainBlocked ? 0.6 : 1,
           }}
         >
           {trainIcon}
@@ -369,6 +383,17 @@ export function TrainingActionsAndResults({
                 status={terminalStatus}
                 terminalReason={terminalReason}
               />
+              {terminalTraceback && (
+                <details className="text-[11px]">
+                  <summary className="cursor-pointer" style={{ color: "var(--text-muted)" }}>Error details</summary>
+                  <pre
+                    className="mt-1 max-h-64 overflow-auto rounded p-2 font-mono leading-4"
+                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+                  >
+                    {terminalTraceback}
+                  </pre>
+                </details>
+              )}
             </div>
           </div>
         </div>

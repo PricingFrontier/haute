@@ -166,6 +166,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
         error_code=job.get("error_code"),
         http_status_code=job.get("http_status_code"),
         error_detail=job.get("error_detail"),
+        worker_remote_traceback=job.get("worker_remote_traceback"),
         export_receipts=TrainExportReceipts.model_validate(export_receipts(job)),
     )
 
@@ -205,6 +206,7 @@ async def cancel_training(job_id: str) -> TrainStatusResponse:
         error_code=job.get("error_code"),
         http_status_code=job.get("http_status_code"),
         error_detail=job.get("error_detail"),
+        worker_remote_traceback=job.get("worker_remote_traceback"),
     )
 
 
@@ -220,6 +222,7 @@ def _dispersion_status_response(job: Mapping[str, Any]) -> DispersionEstimateSta
         n_fits=job.get("n_fits"),
         error=job.get("error"),
         terminal_reason=job.get("terminal_reason"),
+        worker_remote_traceback=job.get("worker_remote_traceback"),
     )
 
 

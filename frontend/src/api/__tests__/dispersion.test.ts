@@ -40,6 +40,7 @@ function makeDispersionStatus(overrides: Record<string, unknown> = {}) {
     n_fits: null,
     error: null,
     terminal_reason: null,
+    worker_remote_traceback: null,
     ...overrides,
   }
 }

@@ -164,7 +164,8 @@
   `memory_limit_bytes`, `require_memory_limit`, `cleanup_callbacks`, `stop_reason`
   (polled callback returning a `WorkerTerminalReason | None`),
   `stop_poll_interval_seconds`, `process_name`, `address_space_allowance_bytes`,
-  `environment` (variables set for the child at spawn only, through
+  `preload_modules` (module names the protocol worker imports before installing its cap;
+  empty by default), `environment` (variables set for the child at spawn only, through
   `start_process_with_environment`; the parent's environment is restored); validates positivity
   in `__post_init__`.
 - **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
@@ -1004,10 +1005,40 @@ hard ceiling is installed. The `RLIMIT_AS` fallback first runs
 `_start_polars_thread_pools()` once per process — one small query on each Polars engine,
 so every pool thread and its allocator arena exist — and only then reads the address-space
 baseline; its ceiling is that baseline plus the growth budget plus the lease's
-`address_space_allowance_bytes` (zero except for the training fit's protocol worker, which
-passes `model_thread_address_space_allowance()`, 192 MiB per CPU, for the model library's
-pool). The allowance applies to `RLIMIT_AS` only; a cgroup or Job Object counts charged or
-committed memory, not reservations. `_protocol_entrypoint` installs its cap through the
+`address_space_allowance_bytes` (zero except for the training and dispersion fits' protocol
+workers, which pass `model_thread_address_space_allowance()`: 2.5 GiB plus 192 MiB per
+`os.cpu_count()` CPU, for the model library's pools, arenas and runtime state). The
+allowance applies to `RLIMIT_AS` only; a cgroup or Job Object counts charged or
+committed memory, not reservations. The same two workers pass
+`preload_modules=(algorithm_descriptor(algorithm).engine_module,)`, and
+`_protocol_entrypoint` imports each named module before `NativeMemoryLease.apply()`, so the
+library's mapped code and static data sit in the measured baseline on every backend. A
+module that fails to import there ends the worker before any cap exists or the job's function
+runs, with a curated remote failure (`_preload_failure_payload`): terminal reason `error`, the
+exception's type, and the message "Haute could not load <module> (<type>). The full error is
+recorded in the job's error details.", also marked as the payload's `user_message` so the
+supervisor shows it as the job's message. The module name is Haute's own; the library's text,
+which can carry internal paths, stays in the payload's `error` field and its traceback, as
+`_friendly_error` keeps it for a failure inside the fit. The allowance's figures were measured through a spawned child that loads the engine,
+starts the Polars pools, then fits 10,000 rows with the engine's default thread count, on
+Fly machines with 4 and 16 CPUs and with 32 and 64 online CPUs presented to the kernel's
+count. CatBoost's reservation above that baseline was 2.1, 2.2, 2.8, 3.7, 4.9, 6.0 and
+8.3 GiB at 1, 2, 4, 8, 16, 32 and 64 CPUs (1, 2 and 8 on WSL with the online count
+narrowed); LightGBM's and XGBoost's 1.7 GiB at 4 CPUs and at most 6.3 GiB at 64,
+RustyStats' under 1.2 GiB, and interpret's 1.9 GiB at 4. Those uncapped peaks are an upper
+bound: under a cap the allocator falls back to an existing arena when it cannot map a new one,
+so a capped fit needs less. Haute's own CatBoost training of the same data on a 4-CPU host,
+under a 650 MiB budget, failed with the old 768 MiB (`pthread_create has failed`) and trained
+from 1,536 MiB. The formula clears every uncapped peak by at least 350 MiB; it is generous on
+large hosts, where the slope falls to about 72 MiB per CPU (a thread's stack and allocator
+arena), and that excess only loosens an address-space cap the parent RSS watchdog backs.
+
+Known gaps, left for follow-ups: an allowance that is still too small does not fail
+cleanly. CatBoost, under a cap it cannot fit, stalls until the worker's timeout rather than
+raising, so an undersized figure costs the whole training timeout. A pre-flight probe or a
+progress watchdog would bound that. The optimiser session's protocol worker
+(`_optimiser_session.py`) and interactive preview scoring run model libraries under the same
+fallback without the preload or the allowance. `_protocol_entrypoint` installs its cap through the
 same `NativeMemoryLease` as the other entrypoints, with the caller's `require_memory_limit`;
 a required cap the host cannot install is its `contract_error`, as it is for a one-shot worker,
 and `run_worker_protocol` removes the joined child's private cgroup as `run_isolated_worker` does.
@@ -2606,7 +2637,19 @@ present a structural or schema result as execution evidence.
 - `tests/test_interactive_worker_pool.py` — warm interactive-worker pool readiness, protocol, timeout, cancellation, RSS-limit, replacement, and execution-mode contracts.
 - `tests/test_native_memory_limit.py` — native-backend selection, strict-policy
   rejection, Linux/Windows aggregate enforcement, active-backend scoping, lease
-  cleanup, and fork-safe ownership contracts.
+  cleanup, and fork-safe ownership contracts, and the model-thread allowance's fixed
+  part plus its per-CPU part.
+- `tests/test_worker_protocol.py` — also that `_protocol_entrypoint` imports every
+  `preload_modules` entry before `NativeMemoryLease.apply()`, and that a failed preload is
+  the curated failure above, with the library's text only in its `error` field and traceback,
+  no cap installed and the job's function never run.
+- `tests/test_training_worker_protocol.py` — on Linux, a real spawn of the training
+  entrypoint (`_run_training_process_job`, 10,000 rows with five 40-level categoricals,
+  50 CatBoost iterations on 4 threads) that preloads CatBoost and installs the `RLIMIT_AS`
+  fallback itself, with a 650 MiB budget, so a host's delegated cgroup cannot stand in for
+  it: with `model_thread_address_space_allowance()` the job completes and CatBoost was
+  already loaded when the cap went on; with no allowance the same job fails, which shows the
+  cap binds on that host. On a 4-CPU host the old allowance fails it too.
 - `tests/test_materialisation_calibration.py` — upward-only materialisation-estimate calibration, conservative rounding, profile isolation, and planner/admission integration.
 - `tests/test_process_memory.py` — the psutil probe's real readings for this process and a child, the unobservable results for a gone or inaccessible process, pid validation, and liveness.
 - `tests/test_projection_aware_admission.py` — materialisation-boundary admission estimates use exact projected edge demand and preserve conservative fallback behaviour.

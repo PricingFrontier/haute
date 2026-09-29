@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import DESCRIPTORS
 from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
     TrainService,
@@ -965,6 +966,34 @@ class TestTrainStatusEndpoint:
     def test_missing_job_returns_404(self, client):
         resp = client.get("/api/modelling/train/status/nonexistent")
         assert resp.status_code == 404
+
+    @pytest.mark.parametrize(
+        "remote_traceback",
+        ["Traceback (most recent call last):\n  ImportError: /opt/lib/engine.so\n", None],
+    )
+    @pytest.mark.parametrize(
+        ("job_type", "route"),
+        [("training", "train/status"), ("dispersion_estimate", "dispersion/status")],
+    )
+    def test_a_failed_job_returns_its_workers_traceback(
+        self, client, remote_traceback, job_type, route
+    ):
+        """The failure message says the full error is in the job's error details: the
+        traceback the supervisor recorded is those details."""
+        from haute.routes._job_lifecycle import JobLifecycle
+        from haute.routes.modelling import _store
+
+        job_id = _store.create_job({"status": "running", "job_type": job_type})
+        fields = {} if remote_traceback is None else {"worker_remote_traceback": remote_traceback}
+        JobLifecycle(_store).transition(
+            job_id, to="error", message="Training failed", fields=fields
+        )
+        try:
+            resp = client.get(f"/api/modelling/{route}/{job_id}")
+            assert resp.status_code == 200
+            assert resp.json()["worker_remote_traceback"] == remote_traceback
+        finally:
+            _store.delete_job(job_id)
 
     def test_non_finite_completed_result_becomes_job_error(self, client):
         """A bad completed payload must not make status polling 500 forever."""
@@ -3215,6 +3244,46 @@ class TestValidateConfig:
             )
         assert exc_info.value.status_code == 400
         assert "loss function" in exc_info.value.detail.lower()
+
+    @pytest.mark.parametrize(
+        ("algorithm", "task", "loss"),
+        [
+            (name, task, loss)
+            for name, descriptor in sorted(DESCRIPTORS.items())
+            if name != "glm"
+            for task, losses in sorted(descriptor.losses.items())
+            for loss in sorted(losses)
+        ],
+    )
+    def test_each_family_accepts_every_loss_it_supports(self, algorithm, task, loss):
+        """The loss is checked against the chosen family, not CatBoost's list: LightGBM,
+        XGBoost and EBM train Gamma, which CatBoost lacks."""
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": algorithm,
+                "task": task,
+                "loss_function": loss,
+                **({"variance_power": 1.5} if loss == "Tweedie" else {}),
+                # EBM trains every round it is given, so it needs an explicit count.
+                "params": {"max_rounds": 100} if algorithm == "ebm" else {},
+                "evaluation": _random_evaluation_config(),
+            }
+        )
+
+    def test_a_loss_the_family_lacks_is_refused_in_its_name(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "Gamma",
+                    "evaluation": _random_evaluation_config(),
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "CatBoost does not support the Gamma loss" in exc_info.value.detail
 
     def test_catboost_loss_invalid_for_task_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:

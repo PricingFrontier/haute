@@ -371,6 +371,7 @@ export function makeTrainStatus(
     error_code: null,
     http_status_code: null,
     error_detail: null,
+    worker_remote_traceback: null,
     phase: null,
     trial_index: null,
     trial_count: null,
