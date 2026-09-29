@@ -63,7 +63,7 @@ from haute.execution import (
     AllExceptColumns,
     execute_lazy_graph,
 )
-from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
+from haute.modelling._algorithms import ALGORITHM_REGISTRY
 from haute.modelling._candidate_run import capture_provenance
 from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import (
@@ -1244,18 +1244,18 @@ class TrainService:
 
         # Validity checks first, so a wrong value beats an incomplete one:
         # GLM values (family/link, dispersion ranges, term contract,
-        # regularization and solver settings); CatBoost loss-vs-task. Absent
-        # values are caught by the completeness gate below.
+        # regularization and solver settings); otherwise the loss against the
+        # chosen family's own losses, not CatBoost's (LightGBM, XGBoost and EBM
+        # train Gamma, which CatBoost lacks). Absent values are caught by the
+        # completeness gate below.
         if algorithm == "glm":
             _validate_glm_config_values(config)
         else:
             loss_function = config.get("loss_function")
             if loss_function:
                 try:
-                    resolve_loss_function(
-                        loss_function,
-                        str(config.get("task", "regression")),
-                        config.get("variance_power"),
+                    algorithm_descriptor(str(algorithm)).native_loss(
+                        str(config.get("task", "regression")), str(loss_function)
                     )
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc

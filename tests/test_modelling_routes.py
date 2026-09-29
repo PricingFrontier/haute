@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import DESCRIPTORS
 from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
     TrainService,
@@ -3243,6 +3244,46 @@ class TestValidateConfig:
             )
         assert exc_info.value.status_code == 400
         assert "loss function" in exc_info.value.detail.lower()
+
+    @pytest.mark.parametrize(
+        ("algorithm", "task", "loss"),
+        [
+            (name, task, loss)
+            for name, descriptor in sorted(DESCRIPTORS.items())
+            if name != "glm"
+            for task, losses in sorted(descriptor.losses.items())
+            for loss in sorted(losses)
+        ],
+    )
+    def test_each_family_accepts_every_loss_it_supports(self, algorithm, task, loss):
+        """The loss is checked against the chosen family, not CatBoost's list: LightGBM,
+        XGBoost and EBM train Gamma, which CatBoost lacks."""
+        TrainService._validate_config(
+            {
+                "target": "y",
+                "algorithm": algorithm,
+                "task": task,
+                "loss_function": loss,
+                **({"variance_power": 1.5} if loss == "Tweedie" else {}),
+                # EBM trains every round it is given, so it needs an explicit count.
+                "params": {"max_rounds": 100} if algorithm == "ebm" else {},
+                "evaluation": _random_evaluation_config(),
+            }
+        )
+
+    def test_a_loss_the_family_lacks_is_refused_in_its_name(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "Gamma",
+                    "evaluation": _random_evaluation_config(),
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "CatBoost does not support the Gamma loss" in exc_info.value.detail
 
     def test_catboost_loss_invalid_for_task_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
