@@ -779,7 +779,7 @@ def test_parallel_build_matches_serial_build_exactly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same rows, same ORDER, same manifest. Row order matters: parts are
-    concatenated in chunk order, and a pool that returned out of order would
+    read in chunk order, and a pool that returned out of order would
     scramble it while keeping every count identical. Two claims arrays carry a
     shape-mismatched element so per-TABLE row skips (not just record skips)
     must survive the cross-chunk merge; both intruders sit in different chunks

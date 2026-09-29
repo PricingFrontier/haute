@@ -291,8 +291,9 @@ defer_retirement)`:
    are logged (`json_shred_records_skipped`), not stored with the generation.
 5. The shared writer converts each bounded buffer through `_rows_to_frame`, writes
    it as a zstd Parquet row group with `_per_frame_metadata`, and immediately releases
-   the Python rows. Closing the writers also produces valid schema-carrying empty
-   parquets.
+   the Python rows. Conversion checkpoints once per column, so the work between
+   two checks is at most one column of one bounded buffer. Closing the writers
+   also produces valid schema-carrying empty parquets.
 6. Compute the source signature again; a change raises
    `SourceChangedDuringCacheBuildError` and nothing is published.
 7. Publish each table through the store's ordinary build
