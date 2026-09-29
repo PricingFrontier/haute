@@ -1926,6 +1926,14 @@ class TestProtocolCallbackValidation:
         assert result is launched
         return store, job_id, captured
 
+    def test_fits_load_their_model_library_before_the_workers_cap(self, tmp_path: Path) -> None:
+        """Imported under an RLIMIT_AS cap, the library's code would spend the job's budget."""
+        _store, _job_id, training = self._capture_training_launch(tmp_path)
+        _store, _job_id, dispersion = self._capture_dispersion_launch(tmp_path)
+
+        assert training["config"].preload_modules == ("catboost",)
+        assert dispersion["config"].preload_modules == ("rustystats",)
+
     def test_training_progress_callback_rejects_malformed_events(self, tmp_path: Path) -> None:
         store, job_id, captured = self._capture_training_launch(tmp_path)
         on_progress = captured["on_progress"]

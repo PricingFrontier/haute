@@ -298,6 +298,11 @@ _EXPECTED_DEBT_IDS = {
     # cap, so the real-spawn check needs a host that has one. The entrypoint's lease
     # wiring is covered on every platform. See tests/test_worker_protocol.py.
     "809667c1ff73f5be",
+    # CatBoost training under the RLIMIT_AS fallback: that cap counts reserved address
+    # space, which only Linux reports, and the test installs it itself so no delegated
+    # cgroup stands in for it. The preload ordering and the allowance formula are covered
+    # on every platform. See tests/test_training_worker_protocol.py.
+    "564994321efac1ec",
     # Polars snapshot contract on a deliberately unpinned resolve — the
     # committed I/O schema records one polars version, so exact snapshot
     # equality is unsatisfiable in the two lanes that resolve polars away from

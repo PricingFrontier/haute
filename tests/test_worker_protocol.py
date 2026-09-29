@@ -4,6 +4,7 @@ import hashlib
 import os
 import pickle
 import queue
+import sys
 import time
 from pathlib import Path
 
@@ -199,6 +200,95 @@ def test_protocol_worker_starts_its_queue_feeders_before_the_cap(
     )
 
     assert events == ["result feeder", "progress feeder", "cap"]
+
+
+def test_protocol_worker_imports_its_preload_modules_before_the_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model library imported under an RLIMIT_AS cap maps its code into the job's
+    budget, and fails as a bare ImportError when that budget is short."""
+    from haute._native_memory_limit import NativeMemoryLease
+
+    (tmp_path / "haute_preload_probe.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "haute_preload_probe", raising=False)
+    loaded_at_cap: list[bool] = []
+    monkeypatch.setattr(
+        NativeMemoryLease,
+        "apply",
+        lambda self, *_a, **_k: loaded_at_cap.append("haute_preload_probe" in sys.modules) or False,
+    )
+    results: queue.Queue[object] = queue.Queue()
+
+    try:
+        _protocol_entrypoint(
+            results,
+            queue.Queue(),
+            _worker_with_progress,
+            _request(),
+            str(tmp_path / "artifacts"),
+            128,
+            True,
+            0,
+            ("haute_preload_probe",),
+        )
+    finally:
+        sys.modules.pop("haute_preload_probe", None)
+
+    status, _result = results.get_nowait()  # type: ignore[misc]
+    assert status == "ok"
+    assert loaded_at_cap == [True]
+
+
+def test_a_preload_that_fails_is_a_curated_failure_before_any_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The job's message names the module but never the library's own text, which can
+    carry internal paths; that text stays in the traceback and the diagnostic field."""
+    from haute._native_memory_limit import NativeMemoryLease
+
+    (tmp_path / "haute_failing_preload.py").write_text(
+        'raise ImportError("/private/secret-path/libengine.so: failed to map segment")\n',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    applied: list[bool] = []
+    monkeypatch.setattr(
+        NativeMemoryLease, "apply", lambda self, *_a, **_k: applied.append(True) or True
+    )
+    ran: list[bool] = []
+    results: queue.Queue[object] = queue.Queue()
+
+    try:
+        _protocol_entrypoint(
+            results,
+            queue.Queue(),
+            lambda runtime, request: ran.append(True),
+            _request(),
+            str(tmp_path / "artifacts"),
+            128,
+            True,
+            0,
+            ("haute_failing_preload",),
+        )
+    finally:
+        sys.modules.pop("haute_failing_preload", None)
+
+    status, failure = results.get_nowait()  # type: ignore[misc]
+    assert status == "error"
+    assert failure.terminal_reason == "error"
+    assert failure.error_type == "ImportError"
+    assert failure.message == (
+        "Haute could not load haute_failing_preload (ImportError). "
+        "The full error is recorded in the job's error details."
+    )
+    assert failure.fields["user_message"] == failure.message
+    assert "secret-path" in failure.fields["error"]
+    assert "secret-path" in failure.traceback
+    assert applied == []
+    assert ran == []
 
 
 def test_a_required_cap_the_host_cannot_install_is_a_contract_error(

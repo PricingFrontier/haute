@@ -37,6 +37,11 @@ _CURRENT_NATIVE_MEMORY_LEASE: ContextVar[NativeMemoryLease | None] = ContextVar(
 # A model library starts its own thread pool during a fit. Measured on a 32-CPU
 # Linux host, a small CatBoost fit reserves 5.3 GB and a RustyStats fit 2.1 GB of
 # address space while their resident growth stays under 20 MB.
+# What a model library reserves during a fit above its preloaded baseline, measured
+# (specs/execution-engine/low-level.md): a fixed part for runtime state it sets up on
+# first use, and a part per online CPU for its threads' stacks and allocator arenas.
+# CatBoost, the largest, needed 2.8 GiB on 4 CPUs and 4.9 GiB on 16.
+_MODEL_LIBRARY_ADDRESS_SPACE_BASE = 2560 * 1024 * 1024
 _MODEL_THREAD_ADDRESS_SPACE_PER_CPU = 192 * 1024 * 1024
 _THREAD_START_FAILURE_MARKERS = ("can't start new thread", "could not spawn threads")
 _polars_thread_pools_started = False
@@ -44,8 +49,14 @@ _polars_thread_pools_lock = threading.Lock()
 
 
 def model_thread_address_space_allowance() -> int:
-    """Address space a training fit's cap allows for its model library's threads."""
-    return (os.cpu_count() or 1) * _MODEL_THREAD_ADDRESS_SPACE_PER_CPU
+    """Address space a training fit's cap allows for what its model library reserves.
+
+    Counted on online CPUs, not the process's affinity: the allocator and CatBoost
+    size their reservations from the online count.
+    """
+    return _MODEL_LIBRARY_ADDRESS_SPACE_BASE + (
+        (os.cpu_count() or 1) * _MODEL_THREAD_ADDRESS_SPACE_PER_CPU
+    )
 
 
 def memory_error_for_thread_start_failure(exc: BaseException) -> BaseException:

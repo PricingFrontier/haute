@@ -362,10 +362,15 @@ def test_starting_the_polars_pools_leaves_no_later_address_space_growth() -> Non
 
 
 def test_model_thread_allowance_scales_with_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fixed part for the library's runtime state plus a part per online CPU: CatBoost
+    reserved 2.8 GiB above its baseline on a 4-CPU host, far above 192 MiB per CPU."""
+    mib = 1024 * 1024
+    monkeypatch.setattr(native.os, "cpu_count", lambda: 4)
+    assert native.model_thread_address_space_allowance() == (2560 + 4 * 192) * mib
     monkeypatch.setattr(native.os, "cpu_count", lambda: 32)
-    assert native.model_thread_address_space_allowance() == 32 * 192 * 1024 * 1024
+    assert native.model_thread_address_space_allowance() == (2560 + 32 * 192) * mib
     monkeypatch.setattr(native.os, "cpu_count", lambda: None)
-    assert native.model_thread_address_space_allowance() == 192 * 1024 * 1024
+    assert native.model_thread_address_space_allowance() == (2560 + 192) * mib
 
 
 @pytest.mark.parametrize(

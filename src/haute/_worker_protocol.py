@@ -7,6 +7,7 @@ parent and child.  The parent remains responsible for artifact publication.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import math
 import multiprocessing as mp
 import pickle
@@ -361,6 +362,7 @@ def run_worker_protocol(
             worker_config.memory_limit_bytes,
             worker_config.require_memory_limit,
             worker_config.address_space_allowance_bytes,
+            worker_config.preload_modules,
         ),
     )
     primary_error: BaseException | None = None
@@ -555,6 +557,7 @@ def _protocol_entrypoint(
     memory_limit_bytes: int | None,
     require_memory_limit: bool = False,
     address_space_allowance_bytes: int = 0,
+    preload_modules: tuple[str, ...] = (),
 ) -> None:
     from haute._polars_utils import apply_spawned_streaming_chunk_size
 
@@ -567,6 +570,14 @@ def _protocol_entrypoint(
         configure_process_high_qos()
         start_worker_queue_feeder(result_queue)
         start_worker_queue_feeder(progress_queue)
+        # Imported under an RLIMIT_AS cap, a model library's code and data would
+        # spend the job's budget, and a short one fails the import itself.
+        for module in preload_modules:
+            try:
+                importlib.import_module(module)
+            except Exception as preload_error:
+                result_queue.put(("error", _preload_failure_payload(module, preload_error)))
+                return
         if memory_limit_bytes is not None:
             applied = lease.apply(
                 memory_limit_bytes,
@@ -599,6 +610,30 @@ def _protocol_entrypoint(
         )
     finally:
         runtime.close()
+
+
+def _preload_failure_payload(module: str, exc: Exception) -> WorkerFailurePayload:
+    """A preload that failed, in curated wording the job can show as its message.
+
+    The module name is Haute's own; the library's message, which can carry internal
+    paths, stays in the diagnostic ``error`` field and the traceback.
+    """
+    message = (
+        f"Haute could not load {module} ({type(exc).__name__}). "
+        "The full error is recorded in the job's error details."
+    )
+    return WorkerFailurePayload(
+        terminal_reason="error",
+        error_type=type(exc).__name__,
+        message=message,
+        traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[
+            :WORKER_MAX_TRACEBACK_LENGTH
+        ],
+        fields={
+            "error": str(exc)[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__,
+            WORKER_USER_MESSAGE_FIELD: message,
+        },
+    )
 
 
 def _drain_progress(

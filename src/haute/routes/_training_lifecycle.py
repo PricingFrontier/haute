@@ -65,6 +65,7 @@ from haute.execution import (
 )
 from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
 from haute.modelling._candidate_run import capture_provenance
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import (
     EvaluationConfig,
     generate_evaluation_plan,
@@ -179,6 +180,11 @@ _JOB_TYPE_KEY = "job_type"
 # waits these out rather than being refused because the estimate was refreshing.
 _EVALUATION_PREVIEW_HOLDERS = frozenset({"training_prep:training_evaluation_preview"})
 _EVALUATION_PREVIEW_WAIT_SECONDS = 30.0
+
+
+def _engine_module(config: Mapping[str, Any]) -> str:
+    """The model library a fit imports, loaded before its worker's memory cap."""
+    return algorithm_descriptor(str(config.get("algorithm", "catboost"))).engine_module
 
 
 class _TrainingRunningJob(RunningJobFields):
@@ -1057,6 +1063,7 @@ class TrainService:
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-dispersion-{job_id}",
                 address_space_allowance_bytes=model_thread_address_space_allowance(),
+                preload_modules=(_engine_module(config),),
             )
             return self._supervisor.launch_protocol(
                 job_id,
@@ -2138,6 +2145,7 @@ class TrainService:
                 stop_reason=lambda: self._training_jobs.cancellation_reason(job_id),
                 process_name=f"haute-training-{job_id}",
                 address_space_allowance_bytes=model_thread_address_space_allowance(),
+                preload_modules=(_engine_module(config),),
             )
             return self._supervisor.launch_protocol(
                 job_id,

@@ -62,6 +62,9 @@ class IsolatedWorkerConfig:
     process_name: str = "haute-isolated-worker"
     # Widens only an RLIMIT_AS cap, for a model library's thread reservations.
     address_space_allowance_bytes: int = 0
+    # Modules the protocol worker imports before its cap, so their mapped code and
+    # data count in the baseline rather than the job's budget.
+    preload_modules: tuple[str, ...] = ()
     # Variables set for the child at spawn only (for example a library's
     # import-time thread pool size); the parent's environment is unchanged.
     environment: Mapping[str, str] = field(default_factory=dict)
@@ -97,6 +100,7 @@ def worker_config_for_memory_policy(
     stop_poll_interval_seconds: float = 0.1,
     process_name: str = "haute-isolated-worker",
     address_space_allowance_bytes: int = 0,
+    preload_modules: tuple[str, ...] = (),
     environment: Mapping[str, str] | None = None,
 ) -> IsolatedWorkerConfig:
     """Build worker controls without implying a hard cap on unsupported hosts."""
@@ -114,6 +118,7 @@ def worker_config_for_memory_policy(
         stop_poll_interval_seconds=stop_poll_interval_seconds,
         process_name=process_name,
         address_space_allowance_bytes=address_space_allowance_bytes,
+        preload_modules=preload_modules,
         environment=dict(environment or {}),
     )
 
