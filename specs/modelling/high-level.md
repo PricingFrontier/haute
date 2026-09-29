@@ -156,7 +156,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   on completion — the full result: metrics, feature importances, and every diagnostic
   chart's underlying data. Terminal preparation failures retain their public
   `error_code`, `http_status_code`, and structured `error_detail` on this status
-  response. Polling also enforces the configured/default training timeout: an overdue
+  response. A failure raised inside the isolated training worker also carries the
+  worker's formatted traceback as `worker_remote_traceback`, so the UI can show what
+  the error message calls "the job's error details". Polling also enforces the configured/default training timeout: an overdue
   running job requests preparation/child termination and atomically transitions to
   `timed_out`.
 - `GET /api/modelling/gpu` reports whether XGBoost can train on a GPU in this server

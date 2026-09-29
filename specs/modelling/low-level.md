@@ -257,8 +257,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   (`schemas.py`) — request carries `graph`, `node_id`, `source`, and `param:
   Literal["theta", "var_power"]`; the start response carries only `status`/`job_id`
   (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
-  progress/message/elapsed shape plus the resolved `param`/`value`/`llf`/`n_fits` once
-  complete.
+  progress/message/elapsed shape, including `worker_remote_traceback`, plus the resolved
+  `param`/`value`/`llf`/`n_fits` once complete.
 - **`TrainService`** (`src/haute/routes/_training_lifecycle.py`, re-exported by
   `src/haute/routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
   and `CancellableJobRegistry`; owns the HTTP-facing training lifecycle
@@ -479,7 +479,14 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    skip the recursive walk; a validation failure instead flips the job to `"error"`
    with `result: None`. The response also carries `error_code`, `http_status_code`, and
    structured `error_detail` for terminal preparation failures, including the actionable
-   GPU-VRAM 507 payload.
+   GPU-VRAM 507 payload, and `worker_remote_traceback`: the formatted traceback that
+   `IsolatedJobSupervisor` records on the job when the isolated worker raises
+   (`WorkerRemoteFailureError`), `None` otherwise. It is diagnostic text for the UI's
+   failure details, not a stable contract to parse. It can hold what `_friendly_error` keeps
+   out of the terminal message (internal paths, a third-party message body), which is why
+   the message stays curated and the traceback is a separate field the UI shows only on
+   request: the status is served to the session that owns the local server, the person
+   who ran the job.
 
 ### Canonical `TrainingJob.run()` pipeline
 
@@ -1489,7 +1496,10 @@ rows/features) and retry.
   worker-memory failure is labelled `operation="dispersion_estimate"` on both the 507 and the
   job's `error_detail`, and `TestPreparationTempPathOwnership` proves a setup failure before
   launch (an invalid `HAUTE_WORKER_MEMORY_ENFORCEMENT`) ends the job `error` with no
-  `haute_train_*.parquet` left behind. `tests/test_modelling_routes.py::TestTrainingProjection` covers the child
+  `haute_train_*.parquet` left behind.
+  `tests/test_modelling_routes.py::TestTrainStatusEndpoint` also proves a job whose worker
+  raised returns its `worker_remote_traceback` on `/train/status` (and `None` for a job
+  without one), and the dispersion status does the same. `tests/test_modelling_routes.py::TestTrainingProjection` covers the child
   core directly (projection forwarding, bounded-sink and target/task-gate contract
   failures, memory failures) with `execute_lazy_graph` patched at
   `haute.routes._training_preparation.execute_lazy_graph`.

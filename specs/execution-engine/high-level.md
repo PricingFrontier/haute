@@ -759,10 +759,21 @@ successful run does no extra work.
   a Polars worker reserves gigabytes for its thread pools and their allocator arenas
   while its resident memory stays small. So before a worker measures that cap's
   baseline it starts both Polars engines' thread pools, and the cap then counts only
-  what the job allocates. A model library starts its own pool during the fit, so the
-  training fit's address-space cap also allows 192 MiB per CPU for it; the parent RSS
-  watchdog still enforces that worker's budget. A thread that cannot start under an
-  active cap is the typed memory-limit failure.
+  what the job allocates. The model library is loaded before the cap too: a training
+  or dispersion worker imports its engine module (CatBoost, LightGBM, XGBoost,
+  RustyStats or interpret) before measuring the baseline, because an import under the
+  cap maps the library's code and data into the job's budget, and a failed import is a
+  bare `ImportError` rather than the memory-limit failure. The library still reserves
+  address space during the fit, for its own thread pools and allocator arenas, for
+  runtime state it sets up on first use, and for the modules the fit imports, so the
+  training fit's address-space cap also allows 2.5 GiB plus 192 MiB per CPU for it. Those
+  figures are measured, not derived: left uncapped, CatBoost, the largest, reserves about
+  2.1 GiB on one CPU, 2.8 GiB on four and 4.9 GiB on sixteen above its baseline while its
+  resident memory grows by 50 to 120 MiB, and under a cap it needs less. The
+  count is the host's online CPUs (`os.cpu_count()`), not the process's affinity,
+  because the allocator and CatBoost size their reservations from the online count.
+  The parent RSS watchdog still enforces that worker's budget. A thread that cannot
+  start under an active cap is the typed memory-limit failure.
   Hard-cap evidence is request-scoped: a worker's lease reports its backend only
   between a successful cap installation and the following release, a failed
   best-effort attempt after an earlier successful request leaves no evidence, and
