@@ -190,6 +190,26 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText("Out of memory")).toBeInTheDocument()
   })
 
+  it("shows the worker's traceback collapsed under Error details", () => {
+    const traceback = "Traceback (most recent call last):\n  ImportError: /opt/lib/_catboost.so"
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Training failed with an unexpected internal error" }),
+      terminalTraceback: traceback,
+    })} />)
+
+    const details = screen.getByText("Error details").closest("details")
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute("open")
+    expect(details?.querySelector("pre")?.textContent).toBe(traceback)
+  })
+
+  it("has no Error details without a traceback", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+    })} />)
+    expect(screen.queryByText("Error details")).toBeNull()
+  })
+
   it("shows structured terminal memory diagnostics when training failed", () => {
     render(<TrainingActionsAndResults {...makeProps({
       trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),

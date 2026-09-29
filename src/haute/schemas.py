@@ -2555,6 +2555,9 @@ class TrainStatusResponse(BaseModel):
     error_code: str | None = None
     http_status_code: int | None = None
     error_detail: Any | None = None
+    # The isolated worker's formatted traceback when it raised: the "job's error
+    # details" a curated failure message points to. Diagnostic text, not a contract.
+    worker_remote_traceback: str | None = None
     phase: (
         Literal[
             "planning",
@@ -2842,6 +2845,7 @@ class DispersionEstimateStatusResponse(BaseModel):
     n_fits: int | None = None
     error: str | None = None
     terminal_reason: str | None = None
+    worker_remote_traceback: str | None = None
 
 
 class ExportScriptRequest(BaseModel):

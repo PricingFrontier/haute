@@ -52,6 +52,8 @@ export type TrainingActionsAndResultsProps = {
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
+  /** The training worker's traceback when it raised: the "job's error details" its message names. */
+  terminalTraceback?: string | null
   /** True while the short start request is waiting for its cancellable job handle. */
   submitting?: boolean
   cancelling?: boolean
@@ -78,6 +80,7 @@ export function TrainingActionsAndResults({
   terminalMetrics = null,
   terminalStatus = null,
   terminalReason = null,
+  terminalTraceback = null,
   submitting = false,
   cancelling = false,
   tuningEnabled = false,
@@ -369,6 +372,17 @@ export function TrainingActionsAndResults({
                 status={terminalStatus}
                 terminalReason={terminalReason}
               />
+              {terminalTraceback && (
+                <details className="text-[11px]">
+                  <summary className="cursor-pointer" style={{ color: "var(--text-muted)" }}>Error details</summary>
+                  <pre
+                    className="mt-1 max-h-64 overflow-auto rounded p-2 font-mono leading-4"
+                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+                  >
+                    {terminalTraceback}
+                  </pre>
+                </details>
+              )}
             </div>
           </div>
         </div>

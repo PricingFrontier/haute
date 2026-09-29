@@ -729,6 +729,18 @@
           ],
           "default": null,
           "title": "Value"
+        },
+        "worker_remote_traceback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Worker Remote Traceback"
         }
       },
       "required": [
@@ -741,7 +753,8 @@
         "llf",
         "n_fits",
         "error",
-        "terminal_reason"
+        "terminal_reason",
+        "worker_remote_traceback"
       ],
       "title": "DispersionEstimateStatusResponse",
       "type": "object"
@@ -12342,6 +12355,18 @@
           ],
           "default": null,
           "title": "Warning"
+        },
+        "worker_remote_traceback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Worker Remote Traceback"
         }
       },
       "required": [
@@ -12362,6 +12387,7 @@
         "error_code",
         "http_status_code",
         "error_detail",
+        "worker_remote_traceback",
         "phase",
         "trial_index",
         "trial_count",

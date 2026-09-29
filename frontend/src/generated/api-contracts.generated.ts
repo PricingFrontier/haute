@@ -1281,6 +1281,7 @@ export interface DispersionEstimateStatusResponse {
     'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
   terminal_reason: string | null;
   value: number | null;
+  worker_remote_traceback: string | null;
 }
 export interface LogExperimentResponse {
   backend: string;
@@ -2187,6 +2188,7 @@ export interface TrainStatusResponse {
   trial_count: number | null;
   trial_index: number | null;
   warning: string | null;
+  worker_remote_traceback: string | null;
 }
 /**
  * Where a completed training result has been exported, oldest first.

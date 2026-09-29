@@ -966,6 +966,34 @@ class TestTrainStatusEndpoint:
         resp = client.get("/api/modelling/train/status/nonexistent")
         assert resp.status_code == 404
 
+    @pytest.mark.parametrize(
+        "remote_traceback",
+        ["Traceback (most recent call last):\n  ImportError: /opt/lib/engine.so\n", None],
+    )
+    @pytest.mark.parametrize(
+        ("job_type", "route"),
+        [("training", "train/status"), ("dispersion_estimate", "dispersion/status")],
+    )
+    def test_a_failed_job_returns_its_workers_traceback(
+        self, client, remote_traceback, job_type, route
+    ):
+        """The failure message says the full error is in the job's error details: the
+        traceback the supervisor recorded is those details."""
+        from haute.routes._job_lifecycle import JobLifecycle
+        from haute.routes.modelling import _store
+
+        job_id = _store.create_job({"status": "running", "job_type": job_type})
+        fields = {} if remote_traceback is None else {"worker_remote_traceback": remote_traceback}
+        JobLifecycle(_store).transition(
+            job_id, to="error", message="Training failed", fields=fields
+        )
+        try:
+            resp = client.get(f"/api/modelling/{route}/{job_id}")
+            assert resp.status_code == 200
+            assert resp.json()["worker_remote_traceback"] == remote_traceback
+        finally:
+            _store.delete_job(job_id)
+
     def test_non_finite_completed_result_becomes_job_error(self, client):
         """A bad completed payload must not make status polling 500 forever."""
         from haute.routes._job_lifecycle import JobLifecycle

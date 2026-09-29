@@ -325,6 +325,7 @@ function TrainPane({
         terminalMetrics={cachedResult?.terminalStatus?.execution_metrics ?? null}
         terminalStatus={cachedResult?.terminalStatus?.status ?? null}
         terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
+        terminalTraceback={cachedResult?.terminalStatus?.worker_remote_traceback ?? null}
         submitting={submitting}
         cancelling={cancelling}
         tuningEnabled={tuningEnabled}
