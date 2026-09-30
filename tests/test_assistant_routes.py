@@ -427,6 +427,26 @@ class TestMessageTurn:
 
 
 class TestRouteEdges:
+    def test_host_without_git_reports_a_reason_not_a_server_error(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute import _git
+        from haute.schemas import GitWorkingBranchResponse
+
+        monkeypatch.setattr(
+            _git,
+            "working_branch_status",
+            lambda _root, cwd=None: GitWorkingBranchResponse(
+                state="git-unavailable", current_branch="", identity_set=False
+            ),
+        )
+
+        response = client.get("/api/assistant/status")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["mutations_enabled"] is False
+        assert "Git is not available" in response.json()["mutations_reason"]
+
     def test_session_create_with_explicit_pipeline_name(
         self, client: TestClient, store: SessionStore
     ):

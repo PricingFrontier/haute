@@ -56,6 +56,44 @@ def _service(project_root: Path, *, published: list[dict] | None = None):
 
 
 class TestDryRun:
+    @pytest.mark.parametrize(
+        ("operations", "tier", "egress"),
+        [
+            pytest.param(
+                [{"op": "delete_node", "node": "quotes"}],
+                "structural",
+                "none",
+                id="nothing-resolved",
+            ),
+            pytest.param(
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "doubled",
+                        "ref": "d",
+                        "config": {
+                            "steps": _free_code_steps(
+                                "quotes", "# Double x\ndf = df.with_columns(y=pl.col('x') * 2)"
+                            )
+                        },
+                    },
+                    {"op": "add_edge", "source": "quotes", "target": "$d"},
+                ],
+                "schema",
+                "schema-resolution",
+                id="node-code-ran",
+            ),
+        ],
+    )
+    def test_plan_egress_says_whether_node_code_ran_over_data(
+        self, project_root: Path, operations: list[dict[str, object]], tier: str, egress: str
+    ):
+        plan = _service(project_root).dry_run("main.py", operations)
+
+        assert (plan.verification_tier, plan.egress) == (tier, egress)
+        assert plan.as_dict()["egress"] == egress
+
     def test_injected_empty_plan_store_remains_the_service_authority(self, project_root: Path):
         from haute.assistant._application import PipelineApplicationService
 
@@ -338,6 +376,8 @@ class TestSchemaValidationScope:
 
         assert plan.verification_tier == "structural"
         assert plan.verification_evidence == ()
+        # Every target was excused, but resolving them still ran node code.
+        assert plan.egress == "schema-resolution"
         assert any(
             warning.startswith("pre_existing_schema_failure:broken")
             for warning in plan.validation_warnings
@@ -363,7 +403,10 @@ class TestSchemaValidationScope:
             )
 
         assert excinfo.value.code == "schema_unresolvable"
-        assert "still_absent" in str(excinfo.value)
+        # The failure is kept for the tool boundary to render under the
+        # egress policy; the message itself names only the node.
+        assert str(excinfo.value) == "Schema validation failed for node 'broken'."
+        assert "still_absent" in str(excinfo.value.failure)
 
     async def test_pre_existing_warning_is_hash_stable_through_apply(
         self, shared_source_project: Path

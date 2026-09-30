@@ -2234,3 +2234,174 @@ class TestStepsFirstAuthoring:
         assert result.status == "ok", result.error
         rows = sorted(result.preview, key=lambda row: row[key])
         assert {column: [row[column] for row in rows] for column in expected} == expected
+
+
+EGRESS_SOURCE = """\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="egress fixture")
+
+
+@pipeline.polars
+def quotes() -> pl.LazyFrame:
+    return pl.scan_csv("data/quotes.csv")
+
+
+@pipeline.polars
+def typed() -> pl.LazyFrame:
+    return pl.scan_csv("data/quotes.csv", schema_overrides={"age": pl.Int64})
+
+
+@pipeline.polars
+def strict(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.with_columns(pl.col("age").cast(pl.Int64, strict=True)).collect().lazy()
+"""
+
+# Values that exist only in the rows: none may reach a tool result unless the
+# project permits row samples.
+_ROW_VALUES = ("Q-7781", "Q-9912", "1984-03-02", "1990-11-30", "abc")
+
+
+@pytest.fixture()
+def egress_project(project_root: Path) -> Path:
+    """Quote rows with personal values and one malformed age, read from CSV."""
+
+    (project_root / "data" / "quotes.csv").write_text(
+        "quote_id,dob,age\nQ-7781,1984-03-02,41\nQ-9912,1990-11-30,abc\n",
+        encoding="utf-8",
+    )
+    (project_root / "main.py").write_text(EGRESS_SOURCE, encoding="utf-8")
+    return project_root
+
+
+def _free_code_node(source: str, code: str) -> list[dict[str, object]]:
+    """Add one Transform that starts from *source* and runs *code* as free code."""
+
+    return [
+        {
+            "op": "add_node",
+            "node_type": "polars",
+            "name": "probe",
+            "ref": "probe",
+            "config": {
+                "steps": [
+                    {"id": "start", "kind": "source", "input": source},
+                    {"id": "logic", "kind": "free_code", "code": code},
+                ]
+            },
+        },
+        {"op": "add_edge", "source": source, "target": "$probe"},
+    ]
+
+
+_RAISE_WITH_ROWS = (
+    "# Reject unexpected quotes\n"
+    "rows = df.collect()\n"
+    "raise ValueError(f\"bad {rows['quote_id'].to_list()} {rows['dob'].to_list()}\")\n"
+)
+
+
+def _row_values_in(result: object) -> list[str]:
+    text = json.dumps(result)
+    return [value for value in _ROW_VALUES if value in text]
+
+
+class TestExecutionErrorEgress:
+    """Resolving a schema runs node code over the project's rows, and that code
+    or Polars itself can quote those rows in an exception."""
+
+    async def test_node_code_exception_is_reduced_to_type_and_step(self, egress_project: Path):
+        from haute.assistant._tools import dry_run_graph_edits
+
+        result = await dry_run_graph_edits("main.py", _free_code_node("quotes", _RAISE_WITH_ROWS))
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert _row_values_in(result) == []
+        message = result["error"]["message"]
+        assert "ValueError in step 2 ('logic') of node 'probe'" in message
+        assert "allow_row_samples" in message
+
+    async def test_csv_cast_failure_names_the_column_not_the_value(self, egress_project: Path):
+        from haute.assistant._tools import dry_run_graph_edits
+
+        result = await dry_run_graph_edits(
+            "main.py", _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()")
+        )
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert _row_values_in(result) == []
+        assert "ComputeError" in result["error"]["message"]
+        assert "column(s) 'age'" in result["error"]["message"]
+
+    def test_node_schema_withholds_a_strict_cast_value(self, egress_project: Path):
+        from haute.assistant._tools import get_node_schema
+
+        result = get_node_schema("main.py", "strict")
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert _row_values_in(result) == []
+        assert "InvalidOperationError at line 1 of the node code" in result["error"]["message"]
+        assert "column(s) 'age'" in result["error"]["message"]
+
+    async def test_permitted_row_samples_keep_the_error_text(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="organization",
+                max_sensitivity="restricted",
+                allow_project_knowledge=False,
+                allow_executable_source=False,
+                allow_row_samples=True,
+            ),
+        )
+
+        result = await tools_module.dry_run_graph_edits(
+            "main.py", _free_code_node("quotes", _RAISE_WITH_ROWS)
+        )
+
+        assert "ValueError in step 2 ('logic') of node 'probe'" in result["error"]["message"]
+        assert "Q-7781" in result["error"]["message"]
+
+
+async def test_saved_free_code_step_text_is_masked_without_executable_source(
+    steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Structured steps are configuration and stay readable; the free-code
+    card's text is executable source and follows the policy."""
+
+    import haute.assistant._tools as tools_module
+    from haute.assistant._config import EgressPolicy
+
+    steps = _guide_step_lists()[0]
+    assert [step["kind"] for step in steps] == ["source", "free_code"]
+    ops = [{"op": "update_node", "node": "august_totals", "config": {"steps": steps}}]
+    plan = await tools_module.dry_run_graph_edits("main.py", ops)
+    applied = await tools_module.apply_graph_plan("main.py", plan["plan_hash"])
+    assert "error" not in applied, applied
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=False,
+        ),
+    )
+
+    config = tools_module.get_node_config("main.py", "august_totals")["config"]
+
+    assert config["steps"] == [
+        steps[0],
+        {**steps[1], "code": "<redacted: executable_source>"},
+    ]
+    assert config["code"] == "<redacted: executable_source>"

@@ -1100,6 +1100,11 @@ def _affected_capabilities(
     return tuple(sorted(capabilities))
 
 
+#: Whether building a plan ran node code over project data: ``none`` when no
+#: schema target was resolved, ``schema-resolution`` when at least one was.
+PlanEgress = Literal["none", "schema-resolution"]
+
+
 @dataclass(frozen=True, slots=True)
 class GraphEditPlan:
     base_revision: str
@@ -1111,7 +1116,7 @@ class GraphEditPlan:
     postconditions: tuple[object, ...]
     validation_warnings: tuple[str, ...]
     resulting_graph_shape: Mapping[str, int]
-    egress: Literal["none"]
+    egress: PlanEgress
     verification_tier: Literal["structural", "schema"]
     verification_evidence: tuple[Mapping[str, object], ...]
     plan_hash: str
@@ -1866,6 +1871,7 @@ def finalize_graph_edit_plan(
     validation_warnings: Sequence[str] = (),
     verification_tier: Literal["structural", "schema"] = "structural",
     verification_evidence: Sequence[Mapping[str, object]] = (),
+    egress: PlanEgress,
 ) -> GraphEditPlan:
     """Seal one prepared edit with application-layer verification facts."""
 
@@ -1886,6 +1892,10 @@ def finalize_graph_edit_plan(
         raise AssistantOperationError(
             "invalid_plan", "Structural plans cannot contain schema evidence"
         )
+    if verification_tier == "schema" and egress == "none":
+        raise AssistantOperationError(
+            "invalid_plan", "Schema evidence comes from running node code over project data"
+        )
     authority = {
         "base_revision": snapshot.revision,
         "capability_hash": snapshot.capability_hash,
@@ -1898,7 +1908,7 @@ def finalize_graph_edit_plan(
             "nodes": len(prepared.result_graph.nodes),
             "edges": len(prepared.result_graph.edges),
         },
-        "egress": "none",
+        "egress": egress,
         "verification_tier": verification_tier,
         "verification_evidence": _wire_json(frozen_evidence),
         "affected_capabilities": prepared.affected_capabilities,
@@ -1918,7 +1928,7 @@ def finalize_graph_edit_plan(
                 "edges": len(prepared.result_graph.edges),
             }
         ),
-        egress="none",
+        egress=egress,
         verification_tier=verification_tier,
         verification_evidence=frozen_evidence,
         plan_hash=_digest(authority),
@@ -1933,13 +1943,17 @@ def build_graph_edit_plan(
     verification_tier: Literal["structural", "schema"] = "structural",
     verification_evidence: Sequence[Mapping[str, object]] = (),
 ) -> GraphEditPlan:
-    """Build a sealed plan, retaining the established public API."""
+    """Build a sealed plan, retaining the established public API.
+
+    Nothing here resolves a schema, so no node code runs over project data.
+    """
 
     return finalize_graph_edit_plan(
         prepare_graph_edit(snapshot, raw_ops, postconditions),
         validation_warnings=validation_warnings,
         verification_tier=verification_tier,
         verification_evidence=verification_evidence,
+        egress="none",
     )
 
 

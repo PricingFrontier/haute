@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), the one path-containment check (`contained_path`) and its project-root form (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
-| `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
+| `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation, which `user_code_line` reads back for error reporting. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |

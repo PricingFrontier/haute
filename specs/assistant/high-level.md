@@ -88,7 +88,11 @@ without overriding variables the caller already exported. A status endpoint repo
 assistant is ready and, if not, exactly which piece is missing (no `[assistant]` table, unknown
 provider, missing model, missing key, a provider SDK missing from the installation, or an
 invalid output-token budget), so the
-UI can disable the input with a reason instead of letting a send fail. Sending a message while unconfigured is rejected with a 400 naming the missing
+UI can disable the input with a reason instead of letting a send fail. It
+also reports edits as disabled, with a named reason, when the egress policy
+denies every project read (`max_sensitivity = "public"`, which external trust
+requires) or when Git is unavailable on the host; the status endpoint never
+fails for either. Sending a message while unconfigured is rejected with a 400 naming the missing
 piece — there is no default provider and no silent degradation.
 
 **Sessions.** A chat session is created explicitly, bound to one pipeline, and held in
@@ -566,8 +570,10 @@ and compares the result to the dry-run. V1 plans that affect executable flow
 declare `schema`, which combines reparse/save validation, exact diff,
 structural-postcondition evidence, and exact lazy-schema evidence. A mutation
 with no executable target to resolve (for example deleting the only node) may
-declare `structural`. Neither tier collects rows or invokes external writes,
-and no row tier is selected implicitly. Results name the tier
+declare `structural`. Neither tier's verifier collects rows or invokes
+external writes, and no row tier is selected implicitly; the schema tier does
+run the node code it resolves, which is why such a plan's egress is
+`schema-resolution` rather than `none`. Results name the tier
 that actually ran and include bounded evidence, the resulting revision, graph
 fingerprint, ledger reference and warnings. Structural or plan verification is
 never described as row-level, model-quality, pricing, or commercial proof.
@@ -714,7 +720,12 @@ configuration may narrow but never widen these class ceilings.
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
 executable source is available only through `get_node_config` when
-`allow_executable_source` permits it. Any future sensitive read must first produce a closed disclosure
+`allow_executable_source` permits it. Resolving a schema still runs node code
+over the project's inputs, and that code, or Polars itself when a cast or
+computation meets a bad value, can put row values in an exception. Unless
+`allow_row_samples` permits row samples, such a failure reaches the model only
+as its exception type, the line or step that raised it, and the column names it
+names. A plan says truthfully whether building it ran node code over data. Any future sensitive read must first produce a closed disclosure
 bound to endpoint identity, policy hash, project revision, category, resource,
 fields, sensitivity, and row limit, then consume same-session confirmation
 exactly once. Credentials, credential references, hidden paths, and restricted

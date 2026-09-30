@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
 | ASSIST-11 | Planned | P1 | A new local file input can be added and transformed in one plan. |
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
@@ -112,35 +111,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-10 — Egress corrections
-**Why:** Dry-run executes the model's code while resolving schemas, and an
-exception's text is returned verbatim, so row values reach the provider under
-`allow_row_samples = false`; ordinary Polars cast errors quote cell values the
-same way. A plan that executed code over data still declares no egress. A
-configuration with `trust = "external"` reports ready although every read and
-mutation is then denied, and a host without Git makes the status endpoint
-fail with a server error. Free-code step text is already masked by the
-recursive redaction when executable source is not allowed; that stays.
-
-**Plan:** Reduce execution errors during dry-run and schema reads to the
-exception type, step or line, and column names unless row samples are
-allowed; make plan egress truthful; report reads and mutations as denied in
-readiness under external trust; return a structured readiness reason when Git
-is unavailable; and pin the free-code masking with an end-to-end payload test.
-
-**Acceptance:** Under `allow_row_samples = false`, two probes return no data
-values in any tool result: a free-code step that raises an exception whose
-message embeds collected `quote_id` and date-of-birth values, and a CSV input
-whose column cast fails on a malformed value. A payload test on a
-`[source, free_code]` node shows the step structure with its code masked;
-readiness under external trust and without Git returns named reasons.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_tools.py::_redact_config_value`;
-`src/haute/assistant/_application.py::build_verified_plan`;
-`src/haute/assistant/_config.py::mutations_readiness`.
 
 ### ASSIST-11 — New local file inputs pass dry-run on an inferred schema
 **Why:** A Data Input the plan adds has no snapshot yet, so schema-only

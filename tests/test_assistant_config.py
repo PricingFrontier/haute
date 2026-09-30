@@ -564,6 +564,26 @@ class TestMutationGate:
         assert "branch missing" in (reason or "")
         assert "invariant violated" in (reason or "")
 
+    def test_git_unavailable_names_git_as_the_reason(self, project_root: Path, patched_git):
+        patched_git(_git_state("git-unavailable"))
+        enabled, reason = _config.mutations_readiness()
+        assert enabled is False
+        assert "Git is not available" in (reason or "")
+
+    def test_public_policy_denies_edits_whatever_the_git_state(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch, patched_git
+    ):
+        """External trust requires a public ceiling, which refuses every project
+        read and so every edit; a ready branch must not report edits as ready."""
+
+        _configured(project_root, monkeypatch)
+        patched_git(_git_state("ready"))
+        status = assistant_readiness()
+        assert status.configured is True
+        assert status.mutations_enabled is False
+        assert "max_sensitivity" in (status.mutations_reason or "")
+        assert "read and edit" in (status.mutations_reason or "")
+
     def test_git_domain_raise_maps_to_disabled_with_reason(self, project_root: Path, patched_git):
         patched_git(HauteError("Not a git repository. Run 'git init' first."))
         enabled, reason = _config.mutations_readiness()

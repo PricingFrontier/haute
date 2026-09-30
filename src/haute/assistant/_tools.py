@@ -33,10 +33,17 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
+from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
-from haute.assistant._application import CommittedVerificationError, PipelineApplicationService
+from haute._user_exec import user_code_line
+from haute.assistant._application import (
+    CommittedVerificationError,
+    FailedStep,
+    PipelineApplicationService,
+    SchemaUnresolvableError,
+)
 from haute.assistant._assets import authoring_guide, load_example
 from haute.assistant._catalog import (
     capability_manifest,
@@ -133,7 +140,7 @@ def _error_message(exc: Exception, *, operation: str) -> str:
     if isinstance(exc, (PathOutsideProjectError, InvalidPathError)):
         # The bare refusal, as the API gives it; the refused path stays in the log context.
         return exc.message
-    if isinstance(exc, (HauteError, SourceCacheError)):
+    if isinstance(exc, (HauteError, SourceCacheError, PolarsIoConfigError)):
         return str(exc)
     if isinstance(exc, HTTPException):
         return str(exc.detail)
@@ -147,19 +154,81 @@ def _error_message(exc: Exception, *, operation: str) -> str:
     return _INTERNAL_ERROR_DETAIL
 
 
-def _execution_error_message(exc: Exception, *, operation: str) -> str:
-    """Surface engine query failures, which are analyst-facing by construction.
+# A Polars error names a column only in these phrases of its first paragraph:
+# `unable to find column "x"`, `at column 'x'`, `in column 'x'`, `"x" not found`.
+_POLARS_COLUMN_PHRASES = (
+    re.compile(r"\bcolumn [`'\"]([^`'\"\n]+)[`'\"]"),
+    re.compile(r'^"([^"\n]+)" not found'),
+)
 
-    A Polars failure names the offending column, node code, or plan step and is
-    exactly what the model needs to correct its own authoring. It is the same
-    text the dry-run schema-validation path already returns, so classifying it
-    here keeps one behaviour across both schema boundaries rather than leaving
-    `get_node_schema` alone reporting an unattributable internal-error string.
+
+def _polars_error_columns(exc: Exception) -> tuple[str, ...]:
+    """The column names a Polars error names; nothing else of its text is read."""
+
+    if not isinstance(exc, pl.exceptions.PolarsError):
+        return ()
+    first_paragraph = str(exc).split("\n\n", 1)[0]
+    names: list[str] = []
+    for pattern in _POLARS_COLUMN_PHRASES:
+        for match in pattern.finditer(first_paragraph):
+            if match.group(1) not in names:
+                names.append(match.group(1))
+    return tuple(names)
+
+
+def _execution_error_message(
+    exc: Exception,
+    *,
+    operation: str,
+    step: FailedStep | None = None,
+) -> str:
+    """Render a failure raised while the engine ran node code over project inputs.
+
+    An authored-code failure — a Polars error, or any exception raised from
+    node code — is what the model needs to correct its own authoring, but its
+    text can quote row values: a Polars cast error names the cell it could not
+    parse, and node code can put collected values in its exception. It is
+    reported as its type, the step or line that raised it, and the columns it
+    names; its text follows only when the project permits row samples. Haute's
+    own errors keep their text, the incomplete-transform messages included, and
+    anything else is an internal failure.
     """
 
-    if isinstance(exc, pl.exceptions.PolarsError):
-        return str(exc)
-    return _error_message(exc, operation=operation)
+    if not isinstance(exc, pl.exceptions.PolarsError) and user_code_line(exc) is None:
+        if isinstance(exc, NotImplementedError) and str(exc).startswith(
+            (INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)
+        ):
+            return str(exc)
+        return _error_message(exc, operation=operation)
+
+    line = user_code_line(exc)
+    summary = type(exc).__name__
+    if step is not None:
+        summary += f" in step {step.number} ({step.step_id!r}) of node {step.node!r}"
+    elif line is not None:
+        summary += f" at line {line} of the node code"
+    columns = _polars_error_columns(exc)
+    if columns:
+        summary += "; it names column(s) " + ", ".join(repr(name) for name in columns)
+    try:
+        allowed = resolve_egress_policy(Path.cwd().resolve()).allow_row_samples
+        withheld_because = (
+            "[assistant.egress].allow_row_samples is false and the text can quote row values"
+        )
+    except Exception as policy_exc:  # noqa: BLE001 - an unreadable policy withholds
+        allowed = False
+        withheld_because = "the egress policy could not be read: " + _error_message(
+            policy_exc, operation=operation
+        )
+    if allowed:
+        return f"{summary}: {exc}"
+    logger.info(
+        "assistant_execution_error_withheld",
+        operation=operation,
+        error_class=type(exc).__name__,
+        error_message=str(exc),
+    )
+    return f"{summary}. Its text is withheld because {withheld_because}."
 
 
 def _node_id(raw: object) -> str | None:
@@ -1062,7 +1131,10 @@ def _application_service(
     )
 
 
-def _operation_error(exc: AssistantOperationError) -> dict[str, object]:
+def _operation_error(exc: AssistantOperationError, *, operation: str) -> dict[str, object]:
+    if isinstance(exc, SchemaUnresolvableError):
+        failure = _execution_error_message(exc.failure, operation=operation, step=exc.step)
+        return _error(exc.code, f"{exc} {failure}")
     return _error(exc.code, str(exc))
 
 
@@ -1087,7 +1159,7 @@ async def dry_run_graph_edits(
     except OpValidationError as exc:
         return _error("invalid_ops", str(exc))
     except AssistantOperationError as exc:
-        return _operation_error(exc)
+        return _operation_error(exc, operation="dry_run_graph_edits")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         # `invalid_plan` is a specific authorization verdict raised by the
         # domain layer. Reusing it for an unexpected exception told the model
@@ -1110,7 +1182,7 @@ async def apply_graph_plan(
     except CommittedVerificationError as exc:
         return _error(exc.code, str(exc), **exc.result)
     except AssistantOperationError as exc:
-        return _operation_error(exc)
+        return _operation_error(exc, operation="apply_graph_plan")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("mutation_failed", _error_message(exc, operation="apply_graph_plan"))
 

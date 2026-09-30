@@ -324,8 +324,9 @@ _PROMPT_UNAVAILABLE_OPERATIONS = (
     "pipeline rather than author its graph, do not substitute a graph edit; begin the "
     "response with exactly `BLOCKED:` and state that no execution tool is available. "
     "Never claim an apply succeeded before its "
-    "successful tool result, and never imply access to rows, executable source, "
-    "deployment, training, Git, or other operations absent from the manifest."
+    "successful tool result, never imply access to project material beyond what the "
+    "project egress policy below permits, and never imply access to deployment, "
+    "training, Git, or other operations absent from the manifest."
 )
 
 
@@ -345,7 +346,12 @@ def _egress_policy_section(egress: EgressPolicy) -> str:
             f"- Executable source: {permitted(egress.allow_executable_source)}"
             + ("" if egress.allow_executable_source else "; `get_node_config` redacts node code"),
             f"- Column value profiles: {permitted(egress.allow_row_samples)}"
-            + ("" if egress.allow_row_samples else "; `get_column_profiles` is refused"),
+            + (
+                ""
+                if egress.allow_row_samples
+                else "; `get_column_profiles` is refused, and an error raised while node "
+                "code runs reports its type, step or line and column names without its text"
+            ),
         )
     )
 

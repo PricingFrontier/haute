@@ -155,11 +155,18 @@ orphaned halves).
   analyst to create/select a working branch in the Git panel; `"detached"` → fixed message
   directing them to attach HEAD in the Git panel; `"divergent"` → fixed message directing
   them to resolve divergence in the Git panel; `"invalid"` → the response's `errors` list
-  joined verbatim (the one state that carries git-layer text). `working_branch_status` is
-  total for those six repository/readiness states. An unexpected git-domain `HauteError`
+  joined verbatim (the one state that carries git-layer text); `"git-unavailable"` → fixed
+  message that Git is not available on this host and assistant edits need it to record
+  each change. `working_branch_status` is total for those seven repository/readiness
+  states, and a state outside them is a programming error that raises. An unexpected
+  git-domain `HauteError`
   raised while computing readiness likewise maps to disabled with that error's message as
   the reason — the assistant status endpoint always renders readiness; an infrastructure
-  failure is a reason, never an HTTP error.
+  failure is a reason, never an HTTP error. A resolved policy whose `max_sensitivity` is
+  `public` (which `trust = "external"` requires) denies every project read and therefore
+  every mutation at the tool boundary, so readiness reports `mutations_enabled: false`
+  with a fixed reason naming `[assistant.egress].max_sensitivity` and stating that it
+  denies project reads and edits; the Git state is not consulted for that reason.
 - **`ProviderEvent`** (internal union, `_providers.py`): `TextDelta(text)`,
   `ToolCallRequest(id, name, arguments)` — emitted only once a call's streamed argument
   fragments have been fully accumulated and JSON-parsed; several calls in one provider turn
@@ -231,6 +238,15 @@ orphaned halves).
 - **`GraphEditPlan`**: base revision, normalized primitive operations,
   semantic diff, affected capabilities, postconditions, egress, verification
   tier, schema evidence, and plan hash.
+  `egress` states whether building the plan ran node code over project data:
+  `"none"` when no schema target was resolved, so nothing executed and the plan
+  carries only the model's own operations, the diff and graph counts; and
+  `"schema-resolution"` when at least one target's lazy schema was resolved, which
+  runs the node code of that target's lineage over the project's inputs (node code
+  may collect rows) and returns node ids, column counts and schema digests, never
+  column names or row values. A plan whose every target was excused as a
+  pre-existing failure is `structural` yet still `"schema-resolution"`, because the
+  code ran.
   Affected capabilities are derived from the complete change set rather than
   the bounded presentation lists. The hash excludes timestamps and includes
   every authority-relevant field.
@@ -563,7 +579,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    name and one-line purpose, operation ids, and recipe ids with their canonical summaries
    + an example-ID-only index + the effective egress policy in words, taken from the
    resolved configuration's `egress` (provider trust, highest sensitivity sent, and
-   whether project knowledge, executable source and column value profiles are permitted)
+   whether project knowledge, executable source and column value profiles are permitted,
+   and, when row samples are not permitted, that execution errors are reported without
+   their text); the always-on rules defer to that section for project material, so they
+   never deny access the policy grants
    + project facts: pipeline name, source file,
    node-count/type summary) + windowed history + the new user message + `_tools` JSON
    schemas. Fresh graph detail is deliberately *not* embedded in the system prompt — the
@@ -717,11 +736,24 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       analyst pointed at. Any other engine raise — unfetched Databricks cache
       (`CacheNotFoundError`, whose message already tells the analyst to fetch), a missing
       trained artifact, invalid node code — remains a structured `schema_unresolvable`
-      tool error. A Polars failure keeps its own text, because naming the offending
-      column or plan step is what lets the model correct its authoring and is exactly
-      what the dry-run schema-validation path already returns; every other unexpected
-      exception is still sanitized to the internal-error detail and logged with
-      `exc_info`.
+      tool error. An *authored-code failure* — a Polars error, or any exception raised
+      from node code (it carries the user-code line `_exec_user_code` records) — is
+      rendered by the one execution-failure renderer in `_tools`, which the dry-run and
+      apply schema-validation path shares: its exception type, the line of the node code
+      that raised it, and the column names it names. In dry-run and apply, when exactly
+      one node the plan adds, updates or rewires runs authored code and that node is stepped, the
+      line is also named as that node's step number and id, since the model authored
+      steps rather than the rendered program. Column names come only from a Polars
+      error's `column '<name>'` / `"<name>" not found` phrases in its first paragraph;
+      nothing else is scraped. When `[assistant.egress].allow_row_samples` is true the
+      error's own text follows, because a Polars cast or compute error quotes cell values
+      and node code can put collected values in its exception; when it is false that text
+      is withheld and the message says so. A policy that cannot be read withholds the
+      text too and names why. Haute's own errors keep their text — a `HauteError`, a
+      source-cache error, an I/O-configuration error and the incomplete-transform
+      messages name nodes, columns, configuration and remedies, never rows — and every
+      other unexpected exception is still sanitized to the internal-error detail and
+      logged with `exc_info`. The full text of a withheld error is logged server-side.
 
    Mutation dispatch is an adapter over `PipelineApplicationService`.
    `dry_run_graph_edits` captures the exact evidence/revision, calls
@@ -1063,7 +1095,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   raising, silently scoring every handle-qualified required edge as missing.
 - **Egress flags are honoured, not merely recorded.** `allow_executable_source` and
   `allow_row_samples` each gate a real capability: node `code`/`preamble`/`query`/`script`
-  values in `get_node_config`, and `get_column_profiles` respectively. A parsed,
+  values in `get_node_config`, and `get_column_profiles` plus the text of authored-code
+  failures (see `get_node_schema` step 5) respectively. A `free_code` step's `code` is
+  masked by the same recursive key redaction, while the step's `id`, `kind` and the
+  structured steps around it stay visible: structured steps are configuration, not
+  executable source. A parsed,
   validated, reported flag that no code path consults is worse than no flag, because a
   project reads its own configuration as a grant that silently never applies.
   Credential keys and inline row-value keys stay redacted under every policy.
@@ -1110,6 +1146,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Provider adapter construction/dependency failure | route provider factory | HTTP 502 before the stream opens |
 | Provider request/stream failures (authentication, rate limit, connection, malformed/truncated/filtered output) | `_providers` | `AssistantProviderError` → terminal `failed` SSE event after the response has started |
 | Op validation, save validation, missing dataset, unknown node, unknown example name, unresolvable node schema (unfetched Databricks cache, missing artifact, invalid node code) | `_tools`/`_ops`/`_assets`/engine/save service | Structured tool error returned to the model (visible as a failed activity row); never terminates the turn |
+| Authored-code failure (a Polars error or an exception raised from node code) while `get_node_schema`, dry-run or apply resolves a schema | engine, rendered by `_tools` | Structured `schema_unresolvable` error with the exception type, line or step, and named columns; the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
+| Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
@@ -1274,9 +1312,10 @@ fixture for route tests). The implemented coverage is:
   from a validated `DATABRICKS_HOST`, reads `DATABRICKS_TOKEN`, and fails
   loudly/redacted for missing or malformed values; `max_output_tokens` unset-defaults-to-8192 and
   malformed/non-positive-fails-readiness behaviour (named reason, no silent default);
-  `mutations_enabled`/`mutations_reason` across all six `working_branch_status` states
-  (ready, no-repository, unset, detached, divergent, invalid — asserting each state's
-  mapped reason, including invalid's joined `errors`).
+  `mutations_enabled`/`mutations_reason` across all seven `working_branch_status` states
+  (ready, no-repository, unset, detached, divergent, invalid, git-unavailable — asserting
+  each state's mapped reason, including invalid's joined `errors`), and the named
+  policy reason under `trust = "external"`.
 - **`tests/test_assistant_providers.py`** — adapters normalise scripted fake SDK streams to
   `ProviderEvent`s; SDK exception classes map to `AssistantProviderError` variants; lazy
   import failure produces the readiness reason, not an ImportError at server start; the

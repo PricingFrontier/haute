@@ -53,6 +53,10 @@ ASSISTANT_EGRESS_TOML_KEYS = frozenset(
 _ASSISTANT_TABLE_KEYS = ASSISTANT_TOML_KEYS
 _EGRESS_TABLE_KEYS = ASSISTANT_EGRESS_TOML_KEYS
 _TRUST_VALUES = frozenset({"local", "organization", "external"})
+_PUBLIC_POLICY_REASON = (
+    '[assistant.egress].max_sensitivity is "public" (external trust requires it), which '
+    "denies the assistant every project read and edit."
+)
 _SENSITIVITY_VALUES = frozenset({"public", "internal", "restricted"})
 
 
@@ -136,6 +140,11 @@ def _mutation_readiness(
         )
     if status.state == "invalid":
         return False, "; ".join(status.errors)
+    if status.state == "git-unavailable":
+        return (
+            False,
+            "Git is not available on this host; assistant edits need Git to record each change.",
+        )
     raise ValueError(f"Unknown working-branch state: {status.state!r}")
 
 
@@ -513,8 +522,8 @@ def assistant_readiness(
 
     The result is always safe to expose through the status endpoint: it never
     contains the API key.  A valid provider configuration sets ``configured``
-    to ``True``; the independent mutation gate reports whether the shared Git
-    working-branch state permits edits.
+    to ``True``; the independent mutation gate reports whether the egress
+    policy and the shared Git working-branch state permit edits.
     """
 
     root = _normalise_project_root(project_root)
@@ -546,7 +555,14 @@ def assistant_readiness(
             reason, provider, model = resolved
             configured = False
 
-    mutations_enabled, mutations_reason = mutations_readiness(root)
+    mutations_enabled: bool
+    mutations_reason: str | None
+    if max_sensitivity == "public":
+        # The tool boundary refuses every project read at this ceiling, and an
+        # edit starts with one, so no Git state could make edits possible.
+        mutations_enabled, mutations_reason = False, _PUBLIC_POLICY_REASON
+    else:
+        mutations_enabled, mutations_reason = mutations_readiness(root)
     return AssistantReadiness(
         configured=configured,
         reason=reason,

@@ -17,8 +17,9 @@ from haute._config_io import collect_node_configs, config_path_for_node, node_em
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
 from haute._graph_utils import _sanitize_func_name
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute._polars_steps import is_stepped_config
+from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
 from haute._types import PipelineGraph
+from haute._user_exec import user_code_line
 from haute.assistant._ops import (
     AssistantOperationError,
     GraphEditPlan,
@@ -95,6 +96,32 @@ class VerifiedPlan:
 
     result_graph: PipelineGraph
     plan: GraphEditPlan
+
+
+@dataclass(frozen=True, slots=True)
+class FailedStep:
+    """The authored step a failure's node-code line falls in (1-based number)."""
+
+    node: str
+    number: int
+    step_id: str
+
+
+class SchemaUnresolvableError(AssistantOperationError):
+    """A target's schema did not resolve while validating a plan.
+
+    Resolving a schema runs node code over the project's inputs, so the
+    failure's own text can quote row values: a Polars cast error names the
+    cell it could not parse, and node code can put collected values in its
+    exception. The message therefore names only the target; the tool
+    boundary renders ``failure`` under the project's egress policy.
+    """
+
+    def __init__(self, node: str, failure: Exception, *, step: FailedStep | None) -> None:
+        super().__init__("schema_unresolvable", f"Schema validation failed for node {node!r}.")
+        self.node = node
+        self.failure = failure
+        self.step = step
 
 
 class CommittedVerificationError(AssistantOperationError):
@@ -251,6 +278,42 @@ def _resolve_target_evidence(prepared: _PreparedGraph, target: str) -> Mapping[s
     }
 
 
+def _failed_step(
+    graph: PipelineGraph,
+    changed: frozenset[str],
+    failure: Exception,
+) -> FailedStep | None:
+    """Name the step a node-code failure came from, when only one node can own it.
+
+    The engine does not say which node raised, only the line of node code. When
+    exactly one node this plan changed runs authored code and that node is
+    stepped, the line is that node's, and the model authored its steps rather
+    than the rendered program, so the step is what it can act on.
+    """
+
+    line = user_code_line(failure)
+    if line is None:
+        return None
+    authored = [
+        node
+        for node in graph.nodes
+        if node.id in changed
+        and isinstance(code := node.data.config.get("code"), str)
+        and code.strip()
+    ]
+    if len(authored) != 1:
+        return None
+    node = authored[0]
+    if not is_stepped_config(node.data.nodeType, node.data.config):
+        return None
+    steps = node.data.config["steps"]
+    rendered = render_polars_steps(steps, start=stepped_surface_for(node.data.nodeType).start)
+    for index, (first, last) in enumerate(rendered.step_lines):
+        if first <= line <= last:
+            return FailedStep(node=node.id, number=index + 1, step_id=str(steps[index]["id"]))
+    return None
+
+
 def _schema_evidence(
     graph: PipelineGraph,
     targets: Sequence[str],
@@ -311,9 +374,10 @@ def _schema_evidence(
                 # failure, and the tool log records it server-side.
                 warnings.append(f"pre_existing_schema_failure:{target}")
                 continue
-        raise AssistantOperationError(
-            "schema_unresolvable",
-            f"Schema validation failed for node {target!r}: {failure}",
+        raise SchemaUnresolvableError(
+            target,
+            failure,
+            step=_failed_step(graph, changed, failure),
         ) from failure
     return tuple(evidence), tuple(warnings)
 
@@ -417,6 +481,9 @@ def build_verified_plan(
         validation_warnings=(*warnings, *schema_warnings),
         verification_tier="schema" if evidence else "structural",
         verification_evidence=evidence,
+        # Resolving any target ran node code over the project's inputs, even
+        # when every target was excused as a pre-existing failure.
+        egress="schema-resolution" if targets else "none",
     )
     return VerifiedPlan(result_graph=prepared.result_graph, plan=plan)
 
