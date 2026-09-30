@@ -619,6 +619,105 @@
                 "additionalProperties": false,
                 "properties": {
                   "op": {
+                    "const": "edit_steps",
+                    "default": "edit_steps",
+                    "title": "Op",
+                    "type": "string"
+                  },
+                  "node": {
+                    "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                    "title": "Node",
+                    "type": "string"
+                  },
+                  "edits": {
+                    "description": "edit_steps changes an existing steps list by step id: each edit inserts a step after one ({insert_after, step}), replaces one whole ({replace, step}) or removes one ({remove}), applied in order. Steps not named stay as saved, so a free-code step you cannot read is kept, replaced or removed, never edited in place.",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "insert_after": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "edit_steps: the id of the step the new step follows; null inserts it at the start.",
+                              "title": "Insert After"
+                            },
+                            "step": {
+                              "additionalProperties": true,
+                              "description": "edit_steps: the whole step, in the shape get_authoring_guide's step_grammar gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>.",
+                              "title": "Step",
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "insert_after",
+                            "step"
+                          ],
+                          "title": "StepInsert",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "replace": {
+                              "description": "edit_steps: the id of the step to replace whole.",
+                              "title": "Replace",
+                              "type": "string"
+                            },
+                            "step": {
+                              "additionalProperties": true,
+                              "description": "edit_steps: the whole step, in the shape get_authoring_guide's step_grammar gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>.",
+                              "title": "Step",
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "replace",
+                            "step"
+                          ],
+                          "title": "StepReplace",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "remove": {
+                              "description": "edit_steps: the id of the step to remove.",
+                              "title": "Remove",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "remove"
+                          ],
+                          "title": "StepRemove",
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "minItems": 1,
+                    "title": "Edits",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "op",
+                  "node",
+                  "edits"
+                ],
+                "title": "EditStepsOp",
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "op": {
                     "const": "rename_node",
                     "default": "rename_node",
                     "title": "Op",

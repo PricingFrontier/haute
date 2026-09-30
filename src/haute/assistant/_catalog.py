@@ -725,7 +725,10 @@ def _step_authoring(node_type: NodeType) -> dict[str, object] | None:
     )
     if surface.start == "frame":
         rules.append("With no post-processing to do, keep steps: [].")
-    rules.append("Keep existing structured steps with their ids and order.")
+    rules.append(
+        "Change existing steps with edit_steps by step id; steps it does not name keep "
+        "their ids and order."
+    )
     return {
         "start": surface.start,
         "inputs": surface.inputs,

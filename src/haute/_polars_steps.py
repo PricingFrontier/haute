@@ -68,6 +68,7 @@ __all__ = [
     "referenced_step_inputs",
     "rename_step_inputs",
     "step_input_references",
+    "render_node_steps",
     "render_polars_steps",
     "step_fields",
     "validate_polars_steps",
@@ -150,6 +151,19 @@ def step_input_names(node_type: NodeType, edge_names: Sequence[str]) -> list[str
     """
     surface = stepped_surface_for(node_type)
     return list(edge_names) if surface.inputs == "edges" else []
+
+
+def render_node_steps(node_type: NodeType, steps: object) -> RenderedSteps:
+    """Render a stepped *node_type*'s *steps* as its saved config materialises them.
+
+    A surface whose code sees only ``df`` has no eligible input names, so a
+    join or concat is refused; an ``edges`` surface's names are only known to
+    the graph, so its references are rendered as written and checked at build
+    time against the connected edges.
+    """
+    surface = stepped_surface_for(node_type)
+    input_names: list[str] | None = [] if surface.inputs == "none" else None
+    return render_polars_steps(steps, input_names, start=surface.start)
 
 
 def is_stepped_config(node_type: NodeType, config: Mapping[str, object]) -> bool:

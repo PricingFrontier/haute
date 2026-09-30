@@ -125,8 +125,14 @@ node sees only `df`.  On a Load File node the loaded object is `obj`.  Start the
 code with a one-line `# intent` comment: the step builder shows it as the
 card's title.  A node that needs no post-processing keeps `steps: []`.
 
-Keep what the analyst built.  An existing structured step keeps its id and its
-place in the list, and a node in code mode (a `code` config without `steps`) is
+Keep what the analyst built.  Change a node that already holds steps with
+`edit_steps`, which names steps by the ids `get_pipeline` and the graph brief
+list: `{"insert_after": "<step id>", "step": {...}}` (`null` inserts at the
+start), `{"replace": "<step id>", "step": {...}}` or `{"remove": "<step id>"}`,
+applied in order.  A step sent without an id gets one.  Every step you do not
+name keeps its id, its place and its content, so a free-code step whose code
+the project's policy withholds is kept, or replaced or removed whole, but never
+edited in place.  A node in code mode (a `code` config without `steps`) is
 edited through its `code`.  Never switch a node between steps and code; that is
 the analyst's choice in the editor.  To edit a structured step, read
 `step_grammar`, which comes with this guide: each step kind with its fields and
@@ -157,6 +163,15 @@ input and `regions` as its second:
 [
   {"id": "logic", "kind": "free_code", "code": "# Add each quote's zone and regional loading\ndf = df.join(regions, on=\"region\", how=\"left\").with_columns(loading=pl.col(\"region\").replace_strict(obj, default=1.0))"}
 ]
+```
+
+Keeping only the policies with more than 100 of August claims on that `polars`
+node, once it is saved, without resending its other steps:
+
+```json
+{"op": "edit_steps", "node": "august_totals", "edits": [
+  {"insert_after": "logic", "step": {"kind": "free_code", "code": "# Keep policies with over 100 of August claims\ndf = df.filter(pl.col(\"august_claims\") > 100)"}}
+]}
 ```
 
 ## A safe editing pattern

@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
 | ASSIST-25 | Planned | P2 | Renaming a node rewrites the references that structured configs hold. |
 | ASSIST-26 | Planned | P2 | Structured cards after a free-code card keep their column help. |
 | ASSIST-27 | Planned | P1 | A new Quote Input can be added and used in one plan. |
@@ -101,27 +100,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-21 — Step-level edits and readable step summaries
-**Why:** Editing one step means resending a whole steps list, including
-free-code text the model may not be allowed to read, and the graph summary
-shows config key names only, so the model cannot see which nodes are stepped,
-code-mode or incomplete.
-
-**Plan:** Add an `edit_steps` operation (insert after, replace, or remove by
-step id, with ids assigned to new steps) whose validator errors name the step
-id, and show each node's authoring state and one line per step in the graph
-summary, with free-code text masked by policy. A free-code step the model
-cannot read may be removed or replaced as a whole, never edited in place.
-
-**Acceptance:** An in-place edit replays through `edit_steps` under a policy
-that masks free code; errors name the step id; the summary shows authoring
-states.
-
-**Dependencies:** `ASSIST-03`.
-
-**Evidence:** `src/haute/assistant/_wire_ops.py`;
-`src/haute/assistant/_render.py::render_pipeline_graph`.
 
 ### ASSIST-25 — Rename reconciles structured references
 **Why:** The editor's rename rewrites step inputs, input mappings, scenario

@@ -178,25 +178,28 @@ def _first_dry_run(trajectory) -> tuple[list[str], dict[str, object] | None]:
 
 
 def _single_node_trajectories() -> list:
-    """Trajectories whose first primitive dry-run adds or updates one node."""
+    """Trajectories whose first primitive dry-run adds, updates or edits the steps of one node."""
 
     single = []
     for trajectory in TRAJECTORIES:
         _before, arguments = _first_dry_run(trajectory)
         if arguments is None:
             continue
-        written = [op for op in arguments["ops"] if op["op"] in {"add_node", "update_node"}]
+        written = [
+            op for op in arguments["ops"] if op["op"] in {"add_node", "update_node", "edit_steps"}
+        ]
         if len(written) == 1:
             single.append(trajectory)
     return single
 
 
 def test_single_node_edits_dry_run_without_an_orientation_read() -> None:
-    """The turn context's graph brief carries what a one-node edit needs."""
+    """The turn context's graph brief carries what a one-node edit needs, the
+    step ids an `edit_steps` names included."""
 
-    single = _single_node_trajectories()
-    assert "smoke_polars_feature_transform" in {trajectory.id for trajectory in single}
-    for trajectory in single:
+    single = {trajectory.id: trajectory for trajectory in _single_node_trajectories()}
+    assert {"smoke_polars_feature_transform", "smoke_step_edit"} <= set(single)
+    for trajectory in single.values():
         before, _arguments = _first_dry_run(trajectory)
         assert not set(before) & _READ_TOOLS, (trajectory.id, before)
 
@@ -265,12 +268,16 @@ def test_trajectory_references_must_name_an_earlier_call(tmp_path: Path) -> None
 def test_the_fixture_projects_are_not_modified_by_replay() -> None:
     """Replays copy the fixtures; nothing under the checked-in projects is written."""
 
+    # The one sidecar a fixture holds on purpose: its Transform authored as steps.
+    stepped = PROJECTS_ROOT / "stepped_pricing" / "config" / "polars" / "risk_features.json"
     written = [
         path
         for path in source_files(PROJECTS_ROOT, suffix=None)
-        if path.parent.name in {"polars", "banding", "rating_step"}
+        if path.parent.name in {"polars", "banding", "rating_step"} and path != stepped
     ]
     assert written == []
+    steps = json.loads(stepped.read_text(encoding="utf-8"))["steps"]
+    assert [step["id"] for step in steps] == ["start", "logic"]
     assert not any(
         name.startswith(".git") for name in os.listdir(PROJECTS_ROOT / "ordinary_pricing")
     )

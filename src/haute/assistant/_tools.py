@@ -16,7 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
@@ -55,7 +55,6 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
-from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
@@ -90,13 +89,13 @@ from haute.assistant._project_knowledge import build_project_knowledge, query_pr
 from haute.assistant._recipes import RecipeError
 from haute.assistant._recipes import plan_recipe as _plan_recipe
 from haute.assistant._render import (
-    AuthoringState,
     BriefFrame,
     BriefInput,
     BriefNode,
     GraphBrief,
     PreviewError,
     TurnContext,
+    node_authoring,
     render_pipeline_graph,
 )
 from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError, PreambleError
@@ -809,10 +808,11 @@ def get_pipeline(source_file: str) -> dict[str, object]:
     """Return the saved graph in the assistant's compact graph shape."""
 
     try:
+        policy = resolve_egress_policy(Path.cwd().resolve())
         graph = _parse_graph(source_file)
         project_revision = _project_revision(source_file, graph)
         return {
-            **render_pipeline_graph(graph),
+            **render_pipeline_graph(graph, egress=policy),
             "project_revision": project_revision,
         }
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
@@ -898,20 +898,17 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
                 )
             )
         output, failure = output_of(node.id)
-        state: AuthoringState | None = None
-        if node_type in STEPPED_NODE_TYPES:
-            if _incomplete(failure):
-                state = "incomplete"
-            elif is_stepped_config(node_type, node.data.config):
-                state = "stepped"
-            else:
-                state = "code"
+        authoring = node_authoring(node_type, node.data.config)
+        if authoring is not None and _incomplete(failure):
+            # Resolution also checks what the config alone cannot: a Transform's
+            # step inputs against its connected edges.
+            authoring = replace(authoring, state="incomplete")
         nodes.append(
             BriefNode(
                 node.id,
                 node_type.value,
                 node.data.label,
-                state,
+                authoring,
                 tuple(inputs),
                 None if output is None else _brief_frames(output),
             )

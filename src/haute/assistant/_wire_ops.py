@@ -143,6 +143,51 @@ class UpdateNodeOp(_OpModel):
     _node_not_blank = field_validator("node")(_reject_blank)
 
 
+_EDIT_STEP_DESCRIPTION = (
+    "edit_steps: the whole step, in the shape get_authoring_guide's step_grammar "
+    "gives its kind. Omit id to have one assigned: a replacement keeps the id it "
+    "replaces, an insertion gets <kind>_<n>."
+)
+
+
+class StepInsert(_OpModel):
+    insert_after: str | None = Field(
+        description=(
+            "edit_steps: the id of the step the new step follows; null inserts it at the start."
+        )
+    )
+    step: dict[str, Any] = Field(description=_EDIT_STEP_DESCRIPTION)
+
+
+class StepReplace(_OpModel):
+    replace: str = Field(description="edit_steps: the id of the step to replace whole.")
+    step: dict[str, Any] = Field(description=_EDIT_STEP_DESCRIPTION)
+
+
+class StepRemove(_OpModel):
+    remove: str = Field(description="edit_steps: the id of the step to remove.")
+
+
+StepEdit: TypeAlias = StepInsert | StepReplace | StepRemove
+
+
+class EditStepsOp(_OpModel):
+    op: Literal["edit_steps"] = "edit_steps"
+    node: str = Field(description=_NODE_REFERENCE_DESCRIPTION)
+    edits: list[StepEdit] = Field(
+        min_length=1,
+        description=(
+            "edit_steps changes an existing steps list by step id: each edit inserts "
+            "a step after one ({insert_after, step}), replaces one whole ({replace, "
+            "step}) or removes one ({remove}), applied in order. Steps not named stay "
+            "as saved, so a free-code step you cannot read is kept, replaced or "
+            "removed, never edited in place."
+        ),
+    )
+
+    _node_not_blank = field_validator("node")(_reject_blank)
+
+
 class RenameNodeOp(_OpModel):
     op: Literal["rename_node"] = "rename_node"
     node: str = Field(description=_NODE_REFERENCE_DESCRIPTION)
@@ -215,6 +260,7 @@ class UpdatePreambleOp(_OpModel):
 GraphEditOp: TypeAlias = Annotated[
     AddNodeOp
     | UpdateNodeOp
+    | EditStepsOp
     | RenameNodeOp
     | DeleteNodeOp
     | AddEdgeOp
@@ -228,6 +274,7 @@ _OP_ADAPTER: TypeAdapter[GraphEditOp] = TypeAdapter(GraphEditOp)
 _OPERATION_MODELS = (
     AddNodeOp,
     UpdateNodeOp,
+    EditStepsOp,
     RenameNodeOp,
     DeleteNodeOp,
     AddEdgeOp,
@@ -365,12 +412,17 @@ __all__ = [
     "AddNodeOp",
     "DeleteEdgeOp",
     "DeleteNodeOp",
+    "EditStepsOp",
     "GraphEditOp",
     "LocatedPlanError",
     "MAX_DECLARED_POSTCONDITIONS",
     "MAX_PLAN_OPERATIONS",
     "OpValidationError",
     "RenameNodeOp",
+    "StepEdit",
+    "StepInsert",
+    "StepRemove",
+    "StepReplace",
     "UpdateNodeOp",
     "UpdatePreambleOp",
     "graph_edit_operations_schema",

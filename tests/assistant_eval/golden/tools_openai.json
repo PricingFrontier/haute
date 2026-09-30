@@ -400,6 +400,7 @@
                   "enum": [
                     "add_node",
                     "update_node",
+                    "edit_steps",
                     "rename_node",
                     "delete_node",
                     "add_edge",
@@ -445,6 +446,31 @@
                 "node": {
                   "type": "string",
                   "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+                },
+                "edits": {
+                  "type": "array",
+                  "description": "edit_steps changes an existing steps list by step id: each edit inserts a step after one ({insert_after, step}), replaces one whole ({replace, step}) or removes one ({remove}), applied in order. Steps not named stay as saved, so a free-code step you cannot read is kept, replaced or removed, never edited in place.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "insert_after": {
+                        "description": "edit_steps: the id of the step the new step follows; null inserts it at the start."
+                      },
+                      "step": {
+                        "type": "object",
+                        "description": "edit_steps: the whole step, in the shape get_authoring_guide's step_grammar gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>."
+                      },
+                      "replace": {
+                        "type": "string",
+                        "description": "edit_steps: the id of the step to replace whole."
+                      },
+                      "remove": {
+                        "type": "string",
+                        "description": "edit_steps: the id of the step to remove."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
                 },
                 "new_name": {
                   "type": "string"

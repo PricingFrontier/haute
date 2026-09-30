@@ -216,7 +216,21 @@ orphaned halves).
     a nested object or list is sent complete. Unknown keys for the node's type are rejected using
     the same `TypedDict`-derived allowlist machinery the sidecar writer uses (see Edge
     cases for why this is deliberately stricter than save's warn-and-drop).
-  - Both node operations follow the stepped-node write contract in Edge cases: a write
+  - `edit_steps {node, edits}` — changes one node's `steps` list step by step, so an edit
+    never resends steps it does not change (a free-code step whose code the policy masks
+    included). `edits` is a non-empty ordered list, each entry one of
+    `{insert_after: <step id> | null, step}` (`null` inserts at the start),
+    `{replace: <step id>, step}` and `{remove: <step id>}`, applied in order to the list
+    as the earlier edits left it. A `step` without an `id` gets one: a replacement keeps
+    the id it replaces, an insertion gets `<kind>_<n>` with the smallest `n` from 1 that
+    no step of the node holds at that point, so ids are deterministic and unique within
+    the node. There is no partial edit: a replacement is the whole step. An edit naming an
+    id the list does not hold, or a step whose explicit id another step holds, is an op
+    error whose `where.step` names that id. The operation needs a node holding a `steps`
+    list on a stepped surface: a code-mode node is refused pointing at `update_node
+    {code}`, and a stepped-type node with neither steps nor code is refused pointing at
+    `update_node {steps}` with the surface's free-code form.
+  - All three node operations follow the stepped-node write contract in Edge cases: a write
     that would change how a stepped-type node is authored is refused, and a write that
     does not land in the materialised config fails the plan with `op_not_applied`.
   - `rename_node {node, new_name}` (sets both id and persisted label to the
@@ -271,7 +285,9 @@ orphaned halves).
   exact preamble digest. Post-save exactness compares that complete digest as
   well as the visible values, so presentation bounds can never mask an
   additional or missing structural change. Configuration changes identify
-  their node and key; the stored normalized
+  their node and key (`<node>:<key>`); an `edit_steps` records one change per step id
+  it inserts, replaces or removes (`<node>:steps[<id>]`) and counts its node as updated.
+  The stored normalized
   operation remains the authority for its requested value. The cap bounds
   presentation only: the diff also holds the complete untruncated identities
   (`SemanticDiff.complete`, a `SemanticChanges` that `as_dict` never emits but
@@ -687,8 +703,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    - the graph brief: per top-level node its id, palette name (from the capability
      manifest), label (whitespace collapsed, at most 80 characters, JSON-quoted), authoring
      state on a stepped surface (`incomplete` when its resolution raises the incomplete
-     transform or incomplete steps placeholder, else `stepped` when `is_stepped_config`,
-     else `code`), each input as its code-visible name, source node and column names, and
+     transform or incomplete steps placeholder or its config is incomplete, else
+     `stepped` when `is_stepped_config`, else `code`) and the node's authoring facts
+     rendered under the turn's policy as described for `get_pipeline` under Edge cases
+     (one line per step, the step an incomplete list fails at, a discarded-steps
+     marker), each input as its code-visible name, source node and column names, and
      its output columns (per port for a multi-frame node). Schemas resolve schema-only in
      one `execute_lazy_graph` call preserving every node; when that call raises, each node
      resolves on its own and an input's source resolves separately, so one broken node
@@ -1188,10 +1207,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   the unknown-config-key strictness above; existing human-authored code is untouched
   (it fails loudly at execution instead).
 - **Assistant-authored free-code steps keep their result and their surface's scope.**
-  Every node the batch adds, or whose `steps` it sets, that carries a step list on a
+  Every node the batch adds, or whose `steps` it sets or edits, that carries a step list on a
   stepped surface (instances excepted) is rendered with the product's renderer
   (`render_polars_steps`, against the node's incoming input names in the surface's start
-  mode), so an invalid step list is an op error naming its step and the surface's
+  mode), so an invalid step list is an op error naming its step (`where.step` holds the
+  id of the step the renderer's error names) and the surface's
   free-code form (a palette-default Transform left at `steps: []` is refused this way,
   because a Transform's steps must choose their input). Each `free_code` step
   is then checked on its own code. A top-level bare expression that calls a method on
@@ -1232,12 +1252,39 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   `[{"id": "start", "kind": "source", "input": "<edge name>"}, {"id": "logic", "kind":
   "free_code", "code": "..."}]`, and on every other stepped surface
   `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
+  `edit_steps` keeps the same transitions: it only changes a list the node already
+  holds, so it never switches a node between steps and code, and it is refused on a
+  code-mode node (edit its `code` instead) and on a stepped-type node without a list.
   After each operation's `with_config`, every key the model wrote must hold the written
-  value in the materialised config (a key written as `null` must be absent), and when
-  the operation wrote `steps` the config must carry no `_steps_error`. Otherwise the
-  plan fails with the stable code `op_not_applied` naming the node and the key, or the
-  step error. A palette-default node's own `_steps_error` (a Transform's empty step
-  list) is not the operation's write and does not trip this check.
+  value in the materialised config (a key written as `null` must be absent; for
+  `edit_steps`, `steps` must hold the edited list), and when the operation wrote `steps`
+  the config must carry no `_steps_error`. Otherwise the plan fails with the stable code
+  `op_not_applied` naming the node and the key, or the step error with `where.step` set
+  to the id of the step it names. A palette-default node's own `_steps_error` (a
+  Transform's empty step list) is not the operation's write and does not trip this
+  check.
+- **The model sees how each stepped node is authored, without values.** `get_pipeline`
+  and the turn context's graph brief carry, for every node of a stepped type (an
+  instance has none: its configuration is its original's), `_render.node_authoring`'s
+  facts, read from the saved config alone: its state
+  (`stepped` when its `steps` list renders, `incomplete` when the list does not render
+  or the node has neither steps nor code, `code` otherwise), whether the editor
+  discarded its steps (`_steps_discarded`, a code-mode node), one entry per step (its
+  id, its kind, the input names a source, join or concat step reads, and a free-code
+  step's intent, the text of a first line that is a `#` comment) and, for a list that
+  does not render, the id of the step its error names. Both views are `internal`
+  project metadata while a step's other fields are `restricted` configuration, so the
+  rendering is value-free and follows the policy: a free-code step's intent is
+  executable source, shown only under `allow_executable_source`, so under a masking
+  policy a free-code step shows only its id and kind; the renderer's message for an
+  incomplete list can quote an authored literal, so it is shown only under a
+  `restricted` ceiling, and when it names a free-code step only under
+  `allow_executable_source` too. `get_pipeline` reports them as a node's `authoring`
+  object (`state`, `steps` as `{id, kind, reads?, intent?}`, `steps_discarded` when
+  true, `error` as `{step, message?}`); the brief as the state on the node's line
+  (`code (steps discarded)`, `incomplete at step "<id>": <message>`) and one
+  `step "<id>" <kind>` line per step. A packaged example's rendering carries its
+  configuration whole and has no `authoring` object.
 - **A rename never leaves a consumer silently broken.** `rename_node` rewrites edge
   endpoints only, while downstream nodes name their inputs by the edge's input name
   (`haute._graph_utils.edge_input_name`, the source's sanitised label). Before renaming,
@@ -1437,7 +1484,11 @@ fixture for route tests). The implemented coverage is:
   with "Rating Step code sees only df", and a step calling a preamble or local helper
   accepted); the palette defaults `add_node` merges (and their omission on another
   branch or an instance); the stepped-node transition refusals and
-  `op_not_applied` landing check; and the `rename_has_consumers` refusal for each
+  `op_not_applied` landing check; `edit_steps` inserting, replacing and removing in
+  order with deterministic assigned ids, its refusals on an unknown or duplicate step
+  id, a code-mode node and a node without a list, its `steps[<id>]` diff entries, and
+  an edited free-code step reaching the authored-step checks with `where.step` set;
+  and the `rename_has_consumers` refusal for each
   consumer field, with edge-only and API Input renames applying.
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
@@ -1468,6 +1519,12 @@ fixture for route tests). The implemented coverage is:
   column under `allow_row_samples = false` and its text when row samples are permitted,
   and a resolving node reports none; a long brief stops before its bound with a pointer to
   `get_pipeline`, lists 40 columns per frame, and a label cannot break out of its line.
+  The authoring facts: `get_pipeline` and the brief list each step's id and kind, a
+  free-code step's intent only under `allow_executable_source`, the step an incomplete
+  list fails at with its message only under a `restricted` ceiling, and a discarded-steps
+  marker on a code-mode node; and a free-code step the policy masks is replaced through
+  `dry_run_graph_edits` and `apply_graph_plan` with `edit_steps`, leaving the other steps
+  as saved.
   Real tmp-project coverage for source/downstream
   schemas, preamble-dependent transforms, per-input schemas keyed by the code-visible
   input name (absent for a source node), the authored-but-empty transform's

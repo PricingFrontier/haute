@@ -1222,6 +1222,7 @@ class TestDatabricksProvider:
             "config",
             "ref",
             "node",
+            "edits",
             "new_name",
             "source",
             "target",
@@ -1233,6 +1234,7 @@ class TestDatabricksProvider:
             "enum": [
                 "add_node",
                 "update_node",
+                "edit_steps",
                 "rename_node",
                 "delete_node",
                 "add_edge",

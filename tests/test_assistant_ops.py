@@ -438,6 +438,132 @@ class TestSteppedWrites:
         assert excinfo.value.code == "op_not_applied"
         assert "Step 1" in str(excinfo.value)
         assert _FRAME_FORM in str(excinfo.value)
+        assert excinfo.value.where["step"] == "keep"
+
+
+def _edit_steps(node: str, *edits: dict) -> list[dict]:
+    return [{"op": "edit_steps", "node": node, "edits": list(edits)}]
+
+
+class TestEditSteps:
+    def test_edits_apply_in_order_and_new_steps_get_deterministic_ids(self):
+        out = _apply(
+            _stepped_graph(),
+            _edit_steps(
+                "stepped",
+                {"insert_after": "start", "step": {"kind": "limit", "n": 5}},
+                {"insert_after": "limit_1", "step": {"kind": "limit", "n": 3}},
+                {"replace": "logic", "step": {"kind": "free_code", "code": "df = df.head(1)"}},
+                {"remove": "limit_1"},
+                {"insert_after": "limit_2", "step": {"kind": "limit", "n": 9}},
+            ),
+        )
+
+        # limit_1 was free again when the last insertion was made.
+        assert _get(out, "stepped").data.config["steps"] == [
+            {"id": "start", "kind": "source", "input": "src"},
+            {"id": "limit_2", "kind": "limit", "n": 3},
+            {"id": "limit_1", "kind": "limit", "n": 9},
+            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+        ]
+
+    def test_an_insert_at_the_start_of_a_frame_surface(self):
+        out = _apply(
+            _stepped_graph(),
+            _edit_steps(
+                "rated", {"insert_after": None, "step": {"id": "few", "kind": "limit", "n": 2}}
+            ),
+        )
+
+        assert _get(out, "rated").data.config["steps"] == [
+            {"id": "few", "kind": "limit", "n": 2},
+            *_LOGIC,
+        ]
+
+    @pytest.mark.parametrize(
+        ("node", "edit", "step"),
+        [
+            ("stepped", {"replace": "ghost", "step": {"kind": "limit", "n": 1}}, "ghost"),
+            ("stepped", {"remove": "ghost"}, "ghost"),
+            ("stepped", {"insert_after": "ghost", "step": {"kind": "limit", "n": 1}}, "ghost"),
+            (
+                "stepped",
+                {"insert_after": "start", "step": {"id": "logic", "kind": "limit", "n": 1}},
+                "logic",
+            ),
+            (
+                "stepped",
+                {"replace": "start", "step": {"id": "logic", "kind": "limit", "n": 1}},
+                "logic",
+            ),
+        ],
+    )
+    def test_an_unknown_or_duplicate_step_id_is_refused_naming_it(
+        self, node: str, edit: dict, step: str
+    ):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_stepped_graph(), _edit_steps(node, edit))
+
+        assert excinfo.value.where == {
+            "op_index": 0,
+            "node": node,
+            "field": "steps",
+            "step": step,
+        }
+        assert repr(step) in str(excinfo.value)
+
+    def test_a_code_mode_node_is_refused_pointing_at_its_code(self):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_stepped_graph(), _edit_steps("coded", {"remove": "logic"}))
+
+        assert "code mode" in str(excinfo.value)
+        assert excinfo.value.where == {"op_index": 0, "node": "coded", "field": "code"}
+        assert excinfo.value.fix is not None and "update_node" in excinfo.value.fix
+
+    def test_a_node_without_steps_or_code_is_refused_with_its_free_code_form(self):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_stepped_graph(), _edit_steps("bare", {"remove": "logic"}))
+
+        assert excinfo.value.fix is not None and _FRAME_FORM in excinfo.value.fix
+
+    def test_a_node_type_without_steps_is_refused(self):
+        graph = _graph([_node("out", "output", fields=["x"])])
+
+        with pytest.raises(OpValidationError, match="does not author steps"):
+            _apply(graph, _edit_steps("out", {"remove": "logic"}))
+
+    def test_an_edit_that_cannot_render_is_not_applied_naming_the_step(self):
+        from haute.assistant._ops import AssistantOperationError
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(
+                _stepped_graph(),
+                _edit_steps("rated", {"replace": "logic", "step": {"kind": "filter"}}),
+            )
+
+        assert excinfo.value.code == "op_not_applied"
+        assert excinfo.value.where == {
+            "op_index": 0,
+            "node": "rated",
+            "field": "steps",
+            "step": "logic",
+        }
+
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            {"replace": "logic", "remove": "logic"},
+            {"insert_after": "logic"},
+            {"replace": "logic", "step": {"kind": "limit", "n": 1}, "extra": 1},
+        ],
+    )
+    def test_an_edit_in_no_single_shape_does_not_parse(self, edit: dict):
+        with pytest.raises(OpValidationError):
+            parse_ops(_edit_steps("stepped", edit))
+
+    def test_an_empty_edit_list_does_not_parse(self):
+        with pytest.raises(OpValidationError):
+            parse_ops([{"op": "edit_steps", "node": "stepped", "edits": []}])
 
 
 # ---------------------------------------------------------------------------
@@ -1250,8 +1376,18 @@ class TestSemanticPlans:
             )
 
     @staticmethod
-    def _stepped_plan(tmp_path: Path, node: str, steps: list[dict], preamble: str | None = None):
-        """Plan setting *node*'s steps in quotes -> prepared -> {t, rated}."""
+    def _stepped_plan(
+        tmp_path: Path,
+        node: str,
+        steps: list[dict],
+        preamble: str | None = None,
+        *,
+        edits: list[dict] | None = None,
+    ):
+        """Plan setting *node*'s steps in quotes -> prepared -> {t, rated}.
+
+        With *edits*, *node* already holds *steps* and the plan edits them.
+        """
         from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
 
         source = tmp_path / "main.py"
@@ -1274,10 +1410,58 @@ class TestSemanticPlans:
             [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
         )
         graph.preamble = preamble
+        if edits is not None:
+            index = next(i for i, item in enumerate(graph.nodes) if item.id == node)
+            graph.nodes[index] = graph.nodes[index].with_config(
+                {**graph.nodes[index].data.config, "steps": steps}
+            )
         snapshot = build_project_snapshot(tmp_path, source, graph)
-        return build_graph_edit_plan(
-            snapshot, [{"op": "update_node", "node": node, "config": {"steps": steps}}]
+        ops = (
+            [{"op": "update_node", "node": node, "config": {"steps": steps}}]
+            if edits is None
+            else [{"op": "edit_steps", "node": node, "edits": edits}]
         )
+        return build_graph_edit_plan(snapshot, ops)
+
+    def test_edit_steps_records_each_step_it_changes(self, tmp_path: Path):
+        steps = [
+            {"id": "keep", "kind": "limit", "n": 2},
+            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+        ]
+        plan = self._stepped_plan(
+            tmp_path,
+            "rated",
+            steps,
+            edits=[
+                {"remove": "keep"},
+                {"insert_after": "logic", "step": {"kind": "limit", "n": 1}},
+            ],
+        )
+
+        assert plan.diff.nodes_updated == ("rated",)
+        assert plan.diff.config_changes == ("rated:steps[keep]", "rated:steps[limit_1]")
+        assert plan.diff.sidecar_changes == ("config/rating_step/rated",)
+
+    def test_an_edited_free_code_step_is_checked_naming_its_step(self, tmp_path: Path):
+        steps = [
+            {"id": "keep", "kind": "limit", "n": 2},
+            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+        ]
+        with pytest.raises(OpValidationError) as excinfo:
+            self._stepped_plan(
+                tmp_path,
+                "rated",
+                steps,
+                edits=[
+                    {
+                        "replace": "logic",
+                        "step": {"kind": "free_code", "code": "df.drop('x')"},
+                    }
+                ],
+            )
+
+        assert "step 2 ('logic')" in str(excinfo.value)
+        assert excinfo.value.where["step"] == "logic"
 
     @pytest.mark.parametrize(
         ("node", "steps"),

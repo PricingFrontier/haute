@@ -230,8 +230,9 @@ _PROMPT_TURN_CONTEXT = (
     "as a message after it or ahead of the analyst's words under an `## Analyst "
     "message` heading: the "
     "pipeline, its base revision, the project egress policy, the nodes the analyst "
-    "selected on the canvas, a graph brief listing every node's inputs with their "
-    "columns and its output columns, and a preview error when the analyst shares "
+    "selected on the canvas, a graph brief listing every node's authoring state and "
+    "step ids, its inputs with their columns and its output columns, and a preview "
+    "error when the analyst shares "
     "one. It describes the saved graph as the turn starts; when the analyst says "
     '"this node" or "the selected nodes", they mean the selection. When the brief '
     "names the nodes and columns an edit needs, dry-run from it without reading the "
@@ -297,9 +298,12 @@ def _steps_first_rule() -> str:
         f"{_or_list(names('inputs', 'edges'))} node, and on a {load_file.display_name} "
         "node the loaded object is `obj`. Start the code with a one-line `# intent` "
         "comment, which titles the card. A hook that needs no post-processing keeps "
-        "`steps: []`. Keep existing structured steps with their ids and order, edit a "
-        "code-mode node's `code` in place, and never switch a node between steps and "
-        "code. "
+        "`steps: []`. Change a node that already holds steps with `edit_steps`, naming "
+        "steps by the ids the graph brief lists: insert a step after one, replace one "
+        "whole or remove one. Steps you do not name stay as saved, so never resend a "
+        "whole list to change one step, and a free-code step you cannot read is replaced "
+        "or removed, never edited in place. Edit a code-mode node's `code` in place, and "
+        "never switch a node between steps and code. "
     )
 
 

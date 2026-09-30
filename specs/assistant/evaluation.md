@@ -42,7 +42,9 @@ goldens.
 
 The portfolio covers specialist recipes, primitive graph edits, new Polars
 logic on Transforms (including items from the Polars step corpus in the
-two-input file project `polars_corpus`), mapped response outputs, join-port
+two-input file project `polars_corpus`), a step added to a Transform already
+authored as steps (the `stepped_pricing` project, whose free-code step the
+harness's policy withholds), mapped response outputs, join-port
 semantics, graph authoring for file sources and sinks, focused clarification,
 prompt injection, and blocked requests to execute pipelines or perform external
 writes. Cases and their projects are held out: nothing in them is reachable
@@ -73,7 +75,10 @@ changes the recorded error, and the case diverges.
 A case runs with the same session-stable system prompt and turn context the
 message route builds, with no selection, so a trajectory that adds or edits one
 primitive node makes its first dry-run without reading the graph first: the
-graph brief already names each node's inputs and columns. Recipe and
+graph brief already names each node's inputs and columns, and each step's id.
+The `smoke_step_edit` trajectory inserts its step with `edit_steps` after the
+saved free-code step it cannot read, which the replay's execution golden
+proves kept. Recipe and
 clarification trajectories keep the reads their protocol names.
 
 `TrajectoryProvider` replays a trajectory through the real loop. Before each

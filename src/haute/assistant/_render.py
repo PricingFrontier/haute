@@ -1,9 +1,11 @@
 """The compact graph renderings the assistant's model reads.
 
 A live pipeline's node configurations are project data, read in full only
-through the policy-gated ``get_node_config``, so its rendering names their keys.
-A packaged example is library content, so its rendering carries each node's
-configuration with its values: that is what the example teaches.
+through the policy-gated ``get_node_config``, so its rendering names their keys
+and, for a stepped-type node, its value-free authoring facts under the egress
+policy: its state and each step's id and kind. A packaged example is library
+content, so its rendering carries each node's configuration with its values:
+that is what the example teaches.
 
 The turn context is the per-turn block that follows the analyst's message: the
 pipeline, its base revision, a bounded graph brief, the egress policy in words,
@@ -20,6 +22,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Literal
 
+from haute._polars_steps import STEPPED_NODE_TYPES, PolarsStepError, render_node_steps
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._config import EgressPolicy
@@ -34,17 +37,171 @@ def _render_config_summary(config: Mapping[str, Any]) -> dict[str, object]:
     return {"keys": sorted(config), "count": len(config)}
 
 
+AuthoringState = Literal["stepped", "code", "incomplete"]
+
+
+@dataclass(frozen=True, slots=True)
+class StepSummary:
+    """One step as the model's graph views list it, value-free.
+
+    `reads` are the input names a source, join or concat step reads; `intent`
+    is the text of a free-code step's leading `#` comment line, which is
+    executable source. `id` and `kind` are None when the saved step lacks them.
+    """
+
+    id: str | None
+    kind: str | None
+    reads: tuple[str, ...] = ()
+    intent: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StepsProblem:
+    """Why a step list does not render.
+
+    `step` is the id of the step the renderer's error names (None for the
+    list); `message` is the renderer's message, which can quote an authored
+    literal, or a free-code step's syntax when `free_code`.
+    """
+
+    step: str | None
+    free_code: bool
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class Authoring:
+    """How a stepped-type node is authored, read from its saved config.
+
+    `steps` is None when the node holds no step list; `steps_discarded` says
+    the editor discarded its steps because its code no longer matched them.
+    """
+
+    state: AuthoringState
+    steps: tuple[StepSummary, ...] | None = None
+    problem: StepsProblem | None = None
+    steps_discarded: bool = False
+
+
+def _text_field(step: Mapping[str, Any], key: str) -> str | None:
+    value = step.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _step_summary(step: object) -> StepSummary:
+    if not isinstance(step, Mapping):
+        return StepSummary(None, None)
+    kind = _text_field(step, "kind")
+    reads: tuple[str, ...] = ()
+    if kind in ("source", "join") and (name := _text_field(step, "input")) is not None:
+        reads = (name,)
+    elif kind == "concat" and isinstance(step.get("inputs"), list):
+        reads = tuple(name for name in step["inputs"] if isinstance(name, str))
+    intent = None
+    if kind == "free_code" and (code := _text_field(step, "code")) is not None:
+        first = next((line.strip() for line in code.splitlines() if line.strip()), "")
+        if first.startswith("#"):
+            intent = first.lstrip("#").strip() or None
+    return StepSummary(_text_field(step, "id"), kind, reads, intent)
+
+
+def node_authoring(node_type: NodeType, config: Mapping[str, Any]) -> Authoring | None:
+    """The authoring facts of a stepped-type node; None for any other type.
+
+    An instance has none: its configuration is its original's. A step list is
+    judged as the saved config materialises it (`render_node_steps`), so
+    `incomplete` here is exactly a `_steps_error`.
+    """
+
+    if node_type not in STEPPED_NODE_TYPES or config.get("instanceOf"):
+        return None
+    steps = config.get("steps")
+    if isinstance(steps, list):
+        summaries = tuple(_step_summary(step) for step in steps)
+        try:
+            render_node_steps(node_type, steps)
+        except PolarsStepError as exc:
+            failing = None if exc.step_index is None else summaries[exc.step_index]
+            return Authoring(
+                "incomplete",
+                summaries,
+                StepsProblem(
+                    None if failing is None else failing.id,
+                    failing is not None and failing.kind == "free_code",
+                    exc.message,
+                ),
+            )
+        return Authoring("stepped", summaries)
+    discarded = "_steps_discarded" in config
+    if str(config.get("code") or "").strip():
+        return Authoring("code", steps_discarded=discarded)
+    return Authoring("incomplete", steps_discarded=discarded)
+
+
+def _intent_shown(step: StepSummary, egress: EgressPolicy) -> str | None:
+    """A free-code step's intent is executable source: shown only when permitted."""
+
+    if step.intent is None or not egress.allow_executable_source:
+        return None
+    return _bounded(step.intent)
+
+
+def _problem_message_shown(problem: StepsProblem, egress: EgressPolicy) -> str | None:
+    """The renderer's message can quote an authored literal (`restricted`
+    configuration) or, on a free-code step, its syntax (executable source)."""
+
+    if egress.max_sensitivity != "restricted":
+        return None
+    if problem.free_code and not egress.allow_executable_source:
+        return None
+    return " ".join(problem.message.split())
+
+
+def render_authoring(authoring: Authoring, egress: EgressPolicy) -> dict[str, object]:
+    """Render a node's authoring facts as `get_pipeline` reports them, under *egress*."""
+
+    rendered: dict[str, object] = {"state": authoring.state}
+    if authoring.steps is not None:
+        steps: list[dict[str, object]] = []
+        for step in authoring.steps:
+            entry: dict[str, object] = {"id": step.id, "kind": step.kind}
+            if step.reads:
+                entry["reads"] = list(step.reads)
+            if (intent := _intent_shown(step, egress)) is not None:
+                entry["intent"] = intent
+            steps.append(entry)
+        rendered["steps"] = steps
+    if authoring.steps_discarded:
+        rendered["steps_discarded"] = True
+    if authoring.problem is not None:
+        error: dict[str, object] = {"step": authoring.problem.step}
+        if (message := _problem_message_shown(authoring.problem, egress)) is not None:
+            error["message"] = message
+        rendered["error"] = error
+    return rendered
+
+
 def render_pipeline_graph(
-    graph: PipelineGraph, *, config_values: bool = False
+    graph: PipelineGraph,
+    *,
+    egress: EgressPolicy | None = None,
+    config_values: bool = False,
 ) -> dict[str, object]:
     """Render the compact graph shape shared by live pipelines and examples.
 
-    With *config_values* each node's configuration is rendered whole, as JSON
-    values; otherwise only its key names and count.
+    A live pipeline passes the *egress* policy: each node's configuration is
+    rendered as its key names and count, and a stepped-type node's authoring
+    facts under that policy. A packaged example passes *config_values*: each
+    node's configuration is rendered whole, as JSON values.
     """
 
-    nodes = [
-        {
+    if config_values == (egress is not None):
+        raise ValueError(
+            "Render a live pipeline under its egress policy, or an example with its config values."
+        )
+    nodes: list[dict[str, object]] = []
+    for node in graph.nodes:
+        rendered: dict[str, object] = {
             "id": node.id,
             "type": _node_type(node),
             "label": node.data.label,
@@ -54,8 +211,11 @@ def render_pipeline_graph(
                 else _render_config_summary(node.data.config)
             ),
         }
-        for node in graph.nodes
-    ]
+        if egress is not None:
+            authoring = node_authoring(node.data.nodeType, node.data.config)
+            if authoring is not None:
+                rendered["authoring"] = render_authoring(authoring, egress)
+        nodes.append(rendered)
     # Snake-case deliberately: these are the exact field names the graph-edit
     # operations accept. The camel-case persisted spelling is an internal wire
     # detail, and echoing it here invited edit operations written in the shape
@@ -90,8 +250,6 @@ def render_pipeline_graph(
     }
 
 
-AuthoringState = Literal["stepped", "code", "incomplete"]
-
 #: The graph brief stops before this many characters and points at `get_pipeline`.
 BRIEF_CHARACTER_LIMIT = 8_000
 #: Columns listed per frame before the rest are counted.
@@ -125,14 +283,14 @@ class BriefInput:
 class BriefNode:
     """One top-level node of the graph brief.
 
-    `authoring_state` is set only on a stepped surface; `outputs` is None when
-    the node's own schema does not resolve.
+    `authoring` is set only on a stepped surface; `outputs` is None when the
+    node's own schema does not resolve.
     """
 
     id: str
     node_type: str
     label: str
-    authoring_state: AuthoringState | None
+    authoring: Authoring | None
     inputs: tuple[BriefInput, ...]
     outputs: tuple[BriefFrame, ...] | None
 
@@ -208,13 +366,46 @@ def render_egress_policy(egress: EgressPolicy) -> str:
     )
 
 
-def _one_line(text: str) -> str:
-    """A project-authored label as one bounded, quoted line."""
+def _bounded(text: str) -> str:
+    """Project-authored text collapsed to one line of at most `_LABEL_LIMIT` characters."""
 
     collapsed = " ".join(text.split())
     if len(collapsed) > _LABEL_LIMIT:
         collapsed = collapsed[: _LABEL_LIMIT - 1] + "…"
-    return json.dumps(collapsed, ensure_ascii=False)
+    return collapsed
+
+
+def _one_line(text: str) -> str:
+    """A project-authored label as one bounded, quoted line."""
+
+    return json.dumps(_bounded(text), ensure_ascii=False)
+
+
+def _quoted(text: str | None) -> str:
+    """A step id or kind, JSON-quoted so no project text can break its line."""
+
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _brief_state(authoring: Authoring, egress: EgressPolicy) -> str:
+    state: str = authoring.state
+    if authoring.problem is not None:
+        if authoring.problem.step is not None:
+            state += f" at step {_quoted(authoring.problem.step)}"
+        if (message := _problem_message_shown(authoring.problem, egress)) is not None:
+            state += f": {json.dumps(message, ensure_ascii=False)}"
+    if authoring.steps_discarded:
+        state += " (steps discarded)"
+    return state
+
+
+def _brief_step_line(step: StepSummary, egress: EgressPolicy) -> str:
+    line = f"  - step {_quoted(step.id)} {step.kind or 'unknown'}"
+    if step.reads:
+        line += f" reads {json.dumps(list(step.reads), ensure_ascii=False)}"
+    if (intent := _intent_shown(step, egress)) is not None:
+        line += f" {json.dumps(intent, ensure_ascii=False)}"
+    return line
 
 
 def _columns(columns: tuple[str, ...]) -> str:
@@ -225,11 +416,15 @@ def _columns(columns: tuple[str, ...]) -> str:
     return shown if hidden <= 0 else f"{shown} and {hidden} more"
 
 
-def _brief_node_lines(node: BriefNode, display_names: Mapping[str, str]) -> list[str]:
+def _brief_node_lines(
+    node: BriefNode, display_names: Mapping[str, str], egress: EgressPolicy
+) -> list[str]:
     head = f"- `{node.id}` ({display_names[node.node_type]}) {_one_line(node.label)}"
-    if node.authoring_state is not None:
-        head += f", {node.authoring_state}"
+    if node.authoring is not None:
+        head += f", {_brief_state(node.authoring, egress)}"
     lines = [head]
+    if node.authoring is not None and node.authoring.steps is not None:
+        lines.extend(_brief_step_line(step, egress) for step in node.authoring.steps)
     for item in node.inputs:
         columns = "not resolved" if item.columns is None else _columns(item.columns)
         lines.append(f"  - input `{item.name}` from `{item.source}`: {columns}")
@@ -242,12 +437,12 @@ def _brief_node_lines(node: BriefNode, display_names: Mapping[str, str]) -> list
     return lines
 
 
-def _render_brief(nodes: tuple[BriefNode, ...]) -> str:
+def _render_brief(nodes: tuple[BriefNode, ...], egress: EgressPolicy) -> str:
     display_names = {node.id: node.display_name for node in capability_manifest().nodes}
     lines: list[str] = []
     size = 0
     for index, node in enumerate(nodes):
-        node_lines = _brief_node_lines(node, display_names)
+        node_lines = _brief_node_lines(node, display_names, egress)
         node_size = sum(len(line) + 1 for line in node_lines)
         if size + node_size + _POINTER_RESERVE > BRIEF_CHARACTER_LIMIT:
             remaining = len(nodes) - index
@@ -292,8 +487,10 @@ def render_turn_context(context: TurnContext) -> str:
     )
     sections.append(
         "### Graph brief\n"
-        "Each node: id, palette name, label and authoring state; then each input's "
-        "name, source and columns, and its output columns.\n" + _render_brief(graph.nodes)
+        "Each node: id, palette name, label and authoring state; then each step's id "
+        "and kind; then each input's name, source and columns, and its output "
+        "columns. Change an existing step list with `edit_steps`, by step id.\n"
+        + _render_brief(graph.nodes, context.egress)
     )
     if graph.preview_error is not None:
         error = graph.preview_error
@@ -312,13 +509,18 @@ def render_turn_context(context: TurnContext) -> str:
 __all__ = [
     "BRIEF_CHARACTER_LIMIT",
     "BRIEF_COLUMN_LIMIT",
+    "Authoring",
     "AuthoringState",
     "BriefFrame",
     "BriefInput",
     "BriefNode",
     "GraphBrief",
     "PreviewError",
+    "StepSummary",
+    "StepsProblem",
     "TurnContext",
+    "node_authoring",
+    "render_authoring",
     "render_egress_policy",
     "render_pipeline_graph",
     "render_turn_context",

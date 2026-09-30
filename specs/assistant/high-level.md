@@ -147,7 +147,10 @@ places after the analyst's message and never stores in the session history:
 
 - the pipeline name and the base revision the turn starts from;
 - a graph brief with one entry per top-level node: its id, palette name, label, authoring
-  state (`stepped`, `code` or `incomplete` on a stepped surface), each input's
+  state (`stepped`, `code` or `incomplete` on a stepped surface, with the step an
+  incomplete list fails at and a marker when the editor discarded the node's steps), one
+  line per step (its id and kind, with a free-code step's `# intent` line only when
+  executable source is permitted), each input's
   code-visible name, source and column names, and its output column names. Columns are
   resolved schema-only on the same engine path as `get_node_schema`, and a node that does
   not resolve says so without its error. The brief is bounded at about 8,000 characters;
@@ -246,7 +249,9 @@ that durable fact, in its original position after the mutation tool row.
   demand rather than embedded in every request, with the structured step grammar
   (each step kind's fields and the closed step vocabularies) derived from the step
   renderer.
-- `get_pipeline` — the saved graph: nodes (id, type, name, config summary), edges,
+- `get_pipeline` — the saved graph: nodes (id, type, name, config summary, and on a
+  stepped type its authoring state and value-free per-step summary, as in the graph
+  brief), edges,
   a preamble-presence/digest summary (never executable source), and which
   singletons exist.
 - `get_node_config` — one node's restricted structured config. Credential-shaped
@@ -375,6 +380,12 @@ refuses `code`. Code-mode nodes keep code editing. Each refusal names the free-c
 for the node's surface: `[{"id": "start", "kind": "source", "input": "<edge name>"},
 {"id": "logic", "kind": "free_code", "code": "..."}]` on a Transform and
 `[{"id": "logic", "kind": "free_code", "code": "..."}]` on every other stepped surface.
+An existing stepped node is changed step by step with `edit_steps`: insert a step
+after a step id (or at the start), replace a step by id, or remove one, with ids
+assigned to new steps that omit one. Only the steps it names are sent, so a free-code
+step whose code the policy masks stays as saved, and such a step can be replaced or
+removed as a whole but never edited in place. Its errors name the step id; it is
+refused on a code-mode node, whose `code` is edited instead.
 Every key an operation writes must hold the written value once the node's config is
 materialised, and a written step list must render; otherwise the plan fails with
 `op_not_applied`. Dry-run then generates the planned source in memory and reparses each

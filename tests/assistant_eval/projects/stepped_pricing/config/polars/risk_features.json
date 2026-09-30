@@ -1,0 +1,14 @@
+{
+  "steps": [
+    {
+      "id": "start",
+      "kind": "source",
+      "input": "quotes"
+    },
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Flag experienced drivers\ndf = df.with_columns((pl.col('driver_age') >= 25).alias('experienced_driver'))"
+    }
+  ]
+}

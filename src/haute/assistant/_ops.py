@@ -41,6 +41,7 @@ from haute._polars_steps import (
     STEPPED_SURFACE_LABELS,
     PolarsStepError,
     is_stepped_config,
+    render_node_steps,
     render_polars_steps,
     step_input_names,
     step_input_references,
@@ -65,10 +66,13 @@ from haute.assistant._wire_ops import (
     AddNodeOp,
     DeleteEdgeOp,
     DeleteNodeOp,
+    EditStepsOp,
     GraphEditOp,
     LocatedPlanError,
     OpValidationError,
     RenameNodeOp,
+    StepInsert,
+    StepReplace,
     UpdateNodeOp,
     UpdatePreambleOp,
     parse_ops,
@@ -81,6 +85,7 @@ _ANY_HANDLE = object()
 _GRAPH_EDIT_OP_MODELS = (
     AddNodeOp,
     UpdateNodeOp,
+    EditStepsOp,
     RenameNodeOp,
     DeleteNodeOp,
     AddEdgeOp,
@@ -280,14 +285,34 @@ def _require_landed(
     if "steps" in written and "_steps_error" in config:
         node_type = node.data.nodeType
         form = _free_code_form(node_type)
+        try:
+            render_node_steps(node_type, config["steps"])
+        except PolarsStepError as exc:
+            step = _step_id_at(config["steps"], exc.step_index)
+        else:  # pragma: no cover - `_steps_error` is this rendering's own failure
+            raise AssertionError("A node carrying _steps_error rendered its steps")
         raise AssistantOperationError(
             "op_not_applied",
             f"{operation} on node {node.id!r} did not land: its steps cannot be rendered "
             f"({config['_steps_error']}). New logic on a {STEPPED_SURFACE_LABELS[node_type]} "
             f"is written as {form}.",
-            where={"node": node.id, "field": "steps"},
+            where={
+                "node": node.id,
+                "field": "steps",
+                **({} if step is None else {"step": step}),
+            },
             fix=f"Write the steps as {form}.",
         )
+
+
+def _step_id_at(steps: Sequence[object], index: int | None) -> str | None:
+    """The id of the step at *index*, which a step error names; None for the list."""
+
+    if index is None:
+        return None
+    step = steps[index]
+    step_id = step.get("id") if isinstance(step, Mapping) else None
+    return step_id if isinstance(step_id, str) and step_id else None
 
 
 def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[str, Any]:
@@ -383,6 +408,106 @@ def _apply_update_node(
     _require_landed(updated, op.config, operation="update_node", null_removes=True)
     _replace_node(graph, index, updated)
     return node_id
+
+
+def _assigned_step_id(kind: object, taken: Sequence[object]) -> str:
+    """``<kind>_<n>`` with the smallest ``n`` from 1 that no step in *taken* holds."""
+
+    prefix = kind if isinstance(kind, str) and kind else "step"
+    number = 1
+    while f"{prefix}_{number}" in taken:
+        number += 1
+    return f"{prefix}_{number}"
+
+
+def _apply_edit_steps(
+    graph: PipelineGraph,
+    op: EditStepsOp,
+    refs: Mapping[str, str],
+    nested_ids: set[str],
+) -> tuple[str, tuple[str, ...]]:
+    """Apply one step-level edit and return its node id and the step ids it changed.
+
+    The operation only changes a list the node already holds, so it can never
+    switch a node between steps and code (see ``_check_stepped_write``).
+    """
+
+    node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="edit_steps target")
+    index = _node_index(graph, node_id)
+    assert index is not None  # _resolve_node_id already checked this
+    node = graph.nodes[index]
+    node_type = node.data.nodeType
+    if node_type not in STEPPED_NODE_TYPES:
+        _invalid(
+            f"Node {node_id!r} is a {node_type.value!r} node, which does not author steps.",
+            where={"node": node_id},
+            fix=f"Change {node_id!r} with update_node.",
+        )
+    label = STEPPED_SURFACE_LABELS[node_type]
+    config = node.data.config
+    steps = config.get("steps")
+    if not isinstance(steps, list):
+        if str(config.get("code") or "").strip():
+            _invalid(
+                f"Node {node_id!r} is a {label} in code mode: it has no steps to edit. "
+                "Edit its code instead.",
+                where={"node": node_id, "field": "code"},
+                fix=f"Edit the node's code with update_node on {node_id!r}.",
+            )
+        form = _free_code_form(node_type)
+        _invalid(
+            f"Node {node_id!r} is a {label} with neither steps nor code, so it has no "
+            "steps to edit.",
+            where={"node": node_id, "field": "steps"},
+            fix=f"Write its steps with update_node: {form}.",
+        )
+
+    edited: list[object] = deepcopy(steps)
+    changed: list[str] = []
+
+    def position_of(step_id: str) -> int:
+        for position, step in enumerate(edited):
+            if isinstance(step, Mapping) and step.get("id") == step_id:
+                return position
+        _invalid(
+            f"Node {node_id!r} has no step {step_id!r}.",
+            where={"node": node_id, "field": "steps", "step": step_id},
+            fix="Name a step id the node's steps hold, as get_pipeline lists them.",
+        )
+
+    for edit in op.edits:
+        ids = [step.get("id") if isinstance(step, Mapping) else None for step in edited]
+        if not isinstance(edit, (StepInsert, StepReplace)):
+            del edited[position_of(edit.remove)]
+            changed.append(edit.remove)
+            continue
+        step = deepcopy(edit.step)
+        if isinstance(edit, StepReplace):
+            position = position_of(edit.replace)
+            step.setdefault("id", edit.replace)
+            taken = ids[:position] + ids[position + 1 :]
+        else:
+            position = 0 if edit.insert_after is None else position_of(edit.insert_after) + 1
+            taken = ids
+            step.setdefault("id", _assigned_step_id(step.get("kind"), taken))
+        if step["id"] in taken:
+            _invalid(
+                f"Node {node_id!r} already has a step {step['id']!r}; step ids are unique "
+                "within a node.",
+                where={"node": node_id, "field": "steps", "step": step["id"]},
+                fix="Give the step an id no other step holds, or omit id to have one assigned.",
+            )
+        if isinstance(edit, StepReplace):
+            edited[position] = step
+            changed.append(edit.replace)
+        else:
+            edited.insert(position, step)
+        changed.append(str(step["id"]))
+
+    updated = node.with_config({**config, "steps": edited})
+    _require_landed(updated, {"steps": edited}, operation="edit_steps", null_removes=False)
+    _replace_node(graph, index, updated)
+    return node_id, tuple(changed)
 
 
 #: Source types whose outgoing input names come from a handle, not the node's label.
@@ -724,13 +849,16 @@ class AppliedOps:
 
     ``writers`` maps each node the batch added, updated or renamed to the
     index of the last operation that did, so a failure found after the whole
-    batch can name the operation that wrote its node.
+    batch can name the operation that wrote its node. ``step_changes`` holds
+    one ``<node>:steps[<id>]`` identity per step an ``edit_steps`` inserted,
+    replaced or removed, ids assigned by the operation included.
     """
 
     graph: PipelineGraph
     refs: dict[str, str]
     new_node_ids: tuple[str, ...]
     writers: Mapping[str, int]
+    step_changes: tuple[str, ...] = ()
 
 
 def locate_plan_error(
@@ -766,6 +894,7 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
     refs: dict[str, str] = {}
     new_node_ids: list[str] = []
     writers: dict[str, int] = {}
+    step_changes: set[str] = set()
 
     for index, op in enumerate(parsed_ops):
         try:
@@ -774,6 +903,12 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
                 writers[new_node_ids[-1]] = index
             elif isinstance(op, UpdateNodeOp):
                 writers[_apply_update_node(working, op, refs, nested_ids)] = index
+            elif isinstance(op, EditStepsOp):
+                edited_id, step_ids = _apply_edit_steps(working, op, refs, nested_ids)
+                writers[edited_id] = index
+                step_changes.update(
+                    f"{_semantic_node_id(op.node, refs)}:steps[{step_id}]" for step_id in step_ids
+                )
             elif isinstance(op, RenameNodeOp):
                 old_id, new_id = _apply_rename_node(working, op, refs, nested_ids, new_node_ids)
                 writers.pop(old_id, None)
@@ -804,7 +939,7 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
             ) from exc
 
     _assign_new_positions(working, new_node_ids)
-    return AppliedOps(working, refs, tuple(new_node_ids), writers)
+    return AppliedOps(working, refs, tuple(new_node_ids), writers, tuple(sorted(step_changes)))
 
 
 def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph:
@@ -1115,8 +1250,9 @@ def _semantic_diff(
     before: PipelineGraph,
     after: PipelineGraph,
     ops: Sequence[GraphEditOp],
-    refs: Mapping[str, str],
+    applied: AppliedOps,
 ) -> SemanticDiff:
+    refs = applied.refs
     old_nodes = {node.id: node for node in before.nodes}
     new_nodes = {node.id: node for node in after.nodes}
     renamed = tuple(
@@ -1129,14 +1265,25 @@ def _semantic_diff(
     # in the explicit operation vocabulary, while added/removed nodes and
     # edges are still derived from the actual before/after graphs.
     updates = tuple(
-        sorted({_semantic_node_id(op.node, refs) for op in ops if isinstance(op, UpdateNodeOp)})
+        sorted(
+            {
+                _semantic_node_id(op.node, refs)
+                for op in ops
+                if isinstance(op, (UpdateNodeOp, EditStepsOp))
+            }
+        )
     )
     config_changes = tuple(
         sorted(
-            f"{_semantic_node_id(op.node, refs)}:{key}"
-            for op in ops
-            if isinstance(op, UpdateNodeOp)
-            for key in op.config
+            [
+                *(
+                    f"{_semantic_node_id(op.node, refs)}:{key}"
+                    for op in ops
+                    if isinstance(op, UpdateNodeOp)
+                    for key in op.config
+                ),
+                *applied.step_changes,
+            ]
         )
     )
     old_edges = {_edge_identity(edge) for edge in before.edges}
@@ -1214,8 +1361,8 @@ def semantic_diff(
         operation if isinstance(operation, _GRAPH_EDIT_OP_MODELS) else parse_ops([operation])[0]
         for operation in operations
     ]
-    refs = _apply_ops_with_refs(before, typed_operations).refs
-    return _semantic_diff(before, after, typed_operations, refs)
+    applied = _apply_ops_with_refs(before, typed_operations)
+    return _semantic_diff(before, after, typed_operations, applied)
 
 
 def _authored_config_projection(
@@ -1402,7 +1549,7 @@ def _affected_capabilities(
     ids.update(
         _semantic_node_id(op.node, refs)
         for op in ops
-        if isinstance(op, (UpdateNodeOp, RenameNodeOp))
+        if isinstance(op, (UpdateNodeOp, EditStepsOp, RenameNodeOp))
     )
     capabilities = {
         node.data.nodeType.value
@@ -2122,10 +2269,11 @@ def _validate_assistant_authored_steps(
             steps, step_input_names(node_type, input_names), start=surface.start
         )
     except PolarsStepError as exc:
+        step = _step_id_at(steps, exc.step_index)
         _invalid(
             f"Node {node.id!r} has an invalid step list: {exc} New logic on a "
             f"{label} is written as {form}.",
-            where={"node": node.id, "field": "steps"},
+            where={"node": node.id, "field": "steps", **({} if step is None else {"step": step})},
             fix=f"Write the steps as {form}.",
         )
     lines = rendered.code.split("\n")
@@ -2204,8 +2352,11 @@ def _validate_assistant_authored_graph(
     code_changed = {
         change.removesuffix(":code") for change in config_changes if change.endswith(":code")
     }
+    # `<node>:steps` from update_node, `<node>:steps[<id>]` from edit_steps.
     steps_changed = {
-        change.removesuffix(":steps") for change in config_changes if change.endswith(":steps")
+        node_id
+        for node_id, _, key in (change.partition(":") for change in config_changes)
+        if key == "steps" or key.startswith("steps[")
     }
     for node_id in sorted(set(authored_added) | steps_changed):
         node = nodes_by_id.get(node_id)
@@ -2252,7 +2403,7 @@ def prepare_graph_edit(
     ops = parse_ops(raw_ops)
     applied = _apply_ops_with_refs(snapshot.graph, ops)
     result, refs = applied.graph, applied.refs
-    diff = _semantic_diff(snapshot.graph, result, ops, refs)
+    diff = _semantic_diff(snapshot.graph, result, ops, applied)
     try:
         _validate_assistant_authored_graph(result, diff, applied.new_node_ids)
     except LocatedPlanError as exc:

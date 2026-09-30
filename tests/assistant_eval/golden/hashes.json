@@ -1,8 +1,8 @@
 {
-  "system_prompt.md": "d2d8c37dde8012afa9097bc24f98854ffc0eb62459440df138f85a13f9e90cc2",
-  "turn_context_1.md": "a8cac613558ccba1ed64e45222a1532253bd55214ce8dd42b713a77131ca0dc5",
-  "turn_context_2.md": "2bf1e95c8a0f5e36a0b4d6f327253c604744656d6a794e4cd3a95d871de2b055",
-  "tools_canonical.json": "5429268063a5820ccd0dffa4d01165ce2b36c78d8395ed1d8d9e7d49682dec50",
-  "tools_anthropic.json": "283c9860a7f1dd367000f563f49d945d289c1c42909c0a0c928993586ecae542",
-  "tools_openai.json": "d9df75b0b92b089828a10c397053aae7346696876825a341d0ea5d3a13b42613"
+  "system_prompt.md": "6a31172862ecfeb6c5bc441506179fc4ff75e5e131f345df3ff6366e2bc68675",
+  "turn_context_1.md": "8b8783d413ddc251a61410369334bf3962d335a68f1785d858583df203d49d7c",
+  "turn_context_2.md": "a59ad76b3e7d08ea6ea1de806b3df366d7de996840b88280432801bbd33c3d2f",
+  "tools_canonical.json": "47646e43c24665dfc897f768dc5307e0577b47eb966cf90ac621becfe84f10ca",
+  "tools_anthropic.json": "c18605354ace505e8dd84c611e8a367fd6b71274d4c63c913d407f174545583a",
+  "tools_openai.json": "e1b1cd401b7ccab01e13b4f6b9667dfe4950c6dcee6a71ca88c5b6843507a3ce"
 }

@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "smoke_step_edit",
+  "case": "smoke_step_edit",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "ops": [
+                  {
+                    "op": "edit_steps",
+                    "node": "risk_features",
+                    "edits": [
+                      {
+                        "insert_after": "logic",
+                        "step": {
+                          "kind": "free_code",
+                          "code": "# Flag young drivers\ndf = df.with_columns((pl.col('driver_age') < 21).alias('young_driver'))"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

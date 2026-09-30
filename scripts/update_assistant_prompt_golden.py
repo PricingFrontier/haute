@@ -24,11 +24,14 @@ from pathlib import Path
 
 from haute.assistant._config import EgressPolicy
 from haute.assistant._render import (
+    Authoring,
     BriefFrame,
     BriefInput,
     BriefNode,
     GraphBrief,
     PreviewError,
+    StepsProblem,
+    StepSummary,
     TurnContext,
 )
 
@@ -54,7 +57,7 @@ _POLICIES = BriefNode(
     "policies",
     "dataInput",
     "Policies",
-    "stepped",
+    Authoring("stepped", ()),
     (),
     (BriefFrame(None, _POLICY_COLUMNS),),
 )
@@ -62,7 +65,13 @@ _ADD_FEATURES = BriefNode(
     "add_features",
     "polars",
     "Add features",
-    "stepped",
+    Authoring(
+        "stepped",
+        (
+            StepSummary("start", "source", ("policies",)),
+            StepSummary("logic", "free_code", (), "Flag drivers under 25"),
+        ),
+    ),
     (BriefInput("policies", "policies", _POLICY_COLUMNS),),
     (BriefFrame(None, _FEATURE_COLUMNS),),
 )
@@ -78,7 +87,7 @@ _REGION_BANDS = BriefNode(
     "region_bands",
     "polars",
     "Region bands",
-    "incomplete",
+    Authoring("incomplete", (), StepsProblem(None, False, "Choose the input to start from.")),
     (BriefInput("add_features", "add_features", _FEATURE_COLUMNS),),
     None,
 )

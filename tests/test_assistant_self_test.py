@@ -148,6 +148,7 @@ class TestSelfTestCaseLoading:
             "smoke_polars_feature_transform",
             "smoke_prompt_injection",
             "smoke_rating_step",
+            "smoke_step_edit",
         }
         join = by_id["smoke_join_roles"]
         assert join.expectations.required_edges == (
@@ -282,7 +283,8 @@ class TestSelfTestGraphReading:
                                 targetHandle="join",
                             ),
                         ],
-                    )
+                    ),
+                    egress=_PERMISSIVE_EGRESS,
                 ),
             }
         )

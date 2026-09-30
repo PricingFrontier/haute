@@ -15,13 +15,15 @@ When your code compares a column to a literal value, first call `get_column_prof
 - Selected on the canvas: none
 
 ### Graph brief
-Each node: id, palette name, label and authoring state; then each input's name, source and columns, and its output columns.
+Each node: id, palette name, label and authoring state; then each step's id and kind; then each input's name, source and columns, and its output columns. Change an existing step list with `edit_steps`, by step id.
 - `policies` (Data Input) "Policies", stepped
   - output: ["policy_id", "driver_age", "vehicle_group", "region", "exposure"]
 - `add_features` (Polars) "Add features", stepped
+  - step "start" source reads ["policies"]
+  - step "logic" free_code "Flag drivers under 25"
   - input `policies` from `policies`: ["policy_id", "driver_age", "vehicle_group", "region", "exposure"]
   - output: ["policy_id", "driver_age", "vehicle_group", "region", "exposure", "young_driver"]
-- `region_bands` (Polars) "Region bands", incomplete
+- `region_bands` (Polars) "Region bands", incomplete: "Choose the input to start from."
   - input `add_features` from `add_features`: ["policy_id", "driver_age", "vehicle_group", "region", "exposure", "young_driver"]
   - output: not resolved
 - `premium` (Quote Response) "Premium"

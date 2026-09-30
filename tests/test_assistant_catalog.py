@@ -389,6 +389,7 @@ class TestResolvedDescriptors:
             AddNodeOp,
             DeleteEdgeOp,
             DeleteNodeOp,
+            EditStepsOp,
             RenameNodeOp,
             UpdateNodeOp,
             UpdatePreambleOp,
@@ -398,6 +399,7 @@ class TestResolvedDescriptors:
         models = (
             AddNodeOp,
             UpdateNodeOp,
+            EditStepsOp,
             RenameNodeOp,
             DeleteNodeOp,
             AddEdgeOp,
