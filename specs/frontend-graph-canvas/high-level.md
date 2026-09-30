@@ -344,8 +344,21 @@ candidate, with the error toast.
   splitting the edge, selects the new edge-join, and records the complete
   rewrite as one undoable action. A rejected edge release reports its
   actionable edge-join reason without changing nodes, edges, selection,
-  dirty state, or history; an ordinary blank-canvas cancellation remains a
-  no-op. Self-loops, duplicate edges, a third input to an edge-join, a role
+  dirty state, or history. Releasing a source-handle gesture on empty
+  canvas — not on a node, handle, edge, or canvas control — opens an Add
+  node menu at the release point instead of cancelling. It lists Edge Join
+  first, then every palette type in palette order except the types that
+  take no input (Quote Input, Data Input, Constant), Quote Response, and
+  Load File; an
+  occupied singleton type is listed but disabled, as in the palette.
+  Choosing a type creates that node at the release point with the dragged
+  output as its input (an Edge Join's base input), selects it, and records
+  node and edge as one undoable action. A connection the new node could
+  not accept is refused with the connection-rejection toast and creates
+  nothing. Escape, a click outside the menu, or a click on the canvas
+  closes it without changing the graph. A target-handle gesture, a
+  gesture from a submodel boundary port, and a read-only canvas release on
+  empty canvas as a no-op. Self-loops, duplicate edges, a third input to an edge-join, a role
   (base/join) that already has an input, and a connection that would exceed
   a node type's `maxInputs` are all rejected silently or with a named toast.
   Dropping a palette item parses its
