@@ -216,7 +216,11 @@ schema overrides and a bounded type-inference row count (never
 from their file metadata. Nothing is collected and no snapshot is written.
 Formats that only read eagerly (JSON, Excel, ODS, Avro, IPC stream), database
 queries and remote sources fail loudly with the remedy "preview this input
-first". The schema evidence records the tier `inferred`, the format and the
+first". Eligibility is decided by the configuration as well as the format,
+reusing the I/O registry's check of which reader arguments and values the
+scanner accepts: a configuration only the eager reader supports (for example a
+CSV encoding the scanner cannot decode) gets the same refusal. The schema
+evidence records the tier `inferred`, the format and the
 inference bound, and the snapshot is still built at the first preview.
 Evidence for a dataset that no longer exists is dropped when the model
 re-inspects the project, and stale-evidence errors name the file. Specify the
@@ -224,10 +228,11 @@ inferred tier in the execution-engine and assistant specifications first.
 
 **Acceptance:** A plan adding a CSV Data Input with a non-default separator
 and a schema override, a Transform and their edge applies at the inferred
-tier, and the resolved schema reflects both settings; an Excel input and a
-database input without a snapshot are refused with the preview remedy; the
-dry-run creates no snapshot files; renaming an inspected dataset no longer
-blocks later dry-runs.
+tier, and the resolved schema reflects both settings; an Excel input, a
+database input without a snapshot, and a CSV whose configured encoding only
+the eager reader supports are refused with the preview remedy; the dry-run
+creates no snapshot files; renaming an inspected dataset no longer blocks
+later dry-runs.
 
 **Dependencies:** None.
 

@@ -793,6 +793,11 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
             "Do not write new logic as code: start the steps with a source step naming "
             "the input edge, which binds df, then transform df in a free_code step."
         )
+        anti_patterns.append(
+            "When editing the code of a node already in code mode (it has no steps), do "
+            "not read df before assigning it: there df is only the output, so start from "
+            "an input by name (df = claims.filter(...))."
+        )
     if node_type == NodeType.EDGE_JOIN:
         anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
     return NodeCapabilityDescriptor(
