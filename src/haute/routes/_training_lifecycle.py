@@ -80,6 +80,7 @@ from haute.modelling._train_config import (
     parse_tuning_config,
     reject_removed_evaluation_fields,
     training_objective_issue,
+    validate_modelling_config_values,
     validate_training_device,
 )
 from haute.routes._background_jobs import (
@@ -1242,23 +1243,15 @@ class TrainService:
                 ),
             )
 
-        # Validity checks first, so a wrong value beats an incomplete one:
-        # GLM values (family/link, dispersion ranges, term contract,
-        # regularization and solver settings); otherwise the loss against the
-        # chosen family's own losses, not CatBoost's (LightGBM, XGBoost and EBM
-        # train Gamma, which CatBoost lacks). Absent values are caught by the
+        # Validity checks first, so a wrong value beats an incomplete one: the
+        # one malformed-value check save validation also runs (GLM values, or
+        # the loss against the chosen family's own losses, not CatBoost's, and
+        # a target that is not also a feature). Absent values are caught by the
         # completeness gate below.
-        if algorithm == "glm":
-            _validate_glm_config_values(config)
-        else:
-            loss_function = config.get("loss_function")
-            if loss_function:
-                try:
-                    algorithm_descriptor(str(algorithm)).native_loss(
-                        str(config.get("task", "regression")), str(loss_function)
-                    )
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            validate_modelling_config_values(config)
+        except TrainingConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # Then require a complete training objective. An unset loss/family, or
         # an unset objective parameter (Tweedie variance power, elastic-net L1

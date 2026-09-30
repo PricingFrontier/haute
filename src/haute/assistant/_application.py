@@ -13,12 +13,13 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
+from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
 from haute._graph_utils import _sanitize_func_name
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
-from haute._types import PipelineGraph
+from haute._types import NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._ops import (
     AssistantOperationError,
@@ -34,7 +35,7 @@ from haute.assistant._ops import (
     verify_postconditions,
 )
 from haute.codegen import graph_to_code_multi
-from haute.errors import ConfigError, ParseError
+from haute.errors import ConfigError, HauteError, HauteValidationError, ParseError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
@@ -42,8 +43,10 @@ from haute.executor import (
     _pipeline_dir,
 )
 from haute.graph_utils import flatten_graph
+from haute.modelling._train_config import MISSING_TARGET_MESSAGE, training_objective_issue
 from haute.routes._helpers import parse_pipeline_to_graph, save_lock
 from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._training_preparation import build_training_feature_selection
 
 _MAX_SCHEMA_TARGETS = 100
 
@@ -227,27 +230,32 @@ class _PreparedGraph:
         )
 
 
-def _resolve_target_evidence(prepared: _PreparedGraph, target: str) -> Mapping[str, object]:
-    """Resolve one terminal's schema through the production lazy engine.
+def _resolve_lazy_output(prepared: _PreparedGraph, target: str) -> Any:
+    """Build one node's lazy output (a frame, or a frame per port) without rows.
 
-    `schema_only=True` states the invariant this path already holds: it reads
-    `collect_schema()` and never collects a frame or invokes a sink, so the
+    `schema_only=True` states the invariant this path already holds: callers
+    read `collect_schema()` and never collect a frame or invoke a sink, so the
     engine's group-by materialisation-admission gate — which bounds peak memory
     during materialisation — does not apply to it.
     """
 
-    graph = prepared.graph
     lazy_outputs, *_ = execute_lazy_graph(
         prepared.flattened,
         _build_node_fn,
         target_node_id=target,
         preserve_node_ids={target},
         preamble_ns=prepared.preamble_ns,
-        source=graph.active_source,
+        source=prepared.graph.active_source,
         enforce_contracts=True,
         schema_only=True,
     )
-    output = lazy_outputs[target]
+    return lazy_outputs[target]
+
+
+def _resolve_target_evidence(prepared: _PreparedGraph, target: str) -> Mapping[str, object]:
+    """Resolve one terminal's schema through the production lazy engine."""
+
+    output = _resolve_lazy_output(prepared, target)
     extra: dict[str, object]
     if isinstance(output, dict):
         ports = {port: _frame_schema(frame) for port, frame in sorted(output.items())}
@@ -452,6 +460,83 @@ def _prove_steps_survive_save(
                 )
 
 
+def _not_ready(node_id: str, message: str) -> AssistantOperationError:
+    return AssistantOperationError("node_not_ready", f"Node {node_id!r} is not ready: {message}")
+
+
+def _prove_load_file_loads(node_id: str, config: Mapping[str, Any]) -> None:
+    """Load a Load File's object as its node would when it runs.
+
+    A deserialiser's own message can quote the file's content, so a failure
+    other than a missing file or a Haute refusal is reported by type only.
+    """
+
+    path = config.get("path")
+    file_type = config.get("fileType")
+    if not isinstance(path, str) or not path.strip():
+        raise _not_ready(node_id, "Load File has no path. Set the file it loads.")
+    try:
+        load_external_file_object(config)
+    except FileNotFoundError:
+        raise _not_ready(node_id, f"Load File path {path!r} does not exist.") from None
+    except (HauteError, HauteValidationError) as exc:
+        raise _not_ready(node_id, str(exc)) from exc
+    except Exception as exc:
+        raise _not_ready(
+            node_id,
+            f"Load File path {path!r} does not load as {file_type!r} ({type(exc).__name__}).",
+        ) from exc
+
+
+def _prove_nodes_ready(graph: PipelineGraph, node_ids: Collection[str]) -> None:
+    """Refuse a Modelling or Load File node in *node_ids* that is not ready to use.
+
+    Save validation lets an analyst keep an unfinished node and refuses only
+    malformed values; a node the assistant writes must also be usable. A
+    Modelling node needs a target and a complete objective, and its configured
+    columns must be in the input schema, checked by the function training
+    preparation runs on the materialised schema. A Load File must load its file
+    as its declared type: with empty steps it passes its input through and
+    never loads the file, so schema resolution does not prove it.
+    """
+
+    nodes = {node.id: node for node in graph.nodes}
+    ready_types = {NodeType.MODELLING, NodeType.EXTERNAL_FILE}
+    written = sorted(
+        node_id
+        for node_id in node_ids
+        if (node := nodes.get(node_id)) is not None
+        and node.data.nodeType in ready_types
+        and not node.data.config.get("instanceOf")
+    )
+    prepared: _PreparedGraph | None = None
+    for node_id in written:
+        node = nodes[node_id]
+        config = node.data.config
+        if node.data.nodeType == NodeType.EXTERNAL_FILE:
+            _prove_load_file_loads(node_id, config)
+            continue
+        target = config.get("target")
+        issue = (
+            MISSING_TARGET_MESSAGE
+            if not isinstance(target, str) or not target
+            else training_objective_issue(config)
+        )
+        if issue is not None:
+            raise _not_ready(node_id, issue)
+        if prepared is None:
+            prepared = _PreparedGraph.build(graph)
+        try:
+            frame = _resolve_lazy_output(prepared, node_id)
+            schema = {name: str(dtype) for name, dtype in frame.collect_schema().items()}
+        except Exception as exc:
+            raise SchemaUnresolvableError(node_id, exc, step=None) from exc
+        try:
+            build_training_feature_selection(config, schema)
+        except HauteValidationError as exc:
+            raise _not_ready(node_id, str(exc)) from exc
+
+
 def build_verified_plan(
     snapshot: ProjectSnapshot,
     operations: Sequence[Mapping[str, Any]],
@@ -475,6 +560,10 @@ def build_verified_plan(
         targets,
         baseline=snapshot.graph,
         changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
+    )
+    _prove_nodes_ready(
+        prepared.result_graph,
+        {*prepared.diff.nodes_added, *prepared.diff.nodes_updated},
     )
     plan = finalize_graph_edit_plan(
         prepared,

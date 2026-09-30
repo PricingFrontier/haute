@@ -1152,3 +1152,202 @@ class TestSteppedWrites:
         assert "'rated'" in str(excinfo.value)
         assert _project_files(stepped_project) == before
         assert len(service.plan_store) == 0
+
+
+MODELLING_PIPELINE = """\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="modelling readiness fixture")
+
+
+@pipeline.polars
+def policies() -> pl.LazyFrame:
+    return pl.LazyFrame({"exposure": [1.0, 0.5], "age": [30.0, 40.0], "claims": [0, 1]})
+
+
+@pipeline.modelling(config="config/model_training/train.json")
+def train(policies): ...
+"""
+
+_VALID_GLM = {
+    "target": "claims",
+    "algorithm": "glm",
+    "family": "poisson",
+    "link": "log",
+    "offset": "exposure",
+    "terms": {"age": {"type": "linear"}},
+}
+
+
+@pytest.fixture()
+def modelling_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A saved pipeline whose modelling node is the editor's unfinished ``{}``."""
+
+    from haute._sandbox import set_project_root
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    (tmp_path / "config" / "model_training").mkdir(parents=True)
+    (tmp_path / "config" / "model_training" / "train.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "main.py").write_text(MODELLING_PIPELINE, encoding="utf-8")
+    return tmp_path
+
+
+class TestWrittenNodesAreReady:
+    """Malformed values fail save validation; an assistant-written Modelling or
+    Load File node must also be complete and match its input and file."""
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            pytest.param(
+                {**_VALID_GLM, "algorithm": "GLM", "family": "Poisson"},
+                "Unknown algorithm 'GLM'",
+                id="algorithm-case",
+            ),
+            pytest.param(
+                {**_VALID_GLM, "family": "poison"}, "Unknown GLM family 'poison'", id="family"
+            ),
+            pytest.param(
+                {"target": "claims", "algorithm": "gbm", "loss_function": "Poisson"},
+                "Unknown algorithm 'gbm'",
+                id="algorithm",
+            ),
+            pytest.param(
+                {
+                    "target": "claims",
+                    "algorithm": "catboost",
+                    "loss_function": "Poisson",
+                    "feature_columns": ["age", "claims"],
+                },
+                "Target column 'claims' is also listed in feature_columns",
+                id="target-is-a-feature",
+            ),
+        ],
+    )
+    def test_a_malformed_value_fails_save_validation_at_dry_run(
+        self, modelling_project: Path, config: dict, message: str
+    ):
+        from fastapi import HTTPException
+
+        service = _service(modelling_project)
+
+        with pytest.raises(HTTPException) as raised:
+            service.dry_run("main.py", [{"op": "update_node", "node": "train", "config": config}])
+
+        assert raised.value.status_code == 400
+        assert message in raised.value.detail
+        assert len(service.plan_store) == 0
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            pytest.param(
+                {**_VALID_GLM, "offset": "exposure_years"},
+                "Training input is missing required column(s): ['exposure_years']",
+                id="offset-column-missing",
+            ),
+            pytest.param(
+                {**_VALID_GLM, "family": None}, "GLM config has no family", id="glm-no-family"
+            ),
+            pytest.param(
+                {**_VALID_GLM, "target": None}, "Modelling config has no target", id="no-target"
+            ),
+        ],
+    )
+    def test_an_unready_modelling_node_fails_the_dry_run(
+        self, modelling_project: Path, config: dict, message: str
+    ):
+        service = _service(modelling_project)
+
+        with pytest.raises(AssistantOperationError) as raised:
+            service.dry_run("main.py", [{"op": "update_node", "node": "train", "config": config}])
+
+        assert raised.value.code == "node_not_ready"
+        assert "'train'" in str(raised.value)
+        assert message in str(raised.value)
+        assert len(service.plan_store) == 0
+
+    def test_a_load_file_whose_path_does_not_exist_fails_the_dry_run(self, modelling_project: Path):
+        service = _service(modelling_project)
+
+        with pytest.raises(AssistantOperationError) as raised:
+            service.dry_run(
+                "main.py",
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "externalFile",
+                        "name": "lookup",
+                        "ref": "l",
+                        "config": {"path": "missing.json", "fileType": "json"},
+                    },
+                    {"op": "add_edge", "source": "policies", "target": "$l"},
+                ],
+            )
+
+        assert raised.value.code == "node_not_ready"
+        assert "'lookup'" in str(raised.value)
+        assert "does not exist" in str(raised.value)
+
+    def test_a_load_file_that_does_not_load_as_its_type_fails_the_dry_run(
+        self, modelling_project: Path
+    ):
+        (modelling_project / "lookup.json").write_text("{not json", encoding="utf-8")
+        service = _service(modelling_project)
+
+        with pytest.raises(AssistantOperationError) as raised:
+            service.dry_run(
+                "main.py",
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "externalFile",
+                        "name": "lookup",
+                        "ref": "l",
+                        "config": {"path": "lookup.json", "fileType": "json"},
+                    },
+                    {"op": "add_edge", "source": "policies", "target": "$l"},
+                ],
+            )
+
+        assert raised.value.code == "node_not_ready"
+        assert "JSONDecodeError" in str(raised.value)
+        assert "not json" not in str(raised.value)
+
+    async def test_the_valid_glm_applies(self, modelling_project: Path):
+        service = _service(modelling_project)
+
+        plan = service.dry_run(
+            "main.py", [{"op": "update_node", "node": "train", "config": _VALID_GLM}]
+        )
+        await service.apply("main.py", plan.plan_hash)
+
+        saved = _reparsed_config(modelling_project, "train")
+        assert {key: saved.get(key) for key in _VALID_GLM} == _VALID_GLM
+
+    async def test_an_edit_beside_an_empty_modelling_node_applies(self, modelling_project: Path):
+        service = _service(modelling_project)
+
+        plan = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "doubled",
+                    "ref": "d",
+                    "config": {
+                        "steps": _free_code_steps(
+                            "policies", "# Double age\ndf = df.with_columns(age2=pl.col('age') * 2)"
+                        )
+                    },
+                },
+                {"op": "add_edge", "source": "policies", "target": "$d"},
+            ],
+        )
+        await service.apply("main.py", plan.plan_hash)
+
+        assert _reparsed_config(modelling_project, "train") == {}

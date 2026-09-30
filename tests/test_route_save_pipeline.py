@@ -473,6 +473,69 @@ class TestValidateScenarioExpanderGridSize:
         SavePipelineService(tmp_path).validate_graph(graph, source_file="pipeline.py")
 
 
+class TestValidateModellingValues:
+    """A malformed modelling value can never train, so save refuses it; an
+    unfinished node is incomplete, not malformed, and still saves."""
+
+    @staticmethod
+    def _graph(config: dict) -> PipelineGraph:
+        return _make_graph(_make_node("m", "train", "modelling", config))
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            pytest.param(
+                {"algorithm": "GLM", "family": "Poisson"},
+                "Unknown algorithm 'GLM'",
+                id="algorithm-case",
+            ),
+            pytest.param({"algorithm": "gbm"}, "Unknown algorithm 'gbm'", id="unknown-algorithm"),
+            pytest.param(
+                {"algorithm": "glm", "family": "poison"},
+                "Unknown GLM family 'poison'",
+                id="unknown-family",
+            ),
+            pytest.param(
+                {"algorithm": "glm", "family": "poisson", "link": "logit"},
+                "Link 'logit' is not valid for the poisson family",
+                id="family-link",
+            ),
+            pytest.param(
+                {"algorithm": "catboost", "loss_function": "Gamma"},
+                "CatBoost does not support the Gamma loss",
+                id="family-loss",
+            ),
+            pytest.param(
+                {"target": "claims", "feature_columns": ["age", "claims"]},
+                "Target column 'claims' is also listed in feature_columns",
+                id="target-is-a-feature",
+            ),
+        ],
+    )
+    def test_a_malformed_value_is_refused_naming_the_node(
+        self, tmp_path: Path, config: dict, message: str
+    ) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(
+                self._graph(config), source_file="pipeline.py"
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "'train'" in exc_info.value.detail
+        assert message in exc_info.value.detail
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            pytest.param({}, id="palette-empty"),
+            pytest.param({"algorithm": "glm"}, id="glm-without-family"),
+            pytest.param({"algorithm": "catboost", "target": "claims"}, id="no-loss"),
+        ],
+    )
+    def test_an_incomplete_node_still_saves(self, tmp_path: Path, config: dict) -> None:
+        SavePipelineService(tmp_path).validate_graph(self._graph(config), source_file="pipeline.py")
+
+
 class TestValidateDeclaredConfigKeys:
     def test_validate_graph_rejects_an_undeclared_key_before_writing(self, tmp_path: Path) -> None:
         """A key the node type does not declare would be lost on save, so the

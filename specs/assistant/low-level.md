@@ -488,6 +488,21 @@ excluded count; its path and content never cross the tool boundary.
    node and the parser's reason. This is the failure class where a rendered step list
    and its extracted body disagree and reparse silently turns the node code-only.
 
+   **Written Modelling and Load File nodes are proved ready.** Save validation already
+   refuses malformed modelling values (`validate_modelling_config_values`). After schema
+   evidence resolves, `_application._prove_nodes_ready` checks each Modelling and Load File
+   node the plan adds or updates (instances excepted); a failure raises
+   `AssistantOperationError("node_not_ready", "Node '<id>' is not ready: <message>")` and
+   stores no plan. A Modelling node needs a `target` and no `training_objective_issue`; its
+   output (a pass-through of its input) is resolved through the same engine path as the
+   schema evidence, and `_training_preparation.build_training_feature_selection` checks the
+   configured columns against it, the check training runs on the materialised schema. A Load
+   File's object is loaded through `_builders.load_external_file_object`, the loader its
+   builder calls: a missing file reports that the file does not exist, a Haute refusal keeps
+   its text, and any other loader failure reports only its exception type, because a
+   deserialiser's message can quote the file's content. An input that does not resolve fails
+   earlier as `schema_unresolvable`.
+
    **Authored config is verified after reparse.** Besides the structural
    postconditions, every plan carries a `node_config {node, sha256}` postcondition for
    each node it adds or updates whose type carries code (the seven stepped types;
@@ -1171,6 +1186,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Authored-code failure (a Polars error or an exception raised from node code) while `get_node_schema`, dry-run or apply resolves a schema | engine, rendered by `_tools` | Structured `schema_unresolvable` error with the exception type, line or step, and named columns; the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
+| A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |
 | A rename whose consumers name the old input in configuration or code | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
@@ -1297,7 +1313,12 @@ fixture for route tests). The implemented coverage is:
   verbatim on its surface, with only the `<edge name>` placeholder replaced.
   Dry-run runs the save path's codegen name-collision check, so a submodel
   occurrence named like a node inside its definition fails at dry-run, and an
-  edge out of Model Training is rejected at dry-run.
+  edge out of Model Training is rejected at dry-run. Malformed and unready nodes fail at
+  dry-run with the product's message: `algorithm: "GLM"` with `family: "Poisson"`,
+  `family: "poison"`, `algorithm: "gbm"` and a target listed in `feature_columns` as save
+  validation's 400; an `offset` the input lacks, a GLM with no family and a Load File whose
+  path does not exist as `node_not_ready`. A valid GLM (`glm`, `poisson`, log link,
+  `exposure` offset) applies, and an edit beside a saved empty modelling node applies.
 - **`tests/test_assistant_project_knowledge.py`** — source attribution,
   sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
   policy, symlink containment, and metadata-only durable cache state.

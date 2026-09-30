@@ -27,7 +27,6 @@ from haute.routes._training_lifecycle import (
 )
 from haute.routes._training_preparation import (
     _bounded_training_detail,
-    _build_training_feature_selection,
     _check_gpu_vram,
     _clamp_row_limit,
     _declared_categorical_levels_for_training,
@@ -43,6 +42,7 @@ from haute.routes._training_preparation import (
     _training_required_columns_by_node,
     _training_required_metadata_columns,
     _VramCheck,
+    build_training_feature_selection,
 )
 from haute.routes._training_worker import (
     _assert_json_finite,
@@ -76,7 +76,7 @@ __all__ = [
     "_assert_json_finite",
     "_bounded_loss_history",
     "_bounded_training_detail",
-    "_build_training_feature_selection",
+    "build_training_feature_selection",
     "_check_gpu_vram",
     "_child_execution_context",
     "_clamp_row_limit",

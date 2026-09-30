@@ -81,7 +81,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
 | ASSIST-16 | Planned | P2 | Column profiles work downstream of joins and aggregations. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
-| ASSIST-19 | Planned | P2 | Invalid modelling and Load File configs fail at dry-run with the product's messages. |
 | ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
 | ASSIST-22 | Planned | P1 | The model reads a realistic, executed config for every node type. |
@@ -234,39 +233,6 @@ express current contracts, and an unknown node-type name fails case loading.
 
 **Evidence:** `scripts/run_assistant_self_test.py::run_self_test_case`;
 `src/haute/_sandbox.py`.
-
-### ASSIST-19 — Product config validators run at dry-run
-**Why:** Six invalid modelling configs passed dry-run at the schema tier, and
-a Load File pointing at a missing file validated. The product's training
-validators run only when training starts, and a new modelling node is saved
-incomplete (`{}`) by the editor on purpose, so completeness cannot simply
-become a save rule.
-
-**Plan:** Separate malformed from incomplete. A malformed value can never
-train: an unknown algorithm or family (names are case-sensitive), a loss the
-family rejects, a target that is also a feature, or an offset, weight or
-feature naming a column the node's resolved input schema lacks. Save
-validation, one path for the editor and the assistant, rejects malformed
-values using the pure checks training already applies. Completeness (a target
-and features set) and a Load File's existing file of the declared type are
-assistant-authoring invariants, checked only for nodes the plan adds or
-changes, so an analyst can still save an unfinished node and edit beside it.
-Column checks use the input schema the dry-run resolves; when that cannot be
-resolved the dry-run already fails at the schema tier. Specify the split in
-the modelling and assistant specifications first.
-
-**Acceptance:** Each of these assistant plans fails at dry-run with the
-product's message: `algorithm: "GLM"` with `family: "Poisson"`; an `offset`
-naming a column the input lacks; `family: "poison"`; a GLM with no family;
-the target listed in `feature_columns`; `algorithm: "gbm"`; and a Load File
-whose path does not exist. The valid GLM (`glm`, `poisson`, log link,
-`exposure` offset) applies. An empty modelling node still saves through the
-editor path, and an unrelated assistant edit beside it applies.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/modelling/_train_config.py::validate_glm_params`;
-`src/haute/modelling/_train_config.py::TrainingConfigError`.
 
 ### ASSIST-20 — Evaluation specification and offline replay
 **Why:** Only one of twelve self-test cases is driven through the real tools

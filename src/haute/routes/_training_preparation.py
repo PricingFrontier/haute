@@ -287,7 +287,7 @@ def _bounded_training_detail(items: list[Any], *, cap: int = 128) -> dict[str, A
     }
 
 
-def _build_training_feature_selection(
+def build_training_feature_selection(
     config: Mapping[str, Any],
     schema_dtypes: Mapping[str, str],
 ) -> TrainingFeatureSelectionDiagnosticPayload:
@@ -845,7 +845,7 @@ def _execute_and_sink_training_frame(
         schema_cols = target_schema.names()
         schema_set = set(schema_cols)
         try:
-            feature_selection = _build_training_feature_selection(
+            feature_selection = build_training_feature_selection(
                 graph.node_map[node_id].data.config,
                 {name: str(dtype) for name, dtype in target_schema.items()},
             )

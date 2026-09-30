@@ -455,8 +455,9 @@ def validate_node_config(
 
     Data Input/Output provider branches control which keys and capabilities
     are legal. Banding's discriminant controls its rule schema. A Scenario
-    Expander's grid size is required with no incomplete form. Invalid
-    configured branches must not be silently persisted and ignored.
+    Expander's grid size is required with no incomplete form. A Modelling
+    node's configured values must be trainable, though it may be unfinished.
+    Invalid configured branches must not be silently persisted and ignored.
     ``require_complete=False`` tolerates absent/empty required Data
     Input/Output locators (declared-incomplete forms); structural rules and
     every other node type stay strict.
@@ -469,6 +470,12 @@ def validate_node_config(
         validate_registered_model_alias(nt, config)
     if nt == NodeType.OPTIMISER:
         validate_optimiser_analysis_config(config)
+    if nt == NodeType.MODELLING:
+        from haute.modelling._train_config import validate_modelling_config_values
+
+        # Malformed values only: an unfinished node (a new node is ``{}``) saves,
+        # and its completeness is checked when training starts.
+        validate_modelling_config_values(config)
     if nt == NodeType.DATA_INPUT:
         from haute._polars_io_registry import validate_data_input_config
 

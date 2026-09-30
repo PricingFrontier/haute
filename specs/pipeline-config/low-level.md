@@ -226,7 +226,8 @@ absent field from `node_defaults.json` and never takes a default from another pr
 
 **Save refuses a config the executor cannot build.** Save runs
 `src/haute/_config_validation.py::validate_node_config` with `require_complete=False` for every
-node type whose builder has a required setting, on each authored config (an instance carries
+node type whose builder has a required setting, and for Modelling, whose configured values
+must be trainable, on each authored config (an instance carries
 its original's config and is checked there). A required setting with a legitimate incomplete
 form stays saveable, because refusing to save unfinished work is worse than the deferred
 error; one without is refused with a 400 naming the node and the setting, before anything is
@@ -241,6 +242,15 @@ nothing written.
 | Scenario Expander | `stepCount` | no: a new node carries an explicit count | refused when missing or invalid |
 | Model Score | `run_id` / `registered_model` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
 | Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
+| Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, `loss_function`, and a `target` that is not also in `feature_columns` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
+
+Modelling's malformed-value check is
+`src/haute/modelling/_train_config.py::validate_modelling_config_values`, the pure check
+training starts with, so the editor and the assistant save under one rule. Algorithm and
+family names are case-sensitive (`glm`, `poisson`). Checks that need the node's resolved
+input schema (a target, weight, offset or feature column the input lacks) are not save
+rules: training runs them against the materialised schema, and the assistant's dry-run runs
+them for the modelling nodes its plan adds or updates.
 
 The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in one four-field

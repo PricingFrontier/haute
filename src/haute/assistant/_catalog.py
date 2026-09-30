@@ -1280,6 +1280,13 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                     "code": "schema_unresolvable",
                     "recovery": "Correct the affected node config or code, then dry-run again.",
                 },
+                {
+                    "code": "node_not_ready",
+                    "recovery": (
+                        "Complete or correct the named Modelling or Load File node, "
+                        "then dry-run again."
+                    ),
+                },
             ]
         )
         if name == "dry_run_graph_edits":

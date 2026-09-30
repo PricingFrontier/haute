@@ -316,6 +316,22 @@ plan before apply. After save, a per-node `node_config` postcondition checks eac
 or updated code-carrying node's authored config against the reparse: its `steps`, or its
 normalised `code` on a code-mode node.
 
+**Modelling and Load File nodes the assistant writes are ready to use.** Save validation
+refuses a malformed modelling value for every author (see
+[modelling](../modelling/high-level.md)), so the dry-run refuses it too. The editor lets an
+analyst save an unfinished node; the assistant may not leave one. For each Modelling or
+Load File node a plan adds or updates (instances excepted), the dry-run also checks what
+save leaves to training or execution, after the plan's schemas resolve. A Modelling node
+needs a target and a complete training objective (`training_objective_issue`: a loss, or a
+GLM family and terms), and its target, weight, offset, identifier, evaluation and feature
+columns (a GLM's term columns included) must exist in the input schema the dry-run
+resolves, checked by the function training preparation runs on the materialised schema. A
+Load File must load its `path` as its declared `fileType` exactly as execution loads it:
+with empty steps the node passes its input through and never loads the file, so schema
+resolution alone does not prove it. A failure is a structured `node_not_ready` error naming
+the node and the product's message, and no plan is stored. A node the plan does not add or
+update is never checked, so an analyst's unfinished node does not block an edit beside it.
+
 **Tools operate on saved state.** Read tools describe the pipeline as saved on disk, and
 mutations rebase on the saved graph at call time. The frontend keeps this coherent by
 refusing to start a turn while the canvas has unsaved edits (see

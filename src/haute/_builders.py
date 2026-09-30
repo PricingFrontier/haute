@@ -452,6 +452,17 @@ def _configured_pipeline_dir() -> Path | None:
     return configured.parent if configured is not None else None
 
 
+def load_external_file_object(config: Mapping[str, Any]) -> object:
+    """Load a Load File node's object exactly as the node does when it runs.
+
+    A relative ``path`` is anchored to the pipeline directory at call time,
+    because ``load_external_object`` resolves against cwd. The assistant's
+    dry-run calls this to prove a Load File it writes, since a node with empty
+    steps passes its input through and never loads the file.
+    """
+    return load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
+
+
 def _resolve_runtime_data_path(data_path: str) -> str:
     """Anchor a (possibly relative) runtime data path to the pipeline dir.
 
@@ -705,10 +716,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # served from the project root would otherwise hash/open the wrong
             # (or a missing) file. Resolved at call time, mirroring codegen.
             ens = dict(_preamble_ext)
-            ens["obj"] = load_external_object_from_config(
-                config,
-                base_dir=_configured_pipeline_dir(),
-            )
+            ens["obj"] = load_external_file_object(config)
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
             else:

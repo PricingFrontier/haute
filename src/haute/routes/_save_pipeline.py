@@ -853,6 +853,7 @@ class SavePipelineService:
             NodeType.DATA_OUTPUT,
             NodeType.BANDING,
             NodeType.SCENARIO_EXPANDER,
+            NodeType.MODELLING,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
@@ -865,7 +866,7 @@ class SavePipelineService:
                     validate_node_config(
                         node.data.nodeType, node.data.config, require_complete=False
                     )
-                except ValueError as exc:
+                except (ValueError, ConfigError) as exc:
                     raise HTTPException(
                         status_code=400,
                         detail=(
