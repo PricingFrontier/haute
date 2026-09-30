@@ -228,6 +228,7 @@ class TestResolvedDescriptors:
             "recipes",
             "errors",
             "step_authoring",
+            "card",
         }
 
         for node in capability_manifest().nodes:
@@ -260,6 +261,25 @@ class TestResolvedDescriptors:
             "df" in anti_pattern and "discard" in anti_pattern
             for anti_pattern in by_id["polars"].anti_patterns
         )
+
+    def test_node_descriptors_serve_their_card_without_its_test_fixture(self):
+        from haute.assistant._node_cards import CARD_CONFIG_NAMES
+
+        by_id = {node.id: node.as_dict() for node in capability_manifest().nodes}
+
+        for node_id, descriptor in by_id.items():
+            card = descriptor["card"]
+            assert card["node_type"] == node_id
+            assert "fixture" not in card
+            if card["authorable"]:
+                assert [config["name"] for config in card["configs"]] == list(CARD_CONFIG_NAMES)
+                assert card["fields"]
+            else:
+                assert "not authorable" in card["note"].lower()
+        banding = by_id["banding"]["card"]["configs"][1]["config"]["factors"]
+        assert {"boundary": "2024-06-30", "label": "2024 H1"} in banding[1]["rules"]
+        assert banding[0]["rules"][-1]["boundary"] == ""
+        assert {"value": "01", "assignment": "London"} in banding[2]["rules"]
 
     def test_operation_descriptors_are_closed_and_policy_complete(self):
         required = {

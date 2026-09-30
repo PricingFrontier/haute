@@ -1,0 +1,92 @@
+{
+  "node_type": "apiInput",
+  "authorable": true,
+  "fields": {
+    "path": "An example request file (JSON array of quote objects) relative to the project root. Its tables are read from snapshots that previewing the node builds, so a dry-run that resolves a consumer of a never-previewed API Input fails asking for a preview.",
+    "tables": "One entry per frame the request yields. Each emitting table is an output of the node, named by its label; downstream edges pick one with source_handle set to that label.",
+    "tables[].path": "The array the table iterates: \"$[:]\" for the top-level quotes, \"$[:].drivers[:]\" for an array nested in each quote.",
+    "tables[].label": "The frame name, unique in the node, used as the source_handle of edges out of this table.",
+    "tables[].emit": "true to output the table as a frame.",
+    "tables[].row_id_column": "The table column that identifies each row, or null.",
+    "tables[].columns": "{name, path, type, status, selected, levels} per column: name is the frame column, path the JSONPath under the table path (\"$[:].vehicle.value\" reads a nested object field), type one of int, float, str, bool, date, status \"Confirmed\", selected true, levels null or the allowed values."
+  },
+  "inputs": [],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "A flat quote request with an id, driver age and vehicle value.",
+      "config": {
+        "path": "requests/flat_quote.json",
+        "tables": [
+          {
+            "path": "$[:]",
+            "label": "quotes",
+            "emit": true,
+            "row_id_column": "quote_id",
+            "columns": [
+              {"name": "quote_id", "path": "$[:].quote_id", "type": "str", "status": "Confirmed", "selected": true, "levels": null},
+              {"name": "driver_age", "path": "$[:].driver_age", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
+              {"name": "vehicle_value", "path": "$[:].vehicle_value", "type": "float", "status": "Confirmed", "selected": true, "levels": null}
+            ]
+          }
+        ]
+      },
+      "produces": ["quote_id", "driver_age", "vehicle_value"]
+    },
+    {
+      "name": "realistic",
+      "intent": "A nested request: a quotes frame reading a nested vehicle object, and a drivers frame from each quote's drivers array.",
+      "config": {
+        "path": "requests/nested_quote.json",
+        "tables": [
+          {
+            "path": "$[:]",
+            "label": "quotes",
+            "emit": true,
+            "row_id_column": "quote_id",
+            "columns": [
+              {"name": "quote_id", "path": "$[:].quote_id", "type": "str", "status": "Confirmed", "selected": true, "levels": null},
+              {"name": "cover", "path": "$[:].cover", "type": "str", "status": "Confirmed", "selected": true, "levels": ["comprehensive", "third_party"]},
+              {"name": "vehicle_value", "path": "$[:].vehicle.value", "type": "float", "status": "Confirmed", "selected": true, "levels": null},
+              {"name": "vehicle_year", "path": "$[:].vehicle.year", "type": "int", "status": "Confirmed", "selected": true, "levels": null}
+            ]
+          },
+          {
+            "path": "$[:].drivers[:]",
+            "label": "drivers",
+            "emit": true,
+            "row_id_column": "driver_id",
+            "columns": [
+              {"name": "driver_id", "path": "$[:].drivers[:].driver_id", "type": "str", "status": "Confirmed", "selected": true, "levels": null},
+              {"name": "age", "path": "$[:].drivers[:].age", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
+              {"name": "main_driver", "path": "$[:].drivers[:].main_driver", "type": "bool", "status": "Confirmed", "selected": true, "levels": null}
+            ]
+          }
+        ]
+      },
+      "produces": ["quote_id", "cover", "vehicle_value", "vehicle_year", "driver_id", "age", "main_driver"]
+    }
+  ],
+  "fixture": {
+    "files": {
+      "requests/flat_quote.json": [
+        {"quote_id": "q1", "driver_age": 42, "vehicle_value": 12000.0}
+      ],
+      "requests/nested_quote.json": [
+        {
+          "quote_id": "q1",
+          "cover": "comprehensive",
+          "vehicle": {"value": 12000.0, "year": 2019},
+          "drivers": [
+            {"driver_id": "d1", "age": 42, "main_driver": true},
+            {"driver_id": "d2", "age": 19, "main_driver": false}
+          ]
+        }
+      ]
+    },
+    "downstream": [
+      {"op": "add_node", "node_type": "explore", "name": "inspect", "config": {}},
+      {"op": "add_edge", "source": "card", "target": "inspect", "source_handle": "quotes"}
+    ]
+  }
+}

@@ -37,6 +37,7 @@ from haute._polars_steps import (
 )
 from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
 from haute._types import NODE_TYPE_TO_DECORATOR, SINK_ONLY_NODE_TYPES, NodeType
+from haute.assistant._node_cards import node_card
 from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
@@ -414,6 +415,7 @@ class NodeCapabilityDescriptor:
     recipes: tuple[str, ...]
     errors: tuple[Mapping[str, str], ...]
     step_authoring: Mapping[str, object] | None
+    card: Mapping[str, object]
 
     def as_dict(self) -> dict[str, object]:
         return _thaw({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
@@ -836,6 +838,7 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
             ),
         ),  # type: ignore[arg-type]
         cast(Mapping[str, object] | None, _freeze(_step_authoring(node_type))),
+        cast(Mapping[str, object], _freeze(node_card(node_type))),
     )
 
 
@@ -1162,7 +1165,10 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "get_project_knowledge": (
             "Retrieve bounded policy-filtered project facts and untrusted documentation."
         ),
-        "get_example": "Load one packaged, versioned teaching example.",
+        "get_example": (
+            "Load one packaged, versioned teaching example: its narrative and every "
+            "node's configuration with its values."
+        ),
         "get_authoring_guide": (
             "Retrieve the packaged canonical authoring guide with attribution, and the "
             "structured step grammar: each step kind's fields and the closed vocabularies."
@@ -1176,7 +1182,11 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         ),
         "apply_graph_plan": "Apply one exact validated plan hash under revision authority.",
         "get_capability_manifest": "Read manifest identity and its compact capability index.",
-        "get_capability_descriptors": "Read ordered complete capability descriptors in one batch.",
+        "get_capability_descriptors": (
+            "Read ordered complete capability descriptors in one batch. A node "
+            "descriptor's card holds a minimal and a realistic configuration with "
+            "real values and the meaning of each field."
+        ),
         "plan_recipe": (
             "Select and plan one installed canonical recipe with its explicit structured "
             "arguments. Supply output_name and explicit output_columns together for a "
@@ -1517,6 +1527,13 @@ def validate_manifest_complete() -> None:
                 f"Capability descriptor {node.id} must carry step_authoring exactly "
                 "when its type authors steps."
             )
+        fields = {*node.required_fields, *node.optional_fields}
+        for config in node_card(NodeType(node.id)).get("configs", []):
+            if unknown := set(config["config"]) - fields:
+                raise RuntimeError(
+                    f"Node card {node.id} {config['name']!r} uses keys outside the "
+                    f"config schema: {sorted(unknown)}"
+                )
     if len({operation.id for operation in manifest.operations}) != len(manifest.operations):
         raise RuntimeError("Capability manifest contains duplicate operation descriptors.")
     for operation in manifest.operations:

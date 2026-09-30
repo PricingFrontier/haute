@@ -316,8 +316,9 @@ _PROMPT_MUTATION_WORKFLOW = (
     "For primitive plans, retrieve complete descriptors for every node type you will "
     "add or configure before the first dry run, batching them in one call where "
     "possible. Read their ports, "
-    "wiring rules, closed config schemas, enums, and "
-    "anti-patterns; do not use dry-run failures to discover the contract. Every newly "
+    "wiring rules, closed config schemas, enums, anti-patterns, and card, and write "
+    "each config in the shape of the card's configurations; do not use dry-run "
+    "failures to discover the contract. Every newly "
     "added node must be connected in the same plan. "
     + _steps_first_rule()
     + "Call `dry_run_graph_edits` with the "

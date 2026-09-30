@@ -98,7 +98,7 @@ class TestExemplars:
             assert node_types & {"apiInput", "dataInput"}, name
             assert "output" in node_types, name
             output_nodes = [node for node in graph["nodes"] if node["type"] == "output"]
-            assert all("outputMapping" in node["config"]["keys"] for node in output_nodes), name
+            assert all(node["config"]["outputMapping"] for node in output_nodes), name
 
         for manifest in _assets.example_bundle_manifests():
             bundle = _assets._bundle_root(str(manifest["id"]))
@@ -138,6 +138,16 @@ class TestExemplars:
         assert set(result["graph"].keys()) == EXPECTED_GRAPH_KEYS
         node = result["graph"]["nodes"][0]
         assert set(node.keys()) == {"id", "type", "label", "config"}
+
+    def test_an_example_shows_each_node_configuration_with_its_values(self):
+        """An example teaches values, not key names: its banding rules are readable."""
+
+        nodes = {node["id"]: node for node in load_example("discrete_banding")["graph"]["nodes"]}
+
+        factor = nodes["banded"]["config"]["factors"][0]
+        assert factor["banding"] == "categorical"
+        assert {"value": "detached", "assignment": "house"} in factor["rules"]
+        assert nodes["response"]["config"]["outputMapping"][0]["output_path"].startswith("$[:].")
 
     def test_summary_is_first_docstring_line(self):
         for name, summary in example_index():

@@ -1520,6 +1520,10 @@ def _backend_production_sources() -> list[Path]:
         # manifested resource tree rather than hundreds of module-map rows.
         if relative_name.startswith("assistant/assets/examples/"):
             continue
+        # Node cards are one JSON file per NodeType, closed and complete by the
+        # loader in assistant/_node_cards.py and executed by its test module.
+        if relative_name.startswith("assistant/assets/node_cards/"):
+            continue
         if path.suffix == ".py" or relative_name in _BACKEND_BEHAVIOUR_ASSETS:
             sources.append(path)
             continue

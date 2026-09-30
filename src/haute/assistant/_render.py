@@ -1,7 +1,14 @@
-"""The compact graph rendering shared by live pipelines and packaged examples."""
+"""The compact graph rendering shared by live pipelines and packaged examples.
+
+A live pipeline's node configurations are project data, read in full only
+through the policy-gated ``get_node_config``, so its rendering names their keys.
+A packaged example is library content, so its rendering carries each node's
+configuration with its values: that is what the example teaches.
+"""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from hashlib import sha256
 from typing import Any
@@ -19,15 +26,25 @@ def _render_config_summary(config: Mapping[str, Any]) -> dict[str, object]:
     return {"keys": sorted(config), "count": len(config)}
 
 
-def render_pipeline_graph(graph: PipelineGraph) -> dict[str, object]:
-    """Render the compact graph shape shared by live pipelines and examples."""
+def render_pipeline_graph(
+    graph: PipelineGraph, *, config_values: bool = False
+) -> dict[str, object]:
+    """Render the compact graph shape shared by live pipelines and examples.
+
+    With *config_values* each node's configuration is rendered whole, as JSON
+    values; otherwise only its key names and count.
+    """
 
     nodes = [
         {
             "id": node.id,
             "type": _node_type(node),
             "label": node.data.label,
-            "config": _render_config_summary(node.data.config),
+            "config": (
+                json.loads(json.dumps(node.data.config))
+                if config_values
+                else _render_config_summary(node.data.config)
+            ),
         }
         for node in graph.nodes
     ]

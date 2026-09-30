@@ -806,7 +806,7 @@ def _load_bundle(bundle: Traversable, manifest: dict[str, object]) -> dict[str, 
             review_class=str(manifest["review_class"]),
         ),
         "narrative": notes,
-        "graph": render_pipeline_graph(graph),
+        "graph": render_pipeline_graph(graph, config_values=True),
     }
 
 

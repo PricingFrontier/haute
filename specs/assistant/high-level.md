@@ -35,7 +35,8 @@ In scope:
   and pass-through registries the rest of the product dispatches on, plus the palette
   names, one-line purposes and per-type usage notes owned here).
 - The assistant's authoring knowledge, shipped as repo-versioned package assets: a
-  concise authoring guide and discoverable executable project bundles served on
+  concise authoring guide, one validated node card per node type served in its node
+  descriptor, and discoverable executable project bundles served on
   demand through `get_example`. Bundle inventories are content-addressed; every
   bundle parses and validates, and the declared fast subset executes in installed
   distribution smoke checks.
@@ -127,9 +128,12 @@ during persistence cannot grow the session directory outside that bound.
 **Authoring knowledge.** Every turn's system prompt carries the compact capability
 identity plus node, operation, recipe, and example indexes. The versioned authoring
 guide (Haute idioms, standard shapes, naming, and do/don't guidance) is retrieved
-through `get_authoring_guide` only when relevant. `get_example` returns a
+through `get_authoring_guide` only when relevant. Each node descriptor carries its
+node card, so the configuration shapes arrive with the descriptors the model reads
+before its first dry run. `get_example` returns a
 self-contained teaching view: bounded attribution, narrative, and the already-rendered
-live graph. It never advertises resource-inventory paths that the model cannot retrieve.
+graph with every node's configuration and its values. It never advertises
+resource-inventory paths that the model cannot retrieve.
 This keeps the always-paid prompt bounded while preserving attributable detailed guidance
 one tool call away.
 The guide refers to the mechanically-derived registry instead of hand-copying node
@@ -251,7 +255,8 @@ that durable fact, in its original position after the mutation tool row.
   placeholder itself is not addressable (the v1 submodel boundary, as for edits).
 - `get_example` — one self-contained packaged teaching view by name: bounded
   attribution, narrative, and a graph rendered through the same machinery as a live
-  pipeline, without inaccessible resource paths.
+  pipeline with each node's configuration shown whole, values included, rather than as
+  its key names, without inaccessible resource paths.
 - `plan_recipe` — accept one flat, recipe-discriminated invocation, including an optional
   downstream response-output name plus explicit selected columns, expand it deterministically, and return
   only an opaque content-addressed recipe-plan receipt; it never writes. Every turn receives
@@ -475,8 +480,16 @@ terminate the stream.
   the same `parse_pipeline_to_graph` the product uses — an exemplar that drifts from the
   current node types or config shapes fails the build, exactly like a stale catalog entry
   would. Hand-maintained JSON "example graphs" were rejected for precisely that drift risk.
-  Serving them rendered as graphs (not raw source) keeps the few-shot format identical to
-  the `get_pipeline` format the model works in.
+  Serving them rendered as graphs (not raw source) keeps the few-shot graph shape identical
+  to the `get_pipeline` format the model works in. An example's node configurations carry
+  their values because they are library content; a live pipeline's are project data, read
+  whole only through `get_node_config` under the egress policy.
+- **Node cards teach values, and CI executes them.** Key names and a closed schema do not
+  say how a breakpoint boundary, an output path or a GLM offset is written, and those are
+  where models guess. One hand-authored card per node type holds a minimal and a realistic
+  configuration with the meaning of each field, and CI applies and executes every one
+  through the real application service and engine, so a card cannot drift from its
+  validator.
 - **Sessions persist per clone, in `.haute/`.** Haute's server is a locally-run
   distribution vehicle, not a hosted service — users restart it constantly, so
   process-local-only chat would lose every conversation at each restart. Committed turns are written as
@@ -511,7 +524,7 @@ manifest. The manifest is the assistant's source of truth and contains:
   facts, ports/cardinality/schema effects, execution and side-effect classes,
   completeness-checked semantic guidance, and, for a stepped type, how its
   steps start, which inputs they see and the step list that writes new logic,
-  derived from the step builder's surface table;
+  derived from the step builder's surface table, and its node card (below);
 - one closed descriptor for every callable assistant operation, including
   versioned input/output schemas, read/mutation and revision semantics,
   deterministic risk/egress/side-effect/cost classes, retry/idempotency,
@@ -526,6 +539,31 @@ manifest object is cached by `(installed Haute version, capability hash)`;
 installed capability discovery is refreshed before choosing that cache key.
 Changing any descriptor or installed capability therefore selects a new cache
 entry without an external prompt or documentation update.
+
+**Node cards.** Every `NodeType` has exactly one packaged node card, and its
+descriptor serves it as `card`. A card for a type the assistant can author holds the
+meaning of each configuration field, the input edges and column dtypes its
+configurations assume, and two configurations, `minimal` and `realistic`, each with its
+intent, its complete config and the columns its node produces. Together the cards teach
+breakpoint banding on numbers and on dates with an open-ended last band, categorical
+banding with string `{value, assignment}` rows, Quote Response output paths rooted at
+`$[:]`, a Load File whose free code reads the loaded `obj`, a Transform written as
+`[source, free_code]` reading a second input by its edge name, a Rating Step with
+several tables and a combined output, a nested API Input, a Source Switch, a Model
+Training node for a tree family (loss and params) and a Poisson GLM with an exposure
+offset under a log link, Model Scoring from a training run, an Expander with its
+`stepCount`, an online and a ratebook Optimisation (the ratebook with a Banding source),
+online and ratebook Apply Optimisation, and Data Input, Data Output, Constant, Edge Join
+and Explore configurations. A card for Submodel or Port states that the assistant
+cannot author it, in the words of the operation layer's refusal. Cards are library
+content, never project data. A card file also carries a synthetic fixture (tiny rows,
+files, surrounding operations) that is test evidence and never reaches the model: CI
+writes each configuration into a fresh project with that fixture, dry-runs and applies
+it through the application service as an assistant plan, executes the node through the
+execution engine, trains a Model Training card and solves an Optimisation card through
+their job routes, and checks the produced columns and, where the card declares them,
+the produced values. At import, every card configuration's keys must lie in its node
+type's closed config schema.
 
 The permanent prompt contains only manifest identity and a compact node,
 operation, recipe, and example index. Full descriptors are retrieved through a

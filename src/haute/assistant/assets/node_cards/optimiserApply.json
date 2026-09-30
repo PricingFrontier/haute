@@ -1,0 +1,137 @@
+{
+  "node_type": "optimiserApply",
+  "authorable": true,
+  "fields": {
+    "sourceType": "Where the saved optimisation result comes from: \"file\" (artifact_path), \"run\" (an MLflow run_id) or \"registered\" (registered_model with version or alias).",
+    "artifact_path": "For a file source: the saved result JSON relative to the project root, as the optimiser's Save wrote it.",
+    "optimiser_mode": "\"online\" or \"ratebook\", matching the saved result.",
+    "ratebook_input": "Ratebook only, and required even with one input: the incoming edge whose rows get the factors; it carries the band columns the result was solved on.",
+    "optimised_value_column": "The output column holding the chosen scenario value (online) or the combined factor (ratebook); default \"optimised_value\".",
+    "version_column": "The output column holding the result's version string.",
+    "wiring": "Online: one input holding the scored scenarios; the output is one row per quote with its chosen scenario. Ratebook: the input named by ratebook_input, whose rows gain one column per factor and the combined factor."
+  },
+  "inputs": [
+    {
+      "edge": "rating_factors",
+      "columns": {
+        "quote_id": "String",
+        "area": "String",
+        "region": "String"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Choose each quote's price scenario from a saved online result.",
+      "inputs": [
+        {
+          "edge": "scored",
+          "columns": {
+            "quote_id": "String",
+            "scenario_index": "Int64",
+            "scenario_value": "Float64",
+            "expected_income": "Float64",
+            "volume": "Float64"
+          }
+        }
+      ],
+      "config": {
+        "sourceType": "file",
+        "artifact_path": "results/online_v1.json",
+        "optimiser_mode": "online"
+      },
+      "produces": ["quote_id", "optimised_value"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Apply a saved ratebook's region factors to banded policies, naming the factor and version columns.",
+      "config": {
+        "sourceType": "file",
+        "artifact_path": "results/ratebook_v1.json",
+        "optimiser_mode": "ratebook",
+        "ratebook_input": "rating_factors",
+        "optimised_value_column": "price_factor",
+        "version_column": "ratebook_version"
+      },
+      "produces": ["quote_id", "region", "price_factor", "ratebook_version"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "scored": {
+        "rows": [
+          {"quote_id": "q1", "scenario_index": 0, "scenario_value": 0.9, "expected_income": 90.0, "volume": 1.0},
+          {"quote_id": "q1", "scenario_index": 1, "scenario_value": 1.0, "expected_income": 100.0, "volume": 0.9},
+          {"quote_id": "q2", "scenario_index": 0, "scenario_value": 0.9, "expected_income": 45.0, "volume": 1.0},
+          {"quote_id": "q2", "scenario_index": 1, "scenario_value": 1.0, "expected_income": 50.0, "volume": 0.95}
+        ]
+      },
+      "policies": {
+        "rows": [
+          {"quote_id": "q1", "area": "NE"},
+          {"quote_id": "q2", "area": "SW"}
+        ]
+      }
+    },
+    "files": {
+      "results/online_v1.json": {
+        "version": "online-v1",
+        "created_at": "2026-09-30T00:00:00Z",
+        "mode": "online",
+        "lambdas": {"volume": 0.4},
+        "objective": "expected_income",
+        "constraints": {"volume": {"min": 1.8}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value"
+      },
+      "results/ratebook_v1.json": {
+        "version": "ratebook-v1",
+        "created_at": "2026-09-30T00:00:00Z",
+        "mode": "ratebook",
+        "lambdas": {"volume": 0.4},
+        "objective": "expected_income",
+        "constraints": {"volume": {"min": 0.9}},
+        "factor_tables": {
+          "region": [
+            {"__factor_group__": "North", "optimal_scenario_value": 1.05},
+            {"__factor_group__": "South", "optimal_scenario_value": 0.95}
+          ]
+        },
+        "combined_factor_bounds": {"min": 0.9, "max": 1.1},
+        "factor_dtypes": {
+          "region": [{"column": "region", "dtype": {"kind": "String"}}]
+        }
+      }
+    },
+    "upstream": [
+      {
+        "op": "add_node",
+        "node_type": "banding",
+        "name": "rating_factors",
+        "config": {
+          "factors": [
+            {
+              "banding": "categorical",
+              "column": "area",
+              "outputColumn": "region",
+              "rules": [
+                {"value": "NE", "assignment": "North"},
+                {"value": "SW", "assignment": "South"}
+              ],
+              "default": "Other"
+            }
+          ]
+        }
+      },
+      {"op": "add_edge", "source": "policies", "target": "rating_factors"}
+    ],
+    "expect": {
+      "realistic": [
+        {"quote_id": "q1", "price_factor": 1.05, "ratebook_version": "ratebook-v1"},
+        {"quote_id": "q2", "price_factor": 0.95, "ratebook_version": "ratebook-v1"}
+      ]
+    }
+  }
+}

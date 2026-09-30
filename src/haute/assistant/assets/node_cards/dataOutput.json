@@ -1,0 +1,59 @@
+{
+  "node_type": "dataOutput",
+  "authorable": true,
+  "fields": {
+    "outputType": "Where the frame is written: \"file\", \"database\" or \"lakehouse\". Each type has its own required keys.",
+    "format": "For a file: \"parquet\", \"csv\", \"json\", \"ndjson\", \"ipc\" or \"avro\".",
+    "mode": "\"sink\" streams the lazy frame to the file; \"write\" collects it first.",
+    "path": "The destination path relative to the project root. Nothing is written while authoring or previewing; the file is written when the output is run.",
+    "arguments": "Options passed to the Polars writer for the format. Leave {} when none are needed.",
+    "selected_columns": "Optional list of the columns to write, in order; absent writes every column."
+  },
+  "inputs": [
+    {
+      "edge": "priced",
+      "columns": {
+        "policy_id": "String",
+        "premium": "Float64",
+        "age_band": "String"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Write the priced policies to a Parquet file.",
+      "config": {
+        "outputType": "file",
+        "format": "parquet",
+        "mode": "sink",
+        "path": "outputs/priced.parquet",
+        "arguments": {}
+      },
+      "produces": ["policy_id", "premium", "age_band"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Write only the policy id and premium to a CSV file for the rating team.",
+      "config": {
+        "outputType": "file",
+        "format": "csv",
+        "mode": "sink",
+        "path": "outputs/premiums.csv",
+        "arguments": {},
+        "selected_columns": ["policy_id", "premium"]
+      },
+      "produces": ["policy_id", "premium"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "priced": {
+        "rows": [
+          {"policy_id": "p1", "premium": 812.5, "age_band": "17-24"},
+          {"policy_id": "p2", "premium": 402.0, "age_band": "25-59"}
+        ]
+      }
+    }
+  }
+}

@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
-| ASSIST-22 | Planned | P1 | The model reads a realistic, executed config for every node type. |
 | ASSIST-23 | Planned | P1 | Tool errors say how to fix them, and the model keeps correcting while each error is new. |
 | ASSIST-24 | Planned | P1 | Each turn starts with the graph, the selection and the policy, without orientation reads. |
 | ASSIST-25 | Planned | P2 | Renaming a node rewrites the references that structured configs hold. |
@@ -123,28 +122,6 @@ states.
 **Dependencies:** `ASSIST-03`.
 
 **Evidence:** `src/haute/assistant/_wire_ops.py`;
-`src/haute/assistant/_render.py::render_pipeline_graph`.
-
-### ASSIST-22 — Validated node cards replace key-only examples
-**Why:** `get_example` returns each node's config key names and a count, so
-no example can teach a banding rule, an output path or a modelling family, and
-the walkthroughs failed on exactly those values. Five of nineteen node types
-link an example.
-
-**Plan:** For every node type, keep a minimal and a realistic configuration
-with its field semantics (breakpoints on numbers and dates with an open-ended
-last band, string categorical values, `$[:].col` output paths, Load File with
-`obj`, a GLM offset under a log link, an optimiser ratebook with a Banding
-source), served through the descriptors in place of the key-only example
-view. CI dry-runs and executes every card.
-
-**Acceptance:** Every node type has a card that CI executes; a card drifting
-from its validator fails CI; replaying the walkthrough's failed banding and
-output attempts against the cards produces valid first attempts.
-
-**Dependencies:** `ASSIST-06`, `ASSIST-07`.
-
-**Evidence:** `src/haute/assistant/_assets.py::load_example`;
 `src/haute/assistant/_render.py::render_pipeline_graph`.
 
 ### ASSIST-23 — Actionable errors and a progress-based retry budget

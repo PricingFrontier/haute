@@ -116,7 +116,7 @@
   },
   {
     "name": "get_example",
-    "description": "Load one packaged, versioned teaching example.",
+    "description": "Load one packaged, versioned teaching example: its narrative and every node's configuration with its values.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -943,7 +943,7 @@
   },
   {
     "name": "get_capability_descriptors",
-    "description": "Read ordered complete capability descriptors in one batch.",
+    "description": "Read ordered complete capability descriptors in one batch. A node descriptor's card holds a minimal and a realistic configuration with real values and the meaning of each field.",
     "input_schema": {
       "type": "object",
       "properties": {

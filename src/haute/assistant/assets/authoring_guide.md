@@ -164,7 +164,9 @@ input and `regions` as its second:
 1. Read the saved graph before editing; node ids are the function names.
 2. Retrieve the complete capability descriptor for every node type that will
    be added or configured, and follow its ports, wiring rules, closed config
-   schema, enums, and anti-patterns.
+   schema, enums, and anti-patterns. Its card shows a minimal and a realistic
+   configuration with real values and the meaning of each field; write the
+   node's configuration in the same shape.
 3. Make the smallest ordered graph edit that expresses the user's intent.
 4. Connect new nodes immediately and check that every input has the intended
    upstream frame.  Do not add disconnected decorative nodes.

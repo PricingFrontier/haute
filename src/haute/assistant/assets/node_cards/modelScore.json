@@ -1,0 +1,77 @@
+{
+  "node_type": "modelScore",
+  "authorable": true,
+  "fields": {
+    "sourceType": "Where the model comes from: \"run\" (an MLflow run_id with artifact_path) or \"registered\" (registered_model with a version such as \"3\" or \"latest\", or an alias such as \"champion\" instead of a version).",
+    "run_id": "For a run source: the MLflow run id of the training run, as the analyst or the training result gives it. Never invent one; ask for it.",
+    "artifact_path": "The model file within the run, such as \"model.cbm\" for a CatBoost model.",
+    "task": "\"regression\" or \"classification\", as the model was trained.",
+    "output_column": "The new prediction column; for classification it holds the positive-class probability.",
+    "mlflow_destination": "Optional: \"databricks\", \"server\" or \"local\"; absent reads the project's local MLflow folder.",
+    "steps": "Optional step cards after scoring; df is already the scored frame, so there is no source step. Keep [] with nothing to do.",
+    "wiring": "One input carrying every model feature by its training name; the output is the input plus the prediction column."
+  },
+  "inputs": [
+    {
+      "edge": "policies",
+      "columns": {
+        "policy_id": "String",
+        "driver_age": "Int64",
+        "region": "String",
+        "vehicle_value": "Float64",
+        "exposure": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Score expected claim cost with a CatBoost model from a training run.",
+      "config": {
+        "sourceType": "run",
+        "run_id": "<training run id>",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "predicted_cost",
+        "steps": []
+      },
+      "produces": ["policy_id", "predicted_cost"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Score expected claim cost, then turn it into a loaded risk premium for the policy's exposure.",
+      "config": {
+        "sourceType": "run",
+        "run_id": "<training run id>",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "predicted_cost",
+        "steps": [
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Load the predicted cost into a risk premium for the exposure\ndf = df.with_columns(risk_premium=(pl.col(\"predicted_cost\") * pl.col(\"exposure\") * 1.15).round(2))"
+          }
+        ]
+      },
+      "produces": ["policy_id", "predicted_cost", "risk_premium"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "policies": {
+        "rows": [
+          {"policy_id": "p1", "driver_age": 19, "region": "North", "vehicle_value": 3500.0, "exposure": 1.0},
+          {"policy_id": "p2", "driver_age": 42, "region": "South", "vehicle_value": 12000.0, "exposure": 0.5},
+          {"policy_id": "p3", "driver_age": 67, "region": "North", "vehicle_value": 28000.0, "exposure": 0.75},
+          {"policy_id": "p4", "driver_age": 33, "region": "South", "vehicle_value": 8000.0, "exposure": 1.0}
+        ]
+      }
+    },
+    "model_run": {
+      "frame": "policies",
+      "features": ["driver_age", "region", "vehicle_value"],
+      "artifact": "model.cbm"
+    }
+  }
+}

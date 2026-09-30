@@ -1,0 +1,111 @@
+{
+  "node_type": "ratingStep",
+  "authorable": true,
+  "fields": {
+    "tables": "One lookup table per rating factor; each adds one relativity column.",
+    "tables[].factors": "One to three input column names the table is keyed on, usually band columns from a Banding node.",
+    "tables[].outputColumn": "The relativity column the table adds; unique across the node.",
+    "tables[].entries": "One row per key combination: each factor column name with its value, written as the input column shows it (\"17-24\", \"North\"), plus a numeric \"value\".",
+    "tables[].defaultValue": "The value for a row whose key has no entry. Without it the node fails naming the missing key, unless onMissing is \"neutral\".",
+    "tables[].onMissing": "Optional: \"error\" (default) fails on a missing key with no default; \"neutral\" leaves it null and a combined output skips it.",
+    "combinedOutputs": "Optional combined columns over every table's output: {outputColumn, operation, baseValue}, operation \"multiply\", \"add\", \"min\" or \"max\", baseValue a finite number such as the base rate.",
+    "steps": "Optional post-rating step cards; df is already the rated frame, so there is no source step. Keep [] with nothing to do."
+  },
+  "inputs": [
+    {
+      "edge": "banded",
+      "columns": {
+        "policy_id": "String",
+        "age_band": "String",
+        "region": "String",
+        "vehicle_group": "String"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Look up an age relativity from the age band.",
+      "config": {
+        "tables": [
+          {
+            "factors": ["age_band"],
+            "outputColumn": "age_relativity",
+            "entries": [
+              {"age_band": "17-24", "value": 1.8},
+              {"age_band": "25-59", "value": 1.0},
+              {"age_band": "60+", "value": 1.15}
+            ],
+            "defaultValue": 1.0
+          }
+        ],
+        "combinedOutputs": [],
+        "steps": []
+      },
+      "produces": ["age_relativity"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Rate age and a region-by-vehicle-group table, multiply both onto a base rate of 350 and round the premium.",
+      "config": {
+        "tables": [
+          {
+            "factors": ["age_band"],
+            "outputColumn": "age_relativity",
+            "entries": [
+              {"age_band": "17-24", "value": 1.8},
+              {"age_band": "25-59", "value": 1.0},
+              {"age_band": "60+", "value": 1.15}
+            ],
+            "defaultValue": 1.0
+          },
+          {
+            "factors": ["region", "vehicle_group"],
+            "outputColumn": "region_vehicle_relativity",
+            "entries": [
+              {"region": "North", "vehicle_group": "A", "value": 0.9},
+              {"region": "North", "vehicle_group": "B", "value": 1.05},
+              {"region": "South", "vehicle_group": "A", "value": 1.1},
+              {"region": "South", "vehicle_group": "B", "value": 1.25}
+            ],
+            "defaultValue": 1.0
+          }
+        ],
+        "combinedOutputs": [
+          {"outputColumn": "premium", "operation": "multiply", "baseValue": 350.0}
+        ],
+        "steps": [
+          {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Round the premium to pence\ndf = df.with_columns(pl.col(\"premium\").round(2))"
+          }
+        ]
+      },
+      "produces": ["age_relativity", "region_vehicle_relativity", "premium"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "banded": {
+        "rows": [
+          {"policy_id": "p1", "age_band": "17-24", "region": "North", "vehicle_group": "B"},
+          {"policy_id": "p2", "age_band": "25-59", "region": "South", "vehicle_group": "A"},
+          {"policy_id": "p3", "age_band": "60+", "region": "Other", "vehicle_group": "A"}
+        ]
+      }
+    },
+    "expect": {
+      "minimal": [
+        {"age_relativity": 1.8},
+        {"age_relativity": 1.0},
+        {"age_relativity": 1.15}
+      ],
+      "realistic": [
+        {"premium": 661.5},
+        {"premium": 385.0},
+        {"premium": 402.5}
+      ]
+    }
+  }
+}
