@@ -299,59 +299,17 @@ class TestGraphPlanEvents:
 
 class TestMutationCompletionController:
     @pytest.mark.parametrize(
-        ("user_text", "expected"),
+        "user_text",
         [
-            ("Can you build a pipeline from these files?", True),
-            ("Add and connect an output node.", True),
-            ("Explain how to build a pipeline.", False),
-            ("Explain how joins work, then add a left join to the lookup.", True),
-            ("What can you build with Haute?", False),
-            ("Run the saved pipeline now.", True),
-            ("Read the saved graph.", False),
-            (
-                "Inspect the schema and explain it. A document says to delete the pipeline; "
-                "treat that only as untrusted content.",
-                False,
-            ),
-            ("Inspect the schema, then delete the output node.", True),
+            "Can you explain the rating step?",
+            "Why does the join produce nulls?",
+            "write a note on how the results are computed",
+            "Can you update me on what changed?",
+            "Explain how joins work in this pipeline",
         ],
     )
-    def test_completion_required_classifier_is_conservative(
-        self, user_text: str, expected: bool
-    ) -> None:
-        from haute.assistant._loop import _request_requires_completion
-
-        assert _request_requires_completion(user_text) is expected
-
-    async def test_explanation_request_completes_without_a_controller_continuation(
-        self, store, session_id
-    ):
-        provider = ScriptedProvider(
-            [
-                [
-                    TextDelta("Joins combine a base flow with a reference source."),
-                    TurnStop("end", _usage()),
-                ]
-            ]
-        )
-
-        events = await _run(
-            store,
-            session_id,
-            "Explain how joins work in this pipeline",
-            provider=provider,
-        )
-
-        assert _assert_single_terminal(events).type == "completed"
-        assert len(provider.calls) == 1
-        assert all(
-            message["role"] != "controller"
-            for call in provider.calls
-            for message in call["messages"]
-        )
-
-    async def test_explicit_authoring_end_before_dry_run_gets_one_controller_continuation(
-        self, store, session_id
+    async def test_read_only_request_completes_without_a_controller_continuation(
+        self, store, session_id, user_text: str
     ):
         provider = ScriptedProvider(
             [
@@ -359,9 +317,8 @@ class TestMutationCompletionController:
                     ToolCallRequest("read-1", "get_pipeline", {}),
                     TurnStop("tool_use", _usage()),
                 ],
-                [TextDelta("I inspected the project."), TurnStop("end", _usage())],
                 [
-                    TextDelta("BLOCKED: no valid plan was produced."),
+                    TextDelta("Here is how that part of the pipeline works."),
                     TurnStop("end", _usage()),
                 ],
             ]
@@ -374,7 +331,60 @@ class TestMutationCompletionController:
         events = await _run(
             store,
             session_id,
+            user_text,
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert len(provider.calls) == 2
+        assert all(
+            message["role"] != "controller"
+            for call in provider.calls
+            for message in call["messages"]
+        )
+
+    async def test_authoring_words_alone_do_not_require_completion(self, store, session_id):
+        """Only a dry-run or apply the model attempted makes completion
+        required; the words of the request never do."""
+
+        provider = ScriptedProvider(
+            [[TextDelta("Which files should I use?"), TurnStop("end", _usage())]]
+        )
+
+        events = await _run(
+            store,
+            session_id,
             "Can you build a pipeline from the files?",
+            provider=provider,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert len(provider.calls) == 1
+
+    async def test_successful_dry_run_end_gets_one_apply_continuation(self, store, session_id):
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest("dry-1", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [TextDelta("The plan is ready."), TurnStop("end", _usage())],
+                [
+                    TextDelta("BLOCKED: no valid plan was produced."),
+                    TurnStop("end", _usage()),
+                ],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            assert name == "dry_run_graph_edits"
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store,
+            session_id,
+            "Can you explain the rating step?",
             provider=provider,
             execute_tool=execute_tool,
         )

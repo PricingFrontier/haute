@@ -139,11 +139,15 @@ completed tool result is recorded before any result/update event is emitted. Cle
 always releases the session reservation even if history persistence or response teardown
 raises, so a failed cleanup cannot turn into a permanent 409 for that session.
 When the user's request authorizes a mutation and the required intent is known, the
-assistant must not end after merely announcing a future tool call. It completes the
-dry-run/apply sequence, asks one focused question prefixed `NEEDS_INPUT:` when
+system prompt tells the model not to end after merely announcing a future tool call: it
+completes the dry-run/apply sequence, asks one focused question prefixed `NEEDS_INPUT:` when
 material intent is ambiguous, or reports a concrete tool blocker prefixed `BLOCKED:`.
-After any dry-run attempt, a provider `end` without a successful apply or one of those
-explicit outcomes is not accepted as completion. The controller records one internal, non-transcript continuation instruction which says
+The controller enforces this only once the model has attempted a mutation: after any
+dry-run or apply attempt, a provider `end` without a successful apply or one of those
+explicit outcomes is not accepted as completion. Before such an attempt, a provider `end`
+completes the turn, whatever words the request contains, so a question such as “Can you
+explain the rating step?” or “Why does the join produce nulls?” ends as an answered
+turn. The controller records one internal, non-transcript continuation instruction which says
 that a successful dry-run must be followed immediately by an `apply_graph_plan` tool call
 using the exact returned hash, then requests one more provider round; a second unqualified
 end fails the turn as incomplete instead of falsely completing it. A successful
@@ -154,8 +158,6 @@ A failed dry-run permits one materially corrected retry. If that retry also fail
 controller terminates the tool loop itself with a value-free `BLOCKED:` outcome naming the
 latest stable error code and stating that no graph changes were applied; the provider cannot
 continue guessing until the global tool-call limit is exhausted.
-The lexical completion check evaluates the user's requested action, not action words the user
-explicitly frames as untrusted reported content inside a read-only inspect-and-explain request.
 The successful mutation result retains its graph fingerprint in neutral
 history; resume derives the same settled “Canvas updated” activity row from
 that durable fact, in its original position after the mutation tool row.
@@ -599,8 +601,8 @@ A standalone `response output` request suggests `response_output`; when a specia
 request also asks for a response output, that specialist suggestion owns the downstream
 output instead. A
 unique match is appended only as advisory provider guidance. No lexical result changes the
-provider-visible tools or schemas, populates an argument, rewrites a tool call, or authorizes
-or rejects an executor operation. The source-bound executor constructor receives no user
+provider-visible tools or schemas, populates an argument, rewrites a tool call, makes
+completion of the turn required, or authorizes or rejects an executor operation. The source-bound executor constructor receives no user
 request text at all. Consequently equivalent phrasing, another locale, or a
 composed request remains free to submit any valid structured recipe or primitive plan.
 

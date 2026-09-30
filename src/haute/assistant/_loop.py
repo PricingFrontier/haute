@@ -22,7 +22,6 @@ from haute.assistant._providers import (
 )
 from haute.assistant._recipes import (
     explicit_dataset_directory,
-    is_explanation_only_request,
     request_requires_material_clarification,
     route_recipe_request,
 )
@@ -83,30 +82,9 @@ _EXECUTION_REQUEST = re.compile(
     r"|\bwrite\b.{0,40}\bresults?\b)",
     re.IGNORECASE,
 )
-_READ_ONLY_PREFIX = re.compile(r"^\s*(?:please\s+)?(?:inspect|read|review)\b", re.IGNORECASE)
-_READ_ONLY_RESPONSE = re.compile(r"\b(?:explain|describe|summari[sz]e|list)\b", re.IGNORECASE)
-_EXPLICIT_UNTRUSTED_CONTENT = re.compile(r"\buntrusted\b.{0,40}\bcontent\b", re.IGNORECASE)
 _CANCEL_CLARIFICATION = re.compile(
     r"\b(?:cancel|nevermind|never\s+mind|forget\s+it|stop)\b", re.IGNORECASE
 )
-
-
-def _request_requires_completion(user_text: str) -> bool:
-    """Prevent explicit authoring/execution requests from ending as empty promises."""
-
-    if _EXECUTION_REQUEST.search(user_text):
-        return True
-    if _AUTHORING_REQUEST.search(user_text) is None:
-        return False
-    if is_explanation_only_request(user_text):
-        return False
-    if (
-        _READ_ONLY_PREFIX.match(user_text)
-        and _READ_ONLY_RESPONSE.search(user_text)
-        and _EXPLICIT_UNTRUSTED_CONTENT.search(user_text)
-    ):
-        return False
-    return True
 
 
 def _turn_ends_with_needs_input(session_turn: Any) -> bool:
@@ -718,9 +696,6 @@ async def run_turn(
     total_input_tokens = 0
     total_output_tokens = 0
     tool_count = 0
-    completion_required = _request_requires_completion(effective_request) or (
-        route_recipe_request(effective_request) is not None
-    )
     mutation_attempted = False
     mutation_applied = False
     mutation_continuation_used = False
@@ -884,11 +859,7 @@ async def run_turn(
                         and bool(response_text[len(prefix) :].strip())
                         for prefix in _MUTATION_OUTCOME_PREFIXES
                     )
-                    if (
-                        (completion_required or mutation_attempted)
-                        and not mutation_applied
-                        and not explicit_outcome
-                    ):
+                    if mutation_attempted and not mutation_applied and not explicit_outcome:
                         if mutation_continuation_used:
                             raise _IncompleteMutationError(_INCOMPLETE_MUTATION_DETAIL)
                         request_messages.extend(

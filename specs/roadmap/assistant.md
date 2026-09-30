@@ -84,7 +84,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-06 | Planned | P1 | Node descriptors agree with the product's own registries and use palette names. |
 | ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
 | ASSIST-08 | Planned | P1 | Recipes produce configs that match rows and never advertise invalid options. |
-| ASSIST-09 | Planned | P1 | Questions end as answered turns. |
 | ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
 | ASSIST-11 | Planned | P1 | A new local file input can be added and transformed in one plan. |
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
@@ -365,25 +364,6 @@ error.
 **Evidence:** `src/haute/assistant/_recipes.py::_validate_categorical_rules`;
 `src/haute/_rating.py::banding_rule_claim_expr`;
 `src/haute/assistant/_recipes.py::plan_recipe`.
-
-### ASSIST-09 — Completion is required only after a mutation attempt
-**Why:** The loop requires a completed edit whenever the request contains an
-authoring verb or matches a recipe route, so "Can you explain the rating
-step?" or "Why does the join produce nulls?" end as failed turns, contrary to
-the specification's statement that routing is advisory.
-
-**Plan:** Derive the completion requirement only from a dry-run the model
-actually attempted; the verb and route checks no longer set it.
-
-**Acceptance:** The four read-only prompts from the review end completed; a
-dry-run followed by an unqualified end still receives one continuation and
-then fails as incomplete.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_loop.py::run_turn`;
-`src/haute/assistant/_loop.py::_request_requires_completion`;
-`src/haute/assistant/_recipes.py::route_recipe_request`.
 
 ### ASSIST-10 — Egress corrections
 **Why:** Dry-run executes the model's code while resolving schemas, and an

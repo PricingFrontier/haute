@@ -511,15 +511,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
    `tool_started`; execute; append the result to the pending provider messages before
    emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
-   re-invoke the provider with the accumulated results. Before streaming, a closed lexical
-   classifier marks completion as required for explicit build/add/change/update/connect/
-   remove/delete/create/rename/configure/edit/author requests unless they clearly ask only
-   for explanation, and for explicit pipeline run/execute/materialise or external-write
-   requests. Classification never authorises a new action; it only prevents false completion.
-   An action word which the user explicitly identifies as untrusted reported content does not
-   create completion authority when the request starts as read-only inspection and asks only for
-   an explanation; an actual inspect-then-mutate request remains completion-required.
-   The loop also marks completion required after a graph dry-run and tracks whether
+   re-invoke the provider with the accumulated results. Completion becomes required only
+   when the model calls `dry_run_graph_edits`, `dry_run_recipe_plan`, or `apply_graph_plan`
+   in the turn; neither the request's wording nor a recipe route sets it, so a read-only
+   question that ends without such a call completes normally. The loop also tracks whether
    `apply_graph_plan` has succeeded. A successful apply is terminal after the current stream
    reaches its stop event: any later tool-call events in that same provider round are ignored,
    the loop records the successful apply and its result, emits the deterministic assistant
@@ -1098,9 +1093,10 @@ fixture for route tests). The implemented coverage is:
   splitting a call/result group, and a twenty-one-call turn followed by a turn that still
   sees its original request; the two dry-run budgets are independent and each
   bounded — a malformed call does not consume a plan-correction attempt, and repeated
-  malformed calls block with their own wording and no echoed detail; an end after
-  unsuccessful mutation receives one internal
-  controller continuation, successful apply terminates with deterministic text and no later
+  malformed calls block with their own wording and no echoed detail; read-only
+  questions and authoring wording without a dry-run attempt end completed with no
+  controller continuation; an end after an attempted but unapplied mutation receives one
+  internal controller continuation, successful apply terminates with deterministic text and no later
   provider/tool round, explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally, and a
   second unqualified end fails rather than completes.
 - **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,
