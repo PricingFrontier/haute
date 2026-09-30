@@ -32,6 +32,7 @@ from scripts.run_assistant_self_test import (
     replay_self_test_case,
     run_self_test_case,
 )
+from tests._source_files import source_files
 from tests.assistant_eval._frames import frames_equal, run, synthetic_inputs
 
 EVAL_ROOT = Path(__file__).parent / "assistant_eval"
@@ -266,8 +267,8 @@ def test_the_fixture_projects_are_not_modified_by_replay() -> None:
 
     written = [
         path
-        for path in PROJECTS_ROOT.rglob("*")
-        if path.is_file() and path.parent.name in {"polars", "banding", "rating_step"}
+        for path in source_files(PROJECTS_ROOT, suffix=None)
+        if path.parent.name in {"polars", "banding", "rating_step"}
     ]
     assert written == []
     assert not any(
