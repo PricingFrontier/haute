@@ -54,7 +54,12 @@ from haute.executor import (
     _pipeline_dir,
 )
 from haute.graph_utils import flatten_graph
-from haute.modelling._train_config import MISSING_TARGET_MESSAGE, training_objective_issue
+from haute.modelling._train_config import (
+    MISSING_TARGET_MESSAGE,
+    TrainingConfigError,
+    parse_evaluation_config,
+    training_objective_issue,
+)
 from haute.routes._helpers import parse_pipeline_to_graph, save_lock
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._training_preparation import build_training_feature_selection
@@ -631,6 +636,13 @@ def _prove_nodes_ready(
             if not isinstance(target, str) or not target
             else training_objective_issue(config)
         )
+        if issue is None:
+            # Training refuses a config without a valid evaluation object, so a
+            # node the assistant writes must carry one too.
+            try:
+                parse_evaluation_config(config.get("evaluation"))
+            except TrainingConfigError as exc:
+                issue = str(exc)
         if issue is not None:
             raise _not_ready(node_id, issue)
         if prepared is None:

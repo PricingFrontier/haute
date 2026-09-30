@@ -532,7 +532,8 @@ excluded count; its path and content never cross the tool boundary.
    node the plan adds or updates (the complete set, however many; instances excepted); a
    failure raises
    `AssistantOperationError("node_not_ready", "Node '<id>' is not ready: <message>")` and
-   stores no plan. A Modelling node needs a `target` and no `training_objective_issue`; its
+   stores no plan. A Modelling node needs a `target`, no `training_objective_issue` and an
+   `evaluation` object that `parse_evaluation_config` accepts, as training requires; its
    output (a pass-through of its input) is resolved through the same engine path as the
    schema evidence, and `_training_preparation.build_training_feature_selection` checks the
    configured columns against it, the check training runs on the materialised schema. A Load

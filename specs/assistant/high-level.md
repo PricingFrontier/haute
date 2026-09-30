@@ -389,8 +389,9 @@ refuses a malformed modelling value for every author (see
 analyst save an unfinished node; the assistant may not leave one. For each Modelling or
 Load File node a plan adds or updates (instances excepted), the dry-run also checks what
 save leaves to training or execution, after the plan's schemas resolve. A Modelling node
-needs a target and a complete training objective (`training_objective_issue`: a loss, or a
-GLM family and terms), and its target, weight, offset, identifier, evaluation and feature
+needs a target, a complete training objective (`training_objective_issue`: a loss, or a
+GLM family and terms) and a valid evaluation object (`parse_evaluation_config`, which
+training also requires), and its target, weight, offset, identifier, evaluation and feature
 columns (a GLM's term columns included) must exist in the input schema the dry-run
 resolves, checked by the function training preparation runs on the materialised schema. A
 Load File must load its `path` as its declared `fileType` exactly as execution loads it:

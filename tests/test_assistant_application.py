@@ -1170,6 +1170,12 @@ _VALID_GLM = {
     "link": "log",
     "offset": "exposure",
     "terms": {"age": {"type": "linear"}},
+    "evaluation": {
+        "schema_version": 1,
+        "strategy": "random",
+        "seed": 42,
+        "validation": {"method": "single", "size": 0.2},
+    },
 }
 
 
@@ -1246,6 +1252,11 @@ class TestWrittenNodesAreReady:
             ),
             pytest.param(
                 {**_VALID_GLM, "target": None}, "Modelling config has no target", id="no-target"
+            ),
+            pytest.param(
+                {**_VALID_GLM, "evaluation": None},
+                "Modelling config has no evaluation object",
+                id="no-evaluation",
             ),
         ],
     )
