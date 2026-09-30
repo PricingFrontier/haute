@@ -155,7 +155,7 @@
     "type": "function",
     "function": {
       "name": "get_authoring_guide",
-      "description": "Retrieve the packaged canonical authoring guide with attribution.",
+      "description": "Retrieve the packaged canonical authoring guide with attribution, and the structured step grammar: each step kind's fields and the closed vocabularies.",
       "parameters": {
         "type": "object",
         "properties": {},

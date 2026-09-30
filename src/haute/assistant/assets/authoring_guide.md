@@ -39,21 +39,11 @@ Every node type except `polars` is configured: its decorator names its settings
 and performs the node's work (reading the source, scoring, rating, joining,
 assembling the response) when the file runs.  Such a node is a one-line
 declaration whose parameters name its inputs and whose body is `...` (or its
-docstring).  To add post-processing code to a Data Input, Rating Step, Model
-Scoring, Expander or Explore node, make its first parameter `df` — the
-frame the node produced — and return the result:
-
-```python
-@pipeline.model_score(config="config/model_scoring/frequency.json")
-def frequency(df: pl.LazyFrame) -> pl.LazyFrame:
-    df = df.with_columns(frequency=pl.col("prediction").clip(0, 5))
-    return df
-```
-
-A Load File node's code keeps its inputs by name, receives the loaded object
-as the keyword-only `obj`, and starts from `df = <first input>`.  Never call
-Haute's loader or scoring helpers from a function body, and never import from a
-`haute._` module.
+docstring).  New logic on a `polars` node, and post-processing on a Data Input,
+Load File, Rating Step, Model Scoring, Expander or Explore node, is authored as
+steps (see "Steps" below); the saved file holds the code the steps render.
+Never call Haute's loader or scoring helpers from a function body, and never
+import from a `haute._` module.
 
 `haute init` scaffolds a blank pipeline: `rating/main.py` declares the
 `haute.Pipeline` and no nodes, and the analyst adds nodes in the editor.
@@ -96,24 +86,12 @@ secrets, credentials, or machine-specific absolute paths in pipeline source.
 
 Prefer lazy Polars expressions (`pl.col`, `with_columns`, `select`, `join`, and
 `drop`) and vectorised arithmetic (`2026 - pl.col("vehicle_year")`) over
-collecting a frame or calling Python per row.  What code sees depends on its
-node:
-
-- On a `polars` node, code starts from a named input.  Each input is named by
-  its upstream node (one per incoming edge) and `df` is only the output
-  variable, so start from the input you mean (`df = quotes.filter(...)`) and
-  never read `df` before assigning it.
-- On a Data Input, Rating Step, Model Scoring, Expander or Explore node, code
-  sees only `df`, the frame the node produced.
-- On a Load File node, `df` is the first input, further inputs are available by
-  name, and the loaded object is `obj`.
-
-Polars frames are immutable: explicit node code must assign the transformed
-result to `df` or return the transformed frame.  A bare `quotes.filter(...)`
-expression is discarded and is therefore invalid, and a polars node with no
-logic at all raises if the pipeline is run — there is no implicit passthrough.
-Make joins explicit about their keys and join type, and name derived columns so
-downstream steps can refer to them without guessing.
+collecting a frame or calling Python per row.  Polars frames are immutable: a
+bare `df.filter(...)` expression is discarded and is refused, so assign the
+result to `df`.  A `polars` node with no steps has not chosen its input and is
+refused; there is no implicit passthrough.  Make joins explicit about their keys
+and join type, and name derived columns so downstream steps can refer to them
+without guessing.
 
 A modelling node's `algorithm` (`catboost`, `xgboost`, `lightgbm`, `ebm`, or
 `glm`) is fixed when the node is created: to try another family, add a new
@@ -124,6 +102,62 @@ objectives, threads, seeds, or aliases there.  An EBM never stops early, so give
 it an explicit `max_rounds`.  A GLM is different: it has no `loss_function` or
 `params`, and is configured by top-level `family`, `link`, `terms` and
 `interactions` instead.
+
+## Steps
+
+A `polars` node and every node that takes post-processing (Data Input, Load
+File, Rating Step, Model Scoring, Expander, Explore) holds an ordered `steps`
+list in its config, and the editor's step builder shows each step as a card.
+Write new logic as steps with one free-code card:
+
+- On a `polars` node, start with a `source` step whose `input` names the
+  incoming edge that becomes `df`, then a `free_code` step:
+  `[{"id": "start", "kind": "source", "input": "quotes"}, {"id": "logic", "kind": "free_code", "code": "..."}]`.
+- On every other stepped node `df` is already bound, so the list is one
+  `free_code` step: `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
+  On a Load File node `df` is the first input; elsewhere it is the frame the
+  node produced.
+
+Every step needs a non-empty id, unique in its list.  The code transforms `df`
+and assigns the result to `df` (a `return` is refused).  It reads other inputs
+by their edge names only on a `polars` or Load File node; every other stepped
+node sees only `df`.  On a Load File node the loaded object is `obj`.  Start the
+code with a one-line `# intent` comment: the step builder shows it as the
+card's title.  A node that needs no post-processing keeps `steps: []`.
+
+Keep what the analyst built.  An existing structured step keeps its id and its
+place in the list, and a node in code mode (a `code` config without `steps`) is
+edited through its `code`.  Never switch a node between steps and code; that is
+the analyst's choice in the editor.  To edit a structured step, read
+`step_grammar`, which comes with this guide: each step kind with its fields and
+the closed vocabularies those fields take.
+
+A `polars` node fed by `proposer_claims` and `additional_drivers_claims` that
+totals both sources' August claims per policy:
+
+```json
+[
+  {"id": "start", "kind": "source", "input": "proposer_claims"},
+  {"id": "logic", "kind": "free_code", "code": "# Total August claims per policy across both claim sources\ndf = pl.concat([df, additional_drivers_claims]).filter(pl.col(\"claim_month\") == \"2026-08\").group_by(\"policy_id\").agg(august_claims=pl.col(\"amount\").sum())"}
+]
+```
+
+A Rating Step capping the premium it produced:
+
+```json
+[
+  {"id": "logic", "kind": "free_code", "code": "# Cap the premium at 150\ndf = df.with_columns(premium=pl.col(\"premium\").clip(0, 150))"}
+]
+```
+
+A Load File node whose file holds regional loadings, with `quotes` as its first
+input and `regions` as its second:
+
+```json
+[
+  {"id": "logic", "kind": "free_code", "code": "# Add each quote's zone and regional loading\ndf = df.join(regions, on=\"region\", how=\"left\").with_columns(loading=pl.col(\"region\").replace_strict(obj, default=1.0))"}
+]
+```
 
 ## A safe editing pattern
 

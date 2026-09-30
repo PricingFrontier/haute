@@ -19,6 +19,22 @@ from typing import Literal, Required, Union, cast, get_args, get_origin, get_typ
 from haute._cache import canonical_json
 from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
+from haute._polars_steps import (
+    AGGREGATIONS,
+    BINARY_OPERATORS,
+    CAST_DTYPES,
+    FILL_STRATEGIES,
+    FUNCTIONS,
+    JOIN_HOW,
+    JOIN_VALIDATE,
+    LITERAL_TYPES,
+    OPERATORS,
+    PIVOT_AGGREGATIONS,
+    STEPPED_NODE_TYPES,
+    WINDOW_AGGREGATIONS,
+    step_fields,
+    stepped_surface_for,
+)
 from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
 from haute._types import NODE_TYPE_TO_DECORATOR, SINK_ONLY_NODE_TYPES, NodeType
 from haute.assistant._recipes import recipe_manifest
@@ -397,6 +413,7 @@ class NodeCapabilityDescriptor:
     examples: tuple[str, ...]
     recipes: tuple[str, ...]
     errors: tuple[Mapping[str, str], ...]
+    step_authoring: Mapping[str, object] | None
 
     def as_dict(self) -> dict[str, object]:
         return _thaw({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
@@ -663,6 +680,83 @@ def _wiring_rules(node_type: NodeType) -> str:
     return " ".join(rules)
 
 
+#: Stands for the incoming edge a Transform's source step starts from.
+EDGE_NAME_PLACEHOLDER = "<edge name>"
+#: The free-code card the descriptors and the system prompt show: it opens with
+#: its one-line intent, which the step builder shows as the card's title, and
+#: names no column, so it applies unchanged on every stepped surface.
+NEW_LOGIC_EXAMPLE_CODE = "# Add a unit exposure column\ndf = df.with_columns(exposure=pl.lit(1.0))"
+
+
+def new_logic_steps(node_type: NodeType, code: str) -> list[dict[str, str]]:
+    """The step list that writes new logic *code* on *node_type*'s stepped surface.
+
+    A surface whose steps choose their input starts from a source step on the
+    incoming edge; every other surface binds ``df`` itself, so the list is one
+    free-code card.
+    """
+
+    logic = {"id": "logic", "kind": "free_code", "code": code}
+    if stepped_surface_for(node_type).start == "input":
+        return [{"id": "start", "kind": "source", "input": EDGE_NAME_PLACEHOLDER}, logic]
+    return [logic]
+
+
+def _step_authoring(node_type: NodeType) -> dict[str, object] | None:
+    """How *node_type*'s steps start, what they see and how new logic is written."""
+
+    surface = STEPPED_NODE_TYPES.get(node_type)
+    if surface is None:
+        return None
+    if surface.start == "input":
+        rules = ["Start with a source step whose input names the incoming edge that becomes df."]
+    elif surface.inputs == "edges":
+        rules = ["df is already the first input, so there is no source step."]
+    else:
+        rules = ["df is already the frame the node produced, so there is no source step."]
+    rules.append(
+        "Code reads the other inputs by their edge names."
+        if surface.inputs == "edges"
+        else "Code sees only df."
+    )
+    rules.append(
+        "Write new logic as one free_code step whose code starts with a one-line "
+        "`# intent` comment and assigns the transformed result to df."
+    )
+    if surface.start == "frame":
+        rules.append("With no post-processing to do, keep steps: [].")
+    rules.append("Keep existing structured steps with their ids and order.")
+    return {
+        "start": surface.start,
+        "inputs": surface.inputs,
+        "rule": " ".join(rules),
+        "new_logic": new_logic_steps(node_type, NEW_LOGIC_EXAMPLE_CODE),
+    }
+
+
+def step_grammar() -> dict[str, object]:
+    """The structured step grammar, read from the step renderer's own tables.
+
+    Nested expression shapes are not enumerated; the renderer's errors name
+    the offending field.
+    """
+
+    return {
+        "kinds": step_fields(),
+        "operators": list(OPERATORS),
+        "binary_operators": list(BINARY_OPERATORS),
+        "aggregations": list(AGGREGATIONS),
+        "window_aggregations": list(WINDOW_AGGREGATIONS),
+        "pivot_aggregations": list(PIVOT_AGGREGATIONS),
+        "join_how": list(JOIN_HOW),
+        "join_validate": list(JOIN_VALIDATE),
+        "cast_dtypes": list(CAST_DTYPES),
+        "fill_strategies": list(FILL_STRATEGIES),
+        "functions": {name: list(arguments) for name, (arguments, _template) in FUNCTIONS.items()},
+        "literal_types": list(LITERAL_TYPES),
+    }
+
+
 def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
     config_folder = NODE_TYPE_TO_FOLDER.get(node_type)
     usage = _USAGE_NOTES[node_type]
@@ -694,12 +788,10 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         "Do not add disconnected decorative nodes; every new node must be wired.",
     ]
     if node_type == NodeType.POLARS:
+        anti_patterns.append("Do not discard immutable Polars results; assign them to df.")
         anti_patterns.append(
-            "Do not discard immutable Polars results; assign them to df or return them."
-        )
-        anti_patterns.append(
-            "Do not read df before assigning it; df is the output variable, not an "
-            "input - start from the node's named input parameters."
+            "Do not write new logic as code: start the steps with a source step naming "
+            "the input edge, which binds df, then transform df in a free_code step."
         )
     if node_type == NodeType.EDGE_JOIN:
         anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
@@ -740,6 +832,7 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
                 }
             ),
         ),  # type: ignore[arg-type]
+        cast(Mapping[str, object] | None, _freeze(_step_authoring(node_type))),
     )
 
 
@@ -860,6 +953,7 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "evidence_class",
             "approval_status",
             "content",
+            "step_grammar",
         ),
         "plan_recipe": (
             "recipe_id",
@@ -1067,7 +1161,8 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         ),
         "get_example": "Load one packaged, versioned teaching example.",
         "get_authoring_guide": (
-            "Retrieve the packaged canonical authoring guide with attribution."
+            "Retrieve the packaged canonical authoring guide with attribution, and the "
+            "structured step grammar: each step kind's fields and the closed vocabularies."
         ),
         "dry_run_graph_edits": (
             "Validate an exact graph-edit plan and report revision, semantic diff, "
@@ -1407,6 +1502,11 @@ def validate_manifest_complete() -> None:
             raise RuntimeError(f"Capability descriptor {node.id} has an open config schema.")
         if any(not getattr(node, field) for field in required_node_fields):
             raise RuntimeError(f"Capability descriptor {node.id} lacks semantic metadata.")
+        if (node.step_authoring is not None) != (NodeType(node.id) in STEPPED_NODE_TYPES):
+            raise RuntimeError(
+                f"Capability descriptor {node.id} must carry step_authoring exactly "
+                "when its type authors steps."
+            )
     if len({operation.id for operation in manifest.operations}) != len(manifest.operations):
         raise RuntimeError("Capability manifest contains duplicate operation descriptors.")
     for operation in manifest.operations:
@@ -1475,12 +1575,16 @@ validate_manifest_complete()
 
 
 __all__ = [
+    "EDGE_NAME_PLACEHOLDER",
     "MANIFEST_SCHEMA_VERSION",
+    "NEW_LOGIC_EXAMPLE_CODE",
     "CapabilityManifest",
     "NodeCapabilityDescriptor",
     "OperationCapabilityDescriptor",
     "capability_manifest",
     "compact_manifest",
     "materialise_json",
+    "new_logic_steps",
+    "step_grammar",
     "validate_manifest_complete",
 ]

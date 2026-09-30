@@ -945,6 +945,43 @@ class TestSteppedWrites:
         assert saved["steps"] == steps
         assert "_steps_discarded" not in saved and "_steps_error" not in saved
 
+    @pytest.mark.parametrize("node", list(_STEPPED_BASES))
+    async def test_the_advertised_new_logic_applies_verbatim(
+        self, stepped_project: Path, node: str
+    ):
+        """The step list a stepped descriptor advertises, spelled the same way
+        in the system prompt, applies unchanged but for its edge placeholder."""
+
+        import json
+
+        from haute.assistant._catalog import EDGE_NAME_PLACEHOLDER, capability_manifest
+        from haute.assistant._config import EgressPolicy
+        from haute.assistant._loop import build_system_prompt
+
+        node_type, _base = _STEPPED_BASES[node]
+        descriptor = next(item for item in capability_manifest().nodes if item.id == node_type)
+        advertised = descriptor.as_dict()["step_authoring"]["new_logic"]
+        egress = EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=True,
+        )
+        prompt = build_system_prompt(pipeline_name="main", source_file="main.py", egress=egress)
+        assert f"`{json.dumps(advertised)}`" in prompt
+        steps = json.loads(json.dumps(advertised).replace(EDGE_NAME_PLACEHOLDER, "quotes"))
+        service = _service(stepped_project)
+
+        plan = service.dry_run(
+            "main.py", [{"op": "update_node", "node": node, "config": {"steps": steps}}]
+        )
+        await service.apply("main.py", plan.plan_hash)
+
+        saved = _reparsed_config(stepped_project, node)
+        assert saved["steps"] == steps
+        assert "_steps_discarded" not in saved and "_steps_error" not in saved
+
     async def test_a_data_input_added_with_a_path_saves_the_palette_input_type(
         self, stepped_project: Path
     ):

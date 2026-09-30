@@ -2029,3 +2029,180 @@ class TestClosedSchemaKeywords:
         from haute.assistant._tools import _validate_tool_value
 
         _validate_tool_value(["a", "a"], {"type": "array"}, path="tool.items")
+
+
+# ---------------------------------------------------------------------------
+# Steps-first authoring replays (ASSIST-03)
+# ---------------------------------------------------------------------------
+
+
+def _guide_step_lists() -> list[list[dict[str, str]]]:
+    """The step lists the authoring guide shows, in the order it shows them."""
+
+    import re
+
+    from haute.assistant._assets import authoring_guide
+
+    blocks = re.findall(r"```json\n(.*?)\n```", authoring_guide(), flags=re.DOTALL)
+    return [json.loads(block) for block in blocks]
+
+
+@pytest.fixture()
+def steps_first_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A saved pipeline whose Transform, Rating Step and Load File the analyst
+    dropped from the palette and wired, but has not filled in."""
+
+    from haute._config_io import palette_default_config
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._sandbox import set_project_root
+    from haute._types import GraphEdge, NodeType
+    from haute.assistant import _tools
+    from haute.assistant._ops import PlanStore
+    from haute.routes._save_pipeline import SavePipelineService
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
+    monkeypatch.setattr(_tools, "mutations_readiness", lambda _root: (True, None))
+    frames = {
+        "proposer_claims": {
+            "policy_id": ["p1", "p1", "p2"],
+            "claim_month": ["2026-08", "2026-08", "2026-07"],
+            "amount": [100.0, 50.0, 30.0],
+        },
+        "additional_drivers_claims": {
+            "policy_id": ["p1", "p2"],
+            "claim_month": ["2026-08", "2026-08"],
+            "amount": [20.0, 10.0],
+        },
+        "quotes": {
+            "quote_id": ["q1", "q2"],
+            "region": ["north", "south"],
+            "premium": [100.0, 200.0],
+        },
+        "regions": {"region": ["north", "south"], "zone": ["A", "B"]},
+    }
+    for name, frame in frames.items():
+        pl.DataFrame(frame).write_parquet(tmp_path / f"{name}.parquet")
+    (tmp_path / "loadings.json").write_text(json.dumps({"north": 1.1, "south": 0.9}))
+    (tmp_path / "main.py").write_text(
+        'import haute\n\npipeline = haute.Pipeline("main", description="replays")\n',
+        encoding="utf-8",
+    )
+    palette = {
+        "august_totals": NodeType.POLARS,
+        "rated": NodeType.RATING_STEP,
+        "loaded": NodeType.EXTERNAL_FILE,
+    }
+    nodes = [
+        GraphNode(
+            id=name,
+            type=NodeType.DATA_INPUT.value,
+            data=NodeData(
+                label=name,
+                nodeType=NodeType.DATA_INPUT,
+                config={
+                    **palette_default_config(NodeType.DATA_INPUT),
+                    "path": f"{name}.parquet",
+                },
+            ),
+        )
+        for name in frames
+    ] + [
+        GraphNode(
+            id=name,
+            type=node_type.value,
+            data=NodeData(label=name, nodeType=node_type, config=palette_default_config(node_type)),
+        )
+        for name, node_type in palette.items()
+    ]
+    wiring = [
+        ("proposer_claims", "august_totals"),
+        ("additional_drivers_claims", "august_totals"),
+        ("quotes", "rated"),
+        ("quotes", "loaded"),
+        ("regions", "loaded"),
+    ]
+    SavePipelineService(project_root=tmp_path, pipeline_root=tmp_path).save_graph_transactionally(
+        graph=PipelineGraph(
+            nodes=nodes,
+            edges=[GraphEdge(id=f"{s}->{t}", source=s, target=t) for s, t in wiring],
+        ),
+        name="main",
+        description="replays",
+        preamble=None,
+        source_file="main.py",
+        base_revision=load_pipeline_editor_document(
+            tmp_path / "main.py", project_root=tmp_path
+        ).source_revision,
+    )
+    return tmp_path
+
+
+class TestStepsFirstAuthoring:
+    """The authoring guide's worked examples, sent as the model would send
+    them, fill the named palette-default node through the real dry-run and
+    apply tools, stay in the step builder and run."""
+
+    @pytest.mark.parametrize(
+        ("example", "node", "config", "key", "expected"),
+        [
+            pytest.param(
+                0,
+                "august_totals",
+                {},
+                "policy_id",
+                {"policy_id": ["p1", "p2"], "august_claims": [170.0, 10.0]},
+                id="august-aggregation-on-a-transform",
+            ),
+            pytest.param(
+                1,
+                "rated",
+                {},
+                "quote_id",
+                {"quote_id": ["q1", "q2"], "premium": [100.0, 150.0]},
+                id="rating-step-hook",
+            ),
+            pytest.param(
+                2,
+                "loaded",
+                {"path": "loadings.json", "fileType": "json"},
+                "quote_id",
+                {"quote_id": ["q1", "q2"], "zone": ["A", "B"], "loading": [1.1, 0.9]},
+                id="load-file-with-obj-and-a-second-input",
+            ),
+        ],
+    )
+    async def test_a_guide_example_fills_the_named_node_and_runs(
+        self,
+        steps_first_project: Path,
+        example: int,
+        node: str,
+        config: dict[str, str],
+        key: str,
+        expected: dict[str, list[object]],
+    ):
+        from haute._native_memory_limit import native_memory_backend_scope
+        from haute.assistant._tools import apply_graph_plan, dry_run_graph_edits
+        from haute.executor import execute_graph
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        steps = _guide_step_lists()[example]
+        before = parse_pipeline_to_graph(steps_first_project / "main.py")
+        ops = [{"op": "update_node", "node": node, "config": {**config, "steps": steps}}]
+
+        plan = await dry_run_graph_edits("main.py", ops)
+        assert "error" not in plan, plan
+        applied = await apply_graph_plan("main.py", plan["plan_hash"])
+        assert "error" not in applied, applied
+
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        assert [item.id for item in graph.nodes] == [item.id for item in before.nodes]
+        saved = next(item for item in graph.nodes if item.id == node).data.config
+        assert saved["steps"] == steps
+        assert "_steps_error" not in saved and "_steps_discarded" not in saved
+        with native_memory_backend_scope("rlimit"):
+            result = execute_graph(graph, target_node_id=node)[node]
+        assert result.status == "ok", result.error
+        rows = sorted(result.preview, key=lambda row: row[key])
+        assert {column: [row[column] for row in rows] for column in expected} == expected

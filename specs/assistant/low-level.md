@@ -87,7 +87,25 @@ orphaned halves).
   palette name (held equal to `NODE_TYPE_META` in
   `frontend/src/utils/nodeTypes.ts` by test), `summary` is a one-line purpose,
   and `usage` is the longer authoring note; all three are completeness-checked
-  at import.
+  at import. `step_authoring` is `null` for a type outside
+  `haute._polars_steps.STEPPED_NODE_TYPES` and, for a stepped type, is derived
+  from its `SteppedSurface`: `start` and `inputs` as the table holds them, a
+  `rule` sentence (an `input` start begins with a source step whose `input`
+  names the incoming edge that becomes `df`; a `frame` start has no source step
+  and binds `df` to the first input on an `edges` surface or to the frame the
+  node produced on a `none` surface; an `edges` surface reads further inputs by
+  edge name; the code starts with a one-line `# intent` comment; a `frame`
+  surface needing no post-processing keeps `steps: []`), and `new_logic`, the
+  step list that writes new logic: `[{"id": "start", "kind": "source", "input":
+  "<edge name>"}, {"id": "logic", "kind": "free_code", "code": ...}]` on an
+  `input` start and `[{"id": "logic", "kind": "free_code", "code": ...}]` on a
+  `frame` start, with a column-agnostic example code
+  (`_catalog.NEW_LOGIC_EXAMPLE_CODE`). `_catalog.new_logic_steps` builds that
+  list for the descriptor, the system prompt and every stepped-write refusal, so
+  all three spell the same shape. Manifest validation fails at import if a
+  stepped type lacks `step_authoring` or another type carries it. The Polars
+  descriptor's anti-patterns state the free-code card's contract (assign the
+  result to `df`; the source step binds `df`), not the code-mode one.
 - **`OperationCapabilityDescriptor`**: a closed, versioned operation
   declaration. `_tools.TOOL_DEFINITIONS` is projected from these descriptors,
   so a provider-visible tool cannot exist without risk, egress, retry,
@@ -560,7 +578,23 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    schemas. Fresh graph detail is deliberately *not* embedded in the system prompt — the
    model fetches it via tools, so it is never stale mid-turn. The authoring
    guide and full exemplar bodies are likewise prompt-excluded: the model pulls
-   them through `get_authoring_guide` and `get_example` only when relevant. The
+   them through `get_authoring_guide` and `get_example` only when relevant.
+   `get_authoring_guide` also returns `step_grammar`, derived from
+   `haute._polars_steps`: every step kind with its required and optional fields
+   (`step_fields`) and the closed vocabularies structured steps use (operators,
+   aggregations, join kinds, cast dtypes, fill strategies, functions, literal
+   types), so a model editing structured steps reads them on demand; nested
+   expression shapes are not enumerated there. The mutation paragraph states one
+   authoring rule for new Polars logic, derived from `STEPPED_NODE_TYPES` and the
+   palette names: steps with a free-code card, the Polars (Transform) form
+   `[source, free_code]` and the `[free_code]` form for every other stepped
+   surface, each spelled as `new_logic_steps` renders it with the example code;
+   the code transforms `df` and assigns the result to `df`, reads other inputs by
+   edge name only on the surfaces whose steps see their edges (Polars and Load
+   File, where the loaded object is `obj`), and starts with a one-line `# intent`
+   comment; a hook needing no post-processing keeps `steps: []`; existing
+   structured steps keep their ids and order, a code-mode node keeps its `code`,
+   and the assistant never switches a node between steps and code. The
    permanent installed-I/O summary includes only group identity, input/output
    availability, cache modes, and format names; field schemas stay out of the prompt
    and remain available through capability tools. This keeps the routing facts useful
@@ -1128,6 +1162,11 @@ fixture for route tests). The implemented coverage is:
   Also pins merged I/O enums, palette defaults, resolved schema agreement, closed operation
   metadata, deterministic canonical hashing, cache reuse/invalidation,
   manifest compatibility identity, and the compact/full projection boundary.
+  `step_authoring` is pinned against `STEPPED_NODE_TYPES`: present exactly on the
+  stepped types, with the surface's `start` and `inputs`, a source step first exactly
+  on an `input` start, and every step carrying a non-empty id and a kind in
+  `STEP_KINDS`; `get_authoring_guide`'s `step_grammar` equals the renderer's step
+  fields.
 - **`tests/test_assistant_tools.py`** — real tmp-project coverage for source/downstream
   schemas, preamble-dependent transforms, per-input schemas keyed by the code-visible
   input name (absent for a source node), the authored-but-empty transform's
@@ -1157,7 +1196,13 @@ fixture for route tests). The implemented coverage is:
   name edge handles in the operation vocabulary. Dataset
   coverage pins installed-registry extension parity and rejects direct hidden,
   state-directory, and credential-file listing/schema inspection; preview
-  collection is poisoned to enforce the no-row boundary.
+  collection is poisoned to enforce the no-row boundary. Steps-first authoring is
+  replayed through the real `dry_run_graph_edits` and `apply_graph_plan` on a project
+  saved with palette-default nodes: a two-input August claims aggregation filled as
+  `[source, free_code]` on the named Transform, a palette-default Rating Step filled
+  with `[free_code]`, and a Load File whose free-code step uses `obj` and a second
+  input by name each apply in one dry-run, reparse with their steps and no
+  `_steps_error` or `_steps_discarded`, and execute on fixture data.
 - **`tests/test_assistant_assets.py`** — the authoring guide loads non-empty via
   `importlib.resources`; every example is a content-addressed bundle (no
   single-file example remains) and parses through `parse_pipeline_to_graph`; the
@@ -1186,8 +1231,10 @@ fixture for route tests). The implemented coverage is:
   Data Input added with only a path saves with the palette's `inputType`; the
   `node_config` projection survives a real save and reparse on every code-carrying
   palette type; a saved config that no longer matches its `node_config` digest is a
-  committed verification failure; and steps whose generated body would not reparse
-  fail the dry-run with `op_not_applied`.
+  committed verification failure; steps whose generated body would not reparse
+  fail the dry-run with `op_not_applied`; and the `new_logic` list each stepped
+  descriptor advertises, which the system prompt spells the same way, applies
+  verbatim on its surface, with only the `<edge name>` placeholder replaced.
 - **`tests/test_assistant_project_knowledge.py`** — source attribution,
   sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
   policy, symlink containment, and metadata-only durable cache state.
@@ -1261,7 +1308,9 @@ fixture for route tests). The implemented coverage is:
   controller continuation; an end after an attempted but unapplied mutation receives one
   internal controller continuation, successful apply terminates with deterministic text and no later
   provider/tool round, explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally, and a
-  second unqualified end fails rather than completes.
+  second unqualified end fails rather than completes. The system prompt states the
+  steps-first rule with both `new_logic` forms, names every stepped surface by its
+  palette name, and no longer teaches `df` as a code-only output variable.
 - **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
   transcript rehydration, adapter construction, atomic concurrent-send reservation, and

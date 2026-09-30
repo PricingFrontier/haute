@@ -42,6 +42,7 @@ from haute.assistant._catalog import (
     capability_manifest,
     compact_manifest,
     materialise_json,
+    step_grammar,
 )
 from haute.assistant._config import mutations_readiness, resolve_egress_policy
 from haute.assistant._ops import (
@@ -965,6 +966,7 @@ def get_authoring_guide() -> dict[str, object]:
             "evidence_class": "canonical_library_guidance",
             "approval_status": "reviewed",
             "content": content,
+            "step_grammar": step_grammar(),
         }
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
         return _error(

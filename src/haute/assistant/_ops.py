@@ -49,7 +49,7 @@ from haute._types import (
     PipelineGraph,
     SubmodelDefinition,
 )
-from haute.assistant._catalog import capability_manifest
+from haute.assistant._catalog import capability_manifest, new_logic_steps
 from haute.assistant._wire_ops import (
     AddEdgeOp,
     AddNodeOp,
@@ -172,10 +172,7 @@ def _replace_node(graph: PipelineGraph, index: int, node: GraphNode) -> None:
 def _free_code_form(node_type: NodeType) -> str:
     """The step list that writes new logic on *node_type*'s stepped surface."""
 
-    logic = '{"id": "logic", "kind": "free_code", "code": "..."}'
-    if stepped_surface_for(node_type).start == "input":
-        return f'[{{"id": "start", "kind": "source", "input": "<edge name>"}}, {logic}]'
-    return f"[{logic}]"
+    return json.dumps(new_logic_steps(node_type, "..."))
 
 
 def _check_stepped_write(

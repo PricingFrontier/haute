@@ -11,8 +11,15 @@ from typing import Any
 
 from haute._env import int_env
 from haute._logging import get_logger
+from haute._polars_steps import STEPPED_NODE_TYPES
+from haute._types import NodeType
 from haute.assistant._assets import example_index
-from haute.assistant._catalog import capability_manifest, compact_manifest
+from haute.assistant._catalog import (
+    EDGE_NAME_PLACEHOLDER,
+    capability_manifest,
+    compact_manifest,
+    materialise_json,
+)
 from haute.assistant._config import EgressPolicy
 from haute.assistant._providers import (
     AssistantProvider,
@@ -225,6 +232,56 @@ _PROMPT_INTENT_AND_RECIPE_ROUTING = (
     "not call `get_capability_manifest` merely to rediscover it. "
 )
 
+
+def _or_list(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} or {names[-1]}"
+
+
+def _steps_first_rule() -> str:
+    """The one authoring rule for new Polars logic, read from the stepped descriptors.
+
+    Each form is the descriptor's own ``new_logic`` list, so the prompt and the
+    descriptors advertise the same shape; the surfaces are named by their
+    palette names, in the order of the step builder's surface table.
+    """
+
+    by_id = {node.id: node for node in capability_manifest().nodes}
+    stepped = [by_id[node_type.value] for node_type in STEPPED_NODE_TYPES]
+
+    def names(key: str, value: str) -> list[str]:
+        return [
+            node.display_name
+            for node in stepped
+            if node.step_authoring is not None and node.step_authoring[key] == value
+        ]
+
+    def form(start: str) -> str:
+        forms = {
+            json.dumps(materialise_json(node.step_authoring["new_logic"]))
+            for node in stepped
+            if node.step_authoring is not None and node.step_authoring["start"] == start
+        }
+        if len(forms) != 1:
+            raise RuntimeError(f"Stepped surfaces starting from {start!r} disagree on new logic.")
+        return forms.pop()
+
+    load_file = next(node for node in stepped if node.id == NodeType.EXTERNAL_FILE.value)
+    return (
+        "Write new Polars logic as steps with a free-code card: on a "
+        f"{_or_list(names('start', 'input'))} node `{form('input')}`, with "
+        f"`{EDGE_NAME_PLACEHOLDER}` replaced by the incoming edge that becomes `df`, and on a "
+        f"{_or_list(names('start', 'frame'))} node `{form('frame')}`, where `df` is "
+        "already bound. The code transforms `df` and must assign the transformed result "
+        "to `df`; it reads other inputs by their edge names only on a "
+        f"{_or_list(names('inputs', 'edges'))} node, and on a {load_file.display_name} "
+        "node the loaded object is `obj`. Start the code with a one-line `# intent` "
+        "comment, which titles the card. A hook that needs no post-processing keeps "
+        "`steps: []`. Keep existing structured steps with their ids and order, edit a "
+        "code-mode node's `code` in place, and never switch a node between steps and "
+        "code. "
+    )
+
+
 _PROMPT_MUTATION_WORKFLOW = (
     "For mutations, "
     "inspect the saved graph, select a recipe or primitive operations, dry-run, "
@@ -235,14 +292,9 @@ _PROMPT_MUTATION_WORKFLOW = (
     "possible. Read their ports, "
     "wiring rules, closed config schemas, enums, and "
     "anti-patterns; do not use dry-run failures to discover the contract. Every newly "
-    "added node must be connected in the same plan. What Polars code sees depends on "
-    "its node. On a `polars` node, code starts from a named input: each input is named by "
-    "its upstream node and `df` is only the output variable. On a Data Input, Rating "
-    "Step, Model Scoring, Expander or Explore node, code sees only `df`, the frame the "
-    "node produced. On a Load File node, `df` is the first input, further inputs are "
-    "available by name, and the loaded object is `obj`. Code must assign the "
-    "transformed result to `df` or return a transformed frame. Call "
-    "`dry_run_graph_edits` with the "
+    "added node must be connected in the same plan. "
+    + _steps_first_rule()
+    + "Call `dry_run_graph_edits` with the "
     "complete operation batch, then call `apply_graph_plan` exactly once with the exact "
     "returned plan hash. Never resend or reconstruct operations at apply time. "
 )

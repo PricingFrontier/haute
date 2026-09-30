@@ -172,7 +172,9 @@ that durable fact, in its original position after the mutation tool row.
   ordinary finite JSON containers before it crosses the tool boundary; immutable registry
   wrappers never leak into provider results.
 - `get_authoring_guide` — the complete attributable packaged guide, retrieved on
-  demand rather than embedded in every request.
+  demand rather than embedded in every request, with the structured step grammar
+  (each step kind's fields and the closed step vocabularies) derived from the step
+  renderer.
 - `get_pipeline` — the saved graph: nodes (id, type, name, config summary), edges,
   a preamble-presence/digest summary (never executable source), and which
   singletons exist.
@@ -265,13 +267,20 @@ commit reports the committed state and ledger evidence without replaying the
 mutation.
 
 Assistant-authored batches must leave every newly added node connected in the
-resulting graph. What Polars code sees depends on its surface, and the system prompt
-and authoring guide state the same rule: on a Transform, code starts from a named
-input (each input is named by its upstream node, and `df` is only the output
-variable); on a Data Input, Rating Step, Model Scoring, Expander or Explore node, code
-sees only `df`, the frame the node produced; on a Load File node, `df` is the first
-input, further inputs are available by name and the loaded object is `obj`. Explicit
-code must assign the transformed frame to `df` or return a transformed frame; immutable
+resulting graph. New Polars logic is written as steps with a free-code card, and the
+system prompt, the node descriptors and the authoring guide teach the same form: on a
+Transform `[source, free_code]`, whose source step names the incoming edge that becomes
+`df`, and on every other stepped surface (Data Input, Load File, Rating Step, Model
+Scoring, Expander, Explore) `[free_code]`, because the surface binds `df` itself. Every
+step carries a non-empty `id`. The code transforms `df` and assigns the result to `df`;
+it reads other inputs by their edge names only on a Transform and a Load File (where
+`df` is the first input and the loaded object is `obj`), and elsewhere sees only `df`,
+the frame the node produced. It starts with a one-line `# intent` comment, which the
+step builder shows as the card's title. A hook that needs no post-processing keeps
+`steps: []`. Existing structured steps keep their ids and order, and code-mode nodes
+keep code editing: code on a code-mode Transform starts from a named input (each input
+is named by its upstream node, and `df` is only the output variable) and must assign
+the transformed frame to `df` or return it; immutable
 expressions whose results would be discarded, and code that reads `df` before
 an assignment that definitely dominates that read across control flow, are
 rejected during dry-run. The derived input name `df` is reserved and rejected
@@ -458,7 +467,9 @@ manifest. The manifest is the assistant's source of truth and contains:
   JSON Schema, required/optional fields, defaults/enums, nested and
   discriminated branches, runtime-derived decorator/config/sidecar/singleton
   facts, ports/cardinality/schema effects, execution and side-effect classes,
-  and completeness-checked semantic guidance;
+  completeness-checked semantic guidance, and, for a stepped type, how its
+  steps start, which inputs they see and the step list that writes new logic,
+  derived from the step builder's surface table;
 - one closed descriptor for every callable assistant operation, including
   versioned input/output schemas, read/mutation and revision semantics,
   deterministic risk/egress/side-effect/cost classes, retry/idempotency,

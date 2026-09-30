@@ -1278,16 +1278,26 @@ class TestSystemPrompt:
         assert "Pipeline execution and external writes are unavailable" in prompt
         assert "do not substitute a graph edit" in prompt
 
-    def test_prompt_states_the_df_contract_per_surface(self):
+    def test_prompt_states_the_steps_first_rule_per_surface(self):
         from haute.assistant._loop import build_system_prompt
 
         prompt = build_system_prompt(pipeline_name="main", source_file="main.py", egress=_egress())
 
         assert "never pre-bound" not in prompt
-        assert "On a `polars` node, code starts from a named input" in prompt
-        assert "Explore node, code sees only `df`, the frame the node produced" in prompt
-        assert "On a Load File node, `df` is the first input" in prompt
+        assert "On a `polars` node, code starts from a named input" not in prompt
+        assert "or return a transformed frame" not in prompt
+        assert "Write new Polars logic as steps with a free-code card: on a Polars node" in prompt
+        assert (
+            "on a Data Input, Load File, Rating Step, Model Scoring, Expander or Explore node"
+            in prompt
+        )
+        assert "reads other inputs by their edge names only on a Polars or Load File node" in (
+            prompt
+        )
         assert "the loaded object is `obj`" in prompt
+        assert "one-line `# intent` comment" in prompt
+        assert "keeps `steps: []`" in prompt
+        assert "never switch a node between steps and code" in prompt
 
     def test_prompt_states_the_egress_policy_and_requires_profiles_only_when_permitted(self):
         from haute.assistant._loop import build_system_prompt

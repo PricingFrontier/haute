@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-03 | Planned | P1 | Every node the assistant writes on a stepped surface stays in the step builder. |
 | ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
 | ASSIST-08 | Planned | P1 | Recipes produce configs that match rows and never advertise invalid options. |
 | ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
@@ -115,43 +114,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-03 — Steps-first authoring with a free-code card
-**Why:** Nothing the assistant is taught mentions steps: descriptors show
-`steps` as an open array, the examples and recipes write code, and the prompt
-states one `df` rule that is wrong on six of the seven code surfaces. Every
-node it creates is code-mode, and the editor's switch from steps to code is
-one way, so analysts can never open assistant work in the step builder. In
-August the configured model failed repeatedly on a two-input aggregation
-because it believed inputs were reached as `df['name']`.
-
-**Plan:** Teach and accept one authoring form for new logic: a Transform is
-`[{id: "start", kind: source, input: <edge name>}, {id: "logic", kind:
-free_code, code}]`, and every other stepped surface, Load File included, is
-`[{id: "logic", kind: free_code, code}]`. Every step carries a non-empty
-`id`, as the step validator requires. The code transforms `df`, reads other
-inputs by name only on Transform and Load File, and starts with a one-line
-`# intent` comment that becomes the card title. A hook that needs no post-processing keeps `steps: []`. Existing
-structured steps keep their ids and order, and code-mode nodes keep code
-editing. Descriptors expose the source and free-code step shapes and each
-surface's start and input rule, derived from `STEPPED_NODE_TYPES`; the
-structured step grammar is available on demand for strong models. Recipes
-that create Polars logic emit the same form.
-
-**Acceptance:** Replays of the August aggregation request, of filling a
-palette-default Transform and Rating Step, and of a Load File using `obj` and
-a second input, apply in one dry-run, edit the named node rather than a new
-one, parse back with their steps and execute on fixture data. The exact
-example shapes the descriptors and prompt advertise are accepted verbatim by
-dry-run. No assistant-authored node on a stepped surface reloads with
-`_steps_error` or discarded steps.
-
-**Dependencies:** `ASSIST-01`, `ASSIST-02`, `ASSIST-05`, `ASSIST-06`.
-
-**Evidence:** `src/haute/_polars_steps.py::render_polars_steps`;
-`src/haute/assistant/_catalog.py::_USAGE_NOTES`;
-`src/haute/assistant/_loop.py::build_system_prompt`;
-`frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`.
 
 ### ASSIST-07 — Example bundles the editor accepts
 **Why:** The reusable-submodel example names its occurrence like the inner

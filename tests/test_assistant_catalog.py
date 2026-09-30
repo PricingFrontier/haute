@@ -228,6 +228,7 @@ class TestResolvedDescriptors:
             "examples",
             "recipes",
             "errors",
+            "step_authoring",
         }
 
         for node in capability_manifest().nodes:
@@ -438,6 +439,46 @@ def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:
     usage = _descriptors()["polars"].usage
     assert "inputMapping" not in usage
     assert "upstream node" in usage
+
+
+class TestStepAuthoring:
+    """Stepped descriptors say how steps start, what they see and how new
+    logic is written, read from the step builder's surface table."""
+
+    def test_it_follows_the_stepped_surface_table(self) -> None:
+        from haute._polars_steps import STEP_KINDS, STEPPED_NODE_TYPES
+
+        for node_type in NodeType:
+            authoring = _descriptors()[node_type.value].as_dict()["step_authoring"]
+            surface = STEPPED_NODE_TYPES.get(node_type)
+            if surface is None:
+                assert authoring is None, node_type
+                continue
+            assert (authoring["start"], authoring["inputs"]) == (surface.start, surface.inputs)
+            steps = authoring["new_logic"]
+            assert [step["kind"] for step in steps] == (
+                ["source", "free_code"] if surface.start == "input" else ["free_code"]
+            )
+            assert all(isinstance(step["id"], str) and step["id"] for step in steps)
+            assert {step["kind"] for step in steps} <= set(STEP_KINDS)
+            assert steps[-1]["code"].startswith("# ")
+            assert ("steps: []" in authoring["rule"]) == (surface.start == "frame")
+            assert ("edge names" in authoring["rule"]) == (surface.inputs == "edges")
+
+    def test_the_guide_carries_the_renderer_s_step_grammar(self) -> None:
+        from haute._polars_steps import STEP_KINDS, PolarsStepError, validate_polars_steps
+        from haute.assistant._tools import get_authoring_guide
+
+        grammar = get_authoring_guide()["step_grammar"]
+
+        assert list(grammar["kinds"]) == list(STEP_KINDS)
+        for kind, fields in grammar["kinds"].items():
+            if not fields["required"]:
+                continue
+            with pytest.raises(PolarsStepError) as excinfo:
+                validate_polars_steps([{"id": "a", "kind": kind}])
+            assert str(fields["required"]) in str(excinfo.value)
+        json.dumps(grammar)
 
 
 def test_edge_join_descriptor_teaches_strict_role_handles() -> None:

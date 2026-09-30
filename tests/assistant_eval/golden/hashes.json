@@ -1,6 +1,6 @@
 {
-  "system_prompt.md": "2504037cad32740fd716002a7450ec287691ab895a9daba691a607ee9243ede6",
-  "tools_canonical.json": "c9a782af8dc996a678887796936c73a81f75edc8773b50e7aeba1597af76542f",
-  "tools_anthropic.json": "20511d3b851fd6ffaaaec097fbcbdc04fe9281561e49f4665754f12f4fe9e195",
-  "tools_openai.json": "5546053ebe51008fdcbacb9099645cbcdc7c50c6a29ce8c482ae25ba29b2bf47"
+  "system_prompt.md": "f7e4ea74e1993df5a37d5d01bf9dcc217b4d0a69a0b8482e847872dfefb837fa",
+  "tools_canonical.json": "65686e0bcc30c46cad27b355ec62a2c46ac4781952f0b42eabf47e67c85bedf2",
+  "tools_anthropic.json": "817fa4f94601cfbe5fe735ecd88f559bb88c521069d2588ce6de5d37d3e32684",
+  "tools_openai.json": "0719406ff5bdaebc283d90ea03b996d0c4414f0c3a63d4d9c51bd47585b2eb95"
 }

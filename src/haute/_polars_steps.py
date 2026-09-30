@@ -68,6 +68,7 @@ __all__ = [
     "referenced_step_inputs",
     "rename_step_inputs",
     "render_polars_steps",
+    "step_fields",
     "validate_polars_steps",
 ]
 
@@ -409,6 +410,22 @@ def render_polars_steps(
     if start not in STEP_STARTS:
         raise ValueError(f"Unknown step start {start!r}; expected one of {STEP_STARTS!r}.")
     return _Renderer(steps, input_names, start, spelling).render()
+
+
+def step_fields() -> dict[str, dict[str, list[str]]]:
+    """Each step kind's required and optional fields besides ``id`` and ``kind``.
+
+    The validator's own tables, in :data:`STEP_KINDS` order, so a description of
+    the step grammar cannot drift from what :func:`validate_polars_steps` accepts.
+    """
+    fields: dict[str, dict[str, list[str]]] = {}
+    for kind in STEP_KINDS:
+        optional = _OPTIONAL_STEP_KEYS.get(kind, frozenset())
+        fields[kind] = {
+            "required": sorted(_STEP_KEYS[kind] - optional),
+            "optional": sorted(optional),
+        }
+    return fields
 
 
 def referenced_step_inputs(steps: object) -> list[str]:
