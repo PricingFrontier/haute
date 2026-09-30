@@ -234,8 +234,9 @@ orphaned halves).
     that would change how a stepped-type node is authored is refused, and a write that
     does not land in the materialised config fails the plan with `op_not_applied`.
   - `rename_node {node, new_name}` (sets both id and persisted label to the
-    canonical sanitised function name, and rewrites edge endpoints; it refuses a
-    rename that a consumer's configuration or code would not follow, see Edge cases) ·
+    canonical sanitised function name, rewrites edge endpoints and the consumers'
+    structured references to the old input name, and refuses a rename that a
+    consumer's code would not follow, see Edge cases) ·
     `delete_node {node}` (drops every touching edge,
     mirroring the GUI's atomic delete) · `add_edge {source, target, source_handle?,
     target_handle?}` · `delete_edge {source, target, source_handle?, target_handle?}`
@@ -1285,26 +1286,33 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   (`code (steps discarded)`, `incomplete at step "<id>": <message>`) and one
   `step "<id>" <kind>` line per step. A packaged example's rendering carries its
   configuration whole and has no `authoring` object.
-- **A rename never leaves a consumer silently broken.** `rename_node` rewrites edge
-  endpoints only, while downstream nodes name their inputs by the edge's input name
-  (`haute._graph_utils.edge_input_name`, the source's sanitised label). Before renaming,
-  the operation compares each outgoing edge's input name under the old and the new
-  label (an API Input frame or a submodel port keeps its name, so it is never
-  affected) and, for every edge whose name changes, lists the fields of the target that
-  still name the old input: a Transform's or External File's steps (`steps[i].input`
-  on a source or join, `steps[i].inputs` on a concat, and `steps[i].code` when a
-  free-code step reads the name); a code-mode node's `code` when it reads the name
-  (unparsable code is listed, since it cannot be shown not to), unless its
-  `inputMapping` binds that name to another edge; `inputMapping.<logical>` values;
-  `input_scenario_map.<name>` keys; `data_input`, `banding_source`, `analysis_input`
-  and `ratebook_input`; `outputMapping[i].source_port`; and the `inputMapping.<name>`
-  keys of every instance of the target. Any node whose `instanceOf` names the renamed
-  node's id is listed with `instanceOf`. When the list is not empty the plan fails with
-  the stable code `rename_has_consumers`, a message naming each consumer and field, and
-  a `consumers` array of `{node, field}` records; nothing is renamed. The check runs
-  against the working graph, so an earlier operation of the batch that rewrites the
-  consumer lets the rename apply. A node whose consumers reference it only through
-  edges renames.
+- **A rename reconciles structured references and never leaves a consumer silently
+  broken.** Downstream nodes name their inputs by the edge's input name
+  (`haute._graph_utils.edge_input_name`, the source's sanitised label). `rename_node`
+  compares each outgoing edge's input name under the old and the new label (an API
+  Input frame or a submodel port keeps its name, so it is never affected) and, for
+  every edge whose name changes, rewrites in the same plan the structured fields of
+  the target that name the old input, as the editor's rename does
+  (`frontend/src/utils/nodeUpdatePlan.ts`): the input references of a Transform's or
+  External File's steps (`input` on a source or join, `inputs` on a concat, through
+  `haute._polars_steps.rename_step_inputs`), `inputMapping` values,
+  `input_scenario_map` keys, `data_input`, `banding_source`, `analysis_input` and
+  `ratebook_input`, `outputMapping` rows' `source_port`, and the `inputMapping` keys of
+  every instance of the target. An instance's own steps or code are never rewritten.
+  Each rewritten node is an updated node of the semantic diff, with one config change
+  per field: `<node>:steps[<id>].input` (or `.inputs`), `<node>:inputMapping.<logical>`,
+  `<node>:input_scenario_map.<name>`, `<node>:<field>` and
+  `<node>:outputMapping[i].source_port`. A rewrite that would give a target two inputs
+  of one name, or a mapping two entries of one key, fails the plan as an op error
+  naming the target. Code is never rewritten: the operation lists `steps[i].code` when
+  a free-code step reads the old name, a code-mode node's `code` when it reads the name
+  (unparsable code is listed, since it cannot be shown not to) unless its
+  `inputMapping` binds that name to another edge, and `instanceOf` on any node whose
+  `instanceOf` names the renamed node's id. When that list is not empty the plan fails
+  with the stable code `rename_has_consumers`, a message naming each consumer and
+  field, and a `consumers` array of `{node, field}` records; nothing is renamed. The
+  check runs against the working graph, so an earlier operation of the batch that
+  rewrites the consumer lets the rename apply.
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
@@ -1449,7 +1457,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |
-| A rename whose consumers name the old input in configuration or code | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
+| A rename whose consumers' code reads the old input name, or whose node an instance names | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
 | Any unexpected exception in the loop | `_loop` outermost handler | Logged server-side with `exc_info=True`; terminal `failed` event carrying the sanitized `_INTERNAL_ERROR_DETAIL` text only |
@@ -1488,8 +1496,10 @@ fixture for route tests). The implemented coverage is:
   order with deterministic assigned ids, its refusals on an unknown or duplicate step
   id, a code-mode node and a node without a list, its `steps[<id>]` diff entries, and
   an edited free-code step reaching the authored-step checks with `where.step` set;
-  and the `rename_has_consumers` refusal for each
-  consumer field, with edge-only and API Input renames applying.
+  a rename rewriting each structured consumer field in one plan and listing them in
+  the diff, its collision refusals, the `rename_has_consumers` refusal for each code
+  consumer and `instanceOf`, edge-only and API Input renames applying, and parity with
+  the fields the editor's `nodeUpdatePlan.ts` reconciles, read from source.
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
   stale/altered-plan rejection before save,

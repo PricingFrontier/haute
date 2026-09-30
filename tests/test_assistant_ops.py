@@ -571,6 +571,9 @@ class TestEditSteps:
 # ---------------------------------------------------------------------------
 
 
+_JOIN = {"how": "left", "leftOn": ["k"], "rightOn": ["k"], "suffix": "_right"}
+
+
 class TestRenameNode:
     def test_rename_changes_label_id_and_rewires_edges(self):
         base = _graph(
@@ -599,33 +602,50 @@ class TestRenameNode:
         assert _ids(graph) == {"first", "Existing_Name"}
 
     @pytest.mark.parametrize(
-        ("consumer", "field"),
+        ("consumer", "key", "expected"),
         [
-            (_node("sink", code="df = src.filter(pl.col('x') > 0)"), "code"),
-            (_node("sink", code="df = ("), "code"),
-            (_node("sink", code="df = frame", inputMapping={"frame": "src"}), "inputMapping.frame"),
             (
-                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
-                "steps[1].input",
+                _node("sink", code="df = frame", inputMapping={"frame": "src"}),
+                "inputMapping",
+                {"frame": "renamed"},
+            ),
+            (
+                _node(
+                    "sink",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "src"},
+                        {"id": "j", "kind": "join", "input": "src", **_JOIN},
+                    ],
+                ),
+                "steps",
+                [
+                    {"id": "s", "kind": "source", "input": "renamed"},
+                    {"id": "j", "kind": "join", "input": "renamed", **_JOIN},
+                ],
             ),
             (
                 _node(
                     "sink",
                     steps=[
                         {"id": "s", "kind": "source", "input": "other"},
-                        {"id": "c", "kind": "free_code", "code": "df = df.join(src, on='k')"},
+                        {"id": "c", "kind": "concat", "inputs": ["src"], "how": "vertical"},
                     ],
                 ),
-                "steps[2].code",
+                "steps",
+                [
+                    {"id": "s", "kind": "source", "input": "other"},
+                    {"id": "c", "kind": "concat", "inputs": ["renamed"], "how": "vertical"},
+                ],
             ),
             (
-                _node("sink", "liveSwitch", input_scenario_map={"src": "live"}),
-                "input_scenario_map.src",
+                _node("sink", "liveSwitch", input_scenario_map={"other": "batch", "src": "live"}),
+                "input_scenario_map",
+                {"other": "batch", "renamed": "live"},
             ),
-            (_node("sink", "optimiser", data_input="src"), "data_input"),
-            (_node("sink", "optimiser", banding_source="src"), "banding_source"),
-            (_node("sink", "optimiser", analysis_input="src"), "analysis_input"),
-            (_node("sink", "optimiserApply", ratebook_input="src"), "ratebook_input"),
+            (_node("sink", "optimiser", data_input="src"), "data_input", "renamed"),
+            (_node("sink", "optimiser", banding_source="src"), "banding_source", "renamed"),
+            (_node("sink", "optimiser", analysis_input="src"), "analysis_input", "renamed"),
+            (_node("sink", "optimiserApply", ratebook_input="src"), "ratebook_input", "renamed"),
             (
                 _node(
                     "sink",
@@ -639,11 +659,145 @@ class TestRenameNode:
                         }
                     ],
                 ),
-                "outputMapping[1].source_port",
+                "outputMapping",
+                [
+                    {
+                        "source_port": "renamed",
+                        "source_column": "x",
+                        "output_path": "$.x",
+                        "enabled": True,
+                    }
+                ],
             ),
         ],
     )
-    def test_rename_refuses_a_consumer_that_names_the_input(self, consumer: GraphNode, field: str):
+    def test_rename_rewrites_a_structured_consumer_field(
+        self, consumer: GraphNode, key: str, expected: object
+    ):
+        graph = _graph(
+            [_node("src", "dataInput"), _node("other", "dataInput"), consumer],
+            [_edge("src", "sink"), _edge("other", "sink")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert _get(out, "sink").data.config[key] == expected
+        assert consumer.data.config[key] != expected
+
+    def test_rename_rewrites_the_input_keys_of_the_targets_instances(self):
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+                _node("copy", instanceOf="sink", inputMapping={"src": "other"}),
+                _node("other", "dataInput"),
+            ],
+            [_edge("src", "sink"), _edge("other", "copy")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert _get(out, "copy").data.config["inputMapping"] == {"renamed": "other"}
+
+    def test_rename_with_stepped_mapped_and_free_code_consumers_lists_only_the_code(self):
+        from haute.assistant._ops import RenameConsumersError
+
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("stepped", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+                _node("mapped", code="df = frame", inputMapping={"frame": "src"}),
+                _node(
+                    "free",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "src"},
+                        {"id": "c", "kind": "free_code", "code": "df = df.join(src, on='k')"},
+                    ],
+                ),
+            ],
+            [_edge("src", "stepped"), _edge("src", "mapped"), _edge("src", "free")],
+        )
+
+        with pytest.raises(RenameConsumersError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert excinfo.value.consumers == (("free", "steps[2].code"),)
+
+    @pytest.mark.parametrize(
+        "consumer",
+        [
+            _node("sink", "liveSwitch", input_scenario_map={"src": "live", "renamed": "batch"}),
+            _node("sink", code="df = frame", inputMapping={"frame": "src", "alt": "renamed"}),
+        ],
+    )
+    def test_rename_refuses_a_rewrite_that_collides_in_a_mapping(self, consumer: GraphNode):
+        graph = _graph(
+            [_node("src", "dataInput"), consumer],
+            [_edge("src", "sink")],
+        )
+
+        with pytest.raises(OpValidationError, match="'sink' already has an input named 'renamed'"):
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+    def test_rename_refuses_a_target_left_with_two_inputs_of_one_name(self):
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("api", "apiInput"),
+                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+            ],
+            [_edge("src", "sink"), _edge("api", "sink", sh="renamed")],
+        )
+
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert "'sink'" in str(excinfo.value) and "'renamed'" in str(excinfo.value)
+        assert excinfo.value.where["node"] == "sink"
+
+    def test_rename_reconciliation_covers_every_field_the_editor_reconciles(self):
+        """The editor's rename plan and this operation rewrite the same fields.
+
+        ``outputMapping`` is reconciled here only: the editor's Quote Response
+        panel owns its mapping rows.
+        """
+        import re
+
+        from haute.assistant._ops import RENAME_RECONCILED_FIELDS
+
+        source = (
+            Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "nodeUpdatePlan.ts"
+        ).read_text(encoding="utf-8")
+        union = re.search(r"field:\s*((?:\"\w+\"\s*\|\s*)*\"\w+\")", source)
+        loop = re.search(r"for \(const field of \[([^\]]*)\] as const\)", source)
+        assert union and loop, "nodeUpdatePlan.ts no longer declares its reconciled fields"
+        editor_fields = set(re.findall(r"\"(\w+)\"", union.group(1) + loop.group(1)))
+        assert "renameStepInputs(config.steps" in source
+        editor_fields.add("steps")
+
+        assert editor_fields <= set(RENAME_RECONCILED_FIELDS)
+        assert set(RENAME_RECONCILED_FIELDS) - editor_fields == {"outputMapping"}
+
+    @pytest.mark.parametrize(
+        ("consumer", "field"),
+        [
+            (_node("sink", code="df = src.filter(pl.col('x') > 0)"), "code"),
+            (_node("sink", code="df = ("), "code"),
+            (
+                _node(
+                    "sink",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "other"},
+                        {"id": "c", "kind": "free_code", "code": "df = df.join(src, on='k')"},
+                    ],
+                ),
+                "steps[2].code",
+            ),
+        ],
+    )
+    def test_rename_refuses_a_consumer_whose_code_reads_the_input(
+        self, consumer: GraphNode, field: str
+    ):
         from haute.assistant._ops import RenameConsumersError
 
         graph = _graph(
@@ -658,7 +812,7 @@ class TestRenameNode:
         assert excinfo.value.consumers == (("sink", field),)
         assert "'sink'" in str(excinfo.value) and field in str(excinfo.value)
 
-    def test_rename_refuses_instances_that_name_the_node_or_its_input(self):
+    def test_rename_refuses_code_and_instances_that_name_the_node(self):
         from haute.assistant._ops import RenameConsumersError
 
         graph = _graph(
@@ -674,11 +828,7 @@ class TestRenameNode:
         with pytest.raises(RenameConsumersError) as excinfo:
             _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
 
-        assert set(excinfo.value.consumers) == {
-            ("sink", "code"),
-            ("copy", "inputMapping.src"),
-            ("twin", "instanceOf"),
-        }
+        assert set(excinfo.value.consumers) == {("sink", "code"), ("twin", "instanceOf")}
 
     def test_rename_with_only_edge_consumers_applies(self):
         graph = _graph(
@@ -1156,6 +1306,49 @@ class TestSemanticPlans:
 
         assert exc.value.code == "invalid_plan"
         assert "renamed" in str(exc.value)
+
+    def test_a_rename_lists_each_reconciled_consumer_field_in_the_diff(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        # An analyst's free-code step the assistant's authoring rules would refuse
+        # (its result is discarded) is not re-judged by a rename that only
+        # rewrites the step list's input references.
+        stepped = _node(
+            "stepped",
+            steps=[
+                {"id": "s", "kind": "source", "input": "source"},
+                {"id": "c", "kind": "free_code", "code": "df.head(1)"},
+            ],
+        )
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph(
+                [
+                    _node("source", "dataInput"),
+                    stepped,
+                    _node("switch", "liveSwitch", input_scenario_map={"source": "live"}),
+                ],
+                [_edge("source", "stepped"), _edge("source", "switch")],
+            ),
+        )
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+
+        assert plan.diff.nodes_renamed == (("source", "renamed"),)
+        assert plan.diff.nodes_updated == ("stepped", "switch")
+        assert plan.diff.config_changes == (
+            "stepped:steps[s].input",
+            "switch:input_scenario_map.renamed",
+        )
+        assert {"node_config", "stepped"} <= {
+            value for condition in plan.postconditions for value in condition.values()
+        }
 
     def test_existing_disconnected_node_does_not_block_an_unrelated_plan(self, tmp_path: Path):
         from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot

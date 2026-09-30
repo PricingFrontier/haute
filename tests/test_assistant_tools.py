@@ -2485,6 +2485,47 @@ class TestStepsFirstAuthoring:
         rows = sorted(result.preview, key=lambda row: row[key])
         assert {column: [row[column] for row in rows] for column in expected} == expected
 
+    async def test_a_rename_rewrites_a_stepped_consumer_in_one_dry_run(
+        self, steps_first_project: Path
+    ):
+        """A stepped consumer follows a rename; its free code never does."""
+        from haute._native_memory_limit import native_memory_backend_scope
+        from haute.assistant._tools import apply_graph_plan, dry_run_graph_edits
+        from haute.executor import execute_graph
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        filled = await dry_run_graph_edits(
+            "main.py", _august_ops("df = pl.concat([df, additional_drivers_claims])")
+        )
+        assert "error" not in filled, filled
+        assert "error" not in await apply_graph_plan("main.py", filled["plan_hash"])
+
+        refused = await dry_run_graph_edits(
+            "main.py",
+            [{"op": "rename_node", "node": "additional_drivers_claims", "new_name": "drivers"}],
+        )
+        assert refused["error"]["code"] == "rename_has_consumers"
+        assert refused["error"]["consumers"] == [
+            {"node": "august_totals", "field": "steps[2].code"}
+        ]
+
+        plan = await dry_run_graph_edits(
+            "main.py",
+            [{"op": "rename_node", "node": "proposer_claims", "new_name": "proposer"}],
+        )
+        assert "error" not in plan, plan
+        assert list(plan["diff"]["nodes_updated"]) == ["august_totals"]
+        assert list(plan["diff"]["config_changes"]) == ["august_totals:steps[start].input"]
+        assert "error" not in await apply_graph_plan("main.py", plan["plan_hash"])
+
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        saved = next(item for item in graph.nodes if item.id == "august_totals").data.config
+        assert saved["steps"][0] == {"id": "start", "kind": "source", "input": "proposer"}
+        with native_memory_backend_scope("rlimit"):
+            result = execute_graph(graph, target_node_id="august_totals")["august_totals"]
+        assert result.status == "ok", result.error
+        assert len(result.preview) == 5
+
 
 def _egress_toml(root: Path, *, max_sensitivity: str) -> None:
     (root / "haute.toml").write_text(

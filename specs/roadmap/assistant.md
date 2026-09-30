@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-25 | Planned | P2 | Renaming a node rewrites the references that structured configs hold. |
 | ASSIST-26 | Planned | P2 | Structured cards after a free-code card keep their column help. |
 | ASSIST-27 | Planned | P1 | A new Quote Input can be added and used in one plan. |
 | ASSIST-30 | Planned | P1 | No regex over the user's words steers a turn. |
@@ -100,23 +99,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-25 — Rename reconciles structured references
-**Why:** The editor's rename rewrites step inputs, input mappings, scenario
-maps and optimiser input names, but only in the frontend; the assistant's
-rename cannot.
-
-**Plan:** Move that reconciliation into the backend operation, using the step
-renamer for stepped consumers, and keep the fail-loud list from `ASSIST-18`
-for free-code and code-mode consumers.
-
-**Acceptance:** Renaming a node with stepped and mapped consumers applies in
-one dry-run; a free-code consumer is listed in the error.
-
-**Dependencies:** `ASSIST-18`, `ASSIST-03`.
-
-**Evidence:** `src/haute/_polars_steps.py::rename_step_inputs`;
-`frontend/src/utils/nodeUpdatePlan.ts`.
 
 ### ASSIST-26 — Column help after free-code cards
 **Why:** The step editor loses its known columns after a free-code card, so an

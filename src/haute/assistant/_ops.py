@@ -31,6 +31,7 @@ from haute._config_validation import VALID_KEYS
 from haute._graph_utils import (
     _edge_id,
     _sanitize_func_name,
+    edge_input_name,
     executable_input_name,
     upstream_node_ids,
 )
@@ -41,6 +42,7 @@ from haute._polars_steps import (
     STEPPED_SURFACE_LABELS,
     PolarsStepError,
     is_stepped_config,
+    rename_step_inputs,
     render_node_steps,
     render_polars_steps,
     step_input_names,
@@ -514,6 +516,16 @@ def _apply_edit_steps(
 _HANDLE_NAMED_SOURCES = frozenset({NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 #: Config fields that hold one incoming edge's input name.
 _INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
+#: The consumer config fields a rename rewrites when they name the renamed input:
+#: those the editor's rename reconciles (``frontend/src/utils/nodeUpdatePlan.ts``)
+#: and ``outputMapping`` rows' ``source_port``.
+RENAME_RECONCILED_FIELDS = (
+    "steps",
+    "inputMapping",
+    "input_scenario_map",
+    *_INPUT_NAME_FIELDS,
+    "outputMapping",
+)
 
 
 def _code_reads_name(code: object, name: str) -> bool:
@@ -531,69 +543,120 @@ def _code_reads_name(code: object, name: str) -> bool:
     )
 
 
-def _input_name_fields(node: GraphNode, name: str) -> list[str]:
-    """The fields of *node*'s own config that name its incoming input *name*."""
+def _rename_collision(node_id: str, name: str) -> NoReturn:
+    _invalid(
+        f"Cannot rename to {name!r}: consumer {node_id!r} already has an input named {name!r}.",
+        where={"node": node_id},
+        fix=f"Choose a new name other than {name!r}, or rename {node_id!r}'s other input first.",
+    )
 
-    config = node.data.config
-    node_type = node.data.nodeType
-    fields: list[str] = []
+
+def _rewrite_consumer(
+    node: GraphNode, config: dict[str, Any], old: str, new: str
+) -> tuple[list[str], list[str]]:
+    """Rewrite *config*'s structured references to its input *old* as *new*.
+
+    *config* is *node*'s working copy and is changed in place. Returns the
+    rewritten field identities and the fields a rename cannot follow: code is
+    never rewritten, so a free-code step or code-mode ``code`` reading *old*
+    is returned for refusal. An instance's steps and code are its original's,
+    so only its own ``inputMapping`` is considered.
+    """
+
+    changes: list[str] = []
+    refused: list[str] = []
     steps = config.get("steps")
-    names_inputs = stepped_surface_allows_input_references(node_type)
-    if isinstance(steps, list):
-        if names_inputs:
+    names_inputs = stepped_surface_allows_input_references(node.data.nodeType) and not config.get(
+        "instanceOf"
+    )
+    if isinstance(steps, list) and names_inputs:
+        try:
+            validated = validate_polars_steps(steps)
+        except PolarsStepError as exc:
+            _invalid(
+                f"Cannot rename {old!r}: its consumer {node.id!r} has an invalid step "
+                f"list ({exc}). Fix that node's steps first.",
+                where={"node": node.id, "field": "steps"},
+                fix=f"Correct {node.id!r}'s steps before renaming {old!r}.",
+            )
+        step_changes: list[str] = []
+        for position, step in enumerate(validated, start=1):
+            if old in step_input_references(step):
+                key = "inputs" if step["kind"] == "concat" else "input"
+                step_changes.append(f"steps[{step['id']}].{key}")
+            elif step["kind"] == "free_code" and _code_reads_name(step["code"], old):
+                refused.append(f"steps[{position}].code")
+        if step_changes:
             try:
-                validated = validate_polars_steps(steps)
-            except PolarsStepError as exc:
-                _invalid(
-                    f"Cannot rename {name!r}: its consumer {node.id!r} has an invalid step "
-                    f"list ({exc}). Fix that node's steps first.",
-                    where={"node": node.id, "field": "steps"},
-                    fix=f"Correct {node.id!r}'s steps before renaming {name!r}.",
-                )
-            for position, step in enumerate(validated, start=1):
-                if name in step_input_references(step):
-                    key = "inputs" if step["kind"] == "concat" else "input"
-                    fields.append(f"steps[{position}].{key}")
-                elif step["kind"] == "free_code" and _code_reads_name(step["code"], name):
-                    fields.append(f"steps[{position}].code")
-    mapping = config.get("inputMapping")
-    mapping = mapping if isinstance(mapping, Mapping) else {}
+                config["steps"] = rename_step_inputs(steps, {old: new})
+            except PolarsStepError:
+                _rename_collision(node.id, new)
+            changes.extend(step_changes)
+    raw_mapping = config.get("inputMapping")
+    mapping = raw_mapping if isinstance(raw_mapping, Mapping) else {}
     if (
         not isinstance(steps, list)
         and names_inputs
-        and name not in mapping
-        and _code_reads_name(config.get("code"), name)
+        and old not in mapping
+        and _code_reads_name(config.get("code"), old)
     ):
-        fields.append("code")
-    fields.extend(f"inputMapping.{logical}" for logical, bound in mapping.items() if bound == name)
+        refused.append("code")
+    bound = [logical for logical, current in mapping.items() if current == old]
+    if bound:
+        if new in mapping.values():
+            _rename_collision(node.id, new)
+        config["inputMapping"] = {
+            logical: new if current == old else current for logical, current in mapping.items()
+        }
+        changes.extend(f"inputMapping.{logical}" for logical in bound)
     scenario_map = config.get("input_scenario_map")
-    if isinstance(scenario_map, Mapping) and name in scenario_map:
-        fields.append(f"input_scenario_map.{name}")
-    fields.extend(field for field in _INPUT_NAME_FIELDS if config.get(field) == name)
+    if isinstance(scenario_map, Mapping) and old in scenario_map:
+        if new in scenario_map:
+            _rename_collision(node.id, new)
+        config["input_scenario_map"] = {
+            new if name == old else name: scenario for name, scenario in scenario_map.items()
+        }
+        changes.append(f"input_scenario_map.{new}")
+    for field_name in _INPUT_NAME_FIELDS:
+        if config.get(field_name) == old:
+            config[field_name] = new
+            changes.append(field_name)
     output_mapping = config.get("outputMapping")
     if isinstance(output_mapping, list):
-        fields.extend(
-            f"outputMapping[{position}].source_port"
+        rows = [
+            position
             for position, entry in enumerate(output_mapping, start=1)
-            if isinstance(entry, Mapping) and entry.get("source_port") == name
-        )
-    return fields
+            if isinstance(entry, Mapping) and entry.get("source_port") == old
+        ]
+        if rows:
+            config["outputMapping"] = [
+                {**entry, "source_port": new} if position in rows else entry
+                for position, entry in enumerate(output_mapping, start=1)
+            ]
+            changes.extend(f"outputMapping[{position}].source_port" for position in rows)
+    return changes, refused
 
 
-def _rename_consumers(
+def _reconcile_rename(
     graph: PipelineGraph, node: GraphNode, new_id: str
-) -> tuple[tuple[str, str], ...]:
-    """Every ``(consumer, field)`` that names *node* where a rename would not follow.
+) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
+    """The consumer configs a rename of *node* to *new_id* rewrites, and their changes.
 
-    A rename rewrites edge endpoints only. Consumers name an ordinary source's
-    frame by its sanitised label, so each target of an outgoing edge is checked
-    for config or code that still names the old input; instances name the node
-    itself by id through ``instanceOf``.
+    Consumers name an ordinary source's frame by its sanitised label, so each
+    target of an outgoing edge has its structured references to the old input
+    rewritten (see :func:`_rewrite_consumer`), as do the ``inputMapping`` keys
+    of the target's instances. Code that reads the old name, and instances
+    naming the node itself through ``instanceOf``, raise
+    :class:`RenameConsumersError`; a rewrite that would give a consumer two
+    inputs of one name is an op error. Changes are ``<node>:<field>``
+    identities. Nothing in *graph* is changed.
     """
 
-    found: dict[tuple[str, str], None] = {}
     # The working graph changes op by op, so its cached node map is not used here.
     nodes_by_id = {candidate.id: candidate for candidate in graph.nodes}
+    configs: dict[str, dict[str, Any]] = {}
+    changes: dict[str, None] = {}
+    refused: dict[tuple[str, str], None] = {}
     node_type = node.data.nodeType
     old_name = new_name = ""
     if node_type not in _HANDLE_NAMED_SOURCES:
@@ -604,20 +667,46 @@ def _rename_consumers(
     if old_name != new_name:
         targets = dict.fromkeys(edge.target for edge in graph.edges if edge.source == node.id)
         for target_id in targets:
-            for field_name in _input_name_fields(nodes_by_id[target_id], old_name):
-                found[(target_id, field_name)] = None
+            for edge in graph.edges:
+                if edge.target != target_id or edge.source == node.id:
+                    continue
+                try:
+                    name = edge_input_name(edge, nodes_by_id[edge.source])
+                except (KeyError, ValueError):
+                    # A malformed edge is the save validator's verdict, not this one's.
+                    continue
+                if name == new_name:
+                    _rename_collision(target_id, new_name)
+            config = configs.setdefault(target_id, dict(nodes_by_id[target_id].data.config))
+            rewritten, code_fields = _rewrite_consumer(
+                nodes_by_id[target_id], config, old_name, new_name
+            )
+            changes.update(dict.fromkeys(f"{target_id}:{field}" for field in rewritten))
+            refused.update(dict.fromkeys((target_id, field) for field in code_fields))
             for instance in graph.nodes:
-                mapping = instance.data.config.get("inputMapping")
-                if (
-                    instance.data.config.get("instanceOf") == target_id
-                    and isinstance(mapping, Mapping)
-                    and old_name in mapping
-                ):
-                    found[(instance.id, f"inputMapping.{old_name}")] = None
+                if instance.data.config.get("instanceOf") != target_id:
+                    continue
+                config = configs.setdefault(instance.id, dict(instance.data.config))
+                mapping = config.get("inputMapping")
+                if not isinstance(mapping, Mapping) or old_name not in mapping:
+                    continue
+                if new_name in mapping:
+                    _rename_collision(instance.id, new_name)
+                config["inputMapping"] = {
+                    new_name if logical == old_name else logical: current
+                    for logical, current in mapping.items()
+                }
+                changes[f"{instance.id}:inputMapping.{new_name}"] = None
     for instance in graph.nodes:
         if instance.data.config.get("instanceOf") == node.id:
-            found[(instance.id, "instanceOf")] = None
-    return tuple(found)
+            refused[(instance.id, "instanceOf")] = None
+    if refused:
+        raise RenameConsumersError(node.id, new_id, tuple(refused))
+    touched = {change.partition(":")[0] for change in changes}
+    return (
+        {node_id: config for node_id, config in configs.items() if node_id in touched},
+        tuple(changes),
+    )
 
 
 def _apply_rename_node(
@@ -626,8 +715,8 @@ def _apply_rename_node(
     refs: dict[str, str],
     nested_ids: set[str],
     new_node_ids: list[str],
-) -> tuple[str, str]:
-    """Apply one rename and return the node's old and new ids."""
+) -> tuple[str, str, tuple[str, ...]]:
+    """Apply one rename; return the node's old and new ids and its consumer changes."""
 
     old_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="rename target")
     index = _node_index(graph, old_id)
@@ -641,9 +730,11 @@ def _apply_rename_node(
         )
 
     node = graph.nodes[index]
-    consumers = _rename_consumers(graph, node, new_id)
-    if consumers:
-        raise RenameConsumersError(old_id, new_id, consumers)
+    configs, changes = _reconcile_rename(graph, node, new_id)
+    for consumer_id, config in configs.items():
+        consumer_index = _node_index(graph, consumer_id)
+        assert consumer_index is not None
+        _replace_node(graph, consumer_index, graph.nodes[consumer_index].with_config(config))
     data = node.data.model_copy(update={"label": new_id})
     _replace_node(graph, index, node.model_copy(update={"id": new_id, "data": data}))
     graph.edges = [
@@ -662,7 +753,7 @@ def _apply_rename_node(
     for position, ref_id in enumerate(new_node_ids):
         if ref_id == old_id:
             new_node_ids[position] = new_id
-    return old_id, new_id
+    return old_id, new_id, changes
 
 
 def _apply_delete_node(
@@ -671,7 +762,9 @@ def _apply_delete_node(
     refs: Mapping[str, str],
     nested_ids: set[str],
     new_node_ids: list[str],
-) -> None:
+) -> str:
+    """Apply one delete and return the deleted node's id."""
+
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="delete target")
     index = _node_index(graph, node_id)
     assert index is not None
@@ -680,6 +773,7 @@ def _apply_delete_node(
         edge for edge in graph.edges if edge.source != node_id and edge.target != node_id
     ]
     new_node_ids[:] = [candidate for candidate in new_node_ids if candidate != node_id]
+    return node_id
 
 
 def _apply_add_edge(
@@ -852,6 +946,9 @@ class AppliedOps:
     batch can name the operation that wrote its node. ``step_changes`` holds
     one ``<node>:steps[<id>]`` identity per step an ``edit_steps`` inserted,
     replaced or removed, ids assigned by the operation included.
+    ``rename_changes`` holds one ``<node>:<field>`` identity per consumer
+    field a ``rename_node`` rewrote, under the consumer's final id; a
+    consumer the batch later deletes has none.
     """
 
     graph: PipelineGraph
@@ -859,6 +956,7 @@ class AppliedOps:
     new_node_ids: tuple[str, ...]
     writers: Mapping[str, int]
     step_changes: tuple[str, ...] = ()
+    rename_changes: tuple[str, ...] = ()
 
 
 def locate_plan_error(
@@ -895,6 +993,7 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
     new_node_ids: list[str] = []
     writers: dict[str, int] = {}
     step_changes: set[str] = set()
+    rename_changes: dict[str, set[str]] = {}
 
     for index, op in enumerate(parsed_ops):
         try:
@@ -910,11 +1009,20 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
                     f"{_semantic_node_id(op.node, refs)}:steps[{step_id}]" for step_id in step_ids
                 )
             elif isinstance(op, RenameNodeOp):
-                old_id, new_id = _apply_rename_node(working, op, refs, nested_ids, new_node_ids)
+                old_id, new_id, changes = _apply_rename_node(
+                    working, op, refs, nested_ids, new_node_ids
+                )
                 writers.pop(old_id, None)
                 writers[new_id] = index
+                if old_id in rename_changes:
+                    rename_changes[new_id] = rename_changes.pop(old_id)
+                for change in changes:
+                    consumer, _, field_name = change.partition(":")
+                    writers[consumer] = index
+                    rename_changes.setdefault(consumer, set()).add(field_name)
             elif isinstance(op, DeleteNodeOp):
-                _apply_delete_node(working, op, refs, nested_ids, new_node_ids)
+                deleted = _apply_delete_node(working, op, refs, nested_ids, new_node_ids)
+                rename_changes.pop(deleted, None)
             elif isinstance(op, AddEdgeOp):
                 _apply_add_edge(working, op, refs, nested_ids)
             elif isinstance(op, DeleteEdgeOp):
@@ -939,7 +1047,20 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
             ) from exc
 
     _assign_new_positions(working, new_node_ids)
-    return AppliedOps(working, refs, tuple(new_node_ids), writers, tuple(sorted(step_changes)))
+    return AppliedOps(
+        working,
+        refs,
+        tuple(new_node_ids),
+        writers,
+        tuple(sorted(step_changes)),
+        tuple(
+            sorted(
+                f"{consumer}:{field_name}"
+                for consumer, fields in rename_changes.items()
+                for field_name in fields
+            )
+        ),
+    )
 
 
 def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph:
@@ -954,8 +1075,9 @@ def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph
 #: Entries per category of the provider-visible diff, and of the automatic
 #: structural postcondition summary. Verification never reads a capped list.
 _DIFF_LIMIT = 50
-#: A sealed plan's postconditions: the declared (or automatic) list plus at
-#: most one ``node_config`` per operation. Apply replays the sealed list.
+#: A sealed plan's postconditions: the declared (or automatic) list plus one
+#: ``node_config`` per operation (a rename's rewritten consumers add theirs).
+#: Apply replays the sealed list.
 MAX_SEALED_POSTCONDITIONS = MAX_DECLARED_POSTCONDITIONS + MAX_PLAN_OPERATIONS
 
 
@@ -975,19 +1097,20 @@ class AssistantOperationError(LocatedPlanError):
 
 
 class RenameConsumersError(AssistantOperationError):
-    """A rename refused because consumers name the node in config or code."""
+    """A rename refused because consumers read the node in code or name it by id."""
 
     def __init__(self, old_id: str, new_id: str, consumers: Sequence[tuple[str, str]]) -> None:
         self.consumers = tuple(consumers)
         listed = "; ".join(f"{node!r} {field}" for node, field in self.consumers)
         fix = (
-            f"Rewrite each field to {new_id!r} with update_node earlier in the same plan, "
-            "or keep the name."
+            f"Rewrite each field to {new_id!r} with update_node or edit_steps earlier in "
+            "the same plan, or keep the name."
         )
         super().__init__(
             "rename_has_consumers",
-            f"Cannot rename node {old_id!r} to {new_id!r}: a rename rewrites edges only, "
-            f"and these consumers name it in their configuration or code: {listed}. {fix}",
+            f"Cannot rename node {old_id!r} to {new_id!r}: a rename rewrites edges and "
+            "structured references but never code, and these consumers read it in code "
+            f"or name it through instanceOf: {listed}. {fix}",
             where={"node": old_id},
             fix=fix,
         )
@@ -1267,9 +1390,12 @@ def _semantic_diff(
     updates = tuple(
         sorted(
             {
-                _semantic_node_id(op.node, refs)
-                for op in ops
-                if isinstance(op, (UpdateNodeOp, EditStepsOp))
+                *(
+                    _semantic_node_id(op.node, refs)
+                    for op in ops
+                    if isinstance(op, (UpdateNodeOp, EditStepsOp))
+                ),
+                *(change.partition(":")[0] for change in applied.rename_changes),
             }
         )
     )
@@ -1283,6 +1409,7 @@ def _semantic_diff(
                     for key in op.config
                 ),
                 *applied.step_changes,
+                *applied.rename_changes,
             ]
         )
     )
@@ -1390,8 +1517,9 @@ def _config_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[ob
     """One ``node_config`` digest per added or updated code-carrying node.
 
     Every such node, never a truncated subset: nothing else proves the saved
-    config. At most one per operation, so the list stays within
-    ``MAX_SEALED_POSTCONDITIONS`` alongside a declared list.
+    config. At most one per operation, except that a rename adds one per
+    code-carrying consumer it rewrites; a plan whose list would then exceed
+    ``MAX_SEALED_POSTCONDITIONS`` fails validation.
     """
 
     nodes = {node.id: node for node in graph.nodes}
@@ -2163,8 +2291,6 @@ def _incoming_input_names(
 ) -> tuple[str, ...]:
     """Return the input names this node's own code binds, in edge order."""
 
-    from haute._graph_utils import edge_input_name
-
     names: list[str] = []
     for edge in result.edges:
         if edge.target != node_id:
@@ -2352,11 +2478,13 @@ def _validate_assistant_authored_graph(
     code_changed = {
         change.removesuffix(":code") for change in config_changes if change.endswith(":code")
     }
-    # `<node>:steps` from update_node, `<node>:steps[<id>]` from edit_steps.
+    # `<node>:steps` from update_node, `<node>:steps[<id>]` from edit_steps. A
+    # rename's `<node>:steps[<id>].input` rewrites an input reference only, so
+    # the consumer's steps are not the assistant's to judge.
     steps_changed = {
         node_id
         for node_id, _, key in (change.partition(":") for change in config_changes)
-        if key == "steps" or key.startswith("steps[")
+        if key == "steps" or (key.startswith("steps[") and key.endswith("]"))
     }
     for node_id in sorted(set(authored_added) | steps_changed):
         node = nodes_by_id.get(node_id)
