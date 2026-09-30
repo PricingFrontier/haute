@@ -81,7 +81,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
 | ASSIST-16 | Planned | P2 | Column profiles work downstream of joins and aggregations. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
-| ASSIST-18 | Planned | P2 | Renaming a node never leaves a consumer silently broken. |
 | ASSIST-19 | Planned | P2 | Invalid modelling and Load File configs fail at dry-run with the product's messages. |
 | ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
@@ -235,22 +234,6 @@ express current contracts, and an unknown node-type name fails case loading.
 
 **Evidence:** `scripts/run_assistant_self_test.py::run_self_test_case`;
 `src/haute/_sandbox.py`.
-
-### ASSIST-18 — Renaming fails loudly on consumers it cannot reconcile
-**Why:** `rename_node` rewrites edge endpoints only; a consumer whose code,
-steps, input mapping or scenario map names the old node fails schema
-validation with a bare name error.
-
-**Plan:** Before applying a rename, list every consumer whose configuration
-or code names the node and refuse with each consumer and field, until
-`ASSIST-25` reconciles the structured ones.
-
-**Acceptance:** Renaming a node with a coded consumer fails at dry-run naming
-the consumer and field; a rename with only edge consumers applies.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_ops.py::_apply_rename_node`.
 
 ### ASSIST-19 — Product config validators run at dry-run
 **Why:** Six invalid modelling configs passed dry-run at the schema tier, and

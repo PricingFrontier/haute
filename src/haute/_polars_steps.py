@@ -67,6 +67,7 @@ __all__ = [
     "RenderedSteps",
     "referenced_step_inputs",
     "rename_step_inputs",
+    "step_input_references",
     "render_polars_steps",
     "step_fields",
     "validate_polars_steps",
@@ -432,7 +433,7 @@ def referenced_step_inputs(steps: object) -> list[str]:
     """Return the distinct input names a valid step list references, in order."""
     seen: dict[str, None] = {}
     for step in validate_polars_steps(steps):
-        for name in _step_input_references(step):
+        for name in step_input_references(step):
             seen.setdefault(name, None)
     return list(seen)
 
@@ -469,7 +470,8 @@ def rename_step_inputs(steps: object, renames: Mapping[str, str]) -> list[dict[s
 # ---------------------------------------------------------------------------
 
 
-def _step_input_references(step: Mapping[str, Any]) -> list[str]:
+def step_input_references(step: Mapping[str, Any]) -> list[str]:
+    """The input names one validated step reads (a source, join or concat)."""
     kind = step["kind"]
     if kind in ("source", "join"):
         return [step["input"]]

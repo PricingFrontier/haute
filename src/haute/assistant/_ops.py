@@ -28,7 +28,12 @@ from haute._code_extraction import normalise_user_code
 from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
 from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
 from haute._config_validation import VALID_KEYS
-from haute._graph_utils import _edge_id, _sanitize_func_name, upstream_node_ids
+from haute._graph_utils import (
+    _edge_id,
+    _sanitize_func_name,
+    executable_input_name,
+    upstream_node_ids,
+)
 from haute._lru_cache import LRUCache
 from haute._node_config_recovery import _DISCRIMINANTS
 from haute._polars_steps import (
@@ -38,7 +43,10 @@ from haute._polars_steps import (
     is_stepped_config,
     render_polars_steps,
     step_input_names,
+    step_input_references,
+    stepped_surface_allows_input_references,
     stepped_surface_for,
+    validate_polars_steps,
 )
 from haute._sandbox import _bound_names
 from haute._types import (
@@ -329,6 +337,114 @@ def _apply_update_node(
     _replace_node(graph, index, updated)
 
 
+#: Source types whose outgoing input names come from a handle, not the node's label.
+_HANDLE_NAMED_SOURCES = frozenset({NodeType.API_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
+#: Config fields that hold one incoming edge's input name.
+_INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
+
+
+def _code_reads_name(code: object, name: str) -> bool:
+    """Whether *code* reads *name*; unparsable code cannot be shown not to."""
+
+    if not isinstance(code, str):
+        return False
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return True
+    return any(
+        isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+        for node in ast.walk(tree)
+    )
+
+
+def _input_name_fields(node: GraphNode, name: str) -> list[str]:
+    """The fields of *node*'s own config that name its incoming input *name*."""
+
+    config = node.data.config
+    node_type = node.data.nodeType
+    fields: list[str] = []
+    steps = config.get("steps")
+    names_inputs = stepped_surface_allows_input_references(node_type)
+    if isinstance(steps, list):
+        if names_inputs:
+            try:
+                validated = validate_polars_steps(steps)
+            except PolarsStepError as exc:
+                _invalid(
+                    f"Cannot rename {name!r}: its consumer {node.id!r} has an invalid step "
+                    f"list ({exc}). Fix that node's steps first."
+                )
+            for position, step in enumerate(validated, start=1):
+                if name in step_input_references(step):
+                    key = "inputs" if step["kind"] == "concat" else "input"
+                    fields.append(f"steps[{position}].{key}")
+                elif step["kind"] == "free_code" and _code_reads_name(step["code"], name):
+                    fields.append(f"steps[{position}].code")
+    mapping = config.get("inputMapping")
+    mapping = mapping if isinstance(mapping, Mapping) else {}
+    if (
+        not isinstance(steps, list)
+        and names_inputs
+        and name not in mapping
+        and _code_reads_name(config.get("code"), name)
+    ):
+        fields.append("code")
+    fields.extend(f"inputMapping.{logical}" for logical, bound in mapping.items() if bound == name)
+    scenario_map = config.get("input_scenario_map")
+    if isinstance(scenario_map, Mapping) and name in scenario_map:
+        fields.append(f"input_scenario_map.{name}")
+    fields.extend(field for field in _INPUT_NAME_FIELDS if config.get(field) == name)
+    output_mapping = config.get("outputMapping")
+    if isinstance(output_mapping, list):
+        fields.extend(
+            f"outputMapping[{position}].source_port"
+            for position, entry in enumerate(output_mapping, start=1)
+            if isinstance(entry, Mapping) and entry.get("source_port") == name
+        )
+    return fields
+
+
+def _rename_consumers(
+    graph: PipelineGraph, node: GraphNode, new_id: str
+) -> tuple[tuple[str, str], ...]:
+    """Every ``(consumer, field)`` that names *node* where a rename would not follow.
+
+    A rename rewrites edge endpoints only. Consumers name an ordinary source's
+    frame by its sanitised label, so each target of an outgoing edge is checked
+    for config or code that still names the old input; instances name the node
+    itself by id through ``instanceOf``.
+    """
+
+    found: dict[tuple[str, str], None] = {}
+    # The working graph changes op by op, so its cached node map is not used here.
+    nodes_by_id = {candidate.id: candidate for candidate in graph.nodes}
+    node_type = node.data.nodeType
+    old_name = new_name = ""
+    if node_type not in _HANDLE_NAMED_SOURCES:
+        old_name = executable_input_name(
+            node_type=node_type, label=node.data.label, source_handle=None
+        )
+        new_name = executable_input_name(node_type=node_type, label=new_id, source_handle=None)
+    if old_name != new_name:
+        targets = dict.fromkeys(edge.target for edge in graph.edges if edge.source == node.id)
+        for target_id in targets:
+            for field_name in _input_name_fields(nodes_by_id[target_id], old_name):
+                found[(target_id, field_name)] = None
+            for instance in graph.nodes:
+                mapping = instance.data.config.get("inputMapping")
+                if (
+                    instance.data.config.get("instanceOf") == target_id
+                    and isinstance(mapping, Mapping)
+                    and old_name in mapping
+                ):
+                    found[(instance.id, f"inputMapping.{old_name}")] = None
+    for instance in graph.nodes:
+        if instance.data.config.get("instanceOf") == node.id:
+            found[(instance.id, "instanceOf")] = None
+    return tuple(found)
+
+
 def _apply_rename_node(
     graph: PipelineGraph,
     op: RenameNodeOp,
@@ -344,6 +460,9 @@ def _apply_rename_node(
         _invalid(f"Cannot rename node: sanitized id {new_id!r} already exists")
 
     node = graph.nodes[index]
+    consumers = _rename_consumers(graph, node, new_id)
+    if consumers:
+        raise RenameConsumersError(old_id, new_id, consumers)
     data = node.data.model_copy(update={"label": new_id})
     _replace_node(graph, index, node.model_copy(update={"id": new_id, "data": data}))
     graph.edges = [
@@ -602,6 +721,21 @@ class AssistantOperationError(HauteError):
     def __init__(self, code: str, message: str | None = None) -> None:
         self.code = code
         super().__init__(message or code)
+
+
+class RenameConsumersError(AssistantOperationError):
+    """A rename refused because consumers name the node in config or code."""
+
+    def __init__(self, old_id: str, new_id: str, consumers: Sequence[tuple[str, str]]) -> None:
+        self.consumers = tuple(consumers)
+        listed = "; ".join(f"{node!r} {field}" for node, field in self.consumers)
+        super().__init__(
+            "rename_has_consumers",
+            f"Cannot rename node {old_id!r} to {new_id!r}: a rename rewrites edges only, "
+            f"and these consumers name it in their configuration or code: {listed}. "
+            f"Rewrite each field to {new_id!r} with update_node earlier in the same plan, "
+            "or keep the name.",
+        )
 
 
 def _canonical_json(value: object) -> str:
@@ -2079,6 +2213,7 @@ __all__ = [
     "PreparedGraphEdit",
     "ProjectSourceEvidence",
     "ProjectSnapshot",
+    "RenameConsumersError",
     "RenameNodeOp",
     "UpdateNodeOp",
     "UpdatePreambleOp",

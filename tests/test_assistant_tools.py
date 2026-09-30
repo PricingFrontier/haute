@@ -1880,6 +1880,20 @@ class TestToolExecutorDispatch:
         )
         assert refused["error"]["code"] == "authority_denied"
 
+    async def test_rename_with_a_coded_consumer_fails_at_dry_run(self, project_root: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        execute_tool = build_tool_executor("main.py", session_id="session-1")
+        result = await execute_tool(
+            "dry_run_graph_edits",
+            {"ops": [{"op": "rename_node", "node": "quotes", "new_name": "policies"}]},
+        )
+
+        error = result["error"]
+        assert error["code"] == "rename_has_consumers"
+        assert error["consumers"] == [{"node": "enriched", "field": "code"}]
+        assert "'enriched' code" in error["message"]
+
     async def test_destructive_dry_run_survives_shared_service_boundary(
         self,
         project_root: Path,

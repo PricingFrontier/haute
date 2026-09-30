@@ -218,7 +218,9 @@ orphaned halves).
     that would change how a stepped-type node is authored is refused, and a write that
     does not land in the materialised config fails the plan with `op_not_applied`.
   - `rename_node {node, new_name}` (sets both id and persisted label to the
-    canonical sanitised function name) · `delete_node {node}` (drops every touching edge,
+    canonical sanitised function name, and rewrites edge endpoints; it refuses a
+    rename that a consumer's configuration or code would not follow, see Edge cases) ·
+    `delete_node {node}` (drops every touching edge,
     mirroring the GUI's atomic delete) · `add_edge {source, target, source_handle?,
     target_handle?}` · `delete_edge {source, target, source_handle?, target_handle?}`
     (matched on endpoints + handles; an ambiguous match is an error, never a guess) ·
@@ -1009,6 +1011,26 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   plan fails with the stable code `op_not_applied` naming the node and the key, or the
   step error. A palette-default node's own `_steps_error` (a Transform's empty step
   list) is not the operation's write and does not trip this check.
+- **A rename never leaves a consumer silently broken.** `rename_node` rewrites edge
+  endpoints only, while downstream nodes name their inputs by the edge's input name
+  (`haute._graph_utils.edge_input_name`, the source's sanitised label). Before renaming,
+  the operation compares each outgoing edge's input name under the old and the new
+  label (an API Input frame or a submodel port keeps its name, so it is never
+  affected) and, for every edge whose name changes, lists the fields of the target that
+  still name the old input: a Transform's or External File's steps (`steps[i].input`
+  on a source or join, `steps[i].inputs` on a concat, and `steps[i].code` when a
+  free-code step reads the name); a code-mode node's `code` when it reads the name
+  (unparsable code is listed, since it cannot be shown not to), unless its
+  `inputMapping` binds that name to another edge; `inputMapping.<logical>` values;
+  `input_scenario_map.<name>` keys; `data_input`, `banding_source`, `analysis_input`
+  and `ratebook_input`; `outputMapping[i].source_port`; and the `inputMapping.<name>`
+  keys of every instance of the target. Any node whose `instanceOf` names the renamed
+  node's id is listed with `instanceOf`. When the list is not empty the plan fails with
+  the stable code `rename_has_consumers`, a message naming each consumer and field, and
+  a `consumers` array of `{node, field}` records; nothing is renamed. The check runs
+  against the working graph, so an earlier operation of the batch that rewrites the
+  consumer lets the rename apply. A node whose consumers reference it only through
+  edges renames.
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
@@ -1149,6 +1171,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Authored-code failure (a Polars error or an exception raised from node code) while `get_node_schema`, dry-run or apply resolves a schema | engine, rendered by `_tools` | Structured `schema_unresolvable` error with the exception type, line or step, and named columns; the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
+| A rename whose consumers name the old input in configuration or code | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
 | Any unexpected exception in the loop | `_loop` outermost handler | Logged server-side with `exc_info=True`; terminal `failed` event carrying the sanitized `_INTERNAL_ERROR_DETAIL` text only |
@@ -1182,8 +1205,9 @@ fixture for route tests). The implemented coverage is:
   expression refused with its step, a Rating Step step reading its input by name refused
   with "Rating Step code sees only df", and a step calling a preamble or local helper
   accepted); the palette defaults `add_node` merges (and their omission on another
-  branch or an instance); and the stepped-node transition refusals and
-  `op_not_applied` landing check.
+  branch or an instance); the stepped-node transition refusals and
+  `op_not_applied` landing check; and the `rename_has_consumers` refusal for each
+  consumer field, with edge-only and API Input renames applying.
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
   stale/altered-plan rejection before save,

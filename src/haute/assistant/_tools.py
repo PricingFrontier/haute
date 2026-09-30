@@ -57,6 +57,7 @@ from haute.assistant._ops import (
     OpValidationError,
     PlanStore,
     ProjectSourceEvidence,
+    RenameConsumersError,
     build_project_snapshot,
     dataset_schema_digest,
 )
@@ -1135,6 +1136,9 @@ def _operation_error(exc: AssistantOperationError, *, operation: str) -> dict[st
     if isinstance(exc, SchemaUnresolvableError):
         failure = _execution_error_message(exc.failure, operation=operation, step=exc.step)
         return _error(exc.code, f"{exc} {failure}")
+    if isinstance(exc, RenameConsumersError):
+        consumers = [{"node": node, "field": field} for node, field in exc.consumers]
+        return _error(exc.code, str(exc), consumers=consumers)
     return _error(exc.code, str(exc))
 
 

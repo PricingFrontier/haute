@@ -472,6 +472,129 @@ class TestRenameNode:
 
         assert _ids(graph) == {"first", "Existing_Name"}
 
+    @pytest.mark.parametrize(
+        ("consumer", "field"),
+        [
+            (_node("sink", code="df = src.filter(pl.col('x') > 0)"), "code"),
+            (_node("sink", code="df = ("), "code"),
+            (_node("sink", code="df = frame", inputMapping={"frame": "src"}), "inputMapping.frame"),
+            (
+                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+                "steps[1].input",
+            ),
+            (
+                _node(
+                    "sink",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "other"},
+                        {"id": "c", "kind": "free_code", "code": "df = df.join(src, on='k')"},
+                    ],
+                ),
+                "steps[2].code",
+            ),
+            (
+                _node("sink", "liveSwitch", input_scenario_map={"src": "live"}),
+                "input_scenario_map.src",
+            ),
+            (_node("sink", "optimiser", data_input="src"), "data_input"),
+            (_node("sink", "optimiser", banding_source="src"), "banding_source"),
+            (_node("sink", "optimiser", analysis_input="src"), "analysis_input"),
+            (_node("sink", "optimiserApply", ratebook_input="src"), "ratebook_input"),
+            (
+                _node(
+                    "sink",
+                    "output",
+                    outputMapping=[
+                        {
+                            "source_port": "src",
+                            "source_column": "x",
+                            "output_path": "$.x",
+                            "enabled": True,
+                        }
+                    ],
+                ),
+                "outputMapping[1].source_port",
+            ),
+        ],
+    )
+    def test_rename_refuses_a_consumer_that_names_the_input(self, consumer: GraphNode, field: str):
+        from haute.assistant._ops import RenameConsumersError
+
+        graph = _graph(
+            [_node("src", "dataInput"), _node("other", "dataInput"), consumer],
+            [_edge("src", "sink"), _edge("other", "sink")],
+        )
+
+        with pytest.raises(RenameConsumersError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert excinfo.value.code == "rename_has_consumers"
+        assert excinfo.value.consumers == (("sink", field),)
+        assert "'sink'" in str(excinfo.value) and field in str(excinfo.value)
+
+    def test_rename_refuses_instances_that_name_the_node_or_its_input(self):
+        from haute.assistant._ops import RenameConsumersError
+
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("sink", code="df = src"),
+                _node("copy", instanceOf="sink", inputMapping={"src": "src"}),
+                _node("twin", instanceOf="src"),
+            ],
+            [_edge("src", "sink"), _edge("src", "copy")],
+        )
+
+        with pytest.raises(RenameConsumersError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert set(excinfo.value.consumers) == {
+            ("sink", "code"),
+            ("copy", "inputMapping.src"),
+            ("twin", "instanceOf"),
+        }
+
+    def test_rename_with_only_edge_consumers_applies(self):
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                # The column 'src' and a keyword named src are not the input.
+                _node("sink", code="df = pl.DataFrame({'src': [1]}).with_columns(src=pl.lit(1))"),
+                _node("join", "edgeJoin"),
+            ],
+            [_edge("src", "sink"), _edge("src", "join", th="base")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert "renamed" in _ids(out)
+
+    def test_rename_of_an_api_input_keeps_its_frame_names(self):
+        graph = _graph(
+            [_node("api", "apiInput"), _node("sink", code="df = quotes")],
+            [_edge("api", "sink", sh="quotes")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "api", "new_name": "requests"}])
+
+        assert "requests" in _ids(out)
+
+    def test_rename_applies_after_an_earlier_op_rewrites_the_consumer(self):
+        graph = _graph(
+            [_node("src", "dataInput"), _node("sink", code="df = src")],
+            [_edge("src", "sink")],
+        )
+
+        out = _apply(
+            graph,
+            [
+                {"op": "update_node", "node": "sink", "config": {"code": "df = renamed"}},
+                {"op": "rename_node", "node": "src", "new_name": "renamed"},
+            ],
+        )
+
+        assert _get(out, "sink").data.config["code"] == "df = renamed"
+
 
 # ---------------------------------------------------------------------------
 # delete_node / delete_edge / add_edge
