@@ -49,7 +49,7 @@ from haute.schemas import (
 
 logger = get_logger(component="assistant.loop")
 
-DEFAULT_TURN_TIMEOUT = 300
+DEFAULT_TURN_TIMEOUT = 600
 _INCOMPLETE_MUTATION_DETAIL = (
     "Assistant ended before completing the requested mutation/execution workflow or "
     "reporting NEEDS_INPUT/BLOCKED."
@@ -67,18 +67,29 @@ _MUTATION_COMMITTED_UNVERIFIED_DETAIL = (
 _COMMITTED_UNVERIFIED_ERROR_CODE = "verification_failed"
 _DRY_RUN_TOOLS = frozenset({"dry_run_graph_edits", "dry_run_recipe_plan"})
 # A malformed call is rejected by the closed input schema before any plan is
-# built, so it is not evidence that the model's plan is wrong — only that it
-# spelled the request wrong, which the named-field validation error makes
-# directly correctable. Charging these to the single plan-correction budget
-# spent the retry before the plan was ever judged.
+# built, so it says the request was spelled wrong, not that the plan is wrong.
+# It counts against the same budget, but the blocker names it for what it is.
 _MALFORMED_CALL_ERROR_CODES = frozenset({"invalid_request", "invalid_capability_query"})
-_MAX_FAILED_DRY_RUNS = 2
-_MAX_MALFORMED_DRY_RUN_CALLS = 2
+# Failed dry-runs a turn allows while each makes progress; see `_DryRunProgress`.
+_MAX_FAILED_DRY_RUNS = 4
+_DRY_RUN_STOP_REASONS = {
+    "budget": f"on {_MAX_FAILED_DRY_RUNS} dry-runs",
+    "identical": "and the same request was sent again",
+    "repeated": "with the same error for an unchanged operation",
+}
+_DRY_RUN_REFUSED_RESULT = {
+    "error": {
+        "code": "dry_run_retry_limit",
+        "message": "This turn's dry-run attempts are spent.",
+        "retryable": False,
+    }
+}
 _CANCELLATION_SHIELDED_TOOLS = frozenset({"apply_graph_plan"})
 _TOOL_INTERRUPTED_RESULT = {
     "error": {
         "code": "tool_interrupted",
         "message": "Tool execution was interrupted before completion.",
+        "retryable": False,
     }
 }
 _MUTATION_CONTINUATION = (
@@ -161,7 +172,7 @@ def effective_authoring_request(session: AssistantSession, user_text: str) -> st
     return user_text
 
 
-DEFAULT_MAX_TOOL_CALLS = 20
+DEFAULT_MAX_TOOL_CALLS = 40
 _INTERNAL_ERROR_DETAIL = "The assistant turn failed unexpectedly."
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[Mapping[str, Any]]]
@@ -327,14 +338,17 @@ _PROMPT_MUTATION_WORKFLOW = (
 )
 
 _PROMPT_DRY_RUN_RETRY = (
-    "If a dry run fails, read its structured error and make at most one materially "
-    "corrected dry-run retry. Do not repeat an identical failed plan. Prefer the "
-    "linked recipe or example when correcting a specialist operation. If that one "
-    "corrected retry also fails, begin the response with `BLOCKED:` and report the "
-    "concrete tool blocker instead of continuing an error loop. An `invalid_request` "
-    "error is different: the call never reached planning, so correct the named fields "
-    "against the tool schema and resend the same plan. That correction has its own "
-    "single retry and does not consume the plan retry. "
+    "If a dry run fails, read its structured error: `where` names the operation index, "
+    "node, field and step, `fix` is one concrete correction, `context.inputs` lists each "
+    "input's columns and `did_you_mean` lists close names. Apply the fix and dry-run the "
+    "corrected plan; a plan can hold several independent faults, reported one at a time. "
+    "A turn allows up to four failed dry-runs and ends early when a failed plan is resent "
+    "unchanged or the same error returns for an unchanged operation, so every retry must "
+    "change what the error names. Prefer the linked recipe or example when correcting a "
+    "specialist operation. When an error is not `retryable`, or you cannot correct it, "
+    "begin the response with `BLOCKED:` and report the concrete tool blocker instead of "
+    "continuing an error loop. An `invalid_request` error means the call never reached "
+    "planning: correct the named fields against the tool schema and resend the same plan. "
 )
 
 _PROMPT_OUTCOME_CONTRACT = (
@@ -615,19 +629,89 @@ def _stable_error_code(payload: Mapping[str, Any]) -> str | None:
     return candidate
 
 
-def _dry_run_budget_spent(failed_dry_runs: int, malformed_dry_run_calls: int) -> bool:
-    """Report whether further dry-run attempts are refused this turn.
+def _canonical(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
-    The two budgets are independent: a plan the domain layer judged and
-    rejected costs a plan retry, while a call the closed input schema refused
-    before any planning costs a malformed-call retry. Either exhausted budget
-    ends the turn, so neither class can loop.
+
+class _DryRunProgress:
+    """Whether a turn's failed dry-runs still make progress.
+
+    A turn allows `_MAX_FAILED_DRY_RUNS` failed dry-runs across both dry-run
+    tools and stops earlier when a failure shows no progress: the request is
+    identical to one that already failed, or the same diagnostic (code,
+    `where` and `fix`) returns while the operation it points at is unchanged.
+    Both identities are built from the model's own arguments and the error's
+    value-free location and correction, and never leave this object.
     """
 
-    return (
-        failed_dry_runs >= _MAX_FAILED_DRY_RUNS
-        or malformed_dry_run_calls >= _MAX_MALFORMED_DRY_RUN_CALLS
-    )
+    def __init__(self) -> None:
+        self.failed = 0
+        self.stop: str | None = None
+        self.code = "unknown_error"
+        self.message = ""
+        self.malformed = False
+        self._requests: set[str] = set()
+        self._diagnostics: set[str] = set()
+
+    def record_failure(self, call: ToolCallRequest, payload: Mapping[str, Any]) -> None:
+        error = payload.get("error")
+        if not isinstance(error, Mapping):
+            raise RuntimeError("a failed dry-run must carry an error object")
+        code = _stable_error_code(payload)
+        if code is not None:
+            self.code = code
+        # The chat's tool-row summary of the error the model was just shown:
+        # the blocker repeats it and so carries nothing that result did not.
+        self.message = _result_summary(payload, True)
+        self.malformed = code in _MALFORMED_CALL_ERROR_CODES
+        self.failed += 1
+        request = _canonical([call.name, call.arguments])
+        diagnostic = _canonical(
+            [
+                call.name,
+                error.get("code"),
+                error.get("where"),
+                error.get("fix"),
+                _attempted(call, error),
+            ]
+        )
+        if request in self._requests:
+            self.stop = "identical"
+        elif diagnostic in self._diagnostics:
+            self.stop = "repeated"
+        elif self.failed >= _MAX_FAILED_DRY_RUNS:
+            self.stop = "budget"
+        self._requests.add(request)
+        self._diagnostics.add(diagnostic)
+
+    def blocker(self) -> str:
+        if self.stop is None:
+            raise RuntimeError("the dry-run budget has not stopped the turn")
+        what = (
+            "the dry-run call was rejected by its input schema"
+            if self.malformed
+            else "graph validation failed"
+        )
+        return (
+            f"BLOCKED: {what} {_DRY_RUN_STOP_REASONS[self.stop]} ({self.code}); "
+            f"no graph changes were applied. Last error: {self.message}"
+        )
+
+
+def _attempted(call: ToolCallRequest, error: Mapping[str, Any]) -> object:
+    """The operation a dry-run error points at, or the whole request without one."""
+
+    where = error.get("where")
+    op_index = where.get("op_index") if isinstance(where, Mapping) else None
+    ops = call.arguments.get("ops") if call.name == "dry_run_graph_edits" else None
+    if (
+        isinstance(op_index, int)
+        and not isinstance(op_index, bool)
+        and isinstance(ops, list)
+        and 0 <= op_index < len(ops)
+    ):
+        return ops[op_index]
+    return call.arguments
 
 
 def _assistant_message(
@@ -833,11 +917,7 @@ async def run_turn(
     mutation_continuation_used = False
     turn_outcome: AssistantTurnOutcome | None = None
     round_text: list[str] = []
-    failed_dry_runs = 0
-    malformed_dry_run_calls = 0
-    latest_dry_run_error_code = "unknown_error"
-    latest_dry_run_blocker = "graph validation failed after one corrected retry"
-    latest_dry_run_message = ""
+    dry_runs = _DryRunProgress()
     round_calls: list[ToolCallRequest] = []
     round_results: list[dict[str, Any]] = []
     round_committed = False
@@ -890,48 +970,21 @@ async def run_turn(
                             summary=_compact_summary(event.arguments),
                         )
                         payload: Mapping[str, Any]
-                        # A second dry-run call inside the same provider round
-                        # is refused without running. Its synthetic result must
-                        # not re-enter accounting, or it would overwrite the
-                        # recorded blocker with its own placeholder code.
-                        refused_by_budget = event.name in _DRY_RUN_TOOLS and _dry_run_budget_spent(
-                            failed_dry_runs, malformed_dry_run_calls
+                        # A further dry-run call inside the provider round
+                        # that stopped the dry-runs is refused without running.
+                        # Its synthetic result must not re-enter accounting, or
+                        # it would overwrite the recorded blocker.
+                        refused_by_budget = (
+                            event.name in _DRY_RUN_TOOLS and dry_runs.stop is not None
                         )
                         if refused_by_budget:
-                            payload = {
-                                "error": {
-                                    "code": "dry_run_retry_limit",
-                                    "message": "The corrected dry-run retry has already failed.",
-                                }
-                            }
+                            payload = _DRY_RUN_REFUSED_RESULT
                             interrupt = None
                         else:
                             payload, interrupt = await _execute_shielded(execute_tool, event)
                         is_error = "error" in payload
-                        # A call only reaches accounting if it actually ran, and
-                        # `refused_by_budget` already withholds every call made
-                        # once either budget is spent. Whichever budget this
-                        # failure belongs to therefore still has room.
                         if event.name in _DRY_RUN_TOOLS and is_error and not refused_by_budget:
-                            code = _stable_error_code(payload)
-                            # The chat's tool-row summary of the error the
-                            # model was just shown: the blocker repeats it and
-                            # so carries nothing that result did not.
-                            latest_dry_run_message = _result_summary(payload, is_error)
-                            if code in _MALFORMED_CALL_ERROR_CODES:
-                                malformed_dry_run_calls += 1
-                                latest_dry_run_error_code = code
-                                latest_dry_run_blocker = (
-                                    "the dry-run call was rejected by its input schema "
-                                    "and the corrected call was rejected again"
-                                )
-                            else:
-                                failed_dry_runs += 1
-                                if code is not None:
-                                    latest_dry_run_error_code = code
-                                latest_dry_run_blocker = (
-                                    "graph validation failed after one corrected retry"
-                                )
+                            dry_runs.record_failure(event, payload)
                         if event.name in {
                             "dry_run_graph_edits",
                             "dry_run_recipe_plan",
@@ -1033,12 +1086,8 @@ async def run_turn(
 
                 _append_round(turn_messages, round_text, round_calls, round_results)
                 round_committed = True
-                if _dry_run_budget_spent(failed_dry_runs, malformed_dry_run_calls):
-                    blocked_text = (
-                        f"BLOCKED: {latest_dry_run_blocker} "
-                        f"({latest_dry_run_error_code}); no graph changes were applied. "
-                        f"Last error: {latest_dry_run_message}"
-                    )
+                if dry_runs.stop is not None:
+                    blocked_text = dry_runs.blocker()
                     turn_messages.append({"role": "assistant", "content": blocked_text})
                     yield AssistantTextDeltaEvent(text=blocked_text)
                     turn_outcome = _prefixed_outcome(blocked_text)

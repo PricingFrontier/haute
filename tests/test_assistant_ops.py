@@ -1341,6 +1341,100 @@ class TestSemanticPlans:
         plan = self._stepped_plan(tmp_path, "rated", steps, preamble=preamble)
         assert plan.diff.config_changes == ("rated:steps",)
 
+    @pytest.mark.parametrize(
+        ("node", "steps", "fix"),
+        [
+            (
+                "t",
+                [
+                    {"id": "start", "kind": "source", "input": "prepared"},
+                    {"id": "logic", "kind": "free_code", "code": "df = df['prepared'].head(2)"},
+                ],
+                "df is already the 'prepared' frame the source step chose; transform df "
+                "directly (df = df.filter(...)).",
+            ),
+            (
+                "rated",
+                [{"id": "logic", "kind": "free_code", "code": "df = df['prepared']"}],
+                "df is this node's own frame; transform df directly (df = df.filter(...)).",
+            ),
+        ],
+    )
+    def test_a_step_indexing_df_by_an_input_name_names_the_operation_that_wrote_it(
+        self, tmp_path: Path, node: str, steps: list[dict], fix: str
+    ):
+        """The check runs on the planned graph after the whole batch, and its
+        failure still names the operation that wrote the node."""
+
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph(
+            [
+                _node("quotes", "dataInput", path="quotes.parquet"),
+                _node("prepared", code="df = quotes"),
+                _node("t"),
+                _node(
+                    "rated",
+                    "ratingStep",
+                    tables=[
+                        {
+                            "factors": ["region"],
+                            "outputColumn": "rate_factor",
+                            "defaultValue": "1.0",
+                            "entries": [{"region": "north", "value": "1.25"}],
+                        }
+                    ],
+                    combinedOutputs=[],
+                ),
+            ],
+            [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            {"op": "update_node", "node": "prepared", "config": {"code": "df = quotes.head(5)"}},
+            {"op": "update_node", "node": node, "config": {"steps": steps}},
+        ]
+
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(snapshot, ops)
+
+        error = excinfo.value
+        assert "indexes df by the input name 'prepared'" in str(error)
+        assert error.where == {"op_index": 1, "node": node, "field": "steps", "step": "logic"}
+        assert error.fix == fix
+        assert error.graph is not None
+
+    def test_a_column_named_like_an_input_is_not_mistaken_for_indexing(self, tmp_path: Path):
+        steps = [
+            {"id": "start", "kind": "source", "input": "prepared"},
+            {"id": "logic", "kind": "free_code", "code": "df = df.filter(pl.col('prepared') > 0)"},
+        ]
+        plan = self._stepped_plan(tmp_path, "t", steps)
+        assert plan.diff.config_changes == ("t:steps",)
+
+    def test_a_failing_operation_is_located_by_its_index(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("a")], []))
+
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(
+                snapshot,
+                [
+                    {"op": "update_node", "node": "a", "config": {"code": "df = pl.LazyFrame()"}},
+                    {"op": "update_node", "node": "b", "config": {}},
+                ],
+            )
+
+        assert excinfo.value.where == {"op_index": 1}
+        assert excinfo.value.fix == (
+            "Use a node id get_pipeline lists, or a $ref an earlier add_node declared."
+        )
+
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
         from haute.assistant._ops import semantic_diff
 

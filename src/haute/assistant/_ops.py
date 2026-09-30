@@ -66,13 +66,13 @@ from haute.assistant._wire_ops import (
     DeleteEdgeOp,
     DeleteNodeOp,
     GraphEditOp,
+    LocatedPlanError,
     OpValidationError,
     RenameNodeOp,
     UpdateNodeOp,
     UpdatePreambleOp,
     parse_ops,
 )
-from haute.errors import HauteError
 
 _SUBMODEL_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 _X_STEP = 280.0
@@ -89,8 +89,13 @@ _GRAPH_EDIT_OP_MODELS = (
 )
 
 
-def _invalid(message: str) -> NoReturn:
-    raise OpValidationError(message)
+def _invalid(
+    message: str,
+    *,
+    fix: str,
+    where: Mapping[str, object] | None = None,
+) -> NoReturn:
+    raise OpValidationError(message, where=where, fix=fix)
 
 
 def _mapping(value: object) -> Mapping[str, Any] | None:
@@ -125,29 +130,43 @@ def _resolve_node_id(
     if raw_id.startswith("$"):
         ref = raw_id[1:]
         if not ref:
-            _invalid(f"{role} reference '$' is empty")
+            _invalid(
+                f"{role} reference '$' is empty",
+                fix="Name the ref an earlier add_node declared, for example $agg.",
+            )
         try:
             node_id = refs[ref]
         except KeyError:
-            _invalid(f"Unknown batch reference {raw_id!r}")
+            _invalid(
+                f"Unknown batch reference {raw_id!r}",
+                fix=f"Declare ref {ref!r} on an earlier add_node in the same plan, "
+                "or use the node's id.",
+            )
     else:
         node_id = raw_id
 
     if node_id in nested_ids:
         _invalid(
             f"{role} {raw_id!r} crosses the submodel boundary; "
-            "submodel-internal nodes are not editable by assistant operations"
+            "submodel-internal nodes are not editable by assistant operations",
+            where={"node": node_id},
+            fix="Edit only top-level nodes; leave submodel internals to the analyst.",
         )
 
     index = _node_index(graph, node_id)
     if index is None:
-        _invalid(f"Unknown {role} node {raw_id!r}")
+        _invalid(
+            f"Unknown {role} node {raw_id!r}",
+            fix="Use a node id get_pipeline lists, or a $ref an earlier add_node declared.",
+        )
 
     node_type = graph.nodes[index].data.nodeType
     if node_type in _SUBMODEL_TYPES:
         _invalid(
             f"{role} {raw_id!r} is a submodel boundary; "
-            "submodel placeholders and ports are not editable by assistant operations"
+            "submodel placeholders and ports are not editable by assistant operations",
+            where={"node": node_id},
+            fix="Edit only ordinary top-level nodes; leave submodels to the analyst.",
         )
     return node_id
 
@@ -161,7 +180,10 @@ def _validate_config(
 ) -> None:
     allowed = VALID_KEYS.get(node_type)
     if allowed is None:
-        _invalid(f"{operation} does not support config for node type {node_type.value!r}")
+        _invalid(
+            f"{operation} does not support config for node type {node_type.value!r}",
+            fix=f"Send no config for a {node_type.value!r} node.",
+        )
     removable_keys = removable_keys or set()
     unknown = sorted(
         key
@@ -171,7 +193,9 @@ def _validate_config(
     if unknown:
         _invalid(
             f"{operation} contains unknown config key(s) for node type "
-            f"{node_type.value!r}: {', '.join(unknown)}"
+            f"{node_type.value!r}: {', '.join(unknown)}",
+            fix=f"Remove {', '.join(unknown)}; use only the keys of the {node_type.value!r} "
+            "descriptor's config schema.",
         )
 
 
@@ -209,18 +233,24 @@ def _check_stepped_write(
         if "code" in written:
             _invalid(
                 f"Node {node_id!r} is a {label} authored as steps: its code is rendered "
-                f"from them, so a code write would not land. {fix}"
+                f"from them, so a code write would not land. {fix}",
+                where={"node": node_id, "field": "code"},
+                fix=fix,
             )
         if "steps" in written and not isinstance(written["steps"], list):
             _invalid(
                 f"Node {node_id!r} is a {label} authored as steps: removing its steps "
                 f"would switch it to code mode, which only the analyst does in the editor. "
-                f"{fix}"
+                f"{fix}",
+                where={"node": node_id, "field": "steps"},
+                fix=fix,
             )
     elif isinstance(written.get("steps"), list) and str(before.get("code") or "").strip():
         _invalid(
             f"Node {node_id!r} is a {label} in code mode: setting steps would discard its "
-            "code. Edit its code instead."
+            "code. Edit its code instead.",
+            where={"node": node_id, "field": "steps"},
+            fix="Edit the node's code instead of setting steps.",
         )
 
 
@@ -244,14 +274,19 @@ def _require_landed(
                 "op_not_applied",
                 f"{operation} on node {node.id!r} did not land: {key!r} does not hold the "
                 "written value in the node's config.",
+                where={"node": node.id, "field": key},
+                fix=f"Write {key!r} in the shape the node's descriptor card shows.",
             )
     if "steps" in written and "_steps_error" in config:
         node_type = node.data.nodeType
+        form = _free_code_form(node_type)
         raise AssistantOperationError(
             "op_not_applied",
             f"{operation} on node {node.id!r} did not land: its steps cannot be rendered "
             f"({config['_steps_error']}). New logic on a {STEPPED_SURFACE_LABELS[node_type]} "
-            f"is written as {_free_code_form(node_type)}.",
+            f"is written as {form}.",
+            where={"node": node.id, "field": "steps"},
+            fix=f"Write the steps as {form}.",
         )
 
 
@@ -282,13 +317,18 @@ def _apply_add_node(
     if op.node_type in _SUBMODEL_TYPES:
         _invalid(
             f"Cannot add node type {op.node_type.value!r}: "
-            "assistant operations cannot create submodel boundaries"
+            "assistant operations cannot create submodel boundaries",
+            fix="Add ordinary nodes instead; submodels are created by the analyst.",
         )
     _validate_config(op.node_type, op.config, operation="add_node")
 
     node_id = _sanitize_func_name(op.name)
     if _node_index(graph, node_id) is not None:
-        _invalid(f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists")
+        _invalid(
+            f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists",
+            where={"node": node_id},
+            fix=f"Choose another name, or change {node_id!r} with update_node.",
+        )
     _check_stepped_write(op.node_type, node_id, None, op.config)
     node = GraphNode(
         id=node_id,
@@ -306,7 +346,10 @@ def _apply_add_node(
 
     if op.ref is not None:
         if op.ref in refs:
-            _invalid(f"Duplicate batch reference {op.ref!r}")
+            _invalid(
+                f"Duplicate batch reference {op.ref!r}",
+                fix=f"Give this add_node a ref other than {op.ref!r}.",
+            )
         refs[op.ref] = node_id
 
 
@@ -315,7 +358,9 @@ def _apply_update_node(
     op: UpdateNodeOp,
     refs: Mapping[str, str],
     nested_ids: set[str],
-) -> None:
+) -> str:
+    """Apply one update and return the id of the node it wrote."""
+
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="update target")
     index = _node_index(graph, node_id)
     assert index is not None  # _resolve_node_id already checked this
@@ -337,6 +382,7 @@ def _apply_update_node(
     updated = node.with_config(config)
     _require_landed(updated, op.config, operation="update_node", null_removes=True)
     _replace_node(graph, index, updated)
+    return node_id
 
 
 #: Source types whose outgoing input names come from a handle, not the node's label.
@@ -375,7 +421,9 @@ def _input_name_fields(node: GraphNode, name: str) -> list[str]:
             except PolarsStepError as exc:
                 _invalid(
                     f"Cannot rename {name!r}: its consumer {node.id!r} has an invalid step "
-                    f"list ({exc}). Fix that node's steps first."
+                    f"list ({exc}). Fix that node's steps first.",
+                    where={"node": node.id, "field": "steps"},
+                    fix=f"Correct {node.id!r}'s steps before renaming {name!r}.",
                 )
             for position, step in enumerate(validated, start=1):
                 if name in step_input_references(step):
@@ -453,13 +501,19 @@ def _apply_rename_node(
     refs: dict[str, str],
     nested_ids: set[str],
     new_node_ids: list[str],
-) -> None:
+) -> tuple[str, str]:
+    """Apply one rename and return the node's old and new ids."""
+
     old_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="rename target")
     index = _node_index(graph, old_id)
     assert index is not None
     new_id = _sanitize_func_name(op.new_name)
     if new_id != old_id and _node_index(graph, new_id) is not None:
-        _invalid(f"Cannot rename node: sanitized id {new_id!r} already exists")
+        _invalid(
+            f"Cannot rename node: sanitized id {new_id!r} already exists",
+            where={"node": old_id},
+            fix=f"Choose a new name whose id is not {new_id!r}.",
+        )
 
     node = graph.nodes[index]
     consumers = _rename_consumers(graph, node, new_id)
@@ -483,6 +537,7 @@ def _apply_rename_node(
     for position, ref_id in enumerate(new_node_ids):
         if ref_id == old_id:
             new_node_ids[position] = new_id
+    return old_id, new_id
 
 
 def _apply_delete_node(
@@ -522,7 +577,8 @@ def _apply_add_edge(
     ):
         _invalid(
             f"Edge {source!r} -> {target!r} with these handles already exists; "
-            "add_edge does not create duplicates"
+            "add_edge does not create duplicates",
+            fix="Drop this add_edge; the edge is already there.",
         )
     try:
         graph.edges.append(
@@ -535,7 +591,10 @@ def _apply_add_edge(
             )
         )
     except ValidationError as exc:
-        raise OpValidationError(f"Invalid edge: {exc}") from exc
+        raise OpValidationError(
+            f"Invalid edge: {exc}",
+            fix="Correct the edge's source, target and handles against get_pipeline.",
+        ) from exc
 
 
 def _apply_delete_edge(
@@ -566,11 +625,15 @@ def _apply_delete_edge(
         and (target_handle is _ANY_HANDLE or edge.targetHandle == target_handle)
     ]
     if not matches:
-        _invalid(f"No edge matches {source!r} -> {target!r} with the requested handles")
+        _invalid(
+            f"No edge matches {source!r} -> {target!r} with the requested handles",
+            fix="Name an edge exactly as get_pipeline lists it, handles included.",
+        )
     if len(matches) > 1:
         _invalid(
             f"Edge match {source!r} -> {target!r} is ambiguous; "
-            "specify source_handle and target_handle"
+            "specify source_handle and target_handle",
+            fix="Add the edge's source_handle and target_handle from get_pipeline.",
         )
     del graph.edges[matches[0]]
 
@@ -655,14 +718,41 @@ def _assign_new_positions(graph: PipelineGraph, new_node_ids: Sequence[str]) -> 
     ]
 
 
-def _apply_ops_with_refs(
-    graph: PipelineGraph, ops: Sequence[GraphEditOp]
-) -> tuple[PipelineGraph, dict[str, str], tuple[str, ...]]:
-    """Apply a batch and return its graph, resolved refs, and final new-node ids.
+@dataclass(frozen=True, slots=True)
+class AppliedOps:
+    """A batch applied to a copy of its graph.
+
+    ``writers`` maps each node the batch added, updated or renamed to the
+    index of the last operation that did, so a failure found after the whole
+    batch can name the operation that wrote its node.
+    """
+
+    graph: PipelineGraph
+    refs: dict[str, str]
+    new_node_ids: tuple[str, ...]
+    writers: Mapping[str, int]
+
+
+def locate_plan_error(
+    exc: LocatedPlanError, writers: Mapping[str, int], graph: PipelineGraph
+) -> None:
+    """Stamp a failure found after a batch with its node's writer and graph."""
+
+    node = exc.where.get("node")
+    if "op_index" not in exc.where and isinstance(node, str) and node in writers:
+        exc.where = {"op_index": writers[node], **exc.where}
+    if exc.graph is None:
+        exc.graph = graph
+
+
+def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> AppliedOps:
+    """Apply a batch to a copy of *graph*.
 
     Operations are evaluated in order.  A validation error can therefore
     refer to an earlier add, rename, or delete, while the caller's original
     graph remains untouched because no operation runs against it directly.
+    A failure is stamped with the index of the operation that raised it and
+    the working graph it was judged against.
     """
 
     raw_ops = list(ops)
@@ -675,15 +765,19 @@ def _apply_ops_with_refs(
     nested_ids = _nested_submodel_node_ids(working.submodels)
     refs: dict[str, str] = {}
     new_node_ids: list[str] = []
+    writers: dict[str, int] = {}
 
     for index, op in enumerate(parsed_ops):
         try:
             if isinstance(op, AddNodeOp):
                 _apply_add_node(working, op, refs, new_node_ids)
+                writers[new_node_ids[-1]] = index
             elif isinstance(op, UpdateNodeOp):
-                _apply_update_node(working, op, refs, nested_ids)
+                writers[_apply_update_node(working, op, refs, nested_ids)] = index
             elif isinstance(op, RenameNodeOp):
-                _apply_rename_node(working, op, refs, nested_ids, new_node_ids)
+                old_id, new_id = _apply_rename_node(working, op, refs, nested_ids, new_node_ids)
+                writers.pop(old_id, None)
+                writers[new_id] = index
             elif isinstance(op, DeleteNodeOp):
                 _apply_delete_node(working, op, refs, nested_ids, new_node_ids)
             elif isinstance(op, AddEdgeOp):
@@ -693,22 +787,30 @@ def _apply_ops_with_refs(
             elif isinstance(op, UpdatePreambleOp):
                 working.preamble = op.preamble
             else:
-                _invalid(f"Unsupported graph edit operation at index {index}")
-        except OpValidationError:
+                _invalid(
+                    f"Unsupported graph edit operation at index {index}",
+                    fix="Use an op the dry_run_graph_edits schema lists.",
+                )
+        except LocatedPlanError as exc:
+            exc.where = {"op_index": index, **exc.where}
+            if exc.graph is None:
+                exc.graph = working
             raise
         except ValidationError as exc:
             raise OpValidationError(
-                f"Invalid graph edit operation at index {index}: {exc}"
+                f"Invalid graph edit operation at index {index}: {exc}",
+                where={"op_index": index},
+                fix=f"Correct operation {index} against the dry_run_graph_edits schema.",
             ) from exc
 
     _assign_new_positions(working, new_node_ids)
-    return working, refs, tuple(new_node_ids)
+    return AppliedOps(working, refs, tuple(new_node_ids), writers)
 
 
 def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph:
     """Apply a batch to a deep copy of *graph* and return the resulting graph."""
 
-    return _apply_ops_with_refs(graph, ops)[0]
+    return _apply_ops_with_refs(graph, ops).graph
 
 
 # The plan domain below is deliberately file-service agnostic.  It records the
@@ -722,12 +824,19 @@ _DIFF_LIMIT = 50
 MAX_SEALED_POSTCONDITIONS = MAX_DECLARED_POSTCONDITIONS + MAX_PLAN_OPERATIONS
 
 
-class AssistantOperationError(HauteError):
+class AssistantOperationError(LocatedPlanError):
     """A stable, machine-readable failure from the assistant plan domain."""
 
-    def __init__(self, code: str, message: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str | None = None,
+        *,
+        where: Mapping[str, object] | None = None,
+        fix: str | None = None,
+    ) -> None:
         self.code = code
-        super().__init__(message or code)
+        super().__init__(message or code, where=where, fix=fix)
 
 
 class RenameConsumersError(AssistantOperationError):
@@ -736,12 +845,16 @@ class RenameConsumersError(AssistantOperationError):
     def __init__(self, old_id: str, new_id: str, consumers: Sequence[tuple[str, str]]) -> None:
         self.consumers = tuple(consumers)
         listed = "; ".join(f"{node!r} {field}" for node, field in self.consumers)
+        fix = (
+            f"Rewrite each field to {new_id!r} with update_node earlier in the same plan, "
+            "or keep the name."
+        )
         super().__init__(
             "rename_has_consumers",
             f"Cannot rename node {old_id!r} to {new_id!r}: a rename rewrites edges only, "
-            f"and these consumers name it in their configuration or code: {listed}. "
-            f"Rewrite each field to {new_id!r} with update_node earlier in the same plan, "
-            "or keep the name.",
+            f"and these consumers name it in their configuration or code: {listed}. {fix}",
+            where={"node": old_id},
+            fix=fix,
         )
 
 
@@ -1101,7 +1214,7 @@ def semantic_diff(
         operation if isinstance(operation, _GRAPH_EDIT_OP_MODELS) else parse_ops([operation])[0]
         for operation in operations
     ]
-    _expected, refs, _new_node_ids = _apply_ops_with_refs(before, typed_operations)
+    refs = _apply_ops_with_refs(before, typed_operations).refs
     return _semantic_diff(before, after, typed_operations, refs)
 
 
@@ -1355,6 +1468,8 @@ class PreparedGraphEdit:
     diff: SemanticDiff
     affected_capabilities: tuple[str, ...]
     postconditions: tuple[object, ...]
+    #: Each node the batch wrote, mapped to the last operation that wrote it.
+    writers: Mapping[str, int]
 
 
 def _resolve_postcondition_refs(
@@ -1831,10 +1946,13 @@ def _validate_polars_named_inputs(code: object, node_id: str, input_names: Seque
 
     if not isinstance(code, str) or not code.strip():
         return
+    where = {"node": node_id, "field": "code"}
     if _BARE_INPUT_NAME in input_names:
         _invalid(
             f"Node {node_id!r} receives an input named 'df', which conflicts with the "
-            "reserved output name for Polars code. Rename the upstream node or frame."
+            "reserved output name for Polars code. Rename the upstream node or frame.",
+            where=where,
+            fix="Rename the upstream node so its input is not named 'df'.",
         )
     try:
         tree = ast.parse(code)
@@ -1847,24 +1965,37 @@ def _validate_polars_named_inputs(code: object, node_id: str, input_names: Seque
             f"Node {node_id!r} reads 'df' before assigning it, but 'df' is not bound to "
             "any input — it is the node's output variable. Start from the input you "
             "mean by name (" + ", ".join(sorted(input_names)) + ") and assign the "
-            "result to 'df'."
+            "result to 'df'.",
+            where=where,
+            fix=f"Bind an input by name before reading df, for example df = {input_names[0]}.",
         )
     _invalid(
         f"Node {node_id!r} reads 'df' before assigning it, but this node has no inputs "
         f"and 'df' is unbound until the code assigns it. Construct a frame and assign "
-        f"it to 'df'."
+        f"it to 'df'.",
+        where=where,
+        fix="Construct a frame and assign it to df before reading df.",
     )
 
 
-def _validate_polars_result_retained(code: object) -> None:
+def _validate_polars_result_retained(code: object, node_id: str) -> None:
+    where = {"node": node_id, "field": "code"}
     if not isinstance(code, str):
-        _invalid("Explicit Polars code must be a string")
+        _invalid(
+            "Explicit Polars code must be a string",
+            where=where,
+            fix="Send the code as one string.",
+        )
     if not code.strip():
         return
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
-        raise OpValidationError("Explicit Polars code contains invalid Python") from exc
+        raise OpValidationError(
+            "Explicit Polars code contains invalid Python",
+            where=where,
+            fix=f"Correct the Python syntax at line {exc.lineno} of the code.",
+        ) from exc
 
     visitor = _PolarsResultVisitor()
     visitor.visit(tree)
@@ -1872,7 +2003,9 @@ def _validate_polars_result_retained(code: object) -> None:
         _invalid(
             "Explicit Polars code must assign a transformed frame to 'df' or return "
             "a transformed frame; bare Polars expressions are immutable and their "
-            "result would be discarded"
+            "result would be discarded",
+            where=where,
+            fix="Assign the transformed frame to df (df = df.filter(...)).",
         )
 
 
@@ -1917,6 +2050,52 @@ def _frame_method_root(expression: ast.expr) -> str | None:
     return receiver.id if isinstance(receiver, ast.Name) else None
 
 
+def _input_indexing_df(tree: ast.AST, input_names: Sequence[str]) -> str | None:
+    """The input name a step indexes ``df`` by (``df['claims']``), if any.
+
+    Only a string key equal to an incoming input's name counts, so indexing a
+    frame by one of its own columns is never mistaken for it.
+    """
+
+    names = set(input_names)
+    for item in ast.walk(tree):
+        if (
+            isinstance(item, ast.Subscript)
+            and isinstance(item.value, ast.Name)
+            and item.value.id == _BARE_INPUT_NAME
+            and isinstance(item.slice, ast.Constant)
+            and isinstance(item.slice.value, str)
+            and item.slice.value in names
+        ):
+            return item.slice.value
+    return None
+
+
+def _df_indexing_fix(
+    node_type: NodeType, steps: Sequence[Mapping[str, Any]], input_names: Sequence[str]
+) -> str:
+    """How a surface's code reaches the frame ``df`` holds and each other input."""
+
+    surface = stepped_surface_for(node_type)
+    if surface.inputs == "none":
+        return "df is this node's own frame; transform df directly (df = df.filter(...))."
+    if surface.start == "input":
+        first = steps[0].get("input")
+        bound = f"df is already the {first!r} frame the source step chose"
+    else:
+        first = input_names[0]
+        bound = f"df is already the first input, {first!r}"
+    others = [name for name in input_names if name != first]
+    if not others:
+        return f"{bound}; transform df directly (df = df.filter(...))."
+    return (
+        f"{bound}; read "
+        + ", ".join(repr(name) for name in others)
+        + f" by edge name (for example pl.concat([df, {others[0]}]) or "
+        f"df.join({others[0]}, ...))."
+    )
+
+
 def _validate_assistant_authored_steps(
     result: PipelineGraph,
     node: GraphNode,
@@ -1926,14 +2105,18 @@ def _validate_assistant_authored_steps(
 
     The product's renderer is the syntax and step-schema verdict. Each
     free-code step is then refused when a top-level frame method call discards
-    its result, and, on a surface whose code sees only ``df``, when it reads an
-    incoming input or an upstream node by name that nothing in scope binds.
+    its result, when it indexes ``df`` by an incoming input's name as if ``df``
+    held every input, and, on a surface whose code sees only ``df``, when it
+    reads an incoming input or an upstream node by name that nothing in scope
+    binds.
     """
 
     node_type = node.data.nodeType
     surface = stepped_surface_for(node_type)
     input_names = _incoming_input_names(result, node.id, nodes_by_id)
     steps = node.data.config["steps"]
+    form = _free_code_form(node_type)
+    label = STEPPED_SURFACE_LABELS[node_type]
     try:
         rendered = render_polars_steps(
             steps, step_input_names(node_type, input_names), start=surface.start
@@ -1941,7 +2124,9 @@ def _validate_assistant_authored_steps(
     except PolarsStepError as exc:
         _invalid(
             f"Node {node.id!r} has an invalid step list: {exc} New logic on a "
-            f"{STEPPED_SURFACE_LABELS[node_type]} is written as {_free_code_form(node_type)}."
+            f"{label} is written as {form}.",
+            where={"node": node.id, "field": "steps"},
+            fix=f"Write the steps as {form}.",
         )
     lines = rendered.code.split("\n")
     frame_names = {_BARE_INPUT_NAME, *input_names}
@@ -1953,16 +2138,28 @@ def _validate_assistant_authored_steps(
     for index, (step, (first, last)) in enumerate(zip(steps, rendered.step_lines, strict=True)):
         if step["kind"] != "free_code":
             continue
-        where = f"Node {node.id!r} step {index + 1} ({step['id']!r})"
+        site = f"Node {node.id!r} step {index + 1} ({step['id']!r})"
+        where = {"node": node.id, "field": "steps", "step": step["id"]}
         tree = ast.parse("\n".join(lines[first - 1 : last]))
         for statement in tree.body:
             if not isinstance(statement, ast.Expr):
                 continue
             if _frame_method_root(statement.value) in frame_names:
                 _invalid(
-                    f"{where} calls a frame method whose result is discarded; Polars frames "
-                    "are immutable, so assign the result to df (df = df.filter(...))."
+                    f"{site} calls a frame method whose result is discarded; Polars frames "
+                    "are immutable, so assign the result to df (df = df.filter(...)).",
+                    where=where,
+                    fix="Assign the call's result to df (df = df.filter(...)).",
                 )
+        indexed = _input_indexing_df(tree, input_names)
+        if indexed is not None:
+            _invalid(
+                f"{site} indexes df by the input name {indexed!r}, but df is one frame, "
+                f"not a mapping of the node's inputs. New logic on a {label} is written "
+                f"as {form}.",
+                where=where,
+                fix=_df_indexing_fix(node_type, steps, input_names),
+            )
         reads = {
             name.id
             for name in ast.walk(tree)
@@ -1974,7 +2171,10 @@ def _validate_assistant_authored_steps(
         try:
             preamble = ast.parse(result.preamble or "")
         except SyntaxError as exc:
-            raise OpValidationError("The pipeline preamble is not valid Python") from exc
+            raise OpValidationError(
+                "The pipeline preamble is not valid Python",
+                fix=f"Correct the preamble's Python syntax at line {exc.lineno}.",
+            ) from exc
         in_scope = {
             _BARE_INPUT_NAME,
             "pl",
@@ -1985,8 +2185,10 @@ def _validate_assistant_authored_steps(
         unbound = [name for name in suspect if name not in in_scope]
         if unbound:
             _invalid(
-                f"{where}: {STEPPED_SURFACE_LABELS[node_type]} code sees only df; "
-                f"{unbound[0]} is not in scope. Transform df, the node's own input."
+                f"{site}: {label} code sees only df; "
+                f"{unbound[0]} is not in scope. Transform df, the node's own input.",
+                where=where,
+                fix=f"Replace {unbound[0]} with df, the node's own input.",
             )
 
 
@@ -2020,7 +2222,7 @@ def _validate_assistant_authored_graph(
             and node.data.nodeType == NodeType.POLARS
             and "code" in node.data.config
         ):
-            _validate_polars_result_retained(node.data.config["code"])
+            _validate_polars_result_retained(node.data.config["code"], node_id)
             _validate_polars_named_inputs(
                 node.data.config["code"],
                 node_id,
@@ -2035,6 +2237,8 @@ def _validate_assistant_authored_graph(
             "New assistant-authored node(s) are disconnected: "
             + ", ".join(disconnected)
             + ". Connect every new node in the same edit plan.",
+            where={"node": disconnected[0]},
+            fix=f"Add an add_edge operation that connects {disconnected[0]!r} in the same plan.",
         )
 
 
@@ -2046,9 +2250,14 @@ def prepare_graph_edit(
     """Parse, apply, and validate an edit once against one exact snapshot."""
 
     ops = parse_ops(raw_ops)
-    result, refs, authored_added = _apply_ops_with_refs(snapshot.graph, ops)
+    applied = _apply_ops_with_refs(snapshot.graph, ops)
+    result, refs = applied.graph, applied.refs
     diff = _semantic_diff(snapshot.graph, result, ops, refs)
-    _validate_assistant_authored_graph(result, diff, authored_added)
+    try:
+        _validate_assistant_authored_graph(result, diff, applied.new_node_ids)
+    except LocatedPlanError as exc:
+        locate_plan_error(exc, applied.writers, result)
+        raise
     normalized = tuple(_frozen_json(op.model_dump(mode="json")) for op in ops)
     _validate_postconditions(postconditions)
     resolved_conditions = tuple(
@@ -2076,6 +2285,7 @@ def prepare_graph_edit(
         diff=diff,
         affected_capabilities=capability_ids,
         postconditions=all_conditions,
+        writers=MappingProxyType(dict(applied.writers)),
     )
 
 
@@ -2288,6 +2498,8 @@ __all__ = [
     "DeleteNodeOp",
     "GraphEditOp",
     "GraphEditPlan",
+    "AppliedOps",
+    "LocatedPlanError",
     "OpValidationError",
     "PlanStore",
     "PreparedGraphEdit",
@@ -2302,6 +2514,7 @@ __all__ = [
     "build_project_snapshot",
     "dataset_schema_digest",
     "parse_ops",
+    "locate_plan_error",
     "prepare_graph_edit",
     "finalize_graph_edit_plan",
     "SemanticDiff",

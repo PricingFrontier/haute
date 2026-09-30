@@ -2473,6 +2473,186 @@ class TestStepsFirstAuthoring:
         assert {column: [row[column] for row in rows] for column in expected} == expected
 
 
+def _egress_toml(root: Path, *, max_sensitivity: str) -> None:
+    (root / "haute.toml").write_text(
+        '[assistant]\nprovider = "openai"\nmodel = "test"\n'
+        'base_url = "https://api.openai.com/v1"\n'
+        f'[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "{max_sensitivity}"\n'
+        "allow_project_knowledge = false\nallow_executable_source = false\n"
+        "allow_row_samples = false\n",
+        encoding="utf-8",
+    )
+
+
+def _august_steps(code: str) -> list[dict[str, str]]:
+    return [
+        {"id": "start", "kind": "source", "input": "proposer_claims"},
+        {"id": "logic", "kind": "free_code", "code": code},
+    ]
+
+
+def _august_ops(code: str) -> list[dict[str, object]]:
+    return [
+        {"op": "update_node", "node": "august_totals", "config": {"steps": _august_steps(code)}}
+    ]
+
+
+#: The August failure: a Transform fed by two claim sources reads one of them
+#: by indexing df, as if df held every input.
+AUGUST_INDEXING = "df = df['proposer_claims'].filter(pl.col('claim_month') == '2026-08')"
+AUGUST_TYPO = "df = df.filter(pl.col('claim_mnth') == '2026-08')"
+AUGUST_DISCARDED = "df.filter(pl.col('claim_month') == '2026-08')"
+CLAIM_COLUMNS = ["policy_id", "claim_month", "amount"]
+
+
+class TestActionableErrors:
+    """A tool error says where it happened, what the node's inputs hold and how
+    to fix it, through the executor the model calls."""
+
+    async def test_the_august_two_input_failure_names_both_inputs_and_the_by_name_form(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        execute = build_tool_executor("main.py")
+
+        result = await execute("dry_run_graph_edits", {"ops": _august_ops(AUGUST_INDEXING)})
+
+        error = result["error"]
+        assert error["code"] == "invalid_ops"
+        assert error["retryable"] is True
+        assert error["where"] == {
+            "op_index": 0,
+            "node": "august_totals",
+            "field": "steps",
+            "step": "logic",
+        }
+        assert error["context"] == {
+            "inputs": {
+                "proposer_claims": CLAIM_COLUMNS,
+                "additional_drivers_claims": CLAIM_COLUMNS,
+            }
+        }
+        assert "indexes df by the input name 'proposer_claims'" in error["message"]
+        assert '{"id": "start", "kind": "source", "input": "<edge name>"}' in error["message"]
+        assert error["fix"] == (
+            "df is already the 'proposer_claims' frame the source step chose; read "
+            "'additional_drivers_claims' by edge name (for example "
+            "pl.concat([df, additional_drivers_claims]) or "
+            "df.join(additional_drivers_claims, ...))."
+        )
+
+    async def test_a_public_policy_refuses_the_dry_run_before_naming_any_column(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="public")
+
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits", {"ops": _august_ops(AUGUST_INDEXING)}
+        )
+
+        assert result["error"]["code"] == "egress_policy_denied"
+        assert result["error"]["retryable"] is False
+        assert "claim_month" not in json.dumps(result)
+
+    async def test_a_misspelt_column_suggests_the_input_column(self, steps_first_project: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        execute = build_tool_executor("main.py")
+
+        result = await execute("dry_run_graph_edits", {"ops": _august_ops(AUGUST_TYPO)})
+
+        error = result["error"]
+        assert error["code"] == "schema_unresolvable"
+        # A lazy plan fails when its schema resolves, outside any step's line,
+        # so the location stops at the node and the operation that wrote it.
+        assert error["where"] == {"op_index": 0, "node": "august_totals"}
+        assert error["did_you_mean"] == ["claim_month"]
+        assert error["fix"] == "Replace 'claim_mnth' with 'claim_month' in node 'august_totals'."
+        assert error["context"]["inputs"]["proposer_claims"] == CLAIM_COLUMNS
+
+    async def test_an_unknown_tool_names_its_close_match(self, steps_first_project: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")("dry_run_graph_edit", {})
+
+        error = result["error"]
+        assert error["code"] == "unknown_tool"
+        assert error["did_you_mean"][0] == "dry_run_graph_edits"
+        assert error["fix"] == "Call dry_run_graph_edits instead."
+        assert error["retryable"] is True
+
+    async def test_three_independent_errors_converge_in_one_turn(self, steps_first_project: Path):
+        """A scripted replay through the real tools: three different faults,
+        each corrected from its error, then the guide's form applies."""
+
+        from haute.assistant._loop import run_turn
+        from haute.assistant._providers import ProviderUsage, ToolCallRequest, TurnStop
+        from haute.assistant._session import SessionStore
+        from haute.assistant._tools import build_tool_executor
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        good = _guide_step_lists()[0]
+        attempts = [_august_ops(code) for code in (AUGUST_INDEXING, AUGUST_TYPO, AUGUST_DISCARDED)]
+        attempts.append([{"op": "update_node", "node": "august_totals", "config": {"steps": good}}])
+        results: list[dict] = []
+
+        class Replay:
+            def __init__(self) -> None:
+                self.rounds = 0
+
+            async def stream_turn(self, *, system, messages, tools):
+                last = messages[-1]
+                if last.get("role") == "tool":
+                    results.append(last["content"])
+                self.rounds += 1
+                if self.rounds <= len(attempts):
+                    yield ToolCallRequest(
+                        f"dry-{self.rounds}",
+                        "dry_run_graph_edits",
+                        {"ops": attempts[self.rounds - 1]},
+                    )
+                else:
+                    yield ToolCallRequest(
+                        "apply", "apply_graph_plan", {"plan_hash": last["content"]["plan_hash"]}
+                    )
+                yield TurnStop("tool_use", ProviderUsage(input_tokens=1, output_tokens=1))
+
+        store = SessionStore()
+        session_id = store.create("main.py").id
+        events = [
+            event
+            async for event in run_turn(
+                store,
+                session_id,
+                "total both claim sources' August claims per policy in august_totals",
+                provider=Replay(),
+                tools=[],
+                execute_tool=build_tool_executor("main.py"),
+                system_prompt="s",
+                turn_timeout=60.0,
+                max_tool_calls=10,
+            )
+        ]
+
+        assert [result["error"]["code"] for result in results[:3]] == [
+            "invalid_ops",
+            "schema_unresolvable",
+            "invalid_ops",
+        ]
+        assert "error" not in results[3]
+        assert events[-1].type == "completed"
+        assert events[-1].outcome.kind == "applied"
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        saved = next(node for node in graph.nodes if node.id == "august_totals")
+        assert saved.data.config["steps"] == good
+
+
 EGRESS_SOURCE = """\
 import polars as pl
 

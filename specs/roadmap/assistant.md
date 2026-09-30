@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
-| ASSIST-23 | Planned | P1 | Tool errors say how to fix them, and the model keeps correcting while each error is new. |
 | ASSIST-24 | Planned | P1 | Each turn starts with the graph, the selection and the policy, without orientation reads. |
 | ASSIST-25 | Planned | P2 | Renaming a node rewrites the references that structured configs hold. |
 | ASSIST-26 | Planned | P2 | Structured cards after a free-code card keep their column help. |
@@ -123,28 +122,6 @@ states.
 
 **Evidence:** `src/haute/assistant/_wire_ops.py`;
 `src/haute/assistant/_render.py::render_pipeline_graph`.
-
-### ASSIST-23 — Actionable errors and a progress-based retry budget
-**Why:** Validator errors rarely say which inputs and columns were available
-or what would fix them, and one corrected dry-run retry is allowed before the
-turn ends `BLOCKED`, so independent, fixable errors end turns early on
-mid-tier models.
-
-**Plan:** Every tool error carries where it happened, the inputs and columns
-available, one concrete fix and close-match suggestions. A turn allows up to
-four failed dry-runs and stops early only when an identical plan is resent or
-the same diagnostic repeats for the same attempted operations; its final text
-carries the last sanitised error. Amend the retry rule in the specification
-first.
-
-**Acceptance:** Replaying the August two-input failure yields an error naming
-both inputs' columns and the by-name form; three independent errors converge
-in one turn; an identical resend stops after two attempts.
-
-**Dependencies:** `ASSIST-08`, `ASSIST-20`.
-
-**Evidence:** `src/haute/assistant/_ops.py::_validate_polars_named_inputs`;
-`src/haute/assistant/_loop.py::run_turn`.
 
 ### ASSIST-24 — Per-turn context and a stable system prefix
 **Why:** Every walkthrough spent three to eight reads orienting before its

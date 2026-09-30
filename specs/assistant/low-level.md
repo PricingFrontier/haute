@@ -24,7 +24,7 @@
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
-| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
+| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Every one of the last three carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. It imports only Polars and the stdlib-only JSON-safe encoder, so the assistant reaches it without importing the routes layer. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request, usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked or committed_unverified, and a non-empty detail exactly for the last three), and the text-delta, tool-started, tool-finished, graph-updated, completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
@@ -32,8 +32,8 @@
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
 | `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
 
-Environment knobs: `HAUTE_ASSISTANT_TURN_TIMEOUT` (seconds, default 300) and
-`HAUTE_ASSISTANT_MAX_TOOL_CALLS` (default 20) read lazily via `haute._env`, matching the
+Environment knobs: `HAUTE_ASSISTANT_TURN_TIMEOUT` (seconds, default 600) and
+`HAUTE_ASSISTANT_MAX_TOOL_CALLS` (default 40) read lazily via `haute._env`, matching the
 existing pattern. `HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS` (the per-provider-call output budget
 both adapters pass through, threaded via `AssistantConfig`) is deliberately stricter than
 `haute._env`'s lenient semantics: unset → 8192; a set-but-malformed or non-positive value
@@ -706,25 +706,37 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    `dry_run_recipe_plan`; it never copies the returned operations. A unique explicit
    current-request recipe suggestion may be repeated in the per-turn system contract, but
    every request receives the same complete mutation tool schemas and the executor never
-   treats lexical classification as authority. A failed dry run
-   permits at most one materially corrected retry. The loop keeps **two independent
-   bounded budgets** over failed calls to either dry-run tool, because the two failure
-   classes are not the same evidence. A domain rejection — the plan was built and judged
-   — costs one of two plan attempts. A closed-input-schema rejection
-   (`invalid_request`/`invalid_capability_query`) never reached planning: it says the
-   call was spelled wrong, not that the plan is wrong, and the named-field validation
-   error makes it directly correctable, so it costs one of two malformed-call attempts
-   instead. Charging both to one budget spent the plan retry before the plan had ever
-   been judged. Either exhausted budget ends the turn, so neither class can loop: the
-   loop appends a deterministic assistant `BLOCKED:` message naming which class blocked
-   it, carrying the latest stable error code, that failed dry-run's error message in the
-   same bounded one-line form the chat's tool row shows (`_result_summary`, at most 160
-   characters), and the fact that no graph changes were applied. The message is exactly
-   what the tool result already returned to the model, so the outcome adds no value the
-   model had not seen. It then emits `completed` with the `blocked` outcome, whose detail
-   is that message after its `BLOCKED:` marker, and performs no further dry-run or
-   provider round. The
-   system prompt states the same distinction.
+   treats lexical classification as authority. A failed dry run may be corrected while
+   the corrections make progress. The loop keeps **one bounded budget of four failed
+   calls** across both dry-run tools and both failure classes, a domain rejection (the
+   plan was built and judged) and a closed-input-schema rejection
+   (`invalid_request`/`invalid_capability_query`, which never reached planning). The
+   budget replaces two independent budgets of two attempts each, which existed because
+   a single plan retry was spent by a spelling error before the plan had ever been
+   judged; with four attempts and the progress rule below that can no longer happen,
+   and one counter is the simpler bound. The loop ends the turn before the budget is
+   spent when a failed dry-run makes no progress, judged on value-free identities it
+   keeps for the failed dry-runs of the turn:
+   - **identical request** — the tool name and the canonical JSON of the arguments of a
+     dry-run that already failed, so an identical resend stops on its second attempt;
+   - **repeated diagnostic** — the error's `code`, canonical `where` and `fix`, together
+     with the canonical JSON of the operation `where.op_index` points at (the whole
+     arguments when the error names no operation), so a model that edits other
+     operations while the failing one stays unchanged stops as soon as the same
+     diagnostic comes back.
+
+   Either stop, and a spent budget, append a deterministic assistant `BLOCKED:` message
+   naming whether the latest failure was graph validation or an input-schema rejection
+   and why the loop stopped (four failed dry-runs, the same request sent again, or the
+   same error for an unchanged operation), carrying the latest stable error code, that
+   failed dry-run's error message in the same bounded one-line form the chat's tool row
+   shows (`_result_summary`, at most 160 characters), and the fact that no graph changes
+   were applied. The message is exactly what the tool result already returned to the
+   model, so the outcome adds no value the model had not seen. It then emits `completed`
+   with the `blocked` outcome, whose detail is that message after its `BLOCKED:` marker,
+   and performs no further dry-run or provider round. A further dry-run call in the same
+   provider round is refused without running as `dry_run_retry_limit` (not retryable) and
+   does not change the recorded blocker. The system prompt states the same rule.
 
    What the model sees is pinned by a checked-in golden snapshot under
    `tests/assistant_eval/golden/`: the system prompt rendered for one fixed project
@@ -913,6 +925,36 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    turn with no server-side record of why it failed. Tool arguments and result values
    are never logged.
 
+   Every error result is finalised by the executor before it is logged or returned:
+   it carries `retryable`, false exactly for the codes in `_NON_RETRYABLE_CODES`
+   (`tool_failed`, `operation_failed`, `mutation_failed`, `egress_policy_denied`,
+   `egress_policy_unavailable`, `tool_interrupted`, `dry_run_retry_limit`,
+   `verification_failed`, `tool_result_too_large`), and true for every other code,
+   each of which is a rejection a corrected call can clear. The plan domain locates
+   its failures: `OpValidationError` and `AssistantOperationError` carry `where` (any
+   of `op_index`, `node`, `field`, `step`), `fix` (one concrete correction) and `graph`
+   (the graph the failure was judged against); `OpValidationError` requires its `fix`,
+   so every `invalid_ops` failure carries one. `_apply_ops_with_refs` stamps the
+   failing operation's index, and records which operation last wrote each node (added,
+   updated or renamed it), so a failure found after the whole batch — the
+   assistant-authored step and code checks, `op_not_applied`, `node_not_ready`,
+   `schema_unresolvable` — is stamped with the index of the operation that wrote its
+   node and with the planned graph. The dry-run boundary renders `where`, `fix`, and,
+   when `where.node` is set, `context.inputs`: each incoming input's code-visible name
+   and its column names, resolved schema-only per source by `_input_columns`, the same
+   resolution that decides which Polars-named columns an execution failure may name.
+   An input whose source does not resolve is left out. The executor admits the dry-run
+   and apply tools only under `get_node_schema`'s permission (a readable policy whose
+   `max_sensitivity` is not `public`), so a public policy refuses the call as
+   `egress_policy_denied` before any column is resolved. `did_you_mean` is the
+   `difflib` close matches (at most three, cutoff 0.6) of each column an execution
+   failure names that no input provides, among those input and column names only.
+   `schema_unresolvable` always carries a `fix` naming the step or node to correct,
+   and the replacement name when `did_you_mean` has one. An unknown tool name carries
+   the valid names and its close matches among them. None of these fields is
+   persisted: durable history keeps only `code`, `validation_path` and
+   `validation_reason`.
+
    Before any dispatcher indexes an argument, the executor validates the
    complete JSON value against the operation descriptor's closed input schema,
    including required/unknown fields, discriminated operation variants,
@@ -936,7 +978,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    `_session._persisted_message` copies exactly `code`, `validation_path`, and
    `validation_reason`. A rejected key is content the model itself submitted and is
    already in provider history, so naming it back is not new egress — and it is what
-   makes the rejection correctable inside the turn's single retry, where
+   makes the rejection correctable on the next attempt, where
    "contains a field that is not allowed" was not. Malformed capability-descriptor
    queries return `invalid_capability_query`; other malformed known-tool calls return
    `invalid_request`. Neither path raises a `KeyError`, echoes any other rejected
@@ -1078,7 +1120,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   its named parameters (one per incoming edge) and `df` is only the output variable,
   unbound until the code assigns it. Reading `df` before assigning it is therefore a
   guaranteed `NameError` at run time, so assistant-authored code that does so is an op
-  error naming that node's actual input names, on ANY input count. Binding first
+  error naming that node's actual input names, on ANY input count, with `where`
+  (`node`, `field: "code"`) and a `fix` that binds the first input by name. Binding first
   (`df = proposer_claims`) and then reusing `df` is explicit and accepted. Only reads
   that resolve to the module-level `df` count, so the
   check skips any nested scope holding a `df` of its own — a `def helper(df)` parameter,
@@ -1113,9 +1156,16 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   Scenario Expander, Explore), a step that reads an incoming input name or the id of a
   node upstream is refused with `<Surface> code sees only df; <name> is not in scope`,
   naming the step, unless that name is bound in the rendered steps up to and including
-  the step, in the pipeline preamble, or is `df`, `pl` or a builtin. The check is
-  deliberately narrow: it never refuses a name it cannot tie to an input, so local
-  helpers, preamble helpers and any other valid program pass.
+  the step, in the pipeline preamble, or is `df`, `pl` or a builtin. On every stepped
+  surface, a step that indexes `df` by an incoming input's edge name
+  (`df['proposer_claims']`) is refused naming the step: `df` is one frame, not a
+  mapping of inputs, and the refusal's `fix` says which frame `df` already is and how
+  that surface reads its other inputs (by edge name on a Transform or Load File, the
+  `[source, free_code]` form on a Transform). The checks are
+  deliberately narrow: they never refuse a name they cannot tie to an input, so local
+  helpers, preamble helpers, a column genuinely named like an input on a collected
+  frame read through another name, and any other valid program pass. Each refusal
+  carries `where` (`node`, `field: "steps"`, `step`) and a `fix`.
 - **Writes to stepped nodes land or fail loudly.** `NodeData` rebuilds `code` from
   `steps` whenever a stepped type holds a `steps` list, so a `code` write to such a node
   would be overwritten while the plan reported success. Each `add_node` and
@@ -1378,6 +1428,14 @@ fixture for route tests). The implemented coverage is:
   rejects a value the direct call happily returns; alongside it, the rendered form of each
   bound, and an unsummarisable column withholding only itself. Executable-config
   coverage pins `code` visible or redacted strictly by `allow_executable_source`.
+  Actionable-error coverage runs through the source-bound executor: the August
+  two-input failure (a Transform fed by two claim sources indexing
+  `df['proposer_claims']`) is `invalid_ops` with its `where`, both inputs' columns in
+  `context.inputs`, the `[source, free_code]` form and the by-name `fix`; a misspelt
+  column is `schema_unresolvable` with `did_you_mean` and the replacement `fix`; a
+  public policy refuses the dry-run before any column is named; an unknown tool names
+  its close match; and three independent errors, each corrected from its error,
+  converge in one scripted turn through the real tools to an applied outcome.
   Contract tests assert that the saved `active_source`
   is passed to the engine; crafted/mocked execution results cover submodel-boundary
   rejection, multi-frame per-port shaping, unknown-node errors, and propagation of an
@@ -1557,9 +1615,11 @@ fixture for route tests). The implemented coverage is:
   persists an unmatched call; a raising history append still releases the lock;
   turn-atomic history windowing, including a tool-heavy turn crossing both caps without
   splitting a call/result group, and a twenty-one-call turn followed by a turn that still
-  sees its original request; the two dry-run budgets are independent and each
-  bounded — a malformed call does not consume a plan-correction attempt, and repeated
-  malformed calls block with their own wording and no echoed detail; read-only
+  sees its original request; the dry-run progress rule — an identical resend stops
+  after two attempts, the same diagnostic for an unchanged operation stops, the same
+  diagnostic after its operation changed does not, four failures that each change the
+  plan spend the budget whatever their class, three independent errors converge to an
+  applied turn, and repeated malformed calls block with their own wording; read-only
   questions and authoring wording without a dry-run attempt end completed with no
   controller continuation; an end after an attempted but unapplied mutation receives one
   internal controller continuation, successful apply terminates with deterministic text and no later
@@ -1567,7 +1627,7 @@ fixture for route tests). The implemented coverage is:
   second unqualified end fails rather than completes. Every completed turn carries and
   stores its typed outcome: `answered` for a reply without a mutation attempt,
   `needs_input` for a question with or without one, `blocked` from the model or from an
-  exhausted dry-run budget (its detail being the streamed text after the marker),
+  stopped dry-run budget (its detail being the streamed text after the marker),
   `applied`, and `committed_unverified` for an apply whose save committed but failed
   verification, which ends the turn at once with no later tool or provider round; a
   failed turn stores none. The system prompt states the

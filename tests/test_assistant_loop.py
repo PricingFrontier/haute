@@ -407,9 +407,7 @@ class TestMutationCompletionController:
         assert "apply_graph_plan" in controller["content"]
         assert "exact returned plan hash" in controller["content"]
 
-    async def test_second_failed_dry_run_terminates_with_deterministic_blocker(
-        self, store, session_id
-    ):
+    async def test_an_identical_resend_stops_after_two_attempts(self, store, session_id):
         provider = ScriptedProvider(
             [
                 [
@@ -449,7 +447,7 @@ class TestMutationCompletionController:
         assert len(provider.calls) == 2
         text = "".join(event.text for event in events if event.type == "text_delta")
         assert text == (
-            "BLOCKED: graph validation failed after one corrected retry "
+            "BLOCKED: graph validation failed and the same request was sent again "
             "(schema_unresolvable); no graph changes were applied. "
             "Last error: Node 'rated' references unknown column 'premium_2'."
         )
@@ -529,31 +527,36 @@ class TestMutationCompletionController:
         assert "dry_run_retry_limit" not in text
         assert "has already failed" not in text
 
-    async def test_malformed_call_does_not_consume_the_plan_correction_budget(
+    async def test_four_failed_dry_runs_that_each_change_the_plan_spend_the_budget(
         self, store, session_id
     ):
-        """`invalid_request` is refused by the closed input schema before any
-        plan is built, so it is not evidence that the plan is wrong. Charging
-        it to the single plan-correction budget spent the retry before the plan
-        had ever been judged."""
+        """Every failure makes progress, so the turn keeps correcting until the
+        fourth failed dry-run, across both failure classes."""
 
         provider = ScriptedProvider(
             [
                 [
-                    ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": []}),
+                    ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": [index]}),
                     TurnStop("tool_use", _usage()),
                 ]
-                for index in range(1, 4)
+                for index in range(1, 5)
             ]
         )
-        codes = ["invalid_request", "schema_unresolvable", "schema_unresolvable"]
+        codes = ["invalid_request", "invalid_ops", "invalid_ops", "schema_unresolvable"]
         calls = 0
 
         async def execute_tool(name: str, arguments: dict) -> dict:
             nonlocal calls
             code = codes[calls]
             calls += 1
-            return {"error": {"code": code, "message": "detail"}}
+            return {
+                "error": {
+                    "code": code,
+                    "message": f"detail {calls}",
+                    "where": {"op_index": 0},
+                    "fix": f"fix {calls}",
+                }
+            }
 
         events = await _run(
             store,
@@ -564,17 +567,157 @@ class TestMutationCompletionController:
         )
 
         assert _assert_single_terminal(events).type == "completed"
-        assert calls == 3
+        assert calls == 4
         text = "".join(event.text for event in events if event.type == "text_delta")
         assert text == (
-            "BLOCKED: graph validation failed after one corrected retry "
-            "(schema_unresolvable); no graph changes were applied. Last error: detail"
+            "BLOCKED: graph validation failed on 4 dry-runs (schema_unresolvable); "
+            "no graph changes were applied. Last error: detail 4"
         )
 
-    async def test_repeated_malformed_calls_block_with_their_own_wording(self, store, session_id):
-        """The separate budget is still bounded, and the blocker names what
-        actually happened: nothing validated the plan."""
+    async def test_three_independent_errors_converge_in_one_turn(self, store, session_id):
+        """A plan with three independent faults, each reported and corrected in
+        turn, is applied in the same turn."""
 
+        attempts = [
+            [{"op": "update_node", "node": "n", "config": {"v": index}}] for index in range(4)
+        ]
+        provider = ScriptedProvider(
+            [
+                *(
+                    [
+                        ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": ops}),
+                        TurnStop("tool_use", _usage()),
+                    ]
+                    for index, ops in enumerate(attempts)
+                ),
+                [
+                    ToolCallRequest("apply", "apply_graph_plan", {"plan_hash": "h"}),
+                    TurnStop("tool_use", _usage()),
+                ],
+            ]
+        )
+        errors = iter(
+            [
+                {"code": "invalid_ops", "message": "a", "where": {"op_index": 0}, "fix": "x"},
+                {"code": "invalid_ops", "message": "b", "where": {"op_index": 0}, "fix": "y"},
+                {"code": "schema_unresolvable", "message": "c", "where": {"node": "n"}, "fix": "z"},
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "apply_graph_plan":
+                return {"graph_fingerprint": "f"}
+            error = next(errors, None)
+            return {"plan_hash": "h"} if error is None else {"error": error}
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "completed"
+        assert terminal.outcome.kind == "applied"
+
+    async def test_the_same_error_for_an_unchanged_operation_stops_the_turn(
+        self, store, session_id
+    ):
+        """Changing another operation while the failing one stays unchanged is
+        no progress: the same diagnostic for the same operation stops the turn."""
+
+        failing = {"op": "update_node", "node": "n", "config": {"v": 1}}
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(
+                        f"dry-{index}", "dry_run_graph_edits", {"ops": [failing, {"other": index}]}
+                    ),
+                    TurnStop("tool_use", _usage()),
+                ]
+                for index in range(1, 3)
+            ]
+        )
+        calls = 0
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            return {
+                "error": {
+                    "code": "invalid_ops",
+                    "message": f"Operation 0 is wrong ({calls}).",
+                    "where": {"op_index": 0, "node": "n"},
+                    "fix": "Write v as a string.",
+                }
+            }
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert calls == 2
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert text == (
+            "BLOCKED: graph validation failed with the same error for an unchanged "
+            "operation (invalid_ops); no graph changes were applied. "
+            "Last error: Operation 0 is wrong (2)."
+        )
+
+    async def test_the_same_error_after_its_operation_changed_is_progress(self, store, session_id):
+        provider = ScriptedProvider(
+            [
+                *(
+                    [
+                        ToolCallRequest(
+                            f"dry-{index}",
+                            "dry_run_graph_edits",
+                            {"ops": [{"op": "update_node", "node": "n", "config": {"v": index}}]},
+                        ),
+                        TurnStop("tool_use", _usage()),
+                    ]
+                    for index in range(1, 3)
+                ),
+                [TextDelta("BLOCKED: v cannot be set."), TurnStop("end", _usage())],
+            ]
+        )
+        calls = 0
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            return {
+                "error": {
+                    "code": "invalid_ops",
+                    "message": "Operation 0 is wrong.",
+                    "where": {"op_index": 0, "node": "n"},
+                    "fix": "Write v as a string.",
+                }
+            }
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        assert calls == 2
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "completed"
+        assert terminal.outcome.detail == "v cannot be set."
+
+    async def test_repeated_malformed_calls_block_with_their_own_wording(self, store, session_id):
+        """A malformed call counts against the same budget, and the blocker names
+        what actually happened: nothing validated the plan."""
         provider = ScriptedProvider(
             [
                 [
@@ -610,9 +753,9 @@ class TestMutationCompletionController:
         assert calls == 2
         text = "".join(event.text for event in events if event.type == "text_delta")
         assert text == (
-            "BLOCKED: the dry-run call was rejected by its input schema and the "
-            "corrected call was rejected again (invalid_request); no graph changes "
-            "were applied. Last error: ops[1]: unknown field 'colour'."
+            "BLOCKED: the dry-run call was rejected by its input schema and the same "
+            "request was sent again (invalid_request); no graph changes were applied. "
+            "Last error: ops[1]: unknown field 'colour'."
         )
 
     async def test_retries_unqualified_end_once_and_accepts_explicit_blocker(
@@ -1240,6 +1383,7 @@ class TestCancellation:
             "error": {
                 "code": "tool_interrupted",
                 "message": "Tool execution was interrupted before completion.",
+                "retryable": False,
             }
         }
 
@@ -1477,8 +1621,10 @@ class TestSystemPrompt:
         assert "Never claim an apply succeeded" in prompt
         assert "Build, add, change, update, connect, remove, and delete" in prompt
         assert "prefer `plan_recipe`" in prompt
-        assert "at most one materially corrected dry-run retry" in prompt
-        assert "Do not repeat an identical failed plan" in prompt
+        assert "up to four failed dry-runs" in prompt
+        assert "a failed plan is resent unchanged" in prompt
+        assert "every retry must change what the error names" in prompt
+        assert "at most one materially corrected" not in prompt
         assert "exact returned plan hash" in prompt
         assert "exactly once" in prompt
         assert "Never resend or reconstruct operations" in prompt

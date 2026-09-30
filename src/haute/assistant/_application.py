@@ -20,17 +20,20 @@ from haute._graph_utils import _sanitize_func_name
 from haute._input_providers import InferredInputSchema, recording_inferred_inputs
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
-from haute._types import NodeType, PipelineGraph
+from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
+from haute.assistant._catalog import new_logic_steps
 from haute.assistant._ops import (
     AssistantOperationError,
     GraphEditPlan,
+    LocatedPlanError,
     PlanStore,
     ProjectSnapshot,
     ProjectSourceEvidence,
     SemanticDiff,
     build_project_snapshot,
     finalize_graph_edit_plan,
+    locate_plan_error,
     prepare_graph_edit,
     semantic_diff,
     validate_declared_postconditions,
@@ -141,7 +144,12 @@ class SchemaUnresolvableError(AssistantOperationError):
         graph: PipelineGraph,
         submitted: Sequence[Mapping[str, Any]],
     ) -> None:
-        super().__init__("schema_unresolvable", f"Schema validation failed for node {node!r}.")
+        where: dict[str, object] = {"node": node}
+        if step is not None:
+            where = {"node": step.node, "field": "steps", "step": step.step_id}
+        super().__init__(
+            "schema_unresolvable", f"Schema validation failed for node {node!r}.", where=where
+        )
         self.node = node
         self.failure = failure
         self.step = step
@@ -531,17 +539,33 @@ def _prove_steps_survive_save(
                 raise AssistantOperationError(
                     "op_not_applied",
                     f"Node {node_id!r} would not reparse after save: {exc}",
+                    where={"node": node_id, "field": "steps"},
+                    fix=_steps_fix(node),
                 ) from exc
             if "_steps_discarded" in reparsed or reparsed.get("steps") != node.data.config["steps"]:
                 reason = reparsed.get("_steps_discarded") or "Its steps change on reparse."
                 raise AssistantOperationError(
                     "op_not_applied",
                     f"Node {node_id!r} would lose its steps on save: {reason}",
+                    where={"node": node_id, "field": "steps"},
+                    fix=_steps_fix(node),
                 )
 
 
+def _steps_fix(node: GraphNode) -> str:
+    """The correction for a step list that would not survive its save."""
+
+    form = json.dumps(new_logic_steps(node.data.nodeType, "..."))
+    return f"Write the node's new logic as {form}."
+
+
 def _not_ready(node_id: str, message: str) -> AssistantOperationError:
-    return AssistantOperationError("node_not_ready", f"Node {node_id!r} is not ready: {message}")
+    return AssistantOperationError(
+        "node_not_ready",
+        f"Node {node_id!r} is not ready: {message}",
+        where={"node": node_id},
+        fix=f"Configure node {node_id!r} so it is ready: {message}",
+    )
 
 
 def _prove_load_file_loads(node_id: str, config: Mapping[str, Any]) -> None:
@@ -635,23 +659,27 @@ def build_verified_plan(
     """Build one plan through the shared edit and save-verification pipeline."""
 
     prepared = prepare_graph_edit(snapshot, operations, postconditions)
-    warnings = validate_graph(prepared.result_graph)
-    _prove_steps_survive_save(
-        prepared.result_graph,
-        prepared.diff.complete.written_nodes,
-        source_file=source_file,
-    )
-    targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
-    evidence, schema_warnings = _schema_evidence(
-        prepared.result_graph,
-        targets,
-        baseline=snapshot.graph,
-        changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
-        submitted=operations,
-    )
-    _prove_nodes_ready(
-        prepared.result_graph, prepared.diff.complete.written_nodes, submitted=operations
-    )
+    try:
+        warnings = validate_graph(prepared.result_graph)
+        _prove_steps_survive_save(
+            prepared.result_graph,
+            prepared.diff.complete.written_nodes,
+            source_file=source_file,
+        )
+        targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
+        evidence, schema_warnings = _schema_evidence(
+            prepared.result_graph,
+            targets,
+            baseline=snapshot.graph,
+            changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
+            submitted=operations,
+        )
+        _prove_nodes_ready(
+            prepared.result_graph, prepared.diff.complete.written_nodes, submitted=operations
+        )
+    except LocatedPlanError as exc:
+        locate_plan_error(exc, prepared.writers, prepared.result_graph)
+        raise
     plan = finalize_graph_edit_plan(
         prepared,
         validation_warnings=(*warnings, *schema_warnings),

@@ -182,12 +182,23 @@ terminal in the same way: the controller emits a deterministic statement that th
 were saved but not verified and completes with the `committed_unverified` outcome, so the
 model cannot apply a second plan over an unverified save and no later text or blocker can
 report that nothing changed.
-A failed dry-run permits one materially corrected retry. If that retry also fails, the
-controller terminates the tool loop itself with a `BLOCKED:` outcome naming the latest
-stable error code, repeating that dry-run error's message in the same bounded form the
-chat's tool row showed (so it carries nothing the tool result had not already shown the
-model), and stating that no graph changes were applied; the provider cannot
-continue guessing until the global tool-call limit is exhausted.
+A failed dry-run may be corrected while each correction makes progress. A turn allows
+up to four failed dry-runs across both dry-run tools, and the controller ends the
+turn earlier when the model makes no progress: it resends a plan identical to one
+that already failed, or the same diagnostic (its code, `where` and `fix`) repeats
+while the operation it points at is unchanged. When either happens the controller
+terminates the tool loop itself with a `BLOCKED:` outcome naming why it stopped and
+the latest stable error code, repeating that dry-run error's message in the same
+bounded form the chat's tool row showed (so it carries nothing the tool result had
+not already shown the model), and stating that no graph changes were applied; the
+provider cannot continue guessing until the global tool-call limit is exhausted.
+This replaces a rule that allowed "one materially corrected retry" so that the
+provider "cannot continue guessing". That rule treated every second failure as
+guessing, but a plan often holds several independent, fixable faults that a dry-run
+reports one at a time, so a mid-tier model that corrected the first fault correctly
+was blocked on the second. Guessing is a plan that stops changing, and that is what
+the progress rule measures; the four-attempt ceiling and the tool-call limit still
+bound a model that changes its plan without converging.
 The successful mutation result retains its graph fingerprint in neutral
 history; resume derives the same settled “Canvas updated” activity row from
 that durable fact, in its original position after the mutation tool row.
@@ -368,6 +379,23 @@ config the save layer rejects, a schema read against a missing file — each ret
 structured error as that tool call's result, so the model can correct course within the same
 turn. Only failures of the turn itself (provider errors, timeout, cap, internal errors)
 terminate the stream.
+
+**A tool error says how to fix it.** Every tool error carries a stable `code`, a
+`message` and `retryable`, which is false only when no corrected call can succeed in
+the turn (an internal failure, a policy refusal, an interrupted call, a spent dry-run
+budget, a save that committed unverified, or a result too large for the model's
+context). A failure located in the submitted plan carries `where`: the operation's
+index, the node, and the config field or step id involved. Every operation validation
+failure (`invalid_ops`) and every `schema_unresolvable`, `op_not_applied`,
+`node_not_ready`, `rename_has_consumers` and `unknown_tool` error carries `fix`, one
+concrete correction. When `where`
+names a node, the error carries `context.inputs`, each incoming input's name and its
+column names; column names are schema metadata and never row values, and the dry-run
+and apply tools run only under a policy that permits saved project metadata (the same
+permission `get_node_schema` needs), so they disclose nothing that tool would not.
+`did_you_mean` lists close matches to a misspelt name, drawn only from names the error
+may already disclose: those input and column names, and the tool names for an unknown
+tool.
 
 ## Design rationale
 

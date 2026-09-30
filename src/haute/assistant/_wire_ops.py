@@ -20,12 +20,47 @@ from pydantic import (
     field_validator,
 )
 
-from haute._types import NodeType
+from haute._types import NodeType, PipelineGraph
 from haute.errors import HauteError
 
 
-class OpValidationError(HauteError):
-    """Raised when an operation cannot be parsed or applied to a graph."""
+class LocatedPlanError(HauteError):
+    """A plan failure that says where it happened and how to correct it.
+
+    ``where`` holds any of ``op_index``, ``node``, ``field`` and ``step``;
+    ``fix`` is one concrete correction; ``graph`` is the graph the failure was
+    judged against, from which the tool boundary resolves the located node's
+    input columns. The operation layer stamps ``op_index`` and ``graph`` when
+    the raise site cannot know them.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        where: Mapping[str, object] | None = None,
+        fix: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.where: dict[str, object] = dict(where or {})
+        self.fix = fix
+        self.graph: PipelineGraph | None = None
+
+
+class OpValidationError(LocatedPlanError):
+    """Raised when an operation cannot be parsed or applied to a graph.
+
+    Every such failure is one the model can correct, so ``fix`` is required.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        fix: str,
+        where: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, where=where, fix=fix)
 
 
 class _OpModel(BaseModel):
@@ -283,8 +318,8 @@ def graph_edit_operations_schema() -> dict[str, object]:
     }
 
 
-def _invalid(message: str) -> NoReturn:
-    raise OpValidationError(message)
+def _invalid(message: str, *, fix: str) -> NoReturn:
+    raise OpValidationError(message, fix=fix)
 
 
 def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
@@ -296,19 +331,31 @@ def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
     """
 
     if isinstance(raw_ops, (str, bytes)) or not isinstance(raw_ops, Sequence):
-        _invalid("Graph edit operations must be a list of operation objects")
+        _invalid(
+            "Graph edit operations must be a list of operation objects",
+            fix="Send ops as a JSON array of operation objects.",
+        )
     if len(raw_ops) > MAX_PLAN_OPERATIONS:
-        _invalid(f"A graph edit plan may contain at most {MAX_PLAN_OPERATIONS} operations")
+        _invalid(
+            f"A graph edit plan may contain at most {MAX_PLAN_OPERATIONS} operations",
+            fix=f"Split the work into plans of at most {MAX_PLAN_OPERATIONS} operations.",
+        )
 
     parsed: list[GraphEditOp] = []
     for index, raw_op in enumerate(raw_ops):
         if not isinstance(raw_op, Mapping):
-            _invalid(f"Operation {index} must be an object")
+            raise OpValidationError(
+                f"Operation {index} must be an object",
+                where={"op_index": index},
+                fix=f"Send operation {index} as a JSON object with an op field.",
+            )
         try:
             parsed.append(_OP_ADAPTER.validate_python(raw_op))
         except ValidationError as exc:
             raise OpValidationError(
-                f"Invalid graph edit operation at index {index}: {exc}"
+                f"Invalid graph edit operation at index {index}: {exc}",
+                where={"op_index": index},
+                fix=f"Correct operation {index} against the dry_run_graph_edits schema.",
             ) from exc
     return parsed
 
@@ -319,6 +366,7 @@ __all__ = [
     "DeleteEdgeOp",
     "DeleteNodeOp",
     "GraphEditOp",
+    "LocatedPlanError",
     "MAX_DECLARED_POSTCONDITIONS",
     "MAX_PLAN_OPERATIONS",
     "OpValidationError",

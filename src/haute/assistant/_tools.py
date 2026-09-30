@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import difflib
 import json
 import re
 import time
@@ -74,6 +75,7 @@ from haute.assistant._catalog import (
 from haute.assistant._config import mutations_readiness, resolve_egress_policy
 from haute.assistant._ops import (
     AssistantOperationError,
+    LocatedPlanError,
     OpValidationError,
     PlanStore,
     ProjectSourceEvidence,
@@ -269,45 +271,84 @@ def _submitted_names(submitted: object) -> set[str]:
     return names
 
 
+def _frame_column_names(output: object, port: str | None) -> list[str]:
+    """Column names of one resolved output, selecting `port` when it emits several.
+
+    An edge that names no port on a multi-frame output reads every frame.
+    """
+
+    if not isinstance(output, dict):
+        frames = [output]
+    elif port is None:
+        frames = list(output.values())
+    else:
+        frames = [output[port]] if port in output else []
+    names: list[str] = []
+    for frame in frames:
+        if isinstance(frame, pl.LazyFrame):
+            names.extend(name for name in frame.collect_schema().names() if name not in names)
+    return names
+
+
+def _input_columns(
+    graph: PipelineGraph, node: str, *, input_name: str | None = None
+) -> dict[str, list[str]]:
+    """Each incoming input's code-visible name and column names at *node*.
+
+    Resolved schema-only, once per source, on the same engine path as
+    `get_node_schema`, so each name is one that tool would disclose.
+    `input_name` narrows the result to that one input. An input whose source
+    does not resolve is left out and is never an error of its own.
+    """
+
+    try:
+        flat = flatten_graph(graph)
+        inputs = _node_inputs(flat, node)
+    except Exception as exc:  # noqa: BLE001 - an unresolvable site discloses nothing
+        logger.info("assistant_failure_schema_unresolved", node=node, error=type(exc).__name__)
+        return {}
+    outputs: dict[str, object] = {}
+    columns: dict[str, list[str]] = {}
+    for item in inputs:
+        if input_name is not None and item.name != input_name:
+            continue
+        try:
+            if item.source not in outputs:
+                outputs[item.source] = _resolve_schema_outputs(
+                    flat, graph, target=item.source, preserve=frozenset({item.source})
+                )[item.source]
+            columns[item.name] = _frame_column_names(outputs[item.source], item.source_port)
+        except Exception as exc:  # noqa: BLE001 - an unresolvable frame discloses nothing
+            logger.info(
+                "assistant_failure_schema_unresolved", node=item.source, error=type(exc).__name__
+            )
+    return columns
+
+
 def _schema_metadata_names(site: _FailureSite) -> set[str]:
     """Column names of the failing node's input frames, resolved schema-only.
 
-    The same engine path as `get_node_schema`, so each name is one that tool
-    would disclose. A frame that does not resolve contributes nothing and is
-    never an error of its own.
+    With `own_output`, the node's own output columns too. A frame that does
+    not resolve contributes nothing.
     """
 
-    names: set[str] = set()
-    try:
-        flat = flatten_graph(site.graph)
-        inputs = _node_inputs(flat, site.node)
-    except Exception as exc:  # noqa: BLE001 - an unresolvable site discloses nothing
-        logger.info("assistant_failure_schema_unresolved", node=site.node, error=type(exc).__name__)
-        return names
-    targets: dict[str, set[str | None]] = {}
-    for item in inputs:
-        if site.input_name is None or item.name == site.input_name:
-            targets.setdefault(item.source, set()).add(item.source_port)
+    names = {
+        name
+        for columns in _input_columns(site.graph, site.node, input_name=site.input_name).values()
+        for name in columns
+    }
     if site.own_output and site.input_name is None:
-        targets.setdefault(site.node, set()).add(None)
-    for target, ports in targets.items():
         try:
             output = _resolve_schema_outputs(
-                flat, site.graph, target=target, preserve=frozenset({target})
-            )[target]
-            if not isinstance(output, dict):
-                frames = [output]
-            elif None in ports:
-                # The node's own output, or an edge that names no port: every frame.
-                frames = list(output.values())
-            else:
-                frames = [output[port] for port in ports if port in output]
-            for frame in frames:
-                if isinstance(frame, pl.LazyFrame):
-                    names.update(frame.collect_schema().names())
+                flatten_graph(site.graph),
+                site.graph,
+                target=site.node,
+                preserve=frozenset({site.node}),
+            )[site.node]
+            names.update(_frame_column_names(output, None))
         except Exception as exc:  # noqa: BLE001 - an unresolvable frame discloses nothing
             logger.info(
-                "assistant_failure_schema_unresolved", node=target, error=type(exc).__name__
+                "assistant_failure_schema_unresolved", node=site.node, error=type(exc).__name__
             )
     return names
 
@@ -354,7 +395,19 @@ def _execution_error_message(
     site: _FailureSite | None,
     step: FailedStep | None = None,
 ) -> str:
-    """Render a failure raised while the engine ran authored code over project inputs.
+    """Render a failure raised while the engine ran authored code over project inputs."""
+
+    return _execution_failure(exc, operation=operation, site=site, step=step)[0]
+
+
+def _execution_failure(
+    exc: Exception,
+    *,
+    operation: str,
+    site: _FailureSite | None,
+    step: FailedStep | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """Render an authored-code failure and return the column names it reports.
 
     An authored-code failure — a Polars error, any exception raised from node
     code, or a preamble failure — is what the model needs to correct its own
@@ -373,8 +426,8 @@ def _execution_error_message(
         if isinstance(exc, NotImplementedError) and str(exc).startswith(
             (INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)
         ):
-            return str(exc)
-        return _error_message(exc, operation=operation)
+            return str(exc), ()
+        return _error_message(exc, operation=operation), ()
 
     summary = type(exc).__name__
     if isinstance(exc, PreambleError):
@@ -408,14 +461,14 @@ def _execution_error_message(
     elif dropped:
         summary += "; it names a column"
     if allowed:
-        return f"{summary}: {exc}"
+        return f"{summary}: {exc}", columns
     logger.info(
         "assistant_execution_error_withheld",
         operation=operation,
         error_class=type(exc).__name__,
         error_message=str(exc),
     )
-    return f"{summary}. Its text is withheld because {withheld_because}."
+    return f"{summary}. Its text is withheld because {withheld_because}.", columns
 
 
 def _node_id(raw: object) -> str | None:
@@ -1488,25 +1541,109 @@ def _application_service(
     )
 
 
-def _operation_error(exc: AssistantOperationError, *, operation: str) -> dict[str, object]:
+def _close_matches(
+    names: Sequence[str], inputs: Mapping[str, Sequence[str]]
+) -> dict[str, list[str]]:
+    """Each name no input provides, with its close matches among the inputs' names."""
+
+    pool = sorted({*inputs, *(column for columns in inputs.values() for column in columns)})
+    matches: dict[str, list[str]] = {}
+    for name in names:
+        if name in pool:
+            continue
+        close = difflib.get_close_matches(name, pool, n=3, cutoff=0.6)
+        if close:
+            matches[name] = close
+    return matches
+
+
+def _located_error(
+    code: str,
+    message: str,
+    exc: LocatedPlanError,
+    *,
+    named_columns: Sequence[str] = (),
+    fix: Callable[[Mapping[str, list[str]]], str] | None = None,
+    **fields: object,
+) -> dict[str, object]:
+    """Render a plan failure with where it happened and how to correct it.
+
+    `context.inputs` and `did_you_mean` are schema metadata. The dry-run and
+    apply tools that reach here are internal-project tools, so the executor
+    has already required the policy that permits that metadata, the one
+    `get_node_schema` needs. `fix`, when given, composes the correction from
+    the close matches of `named_columns`; otherwise the failure's own `fix`
+    is used.
+    """
+
+    envelope: dict[str, object] = dict(fields)
+    if exc.where:
+        envelope["where"] = dict(exc.where)
+    node = exc.where.get("node")
+    inputs: dict[str, list[str]] = {}
+    if isinstance(node, str) and exc.graph is not None:
+        inputs = _input_columns(exc.graph, node)
+    if inputs:
+        envelope["context"] = {"inputs": inputs}
+    matches = _close_matches(named_columns, inputs)
+    suggestions = list(dict.fromkeys(match for close in matches.values() for match in close))
+    if suggestions:
+        envelope["did_you_mean"] = suggestions[:3]
+    correction = fix(matches) if fix is not None else exc.fix
+    if correction is not None:
+        envelope["fix"] = correction
+    return _error(code, message, **envelope)
+
+
+def _schema_fix(exc: SchemaUnresolvableError) -> Callable[[Mapping[str, list[str]]], str]:
+    """The correction for a schema failure: the replacement name when one is close."""
+
+    target = (
+        f"step {exc.step.step_id!r} of node {exc.step.node!r}"
+        if exc.step is not None
+        else f"node {exc.node!r}"
+    )
+
+    def fix(matches: Mapping[str, list[str]]) -> str:
+        if matches:
+            name, close = next(iter(matches.items()))
+            return f"Replace {name!r} with {close[0]!r} in {target}."
+        return f"Correct {target} so it reads only columns its inputs provide, then dry-run again."
+
+    return fix
+
+
+def _operation_error(exc: LocatedPlanError, *, operation: str) -> dict[str, object]:
     if isinstance(exc, SchemaUnresolvableError):
+        if exc.graph is None:
+            raise RuntimeError("a schema failure must carry the graph that ran")
         site = _FailureSite(
             exc.graph,
             exc.step.node if exc.step is not None else exc.node,
             submitted=exc.submitted,
         )
-        failure = _execution_error_message(
+        failure, named = _execution_failure(
             exc.failure, operation=operation, site=site, step=exc.step
         )
-        return _error(exc.code, f"{exc} {failure}")
+        return _located_error(
+            exc.code, f"{exc} {failure}", exc, named_columns=named, fix=_schema_fix(exc)
+        )
     if isinstance(exc, PreambleFailedError):
         # A preamble failure names no column, so it needs no failure site.
         failure = _execution_error_message(exc.failure, operation=operation, site=None)
-        return _error(exc.code, f"{exc} {failure}")
+        return _error(
+            exc.code,
+            f"{exc} {failure}",
+            fix="Correct the pipeline preamble so it runs without error.",
+        )
     if isinstance(exc, RenameConsumersError):
         consumers = [{"node": node, "field": field} for node, field in exc.consumers]
-        return _error(exc.code, str(exc), consumers=consumers)
-    return _error(exc.code, str(exc))
+        return _located_error(exc.code, str(exc), exc, consumers=consumers)
+    if isinstance(exc, OpValidationError):
+        return _located_error("invalid_ops", str(exc), exc)
+    if isinstance(exc, AssistantOperationError):
+        return _located_error(exc.code, str(exc), exc)
+    raise TypeError(f"unexpected plan failure {type(exc).__name__}")
 
 
 async def dry_run_graph_edits(
@@ -1527,9 +1664,7 @@ async def dry_run_graph_edits(
                 postconditions=postconditions,  # type: ignore[arg-type]
             )
         return plan.as_dict()
-    except OpValidationError as exc:
-        return _error("invalid_ops", str(exc))
-    except AssistantOperationError as exc:
+    except LocatedPlanError as exc:
         # Naming a failure's columns can resolve schemas, which runs the engine.
         return await asyncio.to_thread(_operation_error, exc, operation="dry_run_graph_edits")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
@@ -1553,7 +1688,7 @@ async def apply_graph_plan(
         return result.as_dict()
     except CommittedVerificationError as exc:
         return _error(exc.code, str(exc), **exc.result)
-    except AssistantOperationError as exc:
+    except LocatedPlanError as exc:
         return await asyncio.to_thread(_operation_error, exc, operation="apply_graph_plan")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("mutation_failed", _error_message(exc, operation="apply_graph_plan"))
@@ -1617,7 +1752,47 @@ _REMOVED_TOOLS: dict[str, str] = {
 
 
 def _dispatch_error(name: str, message: str) -> dict[str, object]:
-    return _error("unknown_tool", message, name=name, valid_names=list(_TOOL_NAMES))
+    fields: dict[str, object] = {"name": name, "valid_names": list(_TOOL_NAMES)}
+    close = difflib.get_close_matches(name, _TOOL_NAMES, n=3, cutoff=0.6)
+    if close:
+        fields["did_you_mean"] = close
+    return _error(
+        "unknown_tool",
+        message,
+        fix=f"Call {close[0]} instead." if close else "Call one of valid_names.",
+        **fields,
+    )
+
+
+#: Error codes no corrected call can clear within the turn: an internal
+#: failure, a policy refusal, an interrupted call, a spent dry-run budget, a
+#: save that committed unverified, or a result too large for the model's
+#: context. Every other code is a rejection the model can correct.
+_NON_RETRYABLE_CODES = frozenset(
+    {
+        "tool_failed",
+        "operation_failed",
+        "mutation_failed",
+        "egress_policy_denied",
+        "egress_policy_unavailable",
+        "tool_interrupted",
+        "dry_run_retry_limit",
+        "verification_failed",
+        "tool_result_too_large",
+    }
+)
+
+
+def _with_retryable(result: Mapping[str, object]) -> Mapping[str, object]:
+    """Mark an error result retryable unless its code is one no correction clears."""
+
+    error = result.get("error")
+    if not isinstance(error, Mapping):
+        return result
+    code = error.get("code")
+    if not isinstance(code, str):
+        raise RuntimeError("a tool error must carry a string code")
+    return {**result, "error": {**error, "retryable": code not in _NON_RETRYABLE_CODES}}
 
 
 def _json_size(value: object) -> int:
@@ -2087,7 +2262,7 @@ def build_tool_executor(
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         started = time.monotonic()
-        result = await _dispatch_tool(name, arguments)
+        result = _with_retryable(await _dispatch_tool(name, arguments))
         _log_tool_outcome(name, result, elapsed_ms=(time.monotonic() - started) * 1000)
         return result
 
