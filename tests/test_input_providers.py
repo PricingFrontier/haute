@@ -104,6 +104,12 @@ def test_schema_only_resolution_infers_a_missing_csv_snapshot_from_the_node_sett
         pytest.param({"infer_schema_length": None}, INFERRED_SCHEMA_ROWS, id="whole-file"),
         pytest.param({"infer_schema_length": 10**9}, INFERRED_SCHEMA_ROWS, id="above-cap"),
         pytest.param({"infer_schema_length": 50}, 50, id="configured"),
+        # A null schema declares nothing: inference still runs and must stay bounded.
+        pytest.param(
+            {"schema": None, "infer_schema_length": None},
+            INFERRED_SCHEMA_ROWS,
+            id="null-schema-whole-file",
+        ),
     ],
 )
 def test_inferred_csv_types_come_from_a_bounded_row_count(
@@ -118,6 +124,22 @@ def test_inferred_csv_types_come_from_a_bounded_row_count(
     # The float on the last row lies beyond every bound: a whole-file inference would see it.
     assert frame.collect_schema() == pl.Schema({"amount": pl.Int64})
     assert inferred["claims"].inference_rows == rows
+
+
+def test_a_declared_csv_schema_is_used_whole_without_inference(tmp_path: Path) -> None:
+    lines = ["amount", *(str(n) for n in range(INFERRED_SCHEMA_ROWS)), "1.5"]
+    (tmp_path / "claims.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    config = {
+        "inputType": "file",
+        "format": "csv",
+        "path": "claims.csv",
+        "arguments": {"schema": {"amount": "Float64"}, "infer_schema_length": None},
+    }
+
+    frame, inferred = _infer(config, tmp_path, SourceCacheStore(tmp_path))
+
+    assert frame.collect_schema() == pl.Schema({"amount": pl.Float64})
+    assert inferred == {"claims": InferredInputSchema(format="csv", inference_rows=None)}
 
 
 def test_inferred_parquet_reads_file_metadata_without_a_row_bound(tmp_path: Path) -> None:

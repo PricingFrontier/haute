@@ -312,6 +312,15 @@ _DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
 )
 
 
+def _declares_full_schema(arguments: Mapping[str, Any]) -> bool:
+    """Whether validated arguments declare the whole schema, so no type inference runs.
+
+    Only a non-null ``schema`` does: Polars reads ``schema=None`` as no declared
+    schema, and ``schema_overrides`` still leaves the other columns to inference.
+    """
+    return arguments.get("schema") is not None
+
+
 class PolarsIoConfigError(ValueError):
     """A dataInput/dataOutput config does not describe a valid invocation."""
 
@@ -850,7 +859,7 @@ def read_polars_input(
                     format=fmt.name,
                     profile=str(profile),
                 )
-        if fmt.needs_schema_when_bounded and "schema" not in arguments:
+        if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
             raise BoundedMemoryUnsupportedError(
                 f"Format {fmt.name!r} requires a full declared 'schema' argument for "
                 "bounded-memory execution profiles (schema inference reads the data).",
@@ -955,7 +964,7 @@ def read_polars_input_for_snapshot(
     mode, _build_class, warning_code = snapshot_input_plan(fmt, config)
     owner, callable_name = input_callable_key(fmt, mode)
     arguments = dict(validate_arguments(fmt, owner, callable_name, config.get("arguments") or {}))
-    if fmt.needs_schema_when_bounded and "schema" not in arguments:
+    if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
         arguments["infer_schema_length"] = None
     return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
 
@@ -981,7 +990,7 @@ def scan_polars_input_for_schema(config: Mapping[str, Any]) -> tuple[pl.LazyFram
     inference_rows: int | None = None
     if (
         "infer_schema_length" in allowed_arguments(fmt, owner, scanner_name)
-        and "schema" not in arguments
+        and not _declares_full_schema(arguments)
         and arguments.get("infer_schema") is not False
     ):
         configured = arguments.get("infer_schema_length")

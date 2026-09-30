@@ -513,8 +513,12 @@ configured arguments. A scanner that infers types (`infer_schema_length` in its 
 surface: CSV, NDJSON) and has no declared `schema` or `infer_schema: false` receives
 `infer_schema_length` equal to the configured value capped at `INFERRED_SCHEMA_ROWS`
 (10,000), or the cap when the configuration sets none or `None`; that value is the
-recorded `inference_rows`. Parquet and IPC read file metadata and a declared schema needs
-no inference, so they record `inference_rows=None`. The scan is returned uncollected, and
+recorded `inference_rows`. A declared schema is a non-null `schema` mapping, which Polars
+uses as the whole schema: `schema: null` declares none, and `schema_overrides` still leaves
+the other columns to inference, so both are bounded. Parquet and IPC read file
+metadata and a declared schema needs no inference, so they record `inference_rows=None`.
+The same non-null test decides whether a direct bounded read has the declared CSV schema
+it requires and whether a snapshot build must infer from the whole file. The scan is returned uncollected, and
 the source cache is not written. Anything ineligible raises `InputSnapshotMissingError`
 naming the reason (`a <provider> input has no local file to scan`, `format '<name>' reads
 only eagerly`, or the reader-only argument names) and the remedy "Preview this input
