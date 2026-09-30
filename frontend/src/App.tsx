@@ -31,7 +31,6 @@ import type { TraceResult } from "./types/trace"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
-import ConnectionDropMenu from "./components/ConnectionDropMenu"
 import { isEmptyCanvasAtPoint } from "./utils/canvasHitTest"
 import KeyboardShortcuts from "./components/KeyboardShortcuts"
 import BreadcrumbBar from "./components/BreadcrumbBar"
@@ -109,6 +108,7 @@ const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
 const IdentityPromptModal = lazy(() => import("./components/IdentityPromptModal"))
 const PipelineRepairDialog = lazy(() => import("./components/PipelineRepairDialog"))
+const ConnectionDropMenu = lazy(() => import("./components/ConnectionDropMenu"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -1778,13 +1778,15 @@ function FlowEditor() {
                 <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
               </ReactFlow>
               {connectionDropMenu && !editingReadOnly && (
-                <ConnectionDropMenu
-                  x={connectionDropMenu.x}
-                  y={connectionDropMenu.y}
-                  existingSingletonTypes={existingSingletonTypes}
-                  onSelect={createNodeFromConnectionDrop}
-                  onClose={closeConnectionDropMenu}
-                />
+                <Suspense fallback={null}>
+                  <ConnectionDropMenu
+                    x={connectionDropMenu.x}
+                    y={connectionDropMenu.y}
+                    existingSingletonTypes={existingSingletonTypes}
+                    onSelect={createNodeFromConnectionDrop}
+                    onClose={closeConnectionDropMenu}
+                  />
+                </Suspense>
               )}
             </div>
           </ErrorBoundary>

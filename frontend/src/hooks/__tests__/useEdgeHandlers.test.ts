@@ -2880,6 +2880,18 @@ describe("useEdgeHandlers connection drop menu", () => {
     )
   })
 
+  it("creates nothing when no connection drop is pending", async () => {
+    const params = makeDropParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.POLARS))
+    await flushIdentityCommit()
+
+    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.nodeIdCounter.current).toBe(0)
+  })
+
   it("closes without changing the graph", () => {
     const params = makeDropParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
