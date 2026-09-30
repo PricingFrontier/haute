@@ -31,6 +31,7 @@ import type { TraceResult } from "./types/trace"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
+import { isEmptyCanvasAtPoint } from "./utils/canvasHitTest"
 import KeyboardShortcuts from "./components/KeyboardShortcuts"
 import BreadcrumbBar from "./components/BreadcrumbBar"
 import Toolbar from "./components/Toolbar"
@@ -107,6 +108,7 @@ const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
 const IdentityPromptModal = lazy(() => import("./components/IdentityPromptModal"))
 const PipelineRepairDialog = lazy(() => import("./components/PipelineRepairDialog"))
+const ConnectionDropMenu = lazy(() => import("./components/ConnectionDropMenu"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -1385,6 +1387,7 @@ function FlowEditor() {
     onConnect, onSelectionChange, openNode, onNodeClick, handleDeleteEdge,
     onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
+    connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
   } = useEdgeHandlers({
     selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
@@ -1399,6 +1402,7 @@ function FlowEditor() {
     existingSingletonTypes,
     resolveGraphIdentities: resolveCandidateGraphIdentities,
     findEdgeIdAtPoint,
+    isPaneAtPoint: isEmptyCanvasAtPoint,
     validateConnection,
     commitBoundaryConnection,
     deleteBoundaryEdge,
@@ -1753,7 +1757,7 @@ function FlowEditor() {
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
-                onPaneClick={() => { setContextMenu(null); clearTrace(); closePanel() }}
+                onPaneClick={() => { setContextMenu(null); closeConnectionDropMenu(); clearTrace(); closePanel() }}
                 onDrop={editingReadOnly ? undefined : onDrop}
                 onDragOver={editingReadOnly ? undefined : onDragOver}
                 nodeTypes={nodeTypes}
@@ -1773,6 +1777,17 @@ function FlowEditor() {
                 <InitialViewFit />
                 <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
               </ReactFlow>
+              {connectionDropMenu && !editingReadOnly && (
+                <Suspense fallback={null}>
+                  <ConnectionDropMenu
+                    x={connectionDropMenu.x}
+                    y={connectionDropMenu.y}
+                    existingSingletonTypes={existingSingletonTypes}
+                    onSelect={createNodeFromConnectionDrop}
+                    onClose={closeConnectionDropMenu}
+                  />
+                </Suspense>
+              )}
             </div>
           </ErrorBoundary>
 

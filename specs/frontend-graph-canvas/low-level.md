@@ -79,6 +79,8 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations; Explore presentation keys and the modelling and optimiser export settings (`exportConfigKeysFor`) do not contribute to a node's config hash. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
+| `frontend/src/utils/canvasHitTest.ts` | `isEmptyCanvasAtPoint`: whether the uppermost element under a client point is the React Flow pane itself. |
+| `frontend/src/components/ConnectionDropMenu.tsx` | Add node menu opened by releasing a source-handle connection on empty canvas: Edge Join plus the palette types that take a data input (not Load File), occupied singletons disabled, viewport-clamped, arrow-key focus, Escape/outside-click close. |
 | `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
 | `frontend/src/components/PolarsIcon.tsx` | Memoized SVG icon for the Polars node type. |
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with name-length and unsafe-character validation. |
@@ -593,6 +595,39 @@ reconciliation rather than dropping them or committing a second mutation.
     Failure leaves graph,
     selection, and history untouched; an edge-targeted failure uses the
     exhaustive reason-to-toast map, while a non-edge cancellation is silent.
+
+    **Connection drop menu.** When a source-handle release resolves no target
+    node and no edge, `onConnectEnd` asks `isPaneAtPoint`, which `FlowEditor`
+    supplies as `isEmptyCanvasAtPoint` (`utils/canvasHitTest.ts`): true only
+    when the uppermost element under the point is `.react-flow__pane` itself,
+    so a node, handle, edge, `.react-flow__panel`, or an overlay such as the
+    breadcrumb bar covers it. If the source node is not a `SUBMODEL_PORT`, the
+    hook stores `connectionDropMenu = { x, y, position, source,
+    sourceHandle }` — client coordinates, the `screenToFlowPosition` of the
+    release point, and the dragged endpoint. `FlowEditor` renders
+    `ConnectionDropMenu` from it while the canvas is editable; a pane click,
+    Escape, or an outside mousedown calls `closeConnectionDropMenu`. The menu
+    lists `CONNECTION_DROP_TYPES` (`nodeTypes.ts`): `EDGE_JOIN`, then
+    `PALETTE_TYPES` without `SOURCE_ONLY_TYPES`, `OUTPUT`, and `EXTERNAL_FILE`, each with its
+    palette icon, colour, name, and description; an occupied `SINGLETON_TYPES`
+    entry is disabled. The menu is clamped inside the viewport, focuses its
+    first enabled item, and moves focus with the arrow keys. Escape closes it
+    wherever focus is: a document `keydown` listener prevents the event, so
+    the window-level canvas shortcuts skip it.
+
+    `createNodeFromConnectionDrop(type)` closes the menu, refuses an occupied
+    singleton with the palette's info toast, and builds the node with `appNode`
+    at `position`. The candidate edge targets the default handle, or
+    `EDGE_JOIN_BASE_HANDLE` for an Edge Join, and is checked with
+    `validatePipelineConnection` against `graphRef.current` plus the new node
+    before any identity request; a failure reports through the
+    connection-rejection toast and allocates nothing. The new node's identity
+    is resolved alone, then the edge's `_inputName` is attached with
+    `attachEditorEdgeIdentities`. If the graph changed while identities
+    resolved, the creation is refused with the palette drop's toast.
+    Otherwise one `pushSnapshot` precedes the raw node and edge setters, the
+    new node is selected exclusively and opened in the panel, and trace and
+    any in-flight preview are cleared, as for an edge-join insertion.
 14. **Palette drop (`useEdgeHandlers.onDrop`).** Parses the drag event's
     `application/reactflow-type` and `application/reactflow-config` payloads;
     a config JSON parse failure or a non-object payload toasts an error and
@@ -1441,7 +1476,11 @@ again through the editor and save paths.
     normalisation; source-to-source edge-join creation and its rejection
     when invalid; edge-join base/join role assignment, role-occupied and
     third-input rejection; edge-drop edge-join insertion and its
-    ignore-if-no-edge-under-pointer case; touch-event coordinate
+    ignore-if-no-edge-under-pointer case; the empty-canvas connection drop
+    menu (opening only for a source release over the pane and not from a
+    submodel port, node plus identified edge created as one undo step, Edge
+    Join base role, singleton and invalid-connection refusal, stale-graph
+    refusal); touch-event coordinate
     resolution via `changedTouches`; selection-change drag-safety and
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
     preview fetch (including Optimiser debounce, modelling/explore
@@ -1695,6 +1734,14 @@ again through the editor and save paths.
     submission calls `onSubmit`; Escape closes and is cleaned up on
     unmount; non-Escape keys are inert.
   - `frontend/src/components/__tests__/PolarsIcon.test.tsx` — default-prop SVG rendering; custom size/color.
+  - `frontend/src/components/__tests__/ConnectionDropMenu.test.tsx` — Edge Join first then palette order
+    without Quote Input/Response, Load File, and the no-input types; choosing an item
+    reports its type; an occupied singleton is disabled; Escape and an
+    outside mousedown close, Escape also after focus has left the menu and
+    with the event prevented for the canvas shortcuts; arrow keys move focus.
+  - `frontend/src/utils/__tests__/canvasHitTest.test.ts` — the pane counts as
+    empty canvas only when it is the uppermost element; an overlay without
+    React Flow classes, a node, a panel, or a pane descendant covers it.
 - **Strategy.** Predominantly unit and React Testing Library component
   tests, with a deliberate render-count "reviewer gate" for the store's
   selector-isolation contract, several regression tests named after
