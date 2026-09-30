@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react"
 import useClickOutside from "../hooks/useClickOutside"
 import { CONNECTION_DROP_TYPES, NODE_TYPE_META, SINGLETON_TYPES, type NodeTypeValue } from "../utils/nodeTypes"
 
@@ -44,13 +44,19 @@ export default function ConnectionDropMenu({
     itemRefs.current.find((item) => item && !item.disabled)?.focus()
   }, [])
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
+  // Escape closes the menu wherever focus is. The document listener runs
+  // before the window-level shortcuts, which skip a prevented event.
+  useEffect(() => {
+    const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return
       event.preventDefault()
-      event.stopPropagation()
       onClose()
-      return
     }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [onClose])
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return
     event.preventDefault()
     const enabled = itemRefs.current.filter((item): item is HTMLButtonElement => !!item && !item.disabled)

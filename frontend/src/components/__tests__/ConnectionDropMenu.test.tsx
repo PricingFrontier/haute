@@ -90,4 +90,20 @@ describe("ConnectionDropMenu", () => {
     fireEvent.mouseDown(document.body)
     expect(onClose).toHaveBeenCalledTimes(2)
   })
+
+  it("closes on Escape after focus has left the menu, and claims the key from the canvas shortcuts", () => {
+    const { onClose } = renderMenu()
+    const outside = document.createElement("button")
+    document.body.appendChild(outside)
+    outside.focus()
+    const windowEscape = vi.fn((event: KeyboardEvent) => event.defaultPrevented)
+    window.addEventListener("keydown", windowEscape)
+
+    fireEvent.keyDown(outside, { key: "Escape" })
+
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(windowEscape).toHaveReturnedWith(true)
+    window.removeEventListener("keydown", windowEscape)
+    outside.remove()
+  })
 })

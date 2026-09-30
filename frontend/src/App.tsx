@@ -32,6 +32,7 @@ import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
 import ConnectionDropMenu from "./components/ConnectionDropMenu"
+import { isEmptyCanvasAtPoint } from "./utils/canvasHitTest"
 import KeyboardShortcuts from "./components/KeyboardShortcuts"
 import BreadcrumbBar from "./components/BreadcrumbBar"
 import Toolbar from "./components/Toolbar"
@@ -1346,14 +1347,6 @@ function FlowEditor() {
     return null
   }, [])
 
-  const isPaneAtPoint = useCallback((point: { x: number; y: number }) => {
-    for (const element of document.elementsFromPoint(point.x, point.y)) {
-      if (element.closest?.(".react-flow__node, .react-flow__handle, .react-flow__edge, .react-flow__panel")) return false
-      if (element.closest?.(".react-flow__pane")) return true
-    }
-    return false
-  }, [])
-
   const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
     if (!activeSubmodelName) return false
     return graphRef.current.nodes.some(
@@ -1409,7 +1402,7 @@ function FlowEditor() {
     existingSingletonTypes,
     resolveGraphIdentities: resolveCandidateGraphIdentities,
     findEdgeIdAtPoint,
-    isPaneAtPoint,
+    isPaneAtPoint: isEmptyCanvasAtPoint,
     validateConnection,
     commitBoundaryConnection,
     deleteBoundaryEdge,
