@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
 | ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
 | ASSIST-11 | Planned | P1 | A new local file input can be added and transformed in one plan. |
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
@@ -113,33 +112,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-07 — Example bundles the editor accepts
-**Why:** The reusable-submodel example names its occurrence like the inner
-node, so any edit passes dry-run and then fails at apply on the codegen name
-collision, which dry-run never checks. The ratebook example uses a Data Input
-as the banding source, which the editor's Optimise refuses. Two examples wire
-training and optimisation into the response. Two bundles label a vehicle's
-year as its age and assert it in their goldens.
-
-**Plan:** Rename the submodel occurrence, rebuild the ratebook example
-through a Banding node, make training and optimisation terminal branches, fix
-the vehicle-age goldens, move security and deployment fixtures out of the
-teaching index, run the codegen collision check inside dry-run
-validation, and reject outgoing edges from sink-only types
-(`haute._types.SINK_ONLY_NODE_TYPES`) in save validation.
-
-**Acceptance:** Every bundle parses, regenerates and accepts a no-op edit
-through the application service; the collision repro fails at dry-run; the
-portfolio test solves the ratebook example with a Banding source; an edge out
-of Model Training is rejected at dry-run.
-
-**Dependencies:** `ASSIST-06`.
-
-**Evidence:** `src/haute/assistant/assets/examples/reusable_submodel/pipeline.py`;
-`src/haute/assistant/assets/examples/ratebook_optimisation_apply/pipeline.py`;
-`src/haute/codegen.py::_error_on_name_collisions`;
-`tests/test_assistant_example_portfolio.py`.
 
 ### ASSIST-10 — Egress corrections
 **Why:** Dry-run executes the model's code while resolving schemas, and an

@@ -151,6 +151,55 @@ class TestExemplars:
         for name, _summary in example_index():
             assert name in error["message"]
 
+    def test_only_teaching_bundles_are_offered_to_the_model(self):
+        manifests = _assets.example_bundle_manifests()
+        teaching = {str(manifest["id"]) for manifest in manifests if manifest["teaching"]}
+        fixtures = {str(manifest["id"]) for manifest in manifests if not manifest["teaching"]}
+
+        assert fixtures == {"deployment_safety", "invalid_adversarial"}
+        assert {name for name, _summary in example_index()} == teaching
+        for name in fixtures:
+            error = load_example(name)["error"]
+            assert error["code"] == "unknown_example"
+            assert name not in error["valid_names"]
+
+
+@pytest.mark.parametrize(
+    "bundle_id",
+    [str(manifest["id"]) for manifest in _assets.example_bundle_manifests()],
+)
+def test_every_bundle_regenerates_and_accepts_a_no_op_edit(tmp_path: Path, bundle_id: str):
+    """Every bundle is a project the editor accepts, not only one the parser reads."""
+
+    from haute.assistant._application import PipelineApplicationService
+    from haute.codegen import graph_to_code_multi
+    from haute.routes._helpers import parse_pipeline_to_graph
+
+    destination = tmp_path / "b"
+    manifest = _assets.materialize_example_bundle(bundle_id, destination)
+    source_file = str(manifest["source"])
+    graph = parse_pipeline_to_graph(destination / source_file)
+    files = graph_to_code_multi(
+        graph,
+        pipeline_name=graph.pipeline_name or "",
+        description=graph.pipeline_description or "",
+        preamble=graph.preamble or "",
+        source_file=source_file,
+        preserved_blocks=graph.preserved_blocks or None,
+    )
+    assert source_file in files
+
+    before = (destination / source_file).read_bytes()
+    service = PipelineApplicationService(
+        project_root=destination,
+        pipeline_root=destination,
+        mutations_readiness=lambda _root: (True, None),
+        publish_document_update=lambda _source: "f" * 64,
+    )
+    plan = service.dry_run(source_file, [{"op": "update_preamble", "preamble": graph.preamble}])
+    assert (destination / source_file).read_bytes() == before
+    assert not any(plan.diff.complete_counts.values())
+
 
 class TestExecutableBundles:
     EXPECTED = {
@@ -206,9 +255,11 @@ class TestExecutableBundles:
                 "source",
                 "assertion_tier",
                 "review_class",
+                "teaching",
                 "resources",
             }
             assert manifest["schema_version"] == 1
+            assert isinstance(manifest["teaching"], bool)
             assert manifest["assertion_tier"] in {"fast", "ordinary", "negative"}
             assert manifest["review_class"] in {"engineering", "pricing"}
             assert manifest["resources"]
@@ -284,6 +335,7 @@ class TestExecutableBundles:
                     "source": "pipeline.py",
                     "assertion_tier": "fast",
                     "review_class": "engineering",
+                    "teaching": True,
                     "resources": [
                         {"path": "pipeline.py", "role": "pipeline_source", "sha256": "a" * 64},
                         {"path": "other", "role": "invented_role", "sha256": "b" * 64},

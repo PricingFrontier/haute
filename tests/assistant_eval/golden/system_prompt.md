@@ -44,9 +44,7 @@ Detailed library guidance is progressive: call `get_authoring_guide`, `get_capab
 
 ## Packaged exemplar pipelines
 - `branched_features`
-- `deployment_safety`
 - `discrete_banding`
-- `invalid_adversarial`
 - `linear_pricing`
 - `live_batch_parity`
 - `minimal_batch`

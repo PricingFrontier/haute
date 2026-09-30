@@ -53,7 +53,11 @@
 - `SavePipelineService.validate_graph(graph, source_file)` is public and
   side-effect free. It validates Edge Join connected roles, target handles,
   and mutually exclusive/required key forms through the canonical
-  `_edge_join.py` validators as well as the other save invariants. `save()`
+  `_edge_join.py` validators as well as the other save invariants, rejects an
+  edge whose source type is in `SINK_ONLY_NODE_TYPES` (HTTP 400 naming the node,
+  its type and the edge's target), and runs
+  `haute.codegen.check_function_name_collisions` (its `ParseError` becomes HTTP
+  400) after the scoped sanitized-name check. `save()`
   calls it before staging, and dry-run calls the same method.
 - `AssistantMessageRequest` is a strict request containing only `session_id`
   and `message`; graph-authoring confirmation payloads are rejected as unknown

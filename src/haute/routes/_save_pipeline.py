@@ -38,7 +38,8 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute.errors import ConfigError, PathOutsideProjectError
+from haute._types import SINK_ONLY_NODE_TYPES
+from haute.errors import ConfigError, ParseError, PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -578,11 +579,13 @@ class SavePipelineService:
 
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
+        self._validate_nothing_leaves_a_sink(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
         self._validate_unique_sanitized_names(graph)
+        self._validate_codegen_function_names(graph)
         self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
@@ -804,6 +807,40 @@ class SavePipelineService:
                     status_code=400,
                     detail=f"Only one {label} node is allowed per pipeline (found {count}).",
                 )
+
+    @staticmethod
+    def _validate_nothing_leaves_a_sink(flattened: PipelineGraph) -> None:
+        """Refuse an edge out of a node type that has no output."""
+        # An edge naming an unknown node is refused by codegen's strict topology.
+        nodes = flattened.node_map
+        for edge in flattened.edges:
+            source = nodes.get(edge.source)
+            if source is None or source.data.nodeType not in SINK_ONLY_NODE_TYPES:
+                continue
+            target = nodes.get(edge.target)
+            target_label = target.data.label if target is not None else edge.target
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Node {source.data.label!r} ({source.data.nodeType.value}) has no "
+                    f"output, so it cannot feed {target_label!r}. "
+                    "Remove that edge. Nothing was saved."
+                ),
+            )
+
+    @staticmethod
+    def _validate_codegen_function_names(graph: PipelineGraph) -> None:
+        """Run codegen's own function-name collision check before generating.
+
+        This covers what the scoped check above cannot: a submodel occurrence
+        alias that matches a node inside its definition.
+        """
+        from haute.codegen import check_function_name_collisions
+
+        try:
+            check_function_name_collisions(graph)
+        except ParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @staticmethod
     def _validate_strict_node_configs(graph: PipelineGraph) -> None:

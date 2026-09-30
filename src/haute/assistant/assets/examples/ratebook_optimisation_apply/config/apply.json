@@ -4,5 +4,5 @@
   "version_column": "ratebook_version",
   "optimised_value_column": "selected_factor",
   "optimiser_mode": "ratebook",
-  "ratebook_input": "factors"
+  "ratebook_input": "rating_factors"
 }

@@ -397,7 +397,11 @@ ledger capture.
 entry point used by both `save(...)` and assistant dry-run. It performs the
 same singleton, data-I/O, declared-config-key, Edge Join role/key/topology,
 sanitized-name, load-error, API-input and path validation that can be decided without staging
-files. Edge Join validation uses the canonical backend join validators, not a
+files. It rejects any edge out of a node type that has no output
+(`haute._types.SINK_ONLY_NODE_TYPES`: Quote Response, Data Output, Explore, Model
+Training and Optimisation), and it runs codegen's own function-name collision
+check (`haute.codegen.check_function_name_collisions`), so a submodel occurrence
+named like a node inside its definition fails here rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
 save- or assistant-specific approximation. Save invokes it before any write,
 so the validation paths cannot drift.
 

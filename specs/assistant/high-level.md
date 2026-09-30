@@ -661,14 +661,27 @@ bundles execute through the production graph executor in installed wheel and
 source-distribution smoke checks. Ordinary bundles parse there and execute
 their declared production training, scoring, optimisation, apply, trace, or
 deployment-preflight checks in the ordinary test suite. Negative bundles are
-valid teaching projects with machine-readable invalid/adversarial cases; their
-rejection checks run in the ordinary suite, so discoverability never requires
+valid projects with machine-readable invalid/adversarial cases; their
+rejection checks run in the ordinary suite, so validation never requires
 importing malformed or executable hostile source.
+Every manifest also declares a required boolean `teaching`. A teaching bundle
+is one the model learns from: it is listed in the system prompt's example
+index and served by `get_example`. A bundle with `teaching: false` is a test
+fixture (the deployment-safety and invalid/adversarial bundles): it is
+validated and materialisable for its specialist checks exactly like a
+teaching bundle, but it is absent from the example index, and `get_example`
+refuses its name as `unknown_example`.
+Every bundle is a project the editor accepts: it parses, regenerates through
+the save path's codegen, and accepts a no-op edit through the application
+service's dry-run. Bundles wire nothing out of a node type that has no output
+(Model Training and Optimisation are terminal branches), name no submodel
+occurrence like a node inside its definition, and give a ratebook optimiser a
+Banding node as its rating factor source.
 Golden output arrays are positional contracts. A bundle whose operators do not
 guarantee row order must impose an explicit stable order in its production
 pipeline before asserting those arrays; packaging checks never sort observed
 results to make a nondeterministic fixture pass.
-Discoverable teaching bundles are indexed by the capability registry and
+Teaching bundles are indexed by the system prompt and
 `get_example`; held-out evaluation fixtures live outside assistant package
 resources and cannot be enumerated through those surfaces. Installed
 distribution smoke checks enumerate and validate every bundle and execute the

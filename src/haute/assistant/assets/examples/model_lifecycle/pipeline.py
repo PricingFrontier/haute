@@ -1,4 +1,9 @@
-"""Train a tiny synthetic model and document the corresponding scoring contract."""
+"""Train a tiny synthetic model on one branch and score with it on another.
+
+Model Training has no output, so training is a terminal branch: nothing is
+wired downstream of it. The response is fed by the Model Score node, which
+names the training run whose artifact it scores with.
+"""
 
 import haute
 
@@ -21,4 +26,4 @@ def scored(training_rows): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(train): ...
+def response(scored): ...

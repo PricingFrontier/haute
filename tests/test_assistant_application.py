@@ -177,6 +177,53 @@ class TestDryRun:
         assert (project_root / "main.py").read_bytes() == before
         assert len(service.plan_store) == 0
 
+    def test_an_occurrence_named_like_its_inner_node_fails_at_dry_run(self, tmp_path: Path):
+        """Codegen would refuse this graph at apply, so dry-run refuses it first."""
+
+        from fastapi import HTTPException
+
+        from haute.assistant._assets import materialize_example_bundle
+
+        materialize_example_bundle("reusable_submodel", tmp_path / "b")
+        source = tmp_path / "b" / "pipeline.py"
+        text = source.read_text(encoding="utf-8")
+        colliding = text.replace('"enrichment"', '"enriched"')
+        assert colliding != text
+        source.write_bytes(colliding.encode("utf-8"))
+        service = _service(tmp_path / "b")
+
+        with pytest.raises(HTTPException, match="sanitize to the same Python function name"):
+            service.dry_run("pipeline.py", [{"op": "update_preamble", "preamble": None}])
+
+        assert source.read_bytes() == colliding.encode("utf-8")
+        assert len(service.plan_store) == 0
+
+    def test_an_edge_out_of_model_training_is_rejected_at_dry_run(self, tmp_path: Path):
+        from fastapi import HTTPException
+
+        from haute.assistant._assets import materialize_example_bundle
+
+        materialize_example_bundle("model_lifecycle", tmp_path / "b")
+        service = _service(tmp_path / "b")
+
+        with pytest.raises(HTTPException, match="'train'.*has no output") as raised:
+            service.dry_run(
+                "pipeline.py",
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "after",
+                        "config": {"steps": _free_code_steps("train", "df = df")},
+                        "ref": "a",
+                    },
+                    {"op": "add_edge", "source": "train", "target": "$a"},
+                ],
+            )
+
+        assert raised.value.status_code == 400
+        assert len(service.plan_store) == 0
+
 
 SHARED_SOURCE_PIPELINE = """\
 import polars as pl
