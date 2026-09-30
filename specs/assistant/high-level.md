@@ -31,8 +31,9 @@ In scope:
   `DATABRICKS_HOST` / `DATABRICKS_TOKEN` environment variables, and reuses the
   OpenAI-protocol stream normalizer internally.
 - The versioned tool/recipe registry and node descriptors the model queries (derived from the same
-  `NodeType`/config-`TypedDict` machinery the rest of the product dispatches on, plus
-  per-type usage notes owned here).
+  `NodeType`/config-`TypedDict` machinery, the palette defaults, and the source, sink-only
+  and pass-through registries the rest of the product dispatches on, plus the palette
+  names, one-line purposes and per-type usage notes owned here).
 - The assistant's authoring knowledge, shipped as repo-versioned package assets: a
   concise authoring guide and discoverable executable project bundles served on
   demand through `get_example`. Bundle inventories are content-addressed; every

@@ -279,6 +279,18 @@ def build_system_prompt(
             raise RuntimeError(f"Capability manifest {key!r} is invalid")
         return ", ".join(f"`{item['id']}`" for item in index)
 
+    def node_lines() -> str:
+        index = manifest["node_index"]
+        if not isinstance(index, list) or any(
+            not isinstance(item, Mapping)
+            or not all(isinstance(item.get(key), str) for key in ("id", "display_name", "summary"))
+            for item in index
+        ):
+            raise RuntimeError("Capability manifest 'node_index' is invalid")
+        return "\n".join(
+            f"- `{item['id']}` ({item['display_name']}): {item['summary']}" for item in index
+        )
+
     def recipe_summaries() -> str:
         index = manifest["recipe_index"]
         if not isinstance(index, list) or any(
@@ -333,7 +345,7 @@ def build_system_prompt(
             )
         return "\n".join(lines)
 
-    node_ids = index_ids("node_index")
+    node_index = node_lines()
     operation_ids = index_ids("operation_index")
     recipe_index = recipe_summaries()
     manifest_section = "\n".join(
@@ -354,7 +366,7 @@ def build_system_prompt(
             "### Installed I/O availability",
             installed_io_summary(),
             "### Node index",
-            node_ids,
+            node_index,
             "### Operation index",
             operation_ids,
             (

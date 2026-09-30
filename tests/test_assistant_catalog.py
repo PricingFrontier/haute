@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -154,7 +155,7 @@ class TestCapabilityManifest:
             "operation_index",
             "recipe_index",
         }
-        assert set(compact["node_index"][0]) == {"id", "decorator", "summary"}
+        assert set(compact["node_index"][0]) == {"id", "display_name", "decorator", "summary"}
         assert "config_schema" not in compact["node_index"][0]
         assert {item["id"] for item in compact["recipe_index"]} == {
             "categorical_banding",
@@ -203,6 +204,7 @@ class TestResolvedDescriptors:
     def test_node_descriptors_include_the_complete_closed_contract(self):
         required = {
             "id",
+            "display_name",
             "decorator",
             "config_schema",
             "required_fields",
@@ -427,3 +429,175 @@ def test_banding_descriptor_exposes_canonical_type_enum() -> None:
         "breakpoints",
         "categorical",
     ]
+
+
+# The editor's own declarations, read from source: the catalogue mirrors them.
+_NODE_TYPES_TS = (
+    Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "nodeTypes.ts"
+).read_text(encoding="utf-8")
+
+
+def _editor_set(name: str) -> set[str]:
+    match = re.search(rf"export const {name} = new Set<\w+>\(\[(.*?)\]\)", _NODE_TYPES_TS, re.S)
+    assert match, f"nodeTypes.ts declares no {name}"
+    return {NodeType[member].value for member in re.findall(r"NODE_TYPES\.(\w+)", match.group(1))}
+
+
+def _editor_meta(field: str) -> dict[str, str]:
+    """One field of each ``NODE_TYPE_META`` row, keyed by node type value."""
+    return {
+        NodeType[member].value: value.strip()
+        for member, value in re.findall(
+            rf'^\s+\[NODE_TYPES\.(\w+)\]:[^\n]*?\b{field}: "?([^",}}]+)"?', _NODE_TYPES_TS, re.M
+        )
+    }
+
+
+def _descriptors() -> dict[str, NodeCapabilityDescriptor]:
+    return {descriptor.id: descriptor for descriptor in capability_manifest().nodes}
+
+
+class TestRegistryFacts:
+    """Source, sink, pass-through and cardinality come from the product's registries."""
+
+    def test_sources_are_the_standalone_source_types_and_the_editor_agrees(self) -> None:
+        from haute._standalone_nodes import SOURCE_NODE_TYPES
+
+        zero_input = {
+            node_id
+            for node_id, descriptor in _descriptors().items()
+            if descriptor.input_cardinality == "zero"
+        }
+        assert zero_input == {node_type.value for node_type in SOURCE_NODE_TYPES}
+        assert _editor_set("SOURCE_ONLY_TYPES") == zero_input
+
+    def test_sinks_are_the_sink_only_types_and_the_editor_agrees(self) -> None:
+        from haute._types import SINK_ONLY_NODE_TYPES
+
+        no_output = {
+            node_id
+            for node_id, descriptor in _descriptors().items()
+            if descriptor.ports["outputs"] == ()
+        }
+        assert no_output == {node_type.value for node_type in SINK_ONLY_NODE_TYPES}
+        assert _editor_set("SINK_ONLY_TYPES") == no_output
+        assert no_output == {"output", "dataOutput", "explore", "modelling", "optimiser"}
+
+    def test_single_input_types_are_the_palette_max_one_types(self) -> None:
+        single = {
+            node_id
+            for node_id, descriptor in _descriptors().items()
+            if descriptor.input_cardinality == "exactly one"
+        }
+        max_inputs = _editor_meta("maxInputs")
+        assert single == {node_id for node_id, value in max_inputs.items() if value == "1"}
+        assert max_inputs["edgeJoin"] == "2"
+        assert _descriptors()["edgeJoin"].input_cardinality == "exactly two"
+        assert "ratingStep" in single
+
+    def test_a_load_file_with_an_incoming_edge_validates_against_its_descriptor(self) -> None:
+        from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
+
+        load_file = _descriptors()["externalFile"].as_dict()
+
+        assert NodeType.EXTERNAL_FILE in STANDALONE_PASSTHROUGH_TYPES
+        assert load_file["input_cardinality"] == "zero or more"
+        assert "`df`" in load_file["ports"]["inputs"]
+        assert load_file["ports"]["outputs"] == ["frame"]
+        assert "`obj`" in load_file["usage"]
+        assert "first input" in load_file["schema_effect"]
+        assert "no upstream" not in load_file["wiring_rules"].lower()
+
+    def test_apply_optimisation_takes_several_inputs_chosen_by_ratebook_input(self) -> None:
+        apply = _descriptors()["optimiserApply"]
+
+        assert apply.input_cardinality == "one or more, subject to the descriptor configuration"
+        assert "ratebook_input" in apply.wiring_rules
+
+    def test_every_node_type_has_an_explicit_input_cardinality(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_catalog, "_SINGLE_INPUT_TYPES", frozenset())
+        with pytest.raises(RuntimeError, match="input cardinality"):
+            _catalog._input_cardinality(NodeType.BANDING)
+
+
+class TestPaletteFacts:
+    def test_display_names_are_the_palette_names(self) -> None:
+        names = _editor_meta("name")
+
+        assert {node_id: d.display_name for node_id, d in _descriptors().items()} == names
+        assert names["externalFile"] == "Load File"
+        assert names["liveSwitch"] == "Source Switch"
+
+    def test_defaults_are_the_palette_defaults(self) -> None:
+        from haute._config_io import palette_default_config
+
+        for node_type in NodeType:
+            descriptor = _descriptors()[node_type.value].as_dict()
+            assert descriptor["defaults"] == palette_default_config(node_type)
+        assert _descriptors()["scenarioExpander"].as_dict()["defaults"]["stepCount"] == 21
+
+    def test_the_node_index_names_each_type_with_its_palette_name_and_purpose(self) -> None:
+        from haute.assistant._loop import build_system_prompt
+
+        index = compact_manifest(capability_manifest())["node_index"]
+        load_file = next(entry for entry in index if entry["id"] == "externalFile")
+        assert load_file["display_name"] == "Load File"
+        assert load_file["summary"] != _descriptors()["externalFile"].usage
+
+        prompt = build_system_prompt(pipeline_name="p", source_file="p.py")
+        assert f"- `externalFile` (Load File): {load_file['summary']}" in prompt
+        assert "- `liveSwitch` (Source Switch): " in prompt
+
+
+class TestIoBranches:
+    def test_data_input_and_output_enums_merge_every_branch(self) -> None:
+        data_input = _descriptors()["dataInput"]
+        data_output = _descriptors()["dataOutput"]
+
+        assert data_input.as_dict()["enum_values"]["inputType"] == [
+            "file",
+            "database",
+            "lakehouse",
+            "databricks",
+            "inline",
+        ]
+        assert data_input.config_schema["properties"]["inputType"]["enum"] == (
+            "file",
+            "database",
+            "lakehouse",
+            "databricks",
+            "inline",
+        )
+        # The file branch accepts any installed format, so format is not closed.
+        assert "format" not in data_input.enum_values
+        assert data_output.as_dict()["enum_values"]["outputType"] == [
+            "file",
+            "database",
+            "lakehouse",
+        ]
+        assert data_input.required_fields == ("inputType",)
+        assert data_output.required_fields == ("format", "outputType")
+
+
+class TestUsageNotes:
+    def test_notes_name_real_fields_and_shapes(self) -> None:
+        nodes = _descriptors()
+
+        expander = nodes["scenarioExpander"].usage
+        assert "stepCount" in expander
+        assert "source column" not in expander
+        for field in ("column_name", "min_value", "max_value", "step_column"):
+            assert field in expander
+
+        banding = nodes["banding"].usage
+        assert "date" in banding
+        assert "{boundary, label}" in banding
+        assert "{value, assignment}" in banding
+
+        optimiser = nodes["optimiser"].usage
+        assert "scored" not in optimiser
+        assert "data_input" in optimiser
+
+        assert "first input" in nodes["ratingStep"].usage

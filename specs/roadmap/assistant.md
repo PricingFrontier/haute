@@ -78,7 +78,6 @@ to the build journeys the evaluation targets first.
 |---|---|---:|---|
 | ASSIST-03 | Planned | P1 | Every node the assistant writes on a stepped surface stays in the step builder. |
 | ASSIST-05 | Planned | P1 | The prompt and guide state the product's real contracts and the effective egress policy. |
-| ASSIST-06 | Planned | P1 | Node descriptors agree with the product's own registries and use palette names. |
 | ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
 | ASSIST-08 | Planned | P1 | Recipes produce configs that match rows and never advertise invalid options. |
 | ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
@@ -184,38 +183,6 @@ the prompt does not require `get_column_profiles`; the guide contains no
 `src/haute/assistant/_loop.py::build_system_prompt`;
 `src/haute/assistant/_wire_ops.py`.
 
-### ASSIST-06 — Catalogue facts come from the product's registries
-**Why:** The node descriptors' hand-kept sets have drifted: Load File is a
-zero-input source although it passes its first input through and exposes the
-loaded object as `obj`; Model Training, Optimisation and Explore are shown
-with an output although the editor gives them none, and two examples wire
-them into the response; Rating Step is marked multi-input and Apply
-Optimisation single-input; the Scenario Expander note names fields that do
-not exist and hides the required `stepCount`; banding breakpoints are
-described as numeric only; Data Input and Data Output enums keep only the last
-branch; required fields are empty for 17 of 19 types. The node index lists
-bare ids with no palette names.
-
-**Plan:** Derive source, sink, pass-through and input cardinality from the
-product's registries (`SOURCE_NODE_TYPES`, the pass-through set and the
-editor's sink-only list, shared through one backend table the frontend
-reads), reject outgoing edges from sink-only types in save validation,
-correct the per-type notes, merge enums across every branch, publish palette
-defaults, and show each node's palette name and one-line purpose in the node
-index.
-
-**Acceptance:** A catalogue test asserts that the source and sink sets equal
-the product registries; a Load File with an incoming edge validates against
-its descriptor; the golden node index shows palette names such as Load File
-and Source Switch; an edge out of Model Training is rejected at dry-run.
-
-**Dependencies:** `ASSIST-04`.
-
-**Evidence:** `src/haute/assistant/_catalog.py::_node_ports`;
-`src/haute/assistant/_catalog.py::_config_schema`;
-`src/haute/_standalone_nodes.py::SOURCE_NODE_TYPES`;
-`frontend/src/utils/nodeTypes.ts::SINK_ONLY_TYPES`.
-
 ### ASSIST-07 — Example bundles the editor accepts
 **Why:** The reusable-submodel example names its occurrence like the inner
 node, so any edit passes dry-run and then fails at apply on the codegen name
@@ -227,12 +194,14 @@ year as its age and assert it in their goldens.
 **Plan:** Rename the submodel occurrence, rebuild the ratebook example
 through a Banding node, make training and optimisation terminal branches, fix
 the vehicle-age goldens, move security and deployment fixtures out of the
-teaching index, and run the codegen collision check inside dry-run
-validation.
+teaching index, run the codegen collision check inside dry-run
+validation, and reject outgoing edges from sink-only types
+(`haute._types.SINK_ONLY_NODE_TYPES`) in save validation.
 
 **Acceptance:** Every bundle parses, regenerates and accepts a no-op edit
 through the application service; the collision repro fails at dry-run; the
-portfolio test solves the ratebook example with a Banding source.
+portfolio test solves the ratebook example with a Banding source; an edge out
+of Model Training is rejected at dry-run.
 
 **Dependencies:** `ASSIST-06`.
 

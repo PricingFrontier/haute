@@ -18,7 +18,25 @@ When a request matches one of these summaries, prefer `plan_recipe` before dry-r
 - databricks: input=yes, output=no; cache=snapshot; formats=none
 - inline: input=yes, output=no; cache=snapshot; formats=records
 ### Node index
-`apiInput`, `dataInput`, `dataOutput`, `polars`, `edgeJoin`, `modelScore`, `banding`, `ratingStep`, `output`, `explore`, `externalFile`, `liveSwitch`, `modelling`, `optimiser`, `scenarioExpander`, `optimiserApply`, `constant`, `submodel`, `submodelPort`
+- `apiInput` (Quote Input): The live quote request, one frame per declared request table.
+- `dataInput` (Data Input): Read a file, database, lakehouse, Databricks table or inline records.
+- `dataOutput` (Data Output): Write a frame to a file, database or lakehouse when the output is run.
+- `polars` (Polars): Transform one or more frames with Polars steps.
+- `edgeJoin` (Edge Join): Join a base frame with a lookup frame on keys.
+- `modelScore` (Model Scoring): Score rows with a saved model.
+- `banding` (Banding): Group number, date or categorical values into named bands.
+- `ratingStep` (Rating Step): Look up rating factors from tables and combine them.
+- `output` (Quote Response): Assemble the quote's JSON response from upstream columns.
+- `explore` (Explore): Analyse an upstream frame with summaries, pivots and charts.
+- `externalFile` (Load File): Load a pickle, JSON, joblib or CatBoost file for use in steps.
+- `liveSwitch` (Source Switch): Route the live request or a batch source by scenario.
+- `modelling` (Model Training): Train a gradient boosting, EBM or GLM model.
+- `optimiser` (Optimisation): Optimise prices under an objective and constraints.
+- `scenarioExpander` (Expander): Repeat each row across a grid of scenario values.
+- `optimiserApply` (Apply Optimisation): Apply a saved optimisation result to price rows.
+- `constant` (Constant): A one-row frame of named constant values.
+- `submodel` (Submodel): An occurrence of a reusable sub-pipeline.
+- `submodelPort` (Port): A submodel's structural input or output port.
 ### Operation index
 `get_pipeline`, `get_node_schema`, `get_node_config`, `get_column_profiles`, `list_datasets`, `get_dataset_schema`, `get_project_knowledge`, `get_example`, `get_authoring_guide`, `plan_recipe`, `dry_run_recipe_plan`, `dry_run_graph_edits`, `apply_graph_plan`, `get_capability_manifest`, `get_capability_descriptors`
 Retrieve complete descriptors with `get_capability_descriptors`, batching one to twelve ids per call; do not infer omitted configuration or policy facts.

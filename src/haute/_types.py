@@ -86,6 +86,19 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
     v: k for k, v in DECORATOR_TO_NODE_TYPE.items() if k != "instance"
 }
 
+#: Node types with no output: nothing may be wired downstream of them. The
+#: editor's ``SINK_ONLY_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is held
+#: equal to this set by test.
+SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.OUTPUT,
+        NodeType.DATA_OUTPUT,
+        NodeType.EXPLORE,
+        NodeType.MODELLING,
+        NodeType.OPTIMISER,
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Typed config shapes (documentation + IDE autocomplete, no runtime change)

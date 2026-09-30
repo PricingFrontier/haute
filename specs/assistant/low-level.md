@@ -65,8 +65,29 @@ orphaned halves).
   `config_schema` is derived from the canonical `TypedDict` annotations
   (including `Required`, `Literal`, unions, lists, mappings and discriminated
   Data Input/Output branches) and has `additionalProperties: false`.
-  `required_fields`, `optional_fields`, defaults and enum values are derived
-  from that resolved schema rather than maintained separately.
+  `required_fields`, `optional_fields` and enum values are derived from that
+  resolved schema rather than maintained separately. For Data Input and Data
+  Output the top-level properties merge every branch: a key every declaring
+  branch enumerates carries the union of their values, `enum_values` lists only
+  such closed keys (Data Input `format` stays open because the file branch
+  accepts any installed format), and `required_fields` are the keys every
+  branch requires. `defaults` is the palette's config for the type
+  (`haute._config_io.palette_default_config`, read from `node_defaults.json`).
+  Source-ness comes from `haute._standalone_nodes.SOURCE_NODE_TYPES`, types
+  with no output from `haute._types.SINK_ONLY_NODE_TYPES` (held
+  equal to the editor's `SINK_ONLY_TYPES` by test), first-input pass-through from
+  `haute._standalone_nodes.STANDALONE_PASSTHROUGH_TYPES`, and the single-input types
+  are held equal to the palette's `maxInputs: 1` entries by test; every
+  `NodeType` has an explicit input cardinality, and one without it fails at
+  import. So Load File takes its first input as `df` plus further inputs by
+  edge name and exposes the loaded object as `obj`; Model Training,
+  Optimisation, Explore, Data Output and Quote Response have no outputs;
+  Rating Step rates its one input; Apply Optimisation takes several inputs and
+  picks a ratebook artifact's frame by `ratebook_input`. `display_name` is the
+  palette name (held equal to `NODE_TYPE_META` in
+  `frontend/src/utils/nodeTypes.ts` by test), `summary` is a one-line purpose,
+  and `usage` is the longer authoring note; all three are completeness-checked
+  at import.
 - **`OperationCapabilityDescriptor`**: a closed, versioned operation
   declaration. `_tools.TOOL_DEFINITIONS` is projected from these descriptors,
   so a provider-visible tool cannot exist without risk, egress, retry,
@@ -522,7 +543,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 3. Resolve the provider configuration, construct the adapter, parse the session's saved
    pipeline, and build the provider request: system prompt (static role and
    authority/evidence instructions + compact capability identity, an installed-I/O
-   availability summary, and node/operation/recipe ids with their canonical summaries
+   availability summary, a node index with one line per node type naming its id, palette
+   name and one-line purpose, operation ids, and recipe ids with their canonical summaries
    + an example-ID-only index + project facts: pipeline name, source file,
    node-count/type summary) + windowed history + the new user message + `_tools` JSON
    schemas. Fresh graph detail is deliberately *not* embedded in the system prompt — the
@@ -1091,7 +1113,9 @@ fixture for route tests). The implemented coverage is:
   unrelated-diff detection, and truthful verification evidence.
 - **`tests/test_assistant_catalog.py`** — completeness against `NodeType` (mirror of the
   registry-completeness test); folder/decorator facts agree with `_types`/`_config_io`.
-  Also pins resolved schema agreement, closed operation
+  Source, sink-only and single-input sets and palette names are asserted equal to the
+  product registries and to the editor's `nodeTypes.ts` declarations, read from source.
+  Also pins merged I/O enums, palette defaults, resolved schema agreement, closed operation
   metadata, deterministic canonical hashing, cache reuse/invalidation,
   manifest compatibility identity, and the compact/full projection boundary.
 - **`tests/test_assistant_tools.py`** — real tmp-project coverage for source/downstream
