@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
-| ASSIST-24 | Planned | P1 | Each turn starts with the graph, the selection and the policy, without orientation reads. |
 | ASSIST-25 | Planned | P2 | Renaming a node rewrites the references that structured configs hold. |
 | ASSIST-26 | Planned | P2 | Structured cards after a free-code card keep their column help. |
 | ASSIST-30 | Planned | P1 | No regex over the user's words steers a turn. |
@@ -122,28 +121,6 @@ states.
 
 **Evidence:** `src/haute/assistant/_wire_ops.py`;
 `src/haute/assistant/_render.py::render_pipeline_graph`.
-
-### ASSIST-24 — Per-turn context and a stable system prefix
-**Why:** Every walkthrough spent three to eight reads orienting before its
-first dry-run, and in August an edit meant for a named node landed on a new
-one. The system prompt is rebuilt each turn with the node count and routing
-text, which also prevents prompt caching.
-
-**Plan:** Freeze the system prefix for a session and add a per-turn context
-block after the user message: a bounded graph brief (id, palette name, label,
-inputs with columns, output columns, authoring state), the base revision, the
-effective egress policy in words, the analyst's selected nodes, and an opt-in
-preview error reduced by policy. The request accepts a typed context object.
-
-**Acceptance:** The golden prefix is identical across turns; replayed
-single-node edits need no read before their first dry-run; the preview error
-is reduced under `allow_row_samples = false`.
-
-**Dependencies:** `ASSIST-06`, `ASSIST-10`, `ASSIST-12`.
-
-**Evidence:** `src/haute/routes/assistant.py`;
-`src/haute/assistant/_loop.py::build_system_prompt`;
-`src/haute/schemas.py::AssistantMessageRequest`.
 
 ### ASSIST-25 — Rename reconciles structured references
 **Why:** The editor's rename rewrites step inputs, input mappings, scenario
@@ -198,7 +175,7 @@ one nudge.
 **Dependencies:** `ASSIST-09`, `ASSIST-13`, `ASSIST-23`.
 
 **Evidence:** `src/haute/assistant/_loop.py::effective_authoring_request`;
-`src/haute/assistant/_loop.py::_request_routed_system_prompt`;
+`src/haute/assistant/_loop.py::_request_routed_guidance`;
 `src/haute/assistant/_recipes.py::route_recipe_request`.
 
 ### ASSIST-31 — A change card built from what was saved

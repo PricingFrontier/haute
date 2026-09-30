@@ -15,13 +15,19 @@ from haute._sandbox import contained_path
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
 from haute.assistant._providers import AssistantProvider, create_provider
+from haute.assistant._render import render_turn_context
 from haute.assistant._session import AssistantSession, SessionStore
-from haute.assistant._tools import TOOL_DEFINITIONS, build_tool_executor
+from haute.assistant._tools import (
+    TOOL_DEFINITIONS,
+    TurnContextError,
+    build_tool_executor,
+    build_turn_context,
+)
 from haute.errors import ConfigError, HauteError, InvalidPathError, PathOutsideProjectError
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
-    parse_pipeline_to_graph,
+    save_lock,
 )
 from haute.schemas import (
     AssistantCancelledEvent,
@@ -249,6 +255,7 @@ async def _event_stream(
     system_prompt: str,
     reservation: _loop.TurnReservation,
     authoring_request: str,
+    turn_context: str,
 ) -> AsyncIterator[str]:
     """Frame loop events as server-sent events."""
 
@@ -264,6 +271,7 @@ async def _event_stream(
         max_tool_calls=None,
         reservation=reservation,
         authoring_request=authoring_request,
+        turn_context=turn_context,
     )
     try:
         async for event in turn:
@@ -361,19 +369,30 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             detail = _http_error_detail(exc, "provider_factory")
             raise HTTPException(status_code=502, detail=detail) from None
 
+        request_context = body.context
         try:
-            graph = await asyncio.to_thread(parse_pipeline_to_graph, Path(session.source_file))
-            pipeline_name = graph.pipeline_name or Path(session.source_file).stem
-            system_prompt = _loop.build_system_prompt(
-                pipeline_name=pipeline_name,
-                source_file=session.source_file,
-                egress=config.egress,
-                node_summary=_loop.summarise_graph_nodes(graph),
-            )
+            system_prompt = _loop.build_system_prompt(source_file=session.source_file)
+            async with save_lock:
+                gathered = await asyncio.to_thread(
+                    build_turn_context,
+                    session.source_file,
+                    config.egress,
+                    selected_node_ids=(
+                        () if request_context is None else request_context.selected_node_ids
+                    ),
+                    preview_error_node_id=(
+                        None if request_context is None else request_context.preview_error_node_id
+                    ),
+                )
+            turn_context = render_turn_context(gathered)
+        except TurnContextError as exc:
+            # The canvas that sent this context shows a graph the saved file no
+            # longer has.
+            raise HTTPException(status_code=409, detail=str(exc)) from None
         except HauteError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from None
         except Exception as exc:
-            detail = _http_error_detail(exc, "system_prompt")
+            detail = _http_error_detail(exc, "turn_context")
             raise HTTPException(status_code=500, detail=detail) from None
         authoring_request = _loop.effective_authoring_request(session, body.message)
         execute_tool = build_tool_executor(
@@ -395,6 +414,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             system_prompt=system_prompt,
             reservation=reservation,
             authoring_request=authoring_request,
+            turn_context=turn_context,
         ),
         media_type="text/event-stream",
         reservation=reservation,

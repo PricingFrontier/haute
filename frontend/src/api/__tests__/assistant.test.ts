@@ -12,6 +12,7 @@
  *   streamAssistantMessage(sessionId, message, sourceFile, opts: {
  *     signal: AbortSignal
  *     onEvent: (event: AssistantStreamEvent) => void
+ *     context: AssistantMessageContext
  *   }): Promise<void>   — resolves when the stream ends (terminal-event
  *   accounting is the store's job); throws on unknown event types.
  *
@@ -31,6 +32,8 @@ import {
 } from "../assistant"
 
 let mockFetch: ReturnType<typeof vi.fn>
+
+const NO_CONTEXT = { selectedNodeIds: [], previewErrorNodeId: null }
 
 beforeEach(() => {
   mockFetch = vi.fn()
@@ -73,6 +76,7 @@ async function collectEvents(chunks: string[]): Promise<AssistantStreamEvent[]> 
   const events: AssistantStreamEvent[] = []
   await streamAssistantMessage("session-1", "hello", "main.py", {
     signal: new AbortController().signal,
+    context: NO_CONTEXT,
     onEvent: (event) => events.push(event),
   })
   return events
@@ -240,10 +244,14 @@ describe("listAssistantSessions", () => {
 })
 
 describe("streamAssistantMessage", () => {
-  it("posts the message with the abort signal attached", async () => {
+  it("posts the message and its canvas context with the abort signal attached", async () => {
     const signal = new AbortController().signal
     mockFetch.mockReturnValueOnce(sseResponse(['data: {"type":"cancelled"}\n\n']))
-    await streamAssistantMessage("session-1", "add a node", "main.py", { signal, onEvent: () => {} })
+    await streamAssistantMessage("session-1", "add a node", "main.py", {
+      signal,
+      onEvent: () => {},
+      context: { selectedNodeIds: ["quotes", "premium"], previewErrorNodeId: "premium" },
+    })
 
     const [url, opts] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/assistant/message")
@@ -252,6 +260,7 @@ describe("streamAssistantMessage", () => {
       session_id: "session-1",
       message: "add a node",
       source_file: "main.py",
+      context: { selected_node_ids: ["quotes", "premium"], preview_error_node_id: "premium" },
     })
     expect(opts.signal).toBe(signal)
   })
@@ -303,6 +312,7 @@ describe("streamAssistantMessage", () => {
     await expect(
       streamAssistantMessage("session-1", "hi", "main.py", {
         signal: new AbortController().signal,
+        context: NO_CONTEXT,
         onEvent: () => {},
       }),
     ).rejects.toThrow(/mystery_event/)
@@ -329,6 +339,7 @@ describe("streamAssistantMessage", () => {
 
     await expect(streamAssistantMessage("session-1", "hi", "main.py", {
       signal: new AbortController().signal,
+      context: NO_CONTEXT,
       onEvent: callback,
     })).rejects.toThrow(/Invalid assistant payload/)
     expect(callback).not.toHaveBeenCalled()
@@ -346,6 +357,7 @@ describe("streamAssistantMessage", () => {
 
     await expect(streamAssistantMessage("session-1", "hi", "main.py", {
       signal: new AbortController().signal,
+      context: NO_CONTEXT,
       onEvent: () => {},
     })).rejects.toThrow(/mystery_event/)
     expect(cancel).toHaveBeenCalledTimes(1)
@@ -363,6 +375,7 @@ describe("streamAssistantMessage", () => {
 
     await expect(streamAssistantMessage("session-1", "hi", "main.py", {
       signal: new AbortController().signal,
+      context: NO_CONTEXT,
       onEvent: () => { throw new Error("callback failure") },
     })).rejects.toThrow("callback failure")
     expect(cancel).toHaveBeenCalledTimes(1)
@@ -373,6 +386,7 @@ describe("streamAssistantMessage", () => {
     await expect(
       streamAssistantMessage("session-1", "hi", "main.py", {
         signal: new AbortController().signal,
+        context: NO_CONTEXT,
         onEvent: () => {},
       }),
     ).rejects.toBeInstanceOf(ApiError)

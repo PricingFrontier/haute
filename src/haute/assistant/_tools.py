@@ -12,7 +12,9 @@ import asyncio
 import difflib
 import json
 import re
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -53,6 +55,7 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
+from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
@@ -72,7 +75,7 @@ from haute.assistant._catalog import (
     materialise_json,
     step_grammar,
 )
-from haute.assistant._config import mutations_readiness, resolve_egress_policy
+from haute.assistant._config import EgressPolicy, mutations_readiness, resolve_egress_policy
 from haute.assistant._ops import (
     AssistantOperationError,
     LocatedPlanError,
@@ -86,7 +89,16 @@ from haute.assistant._ops import (
 from haute.assistant._project_knowledge import build_project_knowledge, query_project_knowledge
 from haute.assistant._recipes import RecipeError
 from haute.assistant._recipes import plan_recipe as _plan_recipe
-from haute.assistant._render import render_pipeline_graph
+from haute.assistant._render import (
+    AuthoringState,
+    BriefFrame,
+    BriefInput,
+    BriefNode,
+    GraphBrief,
+    PreviewError,
+    TurnContext,
+    render_pipeline_graph,
+)
 from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError, PreambleError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
@@ -577,7 +589,7 @@ def _resolve_schema_outputs(
     flat: PipelineGraph,
     graph: PipelineGraph,
     *,
-    target: str,
+    target: str | None,
     preserve: frozenset[str],
     schema_only: bool = True,
     execution_context: ExecutionContext | None = None,
@@ -805,6 +817,197 @@ def get_pipeline(source_file: str) -> dict[str, object]:
         }
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
         return _error("pipeline_unavailable", _error_message(exc, operation="get_pipeline"))
+
+
+class TurnContextError(HauteError):
+    """The request's context names a node the saved pipeline's top level lacks."""
+
+
+# The brief's resolved facts for the latest project revisions. A revision covers
+# the pipeline file, `haute.toml` and the capability hash, so an edit always
+# misses; a data file's header is read again only when the revision changes.
+_BRIEF_CACHE: OrderedDict[str, tuple[BriefNode, ...]] = OrderedDict()
+_BRIEF_CACHE_SIZE = 8
+_BRIEF_CACHE_LOCK = threading.Lock()
+
+
+def _incomplete(exc: Exception | None) -> bool:
+    return isinstance(exc, NotImplementedError) and str(exc).startswith(
+        (INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)
+    )
+
+
+def _brief_frames(output: object) -> tuple[BriefFrame, ...]:
+    if isinstance(output, dict):
+        return tuple(
+            BriefFrame(port, tuple(_frame_column_names(frame, None)))
+            for port, frame in output.items()
+        )
+    return (BriefFrame(None, tuple(_frame_column_names(output, None))),)
+
+
+def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
+    """Every top-level node's brief entry, in graph order, resolved schema-only.
+
+    One engine call resolves every node. When it raises, each node resolves on
+    its own, so one broken node marks only itself unresolved and never puts its
+    error text in the brief.
+    """
+
+    flat = flatten_graph(graph)
+    flat_ids = frozenset(node.id for node in flat.nodes)
+    resolved: dict[str, tuple[object | None, Exception | None]] = {}
+    try:
+        outputs = _resolve_schema_outputs(flat, graph, target=None, preserve=flat_ids)
+        resolved = {node_id: (outputs[node_id], None) for node_id in flat_ids if node_id in outputs}
+    except Exception as exc:  # noqa: BLE001 - each node then resolves on its own
+        logger.info("assistant_turn_context_graph_unresolved", error=type(exc).__name__)
+
+    def output_of(node_id: str) -> tuple[object | None, Exception | None]:
+        if node_id not in resolved:
+            try:
+                output = _resolve_schema_outputs(
+                    flat, graph, target=node_id, preserve=frozenset({node_id})
+                )[node_id]
+                resolved[node_id] = (output, None)
+            except Exception as exc:  # noqa: BLE001 - an unresolved node is reported as such
+                logger.info(
+                    "assistant_turn_context_node_unresolved",
+                    node=node_id,
+                    error=type(exc).__name__,
+                )
+                resolved[node_id] = (None, exc)
+        return resolved[node_id]
+
+    nodes: list[BriefNode] = []
+    for node in graph.nodes:
+        node_type = node.data.nodeType
+        if node_type in _BOUNDARY_NODE_TYPES or node.id not in flat_ids:
+            nodes.append(BriefNode(node.id, node_type.value, node.data.label, None, (), None))
+            continue
+        inputs = []
+        for item in _node_inputs(flat, node.id):
+            source_output, _failure = output_of(item.source)
+            inputs.append(
+                BriefInput(
+                    item.name,
+                    item.source,
+                    None
+                    if source_output is None
+                    else tuple(_frame_column_names(source_output, item.source_port)),
+                )
+            )
+        output, failure = output_of(node.id)
+        state: AuthoringState | None = None
+        if node_type in STEPPED_NODE_TYPES:
+            if _incomplete(failure):
+                state = "incomplete"
+            elif is_stepped_config(node_type, node.data.config):
+                state = "stepped"
+            else:
+                state = "code"
+        nodes.append(
+            BriefNode(
+                node.id,
+                node_type.value,
+                node.data.label,
+                state,
+                tuple(inputs),
+                None if output is None else _brief_frames(output),
+            )
+        )
+    return tuple(nodes)
+
+
+def _cached_brief_nodes(graph: PipelineGraph, revision: str) -> tuple[BriefNode, ...]:
+    with _BRIEF_CACHE_LOCK:
+        cached = _BRIEF_CACHE.get(revision)
+        if cached is not None:
+            _BRIEF_CACHE.move_to_end(revision)
+            return cached
+    nodes = _brief_nodes(graph)
+    with _BRIEF_CACHE_LOCK:
+        _BRIEF_CACHE[revision] = nodes
+        _BRIEF_CACHE.move_to_end(revision)
+        while len(_BRIEF_CACHE) > _BRIEF_CACHE_SIZE:
+            _BRIEF_CACHE.popitem(last=False)
+    return nodes
+
+
+def _preview_error(graph: PipelineGraph, node: str) -> PreviewError:
+    """The node's schema-only resolution failure, rendered by the authored-code renderer.
+
+    Its text is present only when the project permits row samples; otherwise it
+    is the failure's type, step or line and the column names the policy already
+    discloses.
+    """
+
+    try:
+        _resolve_schema_outputs(
+            flatten_graph(graph), graph, target=node, preserve=frozenset({node})
+        )
+    except Exception as exc:  # noqa: BLE001 - the failure is what was asked for
+        return PreviewError(
+            node,
+            _execution_error_message(exc, operation="turn_context", site=_FailureSite(graph, node)),
+        )
+    return PreviewError(node, None)
+
+
+def build_turn_context(
+    source_file: str,
+    egress: EgressPolicy,
+    *,
+    selected_node_ids: Sequence[str] = (),
+    preview_error_node_id: str | None = None,
+) -> TurnContext:
+    """Gather the turn context's facts for the saved pipeline.
+
+    The graph brief, revision, selection and preview error are `internal`
+    project metadata, withheld under a `public` policy. A selected or
+    preview-error id the saved top level lacks raises `TurnContextError`: the
+    canvas it came from is stale.
+    """
+
+    if egress.max_sensitivity == "public":
+        return TurnContext(egress, None)
+    graph = _parse_graph(source_file)
+    top_level = {node.id: node for node in graph.nodes}
+    for node_id in selected_node_ids:
+        if node_id not in top_level:
+            raise TurnContextError(
+                f"The canvas selection names node '{node_id}', which the saved pipeline "
+                "does not have. Reload the pipeline and send again."
+            )
+    if preview_error_node_id is not None and (
+        preview_error_node_id not in top_level
+        or top_level[preview_error_node_id].data.nodeType in _BOUNDARY_NODE_TYPES
+    ):
+        raise TurnContextError(
+            f"Node '{preview_error_node_id}' has no preview error the assistant can "
+            "reproduce: it is not a top-level executable node of the saved pipeline."
+        )
+    revision = _project_revision(source_file, graph)
+    nodes = _cached_brief_nodes(graph, revision)
+    by_id = {node.id: node for node in nodes}
+    ordered = tuple(
+        [by_id[node_id] for node_id in selected_node_ids]
+        + [node for node in nodes if node.id not in set(selected_node_ids)]
+    )
+    return TurnContext(
+        egress,
+        GraphBrief(
+            pipeline_name=graph.pipeline_name or Path(source_file).stem,
+            revision=revision,
+            nodes=ordered,
+            selected_node_ids=tuple(selected_node_ids),
+            preview_error=(
+                None
+                if preview_error_node_id is None
+                else _preview_error(graph, preview_error_node_id)
+            ),
+        ),
+    )
 
 
 def get_node_config(source_file: str, node: str) -> dict[str, object]:
@@ -2518,8 +2721,10 @@ def build_tool_executor(
 
 __all__ = [
     "TOOL_DEFINITIONS",
+    "TurnContextError",
     "apply_graph_plan",
     "build_tool_executor",
+    "build_turn_context",
     "dry_run_graph_edits",
     "get_capability_descriptors",
     "get_capability_manifest",

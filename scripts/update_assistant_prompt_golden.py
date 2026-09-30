@@ -1,10 +1,13 @@
 """Check or refresh the golden snapshot of what the assistant's model sees.
 
-The snapshot is the always-on system prompt for one fixed project, the
+The snapshot is the session-stable system prompt for one fixed source file,
+the turn context of two turns of that project rendered from fixed data, the
 canonical tool definitions, and each provider adapter's wire projection of
-them, plus a sha256 of each rendered file. The Haute version and the
-capability hash in the prompt are replaced with fixed placeholders, because
-both change on every release while the text the model reads does not.
+them, plus a sha256 of each rendered file. The system prompt is rendered once
+per turn and must come out identical, so the snapshot shows one prefix for
+both turns. The Haute version and the capability hash in the prompt are
+replaced with fixed placeholders, because both change on every release while
+the text the model reads does not.
 
 Without arguments it exits non-zero and prints a unified diff when a rendered
 file differs from the checked-in one; ``--write`` rewrites the files.
@@ -20,23 +23,104 @@ import sys
 from pathlib import Path
 
 from haute.assistant._config import EgressPolicy
+from haute.assistant._render import (
+    BriefFrame,
+    BriefInput,
+    BriefNode,
+    GraphBrief,
+    PreviewError,
+    TurnContext,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_ROOT = PROJECT_ROOT / "tests" / "assistant_eval" / "golden"
 HASHES_FILE = "hashes.json"
 
-GOLDEN_PIPELINE_NAME = "motor_pricing"
 GOLDEN_SOURCE_FILE = "motor_pricing.py"
-GOLDEN_NODE_SUMMARY = "3 nodes: `policies` (dataInput), `add_features` (polars), `premium` (output)"
 # A fixed policy, never the repository's haute.toml, so the snapshot does not
-# follow local configuration. Row samples are off, so the snapshot shows the
-# prompt that asks the analyst for literal values.
+# follow local configuration. Row samples are off in the first turn, so it shows
+# the context that asks the analyst for literal values; the second turn permits
+# them, as a policy changed mid-session would.
 GOLDEN_EGRESS_POLICY = EgressPolicy(
     trust="organization",
     max_sensitivity="restricted",
     allow_project_knowledge=True,
     allow_executable_source=True,
     allow_row_samples=False,
+)
+_POLICY_COLUMNS = ("policy_id", "driver_age", "vehicle_group", "region", "exposure")
+_FEATURE_COLUMNS = (*_POLICY_COLUMNS, "young_driver")
+_POLICIES = BriefNode(
+    "policies",
+    "dataInput",
+    "Policies",
+    "stepped",
+    (),
+    (BriefFrame(None, _POLICY_COLUMNS),),
+)
+_ADD_FEATURES = BriefNode(
+    "add_features",
+    "polars",
+    "Add features",
+    "stepped",
+    (BriefInput("policies", "policies", _POLICY_COLUMNS),),
+    (BriefFrame(None, _FEATURE_COLUMNS),),
+)
+_PREMIUM = BriefNode(
+    "premium",
+    "output",
+    "Premium",
+    None,
+    (BriefInput("add_features", "add_features", _FEATURE_COLUMNS),),
+    (BriefFrame(None, ("policy_id", "premium")),),
+)
+_REGION_BANDS = BriefNode(
+    "region_bands",
+    "polars",
+    "Region bands",
+    "incomplete",
+    (BriefInput("add_features", "add_features", _FEATURE_COLUMNS),),
+    None,
+)
+GOLDEN_TURNS = (
+    (
+        "Make young_driver true below 21 instead of 25.",
+        TurnContext(
+            GOLDEN_EGRESS_POLICY,
+            GraphBrief(
+                pipeline_name="motor_pricing",
+                revision="<revision-1>",
+                nodes=(_ADD_FEATURES, _POLICIES, _PREMIUM),
+                selected_node_ids=("add_features",),
+                preview_error=PreviewError(
+                    "add_features",
+                    "ColumnNotFoundError in step 2 ('logic') of node 'add_features'; it "
+                    "names column(s) 'driver_age'. Its text is withheld because "
+                    "[assistant.egress].allow_row_samples is false and the text can quote "
+                    "row values.",
+                ),
+            ),
+        ),
+    ),
+    (
+        "Please band region into discrete region groups.",
+        TurnContext(
+            EgressPolicy(
+                trust="organization",
+                max_sensitivity="restricted",
+                allow_project_knowledge=True,
+                allow_executable_source=True,
+                allow_row_samples=True,
+            ),
+            GraphBrief(
+                pipeline_name="motor_pricing",
+                revision="<revision-2>",
+                nodes=(_POLICIES, _ADD_FEATURES, _REGION_BANDS, _PREMIUM),
+                selected_node_ids=(),
+                preview_error=None,
+            ),
+        ),
+    ),
 )
 HAUTE_VERSION_PLACEHOLDER = "<haute-version>"
 CAPABILITY_HASH_PLACEHOLDER = "<capability-hash>"
@@ -57,17 +141,16 @@ def render_golden() -> dict[str, str]:
     """Render every golden file, keyed by its name under ``GOLDEN_ROOT``."""
 
     from haute.assistant._catalog import capability_manifest
-    from haute.assistant._loop import build_system_prompt
+    from haute.assistant._loop import build_system_prompt, turn_context_text
     from haute.assistant._providers import _openai_tools, _portable_tools
+    from haute.assistant._render import render_turn_context
     from haute.assistant._tools import TOOL_DEFINITIONS
 
     manifest = capability_manifest()
-    prompt = build_system_prompt(
-        pipeline_name=GOLDEN_PIPELINE_NAME,
-        source_file=GOLDEN_SOURCE_FILE,
-        egress=GOLDEN_EGRESS_POLICY,
-        node_summary=GOLDEN_NODE_SUMMARY,
-    )
+    prompts = {build_system_prompt(source_file=GOLDEN_SOURCE_FILE) for _turn in GOLDEN_TURNS}
+    if len(prompts) != 1:
+        raise ValueError("The system prompt differs between the turns of one session")
+    (prompt,) = prompts
     prompt = _replace_once(
         prompt,
         f"- Haute version: `{manifest.haute_version}`",
@@ -81,6 +164,11 @@ def render_golden() -> dict[str, str]:
     portable = _portable_tools(TOOL_DEFINITIONS)
     files = {
         "system_prompt.md": prompt + "\n",
+        **{
+            f"turn_context_{number}.md": turn_context_text(render_turn_context(context), request)
+            + "\n"
+            for number, (request, context) in enumerate(GOLDEN_TURNS, start=1)
+        },
         "tools_canonical.json": _json_text(TOOL_DEFINITIONS),
         "tools_anthropic.json": _json_text(portable),
         "tools_openai.json": _json_text(_openai_tools(portable)),

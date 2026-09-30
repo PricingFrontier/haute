@@ -29,6 +29,7 @@ vi.mock("../../api/assistant", () => ({
   createAssistantSession: vi.fn(),
   listAssistantSessions: vi.fn(),
   streamAssistantMessage: vi.fn(),
+  MAX_CONTEXT_SELECTION: 20,
 }))
 
 import {
@@ -72,7 +73,7 @@ function resetStores() {
     // The mounted panel has listed the canvas pipeline's chats.
     sessionsSource: "main.py",
   })
-  useGraphStore.setState({ dirty: false })
+  useGraphStore.setState({ dirty: false, nodes: [] })
   vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", sourceFile: "main.py", history: [] })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
   // Every completed turn refreshes the list; without a default the shared
@@ -448,6 +449,24 @@ describe("send gates", () => {
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
     expect(createAssistantSession).not.toHaveBeenCalled()
     expect(streamAssistantMessage).toHaveBeenCalledWith("session-1", "hi", "main.py", expect.anything())
+  })
+
+  it("carries the canvas selection, at most twenty nodes in canvas order", async () => {
+    scriptStream([completed()])
+    const nodes = Array.from({ length: 23 }, (_, index) => ({
+      id: `n${index}`,
+      position: { x: 0, y: 0 },
+      data: {},
+      selected: index !== 1,
+    }))
+    useGraphStore.setState({ nodes, dirty: false })
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    const options = vi.mocked(streamAssistantMessage).mock.calls[0][3]
+    const expected = nodes.filter((node) => node.selected).slice(0, 20).map((node) => node.id)
+    expect(options.context).toEqual({ selectedNodeIds: expected, previewErrorNodeId: null })
+    expect(options.context.selectedNodeIds).not.toContain("n1")
   })
 
   it("binds a new chat to the source file the server echoes", async () => {

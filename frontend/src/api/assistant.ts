@@ -294,9 +294,21 @@ export function listAssistantSessions(
   })
 }
 
+/** What the canvas adds to a message: the backend's closed message `context`. */
+export interface AssistantMessageContext {
+  /** Top-level node ids selected on the canvas, at most `MAX_CONTEXT_SELECTION`. */
+  selectedNodeIds: string[]
+  /** The node whose schema-resolution error the turn context reports. */
+  previewErrorNodeId: string | null
+}
+
+/** The most selected nodes one message carries; the backend refuses more. */
+export const MAX_CONTEXT_SELECTION = 20
+
 export interface StreamAssistantMessageOptions {
   signal: AbortSignal
   onEvent: (event: AssistantStreamEvent) => void
+  context: AssistantMessageContext
 }
 
 export async function streamAssistantMessage(
@@ -307,7 +319,15 @@ export async function streamAssistantMessage(
 ): Promise<void> {
   const response = await postRawStream(
     "/api/assistant/message",
-    { session_id: sessionId, message, source_file: sourceFile },
+    {
+      session_id: sessionId,
+      message,
+      source_file: sourceFile,
+      context: {
+        selected_node_ids: options.context.selectedNodeIds,
+        preview_error_node_id: options.context.previewErrorNodeId,
+      },
+    },
     { signal: options.signal },
   )
   if (response.body === null) {

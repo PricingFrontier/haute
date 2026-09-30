@@ -688,15 +688,15 @@ class TestTurnReservation:
         monkeypatch.setattr(assistant_routes, "session_store", store)
         session_id = store.create("main.py").id
 
-        real_parse = assistant_routes.parse_pipeline_to_graph
+        real_context = assistant_routes.build_turn_context
         parse_started = threading.Event()
 
-        def slow_parse(path):
+        def slow_context(*args, **kwargs):
             parse_started.set()
             time_module.sleep(0.2)  # runs in to_thread — widens the await window
-            return real_parse(path)
+            return real_context(*args, **kwargs)
 
-        monkeypatch.setattr(assistant_routes, "parse_pipeline_to_graph", slow_parse)
+        monkeypatch.setattr(assistant_routes, "build_turn_context", slow_context)
         monkeypatch.setattr(
             assistant_routes,
             "_provider_factory",
@@ -835,7 +835,10 @@ class TestTurnReservation:
         assert any("completed" in chunk for chunk in chunks)
         assert set(captured) == {"source_file", "session_id", "prior_messages"}
         assert len(provider.calls) == 1
-        assert "Suggested recipe: `categorical_banding`" in provider.calls[0]["system"]
+        assert "Suggested recipe" not in provider.calls[0]["system"]
+        context = provider.calls[0]["messages"][-1]
+        assert context["role"] == "context"
+        assert "Suggested recipe: `categorical_banding`" in context["content"]
         dataset_tool = next(
             tool for tool in provider.calls[0]["tools"] if tool["name"] == "list_datasets"
         )
@@ -902,6 +905,148 @@ class TestTurnReservation:
             )
 
         assert not session.lock.locked()
+
+
+_QUOTES_PIPELINE = """import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="d")
+
+
+@pipeline.polars
+def quotes() -> pl.LazyFrame:
+    return pl.LazyFrame({"quote_id": [1], "driver_age": [30]})
+"""
+
+_TWO_NODE_PIPELINE = (
+    _QUOTES_PIPELINE
+    + """
+
+@pipeline.polars
+def adults(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.filter(pl.col("driver_age") >= 18)
+
+
+pipeline.connect("quotes", "adults")
+"""
+)
+
+
+def _egress_toml(*, max_sensitivity: str, allow_row_samples: bool) -> str:
+    return (
+        '[assistant]\nprovider = "anthropic"\nmodel = "test-model"\n'
+        '[assistant.egress]\ntrust = "organization"\n'
+        f'max_sensitivity = "{max_sensitivity}"\n'
+        "allow_project_knowledge = false\nallow_executable_source = false\n"
+        f"allow_row_samples = {'true' if allow_row_samples else 'false'}\n"
+    )
+
+
+class TestTurnContext:
+    """The system prompt is one prefix for a session; the turn context carries
+    the graph, the policy and the selection, each as the turn starts."""
+
+    @pytest.fixture()
+    def internal(self, project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        (project_root / "main.py").write_text(_QUOTES_PIPELINE, encoding="utf-8")
+        (project_root / "haute.toml").write_text(
+            _egress_toml(max_sensitivity="internal", allow_row_samples=False), encoding="utf-8"
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        return project_root
+
+    async def _turn(self, monkeypatch, store, session_id, context=None) -> _ScriptedProvider:
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._providers import ProviderUsage
+        from haute.schemas import AssistantMessageContext, AssistantMessageRequest
+
+        provider = _ScriptedProvider([TextDelta("ok"), TurnStop("end", ProviderUsage(1, 1))])
+        monkeypatch.setattr(assistant_routes, "_provider_factory", lambda _config: provider)
+        response = await assistant_routes.post_assistant_message(
+            AssistantMessageRequest(
+                session_id=session_id,
+                message="hi",
+                source_file="main.py",
+                context=None if context is None else AssistantMessageContext(**context),
+            )
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+        assert any("completed" in chunk for chunk in chunks)
+        return provider
+
+    async def test_every_turn_sends_one_system_prompt_while_the_context_follows_the_project(
+        self, internal: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.assistant as assistant_routes
+
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session_id = store.create("main.py").id
+
+        first = await self._turn(monkeypatch, store, session_id, {"selected_node_ids": ["quotes"]})
+        (internal / "main.py").write_text(_TWO_NODE_PIPELINE, encoding="utf-8")
+        (internal / "haute.toml").write_text(
+            _egress_toml(max_sensitivity="restricted", allow_row_samples=True), encoding="utf-8"
+        )
+        second = await self._turn(monkeypatch, store, session_id)
+
+        (first_call,) = first.calls
+        (second_call,) = second.calls
+        assert first_call["system"] == second_call["system"]
+        assert "Pipeline:" not in first_call["system"]
+        assert "egress policy\n" not in first_call["system"]
+        first_context = first_call["messages"][-1]
+        second_context = second_call["messages"][-1]
+        assert first_context["role"] == second_context["role"] == "context"
+        assert first_call["messages"][-2] == {"role": "user", "content": "hi"}
+        assert "- Selected on the canvas: `quotes`" in first_context["content"]
+        assert '["quote_id", "driver_age"]' in first_context["content"]
+        assert "- Column value profiles: not permitted" in first_context["content"]
+        assert "`adults`" not in first_context["content"]
+        assert "- Selected on the canvas: none" in second_context["content"]
+        assert "- `adults` (Polars)" in second_context["content"]
+        assert "  - input `quotes` from `quotes`: [" in second_context["content"]
+        assert "- Column value profiles: permitted" in second_context["content"]
+        # The first turn's context is not replayed with its history.
+        assert all(
+            message.get("content") != first_context["content"]
+            for message in second_call["messages"][:-1]
+        )
+
+    async def test_a_selection_the_saved_pipeline_lacks_is_refused_before_the_turn(
+        self, internal: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fastapi import HTTPException
+
+        import haute.routes.assistant as assistant_routes
+
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session_id = store.create("main.py").id
+
+        with pytest.raises(HTTPException) as excinfo:
+            await self._turn(monkeypatch, store, session_id, {"selected_node_ids": ["ghost"]})
+
+        assert excinfo.value.status_code == 409
+        assert "'ghost'" in str(excinfo.value.detail)
+        session = store.lookup(session_id)
+        assert session is not None
+        assert not session.lock.locked()
+        assert session.history == []
+
+    def test_the_context_is_closed_and_bounded(self):
+        from pydantic import ValidationError
+
+        from haute.schemas import AssistantMessageContext
+
+        assert AssistantMessageContext(selected_node_ids=[]).preview_error_node_id is None
+        with pytest.raises(ValidationError):
+            AssistantMessageContext(selected_node_ids=[f"n{index}" for index in range(21)])
+        with pytest.raises(ValidationError, match="must not repeat"):
+            AssistantMessageContext(selected_node_ids=["a", "a"])
+        with pytest.raises(ValidationError):
+            AssistantMessageContext(selected_node_ids=[], unknown=True)
 
 
 class TestReservationNeverLeaks:

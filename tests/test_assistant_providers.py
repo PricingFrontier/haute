@@ -100,7 +100,7 @@ def test_controller_messages_are_provider_visible_as_user_messages():
         "content": "Continue the mutation workflow.",
     }
 
-    assert _anthropic_messages([controller]) == [
+    assert _anthropic_messages([controller], system_context=False) == [
         {"role": "user", "content": "Continue the mutation workflow."}
     ]
     assert _openai_messages(_SYSTEM, [controller]) == [
@@ -138,7 +138,8 @@ def test_anthropic_round_results_share_one_user_message():
             result("b"),
             calls("c"),
             result("c"),
-        ]
+        ],
+        system_context=False,
     )
 
     assert [message["role"] for message in translated] == [
@@ -151,6 +152,62 @@ def test_anthropic_round_results_share_one_user_message():
     assert [block["tool_use_id"] for block in translated[2]["content"]] == ["a", "b"]
     assert [block["tool_use_id"] for block in translated[4]["content"]] == ["c"]
     assert all(block["type"] == "tool_result" for block in translated[2]["content"])
+
+
+_CONTEXT_TURN = [
+    {"role": "user", "content": "change the selected node"},
+    {"role": "context", "content": "## Turn context\nbrief"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "a", "name": "get_pipeline", "arguments": {}}],
+    },
+    {"role": "tool", "tool_call_id": "a", "name": "get_pipeline", "content": {}, "is_error": False},
+]
+
+
+def test_a_turn_context_is_a_system_message_only_where_the_model_accepts_one():
+    """A mid-conversation system message keeps the cached prefix on the Claude
+    models that accept one; every other model reads the context as the leading
+    text of the analyst's message, never as a second user message."""
+
+    from haute.assistant._providers import (
+        MID_CONVERSATION_SYSTEM_MODELS,
+        _anthropic_messages,
+        _openai_messages,
+    )
+
+    leading = "## Turn context\nbrief\n\n## Analyst message\nchange the selected node"
+    system = _anthropic_messages(_CONTEXT_TURN, system_context=True)
+    assert [message["role"] for message in system] == ["user", "system", "assistant", "user"]
+    assert system[:2] == [
+        {"role": "user", "content": "change the selected node"},
+        {"role": "system", "content": "## Turn context\nbrief"},
+    ]
+    folded = _anthropic_messages(_CONTEXT_TURN, system_context=False)
+    assert [message["role"] for message in folded] == ["user", "assistant", "user"]
+    assert folded[0] == {"role": "user", "content": leading}
+    openai_messages = _openai_messages(_SYSTEM, _CONTEXT_TURN)
+    assert [message["role"] for message in openai_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert openai_messages[1] == {"role": "user", "content": leading}
+    assert _CONTEXT_TURN[0]["content"] == "change the selected node"
+    assert "claude-opus-5-5" in MID_CONVERSATION_SYSTEM_MODELS
+    assert "claude-sonnet-5" not in MID_CONVERSATION_SYSTEM_MODELS
+
+
+def test_a_turn_context_that_follows_no_user_message_fails_loudly():
+    from haute.assistant._providers import _anthropic_messages, _openai_messages
+
+    orphan = [{"role": "context", "content": "## Turn context"}]
+    with pytest.raises(RuntimeError, match="must follow a user text message"):
+        _anthropic_messages(orphan, system_context=False)
+    with pytest.raises(RuntimeError, match="must follow a user text message"):
+        _openai_messages(_SYSTEM, orphan)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +315,23 @@ class TestAnthropicProvider:
         assert kwargs["system"] == _SYSTEM
         assert kwargs["tools"] == _TOOLS
         assert kwargs["max_tokens"] == 1234
+
+    @pytest.mark.parametrize(
+        ("model", "roles"),
+        [("claude-opus-5-5", ["user", "system"]), ("claude-sonnet-5", ["user"])],
+    )
+    async def test_the_configured_model_decides_how_a_turn_context_travels(
+        self, model: str, roles: list[str]
+    ):
+        from dataclasses import replace
+
+        client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        provider = AnthropicProvider(replace(_config("anthropic"), model=model), client=client)
+        messages = [*_MESSAGES, {"role": "context", "content": "## Turn context"}]
+        async for _event in provider.stream_turn(system=_SYSTEM, messages=messages, tools=_TOOLS):
+            pass
+        assert client.captured_kwargs is not None
+        assert [message["role"] for message in client.captured_kwargs["messages"]] == roles
 
     async def test_tool_call_emitted_only_after_block_stop(self):
         """No ToolCallRequest may be emitted while fragments are pending."""

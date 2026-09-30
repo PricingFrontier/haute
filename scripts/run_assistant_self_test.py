@@ -36,7 +36,7 @@ from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import bound_project_root
 from haute._types import NodeType
 from haute.assistant._config import AssistantConfig, EgressPolicy, resolve_assistant_config
-from haute.assistant._loop import build_system_prompt, run_turn, summarise_graph_nodes
+from haute.assistant._loop import build_system_prompt, run_turn
 from haute.assistant._providers import (
     AssistantProvider,
     ProviderEvent,
@@ -46,8 +46,14 @@ from haute.assistant._providers import (
     TurnStop,
     create_provider,
 )
+from haute.assistant._render import render_turn_context
 from haute.assistant._session import SessionStore
-from haute.assistant._tools import TOOL_DEFINITIONS, build_tool_executor, get_pipeline
+from haute.assistant._tools import (
+    TOOL_DEFINITIONS,
+    build_tool_executor,
+    build_turn_context,
+    get_pipeline,
+)
 from haute.deploy._config import _load_env
 from haute.executor import execute_graph
 from haute.routes._helpers import parse_pipeline_to_graph, pipeline_dir
@@ -1037,13 +1043,9 @@ async def run_self_test_case(
     with _working_directory(project_root):
         source_file = "pipeline.py"
         before = _read_graph(source_file)
-        parsed = parse_pipeline_to_graph(Path(source_file))
-        system_prompt = build_system_prompt(
-            pipeline_name=parsed.pipeline_name or "pipeline",
-            source_file=source_file,
-            egress=config.egress,
-            node_summary=summarise_graph_nodes(parsed),
-        )
+        # The prompt and turn context the message route builds, with no selection.
+        system_prompt = build_system_prompt(source_file=source_file)
+        turn_context = render_turn_context(build_turn_context(source_file, config.egress))
         store = SessionStore()
         session = store.create(source_file)
         started_at = time.monotonic()
@@ -1070,6 +1072,7 @@ async def run_self_test_case(
             system_prompt=system_prompt,
             turn_timeout=None,
             max_tool_calls=case.expectations.max_tool_calls + 1,
+            turn_context=turn_context,
         ):
             if event.type == "text_delta":
                 text_parts.append(event.text)
@@ -1290,6 +1293,8 @@ class TrajectoryProvider:
     def __init__(self, trajectory: Trajectory) -> None:
         self.trajectory = trajectory
         self.system: str | None = None
+        # The messages of the first provider request, turn context included.
+        self.first_messages: tuple[Mapping[str, Any], ...] | None = None
         self.divergence: str | None = None
         self._served: list[int] = [0] * len(trajectory.turns)
 
@@ -1330,6 +1335,8 @@ class TrajectoryProvider:
         tools: Sequence[Mapping[str, Any]],
     ) -> AsyncIterator[ProviderEvent]:
         self.system = system
+        if self.first_messages is None:
+            self.first_messages = tuple(dict(message) for message in messages)
         turn = sum(1 for message in messages if message.get("role") == "user")
         results = {
             str(message["tool_call_id"]): message

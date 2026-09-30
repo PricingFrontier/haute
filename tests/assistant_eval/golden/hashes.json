@@ -1,5 +1,7 @@
 {
-  "system_prompt.md": "23cec7fa30a3d4ba1dc51626eef11d1a5a12bb06d64c65738eea0c7dbe636e45",
+  "system_prompt.md": "d2d8c37dde8012afa9097bc24f98854ffc0eb62459440df138f85a13f9e90cc2",
+  "turn_context_1.md": "a8cac613558ccba1ed64e45222a1532253bd55214ce8dd42b713a77131ca0dc5",
+  "turn_context_2.md": "2bf1e95c8a0f5e36a0b4d6f327253c604744656d6a794e4cd3a95d871de2b055",
   "tools_canonical.json": "5429268063a5820ccd0dffa4d01165ce2b36c78d8395ed1d8d9e7d49682dec50",
   "tools_anthropic.json": "283c9860a7f1dd367000f563f49d945d289c1c42909c0a0c928993586ecae542",
   "tools_openai.json": "d9df75b0b92b089828a10c397053aae7346696876825a341d0ea5d3a13b42613"

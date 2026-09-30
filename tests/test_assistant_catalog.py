@@ -635,11 +635,7 @@ class TestPaletteFacts:
         assert load_file["display_name"] == "Load File"
         assert load_file["summary"] != _descriptors()["externalFile"].usage
 
-        from scripts.update_assistant_prompt_golden import GOLDEN_EGRESS_POLICY
-
-        prompt = build_system_prompt(
-            pipeline_name="p", source_file="p.py", egress=GOLDEN_EGRESS_POLICY
-        )
+        prompt = build_system_prompt(source_file="p.py")
         assert f"- `externalFile` (Load File): {load_file['summary']}" in prompt
         assert "- `liveSwitch` (Source Switch): " in prompt
 

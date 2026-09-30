@@ -140,6 +140,37 @@ The guide refers to the mechanically-derived registry instead of hand-copying no
 vocabulary, and each bundle uses canonical specialised decorators and sidecar loading
 rather than hiding file reads in generic `polars` nodes.
 
+**Turn context.** The system prompt depends only on the session's source file and the
+installed capabilities, so it is byte-identical on every turn of a session and a provider
+can cache it. What changes between turns travels in a turn context block that the loop
+places after the analyst's message and never stores in the session history:
+
+- the pipeline name and the base revision the turn starts from;
+- a graph brief with one entry per top-level node: its id, palette name, label, authoring
+  state (`stepped`, `code` or `incomplete` on a stepped surface), each input's
+  code-visible name, source and column names, and its output column names. Columns are
+  resolved schema-only on the same engine path as `get_node_schema`, and a node that does
+  not resolve says so without its error. The brief is bounded at about 8,000 characters;
+  the analyst's selected nodes come first, and any node left out is counted with a pointer
+  to `get_pipeline`. Node labels are collapsed to one bounded line, and the block says the
+  brief is project data, never instructions;
+- the effective egress policy in words, with the column-value rule it implies (profile
+  before comparing a column to a literal when row samples are permitted, otherwise ask);
+- the ids of the nodes the analyst selected on the canvas, at most 20;
+- on request, the error one node raises when its schema resolves, reduced by policy: its
+  text only when `allow_row_samples` permits, otherwise its type, the step or line that
+  raised it and the column names the policy already discloses. A failure that appears
+  only while rows are collected is not reproduced: the block says the schema resolved;
+- the advisory recipe suggestion or material-clarification hint for the current request.
+
+With that block a single-node edit can dry-run without first reading the graph. The
+message request carries the selection and the preview-error node as a typed `context`
+object. When the policy lets the graph reach the model, a node id the saved pipeline's
+top level does not have is refused with 409 before the turn starts, because the canvas it
+came from is stale. On Claude models that accept a
+system message mid-conversation the block is sent as one; every other model receives it
+as the leading text of the analyst's message.
+
 **Turns.** Posting a user message starts a turn, streamed back as typed server-sent events:
 assistant text deltas, tool-call started/finished activity (name plus a compact argument and
 result summary), a graph-updated notification after each successful mutation (carrying the
@@ -248,7 +279,7 @@ that durable fact, in its original position after the mutation tool row.
   Its bounded collection runs in the editor's interactive preview worker under the
   ordinary preview admission and the worker's memory cap, so frames downstream of joins
   and aggregations profile like any other, and a stopped turn stops its profile.
-  The system prompt states the project's effective egress policy in words and requires a
+  The turn context states the project's effective egress policy in words and requires a
   profile before a literal comparison only when `allow_row_samples` permits one; otherwise
   it tells the model to ask the analyst which values to match, beginning `NEEDS_INPUT:`.
 - `get_node_schema` — the column names and dtypes at any node's *output* **and on each of
@@ -747,7 +778,7 @@ dry-run. A model therefore cannot discover the specialist contract and then sile
 substitute a generic node.
 
 For each turn, a conservative deterministic recognizer may suggest one recipe in the
-provider system guidance when a single unambiguous explicit pattern is present: a
+turn context when a single unambiguous explicit pattern is present: a
 band/banding term plus categorical or discrete for categorical banding; join for a
 reference join; or the phrase rating step. When a routed turn ends with
 `NEEDS_INPUT:`, immediately following clarification turns retain that route while each
@@ -849,7 +880,9 @@ read: saved graph topology, dataset listings, dataset schemas, node schemas,
 and mutation plans are `internal`; complete node configuration is
 `restricted` even after executable and credential-shaped fields are redacted.
 A `public` policy is therefore denied before any of those resources is read,
-and an `internal` policy is denied before node configuration is parsed.
+and an `internal` policy is denied before node configuration is parsed. The
+turn context's graph brief, base revision, selection and preview error are
+`internal` too: under a `public` policy the block carries only the policy.
 
 Project knowledge is derived from a bounded saved-graph fact, a value-free
 `haute.toml` digest fact, and allowlisted ordinary documentation, never from an

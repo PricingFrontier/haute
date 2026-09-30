@@ -247,6 +247,23 @@ class AssistantSessionListResponse(BaseModel):
     sessions: list[AssistantSessionSummary] = []
 
 
+class AssistantMessageContext(BaseModel):
+    """What the canvas adds to one message: its selection and an opt-in preview error."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Top-level node ids of the saved pipeline, in selection order.
+    selected_node_ids: list[str] = Field(max_length=20)
+    # The node whose schema-resolution error the turn context reports.
+    preview_error_node_id: str | None = None
+
+    @model_validator(mode="after")
+    def _unique_selection(self) -> AssistantMessageContext:
+        if len(set(self.selected_node_ids)) != len(self.selected_node_ids):
+            raise ValueError("selected_node_ids must not repeat a node")
+        return self
+
+
 class AssistantMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -254,6 +271,7 @@ class AssistantMessageRequest(BaseModel):
     message: str
     # The canvas document's source file; one other than the session's is refused.
     source_file: str = Field(min_length=1)
+    context: AssistantMessageContext | None = None
 
 
 # ---------------------------------------------------------------------------

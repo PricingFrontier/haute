@@ -19,15 +19,15 @@
 | `src/haute/assistant/assets/examples/<id>/pipeline.py` | Every example is a bundle; there is no other example format. The bundle source is parsed as data by `_assets.py`, never imported, and rendered in the same compact graph shape as the get-pipeline tool, each node's configuration carried with its values; its module docstring supplies the narrative and the index summary. `linear_pricing` teaches implicit wiring through a source, one Polars enrichment and an output; `branched_features` teaches parallel feature branches joined before the response with explicit connections. `model_lifecycle` ends its training branch at Model Training and feeds the response from Model Score; `online_scenario_optimisation` ends at the Optimisation node and feeds the response from the scored scenario frame; `ratebook_optimisation_apply` bands the raw rating column through a Banding node that is both the optimiser's `banding_source` and Apply Optimisation's ratebook input; `reusable_submodel` names its occurrence `enrichment`, apart from the `enriched` node inside its definition. A request for the removed `joined_reference` example is refused with `example_removed`, naming `reference_join`, which teaches the same edge join. |
 | `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
 | `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. `_evidence_manifest_entry` names the project-relative file in its missing-source and stale-evidence messages, with the tool call that refreshes it (listing datasets for a vanished dataset, reading a changed dataset's schema, querying project knowledge for a document). It performs no writes. |
-| `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries (a live pipeline's node configs as their key names and count; with `config_values=True`, which only the example loader passes, each config whole as JSON values), edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. |
+| `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries (a live pipeline's node configs as their key names and count; with `config_values=True`, which only the example loader passes, each config whole as JSON values), edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. It also owns the turn context: the frozen `TurnContext`/`BriefNode`/`BriefInput` data, the egress policy words with the column-value rule, and the pure bounded `render_turn_context`, which the route, the self-test harness and the golden script share. |
 | `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and document-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. |
-| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. `build_turn_context` gathers the turn context's facts (revision, brief nodes resolved schema-only and cached per revision, validated selection, policy-reduced preview error) on the same schema helpers as `get_node_schema`. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
-| `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
-| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
+| `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. A neutral `context` message becomes a mid-conversation `system` message for the Anthropic models in `MID_CONVERSATION_SYSTEM_MODELS` and otherwise the leading text of the preceding user message. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
+| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the context message joins the route's rendered context with the routed guidance and is never stored), forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Every one of the last three carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. It imports only Polars and the stdlib-only JSON-safe encoder, so the assistant reaches it without importing the routes layer. |
-| `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request, usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked or committed_unverified, and a non-empty detail exactly for the last three), and the text-delta, tool-started, tool-finished, graph-updated, completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
+| `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request (with its optional closed `context`: `selected_node_ids`, unique, at most 20, and an optional `preview_error_node_id`), usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked or committed_unverified, and a non-empty detail exactly for the last three), and the text-delta, tool-started, tool-finished, graph-updated, completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies document-update fingerprint/wire-path helpers used by mutation publishing. |
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
 | `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
@@ -443,9 +443,9 @@ sentinel `{"__haute_type__": "non_finite_float", "value": "inf"}` built by
 uses, which also keeps an infinity distinct from a string column holding the text `inf`.
 Numbers and strings keep their JSON type, so a finite numeric bound stays a number. Left raw, the failure surfaced nowhere near the column that caused it: as
 an opaque `tool_failed` for the whole call. When the policy's `allow_row_samples` is
-true, the system prompt requires the model to profile a frame before comparing a column
+true, the turn context requires the model to profile a frame before comparing a column
 to a literal, and to answer `NEEDS_INPUT:` rather than guess an encoding when a column's
-values are withheld. When it is false, the prompt says profiles are not permitted and
+values are withheld. When it is false, the turn context says profiles are not permitted and
 tells the model to ask the analyst which values to match, beginning `NEEDS_INPUT:`, so a
 turn never ends on a refused profile call. Either way a guessed comparison is ruled out:
 it produces code that runs, validates at schema tier, and silently matches nothing.
@@ -659,22 +659,64 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    differs from the session's binding releases the reservation and is refused with 409
    naming the chat's pipeline: the canvas shows another pipeline, and the turn would
    otherwise edit a file the analyst is not looking at.
-3. Resolve the provider configuration, construct the adapter, parse the session's saved
-   pipeline, and build the provider request: system prompt (static role and
-   authority/evidence instructions + compact capability identity, an installed-I/O
-   availability summary, a node index with one line per node type naming its id, palette
-   name and one-line purpose, operation ids, and recipe ids with their canonical summaries
-   + an example-ID-only index + the effective egress policy in words, taken from the
-   resolved configuration's `egress` (provider trust, highest sensitivity sent, and
-   whether project knowledge, executable source and column value profiles are permitted,
-   and, when row samples are not permitted, that execution errors are reported without
-   their text); the always-on rules defer to that section for project material, so they
-   never deny access the policy grants
-   + project facts: pipeline name, source file,
-   node-count/type summary) + windowed history + the new user message + `_tools` JSON
-   schemas. Fresh graph detail is deliberately *not* embedded in the system prompt — the
-   model fetches it via tools, so it is never stale mid-turn. The authoring
-   guide and full exemplar bodies are likewise prompt-excluded: the model pulls
+3. Resolve the provider configuration and construct the adapter, then build the provider
+   request. The system prompt (`build_system_prompt(source_file=...)`) takes only the
+   session's source file and the installed capabilities, so it is byte-identical on every
+   turn of a session: static role and authority/evidence instructions + compact capability
+   identity, an installed-I/O availability summary, a node index with one line per node
+   type naming its id, palette name and one-line purpose, operation ids, and recipe ids
+   with their canonical summaries + an example-ID-only index + the source file. It holds
+   no pipeline name, node summary, egress policy or request-dependent text. The request
+   then carries the windowed history, the new user message, a turn context message (neutral
+   role `context`) and the `_tools` JSON schemas. The route builds the turn context under
+   the save lock with `_tools.build_turn_context(source_file, egress, selected_node_ids,
+   preview_error_node_id)` and `_render.render_turn_context`; the self-test harness builds it
+   the same way. It holds:
+   - the pipeline name and the base revision (`build_project_snapshot(...).revision`);
+   - the effective egress policy in words, taken from the resolved configuration's
+     `egress` (provider trust, highest sensitivity sent, and whether project knowledge,
+     executable source and column value profiles are permitted, and, when row samples are
+     not permitted, that execution errors are reported without their text), followed by
+     the column-value rule it implies: with `allow_row_samples`, call
+     `get_column_profiles` before comparing a column to a literal and answer
+     `NEEDS_INPUT:` when its values are withheld; without it, ask which values to match,
+     beginning `NEEDS_INPUT:`. The always-on rules defer to that section for project
+     material, so they never deny access the policy grants;
+   - the selected node ids, in request order;
+   - the graph brief: per top-level node its id, palette name (from the capability
+     manifest), label (whitespace collapsed, at most 80 characters, JSON-quoted), authoring
+     state on a stepped surface (`incomplete` when its resolution raises the incomplete
+     transform or incomplete steps placeholder, else `stepped` when `is_stepped_config`,
+     else `code`), each input as its code-visible name, source node and column names, and
+     its output columns (per port for a multi-frame node). Schemas resolve schema-only in
+     one `execute_lazy_graph` call preserving every node; when that call raises, each node
+     resolves on its own and an input's source resolves separately, so one broken node
+     marks only itself `unresolved` (never with its error text). A submodel node has no
+     columns. A node lists at most 40 columns per frame, then how many more. The resolved
+     facts are cached per project revision (a small LRU); the revision covers the pipeline
+     file, `haute.toml` and the capability hash, not data files, so a data file whose
+     header changes under an unchanged pipeline keeps its cached columns until the
+     revision changes, and a dry-run always resolves afresh. Selected nodes come first,
+     then graph order; the rendered brief stops before 8,000 characters and ends with the
+     count of nodes left out and a pointer to `get_pipeline`;
+   - when the request names `preview_error_node_id`, that node's schema-only resolution:
+     a failure is rendered by `_execution_error_message` at a `_FailureSite` for the node
+     (text only under `allow_row_samples`; otherwise type, step or line and disclosable
+     column names), and a clean resolution says the schema resolves and that a failure
+     seen only while rows are collected is not reproduced;
+   - the routed recipe suggestion or material-clarification hint for the effective
+     request (see below).
+   Under `max_sensitivity = "public"` the block holds only the policy and says the graph
+   is withheld; the pipeline is not read, so the ids are not checked. Under any other
+   policy a selected id that is not a top-level node of the saved pipeline, or a
+   preview-error id that is not a top-level executable node, raises `TurnContextError`
+   and the route answers 409 before the stream opens, releasing the reservation. The loop places the context message after the user message
+   in every provider round of the turn and never appends it to the stored turn. The
+   Anthropic adapter sends it as a mid-conversation `system` message for the models that
+   accept one (`MID_CONVERSATION_SYSTEM_MODELS`) and otherwise, like the OpenAI and
+   Databricks adapters, prepends it to the preceding user message's text followed by an
+   `## Analyst message` heading. The authoring
+   guide and full exemplar bodies are prompt-excluded: the model pulls
    them through `get_authoring_guide` and `get_example` only when relevant, and the
    node cards travel in the node descriptors: the mutation paragraph tells the model
    to read each descriptor's card with its ports, wiring rules, schema, enums and
@@ -704,7 +746,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    inspect and stop. When an installed deterministic recipe matches the requested
    operation, the model should call `plan_recipe`, then pass its `recipe_plan_hash` to
    `dry_run_recipe_plan`; it never copies the returned operations. A unique explicit
-   current-request recipe suggestion may be repeated in the per-turn system contract, but
+   current-request recipe suggestion may be repeated in the turn context, but
    every request receives the same complete mutation tool schemas and the executor never
    treats lexical classification as authority. A failed dry run may be corrected while
    the corrections make progress. The loop keeps **one bounded budget of four failed
@@ -739,8 +781,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    does not change the recorded blocker. The system prompt states the same rule.
 
    What the model sees is pinned by a checked-in golden snapshot under
-   `tests/assistant_eval/golden/`: the system prompt rendered for one fixed project
-   (pipeline `motor_pricing`, its source file and a three-node summary), the canonical
+   `tests/assistant_eval/golden/`: the system prompt rendered for one fixed source
+   file (`motor_pricing.py`), the turn context rendered from fixed data for two turns of
+   that project (a three-node brief with a selection and a withheld preview error, then
+   a four-node brief under a changed policy, each with the fixed policy words), the canonical
    `TOOL_DEFINITIONS`, the portable projection the Anthropic adapter sends
    (`_portable_tools`), the OpenAI Chat Completions function projection of it (which
    the Databricks adapter reuses unchanged), and a sha256 of each file.
@@ -749,8 +793,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    version and the capability hash, which change on every release, are replaced with
    the placeholders `<haute-version>` and `<capability-hash>` so a version bump alone
    does not change the snapshot; every other line, including the installed-I/O
-   summary rendered against the locked Polars, is compared verbatim. The per-turn
-   request-routed additions are not part of the snapshot.
+   summary rendered against the locked Polars, is compared verbatim. The script renders
+   the system prompt once per turn and refuses to write when the two renderings differ,
+   so the snapshot shows one prefix shared by both turns.
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
    `tool_started`; execute; append the result to the pending provider messages before
    emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
@@ -1412,7 +1457,17 @@ fixture for route tests). The implemented coverage is:
   on an `input` start, and every step carrying a non-empty id and a kind in
   `STEP_KINDS`; `get_authoring_guide`'s `step_grammar` equals the renderer's step
   fields.
-- **`tests/test_assistant_tools.py`** — real tmp-project coverage for source/downstream
+- **`tests/test_assistant_tools.py`** — the turn context: the brief names each node's
+  inputs with their columns and its authoring state (a palette-default Transform is
+  `incomplete`, a hook `stepped`, a failing node `code` with no output and no error text)
+  with the selection first and the revision `get_pipeline` reports; a `public` policy
+  withholds the graph without reading it; an unknown selected or preview-error node is
+  refused; the brief resolves once per revision and keeps only the latest revisions; a
+  submodel node has no columns and a multi-frame node lists each port; the preview error is type, line and
+  column under `allow_row_samples = false` and its text when row samples are permitted,
+  and a resolving node reports none; a long brief stops before its bound with a pointer to
+  `get_pipeline`, lists 40 columns per frame, and a label cannot break out of its line.
+  Real tmp-project coverage for source/downstream
   schemas, preamble-dependent transforms, per-input schemas keyed by the code-visible
   input name (absent for a source node), the authored-but-empty transform's
   `node_has_no_code` success shape with resolved inputs (for code-less code and for a
@@ -1567,6 +1622,8 @@ fixture for route tests). The implemented coverage is:
   case has a trajectory and each step-corpus case has both its free-code and its structured
   form; the structured trajectories write the corpus translations, the corpus goldens are the
   corpus snippets, and `polars_corpus`'s data files equal the corpus's normal synthetic inputs.
+  No single-node trajectory reads before its first dry-run, and the feature transform's first
+  provider request carries a turn context listing `quotes` and its `driver_age` column.
   A recorded status the tools no longer return raises a divergence naming the trajectory, turn,
   round and call; a golden the saved node does not reproduce fails only the execution layer; and
   a `$result` reference to a later call fails trajectory loading.
@@ -1603,7 +1660,11 @@ fixture for route tests). The implemented coverage is:
   untouched, carries invalid/wrong-type encodings to the canonical validator for a
   recoverable `invalid_request` result, and logs each undecoded eligible field by shape
   alone — asserting both warning events and that the rejected value never reaches the log.
-- **`tests/test_assistant_prompt_golden.py`** — the rendered system prompt, canonical
+  A turn context is a mid-conversation `system` message for the Anthropic models that accept
+  one and otherwise the leading text of the analyst's message, and one that follows no user
+  message fails loudly.
+- **`tests/test_assistant_prompt_golden.py`** — the rendered system prompt, the two
+  turn contexts, canonical
   tool definitions and both provider wire projections match the golden files; the
   release version and capability hash are normalised out; an added prompt sentence
   and an edited wire-operation field description each fail with the changed lines in
@@ -1624,7 +1685,11 @@ fixture for route tests). The implemented coverage is:
   controller continuation; an end after an attempted but unapplied mutation receives one
   internal controller continuation, successful apply terminates with deterministic text and no later
   provider/tool round, explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally, and a
-  second unqualified end fails rather than completes. Every completed turn carries and
+  second unqualified end fails rather than completes. The turn context follows the user
+  message in every round, joins the routed guidance, is absent when there is neither, and
+  is never stored; the system prompt takes only the source file and holds no policy or
+  pipeline facts, and the rendered context states the policy and the column-value rule.
+  Every completed turn carries and
   stores its typed outcome: `answered` for a reply without a mutation attempt,
   `needs_input` for a question with or without one, `blocked` from the model or from an
   stopped dry-run budget (its detail being the streamed text after the marker),
@@ -1643,7 +1708,12 @@ fixture for route tests). The implemented coverage is:
   project a chat created for the second pipeline runs its tools on that file, that a
   message for another pipeline is a 409 naming the chat's pipeline which frees the
   session, that an escaping source file is a 403, and that a request without
-  `source_file` or with an unknown field such as `pipeline` is a 422.
+  `source_file` or with an unknown field such as `pipeline` is a 422. Two turns of one
+  session send the same system prompt while the pipeline, the policy and the selection
+  change, each turn's context carries its own graph, policy and selection after the user
+  message, and the first turn's context is not replayed; a selection the saved pipeline
+  lacks is a 409 that frees the session; the message context is closed, unique and at most
+  20 ids.
 - **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,

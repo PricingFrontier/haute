@@ -20,7 +20,6 @@ from haute.assistant._catalog import (
     compact_manifest,
     materialise_json,
 )
-from haute.assistant._config import EgressPolicy
 from haute.assistant._providers import (
     AssistantProvider,
     AssistantProviderError,
@@ -206,20 +205,6 @@ def _resolved_limit(value: float | int | None, env_name: str, default: int) -> f
     return float(int_env(env_name, default))
 
 
-def summarise_graph_nodes(graph: Any) -> str:
-    """Render the spec's node-count/type project fact from a parsed graph."""
-
-    type_counts: dict[str, int] = {}
-    for node in graph.nodes:
-        node_type = node.data.nodeType
-        key = getattr(node_type, "value", str(node_type))
-        type_counts[key] = type_counts.get(key, 0) + 1
-    if not type_counts:
-        return "0 nodes"
-    rendered = ", ".join(f"{count}× {name}" for name, count in sorted(type_counts.items()))
-    return f"{len(graph.nodes)} nodes ({rendered})"
-
-
 # The stable-knowledge preamble is one rendered paragraph; the constants below
 # only group its sentences by topic, so each fragment keeps the exact spacing
 # that separates it from the next.
@@ -234,24 +219,23 @@ _PROMPT_IDENTITY_AND_EVIDENCE = (
     "Never assume how a column encodes its categories. A dtype does not tell you "
     "whether a status or indicator column holds Y/N, true/false, or descriptive "
     "labels, and a wrong guess produces code that runs, validates, and silently "
-    "returns nothing. "
+    "returns nothing. The egress policy in the turn context says whether you profile "
+    "the column first or ask the analyst which values to match. "
 )
 
-# Which of these follows the identity paragraph depends on the project's
-# `allow_row_samples`: requiring a profile the policy refuses would end every
-# literal comparison in a failed tool call instead of a question.
-_PROMPT_COLUMN_VALUES_PROFILED = (
-    "When your code compares a column to a literal value, first call "
-    "`get_column_profiles` for that frame and use the levels it reports. If the "
-    "column's values are withheld, do not guess a comparison: begin the response "
-    "with `NEEDS_INPUT:` and ask which values you should match. "
-)
-
-_PROMPT_COLUMN_VALUES_ASKED = (
-    "This project's policy does not permit column value profiles. When your code "
-    "compares a column to a literal value the request does not state, do not guess "
-    "a comparison: begin the response with `NEEDS_INPUT:` and ask the analyst which "
-    "values to match. "
+# Every user message carries a turn context. The prompt describes it once, so
+# the prompt itself never changes between the turns of a session.
+_PROMPT_TURN_CONTEXT = (
+    "Every user message comes with a `## Turn context` block that Haute writes, either "
+    "as a message after it or ahead of the analyst's words under an `## Analyst "
+    "message` heading: the "
+    "pipeline, its base revision, the project egress policy, the nodes the analyst "
+    "selected on the canvas, a graph brief listing every node's inputs with their "
+    "columns and its output columns, and a preview error when the analyst shares "
+    "one. It describes the saved graph as the turn starts; when the analyst says "
+    '"this node" or "the selected nodes", they mean the selection. When the brief '
+    "names the nodes and columns an edit needs, dry-run from it without reading the "
+    "graph first. "
 )
 
 _PROMPT_INTENT_AND_RECIPE_ROUTING = (
@@ -259,7 +243,7 @@ _PROMPT_INTENT_AND_RECIPE_ROUTING = (
     "intent: Build, add, change, update, connect, remove, and delete each require "
     "authoring unless the user clearly asks only for an explanation. When the "
     "requested operation matches an installed deterministic recipe, prefer "
-    "`plan_recipe` after `get_pipeline`. The explicit structured recipe_id selects "
+    "`plan_recipe`. The explicit structured recipe_id selects "
     "the recipe; natural-language hints never authorize or reject a tool call. If the request "
     "also asks for a response output, pass `output_name` and `output_columns` together; "
     "a name without explicit selected columns is material ambiguity. Pass only the "
@@ -321,7 +305,7 @@ def _steps_first_rule() -> str:
 
 _PROMPT_MUTATION_WORKFLOW = (
     "For mutations, "
-    "inspect the saved graph, select a recipe or primitive operations, dry-run, "
+    "start from the graph brief, select a recipe or primitive operations, dry-run, "
     "apply only through the mutation tool, and report "
     "only the verification tier and result the tool actually returned. "
     "For primitive plans, retrieve complete descriptors for every node type you will "
@@ -367,45 +351,20 @@ _PROMPT_UNAVAILABLE_OPERATIONS = (
     "response with exactly `BLOCKED:` and state that no execution tool is available. "
     "Never claim an apply succeeded before its "
     "successful tool result, never imply access to project material beyond what the "
-    "project egress policy below permits, and never imply access to deployment, "
+    "project egress policy in the turn context permits, and never imply access to "
+    "deployment, "
     "training, Git, or other operations absent from the manifest."
 )
 
 
-def _egress_policy_section(egress: EgressPolicy) -> str:
-    """State the effective egress policy in words the model can act on."""
+def build_system_prompt(*, source_file: str) -> str:
+    """Assemble the session-stable system prompt: knowledge, capabilities and the source file.
 
-    def permitted(allowed: bool) -> str:
-        return "permitted" if allowed else "not permitted"
-
-    return "\n".join(
-        (
-            "## Project egress policy",
-            f"- Provider trust: `{egress.trust}`",
-            f"- Highest sensitivity sent: `{egress.max_sensitivity}` (saved pipeline "
-            "metadata needs `internal`; saved node configuration needs `restricted`)",
-            f"- Project knowledge: {permitted(egress.allow_project_knowledge)}",
-            f"- Executable source: {permitted(egress.allow_executable_source)}"
-            + ("" if egress.allow_executable_source else "; `get_node_config` redacts node code"),
-            f"- Column value profiles: {permitted(egress.allow_row_samples)}"
-            + (
-                ""
-                if egress.allow_row_samples
-                else "; `get_column_profiles` is refused, and an error raised while node "
-                "code runs reports its type, step or line and column names without its text"
-            ),
-        )
-    )
-
-
-def build_system_prompt(
-    *,
-    pipeline_name: str,
-    source_file: str,
-    egress: EgressPolicy,
-    node_summary: str | None = None,
-) -> str:
-    """Assemble the stable knowledge, egress policy and project-facts system prompt."""
+    It depends only on the session's source file and the installed
+    capabilities, so every turn of a session sends the same bytes and a
+    provider can cache them. Everything that changes between turns travels in
+    the turn context instead.
+    """
 
     # Bundle IDs are intentionally descriptive and are the only exemplar
     # material kept permanently in context. Summaries and complete narratives
@@ -518,17 +477,10 @@ def build_system_prompt(
             ),
         )
     )
-    facts = [f"- Pipeline: `{pipeline_name}`", f"- Source file: `{source_file}`"]
-    if node_summary is not None:
-        facts.append(f"- Nodes: {node_summary}")
     return "\n\n".join(
         (
             _PROMPT_IDENTITY_AND_EVIDENCE
-            + (
-                _PROMPT_COLUMN_VALUES_PROFILED
-                if egress.allow_row_samples
-                else _PROMPT_COLUMN_VALUES_ASKED
-            )
+            + _PROMPT_TURN_CONTEXT
             + _PROMPT_INTENT_AND_RECIPE_ROUTING
             + _PROMPT_MUTATION_WORKFLOW
             + _PROMPT_DRY_RUN_RETRY
@@ -541,31 +493,27 @@ def build_system_prompt(
                 "only when the task needs it."
             ),
             "## Packaged exemplar pipelines\n" + "\n".join(exemplar_lines),
-            _egress_policy_section(egress),
-            "## Project facts\n" + "\n".join(facts),
+            f"## Project facts\n- Source file: `{source_file}`",
         )
     )
 
 
-def _request_routed_system_prompt(system_prompt: str, user_text: str) -> str:
-    """Append conservative request guidance without granting tool authority."""
+def _request_routed_guidance(user_text: str) -> str | None:
+    """Conservative turn-context guidance for the request, without tool authority."""
 
     if request_requires_material_clarification(user_text):
-        return "\n\n".join(
-            (
-                system_prompt,
-                "## Current-request material clarification\n"
-                "- The request appears to withhold required rating factor values or "
-                "missing-factor policy. Do not invent those choices. If they are not "
-                "supplied elsewhere in the request, begin the response with exactly "
-                "`NEEDS_INPUT:` and ask for them. This hint does not authorize or reject tools.",
-            )
+        return (
+            "### Current-request material clarification\n"
+            "- The request appears to withhold required rating factor values or "
+            "missing-factor policy. Do not invent those choices. If they are not "
+            "supplied elsewhere in the request, begin the response with exactly "
+            "`NEEDS_INPUT:` and ask for them. This hint does not authorize or reject tools."
         )
     recipe_id = route_recipe_request(user_text)
     if recipe_id is None:
-        return system_prompt
+        return None
     route_guidance = (
-        "- After `get_pipeline`, consider `plan_recipe` with this recipe id. The explicit "
+        "- Consider `plan_recipe` with this recipe id. The explicit "
         "structured recipe_id in the tool call remains authoritative. "
         "Supply `output_name` and `output_columns` together when an explicitly mapped "
         "response output is requested, then pass only the returned `recipe_plan_hash` to "
@@ -573,12 +521,20 @@ def _request_routed_system_prompt(system_prompt: str, user_text: str) -> str:
         "primary node name exactly, including an `add NAME:` form. This route supplies no "
         "other recipe arguments; clarify any missing material choice."
     )
+    return (
+        "### Current-request advisory recipe suggestion\n"
+        f"- Suggested recipe: `{recipe_id}`\n" + route_guidance
+    )
+
+
+def turn_context_text(turn_context: str | None, request: str) -> str:
+    """The context message's text: the rendered turn context, then any routed guidance.
+
+    Empty when there is neither, and the turn then sends no context message.
+    """
+
     return "\n\n".join(
-        (
-            system_prompt,
-            "## Current-request advisory recipe suggestion\n"
-            f"- Suggested recipe: `{recipe_id}`\n" + route_guidance,
-        )
+        part for part in (turn_context, _request_routed_guidance(request)) if part is not None
     )
 
 
@@ -877,6 +833,7 @@ async def run_turn(
     max_tool_calls: int | None,
     reservation: TurnReservation | None = None,
     authoring_request: str | None = None,
+    turn_context: str | None = None,
 ) -> AsyncGenerator[AssistantStreamEvent, None]:
     """Stream one complete provider/tool turn for a live session.
 
@@ -884,6 +841,10 @@ async def run_turn(
     (the route's pre-stream 409 path); when omitted the turn reserves for
     itself.  The ``finally`` releases through the idempotent reservation, so
     a second release from the response lifecycle is a no-op.
+
+    ``turn_context`` is the rendered turn context. With the request's routed
+    guidance it becomes one ``context`` message after the user message in
+    every provider round; it is never stored with the turn.
     """
 
     if reservation is None:
@@ -898,13 +859,15 @@ async def run_turn(
     )
     deadline = time.monotonic() + timeout_seconds
     effective_request = authoring_request or effective_authoring_request(session, user_text)
-    routed_system_prompt = _request_routed_system_prompt(system_prompt, effective_request)
+    context_text = turn_context_text(turn_context, effective_request)
     provider_tools = _provider_tools(tools)
     user_message: dict[str, Any] = {"role": "user", "content": user_text}
     request_messages: list[Mapping[str, Any]] = [
         *store.history_window(session),
         user_message,
     ]
+    if context_text:
+        request_messages.append({"role": "context", "content": context_text})
     turn_messages: list[dict[str, Any]] = [user_message]
     total_input_tokens = 0
     total_output_tokens = 0
@@ -937,7 +900,7 @@ async def run_turn(
                 # an abnormal turn exit must shut the provider's SDK stream
                 # deterministically, never leave it to GC finalisation.
                 active_stream = provider.stream_turn(
-                    system=routed_system_prompt,
+                    system=system_prompt,
                     messages=request_messages,
                     tools=provider_tools,
                 )
@@ -1145,5 +1108,5 @@ __all__ = [
     "effective_authoring_request",
     "reserve_turn",
     "run_turn",
-    "summarise_graph_nodes",
+    "turn_context_text",
 ]

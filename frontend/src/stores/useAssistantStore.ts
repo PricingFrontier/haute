@@ -7,8 +7,10 @@ import {
   createAssistantSession,
   getAssistantStatus,
   listAssistantSessions,
+  MAX_CONTEXT_SELECTION,
   streamAssistantMessage,
   type AssistantHistoryEntry,
+  type AssistantMessageContext,
   type AssistantSessionSummary,
   type AssistantStatus,
   type AssistantStreamEvent,
@@ -34,6 +36,19 @@ export type TranscriptEntry =
     }
   /** How a completed turn ended; `needs_input` and `blocked` render as cards. */
   | { kind: "outcome"; outcome: AssistantTurnOutcome }
+
+/**
+ * What the canvas adds to a message: the ids of its selected nodes, the first
+ * `MAX_CONTEXT_SELECTION` in canvas order. No preview error is shared yet.
+ */
+export function canvasMessageContext(): AssistantMessageContext {
+  const selectedNodeIds = useGraphStore
+    .getState()
+    .nodes.filter((node) => node.selected)
+    .map((node) => node.id)
+    .slice(0, MAX_CONTEXT_SELECTION)
+  return { selectedNodeIds, previewErrorNodeId: null }
+}
 
 /** The question card's one-click reply: hand the choice back to the assistant. */
 export const CHOOSE_FOR_ME_REPLY = "You choose, and tell me what you picked."
@@ -495,6 +510,8 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       return
     }
     if (!text.trim()) return
+    // The selection as the analyst sends, before any await can change it.
+    const context = canvasMessageContext()
 
     // A message sent from the immediately mounted composer becomes the active
     // chat. A slower transcript-open response must not replace it afterwards.
@@ -539,6 +556,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     try {
       await streamAssistantMessage(sessionId, text, sourceFile, {
         signal: controller.signal,
+        context,
         onEvent: (event) => {
           if (terminal.current !== null) {
             throw new Error("Assistant stream contract violation: received an event after a terminal event.")

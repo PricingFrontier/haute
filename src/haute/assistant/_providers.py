@@ -656,15 +656,56 @@ def _json_string(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _anthropic_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Translate neutral history into Anthropic Messages content blocks."""
+#: Anthropic models that accept a `system` message in the middle of the
+#: conversation. Every other model reads a turn context as the leading text of
+#: the user message it follows.
+MID_CONVERSATION_SYSTEM_MODELS = frozenset(
+    {
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+    }
+)
+
+
+def _with_leading_context(previous: dict[str, Any] | None, context: object) -> None:
+    """Prepend a turn context to the user message it follows, in place."""
+
+    if (
+        previous is None
+        or previous.get("role") != "user"
+        or not isinstance(previous.get("content"), str)
+        or not isinstance(context, str)
+    ):
+        raise RuntimeError("a turn context message must follow a user text message")
+    previous["content"] = f"{context}\n\n## Analyst message\n{previous['content']}"
+
+
+def _anthropic_messages(
+    messages: Sequence[Mapping[str, Any]], *, system_context: bool
+) -> list[dict[str, Any]]:
+    """Translate neutral history into Anthropic Messages content blocks.
+
+    With *system_context* a turn context travels as a mid-conversation
+    `system` message; otherwise it leads the user message it follows.
+    """
 
     translated: list[dict[str, Any]] = []
     previous_role: object = None
     for message in messages:
         role = message.get("role")
         content = message.get("content")
-        if role == "tool":
+        if role == "context":
+            if system_context:
+                translated.append({"role": "system", "content": content})
+            else:
+                _with_leading_context(translated[-1] if translated else None, content)
+        elif role == "tool":
             result_block = {
                 "type": "tool_result",
                 "tool_use_id": message["tool_call_id"],
@@ -724,7 +765,10 @@ class AnthropicProvider:
             stream = self.client.messages.stream(
                 model=self.config.model,
                 system=system,
-                messages=_anthropic_messages(messages),
+                messages=_anthropic_messages(
+                    messages,
+                    system_context=self.config.model in MID_CONVERSATION_SYSTEM_MODELS,
+                ),
                 tools=wire_tools,
                 max_tokens=self.config.max_output_tokens,
             )
@@ -870,6 +914,8 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
             )
         elif role == "controller":
             translated.append({"role": "user", "content": content})
+        elif role == "context":
+            _with_leading_context(translated[-1], content)
         else:
             translated.append({"role": role, "content": content})
     return translated
@@ -1173,6 +1219,7 @@ __all__ = [
     "AssistantProvider",
     "AssistantProviderError",
     "DatabricksProvider",
+    "MID_CONVERSATION_SYSTEM_MODELS",
     "create_provider",
     "OpenAIProvider",
     "ProviderEvent",

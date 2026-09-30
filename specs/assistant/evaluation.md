@@ -70,6 +70,12 @@ writes `code` to a new Transform, which the stepped-node refusal rejects as
 `invalid_ops`, and then authors the free-code form: removing that refusal
 changes the recorded error, and the case diverges.
 
+A case runs with the same session-stable system prompt and turn context the
+message route builds, with no selection, so a trajectory that adds or edits one
+primitive node makes its first dry-run without reading the graph first: the
+graph brief already names each node's inputs and columns. Recipe and
+clarification trajectories keep the reads their protocol names.
+
 `TrajectoryProvider` replays a trajectory through the real loop. Before each
 round it compares the results the loop returned with the recorded statuses and
 error codes, and on the first difference stops sending and ends the turn. The
@@ -89,8 +95,11 @@ tools, dry-run, apply, parser and Git mutation gate, in a copy of the case's
 project under the test's temporary directory, and each replay must pass every
 scoring layer within its per-case timeout. No provider request is made. A
 replay starts with an empty plan store, because copies of one project have
-identical content and so identical plan hashes. Replay proves the tools,
-validators and contracts; it cannot show that a prompt change helps a model.
+identical content and so identical plan hashes. The replay test also checks
+that no single-node trajectory reads before its first dry-run and that the
+first provider request's turn context lists the columns that dry-run reads.
+Replay proves the tools, validators and contracts; it cannot show that a prompt
+change helps a model.
 
 **Tier 1: live self-test, on demand.** `scripts/run_assistant_self_test.py`
 runs selected cases against the configured provider, each in its own spawned

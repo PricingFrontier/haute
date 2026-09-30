@@ -24,10 +24,13 @@ from haute._sandbox import _get_project_root
 from scripts.run_assistant_self_test import (
     SelfTestGolden,
     TrajectoryDivergedError,
+    TrajectoryProvider,
     load_self_test_cases,
     load_trajectories,
     load_trajectory,
+    replay_config,
     replay_self_test_case,
+    run_self_test_case,
 )
 from tests.assistant_eval._frames import frames_equal, run, synthetic_inputs
 
@@ -133,7 +136,7 @@ async def test_a_tool_result_with_another_status_names_the_turn_and_round(
 
     source = TRAJECTORIES_ROOT / "smoke_polars_feature_transform.json"
     payload = json.loads(source.read_text(encoding="utf-8"))
-    refused = payload["turns"][0]["rounds"][1]["calls"][0]
+    refused = payload["turns"][0]["rounds"][0]["calls"][0]
     assert refused["result"] == {"status": "error", "error_code": "invalid_ops"}
     refused["result"] = {"status": "ok"}
     edited = tmp_path / "smoke_polars_feature_transform.json"
@@ -144,7 +147,7 @@ async def test_a_tool_result_with_another_status_names_the_turn_and_round(
     with pytest.raises(
         TrajectoryDivergedError,
         match=(
-            r"smoke_polars_feature_transform diverged at turn 1 round 2: "
+            r"smoke_polars_feature_transform diverged at turn 1 round 1: "
             r"dry_run_graph_edits call code_attempt returned \('error', 'invalid_ops'\)"
         ),
     ):
@@ -154,6 +157,73 @@ async def test_a_tool_result_with_another_status_names_the_turn_and_round(
             projects_root=PROJECTS_ROOT,
             work_dir=work_dir,
         )
+
+
+_READ_TOOLS = frozenset(
+    {"get_pipeline", "get_node_schema", "get_node_config", "get_dataset_schema", "list_datasets"}
+)
+
+
+def _first_dry_run(trajectory) -> tuple[list[str], dict[str, object] | None]:
+    """The tools called before a trajectory's first primitive dry-run, and that dry-run."""
+
+    before: list[str] = []
+    for trajectory_round in trajectory.turns[0]:
+        for call in trajectory_round.calls:
+            if call.tool == "dry_run_graph_edits":
+                return before, call.arguments
+            before.append(call.tool)
+    return before, None
+
+
+def _single_node_trajectories() -> list:
+    """Trajectories whose first primitive dry-run adds or updates one node."""
+
+    single = []
+    for trajectory in TRAJECTORIES:
+        _before, arguments = _first_dry_run(trajectory)
+        if arguments is None:
+            continue
+        written = [op for op in arguments["ops"] if op["op"] in {"add_node", "update_node"}]
+        if len(written) == 1:
+            single.append(trajectory)
+    return single
+
+
+def test_single_node_edits_dry_run_without_an_orientation_read() -> None:
+    """The turn context's graph brief carries what a one-node edit needs."""
+
+    single = _single_node_trajectories()
+    assert "smoke_polars_feature_transform" in {trajectory.id for trajectory in single}
+    for trajectory in single:
+        before, _arguments = _first_dry_run(trajectory)
+        assert not set(before) & _READ_TOOLS, (trajectory.id, before)
+
+
+async def test_the_first_request_carries_the_columns_the_first_dry_run_reads(
+    tmp_path: Path,
+) -> None:
+    """The feature transform reads `driver_age` from `quotes` without a read call,
+    because the first provider request's turn context lists both."""
+
+    trajectory = next(item for item in TRAJECTORIES if item.id == "smoke_polars_feature_transform")
+    provider = TrajectoryProvider(trajectory)
+    result = await run_self_test_case(
+        CASES[trajectory.case],
+        projects_root=PROJECTS_ROOT,
+        config=replay_config(trajectory),
+        work_dir=tmp_path,
+        provider_factory=lambda _config: provider,
+        evidence="replay",
+    )
+    provider.verify(result.tool_diagnostics)
+
+    assert result.reasons == ()
+    assert provider.first_messages is not None
+    user, context = provider.first_messages
+    assert (user["role"], context["role"]) == ("user", "context")
+    assert "- `quotes` (Polars)" in context["content"]
+    assert '"driver_age"' in context["content"]
 
 
 async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_layer(

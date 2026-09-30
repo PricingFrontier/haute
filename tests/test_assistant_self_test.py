@@ -559,11 +559,15 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
     assert "banding" in result.node_types
     assert result.telemetry.provider_round_trips == 4
     assert provider.system is not None
-    assert "- Provider trust: `organization`" in provider.system
-    assert "- Highest sensitivity sent: `internal`" in provider.system
-    assert "- Project knowledge: not permitted" in provider.system
-    assert "- Executable source: not permitted" in provider.system
-    assert "- Column value profiles: not permitted" in provider.system
+    assert "Project egress policy" not in provider.system
+    assert provider.first_messages is not None
+    context = provider.first_messages[-1]
+    assert context["role"] == "context"
+    assert "- Provider trust: `organization`" in context["content"]
+    assert "- Highest sensitivity sent: `internal`" in context["content"]
+    assert "- Project knowledge: not permitted" in context["content"]
+    assert "- Executable source: not permitted" in context["content"]
+    assert "- Column value profiles: not permitted" in context["content"]
 
 
 @pytest.mark.slow
