@@ -146,12 +146,17 @@ and reparses stepped nodes in memory to prove their steps survive.
 message prefixes. Specify the stepped-node write contract in both assistant
 specifications first.
 
-**Acceptance:** Tests on each palette-default stepped type: `update_node
-{code}` and `{steps: null, code}` are refused at dry-run and the saved file
-is unchanged; a comment-free `[free_code]` write applies and the saved body
-holds it; a digest mismatch after save is reported as a verification failure;
-`get_node_schema` on `steps: []` returns `node_has_no_code` with the input
-schemas; `add_node dataInput {path}` saves with the palette's `inputType`.
+**Acceptance:** Tests on each palette-default stepped type, each built with a
+valid base configuration (a readable source, a scorable model, a rating
+table) so a missing base does not mask the assertion: `update_node {code}`
+and `{steps: null, code}` are refused at dry-run and the saved file is
+unchanged. On a Transform, a `[source, free_code]` write applies and the saved
+body holds it, and `get_node_schema` on its palette default `steps: []`
+returns `node_has_no_code` with the input schemas. On the frame-start
+surfaces, a `[free_code]` write applies and the saved body holds it, and a
+node left at `steps: []` resolves its ordinary schema. A digest mismatch after
+save is reported as a verification failure, and `add_node dataInput {path}`
+saves with the palette's `inputType`.
 
 **Dependencies:** Ships in the same pull request as `ASSIST-03`.
 
@@ -203,11 +208,12 @@ August the configured model failed repeatedly on a two-input aggregation
 because it believed inputs were reached as `df['name']`.
 
 **Plan:** Teach and accept one authoring form for new logic: a Transform is
-`[{kind: source, input: <edge name>}, {kind: free_code, code}]`, and every
-other stepped surface, Load File included, is `[{kind: free_code, code}]`,
-where the code transforms `df`, reads other inputs by name only on Transform
-and Load File, and starts with a one-line `# intent` comment that becomes the
-card title. A hook that needs no post-processing keeps `steps: []`. Existing
+`[{id: "start", kind: source, input: <edge name>}, {id: "logic", kind:
+free_code, code}]`, and every other stepped surface, Load File included, is
+`[{id: "logic", kind: free_code, code}]`. Every step carries a non-empty
+`id`, as the step validator requires. The code transforms `df`, reads other
+inputs by name only on Transform and Load File, and starts with a one-line
+`# intent` comment that becomes the card title. A hook that needs no post-processing keeps `steps: []`. Existing
 structured steps keep their ids and order, and code-mode nodes keep code
 editing. Descriptors expose the source and free-code step shapes and each
 surface's start and input rule, derived from `STEPPED_NODE_TYPES`; the
@@ -217,9 +223,10 @@ that create Polars logic emit the same form.
 **Acceptance:** Replays of the August aggregation request, of filling a
 palette-default Transform and Rating Step, and of a Load File using `obj` and
 a second input, apply in one dry-run, edit the named node rather than a new
-one, parse back with their steps and execute on fixture data. No
-assistant-authored node on a stepped surface reloads with `_steps_error` or
-discarded steps.
+one, parse back with their steps and execute on fixture data. The exact
+example shapes the descriptors and prompt advertise are accepted verbatim by
+dry-run. No assistant-authored node on a stepped surface reloads with
+`_steps_error` or discarded steps.
 
 **Dependencies:** `ASSIST-01`, `ASSIST-02`, `ASSIST-05`, `ASSIST-06`.
 
@@ -359,10 +366,12 @@ allowed; make plan egress truthful; report reads and mutations as denied in
 readiness under external trust; return a structured readiness reason when Git
 is unavailable; and pin the free-code masking with an end-to-end payload test.
 
-**Acceptance:** The review's error-text probe returns no data values under
-`allow_row_samples = false`; a payload test on a `[source, free_code]` node
-shows the step structure with its code masked; readiness under external trust
-and without Git returns named reasons.
+**Acceptance:** Under `allow_row_samples = false`, two probes return no data
+values in any tool result: a free-code step that raises an exception whose
+message embeds collected `quote_id` and date-of-birth values, and a CSV input
+whose column cast fails on a malformed value. A payload test on a
+`[source, free_code]` node shows the step structure with its code masked;
+readiness under external trust and without Git returns named reasons.
 
 **Dependencies:** None.
 
@@ -378,18 +387,26 @@ Separately, a dataset the model inspected and later renamed blocks every
 dry-run for the rest of the history window, and a row-count-only refresh
 produces a stale-evidence error that names no file.
 
-**Plan:** In schema-only execution, a missing snapshot for a supported local
-format resolves the schema from the Data Input's own configuration (format,
-delimiter, sheet, schema overrides) and records the tier as inferred; a remote
-or unsupported source fails loudly with a named remedy; the snapshot is still
-built at the first preview. Evidence for a dataset that no longer exists is
-dropped when the model re-inspects the project, and stale-evidence errors name
-the file. Specify the inferred tier in the execution-engine and assistant
-specifications first.
+**Plan:** In schema-only execution, a missing snapshot for a local file whose
+format has a lazy scanner resolves the schema through that scanner with the
+Data Input's own configuration: CSV with its separator, header, quoting and
+schema overrides and a bounded type-inference row count (never
+`infer_schema_length=None`), NDJSON with the same bound, and Parquet and IPC
+from their file metadata. Nothing is collected and no snapshot is written.
+Formats that only read eagerly (JSON, Excel, ODS, Avro, IPC stream), database
+queries and remote sources fail loudly with the remedy "preview this input
+first". The schema evidence records the tier `inferred`, the format and the
+inference bound, and the snapshot is still built at the first preview.
+Evidence for a dataset that no longer exists is dropped when the model
+re-inspects the project, and stale-evidence errors name the file. Specify the
+inferred tier in the execution-engine and assistant specifications first.
 
-**Acceptance:** A plan adding a CSV Data Input, a Transform and their edge
-applies at the inferred tier; a remote table without a readable schema returns
-a named error; renaming an inspected dataset no longer blocks later dry-runs.
+**Acceptance:** A plan adding a CSV Data Input with a non-default separator
+and a schema override, a Transform and their edge applies at the inferred
+tier, and the resolved schema reflects both settings; an Excel input and a
+database input without a snapshot are refused with the preview remedy; the
+dry-run creates no snapshot files; renaming an inspected dataset no longer
+blocks later dry-runs.
 
 **Dependencies:** None.
 
@@ -471,8 +488,10 @@ changed nodes and their neighbours, fix the stale cases, validate node-type
 names against `NodeType`, pin the self-test's egress policy, and run each case
 in its own process.
 
-**Acceptance:** Six reference trajectories pass in one run; the stale cases
-express current contracts; an unknown node-type name fails case loading.
+**Acceptance:** Six reference trajectories pass in one harness run: three
+items from the Polars step corpus, each authored once as structured steps and
+once as `[source, free_code]`, all in file-input projects. The stale cases
+express current contracts, and an unknown node-type name fails case loading.
 
 **Dependencies:** `ASSIST-08`.
 
@@ -496,18 +515,32 @@ the consumer and field; a rename with only edge consumers applies.
 **Evidence:** `src/haute/assistant/_ops.py::_apply_rename_node`.
 
 ### ASSIST-19 — Product config validators run at dry-run
-**Why:** Six invalid modelling configs (unknown family, a loss the family
-rejects, missing target, target among the features) passed dry-run at the
-schema tier, and a Load File pointing at a missing file validated. The
-product's training validators run only when training starts.
+**Why:** Six invalid modelling configs passed dry-run at the schema tier, and
+a Load File pointing at a missing file validated. The product's training
+validators run only when training starts, and a new modelling node is saved
+incomplete (`{}`) by the editor on purpose, so completeness cannot simply
+become a save rule.
 
-**Plan:** Run the pure configuration checks that training and loading already
-apply (family, loss, parameters, target, features, offset and weight columns,
-Load File path and type) inside save validation, one path for the editor and
-the assistant.
+**Plan:** Separate malformed from incomplete. A malformed value can never
+train: an unknown algorithm or family (names are case-sensitive), a loss the
+family rejects, a target that is also a feature, or an offset, weight or
+feature naming a column the node's resolved input schema lacks. Save
+validation, one path for the editor and the assistant, rejects malformed
+values using the pure checks training already applies. Completeness (a target
+and features set) and a Load File's existing file of the declared type are
+assistant-authoring invariants, checked only for nodes the plan adds or
+changes, so an analyst can still save an unfinished node and edit beside it.
+Column checks use the input schema the dry-run resolves; when that cannot be
+resolved the dry-run already fails at the schema tier. Specify the split in
+the modelling and assistant specifications first.
 
-**Acceptance:** Each of the six invalid configs fails at dry-run with the
-product's message; the valid config applies.
+**Acceptance:** Each of these assistant plans fails at dry-run with the
+product's message: `algorithm: "GLM"` with `family: "Poisson"`; an `offset`
+naming a column the input lacks; `family: "poison"`; a GLM with no family;
+the target listed in `feature_columns`; `algorithm: "gbm"`; and a Load File
+whose path does not exist. The valid GLM (`glm`, `poisson`, log link,
+`exposure` offset) applies. An empty modelling node still saves through the
+editor path, and an unrelated assistant edit beside it applies.
 
 **Dependencies:** None.
 
@@ -851,11 +884,16 @@ compatible one within sixteen keys; the probe result is recorded here.
 that forgets its plan cannot be nudged on it.
 
 **Plan:** Once several applies per turn are measured, add a build-plan tool
-whose items the controller ticks from committed changes, shown as a checklist
-in the panel, with open items resumable by "continue".
+whose items show two separate facts in the panel's checklist: the changes
+committed against an item, which the controller records from applies the
+model attributes to it, and whether the item is complete, which only the
+model can claim and the controller accepts only for an item with at least one
+committed change. Open items are resumable by "continue".
 
-**Acceptance:** A replayed multi-stage build shows its checklist ticking per
-change; an interrupted build resumes its open items.
+**Acceptance:** A replayed multi-stage build shows committed changes against
+each item and marks items complete only when the model claims them; a replay
+where an apply implements part of a stage leaves that stage open with its
+change listed; an interrupted build resumes its open items.
 
 **Dependencies:** `ASSIST-32`, `ASSIST-36`.
 

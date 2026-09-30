@@ -457,9 +457,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   an OUTPUT node.
   Multi-frame results report one schema per output port.
   This is execution-plan evidence, not proof of row values or commercial
-  correctness. The assistant mutation service declares `schema` verification for a
-  plan that affects executable flow and re-proves that evidence after save; a plan
-  with no executable target to resolve declares `structural`.
+  correctness. The assistant mutation service's tier follows its evidence: it
+  declares `schema` when schema evidence was collected for at least one target and
+  re-proves that evidence after save, and `structural` when there is none — a plan
+  with no executable target to resolve, or one whose every target already failed to
+  resolve on the saved graph and was excluded with a `pre_existing_schema_failure`
+  warning.
 - **Partitioned Parquet remains lazy and projected.** Directory-backed inputs retain
   Hive-partition predicates and required columns in the optimized scan, pruning
   irrelevant files/columns before checkpointing, caching, or response materialisation.

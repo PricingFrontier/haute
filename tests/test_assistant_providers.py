@@ -522,6 +522,29 @@ class TestOpenAIProvider:
         assert (tool.id, tool.name, tool.arguments) == ("call_1", "get_pipeline", {"x": 2})
         assert isinstance(events[-1], TurnStop) and events[-1].reason == "tool_use"
 
+    @pytest.mark.parametrize(
+        ("finish_reason", "category"),
+        [("length", "truncated"), ("content_filter", "filtered")],
+    )
+    async def test_truncated_or_filtered_reply_dispatches_no_calls(
+        self, finish_reason: str, category: str
+    ):
+        """The loop runs each call as soon as it is yielded, so a reply cut
+        short or filtered must yield none of its calls, even when the
+        accumulated arguments happen to be complete, valid JSON."""
+
+        chunks = _openai_text_tool_chunks()
+        chunks[3].choices[0].finish_reason = finish_reason
+        provider = OpenAIProvider(_config("openai"), client=_FakeOpenAIClient(chunks))
+        events: list[object] = []
+        with pytest.raises(AssistantProviderError) as excinfo:
+            async for event in provider.stream_turn(
+                system=_SYSTEM, messages=_MESSAGES, tools=_TOOLS
+            ):
+                events.append(event)
+        assert excinfo.value.failure_class == category
+        assert not [e for e in events if isinstance(e, ToolCallRequest)]
+
     async def test_budget_param_is_max_completion_tokens_for_api_openai_com(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())
         await _collect(OpenAIProvider(_config("openai", base_url=None), client=client))
