@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "id": "smoke_polars_feature_transform",
-  "fixture_version": "2",
-  "project_fixture": "ordinary_pricing",
+  "id": "smoke_corpus_underwriting_decision",
+  "fixture_version": "1",
+  "project_fixture": "polars_corpus",
   "category": "semantic",
-  "request": "After quotes, add a Transform named risk_features that adds a boolean column experienced_driver, true when driver_age is at least 25. Connect quotes to risk_features.",
+  "request": "After quotes, add a Transform named underwriting_decision that adds a text column decision: decline when age is below 18; otherwise refer when claims_count is at least 3 or vehicle_value is above 100000; otherwise await_price when premium is null; otherwise accept. Connect quotes to underwriting_decision.",
   "expectations": {
     "outcome": "applied",
     "required_node_types": [
@@ -15,7 +15,7 @@
     "required_edges": [
       {
         "source": "quotes",
-        "target": "risk_features",
+        "target": "underwriting_decision",
         "target_handle": null
       }
     ],

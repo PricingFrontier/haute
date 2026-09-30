@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_attach_regional_rates",
+  "fixture_version": "1",
+  "project_fixture": "polars_corpus",
+  "category": "semantic",
+  "request": "Add a Transform named attach_regional_rates that starts from quotes, left-joins rates on region (each quote matches at most one rate, and the quotes keep their row order), then adds regional_benchmark as base_rate times factor. Connect quotes and rates to attach_regional_rates.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": [
+      "polars"
+    ],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {
+        "source": "quotes",
+        "target": "attach_regional_rates",
+        "target_handle": null
+      },
+      {
+        "source": "rates",
+        "target": "attach_regional_rates",
+        "target_handle": null
+      }
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 6,
+    "max_tool_calls": 12,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

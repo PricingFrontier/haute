@@ -745,9 +745,13 @@ declared fast subset.
 
 The explicit credentialed assistant self-test lane uses disposable held-out synthetic
 projects and the configured provider. Its checked-in prompt portfolio covers specialist
-recipes, primitive graph edits, mapped outputs, join-port semantics, graph authoring for
-file sources and sinks, focused clarification, prompt injection, and blocked requests to
-execute pipelines or perform external writes. Graph-authoring cases may save a sink node but
+recipes, primitive graph edits, new Polars logic on Transforms (including items from the
+Polars step corpus in a file-input project), mapped outputs, join-port semantics, graph
+authoring for file sources and sinks, focused clarification, prompt injection, and blocked
+requests to execute pipelines or perform external writes. Each case runs in its own process
+against its own copy of a fixture project, under the harness's pinned egress allowances
+rather than the invoking project's, so a multi-case run measures the model and not state
+left by an earlier case. Graph-authoring cases may save a sink node but
 the lane never runs the resulting pipeline or materialises the sink. Reports remain
 content-redacted and retain only semantic graph structure, value-free diagnostics, outcomes,
 and aggregate metrics. For a multi-round turn, the last explicit `NEEDS_INPUT:` or `BLOCKED:`

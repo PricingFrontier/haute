@@ -9,21 +9,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import multiprocessing
 import os
 import shutil
 import tempfile
 import time
 import tomllib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from haute import _git
 from haute._git_state import write_working_branch
-from haute.assistant._config import AssistantConfig, resolve_assistant_config
+from haute._sandbox import bound_project_root
+from haute._types import NodeType
+from haute.assistant._config import AssistantConfig, EgressPolicy, resolve_assistant_config
 from haute.assistant._loop import build_system_prompt, run_turn, summarise_graph_nodes
 from haute.assistant._providers import AssistantProvider, ProviderEvent, create_provider
 from haute.assistant._session import SessionStore
@@ -58,6 +62,7 @@ _EXPECTATION_KEYS = {
     "forbidden_assistant_text",
 }
 _EDGE_KEYS = {"source", "target", "target_handle"}
+_NODE_TYPES = frozenset(node_type.value for node_type in NodeType)
 _STATIC_READ_TOOLS = frozenset(
     {
         "get_authoring_guide",
@@ -163,6 +168,13 @@ def _string_list(value: object, path: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _node_type_list(value: object, path: str) -> tuple[str, ...]:
+    names = _string_list(value, path)
+    if unknown := sorted(set(names) - _NODE_TYPES):
+        raise ValueError(f"{path} names unknown node type(s): {', '.join(unknown)}")
+    return names
+
+
 def _limit(value: object, path: str, *, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum:
         raise ValueError(f"{path} must be an integer >= {minimum}")
@@ -205,10 +217,10 @@ def _expectations(value: object, path: Path) -> SelfTestExpectations:
         raise ValueError(f"{path.name} require_connected_graph must be a boolean")
     return SelfTestExpectations(
         outcome=cast(SelfTestOutcome, outcome),
-        required_node_types=_string_list(
+        required_node_types=_node_type_list(
             value["required_node_types"], f"{path.name} required_node_types"
         ),
-        forbidden_node_types=_string_list(
+        forbidden_node_types=_node_type_list(
             value["forbidden_node_types"], f"{path.name} forbidden_node_types"
         ),
         forbidden_assistant_text=_string_list(
@@ -291,24 +303,45 @@ def select_self_test_cases(
     return tuple(case for case in cases if case.id in requested)
 
 
-def _connected_missing(graph: SelfTestGraph) -> tuple[str, ...]:
-    nodes = set(graph.node_types)
-    if len(nodes) < 2:
-        return ()
-    adjacency: dict[str, set[str]] = {node: set() for node in nodes}
-    for source, target, _target_handle in graph.edges:
+def _disconnected_changed_nodes(before: SelfTestGraph, after: SelfTestGraph) -> tuple[str, ...]:
+    """Name the changed nodes and neighbours outside their largest connected component.
+
+    A node is changed when it is new or retyped, or is an endpoint of an added or
+    removed edge. Those nodes and every node adjacent to them must form one
+    component; nodes the plan never touched are not checked, so an unconnected
+    input elsewhere in the fixture cannot fail a case.
+    """
+
+    adjacency: dict[str, set[str]] = {node: set() for node in after.node_types}
+    for source, target, _target_handle in after.edges:
         if source in adjacency and target in adjacency:
             adjacency[source].add(target)
             adjacency[target].add(source)
-    pending = [min(nodes)]
-    visited: set[str] = set()
-    while pending:
-        node = pending.pop()
-        if node in visited:
-            continue
-        visited.add(node)
-        pending.extend(adjacency[node] - visited)
-    return tuple(sorted(nodes - visited))
+    changed = {
+        node
+        for node, node_type in after.node_types.items()
+        if before.node_types.get(node) != node_type
+    }
+    for source, target, _target_handle in set(before.edges) ^ set(after.edges):
+        changed.update(node for node in (source, target) if node in adjacency)
+    region = changed.union(*(adjacency[node] for node in changed))
+    components: list[set[str]] = []
+    unvisited = set(region)
+    while unvisited:
+        pending = [min(unvisited)]
+        component: set[str] = set()
+        while pending:
+            node = pending.pop()
+            if node in component:
+                continue
+            component.add(node)
+            pending.extend((adjacency[node] & region) - component)
+        components.append(component)
+        unvisited -= component
+    if len(components) < 2:
+        return ()
+    largest = max(components, key=lambda component: (len(component), sorted(component)))
+    return tuple(sorted(region - largest))
 
 
 def score_self_test(
@@ -357,8 +390,13 @@ def score_self_test(
         if not present:
             handle = "any" if target_handle is None else target_handle
             reasons.append(f"required edge {source} -> {target} [{handle}] is missing")
-    if expected.require_connected_graph and (missing := _connected_missing(after)):
-        reasons.append("new graph nodes are not one connected component: " + ", ".join(missing))
+    if expected.require_connected_graph and (
+        stranded := _disconnected_changed_nodes(before, after)
+    ):
+        reasons.append(
+            "changed nodes and their neighbours are not one connected component: "
+            + ", ".join(stranded)
+        )
 
     if telemetry.leaked_forbidden_text:
         reasons.append(
@@ -556,6 +594,34 @@ def _append_assistant_config(project_root: Path, config: AssistantConfig) -> Non
     path.write_text(existing + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
 
+def self_test_config(config: AssistantConfig) -> AssistantConfig:
+    """Return *config* under the self-test's own egress allowances.
+
+    Only the provider trust comes from the invoking project, because trust
+    describes the endpoint and is validated against it. What the cases may send
+    is the harness's decision: internal pipeline metadata, and no project
+    knowledge, executable source or row samples, whatever the invoking project
+    permits.
+    """
+
+    if config.egress.trust == "external":
+        raise ValueError(
+            "The assistant self-test needs a local or organization provider: external trust "
+            "is public-only, and a public ceiling denies the project metadata tools every "
+            "case uses."
+        )
+    return replace(
+        config,
+        egress=EgressPolicy(
+            trust=config.egress.trust,
+            max_sensitivity="internal",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=False,
+        ),
+    )
+
+
 def _run_git(project_root: Path, *arguments: str) -> None:
     try:
         _git._run_git(*arguments, cwd=project_root)
@@ -576,12 +642,20 @@ def _initialize_mutation_gate(project_root: Path) -> None:
 
 @contextmanager
 def _working_directory(path: Path) -> Iterator[None]:
+    """Enter a fixture copy as the working directory and the sandbox project root.
+
+    The sandbox root is process-wide and set lazily, so it is bound here and
+    restored on exit; otherwise a later case would resolve its data paths
+    against an earlier case's deleted copy.
+    """
+
     previous = Path.cwd()
     pipeline_dir.cache_clear()
     os.chdir(path)
     pipeline_dir.cache_clear()
     try:
-        yield
+        with bound_project_root(path):
+            yield
     finally:
         pipeline_dir.cache_clear()
         os.chdir(previous)
@@ -614,6 +688,7 @@ async def run_self_test_case(
 ) -> SelfTestResult:
     """Run one prompt through the configured provider and real disposable tools."""
 
+    config = self_test_config(config)
     source_fixture = (projects_root.resolve() / case.project_fixture).resolve()
     if (
         not source_fixture.is_relative_to(projects_root.resolve())
@@ -712,6 +787,52 @@ async def run_self_test_case(
         provider=config.provider,
         model=config.model,
     )
+
+
+def _run_case_in_this_process(
+    case: SelfTestCase,
+    projects_root: Path,
+    config: AssistantConfig,
+    provider_factory: ProviderFactory,
+) -> SelfTestResult:
+    return asyncio.run(
+        run_self_test_case(
+            case,
+            projects_root=projects_root,
+            config=config,
+            provider_factory=provider_factory,
+        )
+    )
+
+
+def run_self_test_cases_in_processes(
+    cases: Sequence[SelfTestCase],
+    *,
+    projects_root: Path,
+    config: AssistantConfig,
+    provider_factory: ProviderFactory = create_provider,
+) -> tuple[SelfTestResult, ...]:
+    """Run each case in its own spawned process, one after another.
+
+    Process-wide state (caches, the sandbox root, imported project modules)
+    cannot carry from one case into the next, so each result measures the model
+    on a fresh process. *provider_factory* must be picklable by reference.
+    """
+
+    context = multiprocessing.get_context("spawn")
+    results: list[SelfTestResult] = []
+    for case in cases:
+        with ProcessPoolExecutor(max_workers=1, mp_context=context) as pool:
+            results.append(
+                pool.submit(
+                    _run_case_in_this_process,
+                    case,
+                    projects_root,
+                    config,
+                    provider_factory,
+                ).result()
+            )
+    return tuple(results)
 
 
 def self_test_report_payload(results: Sequence[SelfTestResult]) -> dict[str, object]:
@@ -816,7 +937,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run(args: argparse.Namespace) -> int:
+def _run(args: argparse.Namespace) -> int:
     cases = load_self_test_cases(args.cases, projects_root=args.projects)
     selected = select_self_test_cases(cases, args.case)
     if args.list:
@@ -840,16 +961,12 @@ async def _run(args: argparse.Namespace) -> int:
 
     config_root = args.config_root.resolve()
     _load_env(config_root)
-    config = resolve_assistant_config(config_root)
-    results = []
-    for case in selected:
-        results.append(
-            await run_self_test_case(
-                case,
-                projects_root=args.projects,
-                config=config,
-            )
-        )
+    config = self_test_config(resolve_assistant_config(config_root))
+    results = run_self_test_cases_in_processes(
+        selected,
+        projects_root=args.projects,
+        config=config,
+    )
     if args.output is not None:
         write_self_test_report(args.output, results)
     payload = self_test_report_payload(results)
@@ -860,7 +977,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    return asyncio.run(_run(_parser().parse_args(argv)))
+    return _run(_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

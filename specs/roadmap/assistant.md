@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
 | ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
 | ASSIST-22 | Planned | P1 | The model reads a realistic, executed config for every node type. |
@@ -105,28 +104,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-17 — Self-test harness corrections
-**Why:** The sandbox's project root leaks between cases, so a multi-case run
-passes only its first file-input case; the connectivity check covers the whole
-graph; two cases demand code the validator now rejects; one case forbids node
-types that do not exist; and the run inherits the invoking project's egress
-policy.
-
-**Plan:** Bind and restore the sandbox root per case, check connectivity of
-changed nodes and their neighbours, fix the stale cases, validate node-type
-names against `NodeType`, pin the self-test's egress policy, and run each case
-in its own process.
-
-**Acceptance:** Six reference trajectories pass in one harness run: three
-items from the Polars step corpus, each authored once as structured steps and
-once as `[source, free_code]`, all in file-input projects. The stale cases
-express current contracts, and an unknown node-type name fails case loading.
-
-**Dependencies:** `ASSIST-08`.
-
-**Evidence:** `scripts/run_assistant_self_test.py::run_self_test_case`;
-`src/haute/_sandbox.py`.
 
 ### ASSIST-20 — Evaluation specification and offline replay
 **Why:** Only one of twelve self-test cases is driven through the real tools

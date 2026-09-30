@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "id": "smoke_file_pipeline_authoring",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "showcase_parquets",
   "category": "semantic",
-  "request": "Author and save this graph only; do not run it or perform the write. Add a file data input named nb_batch that scans data/nb_batch.parquet as Parquet. Add a Polars node named valid_quotes after it with code `df = df.filter(pl.col(\"exposure\") > 0)`. Add a file data output named curated_quotes after valid_quotes, configured to write Parquet to data/curated_quotes.parquet.",
+  "request": "Author and save this graph only; do not run it or perform the write. Add a file data input named nb_batch that scans data/nb_batch.parquet as Parquet. Add a Transform named valid_quotes after it that keeps only the rows whose exposure is above 0. Add a file data output named curated_quotes after valid_quotes, configured to write Parquet to data/curated_quotes.parquet.",
   "expectations": {
     "outcome": "applied",
     "required_node_types": [

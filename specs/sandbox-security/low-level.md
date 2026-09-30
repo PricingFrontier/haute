@@ -59,7 +59,10 @@
   [caching](../caching/low-level.md)).
 - **`_PROJECT_ROOT: Path | None`** (module-level, `_sandbox.py`) — lazily set to
   `Path.cwd().resolve()` on first use by `_get_project_root()`; overridable via
-  `set_project_root()` (used by tests and the CLI).
+  `set_project_root()` (used by tests and the CLI). `bound_project_root(root)` is
+  the scoped form: it binds `root` for the duration of a `with` block and restores
+  the previous root on exit, even when the block raises, so a caller that works in
+  several projects in one process never leaves the root on a project it has left.
 - **`_BOOT_SESSION_TOKEN`** (`_local_security.py`) — a `secrets.token_urlsafe(32)`
   generated once at module import, used as the fallback session token when
   `HAUTE_LOCAL_SESSION_TOKEN` is unset.

@@ -19,6 +19,7 @@ from haute._sandbox import (
     ArtifactVersionMismatchError,
     UnsafeCodeError,
     _resolve_allowed_global,
+    bound_project_root,
     safe_globals,
     safe_joblib_load,
     safe_unpickle,
@@ -145,6 +146,26 @@ class TestValidateProjectPath:
         set_project_root(tmp_path)
         with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path(str(tmp_path / ".." / ".." / "etc" / "passwd"))
+
+    def test_bound_root_is_restored_even_when_the_block_raises(self, tmp_path: Path):
+        outer = tmp_path / "outer"
+        inner = tmp_path / "inner"
+        for root in (outer, inner):
+            root.mkdir()
+            (root / "data.csv").touch()
+        set_project_root(outer)
+
+        with pytest.raises(RuntimeError, match="case failed"):
+            with bound_project_root(inner) as bound:
+                assert bound == inner.resolve()
+                assert validate_project_path(inner / "data.csv") == inner / "data.csv"
+                with pytest.raises(PathOutsideProjectError):
+                    validate_project_path(outer / "data.csv")
+                raise RuntimeError("case failed")
+
+        assert validate_project_path(outer / "data.csv") == outer / "data.csv"
+        with pytest.raises(PathOutsideProjectError):
+            validate_project_path(inner / "data.csv")
 
 
 class TestSafeUnpickle:
