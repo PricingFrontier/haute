@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "smoke_join_clarification",
   "fixture_version": "1",
   "project_fixture": "join_parquets",
@@ -17,6 +17,9 @@
     "max_provider_round_trips": 3,
     "max_tool_calls": 6,
     "max_failed_tool_calls": 0,
-    "max_duplicate_static_reads": 0
+    "max_duplicate_static_reads": 0,
+    "modified_nodes": [],
+    "node_configs": {},
+    "execution": []
   }
 }

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_high_premium_quotes_structured",
+  "case": "smoke_corpus_high_premium_quotes",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "high_premium_quotes",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "s1",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "s2",
+                          "kind": "filter",
+                          "match": "all",
+                          "conditions": [
+                            {
+                              "column": "premium",
+                              "operator": "gt",
+                              "value": {
+                                "kind": "literal",
+                                "type": "number",
+                                "value": 1500
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

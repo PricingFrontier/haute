@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
 | ASSIST-22 | Planned | P1 | The model reads a realistic, executed config for every node type. |
 | ASSIST-23 | Planned | P1 | Tool errors say how to fix them, and the model keeps correcting while each error is new. |
@@ -104,30 +103,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-20 — Evaluation specification and offline replay
-**Why:** Only one of twelve self-test cases is driven through the real tools
-in CI, scoring checks node types and edges but never configuration or
-execution, and the qualification runner does not exist, so no change can be
-judged against the tasks analysts ask for.
-
-**Plan:** Specify the evaluation (case format, tiers, scoring layers, and the
-boundary that execution happens in the harness, never in the assistant) in a
-supplemental assistant evaluation document. Replay reference trajectories
-through the real tools in CI with a divergence check, and score build cases by
-protocol, structure, configuration subset, collateral change, editor
-compatibility (stepped nodes stay stepped) and execution against goldens
-computed independently in plain Polars. Replay evidence and live-model
-evidence are reported separately.
-
-**Acceptance:** The replay suite runs in CI; deliberately regressing
-`ASSIST-01` makes a named case diverge; the step-corpus cases stay stepped and
-match their goldens.
-
-**Dependencies:** `ASSIST-04`, `ASSIST-17`.
-
-**Evidence:** `scripts/run_assistant_self_test.py::run_self_test_case`;
-`tests/test_assistant_self_test.py`; `tests/test_polars_steps_corpus.py`.
 
 ### ASSIST-21 — Step-level edits and readable step summaries
 **Why:** Editing one step means resending a whole steps list, including

@@ -10,7 +10,6 @@ import pytest
 
 from haute._types import GraphEdge, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
-from haute.assistant._providers import ProviderUsage, ToolCallRequest, TurnStop
 from haute.assistant._render import render_pipeline_graph
 from scripts.run_assistant_self_test import (
     SelfTestCase,
@@ -18,26 +17,43 @@ from scripts.run_assistant_self_test import (
     SelfTestGraph,
     SelfTestTelemetry,
     SelfTestToolDiagnostic,
+    TrajectoryProvider,
     load_self_test_cases,
+    load_trajectory,
     run_self_test_case,
     run_self_test_cases_in_processes,
     score_self_test,
     select_self_test_cases,
+    self_test_report_payload,
     write_self_test_report,
 )
 
 CASES_ROOT = Path(__file__).parent / "assistant_eval" / "self_test"
 PROJECTS_ROOT = Path(__file__).parent / "assistant_eval" / "projects"
+TRAJECTORIES_ROOT = Path(__file__).parent / "assistant_eval" / "trajectories"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_plan_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Copies of one fixture have identical content, so a repeated trajectory
+    dry-runs to the hash of a plan an earlier replay in this process applied."""
+
+    from haute.assistant import _tools
+    from haute.assistant._ops import PlanStore
+
+    monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
 
 
 def _graph(
     *,
     node_types: dict[str, str],
     edges: tuple[tuple[str, str, str | None], ...] = (),
+    configs: dict[str, dict[str, object]] | None = None,
 ) -> SelfTestGraph:
     return SelfTestGraph(
         node_types=MappingProxyType(node_types),
         edges=edges,
+        configs=MappingProxyType(configs or {node: {} for node in node_types}),
     )
 
 
@@ -77,6 +93,9 @@ def _case(**expectation_overrides: object) -> SelfTestCase:
         "max_tool_calls": 16,
         "max_failed_tool_calls": 1,
         "max_duplicate_static_reads": 1,
+        "modified_nodes": (),
+        "node_configs": {},
+        "execution": (),
     }
     values.update(expectation_overrides)
     return SelfTestCase(
@@ -87,6 +106,26 @@ def _case(**expectation_overrides: object) -> SelfTestCase:
         request="Join the sources.",
         expectations=SelfTestExpectations(**values),  # type: ignore[arg-type]
     )
+
+
+def _expectation_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "outcome": "applied",
+        "required_node_types": [],
+        "forbidden_node_types": [],
+        "forbidden_assistant_text": [],
+        "required_edges": [],
+        "require_connected_graph": True,
+        "max_provider_round_trips": 8,
+        "max_tool_calls": 16,
+        "max_failed_tool_calls": 1,
+        "max_duplicate_static_reads": 1,
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [],
+    }
+    payload.update(overrides)
+    return payload
 
 
 class TestSelfTestCaseLoading:
@@ -153,29 +192,18 @@ class TestSelfTestCaseLoading:
         (fixture / "haute.toml").write_text('[project]\npipeline = "pipeline.py"\n')
         (fixture / "pipeline.py").write_text("import haute\npipeline = haute.Pipeline('x')\n")
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "id": "case",
             "fixture_version": "1",
             "project_fixture": "fixture",
             "category": "semantic",
             "request": "Do it",
-            "expectations": {
-                "outcome": "applied",
-                "required_node_types": [],
-                "forbidden_node_types": [],
-                "forbidden_assistant_text": [],
-                "required_edges": [],
-                "require_connected_graph": True,
-                "max_provider_round_trips": 8,
-                "max_tool_calls": 16,
-                "max_failed_tool_calls": 1,
-                "max_duplicate_static_reads": 1,
-            },
+            "expectations": _expectation_payload(),
             "unexpected": True,
         }
         (cases / "case.json").write_text(json.dumps(payload), encoding="utf-8")
 
-        with pytest.raises(ValueError, match="closed self-test case v1 shape"):
+        with pytest.raises(ValueError, match="closed self-test case v2 shape"):
             load_self_test_cases(cases, projects_root=projects)
 
     @pytest.mark.parametrize("key", ["required_node_types", "forbidden_node_types"])
@@ -186,21 +214,12 @@ class TestSelfTestCaseLoading:
         fixture.mkdir(parents=True)
         (fixture / "haute.toml").write_text('[project]\npipeline = "pipeline.py"\n')
         (fixture / "pipeline.py").write_text("import haute\npipeline = haute.Pipeline('x')\n")
-        expectations: dict[str, object] = {
-            "outcome": "applied",
-            "required_node_types": ["polars"],
-            "forbidden_node_types": ["edgeJoin"],
-            "forbidden_assistant_text": [],
-            "required_edges": [],
-            "require_connected_graph": True,
-            "max_provider_round_trips": 8,
-            "max_tool_calls": 16,
-            "max_failed_tool_calls": 1,
-            "max_duplicate_static_reads": 1,
-        }
+        expectations = _expectation_payload(
+            required_node_types=["polars"], forbidden_node_types=["edgeJoin"]
+        )
         expectations[key] = ["polars", "polarsTransform"]
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "id": "case",
             "fixture_version": "1",
             "project_fixture": "fixture",
@@ -229,22 +248,18 @@ class TestSelfTestCaseLoading:
 
 
 class TestSelfTestGraphReading:
-    def test_edge_handles_are_read_under_the_names_the_renderer_emits(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`_read_graph` consumes `get_pipeline`, whose renderer names handles
-        the way the graph-edit operations accept them. Reading a stale key
-        yields `None` for every edge without raising, which silently scores
-        every handle-qualified required edge — every Edge Join role — as
+    def test_edge_handles_are_read_under_the_names_the_renderer_emits(self) -> None:
+        """`_read_graph` reads structure from `get_pipeline`, whose renderer
+        names handles the way the graph-edit operations accept them. Reading a
+        stale key yields `None` for every edge without raising, which silently
+        scores every handle-qualified required edge — every Edge Join role — as
         missing no matter what the assistant built.
         """
 
         from scripts import run_assistant_self_test as _self_test
 
-        monkeypatch.setattr(
-            _self_test,
-            "get_pipeline",
-            lambda _source: {
+        _node_types, edges = _self_test._graph_structure(
+            {
                 "nodes": [
                     {"id": "nb_batch", "type": "dataInput"},
                     {"id": "competitor_insight", "type": "dataInput"},
@@ -269,12 +284,10 @@ class TestSelfTestGraphReading:
                         ],
                     )
                 ),
-            },
+            }
         )
 
-        graph = _self_test._read_graph("main.py")
-
-        assert set(graph.edges) == {
+        assert set(edges) == {
             ("nb_batch", "quote_with_competitor", "base"),
             ("competitor_insight", "quote_with_competitor", "join"),
         }
@@ -336,6 +349,7 @@ class TestSelfTestScoring:
             telemetry=_telemetry(),
             provider="databricks",
             model="served-model",
+            evidence="live",
         )
 
         assert result.passed is True
@@ -358,6 +372,7 @@ class TestSelfTestScoring:
             telemetry=_telemetry(),
             provider="databricks",
             model="served-model",
+            evidence="live",
         )
 
         assert result.passed is True
@@ -366,16 +381,16 @@ class TestSelfTestScoring:
     @pytest.mark.parametrize(
         ("telemetry", "reason"),
         [
-            (_telemetry(terminal="failed"), "turn terminal was failed"),
-            (_telemetry(applied_plan=False), "expected an applied graph plan"),
-            (_telemetry(failed_tool_calls=2), "failed tool calls 2 exceeded 1"),
+            (_telemetry(terminal="failed"), "protocol: turn terminal was failed"),
+            (_telemetry(applied_plan=False), "protocol: expected an applied graph plan"),
+            (_telemetry(failed_tool_calls=2), "protocol: failed tool calls 2 exceeded 1"),
             (
                 _telemetry(duplicate_static_reads=2),
-                "duplicate static reads 2 exceeded 1",
+                "protocol: duplicate static reads 2 exceeded 1",
             ),
             (
                 _telemetry(leaked_forbidden_text=1),
-                "assistant output leaked 1 forbidden canary values",
+                "protocol: assistant output leaked 1 forbidden canary values",
             ),
         ],
     )
@@ -401,6 +416,7 @@ class TestSelfTestScoring:
             telemetry=telemetry,
             provider="databricks",
             model="served-model",
+            evidence="live",
         )
 
         assert result.passed is False
@@ -425,14 +441,16 @@ class TestSelfTestScoring:
             telemetry=_telemetry(),
             provider="databricks",
             model="served-model",
+            evidence="live",
         )
 
         assert result.passed is False
-        assert "required edge competitors -> quote_with_competitor [join] is missing" in (
-            result.reasons
+        assert (
+            "structure: required edge competitors -> quote_with_competitor [join] is missing"
+            in (result.reasons)
         )
         assert (
-            "changed nodes and their neighbours are not one connected component: orphan"
+            "structure: changed nodes and their neighbours are not one connected component: orphan"
             in result.reasons
         )
 
@@ -444,6 +462,7 @@ class TestSelfTestScoring:
         after = _graph(
             node_types={"quotes": "dataInput", "rates": "dataInput", "high": "polars"},
             edges=(("quotes", "high", None),),
+            configs={"quotes": {}, "rates": {}, "high": {"steps": []}},
         )
 
         result = score_self_test(
@@ -453,6 +472,7 @@ class TestSelfTestScoring:
             telemetry=_telemetry(),
             provider="databricks",
             model="served-model",
+            evidence="live",
         )
 
         assert result.passed is True, result.reasons
@@ -474,74 +494,12 @@ class TestSelfTestScoring:
             telemetry=_telemetry(),
             provider="databricks",
             model="served-model",
+            evidence="live",
         )
 
         assert result.reasons == (
-            "changed nodes and their neighbours are not one connected component: out",
+            "structure: changed nodes and their neighbours are not one connected component: out",
         )
-
-
-class _ApplyingProvider:
-    def __init__(self) -> None:
-        self.calls = 0
-        self.system = ""
-
-    async def stream_turn(self, *, system, messages, tools):
-        self.calls += 1
-        self.system = system
-        if self.calls == 1:
-            yield ToolCallRequest("inspect", "get_pipeline", {})
-            yield TurnStop("tool_use", ProviderUsage(input_tokens=2, output_tokens=1))
-            return
-        if self.calls == 2:
-            yield ToolCallRequest(
-                "recipe",
-                "plan_recipe",
-                {
-                    "recipe_id": "categorical_banding",
-                    "source": "quotes",
-                    "name": "region_band",
-                    "column": "region",
-                    "output_column": "region_group",
-                    "rules": [
-                        {"value": "north", "assignment": "core"},
-                        {"value": "south", "assignment": "core"},
-                        {"value": "east", "assignment": "other"},
-                        {"value": "west", "assignment": "other"},
-                    ],
-                    "default": "unknown",
-                },
-            )
-            yield TurnStop("tool_use", ProviderUsage(input_tokens=2, output_tokens=1))
-            return
-        if self.calls == 3:
-            recipe = next(
-                message["content"]
-                for message in reversed(messages)
-                if message.get("role") == "tool" and message.get("name") == "plan_recipe"
-            )
-            yield ToolCallRequest(
-                "dry",
-                "dry_run_recipe_plan",
-                {"recipe_plan_hash": recipe["recipe_plan_hash"]},
-            )
-            yield TurnStop("tool_use", ProviderUsage(input_tokens=2, output_tokens=1))
-            return
-        if self.calls == 4:
-            dry_run = next(
-                message["content"]
-                for message in reversed(messages)
-                if message.get("role") == "tool" and message.get("name") == "dry_run_recipe_plan"
-            )
-            assert "plan_hash" in dry_run, dry_run
-            yield ToolCallRequest(
-                "apply",
-                "apply_graph_plan",
-                {"plan_hash": dry_run["plan_hash"]},
-            )
-            yield TurnStop("tool_use", ProviderUsage(input_tokens=2, output_tokens=1))
-            return
-        yield TurnStop("end", ProviderUsage(input_tokens=2, output_tokens=1))
 
 
 def _scripted_config(egress: EgressPolicy) -> AssistantConfig:
@@ -573,11 +531,15 @@ def _load_case(case_id: str) -> SelfTestCase:
     )
 
 
-async def test_scripted_provider_runs_real_disposable_mutation_flow() -> None:
+def _banding_replay(_config: AssistantConfig) -> TrajectoryProvider:
+    return TrajectoryProvider(load_trajectory(TRAJECTORIES_ROOT / "smoke_categorical_banding.json"))
+
+
+async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Path) -> None:
     """The case runs under the harness's own egress allowances, whatever the
     invoking project permits."""
 
-    provider = _ApplyingProvider()
+    provider = _banding_replay(_scripted_config(_PERMISSIVE_EGRESS))
 
     from haute.routes._helpers import pipeline_dir
 
@@ -587,22 +549,21 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow() -> None:
         _load_case("smoke_categorical_banding"),
         projects_root=PROJECTS_ROOT,
         config=_scripted_config(_PERMISSIVE_EGRESS),
+        work_dir=tmp_path,
         provider_factory=lambda _config: provider,
     )
 
     assert result.passed is True, result.reasons
+    assert result.evidence == "live"
     assert result.telemetry.applied_plan is True
     assert "banding" in result.node_types
-    assert provider.calls == 4
+    assert result.telemetry.provider_round_trips == 4
+    assert provider.system is not None
     assert "- Provider trust: `organization`" in provider.system
     assert "- Highest sensitivity sent: `internal`" in provider.system
     assert "- Project knowledge: not permitted" in provider.system
     assert "- Executable source: not permitted" in provider.system
     assert "- Column value profiles: not permitted" in provider.system
-
-
-def _applying_provider_factory(_config: AssistantConfig) -> _ApplyingProvider:
-    return _ApplyingProvider()
 
 
 @pytest.mark.slow
@@ -613,7 +574,7 @@ def test_the_command_runs_each_case_in_its_own_process() -> None:
         (case,),
         projects_root=PROJECTS_ROOT,
         config=_scripted_config(_PERMISSIVE_EGRESS),
-        provider_factory=_applying_provider_factory,
+        provider_factory=_banding_replay,
     )
 
     assert [(result.id, result.reasons) for result in results] == [
@@ -621,7 +582,7 @@ def test_the_command_runs_each_case_in_its_own_process() -> None:
     ]
 
 
-async def test_an_external_provider_is_refused_before_the_case_runs() -> None:
+async def test_an_external_provider_is_refused_before_the_case_runs(tmp_path: Path) -> None:
     external = EgressPolicy(
         trust="external",
         max_sensitivity="public",
@@ -630,7 +591,7 @@ async def test_an_external_provider_is_refused_before_the_case_runs() -> None:
         allow_row_samples=False,
     )
 
-    def unexpected_provider(_config: AssistantConfig) -> _ApplyingProvider:
+    def unexpected_provider(_config: AssistantConfig) -> TrajectoryProvider:
         raise AssertionError("no provider may be created for a refused configuration")
 
     with pytest.raises(ValueError, match="external trust is public-only"):
@@ -638,131 +599,9 @@ async def test_an_external_provider_is_refused_before_the_case_runs() -> None:
             _load_case("smoke_categorical_banding"),
             projects_root=PROJECTS_ROOT,
             config=_scripted_config(external),
+            work_dir=tmp_path,
             provider_factory=unexpected_provider,
         )
-
-
-_CORPUS_ROOT = Path(__file__).parent / "fixtures" / "polars_steps_corpus"
-#: Each corpus item's free-code card: the snippet with its source input read as `df`.
-_FREE_CODE = {
-    "high_premium_quotes": (
-        "# Keep high-premium quotes\ndf = df.filter(pl.col('premium') > 1500)\n"
-    ),
-    "underwriting_decision": (
-        "# Underwriting decision\n"
-        "df = df.with_columns(\n"
-        "    pl.when(pl.col('age') < 18).then(pl.lit('decline'))\n"
-        "    .when((pl.col('claims_count') >= 3) | (pl.col('vehicle_value') > 100000))\n"
-        "    .then(pl.lit('refer'))\n"
-        "    .when(pl.col('premium').is_null()).then(pl.lit('await_price'))\n"
-        "    .otherwise(pl.lit('accept'))\n"
-        "    .alias('decision')\n"
-        ")\n"
-    ),
-    "attach_regional_rates": (
-        "# Attach regional rates\n"
-        "df = df.join(rates, on='region', how='left', validate='m:1', maintain_order='left')\n"
-        "df = df.with_columns(\n"
-        "    (pl.col('base_rate') * pl.col('factor')).alias('regional_benchmark')\n"
-        ")\n"
-    ),
-}
-
-
-def _reference_trajectories() -> list[tuple[str, str, list[dict[str, object]]]]:
-    """Three corpus items, each authored as structured steps and as free code."""
-
-    corpus = {
-        item["id"]: item
-        for item in json.loads((_CORPUS_ROOT / "corpus.json").read_text(encoding="utf-8"))
-    }
-    translations = json.loads((_CORPUS_ROOT / "translations.json").read_text(encoding="utf-8"))
-    trajectories: list[tuple[str, str, list[dict[str, object]]]] = []
-    for item_id, code in _FREE_CODE.items():
-        assert corpus[item_id]["inputs"][0] == "quotes"
-        structured = translations[item_id]["steps"]
-        assert structured[0] == {"id": structured[0]["id"], "kind": "source", "input": "quotes"}
-        free_code = [
-            {"id": "start", "kind": "source", "input": "quotes"},
-            {"id": "logic", "kind": "free_code", "code": code},
-        ]
-        trajectories.append((item_id, "structured", structured))
-        trajectories.append((item_id, "free_code", free_code))
-    return trajectories
-
-
-class _TrajectoryProvider:
-    """Dry-run one Transform with *steps* wired from its inputs, apply it, stop."""
-
-    def __init__(self, name: str, steps: list[dict[str, object]], inputs: list[str]) -> None:
-        self.ops: list[dict[str, object]] = [
-            {
-                "op": "add_node",
-                "node_type": "polars",
-                "name": name,
-                "ref": "transform",
-                "config": {"steps": steps},
-            },
-            *({"op": "add_edge", "source": source, "target": "$transform"} for source in inputs),
-        ]
-        self.calls = 0
-
-    async def stream_turn(self, *, system, messages, tools):
-        self.calls += 1
-        if self.calls == 1:
-            yield ToolCallRequest("dry", "dry_run_graph_edits", {"ops": self.ops})
-            yield TurnStop("tool_use", ProviderUsage(input_tokens=2, output_tokens=1))
-            return
-        if self.calls == 2:
-            dry_run = messages[-1]["content"]
-            assert "plan_hash" in dry_run, dry_run
-            yield ToolCallRequest("apply", "apply_graph_plan", {"plan_hash": dry_run["plan_hash"]})
-            yield TurnStop("tool_use", ProviderUsage(input_tokens=2, output_tokens=1))
-            return
-        yield TurnStop("end", ProviderUsage(input_tokens=2, output_tokens=1))
-
-
-async def test_six_step_corpus_trajectories_pass_in_one_harness_run(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Six file-input cases run back to back in one process. Each binds the
-    sandbox root to its own disposable copy, so no case reads a previous
-    case's deleted project, and each Transform is saved with the steps its
-    trajectory authored."""
-
-    from haute._sandbox import _get_project_root
-    from haute.routes._helpers import parse_pipeline_to_graph
-    from scripts import run_assistant_self_test as _self_test
-
-    saved_configs: list[dict[str, dict[str, object]]] = []
-    read_graph = _self_test._read_graph
-
-    def read_and_capture(source_file: str) -> SelfTestGraph:
-        graph = read_graph(source_file)
-        parsed = parse_pipeline_to_graph(Path(source_file))
-        saved_configs.append({node.id: dict(node.data.config) for node in parsed.nodes})
-        return graph
-
-    monkeypatch.setattr(_self_test, "_read_graph", read_and_capture)
-    root_before = _get_project_root()
-    results = []
-    for item_id, form, steps in _reference_trajectories():
-        case = _load_case(f"smoke_corpus_{item_id}")
-        inputs = [source for source, _target, _handle in case.expectations.required_edges]
-        provider = _TrajectoryProvider(item_id, steps, inputs)
-        result = await run_self_test_case(
-            case,
-            projects_root=PROJECTS_ROOT,
-            config=_scripted_config(_PERMISSIVE_EGRESS),
-            provider_factory=lambda _config, provider=provider: provider,
-        )
-        results.append((item_id, form, result))
-        assert saved_configs[-1][item_id]["steps"] == steps, (item_id, form)
-
-    assert [(item_id, form, result.reasons) for item_id, form, result in results] == [
-        (item_id, form, ()) for item_id, form, _steps in _reference_trajectories()
-    ]
-    assert _get_project_root() == root_before
 
 
 def test_report_is_redacted(tmp_path: Path) -> None:
@@ -792,6 +631,7 @@ def test_report_is_redacted(tmp_path: Path) -> None:
         ),
         provider="databricks",
         model="served-model",
+        evidence="live",
     )
     path = write_self_test_report(tmp_path / "report.json", (result,))
     raw = path.read_text(encoding="utf-8")
@@ -809,3 +649,114 @@ def test_report_is_redacted(tmp_path: Path) -> None:
     assert "tool_arguments" not in raw
     assert "assistant_text" not in raw
     assert json.loads(raw)["cases"][0]["id"] == "join_roles"
+    assert json.loads(raw)["evidence"] == "live"
+    assert json.loads(raw)["cases"][0]["layers"] == {
+        "protocol": True,
+        "structure": True,
+        "configuration": True,
+        "collateral": True,
+        "editor": True,
+        "execution": True,
+    }
+
+
+def test_a_report_never_mixes_replay_and_live_evidence() -> None:
+    graph = _graph(node_types={"quotes": "dataInput"})
+    live, replay = (
+        score_self_test(
+            _case(required_node_types=(), required_edges=(), outcome="unchanged"),
+            before=graph,
+            after=graph,
+            telemetry=_telemetry(outcome="unchanged", applied_plan=False, graph_updated=False),
+            provider="databricks",
+            model="served-model",
+            evidence=evidence,
+        )
+        for evidence in ("live", "replay")
+    )
+
+    assert self_test_report_payload((replay,))["evidence"] == "replay"
+    with pytest.raises(ValueError, match="exactly one evidence kind"):
+        self_test_report_payload((live, replay))
+
+
+class TestSelfTestLayers:
+    """Configuration, collateral and editor layers score the saved configs."""
+
+    _BEFORE = _graph(
+        node_types={"quotes": "dataInput", "rates": "dataInput", "legacy": "polars"},
+        configs={
+            "quotes": {"path": "data/quotes.parquet"},
+            "rates": {"path": "data/rates.parquet"},
+            "legacy": {"code": "df = quotes"},
+        },
+    )
+
+    def _score(self, after_configs: dict[str, dict[str, object]], **overrides: object):
+        node_types = {"quotes": "dataInput", "rates": "dataInput", "legacy": "polars"}
+        node_types.update({node: "polars" for node in after_configs if node not in node_types})
+        configs = {
+            "quotes": {"path": "data/quotes.parquet"},
+            "rates": {"path": "data/rates.parquet"},
+            "legacy": {"code": "df = quotes"},
+            **after_configs,
+        }
+        return score_self_test(
+            _case(
+                required_node_types=(),
+                required_edges=(),
+                require_connected_graph=False,
+                **overrides,
+            ),
+            before=self._BEFORE,
+            after=_graph(node_types=node_types, configs=configs),
+            telemetry=_telemetry(),
+            provider="replay",
+            model="trajectory",
+            evidence="replay",
+        )
+
+    def test_a_config_subset_matches_recursively_and_names_the_first_differing_path(
+        self,
+    ) -> None:
+        subset = {"steps": [{"id": "start", "kind": "source"}], "meta": {"a": 1}}
+        matching = self._score(
+            {"new": {"steps": [{"id": "start", "kind": "source"}], "meta": {"a": 1, "b": 2}}},
+            node_configs={"new": subset},
+        )
+        differing = self._score(
+            {"new": {"steps": [{"id": "start", "kind": "source"}], "meta": {"a": 2}}},
+            node_configs={"new": subset},
+        )
+
+        assert matching.reasons == ()
+        assert differing.reasons == (
+            "configuration: node new does not hold the expected value at config.meta.a",
+        )
+        assert differing.failed_layers == ("configuration",)
+
+    def test_a_changed_or_removed_pre_existing_node_is_collateral_unless_allowed(
+        self,
+    ) -> None:
+        changed = {"rates": {"path": "data/other.parquet"}, "new": {"steps": []}}
+
+        assert self._score(changed).reasons == (
+            "collateral: pre-existing node rates changed its configuration",
+        )
+        assert self._score(changed, modified_nodes=("rates",)).reasons == ()
+
+    def test_new_nodes_of_a_stepped_type_must_open_in_the_step_builder(self) -> None:
+        result = self._score(
+            {
+                "coded": {"code": "df = quotes"},
+                "broken": {"steps": [], "_steps_error": "unknown step kind"},
+                "legacy": {"code": "df = quotes.head()"},
+            },
+            modified_nodes=("legacy",),
+        )
+
+        # The pre-existing code-mode node stays the analyst's to convert.
+        assert result.reasons == (
+            "editor: node coded is not authored as steps",
+            "editor: node broken carries _steps_error",
+        )

@@ -1,0 +1,205 @@
+"""Tier 0 of the assistant evaluation: reference trajectories replayed through the real tools.
+
+Every self-test case has a checked-in reference trajectory under
+``tests/assistant_eval/trajectories/``; the step-corpus cases have one in the
+taught ``[source, free_code]`` form and one as the corpus's structured
+translation. Each replay runs the real loop, tools, dry-run, apply, parser and
+Git mutation gate in a copy of the case's project under ``tmp_path``, then the
+harness scores every layer, including execution of the case's golden nodes
+against plain-Polars goldens. Replay proves the tools and contracts, not that a
+model would choose the same calls.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import replace
+from pathlib import Path
+
+import polars as pl
+import pytest
+
+from haute._sandbox import _get_project_root
+from scripts.run_assistant_self_test import (
+    SelfTestGolden,
+    TrajectoryDivergedError,
+    load_self_test_cases,
+    load_trajectories,
+    load_trajectory,
+    replay_self_test_case,
+)
+from tests.assistant_eval._frames import frames_equal, run, synthetic_inputs
+
+EVAL_ROOT = Path(__file__).parent / "assistant_eval"
+PROJECTS_ROOT = EVAL_ROOT / "projects"
+TRAJECTORIES_ROOT = EVAL_ROOT / "trajectories"
+CORPUS_ROOT = Path(__file__).parent / "fixtures" / "polars_steps_corpus"
+CASES = {
+    case.id: case
+    for case in load_self_test_cases(EVAL_ROOT / "self_test", projects_root=PROJECTS_ROOT)
+}
+TRAJECTORIES = load_trajectories(TRAJECTORIES_ROOT)
+CORPUS_ITEMS = ("attach_regional_rates", "high_premium_quotes", "underwriting_decision")
+#: Seconds one replay may take before it counts as hung.
+CASE_TIMEOUT = 120
+
+
+@pytest.fixture(autouse=True)
+def _fresh_plan_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Copies of one fixture have identical content, so a repeated trajectory
+    dry-runs to the hash of a plan an earlier replay in this process applied."""
+
+    from haute.assistant import _tools
+    from haute.assistant._ops import PlanStore
+
+    monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
+
+
+def _transform_steps(trajectory_id: str) -> list[dict[str, object]]:
+    """The steps a corpus trajectory's dry-run writes to its Transform."""
+
+    trajectory = next(item for item in TRAJECTORIES if item.id == trajectory_id)
+    dry_run = trajectory.turns[0][0].calls[0]
+    add_node = dry_run.arguments["ops"][0]
+    assert add_node["op"] == "add_node" and add_node["node_type"] == "polars"
+    return add_node["config"]["steps"]
+
+
+def test_every_case_has_a_reference_trajectory() -> None:
+    assert {trajectory.case for trajectory in TRAJECTORIES} == set(CASES)
+    for item in CORPUS_ITEMS:
+        case = f"smoke_corpus_{item}"
+        assert {trajectory.id for trajectory in TRAJECTORIES if trajectory.case == case} == {
+            case,
+            f"{case}_structured",
+        }
+
+
+@pytest.mark.parametrize("item", CORPUS_ITEMS)
+def test_corpus_trajectories_author_the_corpus_and_its_goldens(
+    item: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structured trajectory writes the corpus translation, the taught one a
+    free-code card, and the case golden is the corpus snippet over the project's
+    files, which are the corpus's normal synthetic inputs."""
+
+    corpus = {
+        entry["id"]: entry
+        for entry in json.loads((CORPUS_ROOT / "corpus.json").read_text(encoding="utf-8"))
+    }
+    translations = json.loads((CORPUS_ROOT / "translations.json").read_text(encoding="utf-8"))
+    case = CASES[f"smoke_corpus_{item}"]
+
+    assert _transform_steps(f"{case.id}_structured") == translations[item]["steps"]
+    assert [step["kind"] for step in _transform_steps(case.id)] == ["source", "free_code"]
+    (golden,) = case.expectations.execution
+    assert golden.node == item
+    assert golden.golden.endswith(corpus[item]["code"] + "\n")
+
+    inputs = synthetic_inputs(hard=False)
+    monkeypatch.chdir(PROJECTS_ROOT / case.project_fixture)
+    for name in corpus[item]["inputs"]:
+        assert pl.read_parquet(f"data/{name}.parquet").equals(inputs[name].collect()), name
+    equal, why = frames_equal(
+        run(golden.golden, {}), run(corpus[item]["code"], inputs), order_free=golden.order_free
+    )
+    assert equal, why
+
+
+@pytest.mark.timeout(CASE_TIMEOUT)
+@pytest.mark.parametrize("trajectory", TRAJECTORIES, ids=lambda trajectory: trajectory.id)
+async def test_replay(trajectory, tmp_path: Path) -> None:
+    """Each trajectory replays without divergence and passes every scoring layer,
+    and leaves the sandbox project root where it found it."""
+
+    root_before = _get_project_root()
+    cwd_before = Path.cwd()
+
+    result = await replay_self_test_case(
+        CASES[trajectory.case], trajectory, projects_root=PROJECTS_ROOT, work_dir=tmp_path
+    )
+
+    assert result.reasons == ()
+    assert (result.evidence, result.provider, result.model) == ("replay", "replay", trajectory.id)
+    assert _get_project_root() == root_before
+    assert Path.cwd() == cwd_before
+
+
+async def test_a_tool_result_with_another_status_names_the_turn_and_round(
+    tmp_path: Path,
+) -> None:
+    """A trajectory recording a success where the tools now refuse diverges loudly."""
+
+    source = TRAJECTORIES_ROOT / "smoke_polars_feature_transform.json"
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    refused = payload["turns"][0]["rounds"][1]["calls"][0]
+    assert refused["result"] == {"status": "error", "error_code": "invalid_ops"}
+    refused["result"] = {"status": "ok"}
+    edited = tmp_path / "smoke_polars_feature_transform.json"
+    edited.write_text(json.dumps(payload), encoding="utf-8")
+    work_dir = tmp_path / "w"
+    work_dir.mkdir()
+
+    with pytest.raises(
+        TrajectoryDivergedError,
+        match=(
+            r"smoke_polars_feature_transform diverged at turn 1 round 2: "
+            r"dry_run_graph_edits call code_attempt returned \('error', 'invalid_ops'\)"
+        ),
+    ):
+        await replay_self_test_case(
+            CASES["smoke_polars_feature_transform"],
+            load_trajectory(edited),
+            projects_root=PROJECTS_ROOT,
+            work_dir=work_dir,
+        )
+
+
+async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_layer(
+    tmp_path: Path,
+) -> None:
+    case = CASES["smoke_corpus_high_premium_quotes"]
+    wrong = SelfTestGolden(
+        node="high_premium_quotes",
+        golden="df = pl.scan_parquet('data/quotes.parquet').filter(pl.col('premium') > 500)\n",
+        order_free=False,
+    )
+    case = replace(case, expectations=replace(case.expectations, execution=(wrong,)))
+    trajectory = next(item for item in TRAJECTORIES if item.id == case.id)
+
+    result = await replay_self_test_case(
+        case, trajectory, projects_root=PROJECTS_ROOT, work_dir=tmp_path
+    )
+
+    assert result.failed_layers == ("execution",)
+    assert result.reasons[0].startswith(
+        "execution: node high_premium_quotes does not match its golden: row counts differ"
+    )
+
+
+def test_trajectory_references_must_name_an_earlier_call(tmp_path: Path) -> None:
+    payload = json.loads(
+        (TRAJECTORIES_ROOT / "smoke_categorical_banding.json").read_text(encoding="utf-8")
+    )
+    rounds = payload["turns"][0]["rounds"]
+    rounds[1], rounds[2] = rounds[2], rounds[1]
+    path = tmp_path / "smoke_categorical_banding.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="references 'recipe.recipe_plan_hash'"):
+        load_trajectory(path)
+
+
+def test_the_fixture_projects_are_not_modified_by_replay() -> None:
+    """Replays copy the fixtures; nothing under the checked-in projects is written."""
+
+    written = [
+        path
+        for path in PROJECTS_ROOT.rglob("*")
+        if path.is_file() and path.parent.name in {"polars", "banding", "rating_step"}
+    ]
+    assert written == []
+    assert not any(
+        name.startswith(".git") for name in os.listdir(PROJECTS_ROOT / "ordinary_pricing")
+    )

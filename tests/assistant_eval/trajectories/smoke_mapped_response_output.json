@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "id": "smoke_mapped_response_output",
+  "case": "smoke_mapped_response_output",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "recipe",
+              "tool": "plan_recipe",
+              "arguments": {
+                "recipe_id": "response_output",
+                "source": "quotes",
+                "output_name": "quote_response",
+                "output_columns": [
+                  "quote_id",
+                  "driver_age",
+                  "region"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_recipe_plan",
+              "arguments": {
+                "recipe_plan_hash": {
+                  "$result": "recipe.recipe_plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

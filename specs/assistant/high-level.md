@@ -743,20 +743,10 @@ resources and cannot be enumerated through those surfaces. Installed
 distribution smoke checks enumerate and validate every bundle and execute the
 declared fast subset.
 
-The explicit credentialed assistant self-test lane uses disposable held-out synthetic
-projects and the configured provider. Its checked-in prompt portfolio covers specialist
-recipes, primitive graph edits, new Polars logic on Transforms (including items from the
-Polars step corpus in a file-input project), mapped outputs, join-port semantics, graph
-authoring for file sources and sinks, focused clarification, prompt injection, and blocked
-requests to execute pipelines or perform external writes. Each case runs in its own process
-against its own copy of a fixture project, under the harness's pinned egress allowances
-rather than the invoking project's, so a multi-case run measures the model and not state
-left by an earlier case. Graph-authoring cases may save a sink node but
-the lane never runs the resulting pipeline or materialises the sink. Reports remain
-content-redacted and retain only semantic graph structure, value-free diagnostics, outcomes,
-and aggregate metrics. For a multi-round turn, the last explicit `NEEDS_INPUT:` or `BLOCKED:`
-marker in accumulated assistant text determines its non-mutation outcome even when earlier
-rounds streamed preparatory prose.
+The assistant is evaluated offline by replaying reference trajectories through the
+real tools in CI, live against a configured provider on demand, and by repeated
+qualification trials; the cases, tiers, scoring layers and execution boundary are
+specified in [the assistant evaluation](evaluation.md).
 
 
 ## Egress and project knowledge
@@ -816,27 +806,9 @@ deterministic payload digests into restartable history.
 
 ## Provider qualification gate
 
-Model qualification is a versioned, repeatable evaluation lane, never part of
-deterministic unit tests. Held-out scenarios live outside package resources and
-contain ordinary project artifacts, requests, semantic assertions, and
-adversarial perturbations; their requests and expected operations are not
-discoverable through assistant tools, examples, recipes, or the permanent
-prompt.
-
-Each trial records Haute version, capability hash, system-prompt hash,
-provider, pinned model/version, provider parameters, fixture version, run ID,
-cold/warm state, semantic and safety outcomes, provider/tool round trips,
-input/output tokens, estimated cost, time to first token, time to validated
-plan, and end-to-end latency. Scoring compares graph semantics,
-postconditions, unrelated diffs, clarification/recovery decisions, authority,
-and leakage outcomes; it does not require exact prose or tool order.
-
-A closed support matrix defines repeated-trial counts plus per-task semantic,
-tool-call, token/cost, and cold/warm p50/p95 limits. Unauthorized mutation or
-sensitive/secret leakage is zero tolerance and can never be averaged into an
-overall score. A provider/model is `qualified` only when attributable live
-results meet every threshold; absent credentials or candidate-only evidence
-leaves it unqualified rather than silently skipping the gate.
+A provider and model are qualified only by attributable live trials that meet
+every threshold of the closed support matrix; the lane and its scoring are
+specified in [the assistant evaluation](evaluation.md#tiers).
 
 ## Interactions
 

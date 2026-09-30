@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "id": "smoke_polars_feature_transform",
+  "case": "smoke_polars_feature_transform",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "code_attempt",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "risk_features",
+                    "ref": "transform",
+                    "config": {
+                      "code": "df = quotes.with_columns((pl.col('driver_age') >= 25).alias('experienced_driver'))\n"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "error",
+                "error_code": "invalid_ops"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "risk_features",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "df = df.with_columns((pl.col('driver_age') >= 25).alias('experienced_driver'))\n"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

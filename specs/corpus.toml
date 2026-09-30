@@ -21,3 +21,16 @@ required_headings = [
   "Verification, rollback, and save-lock transactions",
   "Acceptance evidence",
 ]
+
+[[supplemental_document]]
+path = "specs/assistant/evaluation.md"
+kind = "decision"
+required_headings = [
+  "Purpose",
+  "Case format",
+  "Reference trajectories",
+  "Tiers",
+  "Scoring layers",
+  "Execution boundary",
+  "Evidence and reports",
+]

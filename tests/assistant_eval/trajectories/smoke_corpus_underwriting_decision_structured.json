@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_underwriting_decision_structured",
+  "case": "smoke_corpus_underwriting_decision",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "underwriting_decision",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "s25",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "s26",
+                          "kind": "with_column",
+                          "name": "decision",
+                          "expr": {
+                            "type": "conditional",
+                            "match": "all",
+                            "conditions": [
+                              {
+                                "column": "premium",
+                                "operator": "is_null"
+                              }
+                            ],
+                            "then": {
+                              "kind": "literal",
+                              "type": "text",
+                              "value": "await_price"
+                            },
+                            "otherwise": {
+                              "kind": "literal",
+                              "type": "text",
+                              "value": "accept"
+                            }
+                          }
+                        },
+                        {
+                          "id": "s27",
+                          "kind": "with_column",
+                          "name": "decision",
+                          "expr": {
+                            "type": "conditional",
+                            "match": "any",
+                            "conditions": [
+                              {
+                                "column": "claims_count",
+                                "operator": "ge",
+                                "value": {
+                                  "kind": "literal",
+                                  "type": "number",
+                                  "value": 3
+                                }
+                              },
+                              {
+                                "column": "vehicle_value",
+                                "operator": "gt",
+                                "value": {
+                                  "kind": "literal",
+                                  "type": "number",
+                                  "value": 100000
+                                }
+                              }
+                            ],
+                            "then": {
+                              "kind": "literal",
+                              "type": "text",
+                              "value": "refer"
+                            },
+                            "otherwise": {
+                              "kind": "column",
+                              "name": "decision"
+                            }
+                          }
+                        },
+                        {
+                          "id": "s28",
+                          "kind": "with_column",
+                          "name": "decision",
+                          "expr": {
+                            "type": "conditional",
+                            "match": "all",
+                            "conditions": [
+                              {
+                                "column": "age",
+                                "operator": "lt",
+                                "value": {
+                                  "kind": "literal",
+                                  "type": "number",
+                                  "value": 18
+                                }
+                              }
+                            ],
+                            "then": {
+                              "kind": "literal",
+                              "type": "text",
+                              "value": "decline"
+                            },
+                            "otherwise": {
+                              "kind": "column",
+                              "name": "decision"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

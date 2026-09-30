@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "id": "smoke_categorical_banding",
+  "case": "smoke_categorical_banding",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "recipe",
+              "tool": "plan_recipe",
+              "arguments": {
+                "recipe_id": "categorical_banding",
+                "source": "quotes",
+                "name": "region_band",
+                "column": "region",
+                "output_column": "region_group",
+                "rules": [
+                  {
+                    "value": "north",
+                    "assignment": "core"
+                  },
+                  {
+                    "value": "south",
+                    "assignment": "core"
+                  },
+                  {
+                    "value": "east",
+                    "assignment": "other"
+                  },
+                  {
+                    "value": "west",
+                    "assignment": "other"
+                  }
+                ],
+                "default": "unknown"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_recipe_plan",
+              "arguments": {
+                "recipe_plan_hash": {
+                  "$result": "recipe.recipe_plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

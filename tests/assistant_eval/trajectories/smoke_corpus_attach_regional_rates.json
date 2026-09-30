@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_attach_regional_rates",
+  "case": "smoke_corpus_attach_regional_rates",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "attach_regional_rates",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Attach regional rates\ndf = df.join(rates, on='region', how='left', validate='m:1', maintain_order='left')\ndf = df.with_columns(\n    (pl.col('base_rate') * pl.col('factor')).alias('regional_benchmark')\n)\n"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "rates",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

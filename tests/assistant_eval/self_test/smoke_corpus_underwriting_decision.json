@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "smoke_corpus_underwriting_decision",
   "fixture_version": "1",
   "project_fixture": "polars_corpus",
@@ -23,6 +23,15 @@
     "max_provider_round_trips": 6,
     "max_tool_calls": 12,
     "max_failed_tool_calls": 1,
-    "max_duplicate_static_reads": 1
+    "max_duplicate_static_reads": 1,
+    "modified_nodes": [],
+    "node_configs": {},
+    "execution": [
+      {
+        "node": "underwriting_decision",
+        "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\ndf = quotes.with_columns(pl.when(pl.col('age') < 18).then(pl.lit('decline')).when((pl.col('claims_count') >= 3) | (pl.col('vehicle_value') > 100000)).then(pl.lit('refer')).when(pl.col('premium').is_null()).then(pl.lit('await_price')).otherwise(pl.lit('accept')).alias('decision'))\n",
+        "order_free": false
+      }
+    ]
   }
 }

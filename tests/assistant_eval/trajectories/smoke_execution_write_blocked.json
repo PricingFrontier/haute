@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "smoke_execution_write_blocked",
+  "case": "smoke_execution_write_blocked",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "BLOCKED: I author and save pipeline graphs but never run them or write their results; run the pipeline from the editor to produce data/executed.parquet.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

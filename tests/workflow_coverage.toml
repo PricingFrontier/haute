@@ -165,6 +165,7 @@ components = ["assistant", "frontend-assistant-ui"]
 documents = [
   "specs/assistant/high-level.md",
   "specs/assistant/low-level.md",
+  "specs/assistant/evaluation.md",
   "specs/frontend-assistant-ui/high-level.md",
   "specs/frontend-assistant-ui/low-level.md",
 ]
