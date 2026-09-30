@@ -1106,12 +1106,14 @@ async def get_column_profiles(
     except (InteractiveWorkerError, SupersededRequestError) as exc:
         return _profile_worker_failure(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
-        return _error(
-            "profile_unavailable",
-            _execution_error_message(
-                exc, operation="get_column_profiles", site=_profile_failure_site(request)
-            ),
+        # Naming a failure's columns can resolve schemas, which runs the engine.
+        failure = await asyncio.to_thread(
+            _execution_error_message,
+            exc,
+            operation="get_column_profiles",
+            site=_profile_failure_site(request),
         )
+        return _error("profile_unavailable", failure)
     if "error" in profile:
         return profile
     return {
@@ -1516,7 +1518,8 @@ async def dry_run_graph_edits(
     except OpValidationError as exc:
         return _error("invalid_ops", str(exc))
     except AssistantOperationError as exc:
-        return _operation_error(exc, operation="dry_run_graph_edits")
+        # Naming a failure's columns can resolve schemas, which runs the engine.
+        return await asyncio.to_thread(_operation_error, exc, operation="dry_run_graph_edits")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         # `invalid_plan` is a specific authorization verdict raised by the
         # domain layer. Reusing it for an unexpected exception told the model
@@ -1539,7 +1542,7 @@ async def apply_graph_plan(
     except CommittedVerificationError as exc:
         return _error(exc.code, str(exc), **exc.result)
     except AssistantOperationError as exc:
-        return _operation_error(exc, operation="apply_graph_plan")
+        return await asyncio.to_thread(_operation_error, exc, operation="apply_graph_plan")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("mutation_failed", _error_message(exc, operation="apply_graph_plan"))
 
