@@ -66,6 +66,7 @@
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
 | `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations. |
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
+| `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |

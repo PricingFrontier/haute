@@ -79,7 +79,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-01 | Planned | P1 | A write the assistant asks for lands in the saved config or its plan fails naming the fix. |
 | ASSIST-02 | Planned | P1 | Free-code steps keep their steps on reload and are checked against their surface's contract. |
 | ASSIST-03 | Planned | P1 | Every node the assistant writes on a stepped surface stays in the step builder. |
-| ASSIST-04 | Planned | P2 | Every change to what the model sees shows up as a reviewable diff. |
 | ASSIST-05 | Planned | P1 | The prompt and guide state the product's real contracts and the effective egress policy. |
 | ASSIST-06 | Planned | P1 | Node descriptors agree with the product's own registries and use palette names. |
 | ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
@@ -228,27 +227,6 @@ discarded steps.
 `src/haute/assistant/_catalog.py::_USAGE_NOTES`;
 `src/haute/assistant/_loop.py::build_system_prompt`;
 `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`.
-
-### ASSIST-04 — A golden snapshot of what the model sees
-**Why:** The system prompt, capability index and the tool schemas each
-provider receives are assembled from several modules, and no test shows how
-a change alters them. Several stale instructions reached the always-on prompt
-unnoticed.
-
-**Plan:** Render the system prompt for a fixed project, the canonical and
-provider-projected tool schemas, and their hashes into checked-in golden
-files, with an explicit update command, and fail with a readable diff when
-they change.
-
-**Acceptance:** Editing a prompt sentence or a wire-operation description
-fails the golden test with the changed lines; the update command rewrites the
-files and the test passes.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_loop.py::build_system_prompt`;
-`src/haute/assistant/_tools.py::TOOL_DEFINITIONS`;
-`src/haute/assistant/_providers.py::_portable_tools`.
 
 ### ASSIST-05 — Teaching text matches the product
 **Why:** The always-on prompt says `df` is never pre-bound, which is false on

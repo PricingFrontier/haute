@@ -1,0 +1,151 @@
+"""Check or refresh the golden snapshot of what the assistant's model sees.
+
+The snapshot is the always-on system prompt for one fixed project, the
+canonical tool definitions, and each provider adapter's wire projection of
+them, plus a sha256 of each rendered file. The Haute version and the
+capability hash in the prompt are replaced with fixed placeholders, because
+both change on every release while the text the model reads does not.
+
+Without arguments it exits non-zero and prints a unified diff when a rendered
+file differs from the checked-in one; ``--write`` rewrites the files.
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GOLDEN_ROOT = PROJECT_ROOT / "tests" / "assistant_eval" / "golden"
+HASHES_FILE = "hashes.json"
+
+GOLDEN_PIPELINE_NAME = "motor_pricing"
+GOLDEN_SOURCE_FILE = "motor_pricing.py"
+GOLDEN_NODE_SUMMARY = "3 nodes: `policies` (dataInput), `add_features` (polars), `premium` (output)"
+HAUTE_VERSION_PLACEHOLDER = "<haute-version>"
+CAPABILITY_HASH_PLACEHOLDER = "<capability-hash>"
+
+
+def _replace_once(text: str, old: str, new: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise ValueError(f"Expected exactly one {old!r} in the system prompt, found {count}")
+    return text.replace(old, new)
+
+
+def _json_text(value: object) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+
+
+def render_golden() -> dict[str, str]:
+    """Render every golden file, keyed by its name under ``GOLDEN_ROOT``."""
+
+    from haute.assistant._catalog import capability_manifest
+    from haute.assistant._loop import build_system_prompt
+    from haute.assistant._providers import _openai_tools, _portable_tools
+    from haute.assistant._tools import TOOL_DEFINITIONS
+
+    manifest = capability_manifest()
+    prompt = build_system_prompt(
+        pipeline_name=GOLDEN_PIPELINE_NAME,
+        source_file=GOLDEN_SOURCE_FILE,
+        node_summary=GOLDEN_NODE_SUMMARY,
+    )
+    prompt = _replace_once(
+        prompt,
+        f"- Haute version: `{manifest.haute_version}`",
+        f"- Haute version: `{HAUTE_VERSION_PLACEHOLDER}`",
+    )
+    prompt = _replace_once(
+        prompt,
+        f"- Capability hash: `{manifest.capability_hash}`",
+        f"- Capability hash: `{CAPABILITY_HASH_PLACEHOLDER}`",
+    )
+    portable = _portable_tools(TOOL_DEFINITIONS)
+    files = {
+        "system_prompt.md": prompt + "\n",
+        "tools_canonical.json": _json_text(TOOL_DEFINITIONS),
+        "tools_anthropic.json": _json_text(portable),
+        "tools_openai.json": _json_text(_openai_tools(portable)),
+    }
+    files[HASHES_FILE] = _json_text(
+        {
+            name: hashlib.sha256(content.encode("utf-8")).hexdigest()
+            for name, content in files.items()
+        }
+    )
+    return files
+
+
+def golden_diff(name: str, expected: str, actual: str) -> str:
+    """Return a unified diff from the checked-in file to the rendered one."""
+
+    return "".join(
+        difflib.unified_diff(
+            expected.splitlines(keepends=True),
+            actual.splitlines(keepends=True),
+            fromfile=f"golden/{name}",
+            tofile=f"rendered/{name}",
+        )
+    )
+
+
+def read_golden(name: str) -> str | None:
+    path = GOLDEN_ROOT / name
+    if not path.is_file():
+        return None
+    return path.read_bytes().decode("utf-8")
+
+
+def check() -> list[str]:
+    """Return one unified diff per golden file that differs from its rendering."""
+
+    rendered = render_golden()
+    diffs = [
+        f"golden/{path.name} is not rendered by this script; delete it\n"
+        for path in sorted(GOLDEN_ROOT.glob("*"))
+        if path.name not in rendered
+    ]
+    for name, actual in rendered.items():
+        expected = read_golden(name)
+        if expected is None:
+            diffs.append(f"golden/{name} is missing\n")
+        elif expected != actual:
+            diffs.append(golden_diff(name, expected, actual))
+    return diffs
+
+
+def write() -> list[str]:
+    GOLDEN_ROOT.mkdir(parents=True, exist_ok=True)
+    changed: list[str] = []
+    for name, content in render_golden().items():
+        if read_golden(name) != content:
+            (GOLDEN_ROOT / name).write_bytes(content.encode("utf-8"))
+            changed.append(name)
+    return changed
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="rewrite the golden files instead of failing with a unified diff",
+    )
+    args = parser.parse_args(argv)
+    if not args.write:
+        diffs = check()
+        for diff in diffs:
+            sys.stdout.write(diff)
+        return 1 if diffs else 0
+    for name in write():
+        print(f"updated {GOLDEN_ROOT.relative_to(PROJECT_ROOT).as_posix()}/{name}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

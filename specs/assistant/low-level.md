@@ -508,6 +508,20 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    it, carrying only the latest stable error code and the fact that no graph changes were
    applied, emits `completed`, and performs no further dry-run or provider round. The
    system prompt states the same distinction.
+
+   What the model sees is pinned by a checked-in golden snapshot under
+   `tests/assistant_eval/golden/`: the system prompt rendered for one fixed project
+   (pipeline `motor_pricing`, its source file and a three-node summary), the canonical
+   `TOOL_DEFINITIONS`, the portable projection the Anthropic adapter sends
+   (`_portable_tools`), the OpenAI Chat Completions function projection of it (which
+   the Databricks adapter reuses unchanged), and a sha256 of each file.
+   `scripts/update_assistant_prompt_golden.py` renders them; by default it fails with
+   a unified diff per changed file, and `--write` is the only update path. The Haute
+   version and the capability hash, which change on every release, are replaced with
+   the placeholders `<haute-version>` and `<capability-hash>` so a version bump alone
+   does not change the snapshot; every other line, including the installed-I/O
+   summary rendered against the locked Polars, is compared verbatim. The per-turn
+   request-routed additions are not part of the snapshot.
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
    `tool_started`; execute; append the result to the pending provider messages before
    emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
@@ -1084,6 +1098,11 @@ fixture for route tests). The implemented coverage is:
   untouched, carries invalid/wrong-type encodings to the canonical validator for a
   recoverable `invalid_request` result, and logs each undecoded eligible field by shape
   alone — asserting both warning events and that the rejected value never reaches the log.
+- **`tests/test_assistant_prompt_golden.py`** — the rendered system prompt, canonical
+  tool definitions and both provider wire projections match the golden files; the
+  release version and capability hash are normalised out; an added prompt sentence
+  and an edited wire-operation field description each fail with the changed lines in
+  the unified diff of every affected file and of the hashes file.
 - **`tests/test_assistant_loop.py`** — against a scripted fake provider: text-only turn;
   tool round-trip; tool error fed back; cap and timeout terminal events; completed/failed
   exactly-one-terminal checks; cancellation drains an in-flight tool, closes the provider

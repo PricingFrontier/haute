@@ -1,0 +1,592 @@
+[
+  {
+    "name": "get_pipeline",
+    "description": "Inspect the saved pipeline graph and its project revision.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_node_schema",
+    "description": "Resolve a saved pipeline node's output columns and dtypes plus the columns arriving on each of its inputs, keyed by the name the node's own code uses. A node reporting unresolved_reason 'node_has_no_code' is an empty transform already wired into the graph and awaiting its code: write that code onto it with update_node rather than adding a parallel node beside it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_node_config",
+    "description": "Inspect one saved node's complete configuration.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_column_profiles",
+    "description": "Summarise the values in one node frame before writing code against it: per column, the distinct levels of a small-cardinality categorical with their counts, or the min/max of a numeric or date column, alongside a null count and, where the dtype can be counted, a distinct count. Temporal and decimal bounds are reported in their written form ('2024-01-01', '12.50'). Call this instead of assuming how a column encodes its categories - a 'fault' or 'status' column may hold Y/N, true/false, or a description, and the schema alone cannot tell you which. Pass 'input' to profile one of the node's inputs by the name its code binds. Returns no rows: a value appears only as a distinct level, and a high-cardinality column is withheld.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string",
+          "description": "Profile this input of the node instead of the node's own output, named exactly as get_node_schema reports it under 'inputs'. Omit to profile the node's own output."
+        }
+      },
+      "required": [
+        "node"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_datasets",
+    "description": "List safe installed-format datasets in one project directory, optionally recursively.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_root": {
+          "type": "string"
+        },
+        "recursive": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_dataset_schema",
+    "description": "Inspect a dataset schema without implicitly reading rows.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_project_knowledge",
+    "description": "Retrieve bounded policy-filtered project facts and untrusted documentation.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_example",
+    "description": "Load one packaged, versioned teaching example.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_authoring_guide",
+    "description": "Retrieve the packaged canonical authoring guide with attribution.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "plan_recipe",
+    "description": "Select and plan one installed canonical recipe with its explicit structured arguments. Supply output_name and explicit output_columns together for a response output. Pass only the returned recipe_plan_hash to dry_run_recipe_plan; canonical operations remain server-side.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "recipe_id": {
+          "enum": [
+            "categorical_banding",
+            "parquet_showcase",
+            "rating_step",
+            "reference_join",
+            "response_output"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "description": "Existing saved graph node id that supplies the recipe input."
+        },
+        "name": {
+          "type": "string",
+          "description": "New graph node name exactly as requested; distinct from every output column name."
+        },
+        "column": {
+          "type": "string",
+          "description": "Existing categorical input column to band."
+        },
+        "output_column": {
+          "type": "string",
+          "description": "New output column that receives the band label; not the graph node name."
+        },
+        "rules": {
+          "type": "array",
+          "description": "Closed exact value-to-assignment categorical rules.",
+          "items": {
+            "type": "object",
+            "description": "One exact categorical value-to-band assignment.",
+            "properties": {
+              "value": {
+                "description": "Non-null finite JSON scalar matched exactly."
+              },
+              "assignment": {
+                "type": "string",
+                "description": "Band label assigned when the value matches."
+              }
+            },
+            "required": [
+              "value",
+              "assignment"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "default": {
+          "type": "string",
+          "description": "Fallback band label when no rule matches."
+        },
+        "output_name": {
+          "type": "string",
+          "description": "Optional new response output graph node connected after the recipe node."
+        },
+        "output_columns": {
+          "type": "array",
+          "description": "Columns selected into the optional response output.",
+          "items": {
+            "type": "string",
+            "description": "Simple JSON-field column name to map to the same response field name."
+          }
+        },
+        "base": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Safe project-relative .parquet file path."
+            },
+            "name": {
+              "type": "string",
+              "description": "New graph node name exactly as requested; distinct from every output column name."
+            }
+          },
+          "required": [
+            "path",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        "reference": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Safe project-relative .parquet file path."
+            },
+            "name": {
+              "type": "string",
+              "description": "New graph node name exactly as requested; distinct from every output column name."
+            }
+          },
+          "required": [
+            "path",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        "join_name": {
+          "type": "string",
+          "description": "New graph node name exactly as requested; distinct from every output column name."
+        },
+        "join_key": {
+          "type": "string",
+          "description": "Column present in both Parquet sources."
+        },
+        "transform_name": {
+          "type": "string",
+          "description": "New graph node name exactly as requested; distinct from every output column name."
+        },
+        "tables": {
+          "type": "array",
+          "description": "Closed positional rating-table configurations.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "factors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "description": "Existing factor column, in row-value order."
+                }
+              },
+              "output_column": {
+                "type": "string",
+                "description": "New output column produced by this table."
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "One positional rating-table row.",
+                  "properties": {
+                    "factor_values": {
+                      "type": "array",
+                      "description": "Non-null finite JSON scalar values aligned positionally with factors.",
+                      "items": {
+                        "description": "One factor value; null and non-finite numbers are invalid."
+                      }
+                    },
+                    "value": {
+                      "type": "number",
+                      "description": "Finite numeric rating value for this factor combination."
+                    }
+                  },
+                  "required": [
+                    "factor_values",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "default_value": {
+                "type": "number",
+                "description": "Finite fallback rating value when no entry matches."
+              }
+            },
+            "required": [
+              "factors",
+              "output_column",
+              "entries",
+              "default_value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "combined_outputs": {
+          "type": "array",
+          "description": "Optional closed combined-output configurations.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "output_column": {
+                "type": "string",
+                "description": "New combined rating output column."
+              },
+              "operation": {
+                "enum": [
+                  "multiply",
+                  "add",
+                  "min",
+                  "max"
+                ]
+              },
+              "base_value": {
+                "type": "number",
+                "description": "Finite numeric base included in the combination."
+              }
+            },
+            "required": [
+              "output_column",
+              "operation",
+              "base_value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "base_source": {
+          "type": "string",
+          "description": "Existing main/base graph node id."
+        },
+        "reference_source": {
+          "type": "string",
+          "description": "Existing joining/reference graph node id."
+        },
+        "how": {
+          "description": "Join mode.",
+          "enum": [
+            "inner",
+            "left",
+            "right",
+            "full",
+            "semi",
+            "anti",
+            "cross"
+          ]
+        },
+        "left_on": {
+          "type": "array",
+          "description": "Ordered join columns on the main/base input.",
+          "items": {
+            "type": "string",
+            "description": "Main/base join column."
+          }
+        },
+        "right_on": {
+          "type": "array",
+          "description": "Ordered join columns on the joining/reference input.",
+          "items": {
+            "type": "string",
+            "description": "Joining/reference join column."
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "recipe_id"
+      ]
+    }
+  },
+  {
+    "name": "dry_run_recipe_plan",
+    "description": "Dry-run exactly one pending canonical recipe by recipe_plan_hash.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "recipe_plan_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipe_plan_hash"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "dry_run_graph_edits",
+    "description": "Validate an exact graph-edit plan and report revision, semantic diff, postconditions, authority and verification tier without writing.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "add_node",
+                  "update_node",
+                  "rename_node",
+                  "delete_node",
+                  "add_edge",
+                  "delete_edge",
+                  "update_preamble"
+                ]
+              },
+              "node_type": {
+                "type": "string",
+                "description": "Canonical node-type identifiers shared with the React Flow frontend.\n\nInherits from ``StrEnum`` so ``NodeType.API_INPUT == \"apiInput\"`` is ``True``\nand JSON serialization produces the plain string value.",
+                "enum": [
+                  "apiInput",
+                  "dataInput",
+                  "dataOutput",
+                  "polars",
+                  "edgeJoin",
+                  "modelScore",
+                  "banding",
+                  "ratingStep",
+                  "output",
+                  "explore",
+                  "externalFile",
+                  "liveSwitch",
+                  "modelling",
+                  "optimiser",
+                  "scenarioExpander",
+                  "optimiserApply",
+                  "constant",
+                  "submodel",
+                  "submodelPort"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "config": {
+                "type": "object"
+              },
+              "ref": {
+                "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\"."
+              },
+              "node": {
+                "type": "string",
+                "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+              },
+              "new_name": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+              },
+              "target": {
+                "type": "string",
+                "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+              },
+              "source_handle": {
+                "description": "Output port on the source node, exactly as get_pipeline reports it under an edge's 'source_handle'. Required only when the source emits several frames, such as an apiInput table; omit it for an ordinary single-output node."
+              },
+              "target_handle": {
+                "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports."
+              },
+              "preamble": {}
+            },
+            "additionalProperties": false,
+            "required": [
+              "op"
+            ]
+          }
+        },
+        "postconditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "node_exists",
+                  "node_absent",
+                  "edge_exists",
+                  "edge_absent",
+                  "graph_shape",
+                  "preamble_digest"
+                ]
+              },
+              "node": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "source_handle": {
+                "type": "string"
+              },
+              "target_handle": {
+                "type": "string"
+              },
+              "nodes": {
+                "type": "integer"
+              },
+              "edges": {
+                "type": "integer"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ]
+          }
+        }
+      },
+      "required": [
+        "ops"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "apply_graph_plan",
+    "description": "Apply one exact validated plan hash under revision authority.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "plan_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_hash"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_capability_manifest",
+    "description": "Read manifest identity and its compact capability index.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_capability_descriptors",
+    "description": "Read ordered complete capability descriptors in one batch.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "node",
+            "operation",
+            "recipe"
+          ]
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "ids"
+      ],
+      "additionalProperties": false
+    }
+  }
+]
