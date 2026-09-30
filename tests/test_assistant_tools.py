@@ -23,10 +23,14 @@ Authored test-first per CLAUDE.md TDD.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -225,6 +229,35 @@ def totals(claims: pl.LazyFrame) -> pl.LazyFrame:
 '''
 
 
+JOIN_PROFILE_SOURCE = """\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="join and aggregation profile fixture")
+
+
+@pipeline.polars
+def claims() -> pl.LazyFrame:
+    return pl.scan_parquet("data/claims.parquet")
+
+
+@pipeline.polars
+def policies() -> pl.LazyFrame:
+    return pl.scan_parquet("data/policies.parquet")
+
+
+@pipeline.polars
+def joined(claims: pl.LazyFrame, policies: pl.LazyFrame) -> pl.LazyFrame:
+    return claims.join(policies, on="quote_id", how="left")
+
+
+@pipeline.polars
+def by_fault(joined: pl.LazyFrame) -> pl.LazyFrame:
+    return joined.group_by("fault").agg(pl.len().alias("claim_count"))
+"""
+
+
 @pytest.fixture()
 def profile_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A project whose categorical encoding cannot be guessed from its name."""
@@ -293,6 +326,27 @@ def dtype_matrix_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) ->
     return project_root
 
 
+@pytest.fixture()
+def join_profile_project(profile_project: Path) -> Path:
+    """Claims joined to policies, then aggregated: the realistic frames the
+    engine refuses to materialise in-process without a native memory cap."""
+
+    pl.DataFrame(
+        {
+            "quote_id": [f"q{index}" for index in range(60)],
+            "region": ["north", "south"] * 30,
+        }
+    ).write_parquet(profile_project / "data" / "policies.parquet")
+    (profile_project / "main.py").write_text(JOIN_PROFILE_SOURCE, encoding="utf-8")
+    return profile_project
+
+
+def _profile(source_file: str, node: str, input_name: str | None = None) -> dict[str, object]:
+    from haute.assistant._tools import get_column_profiles
+
+    return asyncio.run(get_column_profiles(source_file, node, input_name, session_id="test"))
+
+
 def _profiles_by_name(result: dict[str, object]) -> dict[str, dict[str, object]]:
     assert "error" not in result, result
     return {column["name"]: column for column in result["columns"]}  # type: ignore[index,union-attr]
@@ -351,7 +405,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
             ),
         )
 
-        result = tools_module.get_column_profiles("main.py", "by_year")
+        result = _profile("main.py", "by_year")
 
         assert "error" not in result, result
         by_name = {column["name"]: column for column in result["columns"]}
@@ -364,9 +418,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         """The encoding is the fact a schema cannot carry. Guessing `"Y"` here
         yields code that runs, validates, and counts nothing."""
 
-        from haute.assistant._tools import get_column_profiles
-
-        result = get_column_profiles("main.py", "totals", "claims")
+        result = _profile("main.py", "totals", "claims")
 
         assert "error" not in result, result
         by_name = {column["name"]: column for column in result["columns"]}
@@ -382,9 +434,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
     def test_high_cardinality_columns_withhold_their_values(self, profile_project: Path):
         """High-cardinality values are withheld to reduce unnecessary disclosure."""
 
-        from haute.assistant._tools import get_column_profiles
-
-        result = get_column_profiles("main.py", "totals", "claims")
+        result = _profile("main.py", "totals", "claims")
         by_name = {column["name"]: column for column in result["columns"]}
 
         assert by_name["quote_id"]["values_withheld"] == "high_cardinality"
@@ -392,18 +442,14 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         assert by_name["quote_id"]["distinct_count"] == 60
 
     def test_numeric_columns_report_bounds_rather_than_values(self, profile_project: Path):
-        from haute.assistant._tools import get_column_profiles
-
-        result = get_column_profiles("main.py", "totals", "claims")
+        result = _profile("main.py", "totals", "claims")
         amount = {column["name"]: column for column in result["columns"]}["amount_paid"]
 
         assert (amount["min"], amount["max"]) == (0.0, 59.0)
         assert "values" not in amount
 
     def test_unknown_input_names_the_available_inputs(self, profile_project: Path):
-        from haute.assistant._tools import get_column_profiles
-
-        result = get_column_profiles("main.py", "totals", "ghost")
+        result = _profile("main.py", "totals", "ghost")
 
         assert result["error"]["code"] == "unknown_input"
         assert result["error"]["inputs"] == ["claims"]
@@ -433,7 +479,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
     ):
         import haute.assistant._tools as tools_module
 
-        def observe_lock(*_args: object) -> dict[str, object]:
+        async def observe_lock(*_args: object, **_kwargs: object) -> dict[str, object]:
             return {"save_lock_held": tools_module.save_lock.locked()}
 
         monkeypatch.setattr(tools_module, "get_column_profiles", observe_lock)
@@ -444,12 +490,120 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
         assert result["save_lock_held"] is True
 
+    def test_frames_downstream_of_a_join_and_an_aggregation_profile_in_the_preview_worker(
+        self, join_profile_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """In-process the engine refuses a join or group-by it cannot estimate,
+        because nothing caps its memory there; the preview worker has that cap,
+        so these ordinary frames profile under it."""
+
+        from haute._interactive_workers import shutdown_interactive_worker_pool
+
+        monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+        monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+        # The route-isolation tests' policy: this exercises the worker route,
+        # not native cap availability, which macOS lacks.
+        monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+        # A spawned worker's project root is the directory it starts in.
+        shutdown_interactive_worker_pool()
+        try:
+            joined = _profiles_by_name(_profile("main.py", "joined"))
+            by_fault = _profiles_by_name(_profile("main.py", "by_fault"))
+        finally:
+            shutdown_interactive_worker_pool()
+
+        assert joined["region"]["values"] == [
+            {"value": "north", "count": 30},
+            {"value": "south", "count": 30},
+        ]
+        # Each level is one aggregated row, so the counts tie and order is Polars'.
+        assert sorted(entry["value"] for entry in by_fault["fault"]["values"]) == [
+            "at_fault",
+            "not_at_fault",
+            "pending",
+        ]
+        assert (by_fault["claim_count"]["min"], by_fault["claim_count"]["max"]) == (20, 20)
+
+    async def test_a_stopped_turn_cancels_its_profile(
+        self, profile_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Stopping a turn cancels the tool call; the collection it started
+        must stop too rather than run on after the turn has ended."""
+
+        import haute.assistant._tools as tools_module
+
+        running = threading.Event()
+        stopped: list[str] = []
+
+        def slow_profile(_frame: pl.LazyFrame, *, execution_context: object) -> dict[str, object]:
+            running.set()
+            deadline = time.monotonic() + 30
+            while True:
+                assert time.monotonic() < deadline
+                try:
+                    execution_context.checkpoint(label="profile")  # type: ignore[attr-defined]
+                except Exception as exc:
+                    stopped.append(type(exc).__name__)
+                    raise
+                time.sleep(0.01)
+
+        monkeypatch.setattr(tools_module, "_profile_frame", slow_profile)
+        call = asyncio.ensure_future(
+            tools_module.build_tool_executor("main.py", session_id="stop")(
+                "get_column_profiles", {"node": "totals", "input": "claims"}
+            )
+        )
+        assert await asyncio.to_thread(running.wait, 30)
+        call.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        deadline = time.monotonic() + 30
+        while not stopped:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.01)
+        assert stopped == ["ExecutionCancelledError"]
+
+    async def test_a_stopped_turn_stops_its_profile_worker(
+        self, profile_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """In the production mode the pool is told to stop the worker, and the
+        call waits for it to stop before the cancellation reaches the turn."""
+
+        import haute._interactive_workers as workers_module
+        import haute.assistant._tools as tools_module
+
+        monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+        running = threading.Event()
+        reasons: list[str] = []
+
+        class _Pool:
+            def run(self, *_args: object, stop_reason: Any, **_kwargs: object) -> object:
+                running.set()
+                deadline = time.monotonic() + 30
+                while (reason := stop_reason()) is None:
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+                reasons.append(reason)
+                raise workers_module.InteractiveWorkerStoppedError(reason)
+
+        monkeypatch.setattr(workers_module, "interactive_worker_pool", _Pool)
+        call = asyncio.ensure_future(
+            tools_module.build_tool_executor("main.py", session_id="stop")(
+                "get_column_profiles", {"node": "totals", "input": "claims"}
+            )
+        )
+        assert await asyncio.to_thread(running.wait, 30)
+        call.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert reasons == ["cancelled"]
+
     def test_temporal_and_decimal_bounds_render_as_their_written_form(
         self, dtype_matrix_project: Path
     ):
-        from haute.assistant._tools import get_column_profiles
-
-        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+        by_name = _profiles_by_name(_profile("main.py", "totals", "claims"))
 
         assert (by_name["accident_date"]["min"], by_name["accident_date"]["max"]) == (
             "2024-01-01",
@@ -461,9 +615,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
     def test_numeric_bounds_keep_their_json_type(self, dtype_matrix_project: Path):
         """A bound the model compares against must stay a number."""
 
-        from haute.assistant._tools import get_column_profiles
-
-        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+        by_name = _profiles_by_name(_profile("main.py", "totals", "claims"))
 
         assert (by_name["excess"]["min"], by_name["excess"]["max"]) == (0.0, 5.0)
 
@@ -473,9 +625,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         """`Infinity` is a real Polars value and is not JSON: the bounding
         encoder runs under `allow_nan=False` and rejects it."""
 
-        from haute.assistant._tools import get_column_profiles
-
-        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+        by_name = _profiles_by_name(_profile("main.py", "totals", "claims"))
 
         assert by_name["exposure"]["max"] == {"__haute_type__": "non_finite_float", "value": "inf"}
         assert by_name["exposure"]["min"] == 1.0
@@ -484,9 +634,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         """Polars refuses `value_counts` on a column already named `count`,
         and one refusal used to abort every other column in the frame."""
 
-        from haute.assistant._tools import get_column_profiles
-
-        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+        by_name = _profiles_by_name(_profile("main.py", "totals", "claims"))
 
         assert [entry["value"] for entry in by_name["count"]["values"]] == ["one", "two"]
 
@@ -528,7 +676,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
             ),
         )
 
-        result = tools_module.get_column_profiles("main.py", "enriched")
+        result = _profile("main.py", "enriched")
 
         assert result["error"]["code"] == "egress_policy_denied"
         assert result["error"]["required_policy"] == "allow_row_samples"

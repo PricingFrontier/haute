@@ -394,9 +394,25 @@ truncated to `_MAX_PROFILE_VALUE_CHARS`. The operation's egress class is its own
 `restricted-value-profile`, so a policy review
 can see the one data-reading capability plainly.
 
-The operation owns one admitted `PREVIEW_EAGER` execution context through frame
-preparation and bounded collection, including any upstream group-by materialisation
-boundary, and releases it in `finally`.
+The operation runs where the editor's previews run. The server checks the egress gate,
+parses the saved graph, validates the target and input name, and admits one
+`PREVIEW_EAGER` execution context. Frame preparation and the bounded collection then run
+in the interactive preview worker through
+`src/haute/_interactive_workers.py::run_in_interactive_worker`, under the isolated budget
+derived from that admission and the worker's native memory cap, with the preview timeout
+(`HAUTE_PREVIEW_TIMEOUT`). Under that cap a join or group-by whose materialisation cannot
+be estimated runs conservatively inside its reserved envelope instead of being refused, so
+frames downstream of joins and aggregations profile like any other. The worker renders an
+execution failure itself, with the same row-value rules as every execution error, because
+the exception's traceback does not cross the process boundary; a worker memory outcome is
+reported as the preview memory budget being exceeded, and a timeout by its data-free
+limit message. Calls are keyed per assistant session: they share one warm worker
+affinity, and a newer profile in the same session supersedes and stops an older one still
+running. When the turn stops, the cancelled call stops its worker before the call ends;
+with `HAUTE_INTERACTIVE_EXECUTION_MODE=thread` the collection runs on a server thread,
+the call cancels the context's token so the engine stops at its next checkpoint, and the
+admission is released when that thread finishes. The server releases the admission in
+`finally` otherwise.
 
 Every branch is selected by dtype *before* its aggregation runs, through the shared
 predicates in `haute/_column_summary.py` that Explore's frame statistics also use — the
@@ -702,7 +718,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    `tool_started`, the round commit filters the unmatched call; closing at either later
    event retains the already-recorded result. Thus every persisted call id has exactly one
    matching result id on every generator-close boundary.
-5. Tool execution: read tools run via `asyncio.to_thread`. Reads whose answer depends on
+5. Tool execution: read tools run via `asyncio.to_thread`, except `get_column_profiles`,
+   which prepares on a thread and collects in the interactive preview worker (see
+   **Column value profiles**). Reads whose answer depends on
    the saved graph (`get_pipeline`, `get_node_schema`, `get_node_config`,
    `get_column_profiles`, `get_dataset_schema`, and `get_project_knowledge`) hold the
    process-wide `save_lock` across their worker-thread operation, so a concurrent save cannot

@@ -29,15 +29,33 @@ from haute._column_summary import (
 )
 from haute._credential_security import is_credential_name
 from haute._event_bus import default_bus
-from haute._execution_admission import create_admitted_execution_context
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_admission import (
+    IsolatedExecutionBudget,
+    create_admitted_execution_context,
+    create_isolated_execution_context,
+    isolated_execution_budget,
+)
+from haute._execution_context import (
+    ExecutionCancellationToken,
+    ExecutionCancelledError,
+    ExecutionContext,
+    ExecutionProfile,
+)
 from haute._graph_utils import edge_input_name
+from haute._interactive_workers import (
+    InteractiveWorkerError,
+    InteractiveWorkerStoppedError,
+    InteractiveWorkerTimeoutError,
+    resolve_interactive_execution_mode,
+    run_in_interactive_worker,
+)
 from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
+from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
     CommittedVerificationError,
     FailedStep,
@@ -79,6 +97,8 @@ from haute.routes._helpers import (
     pipeline_dir,
     save_lock,
 )
+from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
+from haute.routes.pipeline import preview_timeout
 
 logger = get_logger(component="assistant.tools")
 
@@ -685,17 +705,23 @@ def _profile_frame(
     }
 
 
-def get_column_profiles(
-    source_file: str, node: str, input_name: str | None = None
-) -> dict[str, object]:
-    """Summarise the values in one node frame, without returning rows.
+@dataclass(frozen=True)
+class _ColumnProfileRequest:
+    """One profile's target, as plain data that crosses into the preview worker."""
 
-    This is the only tool that reads data, and it never emits a row: a value
-    only appears as a distinct level of a small-cardinality column, alongside
-    its count. Authoring correct code needs the encoding of a categorical
-    column, and inferring one from its name is guesswork the model has no way
-    to check.
-    """
+    graph: PipelineGraph
+    node: str
+    input_name: str | None
+
+
+# One running profile per assistant session: a newer call stops an older one.
+_PROFILE_SUPERSESSION = SupersessionCoordinator()
+
+
+def _prepare_column_profile(
+    source_file: str, node: str, input_name: str | None
+) -> tuple[_ColumnProfileRequest, str] | dict[str, object]:
+    """Gate, parse and validate on the server; return the request or an error."""
 
     try:
         policy = resolve_egress_policy(Path.cwd().resolve())
@@ -711,45 +737,54 @@ def get_column_profiles(
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-        flat = flatten_graph(graph)
-        inputs = _node_inputs(flat, node)
+        inputs = _node_inputs(flatten_graph(graph), node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("profile_unavailable", _error_message(exc, operation="get_column_profiles"))
-
-    execution_context: ExecutionContext | None = None
-    try:
-        execution_context = create_admitted_execution_context(
-            operation="assistant_column_profiles",
-            profile=ExecutionProfile.PREVIEW_EAGER,
+    if input_name is not None and all(item.name != input_name for item in inputs):
+        return _error(
+            "unknown_input",
+            f"Node {node!r} has no input named {input_name!r}.",
+            inputs=[item.name for item in inputs],
         )
-        if input_name is None:
+    return _ColumnProfileRequest(graph, node, input_name), project_revision
+
+
+def _collect_column_profile(
+    request: _ColumnProfileRequest, execution_context: ExecutionContext
+) -> dict[str, object]:
+    """Prepare the target frame and profile it; an execution failure is a result.
+
+    It is rendered here, where it was raised: in the preview worker the
+    exception's traceback, which names the failing node code line, does not
+    cross the process boundary.
+    """
+
+    try:
+        flat = flatten_graph(request.graph)
+        if request.input_name is None:
             lazy_outputs = _resolve_frame_outputs(
                 flat,
-                graph,
-                target=node,
-                preserve={node},
+                request.graph,
+                target=request.node,
+                preserve={request.node},
                 execution_context=execution_context,
             )
-            output = lazy_outputs[node]
+            output = lazy_outputs[request.node]
             if isinstance(output, dict):
                 return _error(
                     "profile_target_ambiguous",
-                    f"Node {node!r} emits several frames; name one of its ports: "
+                    f"Node {request.node!r} emits several frames; name one of its ports: "
                     + ", ".join(sorted(output)),
                     ports=sorted(output),
                 )
             frame = cast(pl.LazyFrame, output)
         else:
-            match = next((item for item in inputs if item.name == input_name), None)
-            if match is None:
-                return _error(
-                    "unknown_input",
-                    f"Node {node!r} has no input named {input_name!r}.",
-                    inputs=[item.name for item in inputs],
-                )
+            match = next(
+                item for item in _node_inputs(flat, request.node) if item.name == request.input_name
+            )
             lazy_outputs = _resolve_frame_outputs(
                 flat,
-                graph,
+                request.graph,
                 target=match.source,
                 preserve={match.source},
                 execution_context=execution_context,
@@ -759,26 +794,155 @@ def get_column_profiles(
                 if match.source_port is None or match.source_port not in source_output:
                     return _error(
                         "profile_unavailable",
-                        f"Input {input_name!r} does not resolve to one emitted frame.",
+                        f"Input {request.input_name!r} does not resolve to one emitted frame.",
                     )
                 frame = source_output[match.source_port]
             else:
                 frame = cast(pl.LazyFrame, source_output)
-        return {
-            "node": node,
-            "input": input_name,
-            **_profile_frame(frame, execution_context=execution_context),
-            "max_levels": _MAX_PROFILE_LEVELS,
-            "project_revision": project_revision,
-        }
+        return _profile_frame(frame, execution_context=execution_context)
+    except ExecutionCancelledError:
+        return _error("profile_unavailable", "The column profile was stopped before it finished.")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "profile_unavailable",
             _execution_error_message(exc, operation="get_column_profiles"),
         )
+
+
+def _run_column_profile_worker(
+    request: _ColumnProfileRequest, budget: IsolatedExecutionBudget
+) -> dict[str, object]:
+    """The preview worker's half: profile under the budget the server admitted."""
+
+    context = create_isolated_execution_context(budget)
+    try:
+        return _collect_column_profile(request, context)
     finally:
-        if execution_context is not None:
-            execution_context.release_admission(preserve_primary_error=True)
+        context.release_admission(preserve_primary_error=True)
+
+
+async def _run_column_profile(
+    request: _ColumnProfileRequest,
+    token: ExecutionCancellationToken,
+    affinity_key: tuple[str, str],
+) -> dict[str, object]:
+    """Admit one preview execution, then collect in the preview worker.
+
+    A cancelled call (the turn stopped) stops the worker before it returns.
+    In thread mode the collection cannot be interrupted mid-query: the token
+    stops the engine at its next checkpoint, and the admission is released
+    when the thread finishes.
+    """
+
+    context = create_admitted_execution_context(
+        operation="assistant_column_profiles",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        cancellation_token=token,
+    )
+    release_on_exit = True
+    try:
+        if resolve_interactive_execution_mode() == "process":
+            budget = isolated_execution_budget(context)
+            return await run_in_interactive_worker(
+                _run_column_profile_worker,
+                request,
+                budget,
+                affinity_key=affinity_key,
+                timeout_seconds=preview_timeout(),
+                stop_reason=(lambda: "superseded" if token.cancelled else None),
+                absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                memory_growth_limit_bytes=budget.memory_limit_bytes,
+                require_memory_limit=resolve_worker_memory_enforcement() == "required",
+            )
+        collection = asyncio.ensure_future(
+            asyncio.to_thread(_collect_column_profile, request, context)
+        )
+        try:
+            return await asyncio.shield(collection)
+        except asyncio.CancelledError:
+            token.cancel()
+            release_on_exit = False
+            collection.add_done_callback(lambda _done: context.release_admission())
+            raise
+    finally:
+        if release_on_exit:
+            context.release_admission(preserve_primary_error=True)
+
+
+def _profile_worker_failure(
+    exc: InteractiveWorkerError | SupersededRequestError,
+) -> dict[str, object]:
+    """Report a preview-worker outcome with a parent-authored, data-free message."""
+
+    if isinstance(exc, InteractiveWorkerError) and exc.terminal_reason == "memory_limited":
+        return _error(
+            "profile_unavailable",
+            "Profiling this frame exceeded the preview memory budget. Profile a frame "
+            "upstream of the step that multiplies rows, or narrow its input.",
+        )
+    if isinstance(
+        exc,
+        InteractiveWorkerTimeoutError | InteractiveWorkerStoppedError | SupersededRequestError,
+    ):
+        return _error("profile_unavailable", str(exc))
+    logger.error(
+        "assistant_tool_failed",
+        operation="get_column_profiles",
+        error_class=type(exc).__name__,
+        error_message=str(exc),
+    )
+    return _error("profile_unavailable", _INTERNAL_ERROR_DETAIL)
+
+
+async def get_column_profiles(
+    source_file: str,
+    node: str,
+    input_name: str | None = None,
+    *,
+    session_id: str,
+) -> dict[str, object]:
+    """Summarise the values in one node frame, without returning rows.
+
+    This is the only tool that reads data, and it never emits a row: a value
+    only appears as a distinct level of a small-cardinality column, alongside
+    its count. Authoring correct code needs the encoding of a categorical
+    column, and inferring one from its name is guesswork the model has no way
+    to check. The frame is collected in the interactive preview worker, under
+    its memory cap, so joins and aggregations upstream run as they do for an
+    editor preview.
+    """
+
+    prepared = await asyncio.to_thread(_prepare_column_profile, source_file, node, input_name)
+    if isinstance(prepared, dict):
+        return prepared
+    request, project_revision = prepared
+    token = ExecutionCancellationToken()
+    session_key = ("assistant_column_profiles", session_id)
+    try:
+        profile = await _PROFILE_SUPERSESSION.run_latest(
+            session_key,
+            partial(_run_column_profile, request, token, session_key),
+            cancel_active=token.cancel,
+            superseded_message=(
+                "A newer column profile in this assistant session replaced this one."
+            ),
+        )
+    except (InteractiveWorkerError, SupersededRequestError) as exc:
+        return _profile_worker_failure(exc)
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        return _error(
+            "profile_unavailable",
+            _execution_error_message(exc, operation="get_column_profiles"),
+        )
+    if "error" in profile:
+        return profile
+    return {
+        "node": node,
+        "input": input_name,
+        **profile,
+        "max_levels": _MAX_PROFILE_LEVELS,
+        "project_revision": project_revision,
+    }
 
 
 def get_capability_manifest() -> dict[str, object]:
@@ -1862,7 +2026,8 @@ def build_tool_executor(
             )
 
         try:
-            operation: Callable[[], dict[str, object]]
+            operation: Callable[[], dict[str, object]] | None = None
+            worker_call: Callable[[], Awaitable[dict[str, object]]] | None = None
             if name == "get_pipeline":
                 operation = partial(get_pipeline, source_file)
             elif name == "get_node_schema":
@@ -1870,11 +2035,13 @@ def build_tool_executor(
             elif name == "get_node_config":
                 operation = partial(get_node_config, source_file, arguments["node"])
             elif name == "get_column_profiles":
-                operation = partial(
+                # Prepares on a thread, then collects in the interactive preview worker.
+                worker_call = partial(
                     get_column_profiles,
                     source_file,
                     arguments["node"],
                     arguments.get("input"),
+                    session_id=session_id,
                 )
             elif name == "get_capability_manifest":
                 operation = get_capability_manifest
@@ -1915,11 +2082,16 @@ def build_tool_executor(
                 )
             else:  # pragma: no cover - guarded by _TOOL_NAMES
                 return _dispatch_error(name, f"Unknown assistant tool {name!r}.")
+            call = (
+                worker_call
+                if worker_call is not None
+                else partial(asyncio.to_thread, cast(Callable[[], dict[str, object]], operation))
+            )
             if name in _SAVE_LOCK_READ_TOOLS:
                 async with save_lock:
-                    result = await asyncio.to_thread(operation)
+                    result = await call()
             else:
-                result = await asyncio.to_thread(operation)
+                result = await call()
             if name == "plan_recipe" and "error" not in result:
                 recipe_id = result.get("recipe_id")
                 recipe_plan_hash = result.get("recipe_plan_hash")

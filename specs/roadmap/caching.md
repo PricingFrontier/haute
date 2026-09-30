@@ -187,7 +187,7 @@ route, job lifecycle, response schema); [caching](../caching/low-level.md#seed-p
 no budget that refuses a capture.
 
 **Evidence:** `src/haute/routes/pipeline.py` (`_preview_canonical_graph`,
-`_preview_timeout`); `src/haute/routes/_background_jobs.py`;
+`preview_timeout`); `src/haute/routes/_background_jobs.py`;
 `src/haute/_seed_plans.py` (`SeedPlanDecision`); `src/haute/schemas.py`;
 `frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/stores/useNodeDataStore.ts`.
 

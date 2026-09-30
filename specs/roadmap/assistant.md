@@ -78,7 +78,6 @@ to the build journeys the evaluation targets first.
 |---|---|---:|---|
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
-| ASSIST-16 | Planned | P2 | Column profiles work downstream of joins and aggregations. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
 | ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
@@ -154,22 +153,6 @@ after commit never says nothing changed.
 **Evidence:** `frontend/src/stores/useAssistantStore.ts`;
 `frontend/src/panels/assistant/TranscriptEntryView.tsx`;
 `src/haute/assistant/_loop.py::run_turn`.
-
-### ASSIST-16 — Column profiles run in the preview worker
-**Why:** Profiles execute in the assistant's tool thread, where the engine
-refuses any unvalidated join or unestimable aggregation, so they fail on
-realistic pipelines.
-
-**Plan:** Run profiles in the interactive preview worker with its memory
-budget, admission and cancellation, keyed per session.
-
-**Acceptance:** Profiles downstream of a join and of an aggregation return
-levels; a stopped turn cancels its profile.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_tools.py::get_column_profiles`;
-`src/haute/routes/pipeline.py`.
 
 ### ASSIST-17 — Self-test harness corrections
 **Why:** The sandbox's project root leaks between cases, so a multi-case run

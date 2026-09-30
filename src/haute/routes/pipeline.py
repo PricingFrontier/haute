@@ -282,7 +282,7 @@ def _trace_timeout() -> float:
     return float_env("HAUTE_TRACE_TIMEOUT", 120.0)
 
 
-def _preview_timeout() -> float:
+def preview_timeout() -> float:
     return float_env("HAUTE_PREVIEW_TIMEOUT", 120.0)
 
 
@@ -1407,7 +1407,7 @@ async def _preview_canonical_graph(
                     _preview_budget_profile,
                     graph,
                     body,
-                    timeout=_preview_timeout(),
+                    timeout=preview_timeout(),
                     operation="pipeline_preview_budget",
                 )
             except (BlockingWorkTimeoutError, TimeoutError):
@@ -1436,7 +1436,7 @@ async def _preview_canonical_graph(
                             body.source,
                             memo=fingerprint_memo,
                         ),
-                        timeout_seconds=_preview_timeout(),
+                        timeout_seconds=preview_timeout(),
                         stop_reason=(lambda: "superseded" if preview_token.cancelled else None),
                         absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
                         memory_growth_limit_bytes=budget.memory_limit_bytes,
@@ -1464,7 +1464,7 @@ async def _preview_canonical_graph(
 
             results = await run_blocking_with_response_timeout(
                 _execute_graph_in_thread,
-                timeout=_preview_timeout(),
+                timeout=preview_timeout(),
                 operation="pipeline_preview",
             )
             return _preview_response_from_results(graph, body, results, preview_context)
@@ -1501,7 +1501,7 @@ async def _preview_canonical_graph(
         preview_token.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
+            detail=f"Preview execution timed out ({preview_timeout():.0f}s limit)",
         ) from None
     except InteractiveWorkerStoppedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
@@ -1521,13 +1521,13 @@ async def _preview_canonical_graph(
             preview_context = None
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
+            detail=f"Preview execution timed out ({preview_timeout():.0f}s limit)",
         )
     except TimeoutError:
         preview_token.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
+            detail=f"Preview execution timed out ({preview_timeout():.0f}s limit)",
         )
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("preview_public_contract_error", **contract_error_payload(e))
@@ -1639,7 +1639,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     try:
         node_ids = await run_blocking_with_response_timeout(
             _resolve,
-            timeout=_preview_timeout(),
+            timeout=preview_timeout(),
             operation="pipeline_preview_inputs",
         )
     except PreviewProjectionError as e:
@@ -1650,7 +1650,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     except (BlockingWorkTimeoutError, TimeoutError):
         raise HTTPException(
             status_code=504,
-            detail=f"Preview input resolution timed out ({_preview_timeout():.0f}s limit)",
+            detail=f"Preview input resolution timed out ({preview_timeout():.0f}s limit)",
         ) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         raise contract_error_http_exception(e) from None

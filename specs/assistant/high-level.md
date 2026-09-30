@@ -211,8 +211,9 @@ that durable fact, in its original position after the mutation tool row.
   withheld, reducing unnecessary disclosure; low-cardinality strings can still be returned,
   including repeated personal data. This is the only tool that reads project data, and the
   project's explicit `allow_row_samples` policy is therefore the authorization boundary.
-  Its bounded collection owns the ordinary admitted preview-execution context, so upstream
-  group-bys follow the same memory-admission contract as every other execution workflow.
+  Its bounded collection runs in the editor's interactive preview worker under the
+  ordinary preview admission and the worker's memory cap, so frames downstream of joins
+  and aggregations profile like any other, and a stopped turn stops its profile.
   The system prompt states the project's effective egress policy in words and requires a
   profile before a literal comparison only when `allow_row_samples` permits one; otherwise
   it tells the model to ask the analyst which values to match, beginning `NEEDS_INPUT:`.
