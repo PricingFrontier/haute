@@ -23,7 +23,7 @@
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
-| `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (this pipeline's saved conversations for the panel's chat list, resolving the pipeline exactly as session creation does), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
+| `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Every one of the last three carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. It imports only Polars and the stdlib-only JSON-safe encoder, so the assistant reaches it without importing the routes layer. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies document-update fingerprint/wire-path helpers used by mutation publishing. |
@@ -578,8 +578,17 @@ for the configured provider and check its credential env var. Pure inspection, n
 provider network call. Config errors name `[assistant].<field>` but never echo
 the field value.
 
-**Session list** (`GET /api/assistant/sessions`): resolve the pipeline exactly as session
-creation does, then return `SessionStore.list_sessions(source_file)` — one summary per
+**Source file binding.** Session list, session create and message each carry a required,
+non-empty `source_file`: the project-relative path of the pipeline document the canvas
+shows. The route resolves it with `contained_path` against the project root (an escaping
+path → 403, a NUL byte → 400, through the shared path-error handlers), requires the
+resolved file to be one of `discover_pipelines()` (otherwise 404 naming the file), and
+uses its POSIX project-relative spelling, the same spelling the editor document's
+`source_file` carries, as the session binding. The server never picks a pipeline on the
+client's behalf.
+
+**Session list** (`GET /api/assistant/sessions?source_file=...`): resolve the source file,
+then return it with `SessionStore.list_sessions(source_file)` — one summary per
 conversation bound to that source file, carrying id, title, created/last-used timestamps,
 and message count, most recently used first. The title is the opening user message,
 whitespace-collapsed and bounded to 80 characters. Summaries are read directly from the
@@ -593,9 +602,10 @@ store's existing degradation posture. A conversation with no messages is omitted
 `create` persists immediately and an abandoned "new chat" would otherwise occupy the list
 as an untitled empty row.
 
-**Session create** (`POST /api/assistant/session`): resolve the pipeline (explicit name via
-`lookup_pipeline_by_name`, else the same first-pipeline default `GET /api/pipeline` uses);
-unknown name → 404. When the request carries a prior `session_id`,
+**Session create** (`POST /api/assistant/session` with `{source_file, session_id?}`; any
+other field is refused with 422): resolve the source file; the response echoes the
+resolved `source_file` beside `session_id` and `history`. When the request carries a
+prior `session_id`,
 `SessionStore.resume` validates its source binding before touching an
 in-memory candidate or promoting a disk-backed candidate. When it matches,
 return it unchanged
@@ -613,11 +623,16 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 
 1. Readiness is checked before session lookup (400 before the stream opens if
    unconfigured). This ordering means an unconfigured request reports the configuration
-   problem even when its session id is also unknown.
+   problem even when its session id is also unknown. The request's `source_file` is then
+   resolved (see Source file binding); it needs no session, so it happens before the
+   reservation.
 2. Look up the session (404) and atomically acquire its lock without waiting — held →
    409. The reservation happens before provider construction or pipeline parsing; either
    pre-stream failure releases it immediately, while a started turn releases it from the
-   loop/response lifecycle and appends the turn to history.
+   loop/response lifecycle and appends the turn to history. A resolved `source_file` that
+   differs from the session's binding releases the reservation and is refused with 409
+   naming the chat's pipeline: the canvas shows another pipeline, and the turn would
+   otherwise edit a file the analyst is not looking at.
 3. Resolve the provider configuration, construct the adapter, parse the session's saved
    pipeline, and build the provider request: system prompt (static role and
    authority/evidence instructions + compact capability identity, an installed-I/O
@@ -1208,6 +1223,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Malformed `haute.toml`, unknown assistant/egress key, missing or invalid egress policy, invalid OpenAI `base_url`, invalid/missing `DATABRICKS_HOST`, or conflicting Databricks `base_url` | `_config`, before SDK probing/client construction | `ConfigError` or not-ready reason naming the field/environment variable (never its value) → 400 |
 | Not configured / provider SDK missing | `_config` via route pre-check | 400 with the readiness reason verbatim |
 | Unknown session | route | 404 |
+| `source_file` outside the project root / holding a NUL byte | route (`contained_path`) | 403 / 400 |
+| `source_file` that is not a discovered pipeline | route | 404 naming the file |
+| Message `source_file` differs from the session's binding | route (after reservation, which it releases) | 409 naming the chat's pipeline |
 | Turn already running on session | route (lock try-acquire) | 409 |
 | Working branch not `"ready"` (`working_branch_status`) | `_tools` mutation pre-check | Structured tool error carrying the mapped per-state reason; status reports `mutations_enabled: false` with the same reason |
 | Ledger capture fails after a committed save | save service (degrade-to-warning path) | Warning propagated into the tool result and activity row; next successful capture sweeps the delta |
@@ -1442,8 +1460,12 @@ fixture for route tests). The implemented coverage is:
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
   transcript rehydration, adapter construction, atomic concurrent-send reservation, and
   lock release on pre-stream failure, disconnect, and mid-stream send failure. The list
-  endpoint pins this pipeline's conversations with their titles and counts, an empty
-  project, and the unknown-pipeline 404.
+  endpoint pins the requested pipeline's conversations with their titles and counts, an
+  empty project, and the unknown-source 404. Source binding pins that in a two-pipeline
+  project a chat created for the second pipeline runs its tools on that file, that a
+  message for another pipeline is a 409 naming the chat's pipeline which frees the
+  session, that an escaping source file is a 403, and that a request without
+  `source_file` or with an unknown field such as `pipeline` is a 422.
 - **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,

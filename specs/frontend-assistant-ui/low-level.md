@@ -4,14 +4,14 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded lazily by React): `PanelShell` chrome and one of two screens — the chat list, or one conversation's transcript (auto-scrolled while streaming) with the composer. Receives `isInsideSubmodel`, `currentSourceFile`, and the central document `readOnly` fence from the app shell, reads transcript/turn/status/list actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. The header icon becomes a back control inside a chat; the composer mounts only there. |
-| `frontend/src/panels/assistant/SessionList.tsx` | The chat-list screen: one row per saved conversation with its title and relative last-used time, plus distinct loading, empty, and retryable-error states so the opening screen never renders as a blank panel. Rows are disabled while no pipeline is resolved. |
+| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded lazily by React): `PanelShell` chrome and one of two screens — the chat list, or one conversation's transcript (auto-scrolled while streaming) with the composer. Receives `isInsideSubmodel` and the central document `readOnly` fence from the app shell, reads the loaded document's source file from `useDocumentStatusStore` (`sourceFile`, with the empty string of an unsaved canvas meaning no source), reads transcript/turn/status/list actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. The header icon becomes a back control inside a chat; the composer mounts only there. |
+| `frontend/src/panels/assistant/SessionList.tsx` | The chat-list screen: one row per saved conversation with its title and relative last-used time, plus distinct loading, empty, and retryable-error states so the opening screen never renders as a blank panel. Rows are disabled while the canvas has no source file. |
 | `frontend/src/panels/assistant/relativeTime.ts` | Relative-time rendering for list rows, kept out of the component module so the component file exports only components (React Fast Refresh). |
 | `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
 | `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel`, `currentSourceFile`, and `readOnly` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, the `view`/`sessions`/`sessionsStatus` list state, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus`/`loadSessions`/`openSession`/`showSessionList` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
-| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, `listAssistantSessions` (with per-row summary parsing), and `streamAssistantMessage`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
-| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` and the central document-read-only fence into the panel because both are app-owned state unavailable to the module-scope assistant store. |
+| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession(sourceFile, sessionId, signal)`, `listAssistantSessions(sourceFile, signal)` (with per-row summary parsing), and `streamAssistantMessage(sessionId, message, sourceFile, options)`; every call carries the canvas document's `source_file`, and the session and list parsers require the echoed `source_file`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
+| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` and the central document-read-only fence into the panel because both are app-owned state unavailable to the module-scope assistant store; the panel reads the document's source file from `useDocumentStatusStore` itself, so drilling into a submodel never changes the chat's pipeline. |
 | `frontend/src/stores/useUIStore.ts` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned UI state with an `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
 | `frontend/src/components/Toolbar.tsx` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned toolbar with an Assistant toggle button in its Assistant and Help column, calling `setAssistantOpen`. |
 
@@ -49,10 +49,13 @@
   `{ kind: "activity"; id; name; state: "running" | "ok" | "error"; summary }` ·
   `{ kind: "marker"; outcome: "completed" | "failed" | "stopped" | "interrupted"; detail?: string }`.
 - **`AssistantStoreState`**: `sessionId: string | null`, `pipelineSource: string | null` (the
-  source-file key associated with the current in-memory session), `entries: TranscriptEntry[]`,
+  source file the server echoed when the current session was created or opened),
+  `entries: TranscriptEntry[]`,
   `turnStatus: "idle" | "streaming"`, `status: AssistantStatus | "unknown" | "error"`,
   `notice: string | null`, `view: "list" | "chat"`, `sessions: AssistantSessionSummary[]`,
-  `sessionsStatus: "unknown" | "loading" | "ready" | "error"`, and the actions listed in the module map. The in-flight
+  `sessionsStatus: "unknown" | "loading" | "ready" | "error"`, `sessionsSource: string | null`
+  (the source file the panel last asked to list, so a finished turn refreshes the list the
+  canvas shows rather than the one the turn started on), and the actions listed in the module map. The in-flight
   `AbortController` is module state, not a Zustand field.
 
 ## Control flow
@@ -60,13 +63,15 @@
 **Open.** Toolbar button → `setAssistantOpen(true)` (clears the other right-panel flags) →
 `App.tsx` cascade renders `Suspense(lazy AssistantPanel)` in its error boundary → mount
 effects call `refreshStatus()` unconditionally on every open (the previous status stays
-rendered as the loading state; never polled) and `loadSessions(currentSourceFile)`.
+rendered as the loading state; never polled) and `loadSessions(sourceFile)` with the loaded
+document's source file (`null` for an unsaved canvas).
 
-**Chat list.** The panel opens on `view: "list"`: `GET /api/assistant/sessions` returns this
-pipeline's saved conversations, most recently used first, each with a title, relative
-last-used time, and message count. Selecting one calls `openSession(sessionId,
+**Chat list.** The panel opens on `view: "list"`: `GET /api/assistant/sessions?source_file=`
+returns that pipeline's saved conversations, most recently used first, each with a title,
+relative last-used time, and message count. Selecting one calls `openSession(sessionId,
 sourceFile)`, which resolves its transcript through `POST /api/assistant/session` with that
-id and switches to `view: "chat"`. `newChat()` clears the transcript and switches to the
+source file and id, records the echoed source file as `pipelineSource`, and switches to
+`view: "chat"`. `newChat()` clears the transcript and switches to the
 chat screen **without** creating a backend session — `create` persists immediately, so an
 abandoned new chat would appear in the list as an empty untitled row; the first send mints
 it. The back control returns to the list and refreshes it, and a completed turn refreshes
@@ -92,10 +97,8 @@ transcript. A valid send also bumps the open ticket before creating or streaming
 session: the message becomes the active chat, so a slower response from the row that was
 opening cannot overwrite the new session and transcript. The tickets sit at module scope
 alongside `activeController` because the panel can unmount and remount mid-request.
-`loadSessions(sourceFile)` treats
-its argument as the gate, not the query: like `createAssistantSession`, the request itself
-deliberately sends `pipeline: null` so the server resolves the pipeline the same way
-session creation does, and with none resolved there is nothing to list. When called for a
+`loadSessions(sourceFile)` records `sourceFile` as `sessionsSource` and lists exactly that
+pipeline's conversations; with no source file there is nothing to list. When called for a
 different source while idle, it invalidates the old chat's navigation ticket, clears that
 active session/transcript, and returns to the list; a conversation from one pipeline is never shown
 under another pipeline's canvas.
@@ -103,26 +106,32 @@ under another pipeline's canvas.
 **Send.** `Composer` submit → `useAssistantStore.getState().sendMessage(text)`:
 
 1. Guards, in order: `turnStatus === "idle"` (whitespace-only input is also a
-   no-op); `currentSourceFile` equals `pipelineSource` (mismatch resets session +
-   transcript first); then `assistantSendDisabledReason`: status not `"unknown"`
-   and not `"error"`; `status.configured`; `status.mutations_enabled`; not inside
+   no-op); then `assistantSendDisabledReason`: status not `"unknown"`
+   and not `"error"`; `status.configured`; `status.mutations_enabled`; the canvas
+   has a source file ("Save this pipeline to a file before using Assistant.");
+   an open chat's `pipelineSource` equals that source file (otherwise "This chat
+   belongs to <pipelineSource>. Open that pipeline to continue it, or start a new
+   chat." — the session and transcript are kept, never silently replaced); not inside
    a submodel; canvas not dirty (`useGraphStore.getState().dirty === false`);
    document not read-only (synchronized and not degraded). `sendMessage(text, {isInsideSubmodel, currentSourceFile, readOnly})` receives these
-   values as arguments because the
-   view stack AND the loaded pipeline's source are hook-local state in `App`
-   (`usePipelineAPI`) that a module-scope store action cannot read (App → panel →
-   composer prop chain). A failed gate helper check renders as composer messaging,
-   not a thrown error.
+   values as arguments because the view stack and the document fence are app-owned
+   state that a module-scope store action cannot read (App → panel → composer prop
+   chain); `currentSourceFile` is the panel's `useDocumentStatusStore` source file. A
+   failed gate helper check renders as composer messaging and, from `sendMessage`, as
+   the panel notice, not a thrown error.
 2. Create the turn's `AbortController`, make it the module-scope owner, and set
    `turnStatus = "streaming"` synchronously before the first await. This is the lock
    acquisition: a second same-tick send cannot pass while session creation is pending.
-3. Ensure a session: `createAssistantSession(null, null, signal)` on first send — the
-   current client deliberately sends `pipeline: null`, and always a null prior id, so this
-   call only ever mints a fresh conversation. Resuming here would drop a stored transcript
+3. Ensure a session: `createAssistantSession(currentSourceFile, null, signal)` on first
+   send — always a null prior id, so this call only ever mints a fresh conversation bound
+   to the canvas's pipeline. Resuming here would drop a stored transcript
    into a chat the user opened as new; `openSession` owns resumption. The response is
-   requested as `unknown` and parsed locally before its `session_id` is stored to state.
+   requested as `unknown` and parsed locally before its `session_id` and echoed
+   `source_file` are stored to state.
 4. Append the user entry and open a streaming assistant entry.
-5. `streamAssistantMessage(sessionId, text, signal)` — POST via the exported authenticated
+5. `streamAssistantMessage(sessionId, text, currentSourceFile, {signal, onEvent})` — the
+   server refuses a source file other than the session's with a 409 whose detail names
+   the chat's pipeline, rendered as the notice. POST via the exported authenticated
    raw-stream helper, then read the response body: chunks are buffered and split on the
    SSE frame delimiter (frames may span chunk boundaries; one chunk may carry several
    frames), each frame's `data:` payload is JSON-decoded and fully parsed into
@@ -133,7 +142,9 @@ under another pipeline's canvas.
    not here). A terminal event is retained locally and
    committed as the single marker only
    after the response ends; any later event throws instead. The owning action alone clears
-   its controller and returns `turnStatus` to idle in `finally`.
+   its controller and returns `turnStatus` to idle in `finally`, then refreshes the chat
+   list for `sessionsSource`: when the canvas changed pipeline mid-turn that refresh
+   returns the panel to the new pipeline's list, never the old pipeline's.
 6. The loop runs in the store action, not a component effect — closing the panel (or another
    panel's setter forcing `assistantOpen` false) does not stop a running turn; reopening shows
    the live state.
@@ -222,8 +233,8 @@ Implemented Vitest coverage is split between
 and `frontend/src/__tests__/App.assistantLazy.test.ts`. Transcript/composer DOM
 interactions are covered through the store/API boundaries.
 
-- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, a pipeline change clearing the prior chat, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, by a send, or by the back control.
-- **Chat list rendering** (`frontend/src/panels/assistant/__tests__/SessionList.test.tsx`): loading, empty, and retryable-error states are distinguishable rather than blank; rows render their title (with a fallback label for an untitled conversation) and open the one clicked; rows are inert with no pipeline resolved; and relative-time rendering across its boundaries.
+- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; the no-source and mismatched-source refusals (a send whose canvas shows another pipeline than the open chat's is refused with a notice naming the chat's pipeline, keeps the session and makes no request) versus same-source session reuse; every request carrying the canvas source file; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, a pipeline change clearing the prior chat, a turn that finishes after a pipeline change refreshing the new pipeline's list, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, by a send, or by the back control.
+- **Chat list rendering** (`frontend/src/panels/assistant/__tests__/SessionList.test.tsx`): loading, empty, and retryable-error states are distinguishable rather than blank; rows render their title (with a fallback label for an untitled conversation) and open the one clicked; rows are inert while the canvas has no source file; and relative-time rendering across its boundaries.
 - **Assistant API boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
   endpoint payloads and abort signal; valid and malformed status/session/history
   shapes; chunk-split and multi-frame ordering; keep-alive handling; missing or
@@ -246,8 +257,8 @@ The following matrix records the full regression contract; where the scenario is
 - **Send gates**: dirty canvas blocks with notice; a degraded, source-only, or unsynchronized
   document blocks with a recovery notice; unconfigured blocks and renders the
   backend reason; mutations-disabled blocks and renders `mutations_reason`; drilled into a
-  submodel blocks with notice (depth > 1); streaming locks the composer; pipeline-source
-  mismatch resets the session before sending; whitespace no-op.
+  submodel blocks with notice (depth > 1); streaming locks the composer; a canvas without a source file,
+  or one showing another pipeline than the open chat's, refuses to send and names why; whitespace no-op.
 - **Status refresh**: `refreshStatus()` fires on every panel open, keeping the prior status
   rendered while loading.
 - **Stop semantics**: abort marks `stopped`, keeps prior entries, re-enables the composer;

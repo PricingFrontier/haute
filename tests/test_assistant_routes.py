@@ -11,12 +11,14 @@ Seams pinned for batch 9:
 - ``haute.routes.assistant._provider_factory(config)`` — builds the provider
   for a turn; tests patch it to inject a scripted fake.
 - Endpoints: ``GET /api/assistant/status`` → ``AssistantStatusResponse``;
-  ``POST /api/assistant/session`` ``{pipeline?}`` → ``{"session_id": ...}``
-  (unknown pipeline name → 404); ``POST /api/assistant/message``
-  ``{session_id, message}`` → ``text/event-stream`` of ``data:``-framed
+  ``POST /api/assistant/session`` ``{source_file, session_id?}`` →
+  ``{"session_id": ..., "source_file": ...}`` (a source file that is not a
+  discovered pipeline → 404); ``POST /api/assistant/message``
+  ``{session_id, message, source_file}`` → ``text/event-stream`` of ``data:``-framed
   ``AssistantStreamEvent`` JSON (unconfigured → 400 naming the reason;
-  unknown session → 404; concurrent turn → 409; provider failure before
-  the stream opens → 502 with a sanitized message).
+  unknown session → 404; concurrent turn → 409; another pipeline than the
+  session's → 409; provider failure before the stream opens → 502 with a
+  sanitized message).
 
 Authored test-first per CLAUDE.md TDD.
 """
@@ -36,6 +38,13 @@ from haute.assistant._session import SessionStore
 pytestmark = pytest.mark.usefixtures("project_root")
 
 _PIPELINE = 'import haute\npipeline = haute.Pipeline("main", description="d")\n'
+_OTHER_PIPELINE = 'import haute\npipeline = haute.Pipeline("second", description="d")\n'
+# Every assistant request names the pipeline the canvas shows.
+_CANVAS = {"source_file": "main.py"}
+
+
+def _message(session_id: str, message: str = "hi", source_file: str = "main.py") -> dict:
+    return {"session_id": session_id, "message": message, "source_file": source_file}
 
 
 @pytest.fixture()
@@ -135,15 +144,36 @@ class TestStatus:
 
 
 class TestSessionCreate:
-    def test_creates_session_for_default_pipeline(self, client: TestClient, store: SessionStore):
-        response = client.post("/api/assistant/session", json={})
+    def test_creates_session_bound_to_the_canvas_pipeline(
+        self, client: TestClient, store: SessionStore
+    ):
+        response = client.post("/api/assistant/session", json=_CANVAS)
         assert response.status_code == 200, response.text
-        session_id = response.json()["session_id"]
-        assert store.lookup(session_id) is not None
+        body = response.json()
+        assert body["source_file"] == "main.py"
+        session = store.lookup(body["session_id"])
+        assert session is not None
+        assert session.source_file == "main.py"
 
-    def test_unknown_pipeline_name_is_404(self, client: TestClient, store: SessionStore):
-        response = client.post("/api/assistant/session", json={"pipeline": "nope"})
-        assert response.status_code == 404
+    def test_source_file_that_is_not_a_pipeline_is_404(
+        self, client: TestClient, store: SessionStore, project_root: Path
+    ):
+        (project_root / "helpers.py").write_text("VALUE = 1\n", encoding="utf-8")
+        for source_file in ("nope.py", "helpers.py"):
+            response = client.post("/api/assistant/session", json={"source_file": source_file})
+            assert response.status_code == 404, response.text
+            assert source_file in response.json()["detail"]
+
+    def test_source_file_outside_the_project_is_403(self, client: TestClient, store: SessionStore):
+        response = client.post("/api/assistant/session", json={"source_file": "../main.py"})
+        assert response.status_code == 403, response.text
+
+    @pytest.mark.parametrize("body", [{}, {"source_file": ""}, {"pipeline": "main"}])
+    def test_request_without_a_source_file_is_422(
+        self, client: TestClient, store: SessionStore, body: dict
+    ):
+        response = client.post("/api/assistant/session", json=body)
+        assert response.status_code == 422, response.text
 
 
 class TestSessionList:
@@ -153,18 +183,44 @@ class TestSessionList:
         session = store.create("main.py")
         store.append(session, {"messages": [{"role": "user", "content": "aggregate claims"}]})
 
-        response = client.get("/api/assistant/sessions")
+        response = client.get("/api/assistant/sessions", params=_CANVAS)
 
         assert response.status_code == 200, response.text
+        assert response.json()["source_file"] == "main.py"
         sessions = response.json()["sessions"]
         assert [item["session_id"] for item in sessions] == [session.id]
         assert sessions[0]["title"] == "aggregate claims"
         assert sessions[0]["message_count"] == 1
 
+    def test_lists_only_the_requested_pipeline_s_conversations(
+        self, client: TestClient, store: SessionStore, project_root: Path
+    ):
+        (project_root / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
+        main = store.create("main.py")
+        store.append(main, {"messages": [{"role": "user", "content": "main chat"}]})
+        other = store.create("other.py")
+        store.append(other, {"messages": [{"role": "user", "content": "other chat"}]})
+
+        listed = {
+            source_file: [
+                item["title"]
+                for item in client.get(
+                    "/api/assistant/sessions", params={"source_file": source_file}
+                ).json()["sessions"]
+            ]
+            for source_file in ("main.py", "other.py")
+        }
+
+        assert listed == {"main.py": ["main chat"], "other.py": ["other chat"]}
+
     def test_empty_project_lists_nothing(self, client: TestClient, store: SessionStore):
-        response = client.get("/api/assistant/sessions")
+        response = client.get("/api/assistant/sessions", params=_CANVAS)
         assert response.status_code == 200
         assert response.json()["sessions"] == []
+
+    def test_list_requires_a_source_file(self, client: TestClient, store: SessionStore):
+        response = client.get("/api/assistant/sessions")
+        assert response.status_code == 422
 
     def test_reads_the_store_on_its_event_loop_thread(
         self,
@@ -180,12 +236,12 @@ class TestSessionList:
 
         monkeypatch.setattr(store, "list_sessions", list_sessions)
 
-        response = client.get("/api/assistant/sessions")
+        response = client.get("/api/assistant/sessions", params=_CANVAS)
 
         assert response.status_code == 200, response.text
 
-    def test_unknown_pipeline_name_is_404(self, client: TestClient, store: SessionStore):
-        response = client.get("/api/assistant/sessions", params={"pipeline": "nope"})
+    def test_unknown_source_file_is_404(self, client: TestClient, store: SessionStore):
+        response = client.get("/api/assistant/sessions", params={"source_file": "nope.py"})
         assert response.status_code == 404
 
 
@@ -206,7 +262,7 @@ class TestSessionResume:
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         store = _persistent_store(monkeypatch, project_root)
-        session_id = client.post("/api/assistant/session", json={}).json()["session_id"]
+        session_id = client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
         store.append(
             session_id,
             {
@@ -242,7 +298,7 @@ class TestSessionResume:
         )
 
         _persistent_store(monkeypatch, project_root)  # simulated server restart
-        resumed = client.post("/api/assistant/session", json={"session_id": session_id})
+        resumed = client.post("/api/assistant/session", json={**_CANVAS, "session_id": session_id})
         assert resumed.status_code == 200, resumed.text
         body = resumed.json()
         assert body["session_id"] == session_id
@@ -269,7 +325,7 @@ class TestSessionResume:
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         store = _persistent_store(monkeypatch, project_root)
-        session_id = client.post("/api/assistant/session", json={}).json()["session_id"]
+        session_id = client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
         store.append(
             session_id,
             {
@@ -289,7 +345,9 @@ class TestSessionResume:
                 ]
             },
         )
-        body = client.post("/api/assistant/session", json={"session_id": session_id}).json()
+        body = client.post(
+            "/api/assistant/session", json={**_CANVAS, "session_id": session_id}
+        ).json()
         tool = body["history"][-1]
         assert tool["kind"] == "tool"
         assert tool["is_error"] is True
@@ -299,30 +357,25 @@ class TestSessionResume:
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         _persistent_store(monkeypatch, project_root)
-        body = client.post("/api/assistant/session", json={"session_id": "f" * 32}).json()
+        body = client.post(
+            "/api/assistant/session", json={**_CANVAS, "session_id": "f" * 32}
+        ).json()
         assert body["session_id"] != "f" * 32
         assert body["history"] == []
 
     def test_session_bound_to_another_pipeline_yields_a_fresh_session(
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        (project_root / "other.py").write_text(
-            'import haute\npipeline = haute.Pipeline("second", description="d")\n',
-            encoding="utf-8",
-        )
-        # The name→path index is process-cached (startup/watcher rebuild it in
-        # production); tests poke it directly so this cwd's pipelines are seen.
-        from haute.routes._helpers import invalidate_pipeline_index
-
-        invalidate_pipeline_index()
+        (project_root / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
         _persistent_store(monkeypatch, project_root)
-        session_id = client.post("/api/assistant/session", json={}).json()["session_id"]
+        session_id = client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
 
         body = client.post(
             "/api/assistant/session",
-            json={"pipeline": "second", "session_id": session_id},
+            json={"source_file": "other.py", "session_id": session_id},
         ).json()
         assert body["session_id"] != session_id
+        assert body["source_file"] == "other.py"
         assert body["history"] == []
 
 
@@ -333,24 +386,20 @@ class TestSessionResume:
 
 class TestMessageTurn:
     def _session(self, client: TestClient) -> str:
-        return client.post("/api/assistant/session", json={}).json()["session_id"]
+        return client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
 
     def test_unconfigured_send_is_400_naming_the_reason(
         self, client: TestClient, store: SessionStore
     ):
         session_id = self._session(client)
-        response = client.post(
-            "/api/assistant/message", json={"session_id": session_id, "message": "hi"}
-        )
+        response = client.post("/api/assistant/message", json=_message(session_id))
         assert response.status_code == 400
         assert "assistant" in response.json()["detail"].lower()
 
     def test_unknown_session_is_404(
         self, client: TestClient, store: SessionStore, configured: Path
     ):
-        response = client.post(
-            "/api/assistant/message", json={"session_id": "missing", "message": "hi"}
-        )
+        response = client.post("/api/assistant/message", json=_message("missing"))
         assert response.status_code == 404
 
     def test_concurrent_turn_is_409(
@@ -372,9 +421,7 @@ class TestMessageTurn:
         # loop that acquired it.
         asyncio.run(session.lock.acquire())
         try:
-            response = client.post(
-                "/api/assistant/message", json={"session_id": session_id, "message": "hi"}
-            )
+            response = client.post("/api/assistant/message", json=_message(session_id))
             assert response.status_code == 409
         finally:
             session.lock.release()
@@ -393,9 +440,7 @@ class TestMessageTurn:
             monkeypatch,
             [TextDelta("Hel"), TextDelta("lo"), TurnStop("end", ProviderUsage(3, 4))],
         )
-        with client.stream(
-            "POST", "/api/assistant/message", json={"session_id": session_id, "message": "hi"}
-        ) as response:
+        with client.stream("POST", "/api/assistant/message", json=_message(session_id)) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
             events = _sse_events(response)
@@ -404,6 +449,80 @@ class TestMessageTurn:
         assert types[:2] == ["text_delta", "text_delta"]
         assert types[-1] == "completed"
         assert events[-1]["usage"] == {"input_tokens": 3, "output_tokens": 4}
+
+    def test_turn_edits_the_pipeline_the_canvas_shows(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Two-pipeline repro: the chat for the second pipeline must never fall
+        back to the project's first pipeline."""
+
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._providers import ProviderUsage
+
+        (configured / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
+        executor_sources: list[str] = []
+
+        def build_executor(source_file, *, session_id, prior_messages):
+            executor_sources.append(source_file)
+
+            async def execute_tool(_name, _arguments):
+                return {}
+
+            return execute_tool
+
+        provider = _ScriptedProvider([TextDelta("ok"), TurnStop("end", ProviderUsage(1, 1))])
+        monkeypatch.setattr(assistant_routes, "build_tool_executor", build_executor)
+        monkeypatch.setattr(assistant_routes, "_provider_factory", lambda _config: provider)
+
+        created = client.post("/api/assistant/session", json={"source_file": "other.py"})
+        session_id = created.json()["session_id"]
+        with client.stream(
+            "POST",
+            "/api/assistant/message",
+            json=_message(session_id, source_file="other.py"),
+        ) as response:
+            assert response.status_code == 200, response.read()
+            events = _sse_events(response)
+
+        assert events[-1]["type"] == "completed"
+        assert executor_sources == ["other.py"]
+        assert "other.py" in provider.calls[0]["system"]
+        assert "main.py" not in provider.calls[0]["system"]
+
+    def test_message_for_another_pipeline_is_409_naming_the_chat_s_pipeline(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        (configured / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
+        _patch_provider(monkeypatch, [TextDelta("x")])
+        session_id = self._session(client)
+
+        response = client.post(
+            "/api/assistant/message", json=_message(session_id, source_file="other.py")
+        )
+
+        assert response.status_code == 409, response.text
+        assert "main.py" in response.json()["detail"]
+        session = store.lookup(session_id)
+        assert session is not None
+        assert not session.lock.locked(), "a refused message must free the session"
+        assert session.history == []
+
+    def test_message_without_a_source_file_is_422(
+        self, client: TestClient, store: SessionStore, configured: Path
+    ):
+        session_id = self._session(client)
+        response = client.post(
+            "/api/assistant/message", json={"session_id": session_id, "message": "hi"}
+        )
+        assert response.status_code == 422
 
     def test_provider_failure_before_stream_is_502_sanitized(
         self,
@@ -419,9 +538,7 @@ class TestMessageTurn:
 
         monkeypatch.setattr(assistant_routes, "_provider_factory", broken_factory)
         session_id = self._session(client)
-        response = client.post(
-            "/api/assistant/message", json={"session_id": session_id, "message": "hi"}
-        )
+        response = client.post("/api/assistant/message", json=_message(session_id))
         assert response.status_code >= 500
         assert "xyzzy" not in response.text
 
@@ -447,13 +564,6 @@ class TestRouteEdges:
         assert response.json()["mutations_enabled"] is False
         assert "Git is not available" in response.json()["mutations_reason"]
 
-    def test_session_create_with_explicit_pipeline_name(
-        self, client: TestClient, store: SessionStore
-    ):
-        response = client.post("/api/assistant/session", json={"pipeline": "main"})
-        assert response.status_code == 200, response.text
-        assert store.lookup(response.json()["session_id"]) is not None
-
     def test_status_translates_unexpected_readiness_failure_to_sanitized_500(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ):
@@ -477,15 +587,13 @@ class TestRouteEdges:
         import haute.routes.assistant as assistant_routes
         from haute.errors import ConfigError
 
-        session_id = client.post("/api/assistant/session", json={}).json()["session_id"]
+        session_id = client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
 
         def broken_resolve():
             raise ConfigError("assistant config went away")
 
         monkeypatch.setattr(assistant_routes, "resolve_assistant_config", broken_resolve)
-        response = client.post(
-            "/api/assistant/message", json={"session_id": session_id, "message": "hi"}
-        )
+        response = client.post("/api/assistant/message", json=_message(session_id))
         assert response.status_code == 400
         assert "config" in response.json()["detail"].lower()
 
@@ -542,7 +650,7 @@ class TestProviderFactory:
         self, client: TestClient, store: SessionStore, project_root: Path
     ):
         (project_root / "main.py").unlink()
-        response = client.post("/api/assistant/session", json={})
+        response = client.post("/api/assistant/session", json=_CANVAS)
         assert response.status_code == 404
 
 
@@ -585,7 +693,7 @@ class TestTurnReservation:
             ),
         )
 
-        body = AssistantMessageRequest(session_id=session_id, message="hi")
+        body = AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
         first_task = asyncio.create_task(assistant_routes.post_assistant_message(body))
         assert await asyncio.to_thread(parse_started.wait, 2)
 
@@ -644,7 +752,9 @@ class TestTurnReservation:
         )
 
         response = await assistant_routes.post_assistant_message(
-            AssistantMessageRequest(session_id=session.id, message="continue")
+            AssistantMessageRequest(
+                session_id=session.id, message="continue", source_file="main.py"
+            )
         )
         chunks = [chunk async for chunk in response.body_iterator]
 
@@ -705,6 +815,7 @@ class TestTurnReservation:
             AssistantMessageRequest(
                 session_id=session.id,
                 message="north and south are core",
+                source_file="main.py",
             )
         )
         chunks = [chunk async for chunk in response.body_iterator]
@@ -747,7 +858,7 @@ class TestTurnReservation:
             raise RuntimeError("prompt assembly failed")
 
         monkeypatch.setattr(assistant_routes._loop, "build_system_prompt", broken_prompt)
-        body = AssistantMessageRequest(session_id=session_id, message="hi")
+        body = AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
         with pytest.raises(HTTPException) as excinfo:
             await assistant_routes.post_assistant_message(body)
         assert excinfo.value.status_code == 500
@@ -773,7 +884,9 @@ class TestTurnReservation:
 
         with pytest.raises(ValueError, match="invalid project evidence"):
             await assistant_routes.post_assistant_message(
-                AssistantMessageRequest(session_id=session.id, message="continue")
+                AssistantMessageRequest(
+                    session_id=session.id, message="continue", source_file="main.py"
+                )
             )
 
         assert not session.lock.locked()
@@ -835,7 +948,7 @@ class TestReservationNeverLeaks:
             ),
         )
 
-        body = AssistantMessageRequest(session_id=session_id, message="hi")
+        body = AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
         response = await assistant_routes.post_assistant_message(body)
         session = store.lookup(session_id)
         assert session is not None
@@ -886,7 +999,7 @@ class TestMidStreamDisconnectTeardown:
             ),
         )
 
-        body = AssistantMessageRequest(session_id=session_id, message="hi")
+        body = AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
         response = await assistant_routes.post_assistant_message(body)
 
         sent: list[dict] = []

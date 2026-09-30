@@ -98,7 +98,14 @@ piece — there is no default provider and no silent degradation.
 **Sessions.** A chat session is created explicitly, bound to one pipeline, and held in
 process memory as the runtime authority, with every committed turn written through to
 `.haute/assistant/sessions/<id>.json` so history survives the constant server restarts of
-a locally-run tool. Session create accepts an optional prior session id: when its
+a locally-run tool. The pipeline is always the one the canvas shows: session create,
+session list and every message carry the loaded document's project-relative source file,
+and the server never guesses a default pipeline. The server resolves that path inside the
+project, requires it to be a discovered pipeline, and binds the session to its canonical
+spelling, which the create and list responses echo. The chat list offers only
+conversations bound to that source file, and a message whose source file differs from its
+session's is refused with 409 naming the chat's pipeline, so an edit can never land in a
+file the analyst is not looking at. Session create accepts an optional prior session id: when its
 persisted record exists (in memory or on disk) and is bound to the same pipeline, the
 session resumes with its transcript returned for the panel to rehydrate; otherwise a
 fresh session is created — resume is an offer, never an error. A mismatched
@@ -882,8 +889,9 @@ Loud, typed, and never averaged away:
   (read tools still work), and the status endpoint reports mutations disabled with the same
   reason; a rare post-save capture failure degrades to a visible warning in the chat, never
   silently.
-- **Unknown session** → 404; **concurrent turn on one session** → 409; both typed, neither
-  auto-recovers.
+- **Unknown session** → 404; **concurrent turn on one session** → 409; **a message for
+  another pipeline than its session's** → 409 naming the chat's pipeline; **a source file
+  that is not a discovered pipeline** → 404; all typed, none auto-recovers.
 - **Broadcast failures are isolated** — the event bus already isolates subscriber
   exceptions, so a misbehaving WebSocket consumer can never fail a save that has already
   committed.

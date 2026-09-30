@@ -7,23 +7,21 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from haute._logging import get_logger
+from haute._sandbox import contained_path
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
 from haute.assistant._providers import AssistantProvider, create_provider
 from haute.assistant._session import AssistantSession, SessionStore
 from haute.assistant._tools import TOOL_DEFINITIONS, build_tool_executor
-from haute.errors import ConfigError, HauteError
-from haute.graph_utils import PipelineGraph
+from haute.errors import ConfigError, HauteError, InvalidPathError, PathOutsideProjectError
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
-    lookup_pipeline_by_name,
     parse_pipeline_to_graph,
-    raise_pipeline_not_found,
 )
 from haute.schemas import (
     AssistantCancelledEvent,
@@ -63,54 +61,43 @@ def _provider_factory(config: AssistantConfig) -> AssistantProvider:
     return create_provider(config)
 
 
-def _relative_source_file(path: Path) -> str:
-    """Return the source spelling used by the existing pipeline route."""
+def _canonical_source_file(source_file: str) -> str:
+    """Resolve the canvas document's source file to the session binding.
 
-    cwd = Path.cwd().resolve()
-    resolved = path.resolve()
-    try:
-        return str(resolved.relative_to(cwd))
-    except ValueError:
-        return str(path)
+    The path must stay inside the project root and name a discovered pipeline;
+    the binding is its POSIX project-relative spelling, the same spelling the
+    editor document's ``source_file`` carries. There is no default pipeline:
+    the assistant edits exactly the file the canvas shows.
+    """
 
-
-def _find_default_pipeline() -> tuple[Path, PipelineGraph] | None:
-    """Find the first non-empty pipeline using GET /api/pipeline's ordering."""
-
-    cwd = Path.cwd()
-    best: tuple[Path, PipelineGraph] | None = None
+    root = Path.cwd().resolve()
+    target = contained_path(root, source_file)
     for path in discover_pipelines():
-        try:
-            graph = parse_pipeline_to_graph(path)
-            graph.source_file = str(path.relative_to(cwd))
-            if graph.nodes:
-                return path, graph
-            if best is None:
-                best = path, graph
-        except Exception as exc:
-            logger.warning(
-                "assistant_pipeline_parse_failed",
-                file=path.name,
-                error=type(exc).__name__,
-            )
-    return best
+        resolved = path.resolve()
+        if resolved == target:
+            return resolved.relative_to(root).as_posix()
+    raise HTTPException(
+        status_code=404,
+        detail=f"No pipeline file '{source_file}' was found in this project",
+    )
 
 
-def _resolve_pipeline(name: str | None) -> tuple[Path, PipelineGraph]:
-    """Resolve an explicit named pipeline or the default active pipeline."""
+async def _bound_source_file(source_file: str) -> str:
+    """Resolve a request's source file, translating failures at the HTTP edge.
 
-    if name is not None:
-        path = lookup_pipeline_by_name(name)
-        if path is None:
-            raise_pipeline_not_found(name)
-        graph = parse_pipeline_to_graph(path)
-        graph.source_file = _relative_source_file(path)
-        return path, graph
+    Path containment errors propagate to the shared path-error handlers (403
+    for a path outside the project, 400 for an unusable one).
+    """
 
-    resolved = _find_default_pipeline()
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="No pipeline was found")
-    return resolved
+    try:
+        return await asyncio.to_thread(_canonical_source_file, source_file)
+    except (HTTPException, PathOutsideProjectError, InvalidPathError):
+        raise
+    except HauteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        detail = _http_error_detail(exc, "session_source_resolution")
+        raise HTTPException(status_code=500, detail=detail) from None
 
 
 def _http_error_detail(exc: Exception, operation: str) -> str:
@@ -201,26 +188,19 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
 
 
 @router.get("/sessions", response_model=AssistantSessionListResponse)
-async def list_assistant_sessions(pipeline: str | None = None) -> AssistantSessionListResponse:
-    """List this pipeline's saved conversations, most recently used first.
+async def list_assistant_sessions(
+    source_file: str = Query(min_length=1),
+) -> AssistantSessionListResponse:
+    """List the canvas pipeline's saved conversations, most recently used first.
 
-    The panel opens on this list, so it resolves the pipeline the same way
-    session creation does: a conversation belongs to the source file it was
-    bound to, and another pipeline's chats are never offered here.
+    A conversation belongs to the source file it was bound to, and another
+    pipeline's chats are never offered here.
     """
 
-    try:
-        path, _graph = await asyncio.to_thread(_resolve_pipeline, pipeline)
-    except HTTPException:
-        raise
-    except HauteError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except Exception as exc:
-        detail = _http_error_detail(exc, "session_pipeline_resolution")
-        raise HTTPException(status_code=500, detail=detail) from None
-
-    summaries = session_store.list_sessions(_relative_source_file(path))
+    bound_source = await _bound_source_file(source_file)
+    summaries = session_store.list_sessions(bound_source)
     return AssistantSessionListResponse(
+        source_file=bound_source,
         sessions=[
             AssistantSessionSummary(
                 session_id=summary.session_id,
@@ -230,40 +210,31 @@ async def list_assistant_sessions(pipeline: str | None = None) -> AssistantSessi
                 message_count=summary.message_count,
             )
             for summary in summaries
-        ]
+        ],
     )
 
 
 @router.post("/session", response_model=AssistantSessionResponse)
 async def create_assistant_session(body: AssistantSessionRequest) -> AssistantSessionResponse:
-    """Create a session bound to an existing pipeline source file.
+    """Create a session bound to the canvas pipeline's source file.
 
     A prior `session_id` is a resume offer: when it revives (memory or disk)
-    and is bound to the same resolved pipeline, the same session returns with
+    and is bound to the same source file, the same session returns with
     its transcript; any other case creates a fresh session.
     """
 
-    try:
-        path, _graph = await asyncio.to_thread(_resolve_pipeline, body.pipeline)
-    except HTTPException:
-        raise
-    except HauteError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except Exception as exc:
-        detail = _http_error_detail(exc, "session_pipeline_resolution")
-        raise HTTPException(status_code=500, detail=detail) from None
-
-    source_file = _relative_source_file(path)
+    source_file = await _bound_source_file(body.source_file)
     if body.session_id is not None:
         existing = session_store.resume(body.session_id, source_file)
         if existing is not None:
             return AssistantSessionResponse(
                 session_id=existing.id,
+                source_file=existing.source_file,
                 history=_transcript_entries(existing),
             )
 
     session = session_store.create(source_file)
-    return AssistantSessionResponse(session_id=session.id)
+    return AssistantSessionResponse(session_id=session.id, source_file=session.source_file)
 
 
 async def _event_stream(
@@ -346,6 +317,9 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         raise HTTPException(
             status_code=400, detail=readiness.reason or "Assistant is not configured"
         )
+    # The source file needs no session, so it resolves before the reservation;
+    # comparing it with the session's binding waits until the session is held.
+    source_file = await _bound_source_file(body.source_file)
 
     # Reserve the one-turn lock atomically BEFORE any awaited pre-work: a
     # bare `lock.locked()` check here would let two simultaneous sends both
@@ -362,6 +336,16 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
     session = reservation.session
 
     try:
+        if source_file != session.source_file:
+            # The canvas shows another pipeline: running the turn would edit
+            # a file the analyst is not looking at.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This chat belongs to pipeline '{session.source_file}'. "
+                    "Open that pipeline to continue it, or start a new chat."
+                ),
+            )
         try:
             config = resolve_assistant_config()
             provider = _provider_factory(config)

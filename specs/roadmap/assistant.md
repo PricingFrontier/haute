@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
 | ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
@@ -107,28 +106,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-12 — Every request is bound to the canvas pipeline
-**Why:** The panel always sends `pipeline: null`, and the server's default
-pipeline rule differs from the editor's, so in a project whose first pipeline
-is new or empty the assistant commits edits to another file while the canvas
-never changes.
-
-**Plan:** Session create, list and message carry a required `source_file`
-taken from the loaded document; the session response echoes it; the server
-refuses a mismatch with a 409 naming the chat's pipeline; and the panel
-refuses to send when its document differs. Backend and frontend change
-together.
-
-**Acceptance:** In the two-pipeline repro the assistant edits the pipeline on
-the canvas; chat lists are filtered by source file; a store test refuses a
-mismatched source.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/api/assistant.ts::createAssistantSession`;
-`src/haute/routes/assistant.py::_find_default_pipeline`;
-`src/haute/schemas.py::AssistantSessionResponse`.
 
 ### ASSIST-13 — Transcript order and typed turn outcomes
 **Why:** Every text delta of a turn is appended to the first assistant bubble,

@@ -160,7 +160,11 @@ class AssistantStatusResponse(BaseModel):
 
 
 class AssistantSessionRequest(BaseModel):
-    pipeline: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    # The project-relative source file of the pipeline document the canvas
+    # shows. The session is bound to it; the server never picks a pipeline.
+    source_file: str = Field(min_length=1)
     # A previously issued session id the client wants to resume. Resume is an
     # offer: unknown/pruned ids or a different pipeline yield a fresh session.
     session_id: str | None = None
@@ -178,6 +182,8 @@ class AssistantTranscriptEntry(BaseModel):
 
 class AssistantSessionResponse(BaseModel):
     session_id: str
+    # The canonical project-relative source file the session is bound to.
+    source_file: str
     # Non-empty only when the requested session was resumed: the stored turns
     # mapped to transcript entries for the panel to rehydrate.
     history: list[AssistantTranscriptEntry] = []
@@ -196,6 +202,8 @@ class AssistantSessionSummary(BaseModel):
 
 
 class AssistantSessionListResponse(BaseModel):
+    # The canonical project-relative source file the listed sessions are bound to.
+    source_file: str
     sessions: list[AssistantSessionSummary] = []
 
 
@@ -204,6 +212,8 @@ class AssistantMessageRequest(BaseModel):
 
     session_id: str
     message: str
+    # The canvas document's source file; one other than the session's is refused.
+    source_file: str = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------

@@ -34,12 +34,14 @@ export type TranscriptEntry =
 
 export interface SendMessageOptions {
   isInsideSubmodel: boolean
-  currentSourceFile: string
+  /** The canvas document's source file; `null` while the canvas has none. */
+  currentSourceFile: string | null
   readOnly: boolean
 }
 
 export interface AssistantStoreState {
   sessionId: string | null
+  /** The source file the server bound the open chat to. */
   pipelineSource: string | null
   entries: TranscriptEntry[]
   turnStatus: "idle" | "streaming"
@@ -49,6 +51,8 @@ export interface AssistantStoreState {
   view: "list" | "chat"
   sessions: AssistantSessionSummary[]
   sessionsStatus: "unknown" | "loading" | "ready" | "error"
+  /** The source file the panel last listed; a finished turn refreshes this list. */
+  sessionsSource: string | null
   refreshStatus: () => Promise<void>
   loadSessions: (sourceFile: string | null) => Promise<void>
   openSession: (sessionId: string, sourceFile: string) => Promise<void>
@@ -76,16 +80,35 @@ let activeController: AbortController | null = null
 let openGeneration = 0
 let listGeneration = 0
 
-export function assistantSendDisabledReason(
-  status: AssistantStatus | "unknown" | "error",
-  isInsideSubmodel: boolean,
-  dirty: boolean,
-  readOnly: boolean,
-): string | null {
+export interface AssistantSendGate {
+  status: AssistantStatus | "unknown" | "error"
+  isInsideSubmodel: boolean
+  dirty: boolean
+  readOnly: boolean
+  /** The canvas document's source file; `null` while the canvas has none. */
+  sourceFile: string | null
+  /** The source file the open chat is bound to; `null` before its first send. */
+  chatSource: string | null
+}
+
+export function assistantSendDisabledReason({
+  status,
+  isInsideSubmodel,
+  dirty,
+  readOnly,
+  sourceFile,
+  chatSource,
+}: AssistantSendGate): string | null {
   if (status === "unknown") return "Assistant status is unavailable. Refresh its status before sending."
   if (status === "error") return "Assistant status could not be loaded. Try again."
   if (!status.configured) return status.reason ?? "Assistant is not configured."
   if (!status.mutations_enabled) return status.mutations_reason ?? "Assistant mutations are disabled."
+  if (sourceFile === null) return "Save this pipeline to a file before using Assistant."
+  // A chat edits only the pipeline it was started on; sending it from another
+  // pipeline's canvas would change a file the analyst is not looking at.
+  if (chatSource !== null && chatSource !== sourceFile) {
+    return `This chat belongs to ${chatSource}. Open that pipeline to continue it, or start a new chat.`
+  }
   if (isInsideSubmodel) return "Assistant edits are available from the top-level pipeline only."
   if (dirty) return "Save or discard the current canvas changes before using Assistant."
   if (readOnly) return "Resolve the current pipeline recovery issues before using Assistant."
@@ -273,6 +296,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   view: "list",
   sessions: [],
   sessionsStatus: "unknown",
+  sessionsSource: null,
 
   refreshStatus: async () => {
     try {
@@ -284,9 +308,8 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   },
 
   loadSessions: async (sourceFile) => {
-    // `sourceFile` is the gate, not the query: the request deliberately sends
-    // `pipeline: null` so the server resolves the pipeline exactly as session
-    // creation does. With none resolved there is nothing to list.
+    // The list shows only the canvas pipeline's chats; with no source file
+    // there is nothing to list.
     const current = get()
     if (
       current.turnStatus === "idle" &&
@@ -304,13 +327,13 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     }
     if (sourceFile === null) {
       listGeneration += 1
-      set({ sessions: [], sessionsStatus: "ready" })
+      set({ sessions: [], sessionsStatus: "ready", sessionsSource: null })
       return
     }
     const generation = (listGeneration += 1)
-    set({ sessionsStatus: "loading" })
+    set({ sessionsStatus: "loading", sessionsSource: sourceFile })
     try {
-      const sessions = await listAssistantSessions(null)
+      const { sessions } = await listAssistantSessions(sourceFile)
       if (generation !== listGeneration) return
       set({ sessions, sessionsStatus: "ready" })
     } catch {
@@ -332,13 +355,13 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     const generation = (openGeneration += 1)
     set({ view: "chat", entries: [], notice: null, sessionId: null, pipelineSource: null })
     try {
-      const result = await createAssistantSession(null, sessionId)
+      const result = await createAssistantSession(sourceFile, sessionId)
       // A second choice while this one was in flight owns the screen; letting
       // a slower earlier response land would show a chat nobody picked.
       if (generation !== openGeneration) return
       set({
         sessionId: result.sessionId,
-        pipelineSource: sourceFile,
+        pipelineSource: result.sourceFile,
         entries: hydrateEntries(result.history),
       })
     } catch (error) {
@@ -361,13 +384,16 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     const current = get()
     if (current.turnStatus !== "idle") return
 
-    const disabledReason = assistantSendDisabledReason(
-      current.status,
-      options.isInsideSubmodel,
-      useGraphStore.getState().dirty,
-      options.readOnly,
-    )
-    if (disabledReason !== null) {
+    const disabledReason = assistantSendDisabledReason({
+      status: current.status,
+      isInsideSubmodel: options.isInsideSubmodel,
+      dirty: useGraphStore.getState().dirty,
+      readOnly: options.readOnly,
+      sourceFile: options.currentSourceFile,
+      chatSource: current.pipelineSource,
+    })
+    const sourceFile = options.currentSourceFile
+    if (disabledReason !== null || sourceFile === null) {
       set({ notice: disabledReason })
       return
     }
@@ -376,13 +402,6 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // A message sent from the immediately mounted composer becomes the active
     // chat. A slower transcript-open response must not replace it afterwards.
     openGeneration += 1
-
-    if (
-      (current.pipelineSource !== null || current.sessionId !== null) &&
-      current.pipelineSource !== options.currentSourceFile
-    ) {
-      set({ sessionId: null, pipelineSource: null, entries: [] })
-    }
 
     const controller = new AbortController()
     activeController = controller
@@ -393,9 +412,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         // Always a fresh session. The panel resolves an existing conversation
         // through `openSession`, so resuming a remembered id here would drop
         // someone else's transcript into a chat the user opened as new.
-        const result = await createAssistantSession(null, null, controller.signal)
+        const result = await createAssistantSession(sourceFile, null, controller.signal)
         sessionId = result.sessionId
-        set({ sessionId, pipelineSource: options.currentSourceFile })
+        set({ sessionId, pipelineSource: result.sourceFile })
       }
     } catch (error) {
       rejectSessionCreation(set, error)
@@ -421,7 +440,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     }>
     const terminal = { current: null as TerminalEvent | null }
     try {
-      await streamAssistantMessage(sessionId, text, {
+      await streamAssistantMessage(sessionId, text, sourceFile, {
         signal: controller.signal,
         onEvent: (event) => {
           if (terminal.current !== null) {
@@ -485,8 +504,11 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         activeController = null
         set({ turnStatus: "idle" })
         // The turn gave this conversation its first message, and therefore its
-        // title and its place in the list. Refresh so going back shows it.
-        void get().loadSessions(options.currentSourceFile)
+        // title and its place in the list. Refresh so going back shows it —
+        // for the pipeline the canvas shows now, which may have changed mid-turn.
+        // With no listed pipeline there is no list to refresh.
+        const listedSource = get().sessionsSource
+        if (listedSource !== null) void get().loadSessions(listedSource)
       }
     }
   },

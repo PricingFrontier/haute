@@ -36,6 +36,8 @@ import {
   getAssistantStatus,
   listAssistantSessions,
   streamAssistantMessage,
+  type AssistantSessionList,
+  type AssistantSessionResult,
   type AssistantStreamEvent,
 } from "../../api/assistant"
 import useAssistantStore from "../useAssistantStore"
@@ -65,17 +67,19 @@ function resetStores() {
     view: "list",
     sessions: [],
     sessionsStatus: "unknown",
+    // The mounted panel has listed the canvas pipeline's chats.
+    sessionsSource: "main.py",
   })
   useGraphStore.setState({ dirty: false })
-  vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", history: [] })
+  vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", sourceFile: "main.py", history: [] })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
   // Every completed turn refreshes the list; without a default the shared
   // mock resolves undefined and every unrelated test records a list error.
-  vi.mocked(listAssistantSessions).mockResolvedValue([])
+  vi.mocked(listAssistantSessions).mockResolvedValue({ sourceFile: "main.py", sessions: [] })
 }
 
 function scriptStream(events: AssistantStreamEvent[]) {
-  vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, opts) => {
+  vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
     for (const event of events) opts.onEvent(event)
   })
 }
@@ -249,6 +253,7 @@ describe("send gates", () => {
     ["inside a submodel", () => {}, { ...SEND_OPTS, isInsideSubmodel: true }],
     ["read-only document", () => {}, { ...SEND_OPTS, readOnly: true }],
     ["unknown status", () => useAssistantStore.setState({ status: "unknown" }), SEND_OPTS],
+    ["a canvas without a source file", () => {}, { ...SEND_OPTS, currentSourceFile: null }],
   ])("refuses to send with %s", async (_label, prepare, opts) => {
     prepare()
     await useAssistantStore.getState().sendMessage("hi", opts)
@@ -269,20 +274,24 @@ describe("send gates", () => {
     expect(streamAssistantMessage).not.toHaveBeenCalled()
   })
 
-  it("resets the session when the loaded pipeline changed", async () => {
+  it("refuses to send a chat from another pipeline's canvas and names its pipeline", async () => {
     scriptStream([completed()])
     useAssistantStore.setState({
+      view: "chat",
       sessionId: "old-session",
       pipelineSource: "other.py",
       entries: [{ kind: "user", text: "old" }],
     })
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
 
-    expect(createAssistantSession).toHaveBeenCalledTimes(1)
-    const { sessionId, pipelineSource, entries } = useAssistantStore.getState()
-    expect(sessionId).toBe("session-1")
-    expect(pipelineSource).toBe("main.py")
-    expect(entries.some((entry) => entry.kind === "user" && entry.text === "old")).toBe(false)
+    expect(createAssistantSession).not.toHaveBeenCalled()
+    expect(streamAssistantMessage).not.toHaveBeenCalled()
+    const { sessionId, pipelineSource, entries, notice, turnStatus } = useAssistantStore.getState()
+    expect(notice).toContain("other.py")
+    expect(sessionId).toBe("old-session")
+    expect(pipelineSource).toBe("other.py")
+    expect(entries).toEqual([{ kind: "user", text: "old" }])
+    expect(turnStatus).toBe("idle")
   })
 
   it("reuses the existing session for the same pipeline", async () => {
@@ -290,6 +299,26 @@ describe("send gates", () => {
     useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
     expect(createAssistantSession).not.toHaveBeenCalled()
+    expect(streamAssistantMessage).toHaveBeenCalledWith("session-1", "hi", "main.py", expect.anything())
+  })
+
+  it("binds a new chat to the source file the server echoes", async () => {
+    scriptStream([completed()])
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "nested",
+      sourceFile: "pipelines/motor.py",
+      history: [],
+    })
+    useAssistantStore.setState({ sessionsSource: "pipelines/motor.py" })
+    await useAssistantStore.getState().sendMessage("hi", {
+      ...SEND_OPTS,
+      currentSourceFile: "pipelines/motor.py",
+    })
+
+    expect(createAssistantSession).toHaveBeenCalledWith(
+      "pipelines/motor.py", null, expect.any(AbortSignal),
+    )
+    expect(useAssistantStore.getState().pipelineSource).toBe("pipelines/motor.py")
   })
 })
 
@@ -297,14 +326,15 @@ describe("chat list navigation", () => {
   it("opens on the list and never resumes a conversation on send", async () => {
     // The panel used to look empty until a message was sent, then produced an
     // earlier transcript above it, because resume happened inside sendMessage.
-    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", history: [] })
+    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", sourceFile: "main.py", history: [] })
     scriptStream([completed()])
 
     expect(useAssistantStore.getState().view).toBe("list")
     useAssistantStore.getState().newChat()
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
+    expect(createAssistantSession).toHaveBeenCalledWith("main.py", null, expect.any(AbortSignal))
+    expect(streamAssistantMessage).toHaveBeenCalledWith("fresh-9", "hi", "main.py", expect.anything())
     const { entries, sessionId, view } = useAssistantStore.getState()
     expect(sessionId).toBe("fresh-9")
     expect(view).toBe("chat")
@@ -314,6 +344,7 @@ describe("chat list navigation", () => {
   it("hydrates a chosen conversation when it is opened, not when it is used", async () => {
     vi.mocked(createAssistantSession).mockResolvedValue({
       sessionId: "old-session",
+      sourceFile: "main.py",
       history: [
         { kind: "user", text: "add nb_batch", name: "", summary: "", is_error: false },
         { kind: "assistant", text: "Adding it now.", name: "", summary: "", is_error: false },
@@ -329,7 +360,7 @@ describe("chat list navigation", () => {
 
     await useAssistantStore.getState().openSession("old-session", "main.py")
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session")
+    expect(createAssistantSession).toHaveBeenCalledWith("main.py", "old-session")
     const { entries, sessionId, view } = useAssistantStore.getState()
     expect(sessionId).toBe("old-session")
     expect(view).toBe("chat")
@@ -344,14 +375,17 @@ describe("chat list navigation", () => {
   })
 
   it("loads the pipeline's conversations for the list", async () => {
-    vi.mocked(listAssistantSessions).mockResolvedValue([
-      { sessionId: "a", title: "First", createdAt: 1, lastUsed: 2, messageCount: 4 },
-    ])
+    vi.mocked(listAssistantSessions).mockResolvedValue({
+      sourceFile: "main.py",
+      sessions: [{ sessionId: "a", title: "First", createdAt: 1, lastUsed: 2, messageCount: 4 }],
+    })
 
     await useAssistantStore.getState().loadSessions("main.py")
 
-    const { sessions, sessionsStatus } = useAssistantStore.getState()
+    expect(listAssistantSessions).toHaveBeenCalledWith("main.py")
+    const { sessions, sessionsStatus, sessionsSource } = useAssistantStore.getState()
     expect(sessionsStatus).toBe("ready")
+    expect(sessionsSource).toBe("main.py")
     expect(sessions).toHaveLength(1)
     expect(sessions[0].title).toBe("First")
   })
@@ -373,6 +407,31 @@ describe("chat list navigation", () => {
     expect(entries).toEqual([])
   })
 
+  it("refreshes the canvas pipeline's list when a turn ends after a pipeline change", async () => {
+    let finishTurn: () => void = () => {}
+    vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
+      await new Promise<void>((resolve) => { finishTurn = resolve })
+      opts.onEvent(completed())
+    })
+    await useAssistantStore.getState().loadSessions("main.py")
+    useAssistantStore.getState().newChat()
+
+    const sending = useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    await vi.waitFor(() => expect(streamAssistantMessage).toHaveBeenCalled())
+    // The canvas switches pipeline mid-turn; the panel lists the new one.
+    await useAssistantStore.getState().loadSessions("other.py")
+    expect(useAssistantStore.getState().sessionId).toBe("session-1")
+    finishTurn()
+    await sending
+
+    await vi.waitFor(() => expect(useAssistantStore.getState().view).toBe("list"))
+    expect(listAssistantSessions).toHaveBeenLastCalledWith("other.py")
+    const { sessionId, pipelineSource, sessionsSource } = useAssistantStore.getState()
+    expect(sessionId).toBeNull()
+    expect(pipelineSource).toBeNull()
+    expect(sessionsSource).toBe("other.py")
+  })
+
   it("reports a list failure without discarding the current chat", async () => {
     useAssistantStore.setState({ view: "chat", sessionId: "live", pipelineSource: "main.py" })
     vi.mocked(listAssistantSessions).mockRejectedValue(new ApiError("HTTP 500", 500, "boom"))
@@ -384,7 +443,6 @@ describe("chat list navigation", () => {
   })
 
   it("returns to the list and refreshes it", async () => {
-    vi.mocked(listAssistantSessions).mockResolvedValue([])
     useAssistantStore.setState({ view: "chat" })
 
     useAssistantStore.getState().showSessionList("main.py")
@@ -407,9 +465,9 @@ describe("chat list navigation", () => {
     // The composer mounts as soon as the chat screen does. Holding the old id
     // across the await would post the next message into the conversation the
     // user just navigated away from, while the panel shows the new one.
-    let resolveSecond: (value: { sessionId: string; history: [] }) => void = () => {}
+    let resolveSecond: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
-      .mockResolvedValueOnce({ sessionId: "first", history: [] })
+      .mockResolvedValueOnce({ sessionId: "first", sourceFile: "main.py", history: [] })
       .mockImplementationOnce(
         () => new Promise((resolve) => { resolveSecond = resolve }),
       )
@@ -420,24 +478,25 @@ describe("chat list navigation", () => {
     const opening = useAssistantStore.getState().openSession("second", "main.py")
     expect(useAssistantStore.getState().sessionId).toBeNull()
 
-    resolveSecond({ sessionId: "second", history: [] })
+    resolveSecond({ sessionId: "second", sourceFile: "main.py", history: [] })
     await opening
     expect(useAssistantStore.getState().sessionId).toBe("second")
   })
 
   it("ignores a superseded open, so the chat shown is the one last chosen", async () => {
-    let resolveSlow: (value: { sessionId: string; history: never[] }) => void = () => {}
+    let resolveSlow: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
       .mockResolvedValueOnce({
         sessionId: "quick",
+        sourceFile: "main.py",
         history: [{ kind: "user", text: "quick chat", name: "", summary: "", is_error: false }],
       })
 
     const slow = useAssistantStore.getState().openSession("slow", "main.py")
     await useAssistantStore.getState().openSession("quick", "main.py")
 
-    resolveSlow({ sessionId: "slow", history: [] })
+    resolveSlow({ sessionId: "slow", sourceFile: "main.py", history: [] })
     await slow
 
     const { sessionId, entries } = useAssistantStore.getState()
@@ -446,15 +505,15 @@ describe("chat list navigation", () => {
   })
 
   it("does not let an in-flight open overwrite a new message", async () => {
-    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    let resolveOpen: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve }))
-      .mockResolvedValueOnce({ sessionId: "fresh", history: [] })
+      .mockResolvedValueOnce({ sessionId: "fresh", sourceFile: "main.py", history: [] })
     scriptStream([completed()])
 
     const opening = useAssistantStore.getState().openSession("old", "main.py")
     await useAssistantStore.getState().sendMessage("new question", SEND_OPTS)
-    resolveOpen({ sessionId: "old", history: [] })
+    resolveOpen({ sessionId: "old", sourceFile: "main.py", history: [] })
     await opening
 
     const { sessionId, entries } = useAssistantStore.getState()
@@ -466,14 +525,14 @@ describe("chat list navigation", () => {
     ["New chat", () => useAssistantStore.getState().newChat()],
     ["going back to the list", () => useAssistantStore.getState().showSessionList("main.py")],
   ])("discards an in-flight open once %s supersedes it", async (_label, navigate) => {
-    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    let resolveOpen: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession).mockImplementationOnce(
       () => new Promise((resolve) => { resolveOpen = resolve }),
     )
 
     const opening = useAssistantStore.getState().openSession("chosen", "main.py")
     navigate()
-    resolveOpen({ sessionId: "chosen", history: [] })
+    resolveOpen({ sessionId: "chosen", sourceFile: "main.py", history: [] })
     await opening
 
     // Landing here would silently re-attach a conversation the user left.
@@ -481,17 +540,18 @@ describe("chat list navigation", () => {
   })
 
   it("ignores a superseded list load", async () => {
-    let resolveSlow: (value: never[]) => void = () => {}
+    let resolveSlow: (value: AssistantSessionList) => void = () => {}
     vi.mocked(listAssistantSessions)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
-      .mockResolvedValueOnce([
-        { sessionId: "b", title: "Newer", createdAt: 1, lastUsed: 9, messageCount: 2 },
-      ])
+      .mockResolvedValueOnce({
+        sourceFile: "main.py",
+        sessions: [{ sessionId: "b", title: "Newer", createdAt: 1, lastUsed: 9, messageCount: 2 }],
+      })
 
     const slow = useAssistantStore.getState().loadSessions("main.py")
     await useAssistantStore.getState().loadSessions("main.py")
 
-    resolveSlow([])
+    resolveSlow({ sourceFile: "main.py", sessions: [] })
     await slow
 
     const { sessions, sessionsStatus } = useAssistantStore.getState()
@@ -578,7 +638,7 @@ describe("send failures", () => {
 
 describe("stop and new chat", () => {
   it("locks same-tick sends while session creation is pending", async () => {
-    let resolveSession: ((result: { sessionId: string; history: [] }) => void) | undefined
+    let resolveSession: ((result: AssistantSessionResult) => void) | undefined
     vi.mocked(createAssistantSession).mockImplementation(() => new Promise((resolve) => {
       resolveSession = resolve
     }))
@@ -589,14 +649,14 @@ describe("stop and new chat", () => {
     expect(createAssistantSession).toHaveBeenCalledTimes(1)
     expect(useAssistantStore.getState().turnStatus).toBe("streaming")
 
-    resolveSession?.({ sessionId: "session-1", history: [] })
+    resolveSession?.({ sessionId: "session-1", sourceFile: "main.py", history: [] })
     await Promise.all([first, second])
     expect(useAssistantStore.getState().entries).toContainEqual({ kind: "user", text: "first" })
     expect(useAssistantStore.getState().entries).not.toContainEqual({ kind: "user", text: "second" })
   })
 
   it("stop aborts pending session creation without speculative transcript entries", async () => {
-    vi.mocked(createAssistantSession).mockImplementation((_pipeline, _sessionId, signal) =>
+    vi.mocked(createAssistantSession).mockImplementation((_sourceFile, _sessionId, signal) =>
       new Promise((_resolve, reject) => {
         signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
       }),
@@ -614,7 +674,7 @@ describe("stop and new chat", () => {
 
   it("stop aborts the in-flight turn and marks it stopped without a toast", async () => {
     vi.mocked(streamAssistantMessage).mockImplementation(
-      (_id, _text, opts) =>
+      (_id, _text, _source, opts) =>
         new Promise((_resolve, reject) => {
           opts.signal.addEventListener("abort", () =>
             reject(new DOMException("Aborted", "AbortError")),

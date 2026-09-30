@@ -6,19 +6,22 @@ import TranscriptEntryView from "./TranscriptEntryView"
 import Composer from "./Composer"
 import SessionList from "./SessionList"
 import useAssistantStore from "../../stores/useAssistantStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useUIStore from "../../stores/useUIStore"
 
 interface AssistantPanelProps {
   isInsideSubmodel: boolean
-  currentSourceFile: string | null
   readOnly: boolean
 }
 
 export default function AssistantPanel({
   isInsideSubmodel,
-  currentSourceFile,
   readOnly,
 }: AssistantPanelProps) {
+  // Every chat is bound to the loaded pipeline document, never to the drilled
+  // submodel file; an unsaved canvas has no source file to bind to.
+  const documentSourceFile = useDocumentStatusStore((state) => state.sourceFile)
+  const currentSourceFile = documentSourceFile === "" ? null : documentSourceFile
   const setAssistantOpen = useUIStore((state) => state.setAssistantOpen)
   const entries = useAssistantStore((state) => state.entries)
   const turnStatus = useAssistantStore((state) => state.turnStatus)

@@ -273,21 +273,30 @@ class TestExecutionSettings:
 
 
 class TestAssistantMessageRequest:
-    def test_accepts_session_and_message_only(self):
+    def test_accepts_session_message_and_source_file(self):
         from haute.schemas import AssistantMessageRequest
 
         request = AssistantMessageRequest(
             session_id="session-1",
             message="Author this pipeline",
+            source_file="main.py",
         )
         assert request.session_id == "session-1"
         assert request.message == "Author this pipeline"
+        assert request.source_file == "main.py"
 
     @pytest.mark.parametrize(
         "payload",
         [
-            {"session_id": "s", "message": "m", "unknown": True},
-            {"session_id": "s", "message": "m", "confirmation": {"plan_hash": "a" * 64}},
+            {"session_id": "s", "message": "m"},
+            {"session_id": "s", "message": "m", "source_file": ""},
+            {"session_id": "s", "message": "m", "source_file": "main.py", "unknown": True},
+            {
+                "session_id": "s",
+                "message": "m",
+                "source_file": "main.py",
+                "confirmation": {"plan_hash": "a" * 64},
+            },
         ],
     )
     def test_request_is_closed(self, payload):

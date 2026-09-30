@@ -30,7 +30,6 @@ interface SubmodelNavParams {
   setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
   setSelectedNode: (node: Node | null) => void
   setLastSelectedId?: (id: string | null) => void
-  setCurrentSourceFile?: (sourceFile: string | null) => void
   setPreviewData: (data: null) => void
   preambleRef: React.MutableRefObject<string>
   sourceRevisionRef: React.MutableRefObject<string>
@@ -120,7 +119,7 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 export default function useSubmodelNavigation({
   graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
   setNodesRaw, setEdgesRaw, setSubmodelsRaw,
-  setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData,
+  setSelectedNode, setLastSelectedId, setPreviewData,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView, reservedApiInputFrameLabels, resolveGraphIdentities = resolveEditorGraphIdentities,
   resolveCanonicalIdentities = resolveCanonicalGraphIdentities,
@@ -294,7 +293,6 @@ export default function useSubmodelNavigation({
         ]
       })
       sourceFileRef.current = submodelSourceFile
-      setCurrentSourceFile?.(submodelSourceFile)
       setLastSelectedId?.(null)
       setNodesRaw(layouted)
       setEdgesRaw(resolved.edges)
@@ -310,7 +308,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities])
+  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setPreviewData, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
@@ -334,12 +332,11 @@ export default function useSubmodelNavigation({
     }
     if (depth === 0) parentGraphRef.current = null
     sourceFileRef.current = target.file
-    setCurrentSourceFile?.(target.file || null)
     setActiveSubmodelIdentity(target.type === "submodel"
       ? { instanceId: target.instanceId, definitionId: target.definitionId }
       : null)
     setViewStack(prev.slice(0, depth + 1))
-  }, [parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, fitView])
+  }, [parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setPreviewData, fitView])
 
   const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
     transformRequestSerialRef.current += 1
@@ -373,7 +370,6 @@ export default function useSubmodelNavigation({
     const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
     const rootName = viewStackRef.current[0]?.name || pipelineNameRef.current || "main"
     sourceFileRef.current = rootFile
-    setCurrentSourceFile?.(rootFile || null)
     const rootView: ViewLevel[] = [{
       type: "pipeline",
       name: rootName,
@@ -393,7 +389,6 @@ export default function useSubmodelNavigation({
     setActiveSubmodelIdentity,
     sourceFileRef,
     pipelineNameRef,
-    setCurrentSourceFile,
     setNodesRaw,
     setEdgesRaw,
     setSelectedNode,

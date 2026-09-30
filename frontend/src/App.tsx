@@ -515,7 +515,6 @@ type NodePropertiesPanelProps = {
   onImportAdded: (importLine: string) => void
   onPreambleChange: (value: string) => void
   isInsideSubmodel: boolean
-  currentSourceFile: string | null
   documentReadOnly: boolean
   traceResult: TraceResult | null
   traceState: TraceRequestState
@@ -557,7 +556,6 @@ function NodePropertiesPanel({
   onImportAdded,
   onPreambleChange,
   isInsideSubmodel,
-  currentSourceFile,
   documentReadOnly,
   traceResult,
   traceState,
@@ -615,7 +613,6 @@ function NodePropertiesPanel({
         <Suspense fallback={null}>
           <AssistantPanel
             isInsideSubmodel={isInsideSubmodel}
-            currentSourceFile={currentSourceFile}
             readOnly={documentReadOnly}
           />
         </Suspense>
@@ -820,7 +817,6 @@ function FlowEditor() {
   const sourceFileRef = useRef("")
   const sourceRevisionRef = useRef("")
   const preservedBlocksRef = useRef<string[]>([])
-  const [currentSourceFile, setCurrentSourceFile] = useState<string | null>(null)
   const nodeIdCounter = useRef(0)
 
   // Keep graphRef in sync so callbacks never see stale state. A layout effect
@@ -904,7 +900,7 @@ function FlowEditor() {
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
+    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
   })
@@ -992,7 +988,6 @@ function FlowEditor() {
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
-    setCurrentSourceFile,
     preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
     reservedApiInputFrameLabels,
@@ -1794,7 +1789,6 @@ function FlowEditor() {
           onImportAdded={handleImportAdded}
           onPreambleChange={handlePreambleChange}
           isInsideSubmodel={viewStack.length > 1}
-          currentSourceFile={currentSourceFile}
           documentReadOnly={documentReadOnly}
           traceResult={traceResult}
           traceState={traceState}

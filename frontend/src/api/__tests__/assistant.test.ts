@@ -7,8 +7,9 @@
  *
  * API pinned here:
  *   getAssistantStatus(): Promise<AssistantStatus>
- *   createAssistantSession(pipeline: string | null): Promise<string>
- *   streamAssistantMessage(sessionId, message, opts: {
+ *   createAssistantSession(sourceFile, sessionId?, signal?): Promise<AssistantSessionResult>
+ *   listAssistantSessions(sourceFile, signal?): Promise<AssistantSessionList>
+ *   streamAssistantMessage(sessionId, message, sourceFile, opts: {
  *     signal: AbortSignal
  *     onEvent: (event: AssistantStreamEvent) => void
  *   }): Promise<void>   — resolves when the stream ends (terminal-event
@@ -24,6 +25,7 @@ import { ApiError } from "../client"
 import {
   createAssistantSession,
   getAssistantStatus,
+  listAssistantSessions,
   streamAssistantMessage,
   type AssistantStreamEvent,
 } from "../assistant"
@@ -69,7 +71,7 @@ function sseResponse(chunks: string[], status = 200) {
 async function collectEvents(chunks: string[]): Promise<AssistantStreamEvent[]> {
   mockFetch.mockReturnValueOnce(sseResponse(chunks))
   const events: AssistantStreamEvent[] = []
-  await streamAssistantMessage("session-1", "hello", {
+  await streamAssistantMessage("session-1", "hello", "main.py", {
     signal: new AbortController().signal,
     onEvent: (event) => events.push(event),
   })
@@ -112,24 +114,23 @@ describe("getAssistantStatus", () => {
 })
 
 describe("createAssistantSession", () => {
-  it("posts the pipeline name and returns the session result", async () => {
-    mockFetch.mockReturnValueOnce(jsonResponse({ session_id: "abc123", history: [] }))
+  it("posts the canvas source file and returns the bound session", async () => {
+    mockFetch.mockReturnValueOnce(
+      jsonResponse({ session_id: "abc123", source_file: "pipelines/main.py", history: [] }),
+    )
 
-    await expect(createAssistantSession("main")).resolves.toEqual({
+    await expect(createAssistantSession("pipelines/main.py")).resolves.toEqual({
       sessionId: "abc123",
+      sourceFile: "pipelines/main.py",
       history: [],
     })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/assistant/session")
     expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body as string)).toEqual({ pipeline: "main", session_id: null })
-  })
-
-  it("posts null for the default pipeline", async () => {
-    mockFetch.mockReturnValueOnce(jsonResponse({ session_id: "abc123", history: [] }))
-    await createAssistantSession(null)
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body as string)).toEqual({ pipeline: null, session_id: null })
+    expect(JSON.parse(opts.body as string)).toEqual({
+      source_file: "pipelines/main.py",
+      session_id: null,
+    })
   })
 
   it("offers a remembered session id and surfaces returned history", async () => {
@@ -137,14 +138,20 @@ describe("createAssistantSession", () => {
       { kind: "user", text: "hi", name: "", summary: "", is_error: false },
       { kind: "tool", text: "", name: "get_pipeline", summary: "{}", is_error: false },
     ]
-    mockFetch.mockReturnValueOnce(jsonResponse({ session_id: "abc123", history }))
+    mockFetch.mockReturnValueOnce(
+      jsonResponse({ session_id: "abc123", source_file: "main.py", history }),
+    )
 
-    await expect(createAssistantSession(null, "abc123")).resolves.toEqual({
+    await expect(createAssistantSession("main.py", "abc123")).resolves.toEqual({
       sessionId: "abc123",
+      sourceFile: "main.py",
       history,
     })
     const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body as string)).toEqual({ pipeline: null, session_id: "abc123" })
+    expect(JSON.parse(opts.body as string)).toEqual({
+      source_file: "main.py",
+      session_id: "abc123",
+    })
   })
 
   it("propagates an optional abort signal to the in-flight request", async () => {
@@ -161,7 +168,7 @@ describe("createAssistantSession", () => {
       })
     })
 
-    const request = createAssistantSession(null, null, controller.signal)
+    const request = createAssistantSession("main.py", null, controller.signal)
     controller.abort()
 
     await expect(request).rejects.toMatchObject({ name: "AbortError" })
@@ -170,15 +177,39 @@ describe("createAssistantSession", () => {
 
   it.each([
     ["a non-object envelope", []],
-    ["a missing session id", { history: [] }],
-    ["a non-array history", { session_id: "abc", history: {} }],
-    ["a non-object history entry", { session_id: "abc", history: [null] }],
-    ["an unknown history kind", { session_id: "abc", history: [{ kind: "other", text: "", name: "", summary: "", is_error: false }] }],
-    ["a missing history field", { session_id: "abc", history: [{ kind: "user", text: "", name: "", summary: "" }] }],
-    ["a wrong history field primitive", { session_id: "abc", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: "false" }] }],
+    ["a missing session id", { source_file: "main.py", history: [] }],
+    ["a missing source file", { session_id: "abc", history: [] }],
+    ["a non-array history", { session_id: "abc", source_file: "main.py", history: {} }],
+    ["a non-object history entry", { session_id: "abc", source_file: "main.py", history: [null] }],
+    ["an unknown history kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "other", text: "", name: "", summary: "", is_error: false }] }],
+    ["a missing history field", { session_id: "abc", source_file: "main.py", history: [{ kind: "user", text: "", name: "", summary: "" }] }],
+    ["a wrong history field primitive", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: "false" }] }],
   ])("rejects %s", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
-    await expect(createAssistantSession(null)).rejects.toThrow(/assistant|session|history/i)
+    await expect(createAssistantSession("main.py")).rejects.toThrow(/assistant|session|history/i)
+  })
+})
+
+describe("listAssistantSessions", () => {
+  it("queries by the canvas source file and returns the bound list", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({
+      source_file: "pipelines/main.py",
+      sessions: [
+        { session_id: "s1", title: "t", created_at: 1, last_used: 2, message_count: 3 },
+      ],
+    }))
+
+    await expect(listAssistantSessions("pipelines/main.py")).resolves.toEqual({
+      sourceFile: "pipelines/main.py",
+      sessions: [{ sessionId: "s1", title: "t", createdAt: 1, lastUsed: 2, messageCount: 3 }],
+    })
+    const [url] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain("/api/assistant/sessions?source_file=pipelines%2Fmain.py")
+  })
+
+  it("rejects a list without its source file", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({ sessions: [] }))
+    await expect(listAssistantSessions("main.py")).rejects.toThrow(/sessions\.source_file/)
   })
 })
 
@@ -186,7 +217,7 @@ describe("streamAssistantMessage", () => {
   it("posts the message with the abort signal attached", async () => {
     const signal = new AbortController().signal
     mockFetch.mockReturnValueOnce(sseResponse(['data: {"type":"cancelled"}\n\n']))
-    await streamAssistantMessage("session-1", "add a node", { signal, onEvent: () => {} })
+    await streamAssistantMessage("session-1", "add a node", "main.py", { signal, onEvent: () => {} })
 
     const [url, opts] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/assistant/message")
@@ -194,6 +225,7 @@ describe("streamAssistantMessage", () => {
     expect(JSON.parse(opts.body as string)).toEqual({
       session_id: "session-1",
       message: "add a node",
+      source_file: "main.py",
     })
     expect(opts.signal).toBe(signal)
   })
@@ -239,7 +271,7 @@ describe("streamAssistantMessage", () => {
   it("throws loudly on an unrecognised event type", async () => {
     mockFetch.mockReturnValueOnce(sseResponse(['data: {"type":"mystery_event"}\n\n']))
     await expect(
-      streamAssistantMessage("session-1", "hi", {
+      streamAssistantMessage("session-1", "hi", "main.py", {
         signal: new AbortController().signal,
         onEvent: () => {},
       }),
@@ -260,7 +292,7 @@ describe("streamAssistantMessage", () => {
     const callback = vi.fn()
     mockFetch.mockReturnValueOnce(sseResponse([`data: ${JSON.stringify(event)}\n\n`]))
 
-    await expect(streamAssistantMessage("session-1", "hi", {
+    await expect(streamAssistantMessage("session-1", "hi", "main.py", {
       signal: new AbortController().signal,
       onEvent: callback,
     })).rejects.toThrow(/Invalid assistant payload/)
@@ -277,7 +309,7 @@ describe("streamAssistantMessage", () => {
     })
     mockFetch.mockReturnValueOnce(Promise.resolve({ ok: true, body }))
 
-    await expect(streamAssistantMessage("session-1", "hi", {
+    await expect(streamAssistantMessage("session-1", "hi", "main.py", {
       signal: new AbortController().signal,
       onEvent: () => {},
     })).rejects.toThrow(/mystery_event/)
@@ -294,7 +326,7 @@ describe("streamAssistantMessage", () => {
     })
     mockFetch.mockReturnValueOnce(Promise.resolve({ ok: true, body }))
 
-    await expect(streamAssistantMessage("session-1", "hi", {
+    await expect(streamAssistantMessage("session-1", "hi", "main.py", {
       signal: new AbortController().signal,
       onEvent: () => { throw new Error("callback failure") },
     })).rejects.toThrow("callback failure")
@@ -304,7 +336,7 @@ describe("streamAssistantMessage", () => {
   it("maps a non-OK response to ApiError before any streaming", async () => {
     mockFetch.mockReturnValueOnce(jsonResponse({ detail: "Assistant is not configured" }, 400))
     await expect(
-      streamAssistantMessage("session-1", "hi", {
+      streamAssistantMessage("session-1", "hi", "main.py", {
         signal: new AbortController().signal,
         onEvent: () => {},
       }),

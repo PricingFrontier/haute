@@ -101,9 +101,13 @@ marker. Edits already applied remain applied (they are real saves); the marker d
 an undo, but it also does not spell that consequence out.
 
 **One turn, one selected session.** The store holds one active session, created lazily on
-first send or selected explicitly from the backend conversation list. A source change clears
-the in-memory transcript/session; the source string is not passed as the `pipeline` value in
-the session-create request (the current client sends `null`). While a turn
+first send or selected explicitly from the backend conversation list. Every chat is bound to
+the pipeline document the canvas shows: the panel sends that document's source file with
+the chat-list request, session creation and every message, the list shows only that
+pipeline's conversations, and a source change while idle returns the panel to the new
+pipeline's list. Should the canvas show another pipeline than the open chat's, the composer
+refuses to send and names the chat's pipeline instead of starting a conversation silently;
+a canvas with no saved source file cannot send at all. While a turn
 is in flight the composer is locked from before session creation until the response body has
 ended (stop is the only action); the backend's 409 on concurrent
 sends therefore has exactly one

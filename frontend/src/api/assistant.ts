@@ -124,6 +124,7 @@ function parseAssistantSession(value: unknown): AssistantSessionResult {
   if (!Array.isArray(payload.history)) invalidAssistantPayload("session.history", "an array")
   return {
     sessionId: requireString(payload.session_id, "session.session_id"),
+    sourceFile: requireString(payload.source_file, "session.source_file"),
     history: payload.history.map((entry, index) =>
       parseAssistantHistoryEntry(entry, `session.history[${index}]`),
     ),
@@ -197,17 +198,20 @@ export interface AssistantHistoryEntry {
 
 export interface AssistantSessionResult {
   sessionId: string
+  /** The canonical source file the server bound the session to. */
+  sourceFile: string
   history: AssistantHistoryEntry[]
 }
 
+/** Create (or resume) a chat bound to the canvas document's source file. */
 export function createAssistantSession(
-  pipeline: string | null,
+  sourceFile: string,
   sessionId: string | null = null,
   signal?: AbortSignal,
 ): Promise<AssistantSessionResult> {
   return post<unknown>(
     "/api/assistant/session",
-    { pipeline, session_id: sessionId },
+    { source_file: sourceFile, session_id: sessionId },
     { signal },
   ).then(parseAssistantSession)
 }
@@ -231,17 +235,27 @@ function parseAssistantSessionSummary(value: unknown, path: string): AssistantSe
   }
 }
 
+export interface AssistantSessionList {
+  /** The canonical source file the listed chats are bound to. */
+  sourceFile: string
+  sessions: AssistantSessionSummary[]
+}
+
+/** List the chats bound to the canvas document's source file. */
 export function listAssistantSessions(
-  pipeline: string | null = null,
+  sourceFile: string,
   signal?: AbortSignal,
-): Promise<AssistantSessionSummary[]> {
-  const query = pipeline === null ? "" : `?pipeline=${encodeURIComponent(pipeline)}`
+): Promise<AssistantSessionList> {
+  const query = `?source_file=${encodeURIComponent(sourceFile)}`
   return request<unknown>(`/api/assistant/sessions${query}`, { signal }).then((value) => {
     const payload = requireRecord(value, "sessions")
     if (!Array.isArray(payload.sessions)) invalidAssistantPayload("sessions.sessions", "an array")
-    return payload.sessions.map((entry, index) =>
-      parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
-    )
+    return {
+      sourceFile: requireString(payload.source_file, "sessions.source_file"),
+      sessions: payload.sessions.map((entry, index) =>
+        parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
+      ),
+    }
   })
 }
 
@@ -253,11 +267,12 @@ export interface StreamAssistantMessageOptions {
 export async function streamAssistantMessage(
   sessionId: string,
   message: string,
+  sourceFile: string,
   options: StreamAssistantMessageOptions,
 ): Promise<void> {
   const response = await postRawStream(
     "/api/assistant/message",
-    { session_id: sessionId, message },
+    { session_id: sessionId, message, source_file: sourceFile },
     { signal: options.signal },
   )
   if (response.body === null) {
