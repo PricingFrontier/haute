@@ -3,7 +3,7 @@
  * current working pipeline (S11).
  *
  * Left canvas  = the pipeline as it stood at the inspected commit (fetched via
- *                GET /api/git/show/{sha} — no checkout, the working tree is
+ *                GET /api/git/show/{sha}?source_file= — no checkout, the working tree is
  *                untouched).
  * Right canvas = the current working pipeline (a frozen snapshot taken on entry).
  *
@@ -309,6 +309,7 @@ export default function ComparisonView({
   // is edited (toolbar/websocket) while comparing. Re-snapshots on remount, which
   // is keyed by comparison.sha at the call site.
   const [current] = useState(() => ({ nodes: currentNodes, edges: currentEdges }))
+  const sourceFile = useDocumentStatusStore((state) => state.sourceFile)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
     (state) => state.capabilities?.reserved_api_input_frame_labels
       ?? noReservedApiInputFrameLabels,
@@ -364,7 +365,7 @@ export default function ComparisonView({
   useEffect(() => {
     const ctrl = new AbortController()
     const load = async () => {
-      const graph = await getCommitPipeline(comparison.sha, { signal: ctrl.signal })
+      const graph = await getCommitPipeline(comparison.sha, sourceFile, { signal: ctrl.signal })
       const resolved = await resolveEditorGraphIdentities({
         nodes: graph.nodes,
         edges: graph.edges,
@@ -378,7 +379,7 @@ export default function ComparisonView({
       setError(err instanceof Error ? err.message : "Could not load this version.")
     })
     return () => ctrl.abort()
-  }, [comparison.sha, reservedApiInputFrameLabelSet])
+  }, [comparison.sha, sourceFile, reservedApiInputFrameLabelSet])
 
   // Breadcrumb context for the historical (inspected) commit. Best-effort — a
   // failure just leaves the fallback label.

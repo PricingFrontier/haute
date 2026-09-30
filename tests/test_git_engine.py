@@ -229,6 +229,13 @@ class TestCommitSave:
     def test_empty_path_list_is_noop(self, repo: Path) -> None:
         assert commit_save([], WORKING, cwd=repo) is None
 
+    def test_default_message_names_the_first_changed_path_in_full(self, repo: Path) -> None:
+        # Porcelain reports a modified tracked file as " M rating.py"; the
+        # leading space is part of the fixed-width status prefix.
+        sha = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert sha is not None
+        assert _git(repo, "log", "-1", "--format=%s", sha) == "Updated rating"
+
 
 class TestMilestoneMerge:
     def test_first_milestone_is_real_merge_with_user_message(self, repo: Path) -> None:

@@ -932,36 +932,27 @@ def parse_pipeline_to_graph(
     return graph
 
 
-def commit_pipeline_graph(sha: str) -> PipelineGraph:
-    """Parse the active pipeline as it was at commit *sha* into a read-only graph
-    (S11). Only pipeline artifacts are materialised (no checkout, no HEAD
-    change). Parse failures are explicit rather than a successful empty graph."""
+def commit_pipeline_graph(sha: str, source_file: str) -> PipelineGraph:
+    """Parse the pipeline *source_file* as it was at commit *sha* into a
+    read-only graph (S11). Only pipeline artifacts are materialised (no
+    checkout, no HEAD change). A file absent at that commit or one that fails
+    to parse is an explicit failure rather than a successful empty graph."""
     from haute._git import GitHistoryReadError, archive_commit
-    from haute.discovery import discover_pipelines as _discover_in
+    from haute._sandbox import contained_path
 
     root = Path(tempfile.mkdtemp(prefix="haute-show-"))
     try:
         archive_commit(sha, root)
-        best: PipelineGraph | None = None
-        candidates = sorted(_discover_in(root=root))
-        parse_failures = 0
-        for f in candidates:
-            try:
-                graph = parse_pipeline_to_graph(f, project_root=root)
-                if graph.nodes:
-                    return graph
-                best = best if best is not None else graph
-            except Exception as e:
-                parse_failures += 1
-                logger.warning("commit_parse_failed", file=f.name, error=str(e))
-                continue
-        if best is not None:
-            return best
-        if parse_failures:
-            raise GitHistoryReadError("The selected version's pipeline could not be parsed.")
-        raise GitHistoryReadError(
-            "The selected version does not contain a readable Haute pipeline."
-        )
+        pipeline_path = contained_path(root, source_file)
+        if not pipeline_path.is_file():
+            raise GitHistoryReadError(f"The selected version does not contain '{source_file}'.")
+        try:
+            return parse_pipeline_to_graph(pipeline_path, project_root=root)
+        except Exception as e:
+            logger.warning("commit_parse_failed", file=source_file, error=str(e))
+            raise GitHistoryReadError(
+                f"The selected version of '{source_file}' could not be parsed."
+            ) from e
     finally:
         for attempt in range(3):
             try:

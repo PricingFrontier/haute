@@ -138,7 +138,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
-| `GET /api/git/show/{sha}` | Commit SHA path | Read-only `PipelineGraph` |
+| `GET /api/git/show/{sha}` | Commit SHA path; required query `source_file` (project-relative pipeline file) | Read-only `PipelineGraph` of that file at the commit |
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
 | `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[]}`; `default_branch` and `bootstrapped_default` are required response members, and working/ledger non-fast-forward is 409 |
 | `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
@@ -149,7 +149,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 **Save.** `commit_save(paths, working, cwd, message)` → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
-changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --quiet HEAD -- <paths>` re-check (returns `None` when clean, reconciling a stale index entry that reported a spurious modification) → `git commit -m <msg> --
+changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged) → returns the new SHA.
 
@@ -419,8 +419,8 @@ Tar extraction is implemented with Python-3.11-compatible regular-file/directory
 and validates the complete member list before writing. It rejects traversal, unsupported
 members, more than `_HISTORY_ARCHIVE_MAX_MEMBERS = 10_000` entries, and cumulative
 regular-file size above `_HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024`. Malformed or
-over-limit tar data raises `GitHistoryReadError`. Parsing tries each discovered pipeline,
-but if every candidate fails it raises the same typed failure rather than returning
+over-limit tar data raises `GitHistoryReadError`. Parsing reads only the requested
+`source_file` (contained to the extracted tree); a file absent at that commit or one that fails to parse raises the same typed failure rather than returning
 `PipelineGraph()`. Temporary
 directory cleanup retries transient Windows sharing violations and logs an exhausted cleanup
 without replacing a successfully parsed response with a cleanup error.

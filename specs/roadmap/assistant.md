@@ -90,7 +90,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
 | ASSIST-14 | Planned | P2 | Long turns keep their context and streamed tool calls are never dropped. |
-| ASSIST-15 | Planned | P2 | Git history reads the right pipeline and names the right files. |
 | ASSIST-16 | Planned | P2 | Column profiles work downstream of joins and aggregations. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
 | ASSIST-18 | Planned | P2 | Renaming a node never leaves a consumer silently broken. |
@@ -511,23 +510,6 @@ its calls; the matrix lists `databricks-qwen35-122b-a10b`.
 `src/haute/assistant/_providers.py::OpenAIProvider`;
 `src/haute/assistant/_providers.py::_anthropic_messages`;
 `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-15 — Git history for the right pipeline and files
-**Why:** Reading a historical graph ignores the source file, so Compare (and
-the planned Undo) parse the wrong pipeline in a project with several. Save
-commit messages drop a character ("Updated ipeline") because the status
-output is stripped before its fixed-width prefix is sliced.
-
-**Plan:** Pass the source file when reading a pipeline at a commit, and slice
-each status line before stripping.
-
-**Acceptance:** The two-pipeline probe reads the edited pipeline; a save
-commit message names `pipeline` and the changed sidecar correctly.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_helpers.py::commit_pipeline_graph`;
-`src/haute/_git_transactions.py::commit_save`.
 
 ### ASSIST-16 — Column profiles run in the preview worker
 **Why:** Profiles execute in the assistant's tool thread, where the engine

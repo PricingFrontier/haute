@@ -2190,17 +2190,20 @@ export function gitBranchAway(
 }
 
 /**
- * Read-only view of a commit's pipeline (S11): materialise the pipeline as it
- * stood at `sha` and parse it to the same graph shape the editor loads. Backs
- * the side-by-side comparison view. No checkout — the working tree is untouched.
+ * Read-only view of a commit's pipeline (S11): materialise the pipeline file
+ * `sourceFile` as it stood at `sha` and parse it to the same graph shape the
+ * editor loads. Backs the side-by-side comparison view. No checkout — the
+ * working tree is untouched.
  */
 export function getCommitPipeline(
   sha: string,
+  sourceFile: string,
   options?: { signal?: AbortSignal },
 ): Promise<PipelineGraph> {
-  return request<unknown>(`/api/git/show/${encodeURIComponent(sha)}`, options).then(
-    parsePipelineResponse,
-  )
+  return request<unknown>(
+    `/api/git/show/${encodeURIComponent(sha)}?source_file=${encodeURIComponent(sourceFile)}`,
+    options,
+  ).then(parsePipelineResponse)
 }
 
 /** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).

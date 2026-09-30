@@ -122,6 +122,7 @@ vi.mock("../../utils/editorIdentities", () => ({
 
 import ComparisonView from "../ComparisonView"
 import useGitStore from "../../stores/useGitStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 
 const comparison = { sha: "abc1234def567890", label: "v1.2" }
 
@@ -157,10 +158,12 @@ beforeEach(() => {
   // The current-side breadcrumb fetches context for the working branch's latest
   // save — give the store a last_save_sha so that fetch fires.
   useGitStore.setState({ status: { last_save_sha: "live123" } as never })
+  useDocumentStatusStore.setState({ sourceFile: "rating.py" })
 })
 afterEach(() => {
   cleanup()
   useGitStore.setState({ status: null })
+  useDocumentStatusStore.setState({ sourceFile: "" })
 })
 
 describe("ComparisonView", () => {
@@ -206,7 +209,13 @@ describe("ComparisonView", () => {
       expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
     )
     expect(screen.getByTestId("comparison-canvas-current")).toBeInTheDocument()
-    expect(mockGetCommitPipeline).toHaveBeenCalledWith(comparison.sha, expect.anything())
+    // The historical side reads the open pipeline file, not whichever pipeline
+    // the project happens to discover first.
+    expect(mockGetCommitPipeline).toHaveBeenCalledWith(
+      comparison.sha,
+      "rating.py",
+      expect.anything(),
+    )
   })
 
   it("shows the floating chip (label + short sha) and bails out via the ×", async () => {

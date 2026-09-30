@@ -916,7 +916,8 @@ reconciliation rather than dropping them or committing a second mutation.
 23. **Comparison view mount (`ComparisonView`).** Freezes the current
     nodes/edges into local state once on mount (so the right canvas stays
     stable even if the live pipeline changes underneath). Fetches the
-    historical pipeline via `getCommitPipeline(sha)`, then resolves its
+    historical pipeline via `getCommitPipeline(sha, sourceFile)` (the open
+    document's `sourceFile`), then resolves its
     transient node and edge identities through `resolveEditorGraphIdentities`
     using the historical submodel registry; once both sides are available,
     `diffPipelineNodes` runs once (`useMemo`) and `prepNodes`

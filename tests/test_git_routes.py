@@ -397,13 +397,46 @@ class TestGitShow:
         _git(tmp_path, "add", "pipeline.py")
         _git(tmp_path, "commit", "-m", "v2")
 
-        res = client.get(f"/api/git/show/{sha1}")
+        res = client.get(f"/api/git/show/{sha1}", params={"source_file": "pipeline.py"})
         assert res.status_code == 200
         labels = {n["data"]["label"] for n in res.json()["nodes"]}
         assert labels == {"base"}
 
-    def test_unknown_commit_returns_400(self, client: TestClient) -> None:
+    def test_reads_the_requested_pipeline_when_the_project_has_several(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # "a_first.py" sorts before "rating.py" and has nodes, so any
+        # discovery-order choice would return the wrong pipeline.
+        (tmp_path / "a_first.py").write_text(self._V2)
+        (tmp_path / "rating.py").write_text(self._V1)
+        _git(tmp_path, "add", "a_first.py", "rating.py")
+        _git(tmp_path, "commit", "-m", "two pipelines")
+        sha = _git(tmp_path, "rev-parse", "HEAD")
+
+        res = client.get(f"/api/git/show/{sha}", params={"source_file": "rating.py"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["source_file"] == "rating.py"
+        assert {n["data"]["label"] for n in body["nodes"]} == {"base"}
+
+    def test_pipeline_absent_at_the_commit_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pipeline.py").write_text(self._V1)
+        _git(tmp_path, "add", "pipeline.py")
+        _git(tmp_path, "commit", "-m", "v1")
+        sha = _git(tmp_path, "rev-parse", "HEAD")
+
+        res = client.get(f"/api/git/show/{sha}", params={"source_file": "later.py"})
+        assert res.status_code == 400
+        assert "later.py" in res.json()["detail"]
+
+    def test_source_file_is_required(self, client: TestClient) -> None:
         res = client.get(f"/api/git/show/{'0' * 40}")
+        assert res.status_code == 422
+
+    def test_unknown_commit_returns_400(self, client: TestClient) -> None:
+        res = client.get(f"/api/git/show/{'0' * 40}", params={"source_file": "pipeline.py"})
         assert res.status_code == 400
 
 
