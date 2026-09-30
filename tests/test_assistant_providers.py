@@ -109,6 +109,50 @@ def test_controller_messages_are_provider_visible_as_user_messages():
     ]
 
 
+def test_anthropic_round_results_share_one_user_message():
+    from haute.assistant._providers import _anthropic_messages
+
+    def result(call_id: str) -> dict:
+        return {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": "get_pipeline",
+            "content": {"ok": True},
+            "is_error": False,
+        }
+
+    def calls(*call_ids: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": call_id, "name": "get_pipeline", "arguments": {}} for call_id in call_ids
+            ],
+        }
+
+    translated = _anthropic_messages(
+        [
+            {"role": "user", "content": "request"},
+            calls("a", "b"),
+            result("a"),
+            result("b"),
+            calls("c"),
+            result("c"),
+        ]
+    )
+
+    assert [message["role"] for message in translated] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert [block["tool_use_id"] for block in translated[2]["content"]] == ["a", "b"]
+    assert [block["tool_use_id"] for block in translated[4]["content"]] == ["c"]
+    assert all(block["type"] == "tool_result" for block in translated[2]["content"])
+
+
 # ---------------------------------------------------------------------------
 # Anthropic fakes — the Messages streaming wire protocol
 # ---------------------------------------------------------------------------
@@ -459,6 +503,24 @@ class TestOpenAIProvider:
         client = _FakeOpenAIClient(chunks)
         events = await _collect(OpenAIProvider(_config("openai"), client=client))
         assert isinstance(events[-1], TurnStop) and events[-1].reason == "end"
+
+    @pytest.mark.parametrize("provider_cls", [OpenAIProvider, DatabricksProvider])
+    async def test_stop_finish_reason_with_accumulated_calls_yields_them(self, provider_cls):
+        """Some OpenAI-compatible gateways finish a tool-calling reply with
+        `stop`; the accumulated calls must still run."""
+
+        chunks = _openai_text_tool_chunks()
+        chunks[3].choices[0].finish_reason = "stop"
+        config = (
+            _config("databricks", "https://example.cloud.databricks.com/serving-endpoints")
+            if provider_cls is DatabricksProvider
+            else _config("openai")
+        )
+        events = await _collect(provider_cls(config, client=_FakeOpenAIClient(chunks)))
+
+        (tool,) = [e for e in events if isinstance(e, ToolCallRequest)]
+        assert (tool.id, tool.name, tool.arguments) == ("call_1", "get_pipeline", {"x": 2})
+        assert isinstance(events[-1], TurnStop) and events[-1].reason == "tool_use"
 
     async def test_budget_param_is_max_completion_tokens_for_api_openai_com(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())

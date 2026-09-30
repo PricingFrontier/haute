@@ -660,10 +660,24 @@ def _anthropic_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str,
     """Translate neutral history into Anthropic Messages content blocks."""
 
     translated: list[dict[str, Any]] = []
+    previous_role: object = None
     for message in messages:
         role = message.get("role")
         content = message.get("content")
-        if role == "assistant" and message.get("tool_calls"):
+        if role == "tool":
+            result_block = {
+                "type": "tool_result",
+                "tool_use_id": message["tool_call_id"],
+                "content": _json_string(content),
+                "is_error": bool(message.get("is_error", False)),
+            }
+            # One round's results travel in one user message, as the
+            # Messages API expects for parallel tool calls.
+            if previous_role == "tool":
+                translated[-1]["content"].append(result_block)
+            else:
+                translated.append({"role": "user", "content": [result_block]})
+        elif role == "assistant" and message.get("tool_calls"):
             blocks: list[dict[str, Any]] = []
             if content not in (None, ""):
                 blocks.append({"type": "text", "text": content})
@@ -677,24 +691,11 @@ def _anthropic_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str,
                     }
                 )
             translated.append({"role": "assistant", "content": blocks})
-        elif role == "tool":
-            translated.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": message["tool_call_id"],
-                            "content": _json_string(content),
-                            "is_error": bool(message.get("is_error", False)),
-                        }
-                    ],
-                }
-            )
         elif role == "controller":
             translated.append({"role": "user", "content": content})
         else:
             translated.append({"role": role, "content": content})
+        previous_role = role
     return translated
 
 
@@ -1049,7 +1050,12 @@ class OpenAIProvider:
                                 "multiple finish reasons",
                             )
                         finish_reason = str(choice_reason)
-                        if finish_reason in {"tool_calls", "function_call"} and not emitted_tools:
+                        # Some OpenAI-compatible gateways finish a tool-calling
+                        # reply with `stop`; its accumulated calls still run.
+                        calls_finished = finish_reason in {"tool_calls", "function_call"} or (
+                            finish_reason == "stop" and bool(calls)
+                        )
+                        if calls_finished and not emitted_tools:
                             for call in calls.values():
                                 call_id = call["id"]
                                 name = call["name"]
@@ -1069,7 +1075,11 @@ class OpenAIProvider:
                                 )
                                 yield ToolCallRequest(call_id, name, arguments)
                             emitted_tools = True
-                        elif finish_reason not in {"stop", "length", "content_filter"}:
+                        elif not calls_finished and finish_reason not in {
+                            "stop",
+                            "length",
+                            "content_filter",
+                        }:
                             raise _provider_error(
                                 self.provider_name,
                                 "malformed_stream",
@@ -1111,7 +1121,9 @@ class OpenAIProvider:
             # length / content_filter raise typed truncated/filtered failures
             # here rather than masquerading as a natural end.
             yield TurnStop(
-                _map_stop_reason(self.provider_name, finish_reason),
+                "tool_use"
+                if emitted_tools
+                else _map_stop_reason(self.provider_name, finish_reason),
                 ProviderUsage(input_tokens, output_tokens),
             )
         except AssistantProviderError:

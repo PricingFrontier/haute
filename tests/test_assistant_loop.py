@@ -167,6 +167,42 @@ class TestTextOnlyTurn:
         assert "one" in contents, "prior turn's user message must be in the window"
         assert "two" in contents, "current user message must be sent"
 
+    async def test_turn_after_a_long_tool_turn_still_sees_the_original_request(
+        self, store, session_id
+    ):
+        rounds = [
+            [ToolCallRequest(f"t{index}", "get_pipeline", {}), TurnStop("tool_use", _usage())]
+            for index in range(21)
+        ]
+        provider = ScriptedProvider(
+            [
+                *rounds,
+                [TextDelta("It reads quotes."), TurnStop("end", _usage())],
+                [TextDelta("Yes."), TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"ok": True}
+
+        await _run(
+            store,
+            session_id,
+            "What does this pipeline do?",
+            provider=provider,
+            execute_tool=execute_tool,
+            max_tool_calls=21,
+        )
+        await _run(store, session_id, "Is that all?", provider=provider)
+
+        follow_up = provider.calls[-1]["messages"]
+        assert follow_up[0] == {"role": "user", "content": "What does this pipeline do?"}
+        assert follow_up[-1] == {"role": "user", "content": "Is that all?"}
+        call_ids = [call["id"] for message in follow_up for call in message.get("tool_calls", ())]
+        result_ids = [message["tool_call_id"] for message in follow_up if message["role"] == "tool"]
+        assert call_ids and call_ids == result_ids
+        assert call_ids[-1] == "t20", "the newest rounds are the ones kept"
+
 
 class TestGraphPlanEvents:
     async def test_legacy_confirmation_fields_do_not_create_a_stream_event(self, store, session_id):
@@ -1401,6 +1437,86 @@ class TestSessionRetention:
         window = store.history_window(session)
         contents = [message["content"] for message in window]
         assert contents == ["u2", "a2", "u3", "a3"]
+
+    def test_oversized_newest_turn_drops_its_oldest_rounds_whole(self):
+        store = SessionStore(max_provider_messages=7)
+        session = store.create("main.py")
+        store.append(session, _turn("older", "older answer"))
+        rounds: list[dict] = []
+        for index in range(4):
+            rounds.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": f"a{index}", "name": "get_pipeline", "arguments": {}},
+                        {"id": f"b{index}", "name": "get_pipeline", "arguments": {}},
+                    ],
+                }
+            )
+            for call_id in (f"a{index}", f"b{index}"):
+                rounds.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": "get_pipeline",
+                        "content": {"ok": True},
+                        "is_error": False,
+                    }
+                )
+        store.append(
+            session,
+            [
+                {"role": "user", "content": "request"},
+                *rounds,
+                {"role": "controller", "content": "continue"},
+                {"role": "assistant", "content": "answer"},
+            ],
+        )
+
+        window = store.history_window(session)
+
+        # 1 user + 4 rounds of 3 + controller + answer = 15 > 7: the three
+        # oldest rounds go whole, the newest round and the fixed messages stay.
+        assert [message["role"] for message in window] == [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "controller",
+            "assistant",
+        ]
+        assert window[0]["content"] == "request"
+        assert [call["id"] for call in window[1]["tool_calls"]] == ["a3", "b3"]
+        assert [message["tool_call_id"] for message in window[2:4]] == ["a3", "b3"]
+
+    def test_newest_turn_keeps_its_request_when_no_round_fits(self):
+        store = SessionStore(max_provider_messages=2)
+        session = store.create("main.py")
+        store.append(
+            session,
+            [
+                {"role": "user", "content": "request"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "t1", "name": "get_pipeline", "arguments": {}}],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "t1",
+                    "name": "get_pipeline",
+                    "content": {"ok": True},
+                    "is_error": False,
+                },
+                {"role": "controller", "content": "continue"},
+                {"role": "assistant", "content": "answer"},
+            ],
+        )
+
+        window = store.history_window(session)
+
+        assert [message["content"] for message in window] == ["request", "continue", "answer"]
 
     def test_lru_evicts_idle_session_and_evicted_id_is_unknown(self):
         store = SessionStore(max_live_sessions=2)

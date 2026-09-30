@@ -38,7 +38,8 @@ both adapters pass through, threaded via `AssistantConfig`) is deliberately stri
 is a **readiness error**, not a warn-and-default — a silently substituted cost ceiling is
 precisely the wrong-fallback class the project forbids.
 Retention constants in `_session.py`, not env knobs: the provider request carries the most
-recent **complete turns** fitting a 40-message budget; stored history is capped at 200
+recent **complete turns** fitting a 40-message budget, and always the newest turn (trimmed
+of its oldest tool-call rounds when it alone exceeds the budget); stored history is capped at 200
 messages by evicting whole oldest turns; live-session LRU cap 32 idle sessions, held in
 the shared `LRUCache` (a session with a running turn is pinned from `reserve_turn` until
 its reservation is released, so it is never evicted and does not count against the cap;
@@ -640,7 +641,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    and free-form message are not persisted. A rejection additionally names what would
    satisfy it, because a stable reason alone is not correctable: `unknown_field` carries
    `unknown_fields` (the rejected keys) and `allowed_fields` (the closed allowlist), and
-   `wrong_type` carries `expected_types` and the `received_type`, adding an explicit
+   `wrong_type` carries `expected_types` and the `received_type`, spelling a boolean as
+   "JSON boolean (true or false)" so a model that sent `True` or `"true"` sees the literal
+   it needs, without the rejected value being echoed, and adding an explicit
    "send the value itself, not a JSON-encoded string of it" when a string arrived where an
    array or object was declared — the exact shape a gateway dialect produces, and one the
    model cannot infer from a bare type complaint. None of these are persisted, because
@@ -677,7 +680,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   max_tokens=<HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS>)`. Text deltas → `TextDelta`; a `tool_use` content block's
   `input_json_delta` fragments accumulate per block and emit one `ToolCallRequest` at the
   block's stop; the message stop reason (`end_turn` vs `tool_use`) → `TurnStop`; usage
-  from the message-level usage events.
+  from the message-level usage events. In the request, the consecutive tool results of
+  one round travel as `tool_result` blocks in a single user message, as the Messages API
+  expects for parallel tool calls.
 - **OpenAI and Databricks** — `client.chat.completions.create(model=…, messages=…, tools=…, stream=True,
   stream_options={"include_usage": True})` plus the output budget, whose parameter name is
   target-mapped: `max_completion_tokens` against api.openai.com (required by current OpenAI
@@ -743,7 +748,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   logged as a `assistant_openai_stream_missing_finish` warning; a pending tool fragment or a
   missing-usage/empty stream raises `malformed_stream`, and an at-budget end raises the
   typed `truncated` failure; `delta.tool_calls[*]` argument fragments accumulate per call index/id and
-  emit `ToolCallRequest`s when `finish_reason == "tool_calls"`; `finish_reason == "stop"` →
+  emit `ToolCallRequest`s when `finish_reason == "tool_calls"`, and equally when
+  `finish_reason == "stop"` arrives with accumulated calls (some OpenAI-compatible gateways
+  finish a tool-calling reply with `stop`); a round that emitted calls ends with a
+  `tool_use` `TurnStop`, and `finish_reason == "stop"` without calls → an `end`
   `TurnStop`; usage from the final chunk.
 - Usage is **summed across the provider round-trips within one turn**; the `completed`
   event reports the aggregate.
@@ -854,7 +862,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   payload shape the watcher publishes; no assistant-specific frame type exists on `/ws/sync`.
 - **Bounded retention, turn-atomic**: the provider request carries the most recent
   complete turns within a 40-message budget plus the always-complete system prompt; stored
-  history caps at 200 messages by evicting whole oldest turns. No pruning boundary ever
+  history caps at 200 messages by evicting whole oldest turns. The window always holds the
+  newest turn: when that turn alone exceeds the budget, its oldest completed tool-call
+  rounds (an assistant tool-call message with all of its results) are dropped whole until
+  it fits or no round remains, its user message and its other messages are always kept,
+  and no older turn is added. A long turn therefore never leaves the next turn without
+  its original request. No pruning boundary ever
   separates an assistant tool call from its result (an orphaned half is an invalid provider
   conversation). Live sessions are LRU-capped at 32 idle sessions with least-recently-used
   eviction — a session holding a running turn is pinned, never evicted and outside the cap,
@@ -1082,7 +1095,8 @@ fixture for route tests). The implemented coverage is:
   stream, and releases the session lock; closing at each tool lifecycle yield never
   persists an unmatched call; a raising history append still releases the lock;
   turn-atomic history windowing, including a tool-heavy turn crossing both caps without
-  splitting a call/result group; the two dry-run budgets are independent and each
+  splitting a call/result group, and a twenty-one-call turn followed by a turn that still
+  sees its original request; the two dry-run budgets are independent and each
   bounded — a malformed call does not consume a plan-correction attempt, and repeated
   malformed calls block with their own wording and no echoed detail; an end after
   unsuccessful mutation receives one internal

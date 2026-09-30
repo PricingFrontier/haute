@@ -1685,6 +1685,22 @@ class TestToolExecutorDispatch:
         # container is not something the model can see from the type alone.
         assert ("not a JSON-encoded string" in error["message"]) is (received == "string")
 
+    async def test_wrong_type_spells_the_json_boolean_literals_without_the_value(
+        self, project_root: Path
+    ):
+        """A Databricks model that writes Python's `True` arrives as a string;
+        naming only the type left it guessing at the literal to send."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")("list_datasets", {"recursive": "True"})
+
+        error = result["error"]
+        assert error["validation_reason"] == "wrong_type"
+        assert error["expected_types"] == ["boolean"]
+        assert "must be JSON boolean (true or false), but a string was sent" in error["message"]
+        assert "True" not in error["message"]
+
     @pytest.mark.parametrize(
         ("name", "arguments"),
         [

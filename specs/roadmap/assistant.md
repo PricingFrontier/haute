@@ -89,7 +89,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-11 | Planned | P1 | A new local file input can be added and transformed in one plan. |
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
-| ASSIST-14 | Planned | P2 | Long turns keep their context and streamed tool calls are never dropped. |
 | ASSIST-16 | Planned | P2 | Column profiles work downstream of joins and aggregations. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
 | ASSIST-18 | Planned | P2 | Renaming a node never leaves a consumer silently broken. |
@@ -485,31 +484,6 @@ after commit never says nothing changed.
 **Evidence:** `frontend/src/stores/useAssistantStore.ts`;
 `frontend/src/panels/assistant/TranscriptEntryView.tsx`;
 `src/haute/assistant/_loop.py::run_turn`.
-
-### ASSIST-14 — Loop and provider corrections
-**Why:** The history window stops at the first turn that exceeds forty
-messages, so after one long turn the next turn has no history at all. The
-OpenAI-compatible stream drops accumulated tool calls when the finish reason
-is `stop`. The Anthropic adapter sends each parallel tool result as its own
-user message. A Databricks model that sends Python-style booleans is told only
-`wrong_type`. The support matrix names 2025 model snapshots and not the
-configured model.
-
-**Plan:** Always keep the newest turn, trimming its oldest completed
-tool-call rounds as whole pairs; keep streamed tool calls whatever the finish
-reason; group a round's tool results; name the expected JSON type in
-validation errors; refresh the support matrix for the configured models.
-
-**Acceptance:** A turn with twenty-one tool calls is followed by a turn that
-still sees the original request; the simulated stop-with-calls stream yields
-its calls; the matrix lists `databricks-qwen35-122b-a10b`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_session.py::history_window`;
-`src/haute/assistant/_providers.py::OpenAIProvider`;
-`src/haute/assistant/_providers.py::_anthropic_messages`;
-`tests/assistant_eval/support_matrix.json`.
 
 ### ASSIST-16 — Column profiles run in the preview worker
 **Why:** Profiles execute in the assistant's tool thread, where the engine

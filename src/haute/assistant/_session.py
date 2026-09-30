@@ -469,6 +469,49 @@ class AssistantTurn:
         return {"messages": [message.as_dict() for message in self.messages]}
 
 
+def _trim_turn_rounds(
+    messages: tuple[AssistantMessage, ...],
+    limit: int,
+) -> tuple[AssistantMessage, ...]:
+    """Drop one turn's oldest tool-call rounds whole until it fits *limit*.
+
+    A round is an assistant message carrying tool calls together with the
+    ``tool`` messages answering them, so no call is ever separated from its
+    result. The user message and every message outside a round (text
+    replies, controller messages) are always kept, even when they alone
+    exceed *limit*: the newest turn's request must reach the provider.
+    """
+
+    units: list[tuple[bool, list[AssistantMessage]]] = []
+    pending: set[str] = set()
+    for message in messages:
+        if message.role == "tool":
+            if message.tool_call_id not in pending:
+                raise ValueError("a tool result does not follow its tool call")
+            pending.discard(message.tool_call_id)
+            units[-1][1].append(message)
+            continue
+        if pending:
+            raise ValueError("a tool call is not followed by its result")
+        if message.role == "assistant" and message.tool_calls:
+            answered = {result.tool_call_id for result in message.tool_results}
+            pending = {call.id for call in message.tool_calls} - answered
+            units.append((True, [message]))
+        else:
+            units.append((False, [message]))
+    if pending:
+        raise ValueError("a tool call is not followed by its result")
+
+    total = len(messages)
+    kept: list[list[AssistantMessage]] = []
+    for is_round, unit in units:
+        if is_round and total > limit:
+            total -= len(unit)
+            continue
+        kept.append(unit)
+    return tuple(message for unit in kept for message in unit)
+
+
 @dataclass(slots=True)
 class AssistantSession:
     """One process-local assistant session bound to a pipeline source file."""
@@ -888,8 +931,8 @@ class SessionStore:
 
         A turn that is itself larger than ``max_stored_messages`` remains
         intact; splitting it would violate the provider conversation shape.
-        The same rule applies when building a provider window: an oversized
-        newest turn is omitted rather than sliced.
+        The provider window instead keeps an oversized newest turn with its
+        oldest tool-call rounds dropped whole (:meth:`history_window`).
         """
 
         session = self._require(session_ref)
@@ -913,23 +956,31 @@ class SessionStore:
         *,
         max_messages: int | None = None,
     ) -> list[dict[str, JSONValue]]:
-        """Return the newest contiguous complete-turn provider history window."""
+        """Return the newest contiguous complete-turn provider history window.
+
+        The newest turn is always included. When it alone exceeds the limit,
+        its oldest tool-call rounds are dropped whole (see
+        :func:`_trim_turn_rounds`) and no older turn is added.
+        """
 
         session = self._require(session_ref)
         limit = self.max_provider_messages if max_messages is None else max_messages
         if type(limit) is not int or limit < 0:
             raise ValueError("max_messages must be a non-negative integer")
 
-        selected: list[AssistantTurn] = []
+        selected: list[tuple[AssistantMessage, ...]] = []
         count = 0
         for turn in reversed(session.history):
-            if count + turn.message_count > limit:
-                break
-            selected.append(turn)
-            count += turn.message_count
+            if count + turn.message_count <= limit:
+                selected.append(turn.messages)
+                count += turn.message_count
+                continue
+            if not selected:
+                selected.append(_trim_turn_rounds(turn.messages, limit))
+            break
         selected.reverse()
         self._touch(session)
-        return [message.as_dict() for turn in selected for message in turn.messages]
+        return [message.as_dict() for messages in selected for message in messages]
 
     def _coerce_turn(self, turn: TurnInput) -> AssistantTurn:
         if isinstance(turn, AssistantTurn):

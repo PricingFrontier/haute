@@ -1356,10 +1356,15 @@ def _validate_tool_value(
         # cannot see that it sent a string where an array was required.
         received = _json_type_name(value)
         article = "an" if received[:1] in "aeiou" else "a"
+        # A boolean spells its literals: a model writing Python's `True`
+        # cannot tell from the type name alone that JSON wants `true`.
+        expected = " or ".join(
+            "boolean (true or false)" if name == "boolean" else name for name in expected_types
+        )
         raise _ToolArgumentValidationError(
             path,
             "wrong_type",
-            f"{path} must be JSON {' or '.join(expected_types)}, but "
+            f"{path} must be JSON {expected}, but "
             f"{article} {received} was sent"
             + (
                 ". Send the value itself, not a JSON-encoded string of it"
