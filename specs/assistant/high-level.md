@@ -173,10 +173,12 @@ that durable fact, in its original position after the mutation tool row.
 - `get_pipeline` — the saved graph: nodes (id, type, name, config summary), edges,
   a preamble-presence/digest summary (never executable source), and which
   singletons exist.
-- `get_node_config` — one node's restricted structured config. Executable code
-  and credential-shaped fields are always redacted, but the remaining shape is
-  still treated as `restricted` and is refused unless the configured policy
-  permits that class.
+- `get_node_config` — one node's restricted structured config. Credential-shaped
+  fields are always redacted; executable code (`code`, `preamble`, `query`,
+  `script`, at any depth, so a free-code step's `code` too) is redacted unless
+  the policy's `allow_executable_source` permits it. The whole result is still
+  treated as `restricted` and is refused unless the configured policy permits
+  that class.
 - `list_datasets` / `get_dataset_schema` — the data files visible to the project
   and a file's column names and dtypes, with no preview collection or row values.
   Listing names visible subdirectories and accepts a bounded recursive traversal. Recursive
@@ -661,8 +663,9 @@ is public-only and cannot enable executable source or row samples. Project
 configuration may narrow but never widen these class ceilings.
 
 Schema inspection is schema-only: assistant schema results never contain
-preview rows. Raw rows and executable source are unavailable through ordinary
-read tools. Any future sensitive read must first produce a closed disclosure
+preview rows. Raw rows are unavailable through ordinary read tools, and
+executable source is available only through `get_node_config` when
+`allow_executable_source` permits it. Any future sensitive read must first produce a closed disclosure
 bound to endpoint identity, policy hash, project revision, category, resource,
 fields, sensitivity, and row limit, then consume same-session confirmation
 exactly once. Credentials, credential references, hidden paths, and restricted

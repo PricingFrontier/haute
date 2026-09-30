@@ -45,8 +45,9 @@ editors, so the chat feature costs the initial bundle nothing.
 
 **Readiness gates the composer, with the reason visible.** On open, the panel queries the
 backend's assistant status. An unconfigured assistant renders the composer disabled with the
-backend-supplied reason (no `[assistant]` config, missing API key, unknown provider, extra
-not installed) — never a send that bounces. Mutations-disabled (working branch not ready —
+backend-supplied reason (no `[assistant]` config, missing API key, unknown provider, missing
+`[assistant].egress` policy, or a provider SDK missing from a broken installation) — never a
+send that bounces. Mutations-disabled (working branch not ready —
 no repository, unset, detached, divergent, or invalid) renders the same way, with the backend's per-state reason: authoring is this panel's whole
 purpose, so an assistant that could talk but not edit would only mislead. The status is
 re-checked on every panel open, not polled.

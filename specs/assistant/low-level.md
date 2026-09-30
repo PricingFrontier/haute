@@ -582,8 +582,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       own port. This is the fact authoring code against a node actually requires; the
       output schema alone describes what a node already produces, which is precisely
       what an unwritten node has not got. A source node reports no `inputs` key.
-   5. **An authored-but-empty transform is a success, not a refusal.** A node with no
-      code and more than one input cannot resolve its own output — the engine raises its
+   5. **An authored-but-empty transform is a success, not a refusal.** A polars node
+      with no code has no implicit passthrough and cannot resolve its own output — the engine raises its
       canonical `INCOMPLETE_TRANSFORM_MESSAGE`. That is the ordinary editing state of a
       node the analyst is asking the assistant to write, so the tool returns the third
       declared success shape: `unresolved_reason: "node_has_no_code"` plus `inputs`, with
