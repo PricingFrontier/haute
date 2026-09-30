@@ -7,6 +7,7 @@ and therefore never has to know about route exceptions or Polars objects.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -60,6 +61,7 @@ from haute.assistant._application import (
     CommittedVerificationError,
     FailedStep,
     PipelineApplicationService,
+    PreambleFailedError,
     SchemaUnresolvableError,
 )
 from haute.assistant._assets import authoring_guide, load_example
@@ -83,7 +85,7 @@ from haute.assistant._project_knowledge import build_project_knowledge, query_pr
 from haute.assistant._recipes import RecipeError
 from haute.assistant._recipes import plan_recipe as _plan_recipe
 from haute.assistant._render import render_pipeline_graph
-from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError
+from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError, PreambleError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
@@ -161,6 +163,10 @@ def _error_message(exc: Exception, *, operation: str) -> str:
     if isinstance(exc, (PathOutsideProjectError, InvalidPathError)):
         # The bare refusal, as the API gives it; the refused path stays in the log context.
         return exc.message
+    if isinstance(exc, PreambleError):
+        # A Haute error, but its text is the authored preamble's own exception,
+        # which can quote data the preamble read at import.
+        return _execution_error_message(exc, operation=operation, graph=None)
     if isinstance(exc, (HauteError, SourceCacheError, PolarsIoConfigError)):
         return str(exc)
     if isinstance(exc, HTTPException):
@@ -183,54 +189,107 @@ _POLARS_COLUMN_PHRASES = (
 )
 
 
-def _polars_error_columns(exc: Exception) -> tuple[str, ...]:
-    """The column names a Polars error names; nothing else of its text is read."""
+def _authored_names(graph: PipelineGraph) -> frozenset[str]:
+    """Every identifier, keyword name and string literal the graph's authored code writes.
+
+    The preamble and each node's code (a stepped node's code is its rendered
+    steps) are authored text, not rows, so a name found here is one the
+    analyst or the model already wrote. Code that does not parse contributes
+    nothing, which withholds a name rather than trusting it.
+    """
+
+    sources = [graph.preamble or ""]
+    for node in flatten_graph(graph).nodes:
+        code = node.data.config.get("code")
+        if isinstance(code, str):
+            sources.append(code)
+    names: set[str] = set()
+    for source in sources:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for item in ast.walk(tree):
+            if isinstance(item, ast.Name):
+                names.add(item.id)
+            elif isinstance(item, ast.keyword) and item.arg is not None:
+                names.add(item.arg)
+            elif isinstance(item, ast.Constant) and isinstance(item.value, str):
+                names.add(item.value)
+    return frozenset(names)
+
+
+def _polars_error_columns(
+    exc: Exception, graph: PipelineGraph | None
+) -> tuple[tuple[str, ...], bool]:
+    """The column names a Polars error names that the authored code also writes.
+
+    A `column '<x>'` phrase can sit inside a quoted cell value or inside an
+    authored exception's collected values, so a candidate is reported only
+    when the graph's authored code independently writes it; without a graph
+    none is. Returns the reported names and whether any candidate was dropped.
+    """
 
     if not isinstance(exc, pl.exceptions.PolarsError):
-        return ()
+        return (), False
     first_paragraph = str(exc).split("\n\n", 1)[0]
-    names: list[str] = []
+    candidates: list[str] = []
     for pattern in _POLARS_COLUMN_PHRASES:
         for match in pattern.finditer(first_paragraph):
-            if match.group(1) not in names:
-                names.append(match.group(1))
-    return tuple(names)
+            if match.group(1) not in candidates:
+                candidates.append(match.group(1))
+    if not candidates:
+        return (), False
+    known = _authored_names(graph) if graph is not None else frozenset()
+    names = tuple(name for name in candidates if name in known)
+    return names, len(names) < len(candidates)
 
 
 def _execution_error_message(
     exc: Exception,
     *,
     operation: str,
+    graph: PipelineGraph | None,
     step: FailedStep | None = None,
 ) -> str:
-    """Render a failure raised while the engine ran node code over project inputs.
+    """Render a failure raised while the engine ran authored code over project inputs.
 
-    An authored-code failure — a Polars error, or any exception raised from
-    node code — is what the model needs to correct its own authoring, but its
-    text can quote row values: a Polars cast error names the cell it could not
-    parse, and node code can put collected values in its exception. It is
-    reported as its type, the step or line that raised it, and the columns it
-    names; its text follows only when the project permits row samples. Haute's
-    own errors keep their text, the incomplete-transform messages included, and
-    anything else is an internal failure.
+    An authored-code failure — a Polars error, any exception raised from node
+    code, or a preamble failure — is what the model needs to correct its own
+    authoring, but its text can quote row values: a Polars cast error names the
+    cell it could not parse, and node or preamble code can put values it read
+    in its exception. It is reported as its type, the step or line that raised
+    it, and those column names it names that `graph`'s authored code also
+    writes; its text follows only when the project permits row samples.
+    Haute's own errors keep their text, the incomplete-transform messages
+    included, and anything else is an internal failure.
     """
 
-    if not isinstance(exc, pl.exceptions.PolarsError) and user_code_line(exc) is None:
+    preamble = isinstance(exc, PreambleError)
+    line = user_code_line(exc)
+    if not preamble and not isinstance(exc, pl.exceptions.PolarsError) and line is None:
         if isinstance(exc, NotImplementedError) and str(exc).startswith(
             (INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)
         ):
             return str(exc)
         return _error_message(exc, operation=operation)
 
-    line = user_code_line(exc)
     summary = type(exc).__name__
-    if step is not None:
+    if isinstance(exc, PreambleError):
+        summary += (
+            f" at line {exc.source_line} of the preamble"
+            if exc.source_line is not None
+            else " in the preamble"
+        )
+    elif step is not None:
         summary += f" in step {step.number} ({step.step_id!r}) of node {step.node!r}"
     elif line is not None:
         summary += f" at line {line} of the node code"
-    columns = _polars_error_columns(exc)
+    columns, dropped = _polars_error_columns(exc, graph)
     if columns:
         summary += "; it names column(s) " + ", ".join(repr(name) for name in columns)
+    elif dropped:
+        summary += "; it names a column"
     try:
         allowed = resolve_egress_policy(Path.cwd().resolve()).allow_row_samples
         withheld_because = (
@@ -435,7 +494,9 @@ def _input_schemas_independently(
             resolved[item.name] = _port_schema(lazy_outputs[item.source], item.source_port)
         except Exception as exc:  # noqa: BLE001 - one unresolvable input is reportable
             resolved[item.name] = {
-                "unresolved_reason": _execution_error_message(exc, operation="get_node_schema"),
+                "unresolved_reason": _execution_error_message(
+                    exc, operation="get_node_schema", graph=graph
+                ),
                 "source": item.source,
             }
     return resolved
@@ -479,7 +540,7 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
         if not str(exc).startswith((INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)):
             return _error(
                 "schema_unresolvable",
-                _execution_error_message(exc, operation="get_node_schema"),
+                _execution_error_message(exc, operation="get_node_schema", graph=graph),
             )
         # An authored-but-empty transform (no code, or a step list still
         # incomplete, which the engine reports as either placeholder message
@@ -497,7 +558,7 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "schema_unresolvable",
-            _execution_error_message(exc, operation="get_node_schema"),
+            _execution_error_message(exc, operation="get_node_schema", graph=graph),
         )
 
 
@@ -805,7 +866,7 @@ def _collect_column_profile(
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "profile_unavailable",
-            _execution_error_message(exc, operation="get_column_profiles"),
+            _execution_error_message(exc, operation="get_column_profiles", graph=request.graph),
         )
 
 
@@ -932,7 +993,7 @@ async def get_column_profiles(
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "profile_unavailable",
-            _execution_error_message(exc, operation="get_column_profiles"),
+            _execution_error_message(exc, operation="get_column_profiles", graph=request.graph),
         )
     if "error" in profile:
         return profile
@@ -1298,7 +1359,12 @@ def _application_service(
 
 def _operation_error(exc: AssistantOperationError, *, operation: str) -> dict[str, object]:
     if isinstance(exc, SchemaUnresolvableError):
-        failure = _execution_error_message(exc.failure, operation=operation, step=exc.step)
+        failure = _execution_error_message(
+            exc.failure, operation=operation, graph=exc.graph, step=exc.step
+        )
+        return _error(exc.code, f"{exc} {failure}")
+    if isinstance(exc, PreambleFailedError):
+        failure = _execution_error_message(exc.failure, operation=operation, graph=exc.graph)
         return _error(exc.code, f"{exc} {failure}")
     if isinstance(exc, RenameConsumersError):
         consumers = [{"node": node, "field": field} for node, field in exc.consumers]

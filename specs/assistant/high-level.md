@@ -774,12 +774,12 @@ configuration may narrow but never widen these class ceilings.
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
 executable source is available only through `get_node_config` when
-`allow_executable_source` permits it. Resolving a schema still runs node code
-over the project's inputs, and that code, or Polars itself when a cast or
-computation meets a bad value, can put row values in an exception. Unless
-`allow_row_samples` permits row samples, such a failure reaches the model only
-as its exception type, the line or step that raised it, and the column names it
-names. A plan says truthfully whether building it ran node code over data. Any future sensitive read must first produce a closed disclosure
+`allow_executable_source` permits it. Resolving a schema still runs the
+preamble and node code over the project's inputs, and that code, or Polars
+itself when a cast or computation meets a bad value, can put row values in an
+exception. Unless `allow_row_samples` permits row samples, such a failure
+reaches the model only as its exception type, the line or step that raised it,
+and those column names it names that the authored code itself writes. A plan says truthfully whether building it ran node code over data. Any future sensitive read must first produce a closed disclosure
 bound to endpoint identity, policy hash, project revision, category, resource,
 fields, sensitivity, and row limit, then consume same-session confirmation
 exactly once. Credentials, credential references, hidden paths, and restricted

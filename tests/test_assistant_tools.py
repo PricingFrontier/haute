@@ -2492,15 +2492,20 @@ def strict(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 # Values that exist only in the rows: none may reach a tool result unless the
 # project permits row samples.
-_ROW_VALUES = ("Q-7781", "Q-9912", "1984-03-02", "1990-11-30", "abc")
+_ROW_VALUES = ("Q-7781", "Q-9912", "1984-03-02", "1990-11-30", "abc", "secret-123")
 
 
 @pytest.fixture()
 def egress_project(project_root: Path) -> Path:
-    """Quote rows with personal values and one malformed age, read from CSV."""
+    """Quote rows with personal values and malformed ages, read from CSV.
+
+    The first malformed age reads like a Polars column phrase, so a scraper
+    that trusts the error text reports that cell as a column name.
+    """
 
     (project_root / "data" / "quotes.csv").write_text(
-        "quote_id,dob,age\nQ-7781,1984-03-02,41\nQ-9912,1990-11-30,abc\n",
+        "quote_id,dob,age\nQ-7781,1984-03-02,41\nQ-5150,1977-06-01,column 'secret-123'\n"
+        "Q-9912,1990-11-30,abc\n",
         encoding="utf-8",
     )
     (project_root / "main.py").write_text(EGRESS_SOURCE, encoding="utf-8")
@@ -2564,7 +2569,7 @@ class TestExecutionErrorEgress:
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
         assert "ComputeError" in result["error"]["message"]
-        assert "column(s) 'age'" in result["error"]["message"]
+        assert "column(s) 'age'." in result["error"]["message"]
 
     def test_node_schema_withholds_a_strict_cast_value(self, egress_project: Path):
         from haute.assistant._tools import get_node_schema
@@ -2574,7 +2579,133 @@ class TestExecutionErrorEgress:
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
         assert "InvalidOperationError at line 1 of the node code" in result["error"]["message"]
-        assert "column(s) 'age'" in result["error"]["message"]
+        assert "column(s) 'age'." in result["error"]["message"]
+
+    async def test_an_authored_polars_error_cannot_pass_a_value_off_as_a_column(
+        self, egress_project: Path
+    ):
+        """Node code can raise a Polars error whose text embeds collected values
+        in a `column '...'` phrase; only a name the code itself writes is named."""
+
+        from haute.assistant._tools import dry_run_graph_edits
+
+        code = (
+            "# Reject the first quote\n"
+            "rows = df.collect()\n"
+            "raise pl.exceptions.ComputeError(f\"column '{rows['quote_id'][0]}' is bad\")\n"
+        )
+        result = await dry_run_graph_edits("main.py", _free_code_node("quotes", code))
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert _row_values_in(result) == []
+        message = result["error"]["message"]
+        assert "ComputeError in step 2 ('logic') of node 'probe'" in message
+        assert "; it names a column." in message
+
+    async def test_a_missing_column_the_code_names_is_still_named(self, egress_project: Path):
+        from haute.assistant._tools import dry_run_graph_edits
+
+        result = await dry_run_graph_edits(
+            "main.py",
+            _free_code_node(
+                "quotes", '# Rename one column\ndf = df.rename({"missing_col": "renamed"})'
+            ),
+        )
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert "ColumnNotFoundError" in result["error"]["message"]
+        assert "column(s) 'missing_col'." in result["error"]["message"]
+
+
+_PREAMBLE_EGRESS_SOURCE = EGRESS_SOURCE.replace(
+    'pipeline = haute.Pipeline("main", description="egress fixture")',
+    '_FIRST_QUOTE = int(pl.read_csv("data/quotes.csv")["quote_id"][0])\n\n'
+    'pipeline = haute.Pipeline("main", description="egress fixture")',
+)
+
+
+def _allow_row_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    import haute.assistant._tools as tools_module
+    from haute.assistant._config import EgressPolicy
+
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=True,
+        ),
+    )
+
+
+class TestPreambleFailureEgress:
+    """The preamble is authored code that can read project data at import, so its
+    failure is reduced exactly as a node-code failure is."""
+
+    @pytest.fixture()
+    def preamble_project(self, egress_project: Path) -> Path:
+        assert _PREAMBLE_EGRESS_SOURCE != EGRESS_SOURCE
+        (egress_project / "main.py").write_text(_PREAMBLE_EGRESS_SOURCE, encoding="utf-8")
+        return egress_project
+
+    async def test_dry_run_withholds_the_preamble_failure_text(self, preamble_project: Path):
+        from haute.assistant._tools import dry_run_graph_edits
+
+        result = await dry_run_graph_edits("main.py", _free_code_node("quotes", "df = df"))
+
+        assert result["error"]["code"] == "preamble_failed", result
+        assert _row_values_in(result) == []
+        assert "PreambleError at line" in result["error"]["message"]
+        assert "allow_row_samples" in result["error"]["message"]
+
+    def test_node_schema_withholds_the_preamble_failure_text(self, preamble_project: Path):
+        from haute.assistant._tools import get_node_schema
+
+        result = get_node_schema("main.py", "quotes")
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert _row_values_in(result) == []
+        assert "PreambleError at line" in result["error"]["message"]
+
+    async def test_apply_withholds_a_preamble_failure(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Apply rebuilds the plan, so the preamble runs again there; a failure
+        reaching the tool's generic handler is still reduced."""
+
+        import haute.assistant._tools as tools_module
+        from haute.errors import PreambleError
+
+        class _FailingService:
+            async def apply(self, _source_file: str, _plan_hash: str) -> object:
+                raise PreambleError(
+                    "Preamble line 5: invalid literal for int() with base 10: 'Q-7781'",
+                    source_line=5,
+                )
+
+        monkeypatch.setattr(tools_module, "_application_service", lambda: _FailingService())
+
+        result = await tools_module.apply_graph_plan("main.py", "0" * 64)
+
+        assert _row_values_in(result) == []
+        assert "PreambleError at line 5 of the preamble" in result["error"]["message"]
+
+    async def test_permitted_row_samples_keep_the_preamble_text(
+        self, preamble_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._tools import dry_run_graph_edits, get_node_schema
+
+        _allow_row_samples(monkeypatch)
+
+        planned = await dry_run_graph_edits("main.py", _free_code_node("quotes", "df = df"))
+        schema = get_node_schema("main.py", "quotes")
+
+        for result in (planned, schema):
+            assert "PreambleError at line" in result["error"]["message"], result
+            assert "Q-7781" in result["error"]["message"]
 
     async def test_permitted_row_samples_keep_the_error_text(
         self, egress_project: Path, monkeypatch: pytest.MonkeyPatch

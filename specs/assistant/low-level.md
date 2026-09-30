@@ -815,24 +815,35 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       analyst pointed at. Any other engine raise — unfetched Databricks cache
       (`CacheNotFoundError`, whose message already tells the analyst to fetch), a missing
       trained artifact, invalid node code — remains a structured `schema_unresolvable`
-      tool error. An *authored-code failure* — a Polars error, or any exception raised
-      from node code (it carries the user-code line `_exec_user_code` records) — is
-      rendered by the one execution-failure renderer in `_tools`, which the dry-run and
-      apply schema-validation path shares: its exception type, the line of the node code
-      that raised it, and the column names it names. In dry-run and apply, when exactly
-      one node the plan adds, updates or rewires runs authored code and that node is stepped, the
-      line is also named as that node's step number and id, since the model authored
-      steps rather than the rendered program. Column names come only from a Polars
-      error's `column '<name>'` / `"<name>" not found` phrases in its first paragraph;
-      nothing else is scraped. When `[assistant.egress].allow_row_samples` is true the
-      error's own text follows, because a Polars cast or compute error quotes cell values
-      and node code can put collected values in its exception; when it is false that text
-      is withheld and the message says so. A policy that cannot be read withholds the
-      text too and names why. Haute's own errors keep their text — a `HauteError`, a
-      source-cache error, an I/O-configuration error and the incomplete-transform
-      messages name nodes, columns, configuration and remedies, never rows — and every
-      other unexpected exception is still sanitized to the internal-error detail and
-      logged with `exc_info`. The full text of a withheld error is logged server-side.
+      tool error. An *authored-code failure* — a Polars error, any exception raised
+      from node code (it carries the user-code line `_exec_user_code` records), or a
+      `PreambleError` (the preamble is authored code that can read project data at
+      import) — is rendered by the one execution-failure renderer in `_tools`, which the
+      dry-run and apply schema-validation path, `get_node_schema` and
+      `get_column_profiles` share: its exception type, the line of the node code or of
+      the preamble that raised it, and the column names it names. In dry-run and apply,
+      when exactly one node the plan adds, updates or rewires runs authored code and that
+      node is stepped, the line is also named as that node's step number and id, since
+      the model authored steps rather than the rendered program. Column-name candidates
+      come only from a Polars error's `column '<name>'` / `"<name>" not found` phrases
+      in its first paragraph, and such a phrase can sit inside a quoted cell value or an
+      authored exception's collected values, so a candidate is named only when the
+      graph that ran independently writes it — as an identifier, keyword name or string
+      literal in the preamble or any node's code (a stepped node's code is its rendered
+      steps). Any other candidate is dropped and the message says only that the error
+      names a column. A preamble failure names no column. A preamble that fails while a
+      plan is being validated is the structured `preamble_failed` error; every other
+      tool path that meets a `PreambleError`, the generic handlers included, renders it
+      the same way. When `[assistant.egress].allow_row_samples` is true the error's own
+      text follows, because a Polars cast or compute error quotes cell values and node
+      or preamble code can put values it read in its exception; when it is false that
+      text is withheld and the message says so. A policy that cannot be read withholds
+      the text too and names why. Haute's own errors keep their text — a `HauteError`
+      other than `PreambleError`, a source-cache error, an I/O-configuration error and
+      the incomplete-transform messages name nodes, columns, configuration and
+      remedies, never rows — and every other unexpected exception is still sanitized to
+      the internal-error detail and logged with `exc_info`. The full text of a withheld
+      error is logged server-side.
 
    Mutation dispatch is an adapter over `PipelineApplicationService`.
    `dry_run_graph_edits` captures the exact evidence/revision, calls
@@ -1248,7 +1259,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Provider adapter construction/dependency failure | route provider factory | HTTP 502 before the stream opens |
 | Provider request/stream failures (authentication, rate limit, connection, malformed/truncated/filtered output) | `_providers` | `AssistantProviderError` → terminal `failed` SSE event after the response has started |
 | Op validation, save validation, missing dataset, unknown node, unknown example name, unresolvable node schema (unfetched Databricks cache, missing artifact, invalid node code) | `_tools`/`_ops`/`_assets`/engine/save service | Structured tool error returned to the model (visible as a failed activity row); never terminates the turn |
-| Authored-code failure (a Polars error or an exception raised from node code) while `get_node_schema`, dry-run or apply resolves a schema | engine, rendered by `_tools` | Structured `schema_unresolvable` error with the exception type, line or step, and named columns; the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
+| Authored-code failure (a Polars error, an exception raised from node code, or a preamble failure) while `get_node_schema`, a column profile, dry-run or apply resolves a schema or frame | engine, rendered by `_tools` | Structured `schema_unresolvable` (`preamble_failed` when the preamble fails during plan validation) error with the exception type, line or step, and only the named columns the authored code also writes; the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |

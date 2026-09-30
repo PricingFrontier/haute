@@ -36,7 +36,13 @@ from haute.assistant._ops import (
     verify_postconditions,
 )
 from haute.codegen import graph_to_code_multi
-from haute.errors import ConfigError, HauteError, HauteValidationError, ParseError
+from haute.errors import (
+    ConfigError,
+    HauteError,
+    HauteValidationError,
+    ParseError,
+    PreambleError,
+)
 from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
@@ -118,14 +124,40 @@ class SchemaUnresolvableError(AssistantOperationError):
     failure's own text can quote row values: a Polars cast error names the
     cell it could not parse, and node code can put collected values in its
     exception. The message therefore names only the target; the tool
-    boundary renders ``failure`` under the project's egress policy.
+    boundary renders ``failure`` under the project's egress policy, and
+    ``graph`` is the graph that ran, whose authored code is the only source a
+    column name in that failure is trusted from.
     """
 
-    def __init__(self, node: str, failure: Exception, *, step: FailedStep | None) -> None:
+    def __init__(
+        self,
+        node: str,
+        failure: Exception,
+        *,
+        step: FailedStep | None,
+        graph: PipelineGraph,
+    ) -> None:
         super().__init__("schema_unresolvable", f"Schema validation failed for node {node!r}.")
         self.node = node
         self.failure = failure
         self.step = step
+        self.graph = graph
+
+
+class PreambleFailedError(AssistantOperationError):
+    """The pipeline preamble failed while a plan was being validated.
+
+    The preamble is authored code that can read project data at import, so
+    its ``PreambleError`` text can quote row values. The message is fixed; the
+    tool boundary renders ``failure`` under the project's egress policy.
+    """
+
+    def __init__(self, failure: PreambleError, *, graph: PipelineGraph) -> None:
+        super().__init__(
+            "preamble_failed", "The pipeline preamble failed while validating the plan."
+        )
+        self.failure = failure
+        self.graph = graph
 
 
 class CommittedVerificationError(AssistantOperationError):
@@ -220,10 +252,13 @@ class _PreparedGraph:
 
     @classmethod
     def build(cls, graph: PipelineGraph) -> _PreparedGraph:
-        preamble_ns = _compile_preamble(
-            graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
-        )
+        try:
+            preamble_ns = _compile_preamble(
+                graph.preamble or "",
+                pipeline_dir=_pipeline_dir(graph),
+            )
+        except PreambleError as exc:
+            raise PreambleFailedError(exc, graph=graph) from exc
         return cls(
             graph=graph,
             flattened=flatten_graph(graph),
@@ -415,6 +450,7 @@ def _schema_evidence(
             target,
             failure,
             step=_failed_step(graph, changed, failure),
+            graph=graph,
         ) from failure
     evidence.extend(
         _inferred_input_evidence(node, inferred_inputs[node]) for node in sorted(inferred_inputs)
@@ -562,7 +598,7 @@ def _prove_nodes_ready(graph: PipelineGraph, node_ids: Collection[str]) -> None:
             frame, _inferred = _resolve_lazy_output(prepared, node_id)
             schema = {name: str(dtype) for name, dtype in frame.collect_schema().items()}
         except Exception as exc:
-            raise SchemaUnresolvableError(node_id, exc, step=None) from exc
+            raise SchemaUnresolvableError(node_id, exc, step=None, graph=graph) from exc
         try:
             build_training_feature_selection(config, schema)
         except HauteValidationError as exc:
@@ -919,6 +955,7 @@ __all__ = [
     "ApplicationResult",
     "CommittedVerificationError",
     "PipelineApplicationService",
+    "PreambleFailedError",
     "VerifiedPlan",
     "build_verified_plan",
 ]
