@@ -849,10 +849,25 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       come only from a Polars error's `column '<name>'` / `"<name>" not found` phrases
       in its first paragraph, and such a phrase can sit inside a quoted cell value or an
       authored exception's collected values, so a candidate is named only when the
-      graph that ran independently writes it — as an identifier, keyword name or string
-      literal in the preamble or any node's code (a stepped node's code is its rendered
-      steps). Any other candidate is dropped and the message says only that the error
-      names a column. A preamble failure names no column. A preamble that fails while a
+      effective egress policy already discloses that name through another route; being
+      written somewhere in the project is not enough, because saved code the model may
+      not read can hold a literal equal to a cell. The disclosable names are: (a) the
+      column names of the failing node's input frames — the failing step's node, or
+      else the node the tool resolved — each resolved schema-only through the same
+      engine path as `get_node_schema`, plus that node's own output schema on the
+      column-profile path, where the schema resolved and only the collection failed; a
+      frame that does not resolve contributes nothing and is never an error of its own;
+      (b) in dry-run and apply, every string in the operations the model submitted for
+      this plan (apply's are the plan's `normalized_operations`, which the dry-run
+      result returned to the model), with the identifiers, keyword names and string
+      literals of each string that parses as Python; and (c) only when
+      `[assistant.egress].allow_executable_source` is true, the identifiers, keyword
+      names and string literals of the preamble and every node's code in the graph that
+      ran (a stepped node's code is its rendered steps). An unreadable policy counts as
+      `allow_executable_source` false. The allowlist is built only when a candidate
+      exists, so a failure without a column phrase runs nothing more. Any other
+      candidate is dropped and the message says only that the error names a column,
+      with no name. A preamble failure names no column. A preamble that fails while a
       plan is being validated is the structured `preamble_failed` error; every other
       tool path that meets a `PreambleError`, the generic handlers included, renders it
       the same way. When `[assistant.egress].allow_row_samples` is true the error's own
@@ -1280,7 +1295,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Provider adapter construction/dependency failure | route provider factory | HTTP 502 before the stream opens |
 | Provider request/stream failures (authentication, rate limit, connection, malformed/truncated/filtered output) | `_providers` | `AssistantProviderError` → terminal `failed` SSE event after the response has started |
 | Op validation, save validation, missing dataset, unknown node, unknown example name, unresolvable node schema (unfetched Databricks cache, missing artifact, invalid node code) | `_tools`/`_ops`/`_assets`/engine/save service | Structured tool error returned to the model (visible as a failed activity row); never terminates the turn |
-| Authored-code failure (a Polars error, an exception raised from node code, or a preamble failure) while `get_node_schema`, a column profile, dry-run or apply resolves a schema or frame | engine, rendered by `_tools` | Structured `schema_unresolvable` (`preamble_failed` when the preamble fails during plan validation) error with the exception type, line or step, and only the named columns the authored code also writes; the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
+| Authored-code failure (a Polars error, an exception raised from node code, or a preamble failure) while `get_node_schema`, a column profile, dry-run or apply resolves a schema or frame | engine, rendered by `_tools` | Structured `schema_unresolvable` (`preamble_failed` when the preamble fails during plan validation) error with the exception type, line or step, and only the named columns the egress policy already discloses (the failing node's input schemas, the model's own plan text, saved code only under `allow_executable_source`); the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |

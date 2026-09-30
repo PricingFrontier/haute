@@ -125,9 +125,11 @@ class SchemaUnresolvableError(AssistantOperationError):
     failure's own text can quote row values: a Polars cast error names the
     cell it could not parse, and node code can put collected values in its
     exception. The message therefore names only the target; the tool
-    boundary renders ``failure`` under the project's egress policy, and
-    ``graph`` is the graph that ran, whose authored code is the only source a
-    column name in that failure is trusted from.
+    boundary renders ``failure`` under the project's egress policy. ``graph``
+    is the graph that ran, whose schema metadata (and, only when executable
+    source is permitted, its authored code) may name a column in that
+    failure; ``submitted`` is the operations payload the model sent for this
+    plan, whose text the provider already holds.
     """
 
     def __init__(
@@ -137,12 +139,14 @@ class SchemaUnresolvableError(AssistantOperationError):
         *,
         step: FailedStep | None,
         graph: PipelineGraph,
+        submitted: Sequence[Mapping[str, Any]],
     ) -> None:
         super().__init__("schema_unresolvable", f"Schema validation failed for node {node!r}.")
         self.node = node
         self.failure = failure
         self.step = step
         self.graph = graph
+        self.submitted = tuple(submitted)
 
 
 class PreambleFailedError(AssistantOperationError):
@@ -387,6 +391,7 @@ def _schema_evidence(
     *,
     baseline: PipelineGraph | None = None,
     changed: frozenset[str] = frozenset(),
+    submitted: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[tuple[Mapping[str, object], ...], tuple[str, ...]]:
     """Resolve target schemas without rows, separating pre-existing breakage.
 
@@ -414,6 +419,10 @@ def _schema_evidence(
     The terminal records are followed by one `input_schema_inferred` record per
     Data Input in a resolved terminal's lineage whose schema came from its file
     because it has no snapshot yet, sorted by node id.
+
+    `submitted` is the plan's operations payload, carried on a
+    `SchemaUnresolvableError` so the tool boundary may name a column the
+    model's own text names.
     """
 
     if not targets:
@@ -453,6 +462,7 @@ def _schema_evidence(
             failure,
             step=_failed_step(graph, changed, failure),
             graph=graph,
+            submitted=submitted,
         ) from failure
     evidence.extend(
         _inferred_input_evidence(node, inferred_inputs[node]) for node in sorted(inferred_inputs)
@@ -558,7 +568,12 @@ def _prove_load_file_loads(node_id: str, config: Mapping[str, Any]) -> None:
         ) from exc
 
 
-def _prove_nodes_ready(graph: PipelineGraph, node_ids: Collection[str]) -> None:
+def _prove_nodes_ready(
+    graph: PipelineGraph,
+    node_ids: Collection[str],
+    *,
+    submitted: Sequence[Mapping[str, Any]],
+) -> None:
     """Refuse a Modelling or Load File node in *node_ids* that is not ready to use.
 
     Save validation lets an analyst keep an unfinished node and refuses only
@@ -600,7 +615,9 @@ def _prove_nodes_ready(graph: PipelineGraph, node_ids: Collection[str]) -> None:
             frame, _inferred = _resolve_lazy_output(prepared, node_id)
             schema = {name: str(dtype) for name, dtype in frame.collect_schema().items()}
         except Exception as exc:
-            raise SchemaUnresolvableError(node_id, exc, step=None, graph=graph) from exc
+            raise SchemaUnresolvableError(
+                node_id, exc, step=None, graph=graph, submitted=submitted
+            ) from exc
         try:
             build_training_feature_selection(config, schema)
         except HauteValidationError as exc:
@@ -630,8 +647,11 @@ def build_verified_plan(
         targets,
         baseline=snapshot.graph,
         changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
+        submitted=operations,
     )
-    _prove_nodes_ready(prepared.result_graph, prepared.diff.complete.written_nodes)
+    _prove_nodes_ready(
+        prepared.result_graph, prepared.diff.complete.written_nodes, submitted=operations
+    )
     plan = finalize_graph_edit_plan(
         prepared,
         validation_warnings=(*warnings, *schema_warnings),

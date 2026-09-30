@@ -797,14 +797,20 @@ class TestUnresolvableButInspectableNodes:
         assert "error" not in result, result
         assert _columns(result) == {"vehicle_year": "Int64", "quote_count": "UInt32"}
 
-    def test_invalid_node_code_still_reports_the_engine_diagnosis(self, project_root: Path):
+    def test_invalid_node_code_still_reports_the_engine_diagnosis(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """A real query failure keeps its analyst-facing text: naming the
-        missing column is what lets the model correct its own authoring."""
+        missing column is what lets the model correct its own authoring. The
+        name is in saved code only, so it is named where the model may read
+        that code (masked source withholds it; see
+        TestFailureColumnNamesFollowTheEgressPolicy)."""
 
         (project_root / "main.py").write_text(
             PIPELINE_SOURCE.replace('.drop("notes")', '.drop("no_such_column")'),
             encoding="utf-8",
         )
+        _egress_policy(monkeypatch, executable_source=True, row_samples=False)
         from haute.assistant._tools import get_node_schema
 
         result = get_node_schema("main.py", "enriched")
@@ -2615,6 +2621,133 @@ class TestExecutionErrorEgress:
         assert result["error"]["code"] == "schema_unresolvable", result
         assert "ColumnNotFoundError" in result["error"]["message"]
         assert "column(s) 'missing_col'." in result["error"]["message"]
+
+
+def _egress_policy(
+    monkeypatch: pytest.MonkeyPatch, *, executable_source: bool, row_samples: bool
+) -> None:
+    import haute.assistant._tools as tools_module
+    from haute.assistant._config import EgressPolicy
+
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=False,
+            allow_executable_source=executable_source,
+            allow_row_samples=row_samples,
+        ),
+    )
+
+
+# Saved code the model may not read without executable source, holding a
+# literal equal to the malformed cell's `column '...'` phrase.
+_MASKED_LITERAL_SOURCES = {
+    "preamble": EGRESS_SOURCE.replace(
+        'pipeline = haute.Pipeline("main", description="egress fixture")',
+        '_BLOCKED_CUSTOMER = "secret-123"\n\n'
+        'pipeline = haute.Pipeline("main", description="egress fixture")',
+    ),
+    "node": EGRESS_SOURCE
+    + """
+
+@pipeline.polars
+def screened(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.filter(pl.col("quote_id") != "secret-123")
+""",
+}
+
+_GHOST_SOURCE = (
+    EGRESS_SOURCE
+    + """
+
+@pipeline.polars
+def ghost(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.rename({"ghost_col": "renamed"})
+"""
+)
+
+
+class TestFailureColumnNamesFollowTheEgressPolicy:
+    """A column name in an authored-code failure is reported only when the
+    egress policy already discloses it: permitted schema metadata, text the
+    model itself submitted in the plan, or saved code when executable source
+    is permitted. Appearing in masked code does not make a value a column."""
+
+    @pytest.mark.parametrize("where", sorted(_MASKED_LITERAL_SOURCES))
+    async def test_a_masked_literal_equal_to_a_cell_is_not_named(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch, where: str
+    ):
+        from haute.assistant._tools import dry_run_graph_edits
+
+        source = _MASKED_LITERAL_SOURCES[where]
+        assert source != EGRESS_SOURCE
+        (egress_project / "main.py").write_text(source, encoding="utf-8")
+        _egress_policy(monkeypatch, executable_source=False, row_samples=False)
+
+        result = await dry_run_graph_edits(
+            "main.py", _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()")
+        )
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert _row_values_in(result) == []
+        # The plan never names `age`; it is the failing node's input schema.
+        assert "column(s) 'age'." in result["error"]["message"]
+
+    def test_a_profile_names_the_column_of_the_frame_it_collected(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A profile's frame resolved schema-only and failed only when collected,
+        so that frame's own schema is permitted metadata; the masked literal
+        equal to the cell is still not a column."""
+
+        (egress_project / "main.py").write_text(
+            _MASKED_LITERAL_SOURCES["preamble"], encoding="utf-8"
+        )
+        # Profiles need row samples; the summary still follows the source policy.
+        _egress_policy(monkeypatch, executable_source=False, row_samples=True)
+
+        result = _profile("main.py", "typed")
+
+        assert result["error"]["code"] == "profile_unavailable", result
+        summary = result["error"]["message"].split(": ", 1)[0]
+        assert summary.endswith("; it names column(s) 'age'"), summary
+
+    def test_saved_code_names_a_column_only_with_executable_source(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._tools import get_node_schema
+
+        (egress_project / "main.py").write_text(_GHOST_SOURCE, encoding="utf-8")
+
+        _egress_policy(monkeypatch, executable_source=False, row_samples=False)
+        masked = get_node_schema("main.py", "ghost")
+        _egress_policy(monkeypatch, executable_source=True, row_samples=False)
+        readable = get_node_schema("main.py", "ghost")
+
+        for result in (masked, readable):
+            assert result["error"]["code"] == "schema_unresolvable", result
+            assert "ColumnNotFoundError" in result["error"]["message"]
+        assert "ghost_col" not in json.dumps(masked)
+        assert "; it names a column." in masked["error"]["message"]
+        assert "column(s) 'ghost_col'." in readable["error"]["message"]
+
+    async def test_the_models_own_plan_text_names_a_column_with_source_masked(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._tools import dry_run_graph_edits
+
+        _egress_policy(monkeypatch, executable_source=False, row_samples=False)
+
+        result = await dry_run_graph_edits(
+            "main.py",
+            _free_code_node("quotes", '# Rename one column\ndf = df.rename({"absent_col": "x"})'),
+        )
+
+        assert result["error"]["code"] == "schema_unresolvable", result
+        assert "column(s) 'absent_col'." in result["error"]["message"]
 
 
 _PREAMBLE_EGRESS_SOURCE = EGRESS_SOURCE.replace(
