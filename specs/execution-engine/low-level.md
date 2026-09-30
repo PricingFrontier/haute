@@ -2284,9 +2284,12 @@ present a structural or schema result as execution evidence.
   `NodeBuildContext.schema_only`, so a builder that would otherwise materialise
   while the graph is being built honours it. DATA_INPUT passes it to
   `resolve_data_input(..., schema_only=...)`, which reaches the inferred schema tier
-  only while an `_input_providers.recording_inferred_inputs()` collector is active
+  only while an `_input_providers.recording_schema_tiers()` collector is active
   (the assistant's plan verification); the builder records each inferred input under
-  its node id. Without a collector a missing snapshot keeps its `input_snapshot_missing`
+  its node id. API_INPUT passes it, with its node id, through
+  `resolve_api_input_from_config(..., read_snapshots=True, schema_only=..., node_id=...)`
+  to `load_v2_api_source`, which reaches the IO layer's declared schema tier for a table
+  with no snapshot under the same collector and records it by node id and table label. Without a collector a missing snapshot keeps its `input_snapshot_missing`
   rejection, so a caller that cannot report the weaker tier (the GLM training column
   check) never validates against an inferred schema. There are two builders that would
   otherwise materialise.

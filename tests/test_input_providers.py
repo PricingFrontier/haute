@@ -16,7 +16,7 @@ from haute._execution_context import ExecutionProfile
 from haute._input_providers import (
     InferredInputSchema,
     build_input_snapshot,
-    recording_inferred_inputs,
+    recording_schema_tiers,
     resolve_data_input,
     source_cache_identity,
     source_signature,
@@ -69,11 +69,11 @@ def test_missing_snapshot_is_reported_as_a_config_error(tmp_path: Path) -> None:
 
 
 def _infer(config: dict, tmp_path: Path, store: SourceCacheStore) -> tuple[pl.LazyFrame, dict]:
-    with recording_inferred_inputs() as inferred:
+    with recording_schema_tiers() as recorded:
         frame = resolve_data_input(
             config, store=store, base_dir=tmp_path, schema_only=True, node_id="claims"
         )
-    return frame, dict(inferred)
+    return frame, dict(recorded.inferred)
 
 
 def test_schema_only_resolution_infers_a_missing_csv_snapshot_from_the_node_settings(

@@ -732,7 +732,14 @@ the node, the tier `inferred`, the format, and the inference row bound (`null` f
 metadata or a declared schema), so the plan says which schemas were inferred rather than
 read from a snapshot. An input that cannot be scanned this way (an eager-only format, a
 database or remote source, or a configuration only the eager reader accepts) fails the
-dry-run with the remedy to preview the input first. Results name the tier
+dry-run with the remedy to preview the input first. A structured Quote Input table with
+no snapshot yet (for example in a Quote Input the plan adds, alone or behind a Source
+Switch) resolves at the IO layer's declared schema tier: its schema is the node's own
+request contract, each selected column's declared type, so no request data is read,
+nothing is collected and no snapshot is written. The evidence then carries one
+`input_schema_declared` record per such table naming the node, the table, the tier
+`declared` and the table's declared column count. A contract with a column that declares
+no type is refused by the contract validator naming the column, as a preview would be. Results name the tier
 that actually ran and include bounded evidence, the resulting revision, graph
 fingerprint, ledger reference and warnings. Structural or plan verification is
 never described as row-level, model-quality, pricing, or commercial proof.

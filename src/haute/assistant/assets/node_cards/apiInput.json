@@ -2,7 +2,7 @@
   "node_type": "apiInput",
   "authorable": true,
   "fields": {
-    "path": "An example request file (JSON array of quote objects) relative to the project root. Its tables are read from snapshots that previewing the node builds, so a dry-run that resolves a consumer of a never-previewed API Input fails asking for a preview.",
+    "path": "An example request file (JSON array of quote objects) relative to the project root. A dry-run takes each table's schema from its declared column types, so a new API Input needs no preview; running the pipeline reads the tables from snapshots that previewing the node builds.",
     "tables": "One entry per frame the request yields. Each emitting table is an output of the node, named by its label; downstream edges pick one with source_handle set to that label.",
     "tables[].path": "The array the table iterates: \"$[:]\" for the top-level quotes, \"$[:].drivers[:]\" for an array nested in each quote.",
     "tables[].label": "The frame name, unique in the node, used as the source_handle of edges out of this table.",

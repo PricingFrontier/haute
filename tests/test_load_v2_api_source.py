@@ -19,6 +19,7 @@ import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._input_providers import DeclaredTableSchema, recording_schema_tiers
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._snapshots import api_input_snapshot_source
 from haute._polars_io_registry import PolarsIoConfigError
@@ -358,6 +359,50 @@ def test_a_snapshot_read_of_an_unbuilt_table_is_refused_without_shredding(
 
     with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing: .*'root'"):
         _read(data, cfg)
+
+
+def test_a_schema_only_read_resolves_an_unbuilt_table_at_the_declared_tier(
+    tmp_path: Path,
+) -> None:
+    cfg = {
+        "tables": [
+            _table(
+                "$[:]",
+                "root",
+                [_col("id", "$[:].id"), _col("premium", "$[:].premium", type_token="float")],
+            ),
+            _table("$[:].drivers[:]", "drivers", [_col("age", "$[:].drivers[:].age")]),
+        ]
+    }
+    # The request file is never written: the declared tier reads no request data.
+    data = tmp_path / "request.json"
+
+    with recording_schema_tiers() as recorded:
+        out = _read(
+            data, cfg, port_columns={"root": frozenset({"id"})}, schema_only=True, node_id="quote"
+        )
+
+    assert out["root"].collect_schema() == pl.Schema({"id": pl.Int64})
+    assert recorded.declared == {("quote", "root"): DeclaredTableSchema(column_count=2)}
+    assert recorded.inferred == {}
+    store = SourceCacheStore(tmp_path)
+    source = api_input_snapshot_source(cfg, data)
+    assert {store.status(table.identity).state for table in source.tables} == {"missing"}
+
+
+@pytest.mark.parametrize("recorder", [False, True], ids=["no-recorder", "not-schema-only"])
+def test_the_declared_tier_is_open_only_to_a_recording_schema_only_read(
+    tmp_path: Path, recorder: bool
+) -> None:
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
+    data = _write(tmp_path, [{"id": 1}])
+
+    with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing: .*'root'"):
+        if recorder:
+            with recording_schema_tiers():
+                _read(data, cfg, node_id="quote")
+        else:
+            _read(data, cfg, schema_only=True, node_id="quote")
 
 
 def test_never_cached_jsonl_shreds_in_memory(tmp_path: Path) -> None:

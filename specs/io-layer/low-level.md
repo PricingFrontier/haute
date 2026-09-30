@@ -163,7 +163,8 @@ an in-place or non-atomic fallback.
    action that re-reads it.
 3. `schema_only=True` records nothing and never builds; the node builder's
    `input_snapshot_missing` rejection remains the outcome for a missing generation,
-   except at the inferred schema tier described under snapshot resolution below.
+   except at the inferred and declared schema tiers described under snapshot resolution
+   below.
 4. The cap gate: preparation runs only under an admitted `ExecutionContext` (its
    `admission` is present); without one it does nothing and resolution keeps its
    `input_snapshot_missing` rejection. With `current_native_memory_backend()` set the
@@ -498,9 +499,15 @@ schema-only execution, or a caller outside an admitted execution context), it ra
 `input_snapshot_missing:` prefix and an instruction to build the snapshot or run the
 pipeline under an admitted execution, which prepares it.
 
+**Schema tier recorder.** `recording_schema_tiers()` is a context manager yielding a
+`RecordedSchemaTiers` it fills: `inferred`, a `{node_id: InferredInputSchema}` mapping,
+and `declared`, a `{(node_id, table_label): DeclaredTableSchema}` mapping. Resolvers
+reach it only through `schema_tier_recorder(schema_only)`, which returns the active
+recorder for a schema-only resolution and `None` otherwise, so the weaker tiers are open
+only to a schema-only caller that reports them.
+
 **Inferred schema tier.** `resolve_data_input(..., schema_only=True, node_id=...)` called
-while `recording_inferred_inputs()` is active (a context manager yielding the
-`{node_id: InferredInputSchema}` mapping it fills) does not raise for a missing generation
+while `recording_schema_tiers()` is active does not raise for a missing generation
 when the input can be scanned. Eligibility is `inputType == "file"`, a format with a
 scanner, and an empty `scanner_rejected_arguments(fmt, config)`: the registry's one check
 of which configured arguments the scanner does not accept by name
@@ -524,6 +531,19 @@ naming the reason (`a <provider> input has no local file to scan`, `format '<nam
 only eagerly`, or the reader-only argument names) and the remedy "Preview this input
 first, which builds its snapshot." Without an active collector, or when `schema_only` is
 false, a missing generation keeps the plain rejection.
+
+**Declared schema tier.** A structured API Input table read from the store
+(`load_v2_api_source(..., read_snapshots=True, schema_only=True, node_id=...)`, see
+[JSON shredding](../json-shredding/low-level.md)) whose generation is missing while the
+recorder is active resolves as an empty `LazyFrame` under the table's declared frame
+schema (`_declared_frame_schema` of its demanded columns), recorded as
+`declared[(node_id, label)] = DeclaredTableSchema(column_count=...)`, where
+`column_count` is the table's declared selected columns, whatever the demand. The
+contract has already passed `validate_v2_schema`, so every selected column declares one
+of `int|float|str|bool|date`; an untyped column is refused there with
+`ApiInputSchemaError` naming the table and column, the same refusal a preview meets. The
+request file is not opened (it need not exist), nothing is collected, and no generation
+is written. A table whose generation exists is leased as usual, so a node can mix both.
 
 Direct mode is not a general compatibility path. It is valid only for a file-backed
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot

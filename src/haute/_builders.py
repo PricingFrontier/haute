@@ -534,6 +534,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         ),
         _config: dict[str, Any] = config,
         _node_id: str = ctx.node.id,
+        _schema_only: bool = ctx.schema_only,
     ) -> _Frame | dict[str, _Frame]:
         projected = _source_scan_projection(
             _profile,
@@ -550,6 +551,8 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             columns=projected.columns,
             port_columns=_port_columns,
             read_snapshots=True,
+            schema_only=_schema_only,
+            node_id=_node_id,
         )
 
     return ctx.func_name, api_source_fn, True

@@ -100,20 +100,51 @@ def _leased_table_frames(
     config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
     store: SourceCacheStore | None,  # pragma: no mutate
+    *,
+    schema_only: bool,
+    node_id: str | None,
 ) -> dict[str, pl.LazyFrame]:
-    from haute._input_providers import _cache_root, lease_input_generation
+    """Lease each demanded table's generation, or resolve its declared schema.
+
+    A table with no generation resolves at the declared schema tier only for a
+    schema-only read inside :func:`haute._input_providers.recording_schema_tiers`,
+    recorded under *node_id* and its label; otherwise it is refused.
+    """
+    from haute._input_providers import (
+        DeclaredTableSchema,
+        InputSnapshotMissingError,
+        _cache_root,
+        lease_input_generation,
+        schema_tier_recorder,
+    )
     from haute._json_shred._snapshots import api_input_snapshot_source
 
     source = api_input_snapshot_source(config, data_path)
     cache_store = store or SourceCacheStore(_cache_root())
+    recorder = schema_tier_recorder(schema_only)
     frames: dict[str, pl.LazyFrame] = {}
     for spec in table_specs:
-        frame = lease_input_generation(
-            cache_store,
-            source.table(spec.label).identity,
-            missing_message=_snapshot_missing_message(spec.label),
-        )
-        frames[spec.label] = frame.select(_shred._declared_frame_schema(spec).names())
+        table = source.table(spec.label)
+        declared = _shred._declared_frame_schema(spec)
+        try:
+            frame = lease_input_generation(
+                cache_store,
+                table.identity,
+                missing_message=_snapshot_missing_message(spec.label),
+            )
+        except InputSnapshotMissingError:
+            if recorder is None:
+                raise
+            if node_id is None:
+                raise ValueError(
+                    "A declared API Input table schema is recorded by node id; pass node_id."
+                ) from None
+            recorder.declared[(node_id, spec.label)] = DeclaredTableSchema(
+                column_count=len(table.spec.columns)
+            )
+            frames[spec.label] = pl.LazyFrame(schema=declared)
+            continue
+        frames[spec.label] = frame.select(declared.names())
     return frames
 
 
@@ -153,6 +184,8 @@ def load_v2_api_source(
     port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,  # pragma: no mutate
     read_snapshots: bool = False,
     store: SourceCacheStore | None = None,  # pragma: no mutate
+    schema_only: bool = False,
+    node_id: str | None = None,
 ) -> dict[str, pl.LazyFrame]:
     """Load a v2 apiInput as an emit-gated per-port frame bundle.
 
@@ -169,7 +202,8 @@ def load_v2_api_source(
     - ``read_snapshots`` (canvas execution) leases each demanded table's
       current generation from the shared store and never reads the source; a
       table with no generation raises ``PolarsIoConfigError``
-      (``input_snapshot_missing``).
+      (``input_snapshot_missing``), unless a schema-only read (*schema_only*,
+      recorded under *node_id*) reaches the IO layer's declared schema tier.
     - otherwise (generated standalone code) shreds JSON, JSONL, or XML
       in-process into a bounded, process-owned spill.
     - 1+ emitting labels → a ``dict[port_label, LazyFrame]`` in schema order.
@@ -196,5 +230,7 @@ def load_v2_api_source(
         )
     table_specs = _projected_table_specs(complete_table_specs, port_columns)
     if read_snapshots:
-        return _leased_table_frames(data_path, config, table_specs, store)
+        return _leased_table_frames(
+            data_path, config, table_specs, store, schema_only=schema_only, node_id=node_id
+        )
     return _standalone_shred(data_path, config, table_specs)

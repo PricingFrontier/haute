@@ -171,19 +171,11 @@ def _log_model_run(project: Path, fixture: dict[str, Any]) -> str:
     return run_id
 
 
-def _preview_api_inputs(project: Path, operations: list[dict[str, Any]]) -> None:
-    """Build each added API Input's table snapshots, as previewing the node does.
-
-    A dry-run resolves an API Input's tables only from these snapshots.
-    """
-
-    for op in operations:
-        if op["op"] == "add_node" and op["node_type"] == NodeType.API_INPUT.value:
-            build_test_api_input_snapshots(project / op["config"]["path"], op["config"])
-
-
 def _prepare_snapshots(project: Path, graph: PipelineGraph) -> None:
-    """Publish the snapshot every non-direct Data Input executes from."""
+    """Publish the snapshots every non-direct input executes from, as a preview would.
+
+    Only execution needs them: the dry-run resolved every input without one.
+    """
 
     store = SourceCacheStore(project)
     for node in graph.nodes:
@@ -192,6 +184,8 @@ def _prepare_snapshots(project: Path, graph: PipelineGraph) -> None:
             build_input_snapshot(
                 config, store=store, base_dir=project, profile=ExecutionProfile.PREVIEW_EAGER
             )
+        elif node.data.nodeType is NodeType.API_INPUT:
+            build_test_api_input_snapshots(project / config["path"], config)
 
 
 _TERMINAL_JOB_STATUSES = frozenset(
@@ -263,10 +257,18 @@ def test_every_card_configuration_applies_and_executes(
             "config": {**config["config"], "run_id": _log_model_run(project, fixture)},
         }
     operations = _card_operations(card, config, fixture)
-    _preview_api_inputs(project, operations)
     service = _service(project)
 
     plan = service.dry_run(_SOURCE_FILE, operations)
+    # A Quote Input the plan adds has no snapshot yet: its tables resolve from
+    # their declared contract.
+    adds_api_input = any(
+        op["op"] == "add_node" and op["node_type"] == NodeType.API_INPUT.value for op in operations
+    )
+    declared = [
+        item for item in plan.verification_evidence if item["kind"] == "input_schema_declared"
+    ]
+    assert bool(declared) == adds_api_input
     asyncio.run(service.apply(_SOURCE_FILE, plan.plan_hash))
 
     graph = flatten_graph(parse_pipeline_to_graph(project / _SOURCE_FILE))

@@ -1496,3 +1496,105 @@ class TestInferredInputSchemas:
         )
         identity = source_cache_identity(self._CSV, base_dir=csv_project)
         assert SourceCacheStore(csv_project).status(identity).state == "missing"
+
+
+def _quote_table(label: str, path: str, columns: dict[str, str]) -> dict[str, object]:
+    return {
+        "path": path,
+        "label": label,
+        "emit": True,
+        "row_id_column": None,
+        "columns": [
+            {
+                "name": name,
+                "path": f"{path}.{name}",
+                "type": dtype,
+                "status": "Confirmed",
+                "selected": True,
+                "levels": None,
+            }
+            for name, dtype in columns.items()
+        ],
+    }
+
+
+_QUOTE_INPUT = {
+    "path": "quote.json",
+    "tables": [
+        _quote_table("policy", "$[:]", {"quote_id": "str", "age": "int"}),
+        _quote_table("drivers", "$[:].drivers[:]", {"driver_id": "str", "main": "bool"}),
+    ],
+}
+
+
+def _add_quote_input_and_transform(config: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {"op": "add_node", "node_type": "apiInput", "name": "quote", "ref": "q", "config": config},
+        {
+            "op": "add_node",
+            "node_type": "polars",
+            "name": "aged",
+            "ref": "a",
+            "config": {
+                "steps": _free_code_steps(
+                    "policy", "# Age next year\ndf = df.with_columns(next_age=pl.col('age') + 1)"
+                )
+            },
+        },
+        {"op": "add_edge", "source": "$q", "target": "$a", "source_handle": "policy"},
+    ]
+
+
+class TestDeclaredQuoteInputSchemas:
+    """A new Quote Input resolves each table's schema from its declared contract."""
+
+    async def test_a_new_quote_input_and_a_transform_apply_at_the_declared_tier(
+        self, project_root: Path
+    ):
+        from haute._json_shred._snapshots import api_input_snapshot_source
+        from haute._source_cache import SourceCacheStore
+
+        service = _service(project_root)
+        plan = service.dry_run("main.py", _add_quote_input_and_transform(_QUOTE_INPUT))
+
+        assert plan.verification_tier == "schema"
+        declared = [
+            dict(item)
+            for item in plan.verification_evidence
+            if item["kind"] == "input_schema_declared"
+        ]
+        assert declared == [
+            {
+                "kind": "input_schema_declared",
+                "node": "quote",
+                "table": "policy",
+                "tier": "declared",
+                "column_count": 2,
+            },
+        ]
+
+        result = await service.apply("main.py", plan.plan_hash)
+
+        assert result.verification_evidence[-len(plan.verification_evidence) :] == (
+            plan.verification_evidence
+        )
+        store = SourceCacheStore(project_root)
+        source = api_input_snapshot_source(_QUOTE_INPUT, project_root / "quote.json")
+        assert {store.status(table.identity).state for table in source.tables} == {"missing"}
+
+    def test_a_column_without_a_declared_type_is_refused_by_the_contract_validator(
+        self, project_root: Path
+    ):
+        from haute._api_input_schema import ApiInputSchemaError
+        from haute.assistant._application import SchemaUnresolvableError
+
+        untyped = _quote_table("policy", "$[:]", {"quote_id": "str", "age": "int"})
+        del untyped["columns"][1]["type"]  # type: ignore[index]
+        config = {"path": "quote.json", "tables": [untyped]}
+
+        with pytest.raises(SchemaUnresolvableError) as refused:
+            _service(project_root).dry_run("main.py", _add_quote_input_and_transform(config))
+
+        # A preview meets the same refusal, so the remedy is the column's type.
+        assert isinstance(refused.value.failure, ApiInputSchemaError)
+        assert "column=age" in str(refused.value.failure)

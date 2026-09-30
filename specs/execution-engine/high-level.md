@@ -163,7 +163,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   and bounded type inference, collecting nothing and writing no snapshot, and records the
   tier `inferred`; formats without a scanner, configurations only the eager reader
   accepts, and non-file providers are refused with the remedy to preview the input
-  first. Optional input code runs exactly once through `_exec_user_code` after
+  first. The same caller resolves a structured API Input table with no snapshot from
+  its declared column types, reading no request data, and records the tier `declared`
+  per table. Optional input code runs exactly once through `_exec_user_code` after
   provider resolution. Direct source signatures — or, for a snapshot-backed input, the
   generation pointer together with the current source signature — along with source
   identity, mode, and code, participate in fingerprints without resolved secrets, so a

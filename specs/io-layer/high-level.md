@@ -106,7 +106,13 @@ read their file metadata, nothing is collected, and no snapshot is written; the 
 preview still builds the snapshot. Eager-only formats, database, Databricks, lakehouse and
 inline inputs, and configurations only the eager reader accepts keep the
 `input_snapshot_missing` rejection, which then names the reason and the remedy "preview
-this input first". Before a
+this input first". The same caller resolves a structured Quote Input (API Input) table
+with no snapshot at the declared schema tier: the table's schema is the node's own
+request contract, the declared type of each selected column, so the request file is not
+read, nothing is collected, no snapshot is written, and each such table is recorded with
+the tier `declared`. A contract that does not validate (a selected column without a
+declared type, for example) is refused by the contract validator, as a preview would
+refuse it. Before a
 build the engine
 emits a structured warning naming the input, its identity digest, the build class, and the
 reserved limit; afterwards every execution's terminal diagnostics list each input's

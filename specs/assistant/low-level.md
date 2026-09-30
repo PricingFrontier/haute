@@ -275,7 +275,13 @@ orphaned halves).
   the terminal records come `input_schema_inferred` records (`node`, `tier:
   "inferred"`, `format`, `inference_rows`), one per Data Input in a resolved
   terminal's lineage whose schema came from the IO layer's inferred schema tier,
-  deduplicated and sorted by node id. They carry no path or column name, and the
+  deduplicated and sorted by node id. Then come `input_schema_declared` records
+  (`node`, `table`, `tier: "declared"`, `column_count`), one per structured API Input
+  table in a resolved terminal's lineage whose schema came from the IO layer's
+  declared schema tier, deduplicated and sorted by node id and table. `table` is the
+  table's label, the port name the graph's edges already carry as their
+  `source_handle`; `column_count` counts the table's declared selected columns,
+  whatever a consumer demands. Neither record carries a path or column name, and the
   plan's tier stays `schema`.
 - **`SemanticDiff`**: closed added/removed/renamed/updated node records,
   added/removed edges, configuration changes, preamble change and sidecar
@@ -492,13 +498,16 @@ excluded count; its path and content never cross the tool boundary.
    No frame is collected and no sink is invoked, which is what `schema_only`
    declares to the engine's group-by materialisation-admission gate. Every such
    resolution (`_application._resolve_lazy_output`, which `_prove_nodes_ready` also
-   uses) runs inside `_input_providers.recording_inferred_inputs()`, so a local file
-   Data Input with no snapshot resolves at the inferred schema tier and is recorded;
-   an input the tier cannot scan fails the dry-run as `schema_unresolvable` whose
-   message carries the IO layer's `input_snapshot_missing:` reason and the remedy
-   "Preview this input first, which builds its snapshot." The dry-run writes no
-   snapshot, and post-save verification re-resolves the same inputs the same way, so
-   the inferred records compare equal. It then
+   uses) runs inside `_input_providers.recording_schema_tiers()`, so a local file
+   Data Input with no snapshot resolves at the inferred schema tier and a structured
+   API Input table with no snapshot at the declared schema tier, and each is recorded;
+   an input the inferred tier cannot scan fails the dry-run as `schema_unresolvable`
+   whose message carries the IO layer's `input_snapshot_missing:` reason and the remedy
+   "Preview this input first, which builds its snapshot." An API Input contract that
+   fails `validate_v2_schema` (a column without a declared type) fails it as
+   `schema_unresolvable` carrying the validator's `ApiInputSchemaError`. The dry-run
+   writes no snapshot, and post-save verification re-resolves the same inputs the same
+   way, so the inferred and declared records compare equal. It then
    binds the normalized operations, semantic diff, postconditions, tier, warnings,
    and closed schema evidence into the plan
    hash, and records the immutable validated plan. A schema failure aborts the
@@ -1606,8 +1615,10 @@ fixture for route tests). The implemented coverage is:
   card's, the node produces the card's columns, and declared expected rows match. A
   Model Training card also trains through `/api/modelling/train` and an Optimisation
   card solves through `/api/optimiser/solve`, both to `completed`; a Model Scoring card
-  scores a tiny CatBoost model logged to the project's local MLflow folder; added API
-  Inputs have their table snapshots built first, as a preview would. A non-authorable
+  scores a tiny CatBoost model logged to the project's local MLflow folder. Added API
+  Inputs dry-run and apply with no table snapshot, and those plans (the API Input and
+  Source Switch cards) carry `input_schema_declared` evidence; their snapshots are
+  built only after apply, for execution, as a preview would. A non-authorable
   card's note contains the operation layer's refusal and the dry-run refuses the type.
   The walkthrough guesses (breakpoint rules written as `lower`/`upper` intervals, an
   operator-row `continuous` factor, and response paths `quote_id` and `$.quote_id`)
@@ -1651,6 +1662,11 @@ fixture for route tests). The implemented coverage is:
   and their edge applies with an `input_schema_inferred` record (tier `inferred`, format
   `csv`, the bounded row count), the Transform's resolved schema reflects both settings,
   post-save verification reproduces that evidence, and no snapshot generation is written.
+  A plan adding a Quote Input with two declared tables and a Transform over one of them
+  applies with one `input_schema_declared` record for that table (tier `declared`, its
+  declared column count), post-save verification reproduces it, and no table generation
+  is written; a column without a declared type fails the dry-run as `schema_unresolvable`
+  carrying the contract validator's `ApiInputSchemaError` for that column.
 - **`tests/test_assistant_project_knowledge.py`** — source attribution,
   sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
   policy, symlink containment, and metadata-only durable cache state.

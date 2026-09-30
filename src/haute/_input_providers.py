@@ -12,7 +12,7 @@ import weakref
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -64,26 +64,54 @@ class InferredInputSchema:
     inference_rows: int | None
 
 
-_INFERRED_INPUTS: ContextVar[dict[str, InferredInputSchema] | None] = ContextVar(
-    "haute_inferred_inputs", default=None
+@dataclass(frozen=True, slots=True)
+class DeclaredTableSchema:
+    """An API Input table resolved from its declared contract for lack of a snapshot.
+
+    ``column_count`` is the table's declared selected columns, whatever a
+    consumer demanded.
+    """
+
+    column_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedSchemaTiers:
+    """The inputs a schema-only resolution resolved below the snapshot tier.
+
+    ``inferred`` is keyed by Data Input node id; ``declared`` by API Input node
+    id and table label.
+    """
+
+    inferred: dict[str, InferredInputSchema] = field(default_factory=dict)
+    declared: dict[tuple[str, str], DeclaredTableSchema] = field(default_factory=dict)
+
+
+_SCHEMA_TIERS: ContextVar[RecordedSchemaTiers | None] = ContextVar(
+    "haute_schema_tiers", default=None
 )
 
 _PREVIEW_REMEDY = "Preview this input first, which builds its snapshot."
 
 
 @contextmanager
-def recording_inferred_inputs() -> Iterator[dict[str, InferredInputSchema]]:
-    """Admit the inferred schema tier and collect what it inferred, by node id.
+def recording_schema_tiers() -> Iterator[RecordedSchemaTiers]:
+    """Admit the inferred and declared schema tiers and collect what they resolved.
 
-    Only a schema-only caller that reports the tier opens this: without it a
+    Only a schema-only caller that reports the tiers opens this: without it a
     missing snapshot keeps its ``input_snapshot_missing`` rejection.
     """
-    inferred: dict[str, InferredInputSchema] = {}
-    token = _INFERRED_INPUTS.set(inferred)
+    recorded = RecordedSchemaTiers()
+    token = _SCHEMA_TIERS.set(recorded)
     try:
-        yield inferred
+        yield recorded
     finally:
-        _INFERRED_INPUTS.reset(token)
+        _SCHEMA_TIERS.reset(token)
+
+
+def schema_tier_recorder(schema_only: bool) -> RecordedSchemaTiers | None:
+    """The active recorder for a schema-only resolution, else ``None``."""
+    return _SCHEMA_TIERS.get() if schema_only else None
 
 
 def _base_path(base_dir: str | Path | None) -> Path:
@@ -335,7 +363,7 @@ def resolve_data_input(
 ) -> pl.LazyFrame:
     """Resolve canonical direct Parquet or an already-published snapshot.
 
-    A schema-only resolution inside :func:`recording_inferred_inputs` whose
+    A schema-only resolution inside :func:`recording_schema_tiers` whose
     snapshot is missing resolves at the inferred schema tier instead, recorded
     under *node_id*.
     """
@@ -356,13 +384,13 @@ def resolve_data_input(
             ),
         )
     except InputSnapshotMissingError:
-        recorder = _INFERRED_INPUTS.get()
-        if not schema_only or recorder is None:
+        recorder = schema_tier_recorder(schema_only)
+        if recorder is None:
             raise
     if node_id is None:
         raise ValueError("An inferred Data Input schema is recorded by node id; pass node_id.")
     frame, inferred = _infer_input_schema(validated, base_dir=base_dir)
-    recorder[node_id] = inferred
+    recorder.inferred[node_id] = inferred
     return frame
 
 

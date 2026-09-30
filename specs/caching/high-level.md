@@ -135,7 +135,9 @@ source directly and expose no cache action. Snapshot execution contacts the
 provider only through automatic preparation under an admitted execution
 context; schema-only or unadmitted callers receive the IO layer's explicit
 `input_snapshot_missing:` error when a required snapshot is missing, apart from the IO
-layer's inferred schema tier, which scans a local file's schema and writes no snapshot. Execution
+layer's inferred schema tier, which scans a local file's schema and writes no snapshot, and
+its declared schema tier, which takes an API Input table's schema from its declared column
+types and writes no snapshot. Execution
 caches key a snapshot-backed input by its generation pointer and its current
 source signature, so a rewritten source misses every cache.
 
