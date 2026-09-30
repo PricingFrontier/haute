@@ -29,6 +29,7 @@ jobs:
   # scheduled unlocked-resolve lane (dependencies.yml), so a canary refresh
   # re-derives those lanes' subset too.
   canary:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -67,6 +68,7 @@ jobs:
   # file-listing endpoint -> clean shutdown. Local twin:
   # `scripts/preflight.sh --init-smoke` / `scripts/preflight.ps1 -InitSmoke`.
   init-smoke:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -105,6 +107,7 @@ jobs:
   # green this lane is a maintainer decision, not something a PR does
   # unilaterally.
   dependency-floors:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -145,6 +148,7 @@ jobs:
   # (these were duplicated across the old 3-version backend matrix). The
   # package build lives in package-smoke, not here.
   backend-static:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -200,10 +204,20 @@ jobs:
       - name: Pytest shard ${{ matrix.shard }}/2 (coverage)
         env:
           COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
+          PYTHONPATH: ${{ github.workspace }}/.github/diag
+          HAUTE_TIMING_DIR: ${{ github.workspace }}/.cache/timing
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
           --splits 2 --group ${{ matrix.shard }}
           --cov=src/haute --cov-branch --cov-report= --cov-fail-under=0
+          -p ci_timing_plugin --durations=40
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-timing-coverage-shard-${{ matrix.shard }}
+          path: .cache/timing
+          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         with:
@@ -213,6 +227,7 @@ jobs:
           retention-days: 1
 
   backend-coverage-gate:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: backend-coverage-shard
@@ -290,9 +305,20 @@ jobs:
       # shard at once. Run 31129979759 is the worked example: one uncovered
       # frontend source, four red jobs. The shards still run them.
       - name: Pytest (compat, no coverage)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/diag
+          HAUTE_TIMING_DIR: ${{ github.workspace }}/.cache/timing
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
           -m "not perf and not meta"
+          -p ci_timing_plugin --durations=40
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-timing-compat-${{ matrix.python-version }}
+          path: .cache/timing
+          retention-days: 7
 
   # Forward-looking, NON-BLOCKING probe: does haute install + its core test
   # subset pass on Python 3.14? `continue-on-error` keeps it off the required
@@ -307,6 +333,7 @@ jobs:
   # costing every pull request ~367 s (49-sample mean) and contributing 18
   # failures of pure noise to the sampled corpus.
   backend-314-probe:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
@@ -333,6 +360,7 @@ jobs:
           -q -n 4 --timeout=60 --timeout-method=signal
 
   perf:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -355,6 +383,7 @@ jobs:
           path: .cache/perf/
 
   optional-deps-smoke:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -371,6 +400,7 @@ jobs:
         run: uv run pytest tests/test_optional_dependency_matrix.py -q
 
   optional-deps-present-smoke:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -386,6 +416,7 @@ jobs:
         run: uv run pytest tests/test_optional_dependency_extras.py -q
 
   package-smoke:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -418,6 +449,7 @@ jobs:
           ./.pkg-sdist/bin/haute --help >/dev/null
 
   platform-smoke:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -469,6 +501,7 @@ jobs:
           -q
 
   mutation-config-smoke:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -485,6 +518,7 @@ jobs:
         run: uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci
 
   frontend:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -501,6 +535,7 @@ jobs:
       - run: cd .. && bash scripts/preflight.sh --frontend-only
 
   browser-e2e:
+    if: false  # timing diagnostic: backend lanes only
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -548,3 +583,56 @@ jobs:
           path: |
             frontend/playwright-report
             frontend/test-results
+
+  # Timing diagnostic only: the compat selection (no coverage) on 3.12 under
+  # different xdist schedulers and worker counts, to measure the tail and
+  # whether the 4-vCPU runner is saturated at -n 4.
+  diag-xdist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: n4-load
+            args: -n 4 --dist load
+          - label: n4-worksteal
+            args: -n 4 --dist worksteal
+          - label: n4-loadfile
+            args: -n 4 --dist loadfile
+          - label: n6-worksteal
+            args: -n 6 --dist worksteal
+          - label: n8-worksteal
+            args: -n 8 --dist worksteal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Runner shape
+        run: nproc && free -g && cat /proc/cpuinfo | grep "model name" | sort | uniq -c
+
+      - name: Collection only (single process)
+        if: matrix.label == 'n4-load'
+        run: time uv run pytest tests/ --collect-only -q -m "not perf and not meta" | tail -3
+
+      - name: Pytest ${{ matrix.label }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/diag
+          HAUTE_TIMING_DIR: ${{ github.workspace }}/.cache/timing
+        run: >
+          uv run pytest tests/ -q ${{ matrix.args }} --timeout=60 --timeout-method=signal
+          -m "not perf and not meta"
+          -p ci_timing_plugin --durations=40
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-timing-xdist-${{ matrix.label }}
+          path: .cache/timing
+          retention-days: 7
