@@ -170,14 +170,54 @@ class AssistantSessionRequest(BaseModel):
     session_id: str | None = None
 
 
-class AssistantTranscriptEntry(BaseModel):
-    """One rehydratable transcript item from a resumed session's history."""
+AssistantTurnOutcomeKind = Literal[
+    "applied", "answered", "needs_input", "blocked", "committed_unverified"
+]
+_OUTCOME_KINDS_WITH_DETAIL = frozenset({"needs_input", "blocked", "committed_unverified"})
 
-    kind: Literal["user", "assistant", "tool"]
+
+class AssistantTurnOutcome(BaseModel):
+    """How a completed assistant turn ended.
+
+    ``detail`` is the model's question (``needs_input``), the sanitized blocker
+    (``blocked``) or the verification error of a save that committed
+    (``committed_unverified``); ``applied`` and ``answered`` carry none.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: AssistantTurnOutcomeKind
+    detail: str | None
+
+    @model_validator(mode="after")
+    def _detail_matches_kind(self) -> AssistantTurnOutcome:
+        if self.kind in _OUTCOME_KINDS_WITH_DETAIL:
+            if self.detail is None or not self.detail.strip():
+                raise ValueError(f"a {self.kind} outcome requires a non-empty detail")
+        elif self.detail is not None:
+            raise ValueError(f"a {self.kind} outcome carries no detail")
+        return self
+
+
+class AssistantTranscriptEntry(BaseModel):
+    """One rehydratable transcript item from a resumed session's history.
+
+    An ``outcome`` entry closes a completed turn with its stored outcome; it is
+    the only kind that carries ``outcome``.
+    """
+
+    kind: Literal["user", "assistant", "tool", "outcome"]
     text: str = ""
     name: str = ""
     summary: str = ""
     is_error: bool = False
+    outcome: AssistantTurnOutcome | None = None
+
+    @model_validator(mode="after")
+    def _outcome_only_on_outcome_entries(self) -> AssistantTranscriptEntry:
+        if (self.kind == "outcome") != (self.outcome is not None):
+            raise ValueError("exactly the outcome entry carries an outcome")
+        return self
 
 
 class AssistantSessionResponse(BaseModel):
@@ -256,6 +296,7 @@ class AssistantGraphUpdatedEvent(BaseModel):
 class AssistantCompletedEvent(BaseModel):
     type: Literal["completed"] = "completed"
     usage: AssistantUsage
+    outcome: AssistantTurnOutcome
 
 
 class AssistantFailedEvent(BaseModel):

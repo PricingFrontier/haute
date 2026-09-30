@@ -39,8 +39,9 @@ import {
   type AssistantSessionList,
   type AssistantSessionResult,
   type AssistantStreamEvent,
+  type AssistantTurnOutcome,
 } from "../../api/assistant"
-import useAssistantStore from "../useAssistantStore"
+import useAssistantStore, { type TranscriptEntry } from "../useAssistantStore"
 
 const READY_STATUS = {
   configured: true,
@@ -63,6 +64,7 @@ function resetStores() {
     entries: [],
     turnStatus: "idle",
     status: READY_STATUS,
+    statusErrorDetail: null,
     notice: null,
     view: "list",
     sessions: [],
@@ -84,8 +86,8 @@ function scriptStream(events: AssistantStreamEvent[]) {
   })
 }
 
-function completed(): AssistantStreamEvent {
-  return { type: "completed", usage: { input_tokens: 1, output_tokens: 2 } }
+function completed(outcome: AssistantTurnOutcome = { kind: "answered", detail: null }): AssistantStreamEvent {
+  return { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome }
 }
 
 beforeEach(() => {
@@ -104,6 +106,22 @@ describe("refreshStatus", () => {
     vi.mocked(getAssistantStatus).mockRejectedValue(new Error("boom"))
     await useAssistantStore.getState().refreshStatus()
     expect(useAssistantStore.getState().status).toBe("error")
+    expect(useAssistantStore.getState().statusErrorDetail).toBeNull()
+  })
+
+  it("keeps a 400's detail, which names what to fix in haute.toml", async () => {
+    vi.mocked(getAssistantStatus).mockRejectedValue(
+      new ApiError("bad", 400, "haute.toml is malformed and could not be parsed"),
+    )
+    await useAssistantStore.getState().refreshStatus()
+    expect(useAssistantStore.getState().status).toBe("error")
+    expect(useAssistantStore.getState().statusErrorDetail).toBe(
+      "haute.toml is malformed and could not be parsed",
+    )
+
+    vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
+    await useAssistantStore.getState().refreshStatus()
+    expect(useAssistantStore.getState().statusErrorDetail).toBeNull()
   })
 })
 
@@ -123,7 +141,10 @@ describe("sendMessage transcript flow", () => {
     expect(entries[0]).toEqual({ kind: "user", text: "hi" })
     const assistant = entries.find((entry) => entry.kind === "assistant")
     expect(assistant).toMatchObject({ text: "Hello", streaming: false })
-    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "completed" })
+    expect(entries[entries.length - 1]).toEqual({
+      kind: "outcome",
+      outcome: { kind: "answered", detail: null },
+    })
   })
 
   it("settles activity rows from started to ok with the summary", async () => {
@@ -231,6 +252,133 @@ describe("sendMessage transcript flow", () => {
     expect(turnStatus).toBe("idle")
     expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "interrupted" })
     expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(true)
+  })
+})
+
+const HISTORY_TEXT = { name: "", summary: "", is_error: false }
+
+async function liveEntries(events: AssistantStreamEvent[]): Promise<TranscriptEntry[]> {
+  scriptStream(events)
+  await useAssistantStore.getState().sendMessage("go", SEND_OPTS)
+  return useAssistantStore.getState().entries
+}
+
+describe("transcript order and turn outcomes", () => {
+  it("keeps text and tool rows in stream order", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Reading the pipeline." },
+      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "3 nodes" },
+      { type: "text_delta", text: "It has " },
+      { type: "text_delta", text: "three nodes." },
+      completed(),
+    ])
+
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "user", "assistant", "activity", "assistant", "outcome",
+    ])
+    expect(entries[1]).toEqual({ kind: "assistant", text: "Reading the pipeline.", streaming: false })
+    expect(entries[3]).toEqual({ kind: "assistant", text: "It has three nodes.", streaming: false })
+  })
+
+  it("drops the empty placeholder when a tool row comes first", async () => {
+    const entries = await liveEntries([
+      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "ok" },
+      completed(),
+    ])
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "outcome"])
+  })
+
+  it("replaces the model's NEEDS_INPUT: text with the question outcome", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "I checked the columns. " },
+      { type: "text_delta", text: "NEEDS_INPUT: Which values of status mean active?" },
+      completed({ kind: "needs_input", detail: "Which values of status mean active?" }),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "I checked the columns.", streaming: false },
+      {
+        kind: "outcome",
+        outcome: { kind: "needs_input", detail: "Which values of status mean active?" },
+      },
+    ])
+  })
+
+  it("replaces a blocker that follows a tool row with the blocked outcome", async () => {
+    const detail = "graph validation failed after one corrected retry (x); no graph changes were applied."
+    const entries = await liveEntries([
+      { type: "tool_started", id: "t1", name: "dry_run_graph_edits", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", is_error: true, summary: "bad" },
+      { type: "text_delta", text: `BLOCKED: ${detail}` },
+      completed({ kind: "blocked", detail }),
+    ])
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "outcome"])
+    expect(entries[2]).toEqual({ kind: "outcome", outcome: { kind: "blocked", detail } })
+  })
+
+  it("keeps the saved-but-unverified statement beside its outcome", async () => {
+    const outcome: AssistantTurnOutcome = {
+      kind: "committed_unverified",
+      detail: "The plan was committed, but structural verification failed.",
+    }
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Graph changes were saved, but post-save verification failed." },
+      completed(outcome),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      {
+        kind: "assistant",
+        text: "Graph changes were saved, but post-save verification failed.",
+        streaming: false,
+      },
+      { kind: "outcome", outcome },
+    ])
+  })
+
+  it("interrupts a turn whose outcome does not match its reply", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Here is the answer." },
+      completed({ kind: "needs_input", detail: "Which column?" }),
+    ])
+
+    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "interrupted" })
+    expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(true)
+  })
+
+  it("renders a resumed turn exactly as the live turn rendered", async () => {
+    const detail = "Which values of status mean active?"
+    const live = await liveEntries([
+      { type: "text_delta", text: "Reading." },
+      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "3 nodes" },
+      { type: "text_delta", text: "The plan is ready." },
+      { type: "text_delta", text: `NEEDS_INPUT: ${detail}` },
+      completed({ kind: "needs_input", detail }),
+    ])
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [
+        { kind: "user", text: "go", ...HISTORY_TEXT },
+        { kind: "assistant", text: "Reading.", ...HISTORY_TEXT },
+        { kind: "tool", text: "", name: "get_pipeline", summary: "3 nodes", is_error: false },
+        // One stored row per provider round: a controller continuation split these.
+        { kind: "assistant", text: "The plan is ready.", ...HISTORY_TEXT },
+        { kind: "assistant", text: `NEEDS_INPUT: ${detail}`, ...HISTORY_TEXT },
+        { kind: "outcome", outcome: { kind: "needs_input", detail } },
+      ],
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+
+    const strip = (entries: TranscriptEntry[]) =>
+      entries.map((entry) => (entry.kind === "activity" ? { ...entry, id: "" } : entry))
+    expect(strip(useAssistantStore.getState().entries)).toEqual(strip(live))
   })
 })
 

@@ -107,7 +107,8 @@ conversations bound to that source file, and a message whose source file differs
 session's is refused with 409 naming the chat's pipeline, so an edit can never land in a
 file the analyst is not looking at. Session create accepts an optional prior session id: when its
 persisted record exists (in memory or on disk) and is bound to the same pipeline, the
-session resumes with its transcript returned for the panel to rehydrate; otherwise a
+session resumes with its transcript, including each completed turn's outcome, returned
+for the panel to rehydrate; otherwise a
 fresh session is created — resume is an offer, never an error. A mismatched
 offer is rejected before the candidate is promoted or touched in the live LRU,
 so asking to resume the wrong pipeline cannot evict a useful session. A *message* against an
@@ -138,8 +139,14 @@ rather than hiding file reads in generic `polars` nodes.
 **Turns.** Posting a user message starts a turn, streamed back as typed server-sent events:
 assistant text deltas, tool-call started/finished activity (name plus a compact argument and
 result summary), a graph-updated notification after each successful mutation (carrying the
-new graph fingerprint), and exactly one terminal event — completed (with token usage),
-failed (with a sanitized message), or cancelled. One turn may be in flight per session; a second
+new graph fingerprint), and exactly one terminal event — completed (with token usage and
+a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome says
+how the turn ended: `applied` (a plan was saved and verified), `answered` (the model
+replied without attempting a mutation), `needs_input` with the model's question,
+`blocked` with the sanitized blocker (nothing was saved), or `committed_unverified` with
+the verification error when a save committed but its post-save verification failed. The
+outcome is stored with the turn, so a resumed chat shows the same outcome the live turn
+ended with. One turn may be in flight per session; a second
 send while one is running is rejected with 409, not queued. A turn ends when the model stops
 on its own, when a per-turn tool-call cap or wall-clock timeout is hit (both surfaced as a
 named terminal event, never a silent truncation), or when the client disconnects — on
@@ -166,6 +173,11 @@ end fails the turn as incomplete instead of falsely completing it. A successful
 `apply_graph_plan` is itself the terminal mutation outcome: after consuming that provider
 round, the controller emits a concise deterministic success confirmation and completes
 without exposing another tool round in which the model could repeat or extend the mutation.
+An apply that commits its save but fails post-save verification (`verification_failed`) is
+terminal in the same way: the controller emits a deterministic statement that the changes
+were saved but not verified and completes with the `committed_unverified` outcome, so the
+model cannot apply a second plan over an unverified save and no later text or blocker can
+report that nothing changed.
 A failed dry-run permits one materially corrected retry. If that retry also fails, the
 controller terminates the tool loop itself with a `BLOCKED:` outcome naming the latest
 stable error code, repeating that dry-run error's message in the same bounded form the

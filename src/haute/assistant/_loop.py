@@ -32,7 +32,7 @@ from haute.assistant._recipes import (
     request_requires_material_clarification,
     route_recipe_request,
 )
-from haute.assistant._session import AssistantSession, SessionStore
+from haute.assistant._session import AssistantSession, AssistantTurn, SessionStore
 from haute.errors import HauteError
 from haute.schemas import (
     AssistantCompletedEvent,
@@ -42,6 +42,8 @@ from haute.schemas import (
     AssistantTextDeltaEvent,
     AssistantToolFinishedEvent,
     AssistantToolStartedEvent,
+    AssistantTurnOutcome,
+    AssistantTurnOutcomeKind,
     AssistantUsage,
 )
 
@@ -52,8 +54,17 @@ _INCOMPLETE_MUTATION_DETAIL = (
     "Assistant ended before completing the requested mutation/execution workflow or "
     "reporting NEEDS_INPUT/BLOCKED."
 )
-_MUTATION_OUTCOME_PREFIXES = ("NEEDS_INPUT:", "BLOCKED:")
+_MUTATION_OUTCOME_PREFIXES: dict[str, AssistantTurnOutcomeKind] = {
+    "NEEDS_INPUT:": "needs_input",
+    "BLOCKED:": "blocked",
+}
 _MUTATION_APPLIED_DETAIL = "Graph changes applied successfully."
+_MUTATION_COMMITTED_UNVERIFIED_DETAIL = (
+    "Graph changes were saved, but post-save verification failed."
+)
+# The error code an apply returns when its save committed but post-save
+# verification did not complete (`CommittedVerificationError`).
+_COMMITTED_UNVERIFIED_ERROR_CODE = "verification_failed"
 _DRY_RUN_TOOLS = frozenset({"dry_run_graph_edits", "dry_run_recipe_plan"})
 # A malformed call is rejected by the closed input schema before any plan is
 # built, so it is not evidence that the model's plan is wrong — only that it
@@ -92,6 +103,22 @@ _EXECUTION_REQUEST = re.compile(
 _CANCEL_CLARIFICATION = re.compile(
     r"\b(?:cancel|nevermind|never\s+mind|forget\s+it|stop)\b", re.IGNORECASE
 )
+
+
+def _prefixed_outcome(response_text: str) -> AssistantTurnOutcome | None:
+    """Read a final round's `NEEDS_INPUT:`/`BLOCKED:` outcome, or None without one.
+
+    The marker must open the stripped text and be followed by detail; the
+    detail is the rest of the text, stripped.
+    """
+
+    text = response_text.strip()
+    for prefix, kind in _MUTATION_OUTCOME_PREFIXES.items():
+        if text.startswith(prefix):
+            detail = text[len(prefix) :].strip()
+            if detail:
+                return AssistantTurnOutcome(kind=kind, detail=detail)
+    return None
 
 
 def _turn_ends_with_needs_input(session_turn: Any) -> bool:
@@ -799,7 +826,11 @@ async def run_turn(
     tool_count = 0
     mutation_attempted = False
     mutation_applied = False
+    # The tool-row summary of an apply whose save committed but whose
+    # post-save verification failed; like a successful apply, it ends the turn.
+    committed_unverified_detail: str | None = None
     mutation_continuation_used = False
+    turn_outcome: AssistantTurnOutcome | None = None
     round_text: list[str] = []
     failed_dry_runs = 0
     malformed_dry_run_calls = 0
@@ -834,7 +865,7 @@ async def run_turn(
                         round_text.append(event.text)
                         yield AssistantTextDeltaEvent(text=event.text)
                     elif isinstance(event, ToolCallRequest):
-                        if mutation_applied:
+                        if mutation_applied or committed_unverified_detail is not None:
                             logger.warning(
                                 "assistant_tool_ignored_after_apply",
                                 tool_name=event.name,
@@ -908,6 +939,11 @@ async def run_turn(
                             mutation_attempted = True
                         if event.name == "apply_graph_plan" and not is_error:
                             mutation_applied = True
+                        if (
+                            event.name == "apply_graph_plan"
+                            and _stable_error_code(payload) == _COMMITTED_UNVERIFIED_ERROR_CODE
+                        ):
+                            committed_unverified_detail = _result_summary(payload, is_error)
                         round_results.append(_tool_result_message(event, payload, is_error))
                         if interrupt is None:
                             yield AssistantToolFinishedEvent(
@@ -944,28 +980,30 @@ async def run_turn(
 
                 if stop is None:
                     raise RuntimeError("provider stream ended without a turn stop")
-                if mutation_applied:
+                usage = AssistantUsage(
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+                if mutation_applied or committed_unverified_detail is not None:
                     _append_round(turn_messages, round_text, round_calls, round_results)
                     round_committed = True
-                    turn_messages.append({"role": "assistant", "content": _MUTATION_APPLIED_DETAIL})
-                    yield AssistantTextDeltaEvent(text=_MUTATION_APPLIED_DETAIL)
-                    yield AssistantCompletedEvent(
-                        usage=AssistantUsage(
-                            input_tokens=total_input_tokens,
-                            output_tokens=total_output_tokens,
+                    if mutation_applied:
+                        closing_text = _MUTATION_APPLIED_DETAIL
+                        turn_outcome = AssistantTurnOutcome(kind="applied", detail=None)
+                    else:
+                        closing_text = _MUTATION_COMMITTED_UNVERIFIED_DETAIL
+                        turn_outcome = AssistantTurnOutcome(
+                            kind="committed_unverified", detail=committed_unverified_detail
                         )
-                    )
+                    turn_messages.append({"role": "assistant", "content": closing_text})
+                    yield AssistantTextDeltaEvent(text=closing_text)
+                    yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
                 if stop.reason == "end":
                     _append_round(turn_messages, round_text, round_calls, round_results)
                     round_committed = True
-                    response_text = "".join(round_text).lstrip()
-                    explicit_outcome = any(
-                        response_text.startswith(prefix)
-                        and bool(response_text[len(prefix) :].strip())
-                        for prefix in _MUTATION_OUTCOME_PREFIXES
-                    )
-                    if mutation_attempted and not mutation_applied and not explicit_outcome:
+                    explicit_outcome = _prefixed_outcome("".join(round_text))
+                    if mutation_attempted and explicit_outcome is None:
                         if mutation_continuation_used:
                             raise _IncompleteMutationError(_INCOMPLETE_MUTATION_DETAIL)
                         request_messages.extend(
@@ -986,20 +1024,15 @@ async def run_turn(
                         turn_messages.append(controller_message)
                         mutation_continuation_used = True
                         continue
-                    yield AssistantCompletedEvent(
-                        usage=AssistantUsage(
-                            input_tokens=total_input_tokens,
-                            output_tokens=total_output_tokens,
-                        )
+                    turn_outcome = explicit_outcome or AssistantTurnOutcome(
+                        kind="answered", detail=None
                     )
+                    yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
 
                 _append_round(turn_messages, round_text, round_calls, round_results)
                 round_committed = True
-                if (
-                    _dry_run_budget_spent(failed_dry_runs, malformed_dry_run_calls)
-                    and not mutation_applied
-                ):
+                if _dry_run_budget_spent(failed_dry_runs, malformed_dry_run_calls):
                     blocked_text = (
                         f"BLOCKED: {latest_dry_run_blocker} "
                         f"({latest_dry_run_error_code}); no graph changes were applied. "
@@ -1007,12 +1040,10 @@ async def run_turn(
                     )
                     turn_messages.append({"role": "assistant", "content": blocked_text})
                     yield AssistantTextDeltaEvent(text=blocked_text)
-                    yield AssistantCompletedEvent(
-                        usage=AssistantUsage(
-                            input_tokens=total_input_tokens,
-                            output_tokens=total_output_tokens,
-                        )
-                    )
+                    turn_outcome = _prefixed_outcome(blocked_text)
+                    if turn_outcome is None:
+                        raise RuntimeError("the dry-run blocker must be a BLOCKED: outcome")
+                    yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
                 request_messages.extend(
                     [
@@ -1047,7 +1078,9 @@ async def run_turn(
             try:
                 if not round_committed:
                     _append_round(turn_messages, round_text, round_calls, round_results)
-                store.append(session, turn_messages)
+                store.append(
+                    session, AssistantTurn.from_messages(turn_messages, outcome=turn_outcome)
+                )
             finally:
                 reservation.release()
 

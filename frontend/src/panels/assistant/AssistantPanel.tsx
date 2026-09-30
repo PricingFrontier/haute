@@ -2,11 +2,16 @@ import { useEffect, useRef } from "react"
 import { ArrowLeft, Bot, Plus } from "lucide-react"
 
 import PanelShell from "../PanelShell"
-import TranscriptEntryView from "./TranscriptEntryView"
+import TranscriptEntryView, { type OutcomeReply } from "./TranscriptEntryView"
 import Composer from "./Composer"
+import ReadinessCard from "./ReadinessCard"
 import SessionList from "./SessionList"
-import useAssistantStore from "../../stores/useAssistantStore"
+import useAssistantStore, {
+  CHOOSE_FOR_ME_REPLY,
+  assistantSendDisabledReason,
+} from "../../stores/useAssistantStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 
 interface AssistantPanelProps {
@@ -32,6 +37,8 @@ export default function AssistantPanel({
   const view = useAssistantStore((state) => state.view)
   const loadSessions = useAssistantStore((state) => state.loadSessions)
   const showSessionList = useAssistantStore((state) => state.showSessionList)
+  const chatSource = useAssistantStore((state) => state.pipelineSource)
+  const dirty = useGraphStore((state) => state.dirty)
   const transcriptRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -52,6 +59,32 @@ export default function AssistantPanel({
   }, [entries, turnStatus])
 
   const statusError = status === "error"
+
+  // Only the latest question can be answered in one click, and only when the
+  // composer could send: the reply is an ordinary message under the same gate.
+  const lastEntry = entries[entries.length - 1]
+  const reply: OutcomeReply | undefined =
+    turnStatus === "idle" &&
+    lastEntry?.kind === "outcome" &&
+    lastEntry.outcome.kind === "needs_input"
+      ? {
+          disabledReason: assistantSendDisabledReason({
+            status,
+            isInsideSubmodel,
+            dirty,
+            readOnly,
+            sourceFile: currentSourceFile,
+            chatSource,
+          }),
+          onSend: () => {
+            void useAssistantStore.getState().sendMessage(CHOOSE_FOR_ME_REPLY, {
+              isInsideSubmodel,
+              currentSourceFile,
+              readOnly,
+            })
+          },
+        }
+      : undefined
 
   return (
     <PanelShell
@@ -95,28 +128,7 @@ export default function AssistantPanel({
         </button>
       }
     >
-      {statusError && (
-        <div
-          data-testid="assistant-status-error"
-          role="alert"
-          className="mx-3 mt-3 rounded-md px-2.5 py-2 text-[11px]"
-          style={{
-            background: "var(--danger-soft)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--danger-text)",
-          }}
-        >
-          <div className="font-medium">Assistant status could not be loaded.</div>
-          <button
-            type="button"
-            data-testid="assistant-status-retry"
-            onClick={() => { void refreshStatus() }}
-            className="mt-1 underline underline-offset-2"
-          >
-            Retry
-          </button>
-        </div>
-      )}
+      <ReadinessCard showReadinessReasons={view === "list"} />
       {status !== "unknown" && status !== "error" && status.configured && (
         <div
           data-testid="assistant-egress-status"
@@ -152,7 +164,11 @@ export default function AssistantPanel({
             </div>
           )}
           {entries.map((entry, index) => (
-            <TranscriptEntryView key={`${entry.kind}-${index}`} entry={entry} />
+            <TranscriptEntryView
+              key={`${entry.kind}-${index}`}
+              entry={entry}
+              reply={index === entries.length - 1 ? reply : undefined}
+            />
           ))}
         </div>
       )}

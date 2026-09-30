@@ -28,7 +28,8 @@ def _turn(text: str = "hi", reply: str = "hello") -> dict:
         "messages": [
             {"role": "user", "content": text},
             {"role": "assistant", "content": reply},
-        ]
+        ],
+        "outcome": {"kind": "answered", "detail": None},
     }
 
 
@@ -70,7 +71,8 @@ class TestWriteThrough:
                         },
                         "is_error": False,
                     },
-                ]
+                ],
+                "outcome": None,
             },
         )
 
@@ -142,7 +144,8 @@ class TestWriteThrough:
                         },
                         "is_error": True,
                     },
-                ]
+                ],
+                "outcome": None,
             },
         )
 
@@ -180,6 +183,20 @@ class TestWriteThrough:
         assert "provider-secret-canary" not in raw
         assert "<redacted>" in raw
 
+    def test_an_outcome_detail_is_redacted_like_assistant_text(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        turn = _turn("go", "NEEDS_INPUT: is provider-secret-canary the key?")
+        turn["outcome"] = {"kind": "needs_input", "detail": "is provider-secret-canary the key?"}
+        store.append(session, turn)
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        stored = json.loads(raw)["history"][0]["outcome"]
+        assert stored["kind"] == "needs_input"
+        assert "<redacted>" in stored["detail"]
+
     def test_no_storage_dir_means_no_files(self, tmp_path: Path):
         store = SessionStore()
         session = store.create(tmp_path / "main.py")
@@ -199,7 +216,20 @@ class TestRevival:
         assert revived.id == session.id
         assert revived.source_file == "rating/main.py"
         assert [m.content for m in revived.history[0].messages] == ["hi", "hello"]
+        assert revived.history[0].outcome is not None
+        assert revived.history[0].outcome.model_dump() == {"kind": "answered", "detail": None}
         assert not revived.lock.locked()
+
+    def test_a_turn_record_without_an_outcome_key_is_invalid(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        first.append(session, _turn())
+        path = tmp_path / "sessions" / f"{session.id}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["history"][0]["outcome"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert _store(tmp_path).lookup(session.id) is None
 
     def test_controller_continuation_survives_restart(self, tmp_path: Path):
         first = _store(tmp_path)
@@ -215,7 +245,8 @@ class TestRevival:
                         "content": "Continue the mutation workflow.",
                     },
                     {"role": "assistant", "content": "BLOCKED: invalid request."},
-                ]
+                ],
+                "outcome": None,
             },
         )
 
@@ -318,7 +349,7 @@ class TestCorruption:
             "id": session_id,
             "source_file": "rating/main.py",
             # A turn must begin with a user message; this one violates that.
-            "history": [{"messages": [{"role": "assistant", "content": "x"}]}],
+            "history": [{"messages": [{"role": "assistant", "content": "x"}], "outcome": None}],
             "created_at": 1.0,
             "last_used": 2.0,
         }
@@ -439,7 +470,8 @@ class TestBounds:
                         "content": {"error": {"code": "failed"}},
                         "is_error": True,
                     },
-                ]
+                ],
+                "outcome": None,
             },
         )
 
@@ -550,7 +582,9 @@ class TestSessionListing:
             {
                 "id": "1" * 32,
                 "source_file": "rating/main.py",
-                "history": [{"messages": [{"role": "assistant", "content": "invalid"}]}],
+                "history": [
+                    {"messages": [{"role": "assistant", "content": "invalid"}], "outcome": None}
+                ],
                 "created_at": 1.0,
                 "last_used": 2.0,
             },

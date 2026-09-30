@@ -147,7 +147,9 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
     """Map a session's stored neutral history to rehydratable transcript entries.
 
     Tool entries reuse the same compact result summary the live stream shows;
-    the persisted message's explicit ``is_error`` flag is authoritative.
+    the persisted message's explicit ``is_error`` flag is authoritative. A turn
+    stored with an outcome ends with one ``outcome`` entry carrying it, the
+    value its live ``completed`` event carried.
     """
 
     entries: list[AssistantTranscriptEntry] = []
@@ -184,6 +186,8 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                             is_error=False,
                         )
                     )
+        if turn.outcome is not None:
+            entries.append(AssistantTranscriptEntry(kind="outcome", outcome=turn.outcome))
     return entries
 
 

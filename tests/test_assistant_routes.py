@@ -181,7 +181,10 @@ class TestSessionList:
 
     def test_lists_this_pipeline_s_conversations(self, client: TestClient, store: SessionStore):
         session = store.create("main.py")
-        store.append(session, {"messages": [{"role": "user", "content": "aggregate claims"}]})
+        store.append(
+            session,
+            {"messages": [{"role": "user", "content": "aggregate claims"}], "outcome": None},
+        )
 
         response = client.get("/api/assistant/sessions", params=_CANVAS)
 
@@ -197,9 +200,13 @@ class TestSessionList:
     ):
         (project_root / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
         main = store.create("main.py")
-        store.append(main, {"messages": [{"role": "user", "content": "main chat"}]})
+        store.append(
+            main, {"messages": [{"role": "user", "content": "main chat"}], "outcome": None}
+        )
         other = store.create("other.py")
-        store.append(other, {"messages": [{"role": "user", "content": "other chat"}]})
+        store.append(
+            other, {"messages": [{"role": "user", "content": "other chat"}], "outcome": None}
+        )
 
         listed = {
             source_file: [
@@ -293,7 +300,8 @@ class TestSessionResume:
                         "content": "Continue the mutation workflow.",
                     },
                     {"role": "assistant", "content": "Done"},
-                ]
+                ],
+                "outcome": {"kind": "applied", "detail": None},
             },
         )
 
@@ -303,7 +311,7 @@ class TestSessionResume:
         body = resumed.json()
         assert body["session_id"] == session_id
         kinds = [entry["kind"] for entry in body["history"]]
-        assert kinds == ["user", "assistant", "tool", "tool", "assistant"]
+        assert kinds == ["user", "assistant", "tool", "tool", "assistant", "outcome"]
         assert body["history"][0]["text"] == "add a node"
         assert body["history"][1]["text"] == "Working on it"
         tool = body["history"][2]
@@ -318,8 +326,11 @@ class TestSessionResume:
             "name": "graph_updated",
             "summary": "Canvas updated",
             "is_error": False,
+            "outcome": None,
         }
         assert body["history"][4]["text"] == "Done"
+        # The stored outcome closes the resumed turn, as the live completed event did.
+        assert body["history"][5]["outcome"] == {"kind": "applied", "detail": None}
 
     def test_tool_error_entries_carry_the_error_flag_and_message(
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -342,7 +353,8 @@ class TestSessionResume:
                         "content": {"error": {"code": "unknown_node", "message": "No node x"}},
                         "is_error": True,
                     },
-                ]
+                ],
+                "outcome": None,
             },
         )
         body = client.post(

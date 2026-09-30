@@ -833,6 +833,188 @@ class TestMutationCompletionController:
         assert len(provider.calls) == 2
 
 
+def _dry_run_then(*rounds: list[object]) -> ScriptedProvider:
+    return ScriptedProvider(
+        [
+            [
+                ToolCallRequest("dry-1", "dry_run_graph_edits", {"ops": []}),
+                TurnStop("tool_use", _usage()),
+            ],
+            *rounds,
+        ]
+    )
+
+
+def _stored_outcome(store: SessionStore, session_id: str) -> object:
+    session = store.lookup(session_id)
+    assert session is not None
+    return session.history[-1].outcome
+
+
+class TestTurnOutcome:
+    """The completed event carries how the turn ended, and the turn stores it."""
+
+    async def test_a_reply_without_a_mutation_attempt_is_answered(self, store, session_id):
+        provider = ScriptedProvider([[TextDelta("It rates quotes."), TurnStop("end", _usage())]])
+
+        events = await _run(store, session_id, "What does this do?", provider=provider)
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {"kind": "answered", "detail": None}
+        assert _stored_outcome(store, session_id) == terminal.outcome
+
+    async def test_a_question_is_needs_input_even_without_a_mutation_attempt(
+        self, store, session_id
+    ):
+        provider = ScriptedProvider(
+            [
+                [
+                    TextDelta("NEEDS_INPUT: "),
+                    TextDelta("Which values of status mean active?  "),
+                    TurnStop("end", _usage()),
+                ]
+            ]
+        )
+
+        events = await _run(store, session_id, "Keep active policies", provider=provider)
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {
+            "kind": "needs_input",
+            "detail": "Which values of status mean active?",
+        }
+        assert _stored_outcome(store, session_id) == terminal.outcome
+
+    async def test_the_model_s_blocker_after_a_dry_run_is_blocked(self, store, session_id):
+        provider = _dry_run_then(
+            [TextDelta("BLOCKED: the claims file is missing."), TurnStop("end", _usage())]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"error": {"code": "invalid_request", "message": "invalid"}}
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {
+            "kind": "blocked",
+            "detail": "the claims file is missing.",
+        }
+
+    async def test_an_exhausted_dry_run_budget_is_blocked_with_its_reason(self, store, session_id):
+        provider = _dry_run_then(
+            [
+                ToolCallRequest("dry-2", "dry_run_graph_edits", {"ops": []}),
+                TurnStop("tool_use", _usage()),
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"error": {"code": "schema_unresolvable", "message": "Unknown column 'x'."}}
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert terminal.outcome.kind == "blocked"
+        assert text == f"BLOCKED: {terminal.outcome.detail}"
+        assert _stored_outcome(store, session_id) == terminal.outcome
+
+    async def test_a_verified_apply_is_applied(self, store, session_id):
+        provider = _dry_run_then(
+            [
+                ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
+                TurnStop("tool_use", _usage()),
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "apply_graph_plan":
+                return {"graph_fingerprint": "b" * 64}
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {"kind": "applied", "detail": None}
+        assert _stored_outcome(store, session_id) == terminal.outcome
+
+    async def test_a_save_that_fails_verification_ends_committed_unverified(
+        self, store, session_id
+    ):
+        """A committed save whose verification failed ends the turn at once: the
+        model gets no round to apply over it, and nothing says nothing changed."""
+
+        verification_message = (
+            "The plan was committed, but structural verification failed; "
+            "review or undo the captured save before continuing."
+        )
+        provider = _dry_run_then(
+            [
+                ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
+                ToolCallRequest("late-1", "dry_run_graph_edits", {"ops": []}),
+                TurnStop("tool_use", _usage()),
+            ]
+        )
+        executed: list[str] = []
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            executed.append(name)
+            if name == "apply_graph_plan":
+                return {
+                    "error": {
+                        "code": "verification_failed",
+                        "message": verification_message,
+                        "verification_status": "failed",
+                        "graph_fingerprint": "c" * 64,
+                    }
+                }
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "completed"
+        assert terminal.outcome.model_dump() == {
+            "kind": "committed_unverified",
+            "detail": verification_message,
+        }
+        assert executed == ["dry_run_graph_edits", "apply_graph_plan"]
+        assert len(provider.calls) == 2
+        assert [event.text for event in events if event.type == "text_delta"] == [
+            "Graph changes were saved, but post-save verification failed."
+        ]
+        assert _stored_outcome(store, session_id) == terminal.outcome
+
+    async def test_a_failed_turn_stores_no_outcome(self, store, session_id):
+        provider = ScriptedProvider(
+            [[ToolCallRequest(f"t{index}", "get_pipeline", {}) for index in range(3)]]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"nodes": []}
+
+        events = await _run(
+            store,
+            session_id,
+            "look",
+            provider=provider,
+            execute_tool=execute_tool,
+            max_tool_calls=2,
+        )
+
+        assert _assert_single_terminal(events).type == "failed"
+        assert _stored_outcome(store, session_id) is None
+
+
 class TestToolRoundTrip:
     async def test_tool_dispatch_result_feedback_and_second_round(self, store, session_id):
         provider = ScriptedProvider(
@@ -1870,9 +2052,11 @@ class TestNeutralRecordValidationSweep:
         store = SessionStore()
         session = store.create("a.py")
         with pytest.raises(ValueError, match="messages"):
-            store.append(session, {"not_messages": []})
+            store.append(session, {"not_messages": [], "outcome": None})
+        with pytest.raises(ValueError, match="outcome"):
+            store.append(session, {"messages": [{"role": "user", "content": "hi"}]})
         with pytest.raises(TypeError):
-            store.append(session, {"messages": "broken"})
+            store.append(session, {"messages": "broken", "outcome": None})
 
     def test_session_rejects_blank_id_and_bytes_source(self):
         from haute.assistant._session import AssistantSession

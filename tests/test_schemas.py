@@ -322,3 +322,36 @@ class TestAssistantStatus:
                 mutations_enabled=True,
                 mutations_reason=None,
             )
+
+
+class TestAssistantTurnOutcome:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "applied", "detail": None},
+            {"kind": "answered", "detail": None},
+            {"kind": "needs_input", "detail": "Which column?"},
+            {"kind": "blocked", "detail": "The file is missing."},
+            {"kind": "committed_unverified", "detail": "Verification failed."},
+        ],
+    )
+    def test_valid_outcomes(self, payload):
+        from haute.schemas import AssistantTurnOutcome
+
+        assert AssistantTurnOutcome.model_validate(payload).model_dump() == payload
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "applied", "detail": "extra"},
+            {"kind": "needs_input", "detail": None},
+            {"kind": "blocked", "detail": "  "},
+            {"kind": "committed_unverified"},
+            {"kind": "finished", "detail": None},
+        ],
+    )
+    def test_detail_must_match_the_kind(self, payload):
+        from haute.schemas import AssistantTurnOutcome
+
+        with pytest.raises(ValidationError):
+            AssistantTurnOutcome.model_validate(payload)

@@ -154,6 +154,30 @@ describe("createAssistantSession", () => {
     })
   })
 
+  it("parses a turn's outcome row", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({
+      session_id: "abc123",
+      source_file: "main.py",
+      history: [
+        { kind: "user", text: "go", name: "", summary: "", is_error: false, outcome: null },
+        {
+          kind: "outcome",
+          text: "",
+          name: "",
+          summary: "",
+          is_error: false,
+          outcome: { kind: "needs_input", detail: "Which column?" },
+        },
+      ],
+    }))
+
+    const { history } = await createAssistantSession("main.py", "abc123")
+    expect(history).toEqual([
+      { kind: "user", text: "go", name: "", summary: "", is_error: false },
+      { kind: "outcome", outcome: { kind: "needs_input", detail: "Which column?" } },
+    ])
+  })
+
   it("propagates an optional abort signal to the in-flight request", async () => {
     const controller = new AbortController()
     let requestSignal: AbortSignal | undefined
@@ -184,6 +208,8 @@ describe("createAssistantSession", () => {
     ["an unknown history kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "other", text: "", name: "", summary: "", is_error: false }] }],
     ["a missing history field", { session_id: "abc", source_file: "main.py", history: [{ kind: "user", text: "", name: "", summary: "" }] }],
     ["a wrong history field primitive", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: "false" }] }],
+    ["an outcome row without its outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", text: "", name: "", summary: "", is_error: false, outcome: null }] }],
+    ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", outcome: { kind: "blocked", detail: null } }] }],
   ])("rejects %s", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
     await expect(createAssistantSession("main.py")).rejects.toThrow(/assistant|session|history/i)
@@ -234,11 +260,15 @@ describe("streamAssistantMessage", () => {
     const events = await collectEvents([
       'data: {"type":"text_del',
       'ta","text":"Hi"}\n\ndata: {"type":"comp',
-      'leted","usage":{"input_tokens":1,"output_tokens":2}}\n\n',
+      'leted","usage":{"input_tokens":1,"output_tokens":2},"outcome":{"kind":"answered","detail":null}}\n\n',
     ])
     expect(events).toEqual([
       { type: "text_delta", text: "Hi" },
-      { type: "completed", usage: { input_tokens: 1, output_tokens: 2 } },
+      {
+        type: "completed",
+        usage: { input_tokens: 1, output_tokens: 2 },
+        outcome: { kind: "answered", detail: null },
+      },
     ])
   })
 
@@ -247,7 +277,7 @@ describe("streamAssistantMessage", () => {
       'data: {"type":"text_delta","text":"a"}\n\n' +
         'data: {"type":"tool_started","id":"t1","name":"get_pipeline","summary":"{}"}\n\n' +
         'data: {"type":"tool_finished","id":"t1","name":"get_pipeline","is_error":false,"summary":"ok"}\n\n' +
-        'data: {"type":"completed","usage":{"input_tokens":1,"output_tokens":1}}\n\n',
+        'data: {"type":"completed","usage":{"input_tokens":1,"output_tokens":1},"outcome":{"kind":"answered","detail":null}}\n\n',
     ])
     expect(events.map((event) => event.type)).toEqual([
       "text_delta",
@@ -263,7 +293,7 @@ describe("streamAssistantMessage", () => {
       "\n\n",
       'data: {"type":"text_delta","text":"x"}\n\n',
       ": ping\n\n",
-      'data: {"type":"completed","usage":{"input_tokens":0,"output_tokens":0}}\n\n',
+      'data: {"type":"completed","usage":{"input_tokens":0,"output_tokens":0},"outcome":{"kind":"answered","detail":null}}\n\n',
     ])
     expect(events.map((event) => event.type)).toEqual(["text_delta", "completed"])
   })
@@ -285,7 +315,12 @@ describe("streamAssistantMessage", () => {
     ["graph_updated", { type: "graph_updated", fingerprint: 1 }],
     ["completed usage object", { type: "completed", usage: [] }],
     ["completed nested input_tokens", { type: "completed", usage: { input_tokens: "1", output_tokens: 2 } }],
-    ["completed nested output_tokens", { type: "completed", usage: { input_tokens: 1 } }],
+    ["completed nested output_tokens", { type: "completed", usage: { input_tokens: 1 }, outcome: { kind: "answered", detail: null } }],
+    ["completed without an outcome", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 } }],
+    ["completed outcome kind", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: 1, detail: null } }],
+    ["completed answered with a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: "x" } }],
+    ["completed question without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "needs_input", detail: null } }],
+    ["completed blocker with a blank detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: " " } }],
     ["failed", { type: "failed", message: null }],
     ["cancelled discriminator", { type: 1 }],
   ])("rejects malformed %s before invoking the callback", async (_label, event) => {

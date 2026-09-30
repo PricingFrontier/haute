@@ -12,6 +12,7 @@ import {
   type AssistantSessionSummary,
   type AssistantStatus,
   type AssistantStreamEvent,
+  type AssistantTurnOutcome,
 } from "../api/assistant"
 import useGraphStore from "./useGraphStore"
 import useToastStore from "./useToastStore"
@@ -28,9 +29,14 @@ export type TranscriptEntry =
     }
   | {
       kind: "marker"
-      outcome: "completed" | "failed" | "stopped" | "interrupted"
+      outcome: "failed" | "stopped" | "interrupted"
       detail?: string
     }
+  /** How a completed turn ended; `needs_input` and `blocked` render as cards. */
+  | { kind: "outcome"; outcome: AssistantTurnOutcome }
+
+/** The question card's one-click reply: hand the choice back to the assistant. */
+export const CHOOSE_FOR_ME_REPLY = "You choose, and tell me what you picked."
 
 export interface SendMessageOptions {
   isInsideSubmodel: boolean
@@ -46,6 +52,11 @@ export interface AssistantStoreState {
   entries: TranscriptEntry[]
   turnStatus: "idle" | "streaming"
   status: AssistantStatus | "unknown" | "error"
+  /**
+   * The detail of a status fetch refused with 400: a malformed `haute.toml` or
+   * invalid assistant table, named by the backend. `null` for any other failure.
+   */
+  statusErrorDetail: string | null
   notice: string | null
   /** Which screen the panel shows: the conversation list, or one chat. */
   view: "list" | "chat"
@@ -122,21 +133,44 @@ export function assistantSendDisabledReason({
  * blank and then produce an earlier transcript mid-conversation.
  */
 
-/** Map a resumed session's backend history to settled transcript entries. */
+/**
+ * Map a resumed session's backend history to the entries the live turn showed.
+ *
+ * The backend stores one assistant row per provider round, while the live
+ * stream joins deltas until a tool row interrupts them, so adjacent assistant
+ * rows are joined the same way. Each outcome row settles its turn through the
+ * same `settleOutcome` the live `completed` event uses.
+ */
 function hydrateEntries(history: AssistantHistoryEntry[]): TranscriptEntry[] {
-  return history.map((entry, index): TranscriptEntry => {
-    if (entry.kind === "user") return { kind: "user", text: entry.text }
+  let entries: TranscriptEntry[] = []
+  history.forEach((entry, index) => {
+    if (entry.kind === "outcome") {
+      entries = settleOutcome(entries, entry.outcome)
+      return
+    }
+    if (entry.kind === "user") {
+      entries = [...entries, { kind: "user", text: entry.text }]
+      return
+    }
     if (entry.kind === "assistant") {
-      return { kind: "assistant", text: entry.text, streaming: false }
+      const last = entries[entries.length - 1]
+      entries = last?.kind === "assistant"
+        ? [...entries.slice(0, -1), { ...last, text: last.text + entry.text }]
+        : [...entries, { kind: "assistant", text: entry.text, streaming: false }]
+      return
     }
-    return {
-      kind: "activity",
-      id: `history-${index}`,
-      name: entry.name,
-      state: entry.is_error ? "error" : "ok",
-      summary: entry.summary,
-    }
+    entries = [
+      ...entries,
+      {
+        kind: "activity",
+        id: `history-${index}`,
+        name: entry.name,
+        state: entry.is_error ? "error" : "ok",
+        summary: entry.summary,
+      },
+    ]
   })
+  return entries
 }
 
 function isAbortError(error: unknown): boolean {
@@ -154,11 +188,19 @@ function lastIndexMatching(
   return -1
 }
 
+/**
+ * Settle the streaming assistant segment: it stops streaming, and a segment no
+ * text reached (the placeholder opened at send time) is removed.
+ */
 function closeAssistant(entries: TranscriptEntry[]): TranscriptEntry[] {
   const assistantIndex = lastIndexMatching(entries,
     (entry) => entry.kind === "assistant" && entry.streaming,
   )
   if (assistantIndex < 0) return entries
+  const segment = entries[assistantIndex]
+  if (segment.kind === "assistant" && segment.text === "") {
+    return entries.filter((_, index) => index !== assistantIndex)
+  }
 
   return entries.map((entry, index) =>
     index === assistantIndex && entry.kind === "assistant"
@@ -176,7 +218,7 @@ function removeStreamingAssistant(entries: TranscriptEntry[]): TranscriptEntry[]
 
 function appendMarker(
   entries: TranscriptEntry[],
-  outcome: "completed" | "failed" | "stopped" | "interrupted",
+  outcome: "failed" | "stopped" | "interrupted",
   detail?: string,
 ): TranscriptEntry[] {
   const marker: TranscriptEntry = detail === undefined
@@ -195,17 +237,66 @@ function toolStartedEntry(event: Extract<AssistantStreamEvent, { type: "tool_sta
   }
 }
 
+/**
+ * Append streamed text in stream order: it extends the last entry when that is
+ * the streaming segment, and otherwise opens a new segment below whatever the
+ * turn showed last, so prose that follows a tool row renders after it.
+ */
 function appendAssistantText(entries: TranscriptEntry[], text: string): TranscriptEntry[] {
-  const assistantIndex = lastIndexMatching(entries,
-    (entry) => entry.kind === "assistant" && entry.streaming,
-  )
-  if (assistantIndex < 0) return entries
+  const last = entries[entries.length - 1]
+  if (last?.kind === "assistant" && last.streaming) {
+    return [...entries.slice(0, -1), { ...last, text: last.text + text }]
+  }
+  return [...entries, { kind: "assistant", text, streaming: true }]
+}
 
-  return entries.map((entry, index) =>
-    index === assistantIndex && entry.kind === "assistant"
-      ? { ...entry, text: entry.text + text }
-      : entry,
-  )
+/** Append a tool or canvas row after the text streamed before it. */
+function appendActivity(entries: TranscriptEntry[], entry: TranscriptEntry): TranscriptEntry[] {
+  return [...closeAssistant(entries), entry]
+}
+
+const OUTCOME_MARKERS = { needs_input: "NEEDS_INPUT:", blocked: "BLOCKED:" } as const
+
+/**
+ * Remove the model's `NEEDS_INPUT:`/`BLOCKED:` text, which the outcome card
+ * shows instead. By the backend contract the last assistant segment ends with
+ * the marker followed by the outcome's detail; anything else is contract drift.
+ */
+function withoutOutcomeText(
+  entries: TranscriptEntry[],
+  marker: string,
+  detail: string,
+): TranscriptEntry[] {
+  const index = lastIndexMatching(entries, (entry) => entry.kind === "assistant")
+  const segment = index < 0 ? undefined : entries[index]
+  const text = segment?.kind === "assistant" ? segment.text.trimEnd() : ""
+  const body = text.endsWith(detail)
+    ? text.slice(0, text.length - detail.length).trimEnd()
+    : null
+  if (segment?.kind !== "assistant" || body === null || !body.endsWith(marker)) {
+    throw new Error(
+      `Assistant contract violation: the turn's reply does not end with its ${marker} outcome.`,
+    )
+  }
+  const rest = body.slice(0, body.length - marker.length).trimEnd()
+  return rest
+    ? entries.map((entry, entryIndex) => (entryIndex === index ? { ...segment, text: rest } : entry))
+    : entries.filter((_, entryIndex) => entryIndex !== index)
+}
+
+/**
+ * Close a completed turn with its outcome. Shared by the live `completed` event
+ * and a resumed chat's history so both render the same transcript.
+ */
+export function settleOutcome(
+  entries: TranscriptEntry[],
+  outcome: AssistantTurnOutcome,
+): TranscriptEntry[] {
+  let settled = closeAssistant(entries)
+  if (outcome.kind === "needs_input" || outcome.kind === "blocked") {
+    settled = withoutOutcomeText(settled, OUTCOME_MARKERS[outcome.kind], outcome.detail)
+  }
+  return [...settled, { kind: "outcome", outcome }]
 }
 
 function settleTool(
@@ -292,6 +383,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   entries: [],
   turnStatus: "idle",
   status: "unknown",
+  statusErrorDetail: null,
   notice: null,
   view: "list",
   sessions: [],
@@ -301,9 +393,14 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   refreshStatus: async () => {
     try {
       const status = await getAssistantStatus()
-      set({ status })
-    } catch {
-      set({ status: "error" })
+      set({ status, statusErrorDetail: null })
+    } catch (error) {
+      // A 400 is a configuration the backend could not read; its detail names
+      // what to fix, and asking again cannot succeed until the file changes.
+      const detail = error instanceof ApiError && error.status === 400
+        ? error.detail ?? null
+        : null
+      set({ status: "error", statusErrorDetail: detail })
     }
   },
 
@@ -452,23 +549,20 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
               set((state) => ({ entries: appendAssistantText(state.entries, event.text) }))
               break
             case "tool_started":
-              set((state) => ({ entries: [...state.entries, toolStartedEntry(event)] }))
+              set((state) => ({ entries: appendActivity(state.entries, toolStartedEntry(event)) }))
               break
             case "tool_finished":
               set((state) => ({ entries: settleTool(state.entries, event) }))
               break
             case "graph_updated":
               set((state) => ({
-                entries: [
-                  ...state.entries,
-                  {
-                    kind: "activity",
-                    id: `graph-${event.fingerprint}`,
-                    name: "graph_updated",
-                    state: "ok",
-                    summary: "Canvas updated",
-                  },
-                ],
+                entries: appendActivity(state.entries, {
+                  kind: "activity",
+                  id: `graph-${event.fingerprint}`,
+                  name: "graph_updated",
+                  state: "ok",
+                  summary: "Canvas updated",
+                }),
               }))
               break
             case "completed":
@@ -488,9 +582,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       if (terminalEvent === null) {
         set((state) => ({ entries: appendMarker(state.entries, "interrupted") }))
       } else if (terminalEvent.type === "completed") {
-        set((state) => ({
-          entries: appendMarker(state.entries, "completed"),
-        }))
+        set((state) => ({ entries: settleOutcome(state.entries, terminalEvent.outcome) }))
       } else if (terminalEvent.type === "failed") {
         set((state) => ({ entries: appendMarker(state.entries, "failed", terminalEvent.message) }))
         useToastStore.getState().addToast("error", terminalEvent.message)

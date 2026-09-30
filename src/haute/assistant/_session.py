@@ -45,6 +45,7 @@ from uuid import uuid4
 from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute.schemas import AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
 
@@ -66,7 +67,6 @@ _SESSION_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 
 _MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "controller"})
-_MISSING = object()
 
 
 def _copy_json_value(value: object) -> JSONValue:
@@ -370,23 +370,38 @@ class SessionSummary:
     message_count: int
 
 
+def _persisted_text(text: str) -> str:
+    """Redact credential-shaped material from model-written text before it is stored."""
+
+    return redact_sensitive_text(
+        text,
+        known_secrets=(
+            env_secret
+            for name in (
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "DATABRICKS_TOKEN",
+            )
+            if (env_secret := os.environ.get(name))
+        ),
+    )
+
+
+def _persisted_outcome(outcome: AssistantTurnOutcome | None) -> JSONValue:
+    """Store a turn outcome; its detail is model-derived text and is redacted like it."""
+
+    if outcome is None:
+        return None
+    detail = None if outcome.detail is None else _persisted_text(outcome.detail)
+    return {"kind": outcome.kind, "detail": detail}
+
+
 def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
     """Redact provider-working tool payloads for durable restart history."""
 
     wire: dict[str, JSONValue] = message.as_dict()
     if isinstance(message.content, str):
-        wire["content"] = redact_sensitive_text(
-            message.content,
-            known_secrets=(
-                env_secret
-                for name in (
-                    "ANTHROPIC_API_KEY",
-                    "OPENAI_API_KEY",
-                    "DATABRICKS_TOKEN",
-                )
-                if (env_secret := os.environ.get(name))
-            ),
-        )
+        wire["content"] = _persisted_text(message.content)
     if message.tool_calls:
         wire["tool_calls"] = [
             {
@@ -420,11 +435,18 @@ def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
 
 @dataclass(frozen=True, slots=True)
 class AssistantTurn:
-    """One complete user turn and all messages produced for it."""
+    """One complete user turn and all messages produced for it.
+
+    ``outcome`` is how a completed turn ended, the value its ``completed``
+    event carried; a turn that failed or was cancelled has none.
+    """
 
     messages: tuple[AssistantMessage, ...]
+    outcome: AssistantTurnOutcome | None = None
 
     def __post_init__(self) -> None:
+        if self.outcome is not None and not isinstance(self.outcome, AssistantTurnOutcome):
+            raise TypeError("turn outcome must be an AssistantTurnOutcome")
         normalized: list[AssistantMessage] = []
         for message in self.messages:
             if isinstance(message, AssistantMessage):
@@ -445,6 +467,8 @@ class AssistantTurn:
     def from_messages(
         cls,
         messages: Iterable[AssistantMessage | Mapping[str, Any]],
+        *,
+        outcome: AssistantTurnOutcome | None = None,
     ) -> AssistantTurn:
         """Create a complete turn from an iterable of neutral messages."""
 
@@ -454,7 +478,28 @@ class AssistantTurn:
                 if isinstance(message, AssistantMessage)
                 else AssistantMessage.from_mapping(message)
                 for message in messages
-            )
+            ),
+            outcome=outcome,
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> AssistantTurn:
+        """Build a turn from its JSON record; both ``messages`` and ``outcome`` are required."""
+
+        for key in ("messages", "outcome"):
+            if key not in value:
+                raise ValueError(f"turn record is missing required field: {key}")
+        messages = value["messages"]
+        if isinstance(messages, (str, bytes)) or not isinstance(messages, Iterable):
+            raise TypeError("turn messages must be a sequence of JSON objects")
+        raw_outcome = value["outcome"]
+        if raw_outcome is not None and not isinstance(raw_outcome, Mapping):
+            raise TypeError("turn outcome must be a JSON object or null")
+        return cls.from_messages(
+            messages,
+            outcome=None
+            if raw_outcome is None
+            else AssistantTurnOutcome.model_validate(raw_outcome),
         )
 
     @property
@@ -466,7 +511,10 @@ class AssistantTurn:
     def as_dict(self) -> dict[str, JSONValue]:
         """Return the JSON-shaped turn record."""
 
-        return {"messages": [message.as_dict() for message in self.messages]}
+        return {
+            "messages": [message.as_dict() for message in self.messages],
+            "outcome": None if self.outcome is None else self.outcome.model_dump(),
+        }
 
 
 def _trim_turn_rounds(
@@ -533,9 +581,9 @@ class AssistantSession:
         self.history = [
             turn
             if isinstance(turn, AssistantTurn)
-            else AssistantTurn.from_messages(
-                turn["messages"] if isinstance(turn, Mapping) else turn
-            )
+            else AssistantTurn.from_mapping(turn)
+            if isinstance(turn, Mapping)
+            else AssistantTurn.from_messages(turn)
             for turn in self.history
         ]
 
@@ -573,7 +621,10 @@ class AssistantSession:
             "id": self.id,
             "source_file": self.source_file,
             "history": [
-                {"messages": [_persisted_message(message) for message in turn.messages]}
+                {
+                    "messages": [_persisted_message(message) for message in turn.messages],
+                    "outcome": _persisted_outcome(turn.outcome),
+                }
                 for turn in self.history
             ],
             "created_at": self.created_at,
@@ -986,12 +1037,7 @@ class SessionStore:
         if isinstance(turn, AssistantTurn):
             return turn
         if isinstance(turn, Mapping):
-            messages = turn.get("messages", _MISSING)
-            if messages is _MISSING:
-                raise ValueError("turn record is missing required field: messages")
-            if isinstance(messages, (str, bytes)):
-                raise TypeError("turn messages must be a sequence of JSON objects")
-            return AssistantTurn.from_messages(messages)
+            return AssistantTurn.from_mapping(turn)
         return AssistantTurn.from_messages(turn)
 
     def __len__(self) -> int:

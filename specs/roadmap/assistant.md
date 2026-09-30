@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
 | ASSIST-17 | Planned | P2 | A multi-case self-test run measures the model, not leftover harness state. |
 | ASSIST-20 | Planned | P1 | Every assistant change is checked in CI against reference trajectories through the real tools. |
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
@@ -106,30 +105,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-13 — Transcript order and typed turn outcomes
-**Why:** Every text delta of a turn is appended to the first assistant bubble,
-so later prose appears above the tool rows it followed. `NEEDS_INPUT:` and
-`BLOCKED:` replies render as raw prefixes under a green "Turn completed", and
-readiness reasons are hidden on the opening screen behind a Retry that cannot
-succeed.
-
-**Plan:** Keep text and tool rows in stream order. The completed event carries
-a required outcome: `applied`, `answered`, `needs_input` with the question,
-`blocked` with the sanitised reason, or `committed_unverified` when a save
-committed but verification failed, rebuilt on resume. The panel renders a
-question card with a one-click "you choose and tell me" reply, a blocked card
-that states whether anything was saved, and readiness reasons with their fix.
-
-**Acceptance:** Component tests render text, tool and text in order and each
-outcome card; a resumed chat shows the same outcome; a verification failure
-after commit never says nothing changed.
-
-**Dependencies:** `ASSIST-09`.
-
-**Evidence:** `frontend/src/stores/useAssistantStore.ts`;
-`frontend/src/panels/assistant/TranscriptEntryView.tsx`;
-`src/haute/assistant/_loop.py::run_turn`.
 
 ### ASSIST-17 — Self-test harness corrections
 **Why:** The sandbox's project root leaks between cases, so a multi-case run

@@ -20,12 +20,20 @@ export interface AssistantUsage {
   output_tokens: number
 }
 
+/**
+ * How a completed turn ended. The detail is the model's question, the blocker,
+ * or the verification error of a save that committed.
+ */
+export type AssistantTurnOutcome =
+  | { kind: "applied" | "answered"; detail: null }
+  | { kind: "needs_input" | "blocked" | "committed_unverified"; detail: string }
+
 export type AssistantStreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_started"; id: string; name: string; summary: string }
   | { type: "tool_finished"; id: string; name: string; is_error: boolean; summary: string }
   | { type: "graph_updated"; fingerprint: string }
-  | { type: "completed"; usage: AssistantUsage }
+  | { type: "completed"; usage: AssistantUsage; outcome: AssistantTurnOutcome }
   | { type: "failed"; message: string }
   | { type: "cancelled" }
 
@@ -104,9 +112,32 @@ function parseAssistantStatus(value: unknown): AssistantStatus {
   return status
 }
 
+function parseTurnOutcome(value: unknown, path: string): AssistantTurnOutcome {
+  const payload = requireRecord(value, path)
+  const kind = requireString(payload.kind, `${path}.kind`)
+  switch (kind) {
+    case "applied":
+    case "answered":
+      if (payload.detail !== null) invalidAssistantPayload(`${path}.detail`, "null")
+      return { kind, detail: null }
+    case "needs_input":
+    case "blocked":
+    case "committed_unverified": {
+      const detail = requireString(payload.detail, `${path}.detail`)
+      if (!detail.trim()) invalidAssistantPayload(`${path}.detail`, "a non-empty string")
+      return { kind, detail }
+    }
+    default:
+      throw new Error(`Unknown assistant turn outcome kind: ${kind}`)
+  }
+}
+
 function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHistoryEntry {
   const payload = requireRecord(value, path)
   const kind = requireString(payload.kind, `${path}.kind`)
+  if (kind === "outcome") {
+    return { kind, outcome: parseTurnOutcome(payload.outcome, `${path}.outcome`) }
+  }
   if (kind !== "user" && kind !== "assistant" && kind !== "tool") {
     throw new Error(`Unknown assistant history entry kind: ${kind}`)
   }
@@ -162,6 +193,7 @@ function parseEvent(payload: string): AssistantStreamEvent {
           input_tokens: requireNumber(usage.input_tokens, "stream event.usage.input_tokens"),
           output_tokens: requireNumber(usage.output_tokens, "stream event.usage.output_tokens"),
         },
+        outcome: parseTurnOutcome(parsed.outcome, "stream event.outcome"),
       }
     }
     case "failed":
@@ -188,13 +220,16 @@ export function getAssistantStatus(): Promise<AssistantStatus> {
   return request<unknown>("/api/assistant/status").then(parseAssistantStatus)
 }
 
-export interface AssistantHistoryEntry {
-  kind: "user" | "assistant" | "tool"
-  text: string
-  name: string
-  summary: string
-  is_error: boolean
-}
+export type AssistantHistoryEntry =
+  | {
+      kind: "user" | "assistant" | "tool"
+      text: string
+      name: string
+      summary: string
+      is_error: boolean
+    }
+  /** Closes a completed turn with the outcome its live `completed` event carried. */
+  | { kind: "outcome"; outcome: AssistantTurnOutcome }
 
 export interface AssistantSessionResult {
   sessionId: string

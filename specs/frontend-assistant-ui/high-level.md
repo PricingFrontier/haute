@@ -52,18 +52,42 @@ no repository, unset, detached, divergent, or invalid) renders the same way, wit
 purpose, so an assistant that could talk but not edit would only mislead. The status is
 re-checked on every panel open, not polled.
 
+The opening chat-list screen states the same readiness before any chat is opened: an
+unconfigured assistant or one whose edits are disabled (the egress policy denies them, Git
+is unavailable, or the working branch is not ready) shows a readiness card whose heading
+names what is unavailable ("Assistant is not set up" or "Assistant cannot edit this
+project"), the backend's reason verbatim (each reason names its own fix: the `haute.toml`
+table, the environment variable, the Git panel action, or installing Git), and a "Check
+again" action that re-reads the status once the analyst has made the fix.
+
 Readiness also shows the effective provider endpoint host, asserted trust
 class, and maximum sensitivity without displaying credentials or URL query
 material. A missing `[assistant].egress` table renders as an unconfigured
-readiness reason in the composer; an invalid egress policy fails the status
-fetch and renders the panel's error state with retry.
+readiness reason in the composer and on the list screen. A malformed `haute.toml` or an
+invalid egress policy fails the status fetch with a 400 whose detail is the reason; the
+panel's error state shows that detail and says to fix `haute.toml`, then check again,
+rather than offering a bare retry that cannot succeed until the file changes.
 
 **A turn streams into the transcript live.** Sending a message appends the user entry,
 disables the composer, and swaps the send button for a stop button. Assistant text renders
 incrementally as deltas arrive. Tool activity renders as compact rows in-place in the
 transcript — "reading pipeline", "applied 3 edits", with failures marked distinctly — so the
-analyst can follow what the agent actually did, in order. A graph-updated event annotates
-the transcript; the canvas itself updates via live-sync, not via this panel.
+analyst can follow what the agent actually did, in order: text streamed after a tool row
+renders below it as a new text segment, never back in an earlier bubble. A graph-updated
+event annotates the transcript; the canvas itself updates via live-sync, not via this panel.
+A resumed chat renders the same entries in the same order as the live turn did.
+
+**Every completed turn ends with its outcome.** The completed event's typed outcome
+decides how the turn closes. `applied` and `answered` close with the ordinary completed
+marker ("Changes applied" or "Turn completed"). `needs_input` renders a question card
+holding the model's question, in place of the raw `NEEDS_INPUT:` text, with a one-click
+reply "You choose, and tell me what you picked." that sends that message as the next turn
+(available on the latest turn only, under the same send gate as the composer). `blocked`
+renders a blocked card with the reason, in place of the raw `BLOCKED:` text, stating that
+nothing was saved. `committed_unverified` renders a card stating that the changes were
+saved but the post-save check failed, with the check's error and a prompt to review the
+pipeline or return to the previous save in the Git panel; it never says that nothing
+changed.
 
 **Graph authoring applies without a second permission prompt.** The user's
 message authorizes graph authoring. A validated plan may therefore apply
@@ -186,8 +210,9 @@ cannot partially append text or activity.
 
 ## Failure model
 
-- **Status fetch failure** renders the panel's error state with retry — an assistant of unknown
-  readiness never presents an enabled composer.
+- **Status fetch failure** renders the panel's error state — an assistant of unknown
+  readiness never presents an enabled composer. A 400 names its reason and the fix
+  (`haute.toml`) beside "Check again"; any other failure offers a retry.
 - **Session-list fetch failure** leaves the transcript untouched and renders a retryable error state on
   the list screen; it never blanks the panel.
 - **Send-time rejections** (400 unconfigured, 404 stale session, 409 concurrent turn) map to
