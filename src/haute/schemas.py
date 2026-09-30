@@ -841,6 +841,27 @@ class PolarsStepsRenderRequest(BaseModel):
     #: Where ``df`` comes from: ``input`` for a Transform (the first step
     #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
     start: Literal["input", "frame"]
+    #: The columns the editor knows for each input, as a preview reported them.
+    input_columns: dict[str, list[ColumnInfo]]
+    #: The columns the editor knows for a frame-mode surface's ``df``.
+    frame_columns: list[ColumnInfo]
+
+    @model_validator(mode="after")
+    def _frame_columns_need_a_frame(self) -> PolarsStepsRenderRequest:
+        if self.start == "input" and self.frame_columns:
+            raise ValueError("frame_columns describe a frame-mode surface's df; send none here.")
+        stray = sorted(set(self.input_columns) - set(self.input_names))
+        if stray:
+            raise ValueError(f"input_columns name inputs outside input_names: {stray!r}.")
+        return self
+
+
+class FreeCodeColumns(BaseModel):
+    """The columns of ``df`` after one free-code step, or why they are unknown."""
+
+    step_index: int
+    columns: list[ColumnInfo] | None
+    message: str
 
 
 class PolarsStepsRenderResponse(BaseModel):
@@ -848,7 +869,8 @@ class PolarsStepsRenderResponse(BaseModel):
 
     A step validation failure is data (``ok`` false with ``step_index`` and
     ``message``), never a transport error, so a half-built step list renders
-    as an editor message rather than a failed request.
+    as an editor message rather than a failed request. A successful render
+    carries one ``free_code_columns`` entry per free-code step.
     """
 
     ok: bool
@@ -856,6 +878,7 @@ class PolarsStepsRenderResponse(BaseModel):
     step_lines: list[list[int]] = Field(default_factory=list)
     step_index: int | None = None
     message: str = ""
+    free_code_columns: list[FreeCodeColumns] = Field(default_factory=list)
 
 
 PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"

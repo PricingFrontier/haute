@@ -231,14 +231,28 @@ export interface EditorIdentityResponseNode {
  *
  * A step validation failure is data (``ok`` false with ``step_index`` and
  * ``message``), never a transport error, so a half-built step list renders
- * as an editor message rather than a failed request.
+ * as an editor message rather than a failed request. A successful render
+ * carries one ``free_code_columns`` entry per free-code step.
  */
 export interface PolarsStepsRenderResponse {
   code: string;
+  free_code_columns: FreeCodeColumns[];
   message: string;
   ok: boolean;
   step_index: number | null;
   step_lines: number[][];
+}
+/**
+ * The columns of ``df`` after one free-code step, or why they are unknown.
+ */
+export interface FreeCodeColumns {
+  columns: ColumnInfo[] | null;
+  message: string;
+  step_index: number;
+}
+export interface ColumnInfo {
+  dtype: string;
+  name: string;
 }
 /**
  * The editor's execution settings: one value for the server process.

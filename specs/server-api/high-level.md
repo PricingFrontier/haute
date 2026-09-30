@@ -309,7 +309,13 @@ become diagnostic-unavailable rather than a fabricated success.
 and its input names and returns either the rendered code with each step's line range or
 the failing step index and message. Both outcomes are ordinary responses, so a half-built
 step list shows as an editor message rather than a network error; only a malformed
-request is a transport error. The endpoint reads and writes no project state.
+request is a transport error. The endpoint reads and writes no project state. The request
+also carries the columns the editor knows for each input (and for a frame-mode surface's
+`df`), and a successful render returns, for each Free code step, the columns of `df` after
+it: the rendered steps up to that one run as node code over empty frames of those columns
+and only the resulting schema is read, or the entry says in one line why it could not be
+resolved. The steps themselves read no rows; Free code that reads a file itself does so on
+each render, as it does in a preview.
 
 ## Design rationale
 

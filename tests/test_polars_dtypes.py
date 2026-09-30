@@ -12,6 +12,7 @@ from haute._polars_dtypes import (
     dtype_to_spec,
     is_contract_decimal_name,
     parse_dtype,
+    parse_rendered_dtype,
     rendered_dtype_mlflow_type_name,
 )
 from haute._rating import rating_dtype_descriptor, rating_dtype_from_descriptor
@@ -122,3 +123,35 @@ def test_the_rendered_dtype_mlflow_view_keeps_widths(dtype, mlflow_type: DataTyp
 @pytest.mark.parametrize("dtype", [pl.Decimal(10, 2), pl.List(pl.Int64), pl.Binary], ids=str)
 def test_a_rendered_dtype_without_an_mlflow_type_is_reported_as_none(dtype) -> None:
     assert rendered_dtype_mlflow_type_name(str(dtype)) is None
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pl.Int64(),
+        pl.String(),
+        pl.Boolean(),
+        pl.Date(),
+        pl.Categorical(),
+        pl.Datetime("us"),
+        pl.Datetime("ms", "Europe/London"),
+        pl.Duration("ns"),
+        pl.Decimal(10, 2),
+        pl.Enum(["a", "b"]),
+        pl.List(pl.Int64),
+        pl.Array(pl.Int8, 3),
+        pl.Struct({"a": pl.Int64, "b": pl.List(pl.String)}),
+    ],
+    ids=str,
+)
+def test_a_rendered_dtype_is_rebuilt_from_its_rendering(dtype) -> None:
+    assert parse_rendered_dtype(str(dtype)) == dtype
+
+
+@pytest.mark.parametrize(
+    "rendered",
+    ["col", "DataFrame", "Int64(", "__import__('os')", "List(col('a'))", "Datetime(time_unit=x)"],
+)
+def test_a_rendering_that_is_not_a_dtype_is_rejected(rendered: str) -> None:
+    with pytest.raises(SchemaMismatchError, match="Unsupported rendered dtype"):
+        parse_rendered_dtype(rendered, column="premium")

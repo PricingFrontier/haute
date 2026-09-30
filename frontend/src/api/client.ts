@@ -863,6 +863,10 @@ export interface RenderPolarsStepsArgs {
   inputNames: string[]
   /** `input` for a Transform (the first step chooses an input), `frame` when `df` is already bound. */
   start: "input" | "frame"
+  /** The columns the editor knows for each eligible input, so free-code steps' columns resolve. */
+  inputColumns: Record<string, { name: string; dtype: string }[]>
+  /** The columns the editor knows for a frame-mode surface's `df`; empty in `input` mode. */
+  frameColumns: { name: string; dtype: string }[]
   signal?: AbortSignal
 }
 
@@ -870,7 +874,13 @@ export interface RenderPolarsStepsArgs {
 export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsStepsRenderResponse> {
   return post<unknown>(
     "/api/pipeline/polars-steps/render",
-    { steps: args.steps, input_names: args.inputNames, start: args.start },
+    {
+      steps: args.steps,
+      input_names: args.inputNames,
+      start: args.start,
+      input_columns: args.inputColumns,
+      frame_columns: args.frameColumns,
+    },
     { signal: args.signal },
   ).then(async (data) => expectGeneratedContract("PolarsStepsRenderResponse", (await editorValidators()).validatePolarsStepsRenderResponse, data))
 }

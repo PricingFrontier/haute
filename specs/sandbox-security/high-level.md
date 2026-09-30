@@ -107,7 +107,7 @@ Out of scope (owned elsewhere, linked where relevant):
 
 - **The accident guard catches what would hang or stop the server, and nothing
   else.** Project code run inside the server (node code through `_exec_user_code`,
-  the preamble, pivot formulas and expression steps) is parsed by
+  including the Free code steps the step render endpoint resolves columns for, the preamble, pivot formulas and expression steps) is parsed by
   `validate_user_code` before it runs. A direct call to `input()` (it waits for
   console input the server never receives), `exit()` or `quit()` (they stop the server
   process) or `breakpoint()` (it waits for a debugger on the server's console) is

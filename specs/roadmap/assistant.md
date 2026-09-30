@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-26 | Planned | P2 | Structured cards after a free-code card keep their column help. |
 | ASSIST-30 | Planned | P1 | No regex over the user's words steers a turn. |
 | ASSIST-31 | Planned | P1 | After every apply the analyst sees a change card built from what was saved. |
 | ASSIST-32 | Planned | P1 | A multi-stage build can finish in one turn, with a change card per stage. |
@@ -98,22 +97,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-26 — Column help after free-code cards
-**Why:** The step editor loses its known columns after a free-code card, so an
-analyst who adds a structured card after the assistant's free-code card gets
-no column suggestions.
-
-**Plan:** The render endpoint returns the lazily resolved schema at each
-free-code boundary and the editor's derived-column logic uses it. This polishes
-existing editor behaviour and adds no step capability.
-
-**Acceptance:** A `[free_code, with_column]` node offers the columns the free
-code creates; checked in a browser pass on a scratch project.
-
-**Dependencies:** `ASSIST-03`.
-
-**Evidence:** `frontend/src/panels/editors/polarsSteps/derivedColumns.ts`.
 
 ### ASSIST-30 — A structural controller
 **Why:** Completion, routing and clarification are driven by regular

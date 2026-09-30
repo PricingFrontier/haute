@@ -3769,10 +3769,33 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
 # ---------------------------------------------------------------------------
 
 
+def _render_body(
+    steps: list[dict[str, Any]],
+    input_names: list[str],
+    *,
+    start: str = "input",
+    input_columns: dict[str, list[dict[str, str]]] | None = None,
+    frame_columns: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "steps": steps,
+        "input_names": input_names,
+        "start": start,
+        "input_columns": input_columns or {},
+        "frame_columns": frame_columns or [],
+    }
+
+
+QUOTE_COLUMNS = [
+    {"name": "premium", "dtype": "Float64"},
+    {"name": "inception", "dtype": "Datetime(time_unit='us', time_zone=None)"},
+]
+
+
 def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> None:
     ok = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": GOLDEN_STEPS, "input_names": ["quotes", "rates"], "start": "input"},
+        json=_render_body(GOLDEN_STEPS, ["quotes", "rates"]),
     )
     assert ok.status_code == 200
     body = ok.json()
@@ -3782,11 +3805,7 @@ def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> Non
 
     bad = client.post(
         "/api/pipeline/polars-steps/render",
-        json={
-            "steps": [source(), step("f", "filter", match="all", conditions=[])],
-            "input_names": ["quotes"],
-            "start": "input",
-        },
+        json=_render_body([source(), step("f", "filter", match="all", conditions=[])], ["quotes"]),
     )
     assert bad.status_code == 200
     assert bad.json() == {
@@ -3795,6 +3814,7 @@ def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> Non
         "step_lines": [],
         "step_index": 1,
         "message": "Add at least one condition.",
+        "free_code_columns": [],
     }
 
     malformed = client.post("/api/pipeline/polars-steps/render", json={"steps": "nope"})
@@ -3809,7 +3829,7 @@ def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestCl
     ]
     response = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": steps, "input_names": ["quotes"], "start": "input"},
+        json=_render_body(steps, ["quotes"]),
     )
     assert response.status_code == 200
     assert response.json()["ok"] is True
@@ -3817,11 +3837,110 @@ def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestCl
     steps[1]["code"] = "return df"
     invalid = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": steps, "input_names": ["quotes"], "start": "input"},
+        json=_render_body(steps, ["quotes"]),
     )
     assert invalid.status_code == 200
     assert invalid.json()["ok"] is False
     assert invalid.json()["step_index"] == 1
+
+
+def test_render_endpoint_resolves_the_columns_after_each_free_code_step(
+    client: TestClient,
+) -> None:
+    steps = [
+        source(),
+        step(
+            "c",
+            "free_code",
+            code="df = df.with_columns(\n    pl.col('inception').dt.year().alias('year')\n)",
+        ),
+        step("d", "drop", columns=["premium"]),
+        step("e", "free_code", code="df = df.with_columns(band=pl.col('year') // 10)"),
+        step("w", "with_column", name="flag", expr={"type": "operand", "operand": num(1)}),
+    ]
+    response = client.post(
+        "/api/pipeline/polars-steps/render",
+        json=_render_body(steps, ["quotes"], input_columns={"quotes": QUOTE_COLUMNS}),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    year = {"name": "year", "dtype": "Int32"}
+    assert body["free_code_columns"] == [
+        {"step_index": 1, "columns": [*QUOTE_COLUMNS, year], "message": ""},
+        {
+            "step_index": 3,
+            "columns": [QUOTE_COLUMNS[1], year, {"name": "band", "dtype": "Int32"}],
+            "message": "",
+        },
+    ]
+
+
+def test_render_endpoint_says_why_free_code_columns_are_unknown(client: TestClient) -> None:
+    def resolve(code: str, **columns: list[dict[str, str]]) -> dict[str, Any]:
+        steps = [source(), step("c", "free_code", code=code)]
+        response = client.post(
+            "/api/pipeline/polars-steps/render",
+            json=_render_body(steps, ["quotes", "rates"], input_columns=columns),
+        )
+        assert response.status_code == 200
+        [entry] = response.json()["free_code_columns"]
+        assert entry["step_index"] == 1
+        assert entry["columns"] is None
+        return entry
+
+    assert resolve("df = df")["message"] == "The columns of input 'quotes' are not known yet."
+    assert (
+        resolve("df = df.join(rates, on='k')", quotes=QUOTE_COLUMNS)["message"]
+        == "The columns of input 'rates' are not known yet."
+    )
+    assert resolve("df = df.select('missing')", quotes=QUOTE_COLUMNS)["message"].startswith(
+        'ColumnNotFoundError: unable to find column "missing"'
+    )
+    assert (
+        resolve("df = helper(df)", quotes=QUOTE_COLUMNS)["message"]
+        == "NameError: name 'helper' is not defined"
+    )
+    assert (
+        resolve("df = 3", quotes=QUOTE_COLUMNS)["message"]
+        == "The code must leave df as a Polars frame."
+    )
+    assert resolve("df = df", quotes=[{"name": "x", "dtype": "col"}])["message"] == (
+        "The type of column 'x' in input 'quotes' cannot be read: col."
+    )
+
+
+def test_render_endpoint_resolves_free_code_on_a_frame_surface(client: TestClient) -> None:
+    steps = [step("c", "free_code", code="df = df.with_columns(gross=pl.col('premium') * 1.2)")]
+    resolved = client.post(
+        "/api/pipeline/polars-steps/render",
+        json=_render_body(steps, [], start="frame", frame_columns=QUOTE_COLUMNS),
+    ).json()
+    assert resolved["free_code_columns"] == [
+        {
+            "step_index": 0,
+            "columns": [*QUOTE_COLUMNS, {"name": "gross", "dtype": "Float64"}],
+            "message": "",
+        }
+    ]
+
+    unknown = client.post(
+        "/api/pipeline/polars-steps/render", json=_render_body(steps, [], start="frame")
+    ).json()
+    assert unknown["free_code_columns"] == [
+        {
+            "step_index": 0,
+            "columns": None,
+            "message": "The columns of this node's data are not known yet.",
+        }
+    ]
+
+    stray = client.post(
+        "/api/pipeline/polars-steps/render",
+        json=_render_body([source(), *steps], ["quotes"], frame_columns=QUOTE_COLUMNS),
+    )
+    assert stray.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -4169,7 +4288,7 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
     assert missing.status_code == 422
 
     empty = client.post(
-        "/api/pipeline/polars-steps/render", json={"steps": [], "input_names": [], "start": "frame"}
+        "/api/pipeline/polars-steps/render", json=_render_body([], [], start="frame")
     )
     assert empty.status_code == 200
     assert empty.json() == {
@@ -4178,11 +4297,12 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
         "step_lines": [],
         "step_index": None,
         "message": "",
+        "free_code_columns": [],
     }
 
     limited = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": [step("l", "limit", n=2)], "input_names": [], "start": "frame"},
+        json=_render_body([step("l", "limit", n=2)], [], start="frame"),
     )
     assert limited.json() == {
         "ok": True,
@@ -4190,11 +4310,12 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
         "step_lines": [[1, 1]],
         "step_index": None,
         "message": "",
+        "free_code_columns": [],
     }
 
     refused = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": [source()], "input_names": [], "start": "frame"},
+        json=_render_body([source()], [], start="frame"),
     )
     assert refused.json() == {
         "ok": False,
@@ -4202,6 +4323,7 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
         "step_lines": [],
         "step_index": 0,
         "message": "This node starts from df; remove the start step.",
+        "free_code_columns": [],
     }
 
 

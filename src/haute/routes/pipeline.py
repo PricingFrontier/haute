@@ -70,7 +70,7 @@ from haute._polars_io_registry import (
     format_group,
     validate_data_output_config,
 )
-from haute._polars_steps import PolarsStepError, render_polars_steps
+from haute._polars_steps import PolarsStepError, render_polars_steps, resolve_free_code_columns
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._sandbox import _get_project_root, contained_path
 from haute._seed_plans import (
@@ -171,6 +171,7 @@ from haute.schemas import (
     EditorIdentityResponseNode,
     ExecutionMetricsPayload,
     ExecutionSettings,
+    FreeCodeColumns,
     NodeMemoryInfo,
     NodeTimingInfo,
     OutputDestinationRequest,
@@ -264,15 +265,41 @@ async def resolve_pipeline_editor_identities(
 async def render_polars_steps_endpoint(
     body: PolarsStepsRenderRequest,
 ) -> PolarsStepsRenderResponse:
-    """Render a step list to Polars code without reading or writing project state."""
+    """Render a step list to Polars code without reading or writing project state.
+
+    Each free-code step's output columns are resolved in the thread pool,
+    because resolving them runs the authored code.
+    """
     try:
         rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
     except PolarsStepError as exc:
         return PolarsStepsRenderResponse(ok=False, step_index=exc.step_index, message=exc.message)
+    resolved = await run_in_threadpool(
+        resolve_free_code_columns,
+        body.steps,
+        rendered,
+        start=body.start,
+        input_names=body.input_names,
+        input_columns={
+            name: [(c.name, c.dtype) for c in columns]
+            for name, columns in body.input_columns.items()
+        },
+        frame_columns=[(c.name, c.dtype) for c in body.frame_columns],
+    )
     return PolarsStepsRenderResponse(
         ok=True,
         code=rendered.code,
         step_lines=[list(span) for span in rendered.step_lines],
+        free_code_columns=[
+            FreeCodeColumns(
+                step_index=entry.step_index,
+                columns=None
+                if entry.columns is None
+                else [ColumnInfo(name=name, dtype=dtype) for name, dtype in entry.columns],
+                message=entry.message,
+            )
+            for entry in resolved
+        ],
     )
 
 

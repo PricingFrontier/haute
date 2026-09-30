@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { renderPolarsSteps } from "../../../api/client"
 import type { StepStart } from "../../../utils/polarsStepInputs"
+import type { ColumnInfo } from "./derivedColumns"
 import type { Step } from "./types"
+
+/** The columns the editor knows: each input's by name, and a frame-mode surface's `df`. */
+export type KnownColumns = { inputs: Readonly<Record<string, ColumnInfo[]>>; frame: ColumnInfo[] }
+
+/** The columns after one free-code step, or why the render could not resolve them. */
+export type FreeCodeColumns = { columns: ColumnInfo[] | null; message: string }
 
 export type RenderedStepsState = {
   /** `empty` for an empty list (nothing is requested), `pending` while a
@@ -17,21 +24,36 @@ export type RenderedStepsState = {
   revision: number
   /** Inclusive generated-code line ranges for the successful current render. */
   stepLines: number[][]
+  /**
+   * By step id, the columns the last successful render resolved after each
+   * free-code step whose earlier steps and known columns are still the ones
+   * it rendered, so later renders (pending, or failing on a half-built later
+   * step) keep them.
+   */
+  freeCode: ReadonlyMap<string, FreeCodeColumns>
 }
 
+type Resolved = { signature: string; id: string; columns: FreeCodeColumns }
+
 const DEBOUNCE_MS = 250
+
+/** What a free-code step's columns depend on: the steps up to it and the known columns. */
+const signatureOf = (steps: Step[], index: number, knownKey: string) => `${knownKey}\u0000${JSON.stringify(steps.slice(0, index + 1))}`
 
 /**
  * Render `steps` through the backend, debounced, tagging every request with
  * the steps revision it was made for so an older response can never replace a
  * newer one. `inputNames` are the surface's eligible input names and `start`
- * its start mode; both travel with every request. `onRendered` fires with the
- * code of a successful render for the current revision only.
+ * its start mode; both travel with every request, with the `known` columns of
+ * the eligible inputs (and, in `frame` mode, of `df`) so the render resolves
+ * each free-code step's columns. `onRendered` fires with the code of a
+ * successful render for the current revision only.
  */
 export function useRenderedSteps(
   steps: Step[],
   inputNames: string[],
   start: StepStart,
+  known: KnownColumns,
   onRendered?: (code: string) => void,
 ): RenderedStepsState {
   const revisionRef = useRef(0)
@@ -41,7 +63,14 @@ export function useRenderedSteps(
   })
   const stepsKey = JSON.stringify(steps)
   const namesKey = JSON.stringify(inputNames)
-  const [state, setState] = useState<RenderedStepsState>({
+  const inputColumns = useMemo(
+    () => Object.fromEntries(inputNames.flatMap((name) => (known.inputs[name]?.length ? [[name, known.inputs[name]]] : []))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [namesKey, known.inputs],
+  )
+  const frameColumns = start === "frame" ? known.frame : []
+  const knownKey = JSON.stringify([inputColumns, frameColumns])
+  const [state, setState] = useState<Omit<RenderedStepsState, "freeCode">>({
     status: steps.length === 0 ? "empty" : "pending",
     code: "",
     error: null,
@@ -49,18 +78,20 @@ export function useRenderedSteps(
     revision: 0,
     stepLines: [],
   })
+  const [resolved, setResolved] = useState<Resolved[]>([])
 
   useEffect(() => {
     revisionRef.current += 1
     const revision = revisionRef.current
     if (steps.length === 0) {
       setState({ status: "empty", code: "", error: null, revisionRendered: revision, revision, stepLines: [] })
+      setResolved([])
       return
     }
     setState((prev) => ({ ...prev, status: "pending", revision, stepLines: [] }))
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      renderPolarsSteps({ steps, inputNames, start, signal: controller.signal })
+      renderPolarsSteps({ steps, inputNames, start, inputColumns, frameColumns, signal: controller.signal })
         .then((response) => {
           if (controller.signal.aborted || revision !== revisionRef.current) return
           if (response.ok) {
@@ -72,6 +103,14 @@ export function useRenderedSteps(
               revision,
               stepLines: response.step_lines,
             })
+            setResolved(
+              response.free_code_columns.flatMap((entry) => {
+                const step = steps[entry.step_index]
+                return step === undefined
+                  ? []
+                  : [{ signature: signatureOf(steps, entry.step_index, knownKey), id: step.id, columns: { columns: entry.columns, message: entry.message } }]
+              }),
+            )
             onRenderedRef.current?.(response.code)
           } else {
             setState((prev) => ({
@@ -102,10 +141,21 @@ export function useRenderedSteps(
       clearTimeout(timer)
       controller.abort()
     }
-    // The serialised keys are the change signal; `steps`/`inputNames` are read
-    // from the closure of the same render.
+    // The serialised keys are the change signal; `steps`/`inputNames` and the
+    // known columns are read from the closure of the same render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepsKey, namesKey, start])
+  }, [stepsKey, namesKey, start, knownKey])
 
-  return state
+  const freeCode = useMemo(() => {
+    const current = new Map<string, FreeCodeColumns>()
+    for (const entry of resolved) {
+      const index = steps.findIndex((s) => s.id === entry.id)
+      if (index >= 0 && signatureOf(steps, index, knownKey) === entry.signature) current.set(entry.id, entry.columns)
+    }
+    return current
+    // `stepsKey` stands for `steps`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolved, stepsKey, knownKey])
+
+  return { ...state, freeCode }
 }

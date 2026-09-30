@@ -340,33 +340,50 @@ describe("client runtime contracts", () => {
   })
 
   it("renderPolarsSteps resolves rendered code and a failing step as data", async () => {
-    const rendered = { ok: true, code: "df = df.filter(x)", step_lines: [[1, 1]], step_index: null, message: "" }
+    const rendered = {
+      ok: true,
+      code: "df = df.filter(x)",
+      step_lines: [[1, 1]],
+      step_index: null,
+      message: "",
+      free_code_columns: [{ step_index: 0, columns: null, message: "The columns of input 'quotes' are not known yet." }],
+    }
     mockFetch.mockReturnValue(jsonResponse(rendered))
 
     await expect(
-      renderPolarsSteps({ steps: [{ kind: "filter" }], inputNames: ["quotes"], start: "input" }),
+      renderPolarsSteps({
+        steps: [{ kind: "filter" }],
+        inputNames: ["quotes"],
+        start: "input",
+        inputColumns: { quotes: [{ name: "premium", dtype: "Float64" }] },
+        frameColumns: [],
+      }),
     ).resolves.toEqual(rendered)
     const [url, init] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/polars-steps/render")
     expect(JSON.parse(String(init?.body))).toEqual({
-      steps: [{ kind: "filter" }], input_names: ["quotes"], start: "input",
+      steps: [{ kind: "filter" }],
+      input_names: ["quotes"],
+      start: "input",
+      input_columns: { quotes: [{ name: "premium", dtype: "Float64" }] },
+      frame_columns: [],
     })
 
     // A step validation failure is data, not a rejected request.
-    const failed = { ok: false, code: "", step_lines: [], step_index: 2, message: "Pick a column." }
+    const failed = { ok: false, code: "", step_lines: [], step_index: 2, message: "Pick a column.", free_code_columns: [] }
     mockFetch.mockReturnValue(jsonResponse(failed))
     await expect(
-      renderPolarsSteps({ steps: [], inputNames: [], start: "frame" }),
+      renderPolarsSteps({ steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [] }),
     ).resolves.toEqual(failed)
   })
 
   it("renderPolarsSteps rejects a malformed step line range", async () => {
     mockFetch.mockReturnValue(jsonResponse({
-      ok: true, code: "df = df", step_lines: [[1, "2"]], step_index: null, message: "",
+      ok: true, code: "df = df", step_lines: [[1, "2"]], step_index: null, message: "", free_code_columns: [],
     }))
 
     await expect(
-      renderPolarsSteps({ steps: [], inputNames: [], start: "frame" }),
+      renderPolarsSteps({ steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [] }),
     ).rejects.toThrow("PolarsStepsRenderResponse: invalid contract at /step_lines/0/1: type")
   })
 
