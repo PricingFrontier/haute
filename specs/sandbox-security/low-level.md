@@ -89,8 +89,9 @@
    their named bindings and `df` is the output the code must assign. The name
    `df` is therefore reserved and rejected as a polars input, while a preamble
    binding named `df` is hidden from node code. Callers whose code box operates
-   on one implicit frame named `df` — external files, explore, and post-code
-   hooks — opt in explicitly with `alias_first_input_as_df=True`.
+   on one implicit frame named `df` — external files, explore, post-code
+   hooks, and `_polars_steps.resolve_free_code_columns` for a frame-mode
+   surface — opt in explicitly with `alias_first_input_as_df=True`.
 2. Call `validate_user_code(code)`. On `UnsafeCodeError` whose `__cause__` is a
    `SyntaxError`, re-raise the bare `SyntaxError` instead — this normalizes the error
    type callers see for a plain typo versus a guard rejection.

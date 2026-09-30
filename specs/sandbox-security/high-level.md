@@ -287,7 +287,8 @@ Out of scope (owned elsewhere, linked where relevant):
   and `executor.py` both import `validate_user_code`/`safe_globals` directly, and
   `_builders.py`, `chunking.py`, and `_model_scorer.py`/`deploy/_scorer.py` reuse
   the same `_exec_user_code` entry point for node execution and scoring-time code
-  execution.
+  execution, and `_polars_steps.py` reuses it to resolve the columns after each
+  Free code step for the step render endpoint.
 - Depended on by [explore-eda](../explore-eda/high-level.md): `routes/_pivot_service.py`
   imports `validate_user_code` and `safe_globals` directly to validate and `eval()`
   configured pivot formulas without going through `_exec_user_code`.
