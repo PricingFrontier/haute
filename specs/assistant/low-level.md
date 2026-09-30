@@ -147,10 +147,25 @@ orphaned halves).
     because source reparse cannot preserve a separate unsanitised label.
     Adding or renaming to a sanitised id already owned by a different node is
     rejected before the working copy can contain duplicate identities.
+    The node starts from the palette's config for its type
+    (`haute._config_io.palette_default_config`, read from `node_defaults.json`, the file
+    the editor palette uses) with the model's `config` merged over it key by key, so an
+    assistant-created node matches a palette-created one: a Data Input carries
+    `inputType`, and every stepped type carries `steps: []` and opens in the step
+    builder. There is therefore no assistant path to a new code-mode node. Two cases
+    take less than the whole palette config. A config that selects a branch other than
+    the palette's (a Data Input or Data Output provider, a Model Score or Apply
+    Optimisation source, an Optimiser mode or a training algorithm, the discriminants
+    config recovery also uses) keeps only the palette's `steps`, as the palette belongs
+    to one branch and must not fill another's fields. A config naming `instanceOf` takes
+    no palette config, because an instance's configuration is its original's.
   - `update_node {node, config}` — shallow key merge into the existing config; an explicit
     JSON `null` value removes that key. Unknown keys for the node's type are rejected using
     the same `TypedDict`-derived allowlist machinery the sidecar writer uses (see Edge
     cases for why this is deliberately stricter than save's warn-and-drop).
+  - Both node operations follow the stepped-node write contract in Edge cases: a write
+    that would change how a stepped-type node is authored is refused, and a write that
+    does not land in the materialised config fails the plan with `op_not_applied`.
   - `rename_node {node, new_name}` (sets both id and persisted label to the
     canonical sanitised function name) · `delete_node {node}` (drops every touching edge,
     mirroring the GUI's atomic delete) · `add_edge {source, target, source_handle?,
@@ -367,7 +382,8 @@ excluded count; its path and content never cross the tool boundary.
    derives the complete semantic diff and affected capabilities. Its verification
    phase invokes the save service's public no-write validation (including
    canonical Edge Join role, handle, topology, and key-form validation),
-   derives the complete changed-node set, and resolves the schema of every
+   proves that the steps of every stepped node the plan adds or updates survive a
+   save (below), derives the complete changed-node set, and resolves the schema of every
    reachable executable terminal through `flatten_graph` +
    `execute_lazy_graph(..., enforce_contracts=True, schema_only=True)` +
    `collect_schema()`.
@@ -405,6 +421,36 @@ excluded count; its path and content never cross the tool boundary.
    evidence, normalization, and these warnings identically and the plan hash
    is stable; post-save verification re-resolves only the targets the plan already
    proved and admits no pre-existing excuse at all.
+
+   **Steps are proved to survive a save before apply.** For each stepped node the plan
+   adds or updates (instances excepted), the verification phase generates the planned
+   pipeline source in memory with the save path's codegen (`graph_to_code_multi`),
+   takes the node's sidecar exactly as `collect_node_configs` would write it, and
+   resolves the node's generated function through the parser's own node resolution
+   (`_resolve_node_skeleton`, against a temporary directory holding only those
+   sidecars). The resolved config must hold the planned `steps` unchanged and no
+   `_steps_discarded` reason; otherwise the plan fails with `op_not_applied` naming the
+   node and the parser's reason. This is the failure class where a rendered step list
+   and its extracted body disagree and reparse silently turns the node code-only.
+
+   **Authored config is verified after reparse.** Besides the structural
+   postconditions, every plan carries a `node_config {node, sha256}` postcondition for
+   each node it adds or updates whose type carries code (the seven stepped types;
+   instances excepted). It is appended to the automatic or supplied postconditions,
+   without duplicates, so a replayed plan carries the identical list. The digest is
+   over the node's authored-config projection, which is narrow on purpose because the
+   save path legitimately normalises other fields (a Constant's values become strings,
+   a Rating Step's combined outputs gain their default operation, a Source Switch's
+   `inputs` are derived from its edges): a node holding a `steps` list is projected to
+   `{"steps": steps}`, and any other node of those types to
+   `{"code": normalise_user_code(code, kind)}` with its type's extraction kind, which is
+   exactly what reparse returns for code-mode code. Derived and editor-only fields
+   (`code` rendered from steps, `_steps_error`, `_steps_discarded`,
+   `_discarded_sidecar`, positions) are outside the projection. A save whose parser
+   discarded the steps reparses without `steps`, so its projection becomes the code
+   form and the postcondition fails. The dry-run check trivially holds on the planned
+   graph; the post-save check on the reparsed graph reports a mismatch as a committed
+   verification failure (`postcondition_failed`).
 2. `apply` acquires `save_lock`, reloads the snapshot, compares its revision,
    passes the stored normalized operations through `build_verified_plan`, requires
    the complete rebuilt `GraphEditPlan` and plan hash to equal the stored authority,
@@ -594,7 +640,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       what an unwritten node has not got. A source node reports no `inputs` key.
    5. **An authored-but-empty transform is a success, not a refusal.** A polars node
       with no code has no implicit passthrough and cannot resolve its own output — the engine raises its
-      canonical `INCOMPLETE_TRANSFORM_MESSAGE`. That is the ordinary editing state of a
+      canonical `INCOMPLETE_TRANSFORM_MESSAGE`, and a node whose step list is incomplete
+      raises that message or `INCOMPLETE_STEPS_MESSAGE` followed by the step problem (a
+      palette-default Transform's `steps: []` has not chosen its input). The tool
+      recognises both by prefix. That is the ordinary editing state of a
       node the analyst is asking the assistant to write, so the tool returns the third
       declared success shape: `unresolved_reason: "node_has_no_code"` plus `inputs`, with
       neither `columns` nor `ports`. Each input is then resolved against its own source,
@@ -825,7 +874,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   Every node the batch adds, or whose `steps` it sets, that carries a step list on a
   stepped surface (instances excepted) is rendered with the product's renderer
   (`render_polars_steps`, against the node's incoming input names in the surface's start
-  mode), so an invalid step list is an op error naming its step. Each `free_code` step
+  mode), so an invalid step list is an op error naming its step and the surface's
+  free-code form (a palette-default Transform left at `steps: []` is refused this way,
+  because a Transform's steps must choose their input). Each `free_code` step
   is then checked on its own code. A top-level bare expression that calls a method on
   `df` or on an incoming input (`df.filter(...)` alone) is refused naming the node, the
   step's number and its id, because its result is discarded; the rendered program's
@@ -837,6 +888,32 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   the step, in the pipeline preamble, or is `df`, `pl` or a builtin. The check is
   deliberately narrow: it never refuses a name it cannot tie to an input, so local
   helpers, preamble helpers and any other valid program pass.
+- **Writes to stepped nodes land or fail loudly.** `NodeData` rebuilds `code` from
+  `steps` whenever a stepped type holds a `steps` list, so a `code` write to such a node
+  would be overwritten while the plan reported success. Each `add_node` and
+  `update_node` therefore compares the node as it stands before the operation (in the
+  working graph, so an earlier operation of the batch counts) with what the operation
+  writes, and refuses with an op error:
+  - on a node whose config holds a `steps` list: any `code` key (a value or `null`),
+    and a `steps` value that is not a list (`null` included), since removing steps
+    would switch the node to code mode, which stays an analyst action in the editor;
+  - on a stepped-type node in code mode (no `steps`, non-empty `code`): any `steps`
+    key, since steps would replace the analyst's code and converting code into steps
+    is out of scope. A stepped-type node with no `steps` and no code has nothing to
+    lose and accepts a step list;
+  - in `add_node` of a stepped type: a `code` key or a `steps` value that is not a list.
+  Code-mode nodes keep `code` editing. Each refusal names the node, its surface
+  (`STEPPED_SURFACE_LABELS`) and the free-code form to write instead: on a surface
+  whose steps choose their input (`start == "input"`, the Transform)
+  `[{"id": "start", "kind": "source", "input": "<edge name>"}, {"id": "logic", "kind":
+  "free_code", "code": "..."}]`, and on every other stepped surface
+  `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
+  After each operation's `with_config`, every key the model wrote must hold the written
+  value in the materialised config (a key written as `null` must be absent), and when
+  the operation wrote `steps` the config must carry no `_steps_error`. Otherwise the
+  plan fails with the stable code `op_not_applied` naming the node and the key, or the
+  step error. A palette-default node's own `_steps_error` (a Transform's empty step
+  list) is not the operation's write and does not trip this check.
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
@@ -972,6 +1049,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 | Provider adapter construction/dependency failure | route provider factory | HTTP 502 before the stream opens |
 | Provider request/stream failures (authentication, rate limit, connection, malformed/truncated/filtered output) | `_providers` | `AssistantProviderError` → terminal `failed` SSE event after the response has started |
 | Op validation, save validation, missing dataset, unknown node, unknown example name, unresolvable node schema (unfetched Databricks cache, missing artifact, invalid node code) | `_tools`/`_ops`/`_assets`/engine/save service | Structured tool error returned to the model (visible as a failed activity row); never terminates the turn |
+| A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
 | Any unexpected exception in the loop | `_loop` outermost handler | Logged server-side with `exc_info=True`; terminal `failed` event carrying the sanitized `_INTERNAL_ERROR_DETAIL` text only |
@@ -1004,7 +1082,9 @@ fixture for route tests). The implemented coverage is:
   for the module-level output variable; the free-code step rules (a discarded bare
   expression refused with its step, a Rating Step step reading its input by name refused
   with "Rating Step code sees only df", and a step calling a preamble or local helper
-  accepted).
+  accepted); the palette defaults `add_node` merges (and their omission on another
+  branch or an instance); and the stepped-node transition refusals and
+  `op_not_applied` landing check.
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
   stale/altered-plan rejection before save,
@@ -1017,7 +1097,9 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_tools.py`** — real tmp-project coverage for source/downstream
   schemas, preamble-dependent transforms, per-input schemas keyed by the code-visible
   input name (absent for a source node), the authored-but-empty transform's
-  `node_has_no_code` success shape with resolved inputs, a group-by node resolving
+  `node_has_no_code` success shape with resolved inputs (for code-less code and for a
+  palette-default `steps: []` Transform alike), a frame-start node at `steps: []`
+  resolving its ordinary schema, a group-by node resolving
   because nothing is collected, an invalid-code failure retaining the engine's own
   column diagnosis, and the collect-poisoning invariant
   (`LazyFrame.collect` must not run). Value-profile coverage pins small-cardinality levels
@@ -1062,7 +1144,16 @@ fixture for route tests). The implemented coverage is:
   group-by validates at schema tier, a new branch off a shared input does not drag that
   input's other branches into validation, untouched collateral that already failed
   becomes a `pre_existing_schema_failure` warning at structural tier, and a node the
-  plan itself changed is never excused.
+  plan itself changed is never excused. The stepped-node write contract is pinned on
+  every palette-default stepped type, each with a valid base (a readable source, a
+  scorable model, a rating table): `update_node {code}` and `{steps: null, code}` are
+  refused at dry-run with the file unchanged; a Transform's `[source, free_code]` and a
+  frame-start surface's `[free_code]` write apply and the saved body holds them; a
+  Data Input added with only a path saves with the palette's `inputType`; the
+  `node_config` projection survives a real save and reparse on every code-carrying
+  palette type; a saved config that no longer matches its `node_config` digest is a
+  committed verification failure; and steps whose generated body would not reparse
+  fail the dry-run with `op_not_applied`.
 - **`tests/test_assistant_project_knowledge.py`** — source attribution,
   sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
   policy, symlink containment, and metadata-only durable cache state.

@@ -24,11 +24,15 @@ from typing import Any, Literal, NoReturn, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
-from haute._config_io import NODE_TYPE_TO_FOLDER
+from haute._code_extraction import normalise_user_code
+from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
+from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
 from haute._config_validation import VALID_KEYS
 from haute._graph_utils import _edge_id, _sanitize_func_name, upstream_node_ids
 from haute._lru_cache import LRUCache
+from haute._node_config_recovery import _DISCRIMINANTS
 from haute._polars_steps import (
+    STEPPED_NODE_TYPES,
     STEPPED_SURFACE_LABELS,
     PolarsStepError,
     is_stepped_config,
@@ -165,6 +169,103 @@ def _replace_node(graph: PipelineGraph, index: int, node: GraphNode) -> None:
     graph.nodes[index] = node
 
 
+def _free_code_form(node_type: NodeType) -> str:
+    """The step list that writes new logic on *node_type*'s stepped surface."""
+
+    logic = '{"id": "logic", "kind": "free_code", "code": "..."}'
+    if stepped_surface_for(node_type).start == "input":
+        return f'[{{"id": "start", "kind": "source", "input": "<edge name>"}}, {logic}]'
+    return f"[{logic}]"
+
+
+def _check_stepped_write(
+    node_type: NodeType,
+    node_id: str,
+    before: Mapping[str, Any] | None,
+    written: Mapping[str, Any],
+) -> None:
+    """Refuse a write that would change how a stepped-type node is authored.
+
+    *before* is the node's config ahead of the operation, ``None`` for the node
+    an ``add_node`` creates (which starts from the palette's ``steps``). A node
+    holding steps renders its ``code`` from them, so a ``code`` write would be
+    overwritten and removing ``steps`` would switch it to code mode, an analyst
+    action in the editor. A code-mode node with code would lose that code to a
+    step list, and converting code into steps is out of scope.
+    """
+
+    if node_type not in STEPPED_NODE_TYPES:
+        return
+    label = STEPPED_SURFACE_LABELS[node_type]
+    fix = f"Write new logic as steps with a free-code card: {_free_code_form(node_type)}."
+    if before is None or is_stepped_config(node_type, before):
+        if "code" in written:
+            _invalid(
+                f"Node {node_id!r} is a {label} authored as steps: its code is rendered "
+                f"from them, so a code write would not land. {fix}"
+            )
+        if "steps" in written and not isinstance(written["steps"], list):
+            _invalid(
+                f"Node {node_id!r} is a {label} authored as steps: removing its steps "
+                f"would switch it to code mode, which only the analyst does in the editor. "
+                f"{fix}"
+            )
+    elif isinstance(written.get("steps"), list) and str(before.get("code") or "").strip():
+        _invalid(
+            f"Node {node_id!r} is a {label} in code mode: setting steps would discard its "
+            "code. Edit its code instead."
+        )
+
+
+def _require_landed(
+    node: GraphNode,
+    written: Mapping[str, Any],
+    *,
+    operation: str,
+    null_removes: bool,
+) -> None:
+    """Fail the plan unless every key *written* holds its value in the materialised config."""
+
+    config = node.data.config
+    for key, value in written.items():
+        if value is None and null_removes:
+            landed = key not in config
+        else:
+            landed = key in config and config[key] == value
+        if not landed:
+            raise AssistantOperationError(
+                "op_not_applied",
+                f"{operation} on node {node.id!r} did not land: {key!r} does not hold the "
+                "written value in the node's config.",
+            )
+    if "steps" in written and "_steps_error" in config:
+        node_type = node.data.nodeType
+        raise AssistantOperationError(
+            "op_not_applied",
+            f"{operation} on node {node.id!r} did not land: its steps cannot be rendered "
+            f"({config['_steps_error']}). New logic on a {STEPPED_SURFACE_LABELS[node_type]} "
+            f"is written as {_free_code_form(node_type)}.",
+        )
+
+
+def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[str, Any]:
+    """The palette config a new node starts from beneath the model's *config*.
+
+    An instance takes its configuration from its original, so it gets none. A
+    config selecting another branch than the palette's (the discriminants
+    config recovery uses) keeps only the palette's ``steps``: the palette
+    belongs to one branch and must not fill another's fields.
+    """
+
+    if "instanceOf" in config:
+        return {}
+    defaults = palette_default_config(node_type)
+    branch = _DISCRIMINANTS.get(node_type)
+    if branch is not None and branch[0] in config and config[branch[0]] != defaults.get(branch[0]):
+        return {key: value for key, value in defaults.items() if key == "steps"}
+    return defaults
+
+
 def _apply_add_node(
     graph: PipelineGraph,
     op: AddNodeOp,
@@ -181,16 +282,18 @@ def _apply_add_node(
     node_id = _sanitize_func_name(op.name)
     if _node_index(graph, node_id) is not None:
         _invalid(f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists")
+    _check_stepped_write(op.node_type, node_id, None, op.config)
     node = GraphNode(
         id=node_id,
         type=op.node_type.value,
         data=NodeData(
             label=node_id,
             nodeType=op.node_type,
-            config=deepcopy(op.config),
+            config={**_palette_config_for(op.node_type, op.config), **deepcopy(op.config)},
         ),
         position={"x": 0.0, "y": 0.0},
     )
+    _require_landed(node, op.config, operation="add_node", null_removes=False)
     graph.nodes.append(node)
     new_node_ids.append(node_id)
 
@@ -210,6 +313,7 @@ def _apply_update_node(
     index = _node_index(graph, node_id)
     assert index is not None  # _resolve_node_id already checked this
     node = graph.nodes[index]
+    _check_stepped_write(node.data.nodeType, node_id, node.data.config, op.config)
     _validate_config(
         node.data.nodeType,
         op.config,
@@ -223,7 +327,9 @@ def _apply_update_node(
             config.pop(key, None)
         else:
             config[key] = value
-    _replace_node(graph, index, node.with_config(config))
+    updated = node.with_config(config)
+    _require_landed(updated, op.config, operation="update_node", null_removes=True)
+    _replace_node(graph, index, updated)
 
 
 def _apply_rename_node(
@@ -817,6 +923,46 @@ def semantic_diff(
     return _semantic_diff(before, after, typed_operations, refs)
 
 
+def _authored_config_projection(
+    node_type: NodeType, config: Mapping[str, Any]
+) -> dict[str, object] | None:
+    """The part of a code-carrying node's config a save must keep exactly.
+
+    A node holding a ``steps`` list is checked by its steps (its ``code`` is
+    derived from them); any other node of a code-carrying type by its code as
+    reparse extracts it. The projection is narrow on purpose: the save path
+    legitimately normalises other fields, and editor-state keys
+    (``_steps_error``, ``_steps_discarded``) are derived. Other types and
+    instances, whose configuration is their original's, have none.
+    """
+
+    kind = _EXTRACTION_KIND_BY_CODE_TYPE.get(node_type)
+    if kind is None or config.get("instanceOf"):
+        return None
+    if is_stepped_config(node_type, config):
+        return {"steps": config["steps"]}
+    return {"code": normalise_user_code(str(config.get("code") or ""), kind=kind)}
+
+
+def _config_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[object, ...]:
+    """One ``node_config`` digest per added or updated code-carrying node."""
+
+    nodes = {node.id: node for node in graph.nodes}
+    conditions: list[object] = []
+    for node_id in sorted({*diff.nodes_added, *diff.nodes_updated}):
+        node = nodes.get(node_id)
+        if node is None:
+            continue
+        projection = _authored_config_projection(node.data.nodeType, node.data.config)
+        if projection is not None:
+            conditions.append(
+                _frozen_json(
+                    {"kind": "node_config", "node": node_id, "sha256": _digest(projection)}
+                )
+            )
+    return tuple(conditions[:_DIFF_LIMIT])
+
+
 def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[object, ...]:
     conditions: list[object] = [
         _frozen_json({"kind": "node_exists", "node": node_id}) for node_id in diff.nodes_added
@@ -905,6 +1051,14 @@ def verify_postconditions(
                 condition.get("sha256")
                 == sha256((graph.preamble or "").encode("utf-8")).hexdigest()
             )
+        elif kind == "node_config":
+            node = nodes.get(condition.get("node"))  # type: ignore[arg-type]
+            projection = (
+                None
+                if node is None
+                else _authored_config_projection(node.data.nodeType, node.data.config)
+            )
+            passed = projection is not None and _digest(projection) == condition.get("sha256")
         else:
             raise AssistantOperationError(
                 "invalid_plan",
@@ -1051,6 +1205,7 @@ def _validate_postconditions(
         },
         "graph_shape": {"kind", "nodes", "edges"},
         "preamble_digest": {"kind", "sha256"},
+        "node_config": {"kind", "node", "sha256"},
     }
     required_keys = {
         "node_exists": {"kind", "node"},
@@ -1059,6 +1214,7 @@ def _validate_postconditions(
         "edge_absent": {"kind", "source", "target"},
         "graph_shape": {"kind", "nodes", "edges"},
         "preamble_digest": {"kind", "sha256"},
+        "node_config": {"kind", "node", "sha256"},
     }
     for condition in postconditions:
         if not isinstance(condition, Mapping):
@@ -1073,12 +1229,12 @@ def _validate_postconditions(
                 "invalid_plan",
                 f"Postcondition {kind!r} is not the closed supported shape",
             )
-        if kind in {"node_exists", "node_absent"}:
+        if kind in {"node_exists", "node_absent", "node_config"}:
             if not isinstance(condition["node"], str) or not condition["node"]:
                 raise AssistantOperationError(
                     "invalid_plan", f"Postcondition {kind!r} needs a node id"
                 )
-        elif kind in {"edge_exists", "edge_absent"}:
+        if kind in {"edge_exists", "edge_absent"}:
             if any(
                 not isinstance(condition[field], str) or not condition[field]
                 for field in ("source", "target")
@@ -1097,7 +1253,7 @@ def _validate_postconditions(
                 raise AssistantOperationError(
                     "invalid_plan", "graph_shape values must be non-negative integers"
                 )
-        else:
+        elif kind in {"preamble_digest", "node_config"}:
             digest = condition["sha256"]
             if (
                 not isinstance(digest, str)
@@ -1105,7 +1261,7 @@ def _validate_postconditions(
                 or any(character not in "0123456789abcdef" for character in digest)
             ):
                 raise AssistantOperationError(
-                    "invalid_plan", "preamble_digest must be lowercase SHA-256 hex"
+                    "invalid_plan", f"{kind} must be lowercase SHA-256 hex"
                 )
 
 
@@ -1568,7 +1724,10 @@ def _validate_assistant_authored_steps(
             steps, step_input_names(node_type, input_names), start=surface.start
         )
     except PolarsStepError as exc:
-        _invalid(f"Node {node.id!r} has an invalid step list: {exc}")
+        _invalid(
+            f"Node {node.id!r} has an invalid step list: {exc} New logic on a "
+            f"{STEPPED_SURFACE_LABELS[node_type]} is written as {_free_code_form(node_type)}."
+        )
     lines = rendered.code.split("\n")
     frame_names = {_BARE_INPUT_NAME, *input_names}
     out_of_scope = (
@@ -1681,7 +1840,17 @@ def prepare_graph_edit(
     )
     _validate_postconditions(resolved_conditions)
     supplied_conditions = tuple(_frozen_json(condition) for condition in resolved_conditions)
-    all_conditions = supplied_conditions or _automatic_postconditions(result, diff)
+    base_conditions = supplied_conditions or _automatic_postconditions(result, diff)
+    # A replayed plan's supplied list already holds its config digests.
+    all_conditions = (
+        *base_conditions,
+        *(
+            condition
+            for condition in _config_postconditions(result, diff)
+            if condition not in base_conditions
+        ),
+    )
+    _validate_postconditions(cast(Sequence[Mapping[str, Any]], all_conditions))
     verify_postconditions(result, all_conditions)
     capability_ids = _affected_capabilities(snapshot.graph, result, diff, ops, refs)
     return PreparedGraphEdit(

@@ -501,12 +501,19 @@ def test_parquet_showcase_recipe_emits_one_connected_coherent_graph() -> None:
     transform = next(
         operation for operation in recipe["operations"] if operation.get("node_type") == "polars"
     )
-    assert transform["config"]["code"] == (
-        "df = quote_with_competitor.with_columns(\n"
-        '    pl.col("quote_id").cast(pl.String).alias("quote_id_text"),\n'
-        '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
-        ")"
-    )
+    assert transform["config"]["steps"] == [
+        {"id": "start", "kind": "source", "input": "quote_with_competitor"},
+        {
+            "id": "logic",
+            "kind": "free_code",
+            "code": (
+                "df = df.with_columns(\n"
+                '    pl.col("quote_id").cast(pl.String).alias("quote_id_text"),\n'
+                '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
+                ")"
+            ),
+        },
+    ]
     output = next(
         operation for operation in recipe["operations"] if operation.get("node_type") == "output"
     )

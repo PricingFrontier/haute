@@ -780,16 +780,23 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 argument="join_key",
             )
         key_text = f"{join_key}_text"
-        # The transform's single input is the join node; its edge-derived
-        # parameter name is the sanitised join label. `df` is only the output
-        # variable, so the code must start from that named input.
-        join_input = _sanitize_func_name(join_name)
-        transform_code = (
-            f"df = {join_input}.with_columns(\n"
-            f"    pl.col({json.dumps(join_key)}).cast(pl.String).alias({json.dumps(key_text)}),\n"
-            '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
-            ")"
-        )
+        # A Transform is authored as steps: its source step starts from the
+        # join node's edge name (the sanitised join label), then one free-code
+        # card transforms df.
+        transform_steps = [
+            {"id": "start", "kind": "source", "input": _sanitize_func_name(join_name)},
+            {
+                "id": "logic",
+                "kind": "free_code",
+                "code": (
+                    "df = df.with_columns(\n"
+                    f"    pl.col({json.dumps(join_key)}).cast(pl.String)"
+                    f".alias({json.dumps(key_text)}),\n"
+                    '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
+                    ")"
+                ),
+            },
+        ]
         showcase_values = {
             **values,
             "output_columns": [join_key, key_text, "showcase_stage"],
@@ -862,7 +869,7 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 "node_type": "polars",
                 "name": transform_name,
                 "ref": "recipe_showcase_transform",
-                "config": {"code": transform_code},
+                "config": {"steps": transform_steps},
             },
             {
                 "op": "add_edge",

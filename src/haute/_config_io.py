@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from haute._banding_config import (
     compact_banding_config_for_sidecar,
@@ -180,6 +181,23 @@ def is_windows_reserved_filename(filename: str) -> bool:
     """
     stem = filename.rstrip(" .").split(".", 1)[0].rstrip(" .")
     return stem.casefold() in _WINDOWS_RESERVED_DEVICE_STEMS
+
+
+@cache
+def _palette_defaults() -> dict[str, dict[str, Any]]:
+    return cast(
+        dict[str, dict[str, Any]],
+        json.loads(Path(__file__).with_name("node_defaults.json").read_text(encoding="utf-8")),
+    )
+
+
+def palette_default_config(node_type: NodeType) -> dict[str, Any]:
+    """A fresh copy of the config the editor palette gives a new *node_type* node.
+
+    ``node_defaults.json`` is the one source the palette, config recovery and
+    the assistant share; every node type has an entry.
+    """
+    return deepcopy(_palette_defaults()[node_type.value])
 
 
 def has_config_folder(node_type: NodeType) -> bool:

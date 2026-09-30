@@ -21,7 +21,7 @@ from typing import Any, cast
 import polars as pl
 from fastapi import HTTPException
 
-from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._column_summary import (
     CATEGORICAL_COUNT_FIELD,
     is_unhashable_dtype,
@@ -385,12 +385,14 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
         result["project_revision"] = project_revision
         return result
     except NotImplementedError as exc:
-        if str(exc) != INCOMPLETE_TRANSFORM_MESSAGE:
+        if not str(exc).startswith((INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)):
             return _error(
                 "schema_unresolvable",
                 _execution_error_message(exc, operation="get_node_schema"),
             )
-        # An authored-but-empty transform is an ordinary editing state, not a
+        # An authored-but-empty transform (no code, or a step list still
+        # incomplete, which the engine reports as either placeholder message
+        # followed by the step problem) is an ordinary editing state, not a
         # defect: the analyst is asking the assistant to write that code. The
         # node's own output is genuinely unresolvable, so say so by a stable
         # reason and still answer the question the model actually needs —

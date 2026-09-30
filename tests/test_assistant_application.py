@@ -30,6 +30,15 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def _free_code_steps(source: str, code: str) -> list[dict[str, str]]:
+    """A Transform's steps: start from *source*, then one free-code card."""
+
+    return [
+        {"id": "start", "kind": "source", "input": source},
+        {"id": "logic", "kind": "free_code", "code": code},
+    ]
+
+
 def _service(project_root: Path, *, published: list[dict] | None = None):
     from haute.assistant._application import PipelineApplicationService
 
@@ -219,7 +228,9 @@ class TestSchemaValidationScope:
                     "node_type": "polars",
                     "name": "totals",
                     "config": {
-                        "code": 'df = quotes.group_by("x").agg(pl.len().alias("n"))\n',
+                        "steps": _free_code_steps(
+                            "quotes", 'df = df.group_by("x").agg(pl.len().alias("n"))'
+                        ),
                     },
                     "ref": "t",
                 },
@@ -242,7 +253,11 @@ class TestSchemaValidationScope:
                     "op": "add_node",
                     "node_type": "polars",
                     "name": "doubled",
-                    "config": {"code": 'df = shared.with_columns(y=pl.col("x") * 2)\n'},
+                    "config": {
+                        "steps": _free_code_steps(
+                            "shared", 'df = df.with_columns(y=pl.col("x") * 2)'
+                        )
+                    },
                     "ref": "d",
                 },
                 {"op": "add_edge", "source": "shared", "target": "$d"},
@@ -575,7 +590,9 @@ def test_dry_run_binds_schema_evidence_into_executable_plan(
                 "name": "derive_x",
                 "ref": "derive",
                 "config": {
-                    "code": "df = quotes.with_columns(pl.col('x').alias('x_copy'))",
+                    "steps": _free_code_steps(
+                        "quotes", "df = df.with_columns(pl.col('x').alias('x_copy'))"
+                    ),
                 },
             },
             {"op": "add_edge", "source": "quotes", "target": "$derive"},
@@ -606,9 +623,9 @@ def test_dry_run_rejects_trace_regression_polars_plan_before_storing(
                     "name": "bad_fill",
                     "ref": "bad",
                     "config": {
-                        "code": (
-                            "df = quotes.with_columns(pl.lit(True).alias('flag'))"
-                            ".fill_null({'x': 0})"
+                        "steps": _free_code_steps(
+                            "quotes",
+                            "df = df.with_columns(pl.lit(True).alias('flag')).fill_null({'x': 0})",
                         ),
                     },
                 },
@@ -707,3 +724,304 @@ class TestOutputTargetEvidence:
         assert evidence["node"] == "out"
         assert evidence["shape"] == "frame"
         assert evidence["column_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Stepped-node write contract (ASSIST-01)
+# ---------------------------------------------------------------------------
+
+#: Each palette-default stepped node on a valid base, fed by the quotes Data Input.
+_STEPPED_BASES: dict[str, tuple[str, dict]] = {
+    "quotes": ("dataInput", {"path": "quotes.parquet"}),
+    "t": ("polars", {}),
+    "rated": (
+        "ratingStep",
+        {
+            "tables": [
+                {
+                    "factors": ["region"],
+                    "outputColumn": "rate",
+                    "defaultValue": "1.0",
+                    "entries": [{"region": "north", "value": "1.25"}],
+                }
+            ]
+        },
+    ),
+    "expanded": (
+        "scenarioExpander",
+        {
+            "quote_id": "quote_id",
+            "column_name": "scenario_value",
+            "min_value": 0.9,
+            "max_value": 1.1,
+            "stepCount": 3,
+            "step_column": "scenario_index",
+        },
+    ),
+    "explored": ("explore", {}),
+    "loaded": ("externalFile", {"path": "lookup.json", "fileType": "json"}),
+    "scored": (
+        "modelScore",
+        {
+            "sourceType": "run",
+            "run_id": "abc123",
+            "artifact_path": "model.cbm",
+            "task": "regression",
+            "output_column": "prediction",
+        },
+    ),
+}
+_FRAME_START = ("quotes", "rated", "expanded", "explored", "loaded", "scored")
+_FREE_CODE = "# Flag each row\ndf = df.with_columns(flag=pl.lit(1))"
+
+
+def _palette_config(node_type: str, base: dict) -> dict:
+    from haute._config_io import palette_default_config
+    from haute._types import NodeType
+
+    defaults = palette_default_config(NodeType(node_type))
+    if base.get("sourceType") == "run":
+        defaults = {"steps": defaults["steps"]}
+    return {**defaults, **base}
+
+
+@pytest.fixture()
+def stepped_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A saved pipeline holding every stepped type at its palette default."""
+
+    import json
+
+    import polars as pl
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._sandbox import set_project_root
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.routes._save_pipeline import SavePipelineService
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    pl.DataFrame(
+        {"quote_id": ["q1", "q2"], "region": ["north", "south"], "x": [1.0, 2.0]}
+    ).write_parquet(tmp_path / "quotes.parquet")
+    (tmp_path / "lookup.json").write_text(json.dumps({"north": 1}), encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        'import haute\n\npipeline = haute.Pipeline("main", description="stepped")\n',
+        encoding="utf-8",
+    )
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id=node_id,
+                type=node_type,
+                data=NodeData(
+                    label=node_id,
+                    nodeType=NodeType(node_type),
+                    config=_palette_config(node_type, base),
+                ),
+            )
+            for node_id, (node_type, base) in _STEPPED_BASES.items()
+        ],
+        edges=[
+            GraphEdge(id=f"quotes->{node_id}", source="quotes", target=node_id)
+            for node_id in _STEPPED_BASES
+            if node_id != "quotes"
+        ],
+    )
+    SavePipelineService(project_root=tmp_path, pipeline_root=tmp_path).save_graph_transactionally(
+        graph=graph,
+        name="main",
+        description="stepped",
+        preamble=None,
+        source_file="main.py",
+        base_revision=load_pipeline_editor_document(
+            tmp_path / "main.py", project_root=tmp_path
+        ).source_revision,
+    )
+    return tmp_path
+
+
+@pytest.fixture()
+def scorable_model():
+    """Score ``x`` with a stub model wherever the engine loads the run's model."""
+
+    from unittest.mock import MagicMock, patch
+
+    import numpy as np
+
+    from haute._mlflow_io import ScoringModel
+
+    model = MagicMock()
+    model.feature_names_ = ["x"]
+    model.predict.return_value = np.array([1.0, 2.0])
+    model.get_cat_feature_indices.return_value = []
+    del model.predict_proba
+    stub = ScoringModel(
+        model=model, feature_names=["x"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=stub):
+        yield stub
+
+
+def _project_files(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix in {".py", ".json"}
+    }
+
+
+def _reparsed_config(root: Path, node_id: str) -> dict:
+    from haute.routes._helpers import parse_pipeline_to_graph
+
+    graph = parse_pipeline_to_graph(root / "main.py")
+    return next(node for node in graph.nodes if node.id == node_id).data.config
+
+
+@pytest.mark.usefixtures("scorable_model")
+class TestSteppedWrites:
+    @pytest.mark.parametrize("node", list(_STEPPED_BASES))
+    def test_the_authored_config_projection_survives_save_and_reparse(
+        self, stepped_project: Path, node: str
+    ):
+        """Pins the `node_config` projection against the real save for every
+        code-carrying palette type: derived and editor-only fields stay out of
+        it, so an untouched save never fails its own verification."""
+
+        from haute._types import NodeData, NodeType
+        from haute.assistant._ops import _authored_config_projection
+
+        node_type, base = _STEPPED_BASES[node]
+        planned = NodeData(
+            label=node, nodeType=NodeType(node_type), config=_palette_config(node_type, base)
+        ).config
+        reparsed = _reparsed_config(stepped_project, node)
+
+        assert (
+            _authored_config_projection(NodeType(node_type), reparsed)
+            == _authored_config_projection(NodeType(node_type), planned)
+            == {"steps": []}
+        )
+
+    @pytest.mark.parametrize("node", list(_STEPPED_BASES))
+    @pytest.mark.parametrize("with_steps_removed", [False, True])
+    def test_a_code_write_to_a_palette_default_stepped_node_is_refused(
+        self, stepped_project: Path, node: str, with_steps_removed: bool
+    ):
+        service = _service(stepped_project)
+        before = _project_files(stepped_project)
+        config: dict[str, object] = {"code": "df = df.head(1)"}
+        if with_steps_removed:
+            config["steps"] = None
+
+        with pytest.raises(OpValidationError) as excinfo:
+            service.dry_run("main.py", [{"op": "update_node", "node": node, "config": config}])
+
+        assert '{"id": "logic", "kind": "free_code", "code": "..."}' in str(excinfo.value)
+        assert ('"kind": "source"' in str(excinfo.value)) == (node == "t")
+        assert _project_files(stepped_project) == before
+        assert len(service.plan_store) == 0
+
+    @pytest.mark.parametrize("node", ["t", *_FRAME_START])
+    async def test_a_free_code_write_applies_and_the_saved_body_holds_it(
+        self, stepped_project: Path, node: str
+    ):
+        logic = {"id": "logic", "kind": "free_code", "code": _FREE_CODE}
+        steps = (
+            [{"id": "start", "kind": "source", "input": "quotes"}, logic]
+            if node == "t"
+            else [logic]
+        )
+        service = _service(stepped_project)
+        plan = service.dry_run(
+            "main.py", [{"op": "update_node", "node": node, "config": {"steps": steps}}]
+        )
+
+        result = await service.apply("main.py", plan.plan_hash)
+
+        assert result.verification_tier == "schema"
+        saved_source = (stepped_project / "main.py").read_text(encoding="utf-8")
+        assert "df = df.with_columns(flag=pl.lit(1))" in saved_source
+        saved = _reparsed_config(stepped_project, node)
+        assert saved["steps"] == steps
+        assert "_steps_discarded" not in saved and "_steps_error" not in saved
+
+    async def test_a_data_input_added_with_a_path_saves_the_palette_input_type(
+        self, stepped_project: Path
+    ):
+        service = _service(stepped_project)
+        plan = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "claims",
+                    "ref": "claims",
+                    "config": {"path": "quotes.parquet"},
+                },
+                {"op": "add_node", "node_type": "explore", "name": "look", "ref": "look"},
+                {"op": "add_edge", "source": "$claims", "target": "$look"},
+            ],
+        )
+
+        await service.apply("main.py", plan.plan_hash)
+
+        saved = _reparsed_config(stepped_project, "claims")
+        assert saved["inputType"] == "file"
+        assert saved["steps"] == []
+
+    async def test_a_saved_config_that_misses_its_digest_is_a_verification_failure(
+        self, stepped_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._application import CommittedVerificationError
+
+        service = _service(stepped_project)
+        steps = [{"id": "logic", "kind": "free_code", "code": _FREE_CODE}]
+        plan = service.dry_run(
+            "main.py", [{"op": "update_node", "node": "rated", "config": {"steps": steps}}]
+        )
+        original_commit = service._commit
+
+        def commit_other_steps(source_file, after):
+            node = next(item for item in after.nodes if item.id == "rated")
+            other = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
+            after.nodes[after.nodes.index(node)] = node.with_config(
+                {**node.data.config, "steps": other}
+            )
+            return original_commit(source_file, after)
+
+        monkeypatch.setattr(service, "_commit", commit_other_steps)
+
+        with pytest.raises(CommittedVerificationError) as excinfo:
+            await service.apply("main.py", plan.plan_hash)
+
+        assert excinfo.value.result["verification_error_code"] == "postcondition_failed"
+
+    def test_steps_a_save_would_discard_fail_the_dry_run(
+        self, stepped_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.assistant._application as application_module
+
+        generate = application_module.graph_to_code_multi
+
+        def hand_edited_body(*args, **kwargs):
+            files = generate(*args, **kwargs)
+            return {
+                path: source.replace("flag=pl.lit(1)", "flag=pl.lit(2)")
+                for path, source in files.items()
+            }
+
+        monkeypatch.setattr(application_module, "graph_to_code_multi", hand_edited_body)
+        service = _service(stepped_project)
+        before = _project_files(stepped_project)
+        steps = [{"id": "logic", "kind": "free_code", "code": _FREE_CODE}]
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            service.dry_run(
+                "main.py", [{"op": "update_node", "node": "rated", "config": {"steps": steps}}]
+            )
+
+        assert excinfo.value.code == "op_not_applied"
+        assert "'rated'" in str(excinfo.value)
+        assert _project_files(stepped_project) == before
+        assert len(service.plan_store) == 0

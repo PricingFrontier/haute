@@ -102,17 +102,84 @@ class TestAddNode:
             [
                 {
                     "op": "add_node",
-                    "node_type": "polars",
+                    "node_type": "edgeJoin",
                     "name": "My Step",
-                    "config": {"code": "df"},
+                    "config": {"suffix": "_lookup"},
                 },
             ],
         )
         expected_id = _sanitize_func_name("My Step")
         node = _get(out, expected_id)
         assert node.data.label == "My_Step"
-        assert node.data.nodeType == "polars"
-        assert node.data.config == {"code": "df"}
+        assert node.data.nodeType == "edgeJoin"
+        assert node.data.config == {"how": "left", "suffix": "_lookup"}
+
+    def test_a_data_input_starts_from_the_palette_config(self):
+        out = _apply(
+            _graph([]),
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "claims",
+                    "config": {"path": "claims.parquet"},
+                }
+            ],
+        )
+
+        assert _get(out, "claims").data.config == {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "path": "claims.parquet",
+            "arguments": {},
+            "steps": [],
+            "code": "",
+        }
+
+    @pytest.mark.parametrize(
+        ("node_type", "config", "absent"),
+        [
+            (
+                "dataInput",
+                {"inputType": "database", "connection": "warehouse", "query": "select 1"},
+                {"format", "mode", "path"},
+            ),
+            (
+                "modelScore",
+                {"sourceType": "run", "run_id": "abc123", "artifact_path": "model.cbm"},
+                {"registered_model", "version", "task", "output_column"},
+            ),
+        ],
+    )
+    def test_a_config_on_another_branch_keeps_only_the_palette_steps(
+        self, node_type: str, config: dict, absent: set[str]
+    ):
+        out = _apply(
+            _graph([]),
+            [{"op": "add_node", "node_type": node_type, "name": "n", "config": config}],
+        )
+
+        saved = _get(out, "n").data.config
+        assert saved["steps"] == []
+        assert not absent & set(saved)
+        assert {key: saved[key] for key in config} == config
+
+    def test_an_instance_takes_no_palette_config(self):
+        base = _graph([_node("original", steps=[{"id": "start", "kind": "source", "input": "a"}])])
+        out = _apply(
+            base,
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "copy",
+                    "config": {"instanceOf": "original"},
+                }
+            ],
+        )
+
+        assert _get(out, "copy").data.config == {"instanceOf": "original"}
 
     def test_submodel_types_rejected(self):
         for bad in ("submodel", "submodelPort"):
@@ -177,23 +244,23 @@ class TestRefs:
 
     def test_ref_shadowing_existing_id_disambiguated_by_prefix(self):
         """``$x`` targets the batch-created node; bare ``x`` the existing one."""
-        base = _graph([_node("x", "polars", code="old")])
+        base = _graph([_node("x", "edgeJoin", suffix="_old")])
         out = _apply(
             base,
             [
                 {
                     "op": "add_node",
-                    "node_type": "polars",
+                    "node_type": "edgeJoin",
                     "name": "fresh",
                     "ref": "x",
-                    "config": {"code": "new"},
+                    "config": {"suffix": "_new"},
                 },
-                {"op": "update_node", "node": "$x", "config": {"code": "via_ref"}},
-                {"op": "update_node", "node": "x", "config": {"code": "via_id"}},
+                {"op": "update_node", "node": "$x", "config": {"suffix": "_via_ref"}},
+                {"op": "update_node", "node": "x", "config": {"suffix": "_via_id"}},
             ],
         )
-        assert _get(out, "fresh").data.config["code"] == "via_ref"
-        assert _get(out, "x").data.config["code"] == "via_id"
+        assert _get(out, "fresh").data.config["suffix"] == "_via_ref"
+        assert _get(out, "x").data.config["suffix"] == "_via_id"
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +304,140 @@ class TestUpdateNode:
     def test_unknown_node_rejected(self):
         with pytest.raises(OpValidationError):
             _apply(_graph([]), [{"op": "update_node", "node": "ghost", "config": {}}])
+
+
+# ---------------------------------------------------------------------------
+# Stepped-node write contract
+# ---------------------------------------------------------------------------
+
+_TRANSFORM_FORM = (
+    '[{"id": "start", "kind": "source", "input": "<edge name>"}, '
+    '{"id": "logic", "kind": "free_code", "code": "..."}]'
+)
+_FRAME_FORM = '[{"id": "logic", "kind": "free_code", "code": "..."}]'
+_LOGIC = [{"id": "logic", "kind": "free_code", "code": "df = df.head(2)"}]
+
+
+def _stepped_graph() -> PipelineGraph:
+    """``stepped`` and ``rated`` hold steps; ``coded`` is a code-mode Transform with code;
+    ``bare`` is a Rating Step with neither steps nor code."""
+
+    return _graph(
+        [
+            _node("src"),
+            _node(
+                "stepped",
+                steps=[{"id": "start", "kind": "source", "input": "src"}, *_LOGIC],
+            ),
+            _node("rated", "ratingStep", steps=_LOGIC),
+            _node("coded", code="df = src"),
+            _node("bare", "ratingStep"),
+        ],
+        [_edge("src", "stepped"), _edge("src", "rated"), _edge("src", "coded")],
+    )
+
+
+class TestSteppedWrites:
+    @pytest.mark.parametrize(
+        ("node", "config", "form"),
+        [
+            ("stepped", {"code": "df = src"}, _TRANSFORM_FORM),
+            ("stepped", {"steps": None, "code": "df = src"}, _TRANSFORM_FORM),
+            ("stepped", {"steps": None}, _TRANSFORM_FORM),
+            ("stepped", {"code": None}, _TRANSFORM_FORM),
+            ("rated", {"code": "df = df.head(1)"}, _FRAME_FORM),
+            ("rated", {"steps": None, "code": "df = df.head(1)"}, _FRAME_FORM),
+        ],
+    )
+    def test_a_write_that_would_leave_the_step_builder_is_refused(
+        self, node: str, config: dict, form: str
+    ):
+        graph = _stepped_graph()
+
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(graph, [{"op": "update_node", "node": node, "config": config}])
+
+        assert form in str(excinfo.value)
+        assert _get(graph, node).data.config["steps"]
+
+    def test_steps_are_refused_on_a_code_mode_node_with_code(self):
+        with pytest.raises(OpValidationError, match="discard its code"):
+            _apply(
+                _stepped_graph(),
+                [{"op": "update_node", "node": "coded", "config": {"steps": _LOGIC}}],
+            )
+
+    def test_code_mode_nodes_keep_code_editing_and_code_less_nodes_accept_steps(self):
+        out = _apply(
+            _stepped_graph(),
+            [
+                {"op": "update_node", "node": "coded", "config": {"code": "df = src.head(1)"}},
+                {"op": "update_node", "node": "bare", "config": {"steps": _LOGIC}},
+            ],
+        )
+
+        assert _get(out, "coded").data.config["code"] == "df = src.head(1)"
+        assert _get(out, "bare").data.config["steps"] == _LOGIC
+
+    @pytest.mark.parametrize(
+        ("ops", "form"),
+        [
+            (
+                [{"op": "add_node", "node_type": "polars", "name": "t", "config": {"code": "x"}}],
+                _TRANSFORM_FORM,
+            ),
+            (
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "ratingStep",
+                        "name": "r",
+                        "config": {"steps": None},
+                    }
+                ],
+                _FRAME_FORM,
+            ),
+            # A node added earlier in the batch is already stepped.
+            (
+                [
+                    {"op": "add_node", "node_type": "explore", "name": "e", "ref": "e"},
+                    {"op": "update_node", "node": "$e", "config": {"code": "df = df"}},
+                ],
+                _FRAME_FORM,
+            ),
+        ],
+    )
+    def test_add_node_of_a_stepped_type_is_authored_as_steps(self, ops: list[dict], form: str):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_graph([]), ops)
+
+        assert form in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "op",
+        [
+            {
+                "op": "add_node",
+                "node_type": "ratingStep",
+                "name": "r",
+                "config": {"steps": [{"id": "keep", "kind": "filter"}]},
+            },
+            {
+                "op": "update_node",
+                "node": "rated",
+                "config": {"steps": [{"id": "keep", "kind": "filter"}]},
+            },
+        ],
+    )
+    def test_a_steps_write_that_cannot_render_is_not_applied(self, op: dict):
+        from haute.assistant._ops import AssistantOperationError
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(_stepped_graph(), [op])
+
+        assert excinfo.value.code == "op_not_applied"
+        assert "Step 1" in str(excinfo.value)
+        assert _FRAME_FORM in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -641,14 +842,19 @@ class TestSemanticPlans:
                 {
                     "op": "update_node",
                     "node": "$fresh",
-                    "config": {"code": "return frame"},
+                    "config": {
+                        "steps": [
+                            {"id": "start", "kind": "source", "input": "source"},
+                            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+                        ]
+                    },
                 },
                 {"op": "add_edge", "source": "source", "target": "$fresh"},
             ],
         )
 
         assert plan.diff.nodes_updated == ("Fresh_Node",)
-        assert plan.diff.config_changes == ("Fresh_Node:code",)
+        assert plan.diff.config_changes == ("Fresh_Node:steps",)
         assert "$fresh" not in json.dumps(plan.diff.as_dict())
 
     def test_plan_rejects_a_new_disconnected_node(self, tmp_path: Path):
@@ -669,7 +875,7 @@ class TestSemanticPlans:
         with pytest.raises(AssistantOperationError) as exc:
             build_graph_edit_plan(
                 snapshot,
-                [{"op": "add_node", "node_type": "polars", "name": "orphan"}],
+                [{"op": "add_node", "node_type": "explore", "name": "orphan"}],
             )
 
         assert exc.value.code == "invalid_plan"
@@ -694,7 +900,7 @@ class TestSemanticPlans:
             build_graph_edit_plan(
                 snapshot,
                 [
-                    {"op": "add_node", "node_type": "polars", "name": "fresh", "ref": "fresh"},
+                    {"op": "add_node", "node_type": "explore", "name": "fresh", "ref": "fresh"},
                     {"op": "rename_node", "node": "$fresh", "new_name": "renamed"},
                 ],
             )
@@ -1187,6 +1393,56 @@ class TestSemanticPlans:
                 [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
                 postconditions=postconditions,
             )
+
+    @pytest.mark.parametrize(
+        "supplied",
+        [[], [{"kind": "node_exists", "node": "rated"}]],
+    )
+    def test_updated_code_carrying_nodes_carry_a_config_postcondition(
+        self, tmp_path: Path, supplied: list[dict]
+    ):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+            verify_postconditions,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _stepped_graph()
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        steps = [{"id": "logic", "kind": "free_code", "code": "df = df.head(3)"}]
+        ops = [
+            {"op": "update_node", "node": "rated", "config": {"steps": steps}},
+            {"op": "update_node", "node": "coded", "config": {"code": "df = src.head(3)\n"}},
+        ]
+        plan = build_graph_edit_plan(snapshot, ops, postconditions=supplied)
+
+        config_nodes = [
+            condition["node"]
+            for condition in plan.postconditions
+            if condition["kind"] == "node_config"
+        ]
+        assert config_nodes == ["coded", "rated"]
+        # Replaying the sealed plan's own postconditions reproduces it exactly.
+        replayed = build_graph_edit_plan(
+            snapshot, ops, postconditions=[dict(item) for item in plan.as_dict()["postconditions"]]
+        )
+        assert replayed.postconditions == plan.postconditions
+
+        saved = _apply(graph, ops)
+        # Reparse returns code-mode code normalised; the digest compares it so.
+        coded = _get(saved, "coded")
+        saved.nodes[saved.nodes.index(coded)] = coded.with_config({"code": "df = src.head(3)"})
+        verify_postconditions(saved, plan.postconditions)
+
+        rated = _get(saved, "rated")
+        discarded = rated.with_config({"code": "df = df.head(3)", "_steps_discarded": "x"})
+        saved.nodes[saved.nodes.index(rated)] = discarded
+        with pytest.raises(AssistantOperationError) as excinfo:
+            verify_postconditions(saved, plan.postconditions)
+        assert excinfo.value.code == "postcondition_failed"
 
 
 class TestPlanStore:

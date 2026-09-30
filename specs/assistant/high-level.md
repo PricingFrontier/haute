@@ -273,6 +273,26 @@ checked against its surface: a bare frame method call whose result is discarded 
 refused with the step, and on a surface whose code sees only `df` a step that reads an
 input or upstream node by name is refused with "<Surface> code sees only df".
 
+**Writes to stepped nodes land in the saved config or fail naming the fix.** A node
+the assistant adds starts from the palette's config for its type (`node_defaults.json`),
+so it matches a node the analyst drops from the palette: every stepped type opens in the
+step builder with `steps`, and a Data Input carries its `inputType`. The assistant
+writes new Polars logic as steps and never changes how an existing node is authored: on
+a node that holds steps it refuses a `code` write or the removal of `steps` (which would
+switch the node to code mode, an analyst action in the editor), on a code-mode node with
+code it refuses `steps` (which would discard that code), and `add_node` of a stepped type
+refuses `code`. Code-mode nodes keep code editing. Each refusal names the free-code form
+for the node's surface: `[{"id": "start", "kind": "source", "input": "<edge name>"},
+{"id": "logic", "kind": "free_code", "code": "..."}]` on a Transform and
+`[{"id": "logic", "kind": "free_code", "code": "..."}]` on every other stepped surface.
+Every key an operation writes must hold the written value once the node's config is
+materialised, and a written step list must render; otherwise the plan fails with
+`op_not_applied`. Dry-run then generates the planned source in memory and reparses each
+stepped node the plan touches through the parser, so steps a save would discard fail the
+plan before apply. After save, a per-node `node_config` postcondition checks each added
+or updated code-carrying node's authored config against the reparse: its `steps`, or its
+normalised `code` on a code-mode node.
+
 **Tools operate on saved state.** Read tools describe the pipeline as saved on disk, and
 mutations rebase on the saved graph at call time. The frontend keeps this coherent by
 refusing to start a turn while the canvas has unsaved edits (see
@@ -531,7 +551,7 @@ that actually ran and include bounded evidence, the resulting revision, graph
 fingerprint, ledger reference and warnings. Structural or plan verification is
 never described as row-level, model-quality, pricing, or commercial proof.
 
-Stable application errors include `invalid_plan`, `stale_revision`,
+Stable application errors include `invalid_plan`, `op_not_applied`, `stale_revision`,
 `stale_project_evidence`, `plan_not_found`, `plan_expired`,
 `plan_store_busy`, `plan_aborted`, `plan_already_applied`,
 `authority_denied`, `postcondition_failed`, and `verification_failed`.

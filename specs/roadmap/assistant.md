@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-01 | Planned | P1 | A write the assistant asks for lands in the saved config or its plan fails naming the fix. |
 | ASSIST-03 | Planned | P1 | Every node the assistant writes on a stepped surface stays in the step builder. |
 | ASSIST-05 | Planned | P1 | The prompt and guide state the product's real contracts and the effective egress policy. |
 | ASSIST-06 | Planned | P1 | Node descriptors agree with the product's own registries and use palette names. |
@@ -118,52 +117,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-01 — Writes to stepped nodes land or fail loudly
-**Why:** Seven node types carry a `steps` list, and palette-created nodes
-start with `steps: []`. `NodeData` rebuilds `code` from `steps` whenever
-`steps` is present, so an `update_node {code}` on such a node is overwritten:
-on Data Input, Rating Step, Model Score, Scenario Expander and Explore the
-saved code becomes empty, on a Transform the model is told the node has no
-code, and dry-run, apply and post-save verification all pass because the
-semantic diff is derived from the operations rather than the saved config.
-`add_node` copies the model's config verbatim, so assistant nodes miss the
-palette defaults (`steps: []`, a Data Input's `inputType`). `get_node_schema`
-compares the incomplete-transform message by exact equality, so a default
-Transform returns an opaque failure instead of `node_has_no_code`.
-
-**Plan:** In the assistant's graph operations, compare each node before and
-after the operation: a `code` write on a node that holds or held `steps`, or
-removing `steps` from such a node, is refused with an error naming the
-free-code form (`ASSIST-03`). `add_node` merges `node_defaults.json` beneath
-the model's config. After `with_config`, every key the operation wrote must
-hold the written value, and `_steps_error` must not appear, or the plan fails
-with `op_not_applied`. Automatic postconditions add a per-node config digest
-over authored fields, verified after reparse, and dry-run renders, generates
-and reparses stepped nodes in memory to prove their steps survive.
-`get_node_schema` matches the incomplete-transform and incomplete-steps
-message prefixes. Specify the stepped-node write contract in both assistant
-specifications first.
-
-**Acceptance:** Tests on each palette-default stepped type, each built with a
-valid base configuration (a readable source, a scorable model, a rating
-table) so a missing base does not mask the assertion: `update_node {code}`
-and `{steps: null, code}` are refused at dry-run and the saved file is
-unchanged. On a Transform, a `[source, free_code]` write applies and the saved
-body holds it, and `get_node_schema` on its palette default `steps: []`
-returns `node_has_no_code` with the input schemas. On the frame-start
-surfaces, a `[free_code]` write applies and the saved body holds it, and a
-node left at `steps: []` resolves its ordinary schema. A digest mismatch after
-save is reported as a verification failure, and `add_node dataInput {path}`
-saves with the palette's `inputType`.
-
-**Dependencies:** Ships in the same pull request as `ASSIST-03`.
-
-**Evidence:** `src/haute/_types.py::_materialise_steps`;
-`src/haute/assistant/_ops.py::_apply_update_node`;
-`src/haute/assistant/_ops.py::_apply_add_node`;
-`src/haute/node_defaults.json`; `src/haute/assistant/_tools.py::get_node_schema`;
-`src/haute/assistant/_application.py::build_verified_plan`.
 
 ### ASSIST-03 — Steps-first authoring with a free-code card
 **Why:** Nothing the assistant is taught mentions steps: descriptors show

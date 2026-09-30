@@ -587,6 +587,55 @@ class TestUnresolvableButInspectableNodes:
             "notes",
         }
 
+    def test_palette_default_stepped_nodes_answer_by_their_surface(self, project_root: Path):
+        """A palette Transform's ``steps: []`` has not chosen its input, so it is
+        awaiting its code exactly like a code-less one; a frame-start node at
+        ``steps: []`` simply passes its frame through."""
+
+        from haute._config_io import palette_default_config
+        from haute._pipeline_recovery import load_pipeline_editor_document
+        from haute._types import GraphEdge, GraphNode, NodeData, NodeType
+        from haute.assistant._tools import get_node_schema
+        from haute.routes._helpers import parse_pipeline_to_graph
+        from haute.routes._save_pipeline import SavePipelineService
+
+        graph = parse_pipeline_to_graph(project_root / "main.py")
+        table = {
+            "factors": ["quote_id"],
+            "outputColumn": "rate",
+            "defaultValue": "1.0",
+            "entries": [{"quote_id": "q1", "value": "1.1"}],
+        }
+        for node_id, node_type, extra in (
+            ("blank", NodeType.POLARS, {}),
+            ("rated", NodeType.RATING_STEP, {"tables": [table]}),
+        ):
+            config = {**palette_default_config(node_type), **extra}
+            graph.nodes.append(
+                GraphNode(
+                    id=node_id,
+                    data=NodeData(label=node_id, nodeType=node_type, config=config),
+                )
+            )
+            graph.edges.append(GraphEdge(id=f"q-{node_id}", source="quotes", target=node_id))
+        SavePipelineService(project_root, project_root).save_graph_transactionally(
+            graph=graph,
+            name="main",
+            description="",
+            preamble=graph.preamble,
+            source_file="main.py",
+            base_revision=load_pipeline_editor_document(
+                project_root / "main.py", project_root=project_root
+            ).source_revision,
+        )
+
+        blank = get_node_schema("main.py", "blank")
+        rated = get_node_schema("main.py", "rated")
+
+        assert blank["unresolved_reason"] == "node_has_no_code", blank
+        assert set(blank["inputs"]) == {"quotes"}
+        assert "rate" in _columns(rated)
+
     def test_group_by_node_resolves_because_nothing_is_collected(self, project_root: Path):
         """Schema resolution materialises nothing, so the engine's group-by
         memory-admission gate does not apply to it. Before this, every

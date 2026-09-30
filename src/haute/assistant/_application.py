@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
+from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
+from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
+from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
+from haute._graph_utils import _sanitize_func_name
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._polars_steps import is_stepped_config
 from haute._types import PipelineGraph
 from haute.assistant._ops import (
     AssistantOperationError,
@@ -25,6 +32,8 @@ from haute.assistant._ops import (
     semantic_diff,
     verify_postconditions,
 )
+from haute.codegen import graph_to_code_multi
+from haute.errors import ConfigError, ParseError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
@@ -309,17 +318,93 @@ def _schema_evidence(
     return tuple(evidence), tuple(warnings)
 
 
+def _prove_steps_survive_save(
+    graph: PipelineGraph,
+    node_ids: Collection[str],
+    *,
+    source_file: str,
+) -> None:
+    """Reparse each stepped node in *node_ids* from the source a save would write.
+
+    The planned source is generated in memory by the save path's codegen; each
+    node's generated function is resolved by the parser's own node resolution
+    against its sidecar exactly as ``collect_node_configs`` writes it (staged in
+    a temporary directory, since the parser reads sidecars from disk). Steps the
+    parser would discard, because the extracted body no longer matches their
+    rendering, fail the plan before apply rather than turn the node code-only.
+    """
+
+    nodes = {node.id: node for node in graph.nodes}
+    stepped = sorted(
+        node_id
+        for node_id in node_ids
+        if (node := nodes.get(node_id)) is not None
+        and is_stepped_config(node.data.nodeType, node.data.config)
+        and not node.data.config.get("instanceOf")
+    )
+    if not stepped:
+        return
+    source = graph_to_code_multi(
+        graph,
+        pipeline_name=graph.pipeline_name or "",
+        description=graph.pipeline_description or "",
+        preamble=graph.preamble or "",
+        source_file=source_file,
+        preserved_blocks=graph.preserved_blocks or None,
+    )[source_file]
+    tree = ast.parse(source)
+    skeletons = {
+        skeleton.authored_id: skeleton
+        for skeleton in _extract_decorated_node_skeletons(
+            tree,
+            _is_pipeline_authored_decorator,
+            _extract_function_bodies(source, tree=tree),
+            source=source,
+        )
+    }
+    sidecars = collect_node_configs(graph)
+    with TemporaryDirectory(prefix="haute-steps-") as directory:
+        base_dir = Path(directory)
+        for node_id in stepped:
+            node = nodes[node_id]
+            func_name = _sanitize_func_name(node.data.label)
+            if node_emits_sidecar(node):
+                relative = config_path_for_node(node.data.nodeType, func_name).as_posix()
+                target = base_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(sidecars[relative].encode("utf-8"))
+            try:
+                reparsed = _resolve_node_skeleton(skeletons[func_name], base_dir)["config"]
+            except (ConfigError, ParseError) as exc:
+                raise AssistantOperationError(
+                    "op_not_applied",
+                    f"Node {node_id!r} would not reparse after save: {exc}",
+                ) from exc
+            if "_steps_discarded" in reparsed or reparsed.get("steps") != node.data.config["steps"]:
+                reason = reparsed.get("_steps_discarded") or "Its steps change on reparse."
+                raise AssistantOperationError(
+                    "op_not_applied",
+                    f"Node {node_id!r} would lose its steps on save: {reason}",
+                )
+
+
 def build_verified_plan(
     snapshot: ProjectSnapshot,
     operations: Sequence[Mapping[str, Any]],
     postconditions: Sequence[Mapping[str, Any]] = (),
     *,
     validate_graph: GraphValidator,
+    source_file: str,
 ) -> VerifiedPlan:
     """Build one plan through the shared edit and save-verification pipeline."""
 
     prepared = prepare_graph_edit(snapshot, operations, postconditions)
     warnings = validate_graph(prepared.result_graph)
+    _prove_steps_survive_save(
+        prepared.result_graph,
+        {*prepared.diff.nodes_added, *prepared.diff.nodes_updated},
+        source_file=source_file,
+    )
     targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
     evidence, schema_warnings = _schema_evidence(
         prepared.result_graph,
@@ -447,6 +532,7 @@ class PipelineApplicationService:
                 candidate,
                 source_file=source_file,
             ),
+            source_file=source_file,
         )
         self.plan_store.put(verified.plan)
         return verified.plan
@@ -477,6 +563,7 @@ class PipelineApplicationService:
                 candidate,
                 source_file=source_file,
             ),
+            source_file=source_file,
         )
         recomputed = verified.plan
         if recomputed.plan_hash != plan.plan_hash or recomputed != plan:
