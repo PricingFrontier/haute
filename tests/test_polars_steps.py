@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import pickle
 import re
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -4772,8 +4774,25 @@ def test_frame_surface_free_code_with_redundant_parentheses_reloads_in_step_mode
     assert "_steps_discarded" not in node.data.config, surface
 
 
-def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
-    """A Model Score's steps apply to the scored frame, as its post-processing code does."""
+#: Every surface whose steps start from a frame the surface already bound to df.
+_FRAME_START_SURFACES = (*_RUNNABLE_FRAME_SURFACES, "modelScore", "explore")
+_COMMENT_FIRST_CODE = "# keep two rows\ndf = df.head(2)"
+
+
+def _frame_start_graph(
+    tmp_path: Path, surface: str, steps: list[dict[str, Any]]
+) -> tuple[PipelineGraph, str]:
+    """:func:`_surface_graph`, extended to the surfaces that need a model or cards."""
+    if surface not in ("modelScore", "explore"):
+        return _surface_graph(tmp_path, surface, steps)
+    quotes, _rates = _frames(tmp_path)
+    node = _model_score(steps) if surface == "modelScore" else _explore(steps)
+    return PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", node.id)]), node.id
+
+
+@contextlib.contextmanager
+def _scoring_model_stub() -> Iterator[None]:
+    """Serve every registered model as a one-feature regressor, so Model Score resolves."""
     from unittest.mock import MagicMock, patch
 
     import numpy as np
@@ -4782,17 +4801,63 @@ def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
 
     raw = MagicMock()
     raw.feature_names_ = ["premium"]
-    raw.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0])
+    raw.predict.side_effect = lambda frame: np.ones(len(frame))
     raw.get_cat_feature_indices.return_value = []
     del raw.predict_proba
     model = ScoringModel(
         model=raw, feature_names=["premium"], cat_feature_names=frozenset(), flavor="catboost"
     )
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=model):
+        yield
 
+
+def _assert_comment_first_steps_kept(main: Path, node_id: str, surface: str) -> None:
+    node = next(n for n in parse_pipeline_file(main).nodes if n.id == node_id)
+    assert node.data.config["steps"] == [step("c", "free_code", code=_COMMENT_FIRST_CODE)], surface
+    assert node.data.config["code"] == _COMMENT_FIRST_CODE, surface
+    assert "_steps_discarded" not in node.data.config, surface
+
+
+@pytest.mark.parametrize("surface", _FRAME_START_SURFACES)
+def test_comment_first_free_code_keeps_its_steps_through_the_editor_save(
+    project_root: Path, surface: str
+) -> None:
+    """The comment above the first statement is part of the body the steps must render."""
+    steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
+    graph, node_id = _frame_start_graph(project_root, surface, steps)
+    _save(project_root, graph)
+    _assert_comment_first_steps_kept(project_root / "main.py", node_id, surface)
+
+
+@pytest.mark.parametrize("surface", _FRAME_START_SURFACES)
+async def test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply(
+    project_root: Path, surface: str
+) -> None:
+    from haute.assistant._application import PipelineApplicationService
+
+    graph, node_id = _frame_start_graph(project_root, surface, [])
+    _save(project_root, graph)
+    service = PipelineApplicationService(
+        project_root=project_root,
+        pipeline_root=project_root,
+        mutations_readiness=lambda _root: (True, None),
+        publish_document_update=lambda _source: "f" * 64,
+    )
+    steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
+    with _scoring_model_stub():
+        plan = service.dry_run(
+            "main.py", [{"op": "update_node", "node": node_id, "config": {"steps": steps}}]
+        )
+        await service.apply("main.py", plan.plan_hash)
+    _assert_comment_first_steps_kept(project_root / "main.py", node_id, surface)
+
+
+def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
+    """A Model Score's steps apply to the scored frame, as its post-processing code does."""
     quotes, _rates = _frames(tmp_path)
     scored = _model_score([step("l", "limit", n=2)])
     graph = PipelineGraph(nodes=[quotes, scored], edges=[make_edge("quotes", "scored")])
-    with patch("haute._mlflow_io.load_mlflow_model", return_value=model):
+    with _scoring_model_stub():
         result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
             "scored"
         ]

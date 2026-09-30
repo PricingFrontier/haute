@@ -920,6 +920,98 @@ class TestSemanticPlans:
                 ],
             )
 
+    @staticmethod
+    def _stepped_plan(tmp_path: Path, node: str, steps: list[dict], preamble: str | None = None):
+        """Plan setting *node*'s steps in quotes -> prepared -> {t, rated}."""
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        rating_tables = [
+            {
+                "factors": ["region"],
+                "outputColumn": "rate_factor",
+                "defaultValue": "1.0",
+                "entries": [{"region": "north", "value": "1.25"}],
+            }
+        ]
+        graph = _graph(
+            [
+                _node("quotes", "dataInput", path="quotes.parquet"),
+                _node("prepared", code="df = quotes"),
+                _node("t"),
+                _node("rated", "ratingStep", tables=rating_tables, combinedOutputs=[]),
+            ],
+            [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
+        )
+        graph.preamble = preamble
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        return build_graph_edit_plan(
+            snapshot, [{"op": "update_node", "node": node, "config": {"steps": steps}}]
+        )
+
+    @pytest.mark.parametrize(
+        ("node", "steps"),
+        [
+            # The rendered `df = prepared` line retains a frame, but not this step's.
+            (
+                "t",
+                [
+                    {"id": "start", "kind": "source", "input": "prepared"},
+                    {"id": "logic", "kind": "free_code", "code": "df.filter(pl.col('x') > 1)"},
+                ],
+            ),
+            (
+                "rated",
+                [
+                    {"id": "keep", "kind": "limit", "n": 2},
+                    {"id": "logic", "kind": "free_code", "code": "# tidy\ndf.drop('x')"},
+                ],
+            ),
+        ],
+    )
+    def test_a_free_code_step_whose_frame_result_is_discarded_is_refused(
+        self, tmp_path: Path, node: str, steps: list[dict]
+    ):
+        with pytest.raises(OpValidationError) as excinfo:
+            self._stepped_plan(tmp_path, node, steps)
+        message = str(excinfo.value)
+        assert "step 2 ('logic')" in message
+        assert "discarded" in message
+
+    @pytest.mark.parametrize(
+        ("code", "name"),
+        [
+            ("df = prepared.head(2)", "prepared"),
+            ("df = df.join(quotes, on='region')", "quotes"),
+        ],
+    )
+    def test_a_rating_step_step_reading_an_input_by_name_is_refused(
+        self, tmp_path: Path, code: str, name: str
+    ):
+        steps = [{"id": "logic", "kind": "free_code", "code": code}]
+        with pytest.raises(OpValidationError) as excinfo:
+            self._stepped_plan(tmp_path, "rated", steps)
+        message = str(excinfo.value)
+        assert f"Rating Step code sees only df; {name} is not in scope" in message
+        assert "step 1 ('logic')" in message
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "# Keep two rows\ndf = keep_two(df)",
+            "def keep(frame):\n    return frame.head(2)\n\ndf = keep(df)",
+            "prepared = df.head(2)\ndf = prepared.with_columns(pl.lit(len('ab')).alias('n'))",
+        ],
+    )
+    def test_a_rating_step_step_using_helpers_and_its_own_names_is_accepted(
+        self, tmp_path: Path, code: str
+    ):
+        steps = [{"id": "logic", "kind": "free_code", "code": code}]
+        preamble = "def keep_two(frame):\n    return frame.head(2)\n"
+        plan = self._stepped_plan(tmp_path, "rated", steps, preamble=preamble)
+        assert plan.diff.config_changes == ("rated:steps",)
+
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
         from haute.assistant._ops import semantic_diff
 

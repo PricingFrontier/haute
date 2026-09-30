@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-01 | Planned | P1 | A write the assistant asks for lands in the saved config or its plan fails naming the fix. |
-| ASSIST-02 | Planned | P1 | Free-code steps keep their steps on reload and are checked against their surface's contract. |
 | ASSIST-03 | Planned | P1 | Every node the assistant writes on a stepped surface stays in the step builder. |
 | ASSIST-05 | Planned | P1 | The prompt and guide state the product's real contracts and the effective egress policy. |
 | ASSIST-06 | Planned | P1 | Node descriptors agree with the product's own registries and use palette names. |
@@ -165,38 +164,6 @@ saves with the palette's `inputType`.
 `src/haute/assistant/_ops.py::_apply_add_node`;
 `src/haute/node_defaults.json`; `src/haute/assistant/_tools.py::get_node_schema`;
 `src/haute/assistant/_application.py::build_verified_plan`.
-
-### ASSIST-02 — Free-code steps survive a reload and are checked per surface
-**Why:** On a frame-start surface (Data Input, Rating Step, Model Score,
-Scenario Expander, Explore) a free-code step whose code begins with a comment
-loses its steps on reparse, because body extraction starts at the first
-statement while step reconciliation compares comments; the node silently
-becomes code-only. Analysts hit this in the editor as well as through the
-assistant. A free-code step holding a bare expression also passes the
-assistant's checks, because the rendered `df = <input>` line satisfies the
-retained-result visitor.
-
-**Plan:** Keep comment and blank lines between the function header and the
-first statement when extracting a body. Check each free-code step against its
-surface's contract: the names it may read are `df`, `pl`, the preamble's
-bindings, builtins, names bound by earlier steps or locally, the incoming
-edge names on Transform and Load File, and `obj` on Load File; a discarded
-bare expression in a step is refused. Reuse the product's step validation for
-syntax and scope rather than a second parser, and describe the rule in the
-pipeline-config and assistant specifications.
-
-**Acceptance:** A comment-first free-code step round-trips with its steps on
-every frame-start surface, through the editor's save path and the assistant's;
-a bare-expression step is refused with its step index; a Rating Step step that
-reads an input by name is refused with "Rating Step code sees only df"; a
-step that calls a preamble helper is accepted.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_ast_helpers.py::_function_body_source`;
-`src/haute/_config_builder.py::_reconcile_steps`;
-`src/haute/assistant/_ops.py::_validate_polars_result_retained`;
-`src/haute/_polars_steps.py::STEPPED_NODE_TYPES`.
 
 ### ASSIST-03 — Steps-first authoring with a free-code card
 **Why:** Nothing the assistant is taught mentions steps: descriptors show

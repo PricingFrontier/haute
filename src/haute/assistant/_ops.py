@@ -10,6 +10,7 @@ that the caller owns.
 from __future__ import annotations
 
 import ast
+import builtins
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
@@ -25,8 +26,17 @@ from pydantic import BaseModel, ValidationError
 
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import VALID_KEYS
-from haute._graph_utils import _edge_id, _sanitize_func_name
+from haute._graph_utils import _edge_id, _sanitize_func_name, upstream_node_ids
 from haute._lru_cache import LRUCache
+from haute._polars_steps import (
+    STEPPED_SURFACE_LABELS,
+    PolarsStepError,
+    is_stepped_config,
+    render_polars_steps,
+    step_input_names,
+    stepped_surface_for,
+)
+from haute._sandbox import _bound_names
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -1525,6 +1535,87 @@ def _incoming_input_names(
     return tuple(names)
 
 
+def _frame_method_root(expression: ast.expr) -> str | None:
+    """The name a method call chain starts from (``df`` in ``df.a().b()``), if any."""
+
+    if not isinstance(expression, ast.Call) or not isinstance(expression.func, ast.Attribute):
+        return None
+    receiver: ast.expr = expression.func.value
+    while isinstance(receiver, (ast.Call, ast.Attribute, ast.Subscript)):
+        receiver = receiver.func if isinstance(receiver, ast.Call) else receiver.value
+    return receiver.id if isinstance(receiver, ast.Name) else None
+
+
+def _validate_assistant_authored_steps(
+    result: PipelineGraph,
+    node: GraphNode,
+    nodes_by_id: Mapping[str, GraphNode],
+) -> None:
+    """Check an assistant-authored step list against its surface's contract.
+
+    The product's renderer is the syntax and step-schema verdict. Each
+    free-code step is then refused when a top-level frame method call discards
+    its result, and, on a surface whose code sees only ``df``, when it reads an
+    incoming input or an upstream node by name that nothing in scope binds.
+    """
+
+    node_type = node.data.nodeType
+    surface = stepped_surface_for(node_type)
+    input_names = _incoming_input_names(result, node.id, nodes_by_id)
+    steps = node.data.config["steps"]
+    try:
+        rendered = render_polars_steps(
+            steps, step_input_names(node_type, input_names), start=surface.start
+        )
+    except PolarsStepError as exc:
+        _invalid(f"Node {node.id!r} has an invalid step list: {exc}")
+    lines = rendered.code.split("\n")
+    frame_names = {_BARE_INPUT_NAME, *input_names}
+    out_of_scope = (
+        set()
+        if surface.inputs == "edges"
+        else {*input_names, *upstream_node_ids(node.id, result.parents_of)}
+    )
+    for index, (step, (first, last)) in enumerate(zip(steps, rendered.step_lines, strict=True)):
+        if step["kind"] != "free_code":
+            continue
+        where = f"Node {node.id!r} step {index + 1} ({step['id']!r})"
+        tree = ast.parse("\n".join(lines[first - 1 : last]))
+        for statement in tree.body:
+            if not isinstance(statement, ast.Expr):
+                continue
+            if _frame_method_root(statement.value) in frame_names:
+                _invalid(
+                    f"{where} calls a frame method whose result is discarded; Polars frames "
+                    "are immutable, so assign the result to df (df = df.filter(...))."
+                )
+        reads = {
+            name.id
+            for name in ast.walk(tree)
+            if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Load)
+        }
+        suspect = sorted(reads & out_of_scope)
+        if not suspect:
+            continue
+        try:
+            preamble = ast.parse(result.preamble or "")
+        except SyntaxError as exc:
+            raise OpValidationError("The pipeline preamble is not valid Python") from exc
+        in_scope = {
+            _BARE_INPUT_NAME,
+            "pl",
+            *dir(builtins),
+            *_bound_names(preamble),
+            *_bound_names(ast.parse("\n".join(lines[:last]))),
+        }
+        unbound = [name for name in suspect if name not in in_scope]
+        if unbound:
+            _invalid(
+                f"{where}: {STEPPED_SURFACE_LABELS[node_type]} code sees only df; "
+                f"{unbound[0]} is not in scope. Transform df, the node's own input."
+            )
+
+
 def _validate_assistant_authored_graph(
     result: PipelineGraph,
     diff: SemanticDiff,
@@ -1536,6 +1627,17 @@ def _validate_assistant_authored_graph(
     code_changed = {
         change.removesuffix(":code") for change in diff.config_changes if change.endswith(":code")
     }
+    steps_changed = {
+        change.removesuffix(":steps") for change in diff.config_changes if change.endswith(":steps")
+    }
+    for node_id in sorted(set(authored_added) | steps_changed):
+        node = nodes_by_id.get(node_id)
+        if (
+            node is not None
+            and is_stepped_config(node.data.nodeType, node.data.config)
+            and not node.data.config.get("instanceOf")
+        ):
+            _validate_assistant_authored_steps(result, node, nodes_by_id)
     for node_id in set(authored_added) | code_changed:
         node = nodes_by_id.get(node_id)
         if (

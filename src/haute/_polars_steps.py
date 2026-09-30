@@ -38,6 +38,7 @@ from haute._types import NodeType
 
 __all__ = [
     "STEPPED_NODE_TYPES",
+    "STEPPED_SURFACE_LABELS",
     "STEP_STARTS",
     "StepStart",
     "SteppedSurface",
@@ -113,6 +114,19 @@ STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
         NodeType.SCENARIO_EXPANDER: SteppedSurface(start="frame", inputs="none"),
         # The single input is bound as df by codegen; steps live in the decorator.
         NodeType.EXPLORE: SteppedSurface(start="frame", inputs="none"),
+    }
+)
+
+#: The name an analyst knows each stepped surface by, for messages about its steps.
+STEPPED_SURFACE_LABELS: Mapping[NodeType, str] = MappingProxyType(
+    {
+        NodeType.POLARS: "Transform",
+        NodeType.DATA_INPUT: "Data Input",
+        NodeType.EXTERNAL_FILE: "External File",
+        NodeType.RATING_STEP: "Rating Step",
+        NodeType.MODEL_SCORE: "Model Score",
+        NodeType.SCENARIO_EXPANDER: "Scenario Expander",
+        NodeType.EXPLORE: "Explore",
     }
 )
 

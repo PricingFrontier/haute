@@ -267,7 +267,11 @@ assign the transformed frame to `df` or return a transformed frame; immutable
 expressions whose results would be discarded, and code that reads `df` before
 an assignment that definitely dominates that read across control flow, are
 rejected during dry-run. The derived input name `df` is reserved and rejected
-rather than silently weakening the output-only contract.
+rather than silently weakening the output-only contract. A step list the batch
+authors is rendered by the product's step renderer, and each free-code step in it is
+checked against its surface: a bare frame method call whose result is discarded is
+refused with the step, and on a surface whose code sees only `df` a step that reads an
+input or upstream node by name is refused with "<Surface> code sees only df".
 
 **Tools operate on saved state.** Read tools describe the pipeline as saved on disk, and
 mutations rebase on the saved graph at call time. The frontend keeps this coherent by

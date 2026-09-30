@@ -1912,6 +1912,20 @@ class TestFunctionBodySource:
     def test_indented_body_keeps_whole_lines(self):
         assert self._body("def f(a):\n    x = 1\n    return x\n") == "    x = 1\n    return x"
 
+    def test_comments_before_the_first_statement_belong_to_the_body(self):
+        source = "def f(df):\n\n    # keep two rows\n\n    # then stop\n    df = df.head(2)\n"
+        assert self._body(source) == "    # keep two rows\n\n    # then stop\n    df = df.head(2)"
+
+    def test_comments_inside_a_multi_line_signature_stay_in_the_header(self):
+        source = (
+            "@decorate(\n    # a decorator note\n)\ndef f(\n    df,\n    # a parameter note\n"
+            "):\n    # the body's note\n    return df\n"
+        )
+        assert self._body(source) == "    # the body's note\n    return df"
+
+    def test_a_comment_indented_less_than_the_body_is_not_recovered(self):
+        assert self._body("def f(df):\n# outdented\n    return df\n") == "    return df"
+
     def test_extract_function_bodies_slices_one_line_bodies(self):
         source = "def a(): ...\n\n\ndef b(x):\n    return x\n"
         assert _extract_function_bodies(source, tree=ast.parse(source)) == {

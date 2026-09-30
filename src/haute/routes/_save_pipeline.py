@@ -1445,17 +1445,12 @@ class SavePipelineService:
         """
         from haute._builders import resolve_instance_node, stepped_code_problem
         from haute._graph_utils import edge_input_name
-        from haute._polars_steps import is_stepped_config, step_input_names
+        from haute._polars_steps import (
+            STEPPED_SURFACE_LABELS,
+            is_stepped_config,
+            step_input_names,
+        )
 
-        stepped_labels = {
-            NodeType.POLARS: "Transform",
-            NodeType.DATA_INPUT: "Data Input",
-            NodeType.EXTERNAL_FILE: "External File",
-            NodeType.RATING_STEP: "Rating Step",
-            NodeType.MODEL_SCORE: "Model Score",
-            NodeType.SCENARIO_EXPANDER: "Scenario Expander",
-            NodeType.EXPLORE: "Explore",
-        }
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
             node_map = {node.id: node for node in scoped_graph.nodes}
@@ -1481,7 +1476,7 @@ class SavePipelineService:
                     if problem is not None:
                         label = node.data.label or node.id
                         warnings.append(
-                            f"{stepped_labels[node_type]} node {label!r} has an incomplete "
+                            f"{STEPPED_SURFACE_LABELS[node_type]} node {label!r} has an incomplete "
                             f"step list ({problem}). It will save, but running the pipeline "
                             "will fail until the step is completed."
                         )

@@ -821,6 +821,22 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   This is an authoring-time rule for assistant edits only, like
   the unknown-config-key strictness above; existing human-authored code is untouched
   (it fails loudly at execution instead).
+- **Assistant-authored free-code steps keep their result and their surface's scope.**
+  Every node the batch adds, or whose `steps` it sets, that carries a step list on a
+  stepped surface (instances excepted) is rendered with the product's renderer
+  (`render_polars_steps`, against the node's incoming input names in the surface's start
+  mode), so an invalid step list is an op error naming its step. Each `free_code` step
+  is then checked on its own code. A top-level bare expression that calls a method on
+  `df` or on an incoming input (`df.filter(...)` alone) is refused naming the node, the
+  step's number and its id, because its result is discarded; the rendered program's
+  earlier `df = <input>` line does not make such a step retain anything. On a surface
+  whose code sees only `df` (`inputs == "none"`: Data Input, Rating Step, Model Score,
+  Scenario Expander, Explore), a step that reads an incoming input name or the id of a
+  node upstream is refused with `<Surface> code sees only df; <name> is not in scope`,
+  naming the step, unless that name is bound in the rendered steps up to and including
+  the step, in the pipeline preamble, or is `df`, `pl` or a builtin. The check is
+  deliberately narrow: it never refuses a name it cannot tie to an input, so local
+  helpers, preamble helpers and any other valid program pass.
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
@@ -985,7 +1001,10 @@ fixture for route tests). The implemented coverage is:
   post-batch (property: same batch, same graph → same positions); and the
   bare-`df` rule, parameterised over a bare read, a named input, a bind-then-reuse, and
   the nested scopes (`def`, `lambda`, comprehension) whose own `df` must not be mistaken
-  for the module-level output variable.
+  for the module-level output variable; the free-code step rules (a discarded bare
+  expression refused with its step, a Rating Step step reading its input by name refused
+  with "Rating Step code sees only df", and a step calling a preamble or local helper
+  accepted).
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
   stale/altered-plan rejection before save,
