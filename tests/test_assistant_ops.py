@@ -1388,6 +1388,97 @@ class TestSemanticPlans:
         assert plan.diff.complete_counts["nodes_updated"] == 51
         assert plan.affected_capabilities == ("polars", "ratingStep")
 
+    def test_config_postconditions_cover_every_written_node_beyond_the_diff_limit(
+        self, tmp_path: Path
+    ):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+            verify_postconditions,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        coded = [_node(f"coded_{index:02d}", code="df = src") for index in range(50)]
+        coded.append(_node("zz_coded", code="df = src"))
+        graph = _graph([_node("src"), *coded], [_edge("src", node.id) for node in coded])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            {"op": "update_node", "node": node.id, "config": {"code": "df = src.head(3)\n"}}
+            for node in coded
+        ]
+
+        plan = build_graph_edit_plan(snapshot, ops)
+
+        assert plan.diff.truncated is True
+        config_nodes = [
+            condition["node"]
+            for condition in plan.postconditions
+            if condition["kind"] == "node_config"
+        ]
+        assert config_nodes == [node.id for node in coded]
+        saved = _apply(graph, ops)
+        last = _get(saved, "zz_coded")
+        saved.nodes[saved.nodes.index(last)] = last.with_config({"code": "df = src"})
+        with pytest.raises(AssistantOperationError) as excinfo:
+            verify_postconditions(saved, plan.postconditions)
+        assert excinfo.value.code == "postcondition_failed"
+
+    def test_a_plan_at_the_operation_cap_seals_and_replays_every_config_postcondition(
+        self, tmp_path: Path
+    ):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+        from haute.assistant._wire_ops import MAX_PLAN_OPERATIONS
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        coded = [
+            _node(f"coded_{index:03d}", code="df = src") for index in range(MAX_PLAN_OPERATIONS)
+        ]
+        graph = _graph([_node("src"), *coded], [_edge("src", node.id) for node in coded])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            {"op": "update_node", "node": node.id, "config": {"code": "df = src.head(3)\n"}}
+            for node in coded
+        ]
+        declared = [{"kind": "node_exists", "node": node.id} for node in coded]
+
+        plan = build_graph_edit_plan(snapshot, ops, postconditions=declared)
+
+        assert len(plan.postconditions) == 2 * MAX_PLAN_OPERATIONS
+        replayed = build_graph_edit_plan(
+            snapshot, ops, postconditions=[dict(item) for item in plan.as_dict()["postconditions"]]
+        )
+        assert replayed.plan_hash == plan.plan_hash
+
+    def test_a_free_code_step_beyond_the_diff_limit_is_still_refused(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        filler = [_node(f"coded_{index:02d}", code="df = src") for index in range(50)]
+        graph = _graph(
+            [_node("src"), *filler, _node("zz_rated", "ratingStep")],
+            [_edge("src", node.id) for node in [*filler, _node("zz_rated")]],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            *(
+                {"op": "update_node", "node": node.id, "config": {"code": "df = src.head(3)\n"}}
+                for node in filler
+            ),
+            {
+                "op": "update_node",
+                "node": "zz_rated",
+                "config": {"steps": [{"id": "logic", "kind": "free_code", "code": "df = src"}]},
+            },
+        ]
+
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(snapshot, ops)
+        assert "Rating Step code sees only df; src is not in scope" in str(excinfo.value)
+
     @pytest.mark.parametrize(
         "ops",
         [

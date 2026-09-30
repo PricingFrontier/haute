@@ -59,6 +59,8 @@ from haute._types import (
 )
 from haute.assistant._catalog import capability_manifest, new_logic_steps
 from haute.assistant._wire_ops import (
+    MAX_DECLARED_POSTCONDITIONS,
+    MAX_PLAN_OPERATIONS,
     AddEdgeOp,
     AddNodeOp,
     DeleteEdgeOp,
@@ -712,7 +714,12 @@ def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph
 # The plan domain below is deliberately file-service agnostic.  It records the
 # facts which an application service must later re-check under its save lock;
 # it does not itself write a source file or a sidecar.
+#: Entries per category of the provider-visible diff, and of the automatic
+#: structural postcondition summary. Verification never reads a capped list.
 _DIFF_LIMIT = 50
+#: A sealed plan's postconditions: the declared (or automatic) list plus at
+#: most one ``node_config`` per operation. Apply replays the sealed list.
+MAX_SEALED_POSTCONDITIONS = MAX_DECLARED_POSTCONDITIONS + MAX_PLAN_OPERATIONS
 
 
 class AssistantOperationError(HauteError):
@@ -902,7 +909,32 @@ def build_project_snapshot(
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticChanges:
+    """The complete, untruncated change identities every verification reads."""
+
+    nodes_added: tuple[str, ...] = ()
+    nodes_removed: tuple[str, ...] = ()
+    nodes_renamed: tuple[tuple[str, str], ...] = ()
+    nodes_updated: tuple[str, ...] = ()
+    edges_added: tuple[tuple[str, str, str | None, str | None], ...] = ()
+    edges_removed: tuple[tuple[str, str, str | None, str | None], ...] = ()
+    config_changes: tuple[str, ...] = ()
+
+    @property
+    def written_nodes(self) -> frozenset[str]:
+        """Every node the plan adds or updates."""
+
+        return frozenset((*self.nodes_added, *self.nodes_updated))
+
+
+@dataclass(frozen=True, slots=True)
 class SemanticDiff:
+    """The provider-visible diff: identity lists capped at ``_DIFF_LIMIT``.
+
+    ``complete`` holds the same identities untruncated. ``as_dict`` never
+    emits it, but equality compares it, and verification reads only it.
+    """
+
     nodes_added: tuple[str, ...] = ()
     nodes_removed: tuple[str, ...] = ()
     nodes_renamed: tuple[tuple[str, str], ...] = ()
@@ -915,6 +947,7 @@ class SemanticDiff:
     complete_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
     complete_hash: str = ""
     truncated: bool = False
+    complete: SemanticChanges = field(default_factory=SemanticChanges, repr=False)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -1045,6 +1078,15 @@ def _semantic_diff(
         complete_counts=MappingProxyType(complete_counts),
         complete_hash=_digest(complete_payload),
         truncated=any(count > _DIFF_LIMIT for count in complete_counts.values()),
+        complete=SemanticChanges(
+            nodes_added=nodes_added,
+            nodes_removed=nodes_removed,
+            nodes_renamed=renamed,
+            nodes_updated=updates,
+            edges_added=edges_added,
+            edges_removed=edges_removed,
+            config_changes=config_changes,
+        ),
     )
 
 
@@ -1085,11 +1127,16 @@ def _authored_config_projection(
 
 
 def _config_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[object, ...]:
-    """One ``node_config`` digest per added or updated code-carrying node."""
+    """One ``node_config`` digest per added or updated code-carrying node.
+
+    Every such node, never a truncated subset: nothing else proves the saved
+    config. At most one per operation, so the list stays within
+    ``MAX_SEALED_POSTCONDITIONS`` alongside a declared list.
+    """
 
     nodes = {node.id: node for node in graph.nodes}
     conditions: list[object] = []
-    for node_id in sorted({*diff.nodes_added, *diff.nodes_updated}):
+    for node_id in sorted(diff.complete.written_nodes):
         node = nodes.get(node_id)
         if node is None:
             continue
@@ -1100,12 +1147,35 @@ def _config_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[ob
                     {"kind": "node_config", "node": node_id, "sha256": _digest(projection)}
                 )
             )
-    return tuple(conditions[:_DIFF_LIMIT])
+    return tuple(conditions)
 
 
 def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[object, ...]:
+    """A bounded structural summary of at most ``_DIFF_LIMIT`` conditions.
+
+    Identity conditions give way before the two whole-graph checks. The
+    summary may omit identities beyond the bound because post-save exactness
+    compares the complete semantic-diff digest, which covers every node and
+    edge identity; authored config has no such backstop and is proved by the
+    complete ``node_config`` list instead.
+    """
+
+    changes = diff.complete
+    whole_graph: list[object] = []
+    if diff.preamble_changed:
+        whole_graph.append(
+            _frozen_json(
+                {
+                    "kind": "preamble_digest",
+                    "sha256": sha256((graph.preamble or "").encode("utf-8")).hexdigest(),
+                }
+            )
+        )
+    whole_graph.append(
+        _frozen_json({"kind": "graph_shape", "nodes": len(graph.nodes), "edges": len(graph.edges)})
+    )
     conditions: list[object] = [
-        _frozen_json({"kind": "node_exists", "node": node_id}) for node_id in diff.nodes_added
+        _frozen_json({"kind": "node_exists", "node": node_id}) for node_id in changes.nodes_added
     ]
     conditions.extend(
         _frozen_json(
@@ -1117,10 +1187,10 @@ def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple
                 "target_handle": target_handle,
             }
         )
-        for source, target, source_handle, target_handle in diff.edges_added
+        for source, target, source_handle, target_handle in changes.edges_added
     )
     conditions.extend(
-        _frozen_json({"kind": "node_absent", "node": node_id}) for node_id in diff.nodes_removed
+        _frozen_json({"kind": "node_absent", "node": node_id}) for node_id in changes.nodes_removed
     )
     conditions.extend(
         _frozen_json(
@@ -1132,21 +1202,9 @@ def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple
                 "target_handle": target_handle,
             }
         )
-        for source, target, source_handle, target_handle in diff.edges_removed
+        for source, target, source_handle, target_handle in changes.edges_removed
     )
-    if diff.preamble_changed:
-        conditions.append(
-            _frozen_json(
-                {
-                    "kind": "preamble_digest",
-                    "sha256": sha256((graph.preamble or "").encode("utf-8")).hexdigest(),
-                }
-            )
-        )
-    conditions.append(
-        _frozen_json({"kind": "graph_shape", "nodes": len(graph.nodes), "edges": len(graph.edges)})
-    )
-    return tuple(conditions[:_DIFF_LIMIT])
+    return (*conditions[: _DIFF_LIMIT - len(whole_graph)], *whole_graph)
 
 
 def verify_postconditions(
@@ -1320,16 +1378,28 @@ def _resolve_postcondition_refs(
     return resolved
 
 
+def validate_declared_postconditions(postconditions: Sequence[Mapping[str, Any]]) -> None:
+    """Validate a caller-declared list, which holds at most ``MAX_DECLARED_POSTCONDITIONS``.
+
+    A sealed plan's list may be longer (its ``node_config`` digests are
+    appended), so this cap applies where a caller's list enters, not on replay.
+    """
+
+    _validate_postconditions(postconditions, limit=MAX_DECLARED_POSTCONDITIONS)
+
+
 def _validate_postconditions(
     postconditions: Sequence[Mapping[str, Any]],
+    *,
+    limit: int = MAX_SEALED_POSTCONDITIONS,
 ) -> None:
     """Validate the closed structural proof vocabulary before any save."""
 
     if isinstance(postconditions, (str, bytes)) or not isinstance(postconditions, Sequence):
         raise AssistantOperationError("invalid_plan", "Postconditions must be a list of objects")
-    if len(postconditions) > 100:
+    if len(postconditions) > limit:
         raise AssistantOperationError(
-            "invalid_plan", "A plan may declare at most 100 postconditions"
+            "invalid_plan", f"A plan may carry at most {limit} postconditions"
         )
     allowed_keys = {
         "node_exists": {"kind", "node"},
@@ -1928,11 +1998,12 @@ def _validate_assistant_authored_graph(
     """Enforce assistant-only authoring invariants on the final planned graph."""
 
     nodes_by_id = {node.id: node for node in result.nodes}
+    config_changes = diff.complete.config_changes
     code_changed = {
-        change.removesuffix(":code") for change in diff.config_changes if change.endswith(":code")
+        change.removesuffix(":code") for change in config_changes if change.endswith(":code")
     }
     steps_changed = {
-        change.removesuffix(":steps") for change in diff.config_changes if change.endswith(":steps")
+        change.removesuffix(":steps") for change in config_changes if change.endswith(":steps")
     }
     for node_id in sorted(set(authored_added) | steps_changed):
         node = nodes_by_id.get(node_id)
@@ -2235,5 +2306,7 @@ __all__ = [
     "finalize_graph_edit_plan",
     "SemanticDiff",
     "semantic_diff",
+    "SemanticChanges",
+    "validate_declared_postconditions",
     "verify_postconditions",
 ]

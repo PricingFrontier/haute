@@ -40,6 +40,12 @@ def _reject_blank(value: str) -> str:
     return value
 
 
+#: Operations one plan may hold. Each adds or updates at most one node, so a
+#: plan also seals at most this many ``node_config`` postconditions.
+MAX_PLAN_OPERATIONS = 100
+#: Postconditions a caller (the model or a recipe) may declare for one plan.
+MAX_DECLARED_POSTCONDITIONS = 100
+
 _NODE_REFERENCE_DESCRIPTION = "Node id, or a batch-local $ref declared by an earlier add_node."
 _SOURCE_HANDLE_DESCRIPTION = (
     "Output port on the source node, exactly as get_pipeline reports it under "
@@ -273,7 +279,7 @@ def graph_edit_operations_schema() -> dict[str, object]:
     return {
         "type": "array",
         "items": {"oneOf": branches},
-        "maxItems": 100,
+        "maxItems": MAX_PLAN_OPERATIONS,
     }
 
 
@@ -291,8 +297,8 @@ def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
 
     if isinstance(raw_ops, (str, bytes)) or not isinstance(raw_ops, Sequence):
         _invalid("Graph edit operations must be a list of operation objects")
-    if len(raw_ops) > 100:
-        _invalid("A graph edit plan may contain at most 100 operations")
+    if len(raw_ops) > MAX_PLAN_OPERATIONS:
+        _invalid(f"A graph edit plan may contain at most {MAX_PLAN_OPERATIONS} operations")
 
     parsed: list[GraphEditOp] = []
     for index, raw_op in enumerate(raw_ops):
@@ -313,6 +319,8 @@ __all__ = [
     "DeleteEdgeOp",
     "DeleteNodeOp",
     "GraphEditOp",
+    "MAX_DECLARED_POSTCONDITIONS",
+    "MAX_PLAN_OPERATIONS",
     "OpValidationError",
     "RenameNodeOp",
     "UpdateNodeOp",

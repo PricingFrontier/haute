@@ -33,6 +33,7 @@ from haute.assistant._ops import (
     finalize_graph_edit_plan,
     prepare_graph_edit,
     semantic_diff,
+    validate_declared_postconditions,
     verify_postconditions,
 )
 from haute.codegen import graph_to_code_multi
@@ -180,11 +181,12 @@ def _diff_seed_nodes(graph: PipelineGraph, diff: SemanticDiff) -> frozenset[str]
     """
 
     present = {node.id for node in graph.nodes}
-    seeds = set(diff.nodes_added) | set(diff.nodes_updated)
-    seeds.update(new for _old, new in diff.nodes_renamed)
+    changes = diff.complete
+    seeds = set(changes.written_nodes)
+    seeds.update(new for _old, new in changes.nodes_renamed)
     for _source, target, _source_handle, _target_handle in (
-        *diff.edges_added,
-        *diff.edges_removed,
+        *changes.edges_added,
+        *changes.edges_removed,
     ):
         seeds.add(target)
     seeds.intersection_update(present)
@@ -619,7 +621,7 @@ def build_verified_plan(
     warnings = validate_graph(prepared.result_graph)
     _prove_steps_survive_save(
         prepared.result_graph,
-        {*prepared.diff.nodes_added, *prepared.diff.nodes_updated},
+        prepared.diff.complete.written_nodes,
         source_file=source_file,
     )
     targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
@@ -629,10 +631,7 @@ def build_verified_plan(
         baseline=snapshot.graph,
         changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
     )
-    _prove_nodes_ready(
-        prepared.result_graph,
-        {*prepared.diff.nodes_added, *prepared.diff.nodes_updated},
-    )
+    _prove_nodes_ready(prepared.result_graph, prepared.diff.complete.written_nodes)
     plan = finalize_graph_edit_plan(
         prepared,
         validation_warnings=(*warnings, *schema_warnings),
@@ -740,6 +739,7 @@ class PipelineApplicationService:
     ) -> GraphEditPlan:
         """Validate and retain an exact no-write plan against saved state."""
 
+        validate_declared_postconditions(postconditions)
         source = self._source_path(source_file)
         graph = self._parse_graph(source)
         snapshot = build_project_snapshot(

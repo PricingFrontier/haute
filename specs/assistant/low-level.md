@@ -270,7 +270,13 @@ orphaned halves).
   well as the visible values, so presentation bounds can never mask an
   additional or missing structural change. Configuration changes identify
   their node and key; the stored normalized
-  operation remains the authority for its requested value.
+  operation remains the authority for its requested value. The cap bounds
+  presentation only: the diff also holds the complete untruncated identities
+  (`SemanticDiff.complete`, a `SemanticChanges` that `as_dict` never emits but
+  diff equality compares), and every verification reads those — assistant-authored
+  code and step checks, schema seeds, the steps-survive and readiness proofs, and
+  the `node_config` postconditions — so a change beyond the fiftieth in its
+  category is verified like the first.
 - **`PlanStore`**: process-local, size- and TTL-bounded records keyed by plan
   hash, held in the shared `LRUCache`. It owns validated/applying/applied/aborted state transitions under a
   lock. An applied record cannot return to validated. A failed pre-commit
@@ -459,7 +465,8 @@ excluded count; its path and content never cross the tool boundary.
    phase invokes the save service's public no-write validation (including
    canonical Edge Join role, handle, topology, and key-form validation),
    proves that the steps of every stepped node the plan adds or updates survive a
-   save (below), derives the complete changed-node set, and resolves the schema of every
+   save (below), derives the complete changed-node set from the diff's untruncated
+   identities (never the 50-entry presentation lists), and resolves the schema of every
    reachable executable terminal through `flatten_graph` +
    `execute_lazy_graph(..., enforce_contracts=True, schema_only=True)` +
    `collect_schema()`.
@@ -507,7 +514,7 @@ excluded count; its path and content never cross the tool boundary.
    proved and admits no pre-existing excuse at all.
 
    **Steps are proved to survive a save before apply.** For each stepped node the plan
-   adds or updates (instances excepted), the verification phase generates the planned
+   adds or updates (the complete set, however many; instances excepted), the verification phase generates the planned
    pipeline source in memory with the save path's codegen (`graph_to_code_multi`),
    takes the node's sidecar exactly as `collect_node_configs` would write it, and
    resolves the node's generated function through the parser's own node resolution
@@ -520,7 +527,8 @@ excluded count; its path and content never cross the tool boundary.
    **Written Modelling and Load File nodes are proved ready.** Save validation already
    refuses malformed modelling values (`validate_modelling_config_values`). After schema
    evidence resolves, `_application._prove_nodes_ready` checks each Modelling and Load File
-   node the plan adds or updates (instances excepted); a failure raises
+   node the plan adds or updates (the complete set, however many; instances excepted); a
+   failure raises
    `AssistantOperationError("node_not_ready", "Node '<id>' is not ready: <message>")` and
    stores no plan. A Modelling node needs a `target` and no `training_objective_issue`; its
    output (a pass-through of its input) is resolved through the same engine path as the
@@ -535,8 +543,21 @@ excluded count; its path and content never cross the tool boundary.
    **Authored config is verified after reparse.** Besides the structural
    postconditions, every plan carries a `node_config {node, sha256}` postcondition for
    each node it adds or updates whose type carries code (the seven stepped types;
-   instances excepted). It is appended to the automatic or supplied postconditions,
-   without duplicates, so a replayed plan carries the identical list. The digest is
+   instances excepted) — every such node, never a truncated subset. It is appended to
+   the automatic or supplied postconditions, without duplicates, so a replayed plan
+   carries the identical list. The caps agree by construction: a plan holds at most
+   `MAX_PLAN_OPERATIONS` (100) operations, each adding or updating at most one node, so
+   it seals at most 100 `node_config` postconditions; a caller declares at most
+   `MAX_DECLARED_POSTCONDITIONS` (100), enforced by `dry_run`; and the sealed list,
+   which apply replays through `build_verified_plan`, holds at most
+   `MAX_SEALED_POSTCONDITIONS` (their sum, 200). A list over its cap fails loudly as
+   `invalid_plan`; no check is dropped. The automatic structural postconditions (one
+   `node_exists`/`edge_exists`/`node_absent`/`edge_absent` per change, then
+   `preamble_digest` and `graph_shape`) are a bounded summary of at most 50, whose
+   identity entries give way before the two whole-graph checks; they may omit identities
+   beyond that, because post-save exactness already compares the complete semantic-diff
+   digest, which covers every node and edge identity. Authored config has no such
+   backstop, which is why `node_config` is complete. The digest is
    over the node's authored-config projection, which is narrow on purpose because the
    save path legitimately normalises other fields (a Constant's values become strings,
    a Rating Step's combined outputs gain their default operation, a Source Switch's

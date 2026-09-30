@@ -38,7 +38,7 @@ from haute._polars_steps import (
 from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
 from haute._types import NODE_TYPE_TO_DECORATOR, SINK_ONLY_NODE_TYPES, NodeType
 from haute.assistant._recipes import recipe_manifest
-from haute.assistant._wire_ops import graph_edit_operations_schema
+from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
 # The save service is the authority for singleton policy.  Keep this derived
@@ -892,7 +892,7 @@ def _postconditions_schema() -> dict[str, object]:
     return {
         "type": "array",
         "items": {"oneOf": variants},
-        "maxItems": 100,
+        "maxItems": MAX_DECLARED_POSTCONDITIONS,
     }
 
 

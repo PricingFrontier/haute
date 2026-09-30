@@ -1270,6 +1270,56 @@ class TestWrittenNodesAreReady:
         assert message in str(raised.value)
         assert len(service.plan_store) == 0
 
+    def test_a_modelling_node_beyond_the_diff_limit_is_still_proved_ready(
+        self, modelling_project: Path
+    ):
+        import json
+
+        fillers = [f"a{index:02d}" for index in range(50)]
+        (modelling_project / "main.py").write_text(
+            MODELLING_PIPELINE
+            + "".join(
+                f"\n\n@pipeline.polars\ndef {name}() -> pl.LazyFrame:\n"
+                f"    return pl.LazyFrame({{'x': [1]}})\n"
+                for name in fillers
+            ),
+            encoding="utf-8",
+        )
+        (modelling_project / "config" / "model_training" / "train.json").write_text(
+            json.dumps(_VALID_GLM), encoding="utf-8"
+        )
+        service = _service(modelling_project)
+        operations = [
+            *({"op": "update_node", "node": name, "config": {}} for name in fillers),
+            {"op": "update_node", "node": "train", "config": {"target": None}},
+        ]
+
+        with pytest.raises(AssistantOperationError) as raised:
+            service.dry_run("main.py", operations)
+
+        assert raised.value.code == "node_not_ready"
+        assert "'train'" in str(raised.value)
+        assert len(service.plan_store) == 0
+
+    def test_a_caller_declares_at_most_the_declared_postcondition_cap(
+        self, modelling_project: Path
+    ):
+        from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS
+
+        service = _service(modelling_project)
+        declared = [{"kind": "node_exists", "node": "train"}] * (MAX_DECLARED_POSTCONDITIONS + 1)
+
+        with pytest.raises(AssistantOperationError) as raised:
+            service.dry_run(
+                "main.py",
+                [{"op": "update_node", "node": "train", "config": _VALID_GLM}],
+                postconditions=declared,
+            )
+
+        assert raised.value.code == "invalid_plan"
+        assert f"at most {MAX_DECLARED_POSTCONDITIONS} postconditions" in str(raised.value)
+        assert len(service.plan_store) == 0
+
     def test_a_load_file_whose_path_does_not_exist_fails_the_dry_run(self, modelling_project: Path):
         service = _service(modelling_project)
 
