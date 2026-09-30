@@ -197,12 +197,16 @@ class _FailureSite:
     failing step's node, or else the node the tool resolved. `own_output`
     adds that node's own output schema, which only a caller whose schema
     resolved before the failure (a column profile's collection) sets.
-    `submitted` is the operations payload the model sent for the current plan.
+    `input_name` narrows the metadata to that one named input's frame, the
+    only frame a profile of that input resolved, so rendering its failure
+    never resolves the consumer. `submitted` is the operations payload the
+    model sent for the current plan.
     """
 
     graph: PipelineGraph
     node: str
     own_output: bool = False
+    input_name: str | None = None
     submitted: object = ()
 
 
@@ -282,8 +286,9 @@ def _schema_metadata_names(site: _FailureSite) -> set[str]:
         return names
     targets: dict[str, set[str | None]] = {}
     for item in inputs:
-        targets.setdefault(item.source, set()).add(item.source_port)
-    if site.own_output:
+        if site.input_name is None or item.name == site.input_name:
+            targets.setdefault(item.source, set()).add(item.source_port)
+    if site.own_output and site.input_name is None:
         targets.setdefault(site.node, set()).add(None)
     for target, ports in targets.items():
         try:
@@ -917,10 +922,17 @@ def _prepare_column_profile(
 
 
 def _profile_failure_site(request: _ColumnProfileRequest) -> _FailureSite:
-    """A profile fails collecting a frame whose schema resolved, so the node's
-    own output schema is permitted metadata alongside its inputs'."""
+    """A profile fails collecting a frame whose schema resolved first.
 
-    return _FailureSite(request.graph, request.node, own_output=True)
+    Profiling a node's own output makes that output's schema permitted
+    metadata alongside its inputs'. Profiling one named input collected only
+    that input's frame, so only its schema is used: rendering the failure
+    never resolves (and so never runs) the consumer the profile did not ask for.
+    """
+
+    if request.input_name is None:
+        return _FailureSite(request.graph, request.node, own_output=True)
+    return _FailureSite(request.graph, request.node, input_name=request.input_name)
 
 
 def _collect_column_profile(

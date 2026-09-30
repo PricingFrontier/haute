@@ -856,6 +856,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       else the node the tool resolved — each resolved schema-only through the same
       engine path as `get_node_schema`, plus that node's own output schema on the
       column-profile path, where the schema resolved and only the collection failed; a
+      profile of one named input uses that input's frame alone, so rendering its
+      failure never resolves the consumer the profile did not ask for; a
       frame that does not resolve contributes nothing and is never an error of its own;
       (b) in dry-run and apply, every string in the operations the model submitted for
       this plan (apply's are the plan's `normalized_operations`, which the dry-run

@@ -2715,6 +2715,43 @@ class TestFailureColumnNamesFollowTheEgressPolicy:
         summary = result["error"]["message"].split(": ", 1)[0]
         assert summary.endswith("; it names column(s) 'age'"), summary
 
+    def test_a_named_input_profile_failure_never_resolves_the_consumer(
+        self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Profiling one input of a node collects only that input's frame, so
+        naming the failure's columns resolves that frame alone, never the
+        consumer the profile did not ask for."""
+
+        import haute.assistant._tools as tools_module
+
+        (egress_project / "main.py").write_text(
+            EGRESS_SOURCE
+            + """
+
+@pipeline.polars
+def consumer(typed: pl.LazyFrame) -> pl.LazyFrame:
+    return typed.with_columns(flag=pl.lit(1))
+""",
+            encoding="utf-8",
+        )
+        _egress_policy(monkeypatch, executable_source=False, row_samples=True)
+        resolved_targets: list[str] = []
+        original = tools_module._resolve_schema_outputs
+
+        def recording(*args: object, target: str, **kwargs: object) -> object:
+            resolved_targets.append(target)
+            return original(*args, target=target, **kwargs)
+
+        monkeypatch.setattr(tools_module, "_resolve_schema_outputs", recording)
+
+        result = _profile("main.py", "consumer", "typed")
+
+        assert result["error"]["code"] == "profile_unavailable", result
+        summary = result["error"]["message"].split(": ", 1)[0]
+        assert summary.endswith("; it names column(s) 'age'"), summary
+        assert "typed" in resolved_targets
+        assert "consumer" not in resolved_targets, resolved_targets
+
     def test_saved_code_names_a_column_only_with_executable_source(
         self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
     ):
