@@ -13,7 +13,7 @@
 | `scripts/run_assistant_evaluation.py` | The development-only qualification harness and its command (it is not part of the installed package): closed evaluation scenario/support-matrix loaders, semantic/safety scorer, repeated-trial attribution, percentile aggregation, and release-gate evaluator. The runner is injected so deterministic tests use fakes and the live-provider lane uses real provider adapters in isolated projects. It never imports or exposes held-out fixtures through production tools. |
 | `scripts/run_assistant_self_test.py` | Developer-facing live self-test harness for the configured provider, outside the installed package, and its explicit credentialed command. It loads a closed prompt-case format, copies each project fixture into a disposable directory, initializes the real Git mutation gate, runs the provider-neutral loop with the real tool executor, and evaluates semantic, completion, connectivity, join-port, failed-attempt, duplicate-read, and canary-leakage expectations. Reports may retain ordered tool names plus value-free status/error code/validation path/validation reason diagnostics so failed model strategies are actionable. They otherwise record only redacted identities, outcomes, reasons, graph structure, and aggregate metrics; prompts, model prose, tool arguments/results, credentials, dataset values, canary values, and content digests are not written to reports. |
 | `src/haute/assistant/assets/examples/<id>/manifest.json` | Closed executable-bundle manifest (`schema_version=1`, stable id/version, summary, source, `fast`/`ordinary`/`negative` assertion tier, required `engineering`/`pricing` review class, and a closed-role resource inventory). Review class records the required discipline rather than asserting approval; model-validation and optimisation fixtures use `pricing`, while purely mechanical fixtures use `engineering`. Every bundle includes its project configuration, source, synthetic input, graph/schema expectations, golden request/output, boundary cases, paired prompts, and semantic assertions. Assertion files have only `target`, non-empty `required_columns`, optional `row_count`, and a non-empty closed `checks` list. Golden arrays retain production row order, so order-unstable operators are followed by an explicit stable pipeline sort rather than normalized by the verifier. Every declared resource resolves inside its bundle, exists, and matches its recorded SHA-256 digest. |
-| `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
+| `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes written with vectorised Polars expressions, the per-surface `df` rule the system prompt states, what `haute init` scaffolds (a blank pipeline), naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
 | `src/haute/assistant/assets/examples/<id>/pipeline.py` | Every example is a bundle; there is no other example format. The bundle source is parsed as data by `_assets.py`, never imported, and rendered in the same compact graph shape as the get-pipeline tool; its module docstring supplies the narrative and the index summary. `linear_pricing` teaches implicit wiring through a source, one Polars enrichment and an output; `branched_features` teaches parallel feature branches joined before the response with explicit connections. A request for the removed `joined_reference` example is refused with `example_removed`, naming `reference_join`, which teaches the same edge join. |
 | `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
 | `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. It performs no writes. |
@@ -162,6 +162,9 @@ orphaned halves).
     it (`"ref": "agg"` → `"$agg"`); the asymmetry is enforced by `_wire_ops` and stated in
     the `ref` property's own schema description, because documenting `$ref` only at the
     use sites led to declarations being written in the rejected spelling.
+    `node_type` carries its own description (an id from the prompt's node index): the
+    schema builder overlays a field's description onto an inlined local definition, so
+    no Python class docstring reaches the provider-visible schema.
     Positions are assigned by the deterministic rule below *after* the whole batch
     has applied, so parent-based placement sees the batch's final wiring.
     The persisted id and label are both the canonical sanitised function name,
@@ -181,7 +184,9 @@ orphaned halves).
     to one branch and must not fill another's fields. A config naming `instanceOf` takes
     no palette config, because an instance's configuration is its original's.
   - `update_node {node, config}` — shallow key merge into the existing config; an explicit
-    JSON `null` value removes that key. Unknown keys for the node's type are rejected using
+    JSON `null` value removes that key. The operation schema's `config` description
+    states both rules to the model: a written top-level key replaces its whole value, so
+    a nested object or list is sent complete. Unknown keys for the node's type are rejected using
     the same `TypedDict`-derived allowlist machinery the sidecar writer uses (see Edge
     cases for why this is deliberately stricter than save's warn-and-drop).
   - Both node operations follow the stepped-node write contract in Edge cases: a write
@@ -381,11 +386,13 @@ sentinel `{"__haute_type__": "non_finite_float", "value": "inf"}` built by
 `_json_safe.non_finite_float_sentinel` — the one non-finite encoding every Haute payload
 uses, which also keeps an infinity distinct from a string column holding the text `inf`.
 Numbers and strings keep their JSON type, so a finite numeric bound stays a number. Left raw, the failure surfaced nowhere near the column that caused it: as
-an opaque `tool_failed` for the whole call. The system prompt requires the model to
-profile a frame before comparing a column to a literal, and to answer `NEEDS_INPUT:`
-rather than guess an encoding when values are unavailable or withheld — a guessed
-comparison produces code that runs, validates at schema tier, and silently matches
-nothing.
+an opaque `tool_failed` for the whole call. When the policy's `allow_row_samples` is
+true, the system prompt requires the model to profile a frame before comparing a column
+to a literal, and to answer `NEEDS_INPUT:` rather than guess an encoding when a column's
+values are withheld. When it is false, the prompt says profiles are not permitted and
+tells the model to ask the analyst which values to match, beginning `NEEDS_INPUT:`, so a
+turn never ends on a refused profile call. Either way a guessed comparison is ruled out:
+it produces code that runs, validates at schema tier, and silently matches nothing.
 
 **Project-knowledge query**: `get_project_knowledge(query, limit)` builds the
 current policy-filtered view, scores only eligible items against normalized
@@ -545,7 +552,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    authority/evidence instructions + compact capability identity, an installed-I/O
    availability summary, a node index with one line per node type naming its id, palette
    name and one-line purpose, operation ids, and recipe ids with their canonical summaries
-   + an example-ID-only index + project facts: pipeline name, source file,
+   + an example-ID-only index + the effective egress policy in words, taken from the
+   resolved configuration's `egress` (provider trust, highest sensitivity sent, and
+   whether project knowledge, executable source and column value profiles are permitted)
+   + project facts: pipeline name, source file,
    node-count/type summary) + windowed history + the new user message + `_tools` JSON
    schemas. Fresh graph detail is deliberately *not* embedded in the system prompt — the
    model fetches it via tools, so it is never stale mid-turn. The authoring

@@ -53,13 +53,26 @@ _TARGET_HANDLE_DESCRIPTION = (
     "edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as "
     "polars, which binds inputs by source name and has no input ports."
 )
+_NODE_TYPE_DESCRIPTION = "Node type id, exactly as the prompt's node index lists it."
+# The portable provider projection flattens the operation union into one
+# object and joins distinct descriptions, so each text names its operation.
+_ADD_CONFIG_DESCRIPTION = (
+    "Config keys, as the node type's descriptor config schema lists them. "
+    "add_node starts the node from the palette's config for its type and writes "
+    "these keys over it."
+)
+_UPDATE_CONFIG_DESCRIPTION = (
+    "update_node merges shallowly: each key written replaces that key's whole "
+    "value, so send a nested object or list complete; keys not written keep their "
+    "saved values; a JSON null removes the key."
+)
 
 
 class AddNodeOp(_OpModel):
     op: Literal["add_node"] = "add_node"
-    node_type: NodeType
+    node_type: NodeType = Field(description=_NODE_TYPE_DESCRIPTION)
     name: str
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(default_factory=dict, description=_ADD_CONFIG_DESCRIPTION)
     ref: str | None = Field(
         default=None,
         description=(
@@ -84,7 +97,7 @@ class AddNodeOp(_OpModel):
 class UpdateNodeOp(_OpModel):
     op: Literal["update_node"] = "update_node"
     node: str = Field(description=_NODE_REFERENCE_DESCRIPTION)
-    config: dict[str, Any]
+    config: dict[str, Any] = Field(description=_UPDATE_CONFIG_DESCRIPTION)
 
     _node_not_blank = field_validator("node")(_reject_blank)
 
@@ -183,14 +196,19 @@ _OPERATION_MODELS = (
 
 
 def _inline_local_references(schema: object, definitions: Mapping[str, object]) -> object:
-    """Expand the local definitions emitted by Pydantic's JSON-schema generator."""
+    """Expand the local definitions emitted by Pydantic's JSON-schema generator.
+
+    A field's own description, which Pydantic emits beside the ``$ref``, replaces
+    the definition's: a definition's description is its Python class docstring,
+    written for maintainers rather than the model.
+    """
 
     if isinstance(schema, list):
         return [_inline_local_references(item, definitions) for item in schema]
     if not isinstance(schema, dict):
         return schema
     if "$ref" in schema:
-        if set(schema) != {"$ref"}:
+        if not set(schema) <= {"$ref", "description"}:
             raise RuntimeError("Pydantic emitted a $ref with unsupported sibling keywords")
         reference = schema["$ref"]
         if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
@@ -198,7 +216,14 @@ def _inline_local_references(schema: object, definitions: Mapping[str, object]) 
         definition_name = reference.removeprefix("#/$defs/")
         if not definition_name or "/" in definition_name or definition_name not in definitions:
             raise RuntimeError(f"Pydantic emitted an unknown local schema reference: {reference!r}")
-        return _inline_local_references(deepcopy(definitions[definition_name]), definitions)
+        inlined = _inline_local_references(deepcopy(definitions[definition_name]), definitions)
+        if not isinstance(inlined, dict):
+            raise RuntimeError(f"Pydantic emitted a non-object definition: {reference!r}")
+        if "description" in schema:
+            inlined["description"] = schema["description"]
+        else:
+            inlined.pop("description", None)
+        return inlined
     return {key: _inline_local_references(value, definitions) for key, value in schema.items()}
 
 

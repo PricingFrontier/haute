@@ -611,7 +611,7 @@
                     "type": "string"
                   },
                   "node_type": {
-                    "description": "Canonical node-type identifiers shared with the React Flow frontend.\n\nInherits from ``StrEnum`` so ``NodeType.API_INPUT == \"apiInput\"`` is ``True``\nand JSON serialization produces the plain string value.",
+                    "description": "Node type id, exactly as the prompt's node index lists it.",
                     "enum": [
                       "apiInput",
                       "dataInput",
@@ -642,6 +642,7 @@
                   },
                   "config": {
                     "additionalProperties": true,
+                    "description": "Config keys, as the node type's descriptor config schema lists them. add_node starts the node from the palette's config for its type and writes these keys over it.",
                     "title": "Config",
                     "type": "object"
                   },
@@ -683,6 +684,7 @@
                   },
                   "config": {
                     "additionalProperties": true,
+                    "description": "update_node merges shallowly: each key written replaces that key's whole value, so send a nested object or list complete; keys not written keep their saved values; a JSON null removes the key.",
                     "title": "Config",
                     "type": "object"
                   }

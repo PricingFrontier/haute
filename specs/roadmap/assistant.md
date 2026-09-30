@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-03 | Planned | P1 | Every node the assistant writes on a stepped surface stays in the step builder. |
-| ASSIST-05 | Planned | P1 | The prompt and guide state the product's real contracts and the effective egress policy. |
 | ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
 | ASSIST-08 | Planned | P1 | Recipes produce configs that match rows and never advertise invalid options. |
 | ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
@@ -153,35 +152,6 @@ dry-run. No assistant-authored node on a stepped surface reloads with
 `src/haute/assistant/_catalog.py::_USAGE_NOTES`;
 `src/haute/assistant/_loop.py::build_system_prompt`;
 `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`.
-
-### ASSIST-05 — Teaching text matches the product
-**Why:** The always-on prompt says `df` is never pre-bound, which is false on
-the hook surfaces, and demands column profiles that the project's policy may
-deny, so a simple aggregation always ends in a question when row samples are
-off. The authoring guide uses `map_elements` with a lambda for plain
-arithmetic, describes a `haute init` starter pipeline that no longer exists,
-claims the examples avoid sidecars, and recommends `inputMapping`, which a
-stepped Transform rejects. The exemplar list includes security and deployment
-fixtures, and a Python class docstring leaks into the `add_node` schema while
-`config`'s merge semantics are undocumented.
-
-**Plan:** State the `df` contract per surface, state the effective egress
-policy in words and only require a profile when it is permitted, replace the
-guide's idioms with vectorised Polars expressions, correct the starter,
-sidecar and `inputMapping` text, drop test fixtures from the exemplar index,
-and document `update_node` merge and null-removal semantics in the wire
-schema.
-
-**Acceptance:** The golden diff from `ASSIST-04` shows the changes; no
-always-on text contains "never pre-bound"; under `allow_row_samples = false`
-the prompt does not require `get_column_profiles`; the guide contains no
-`map_elements`.
-
-**Dependencies:** `ASSIST-04`.
-
-**Evidence:** `src/haute/assistant/assets/authoring_guide.md`;
-`src/haute/assistant/_loop.py::build_system_prompt`;
-`src/haute/assistant/_wire_ops.py`.
 
 ### ASSIST-07 — Example bundles the editor accepts
 **Why:** The reusable-submodel example names its occurrence like the inner

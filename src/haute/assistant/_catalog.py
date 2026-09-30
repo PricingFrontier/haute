@@ -49,8 +49,8 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "and stays out of the scoring path."
     ),
     NodeType.POLARS: (
-        "Apply a Polars transform to connected inputs; keep reusable logic in "
-        "code and use inputMapping when named inputs need explicit binding."
+        "Apply a Polars transform to connected inputs; each input is named by its "
+        "upstream node, and new logic is written as steps."
     ),
     NodeType.EDGE_JOIN: (
         "Join the base input with a connected input; specify the join keys and "

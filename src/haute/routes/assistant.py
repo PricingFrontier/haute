@@ -379,6 +379,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             system_prompt = _loop.build_system_prompt(
                 pipeline_name=pipeline_name,
                 source_file=session.source_file,
+                egress=config.egress,
                 node_summary=_loop.summarise_graph_nodes(graph),
             )
         except HauteError as exc:

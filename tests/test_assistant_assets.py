@@ -54,6 +54,21 @@ class TestAuthoringGuide:
         assert "specs/README.md" not in guide
         assert "node catalog" in guide.lower()
 
+    def test_guide_teaches_the_products_current_contracts(self):
+        guide = authoring_guide()
+        # Plain arithmetic is a vectorised expression, never a Python lambda.
+        assert "map_elements" not in guide
+        assert '2026 - pl.col("vehicle_year")' in guide
+        # `haute init` scaffolds a blank pipeline; the examples carry sidecars.
+        assert "raw_rows.json" not in guide
+        assert "blank pipeline" in guide
+        assert "without inventing project sidecar files" not in guide
+        # The per-surface `df` rule, matching the system prompt.
+        assert "never pre-bound" not in guide
+        assert "sees only `df`" in guide
+        assert "`obj`" in guide
+        assert "inputMapping" not in guide
+
 
 class TestExemplars:
     def test_index_is_non_empty_with_docstring_summaries(self):

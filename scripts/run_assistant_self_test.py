@@ -633,6 +633,7 @@ async def run_self_test_case(
             system_prompt = build_system_prompt(
                 pipeline_name=parsed.pipeline_name or "pipeline",
                 source_file=source_file,
+                egress=config.egress,
                 node_summary=summarise_graph_nodes(parsed),
             )
             store = SessionStore()

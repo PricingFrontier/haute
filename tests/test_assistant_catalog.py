@@ -409,6 +409,36 @@ class TestResolvedDescriptors:
             node_type.value for node_type in NodeType
         ]
 
+    def test_wire_descriptions_are_model_prose_and_state_update_merge_rules(self) -> None:
+        from haute.assistant._wire_ops import graph_edit_operations_schema
+
+        schema = graph_edit_operations_schema()
+
+        def descriptions(value: object) -> list[str]:
+            if isinstance(value, dict):
+                found = [value["description"]] if isinstance(value.get("description"), str) else []
+                return found + [text for child in value.values() for text in descriptions(child)]
+            if isinstance(value, list):
+                return [text for child in value for text in descriptions(child)]
+            return []
+
+        # A Python class docstring (RST markup, hard-wrapped lines) must never
+        # reach the provider-visible schema.
+        for text in descriptions(schema):
+            assert "``" not in text and "\n" not in text, text
+
+        branches = {item["properties"]["op"]["const"]: item for item in schema["items"]["oneOf"]}
+        assert "node index" in branches["add_node"]["properties"]["node_type"]["description"]
+        update_config = branches["update_node"]["properties"]["config"]["description"]
+        assert "replaces" in update_config and "null" in update_config
+
+
+def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:
+    # A stepped Transform rejects inputMapping, so the descriptor must not teach it.
+    usage = _descriptors()["polars"].usage
+    assert "inputMapping" not in usage
+    assert "upstream node" in usage
+
 
 def test_edge_join_descriptor_teaches_strict_role_handles() -> None:
     from haute.assistant._catalog import capability_manifest
@@ -546,7 +576,11 @@ class TestPaletteFacts:
         assert load_file["display_name"] == "Load File"
         assert load_file["summary"] != _descriptors()["externalFile"].usage
 
-        prompt = build_system_prompt(pipeline_name="p", source_file="p.py")
+        from scripts.update_assistant_prompt_golden import GOLDEN_EGRESS_POLICY
+
+        prompt = build_system_prompt(
+            pipeline_name="p", source_file="p.py", egress=GOLDEN_EGRESS_POLICY
+        )
         assert f"- `externalFile` (Load File): {load_file['summary']}" in prompt
         assert "- `liveSwitch` (Source Switch): " in prompt
 

@@ -13,6 +13,7 @@ from haute._env import int_env
 from haute._logging import get_logger
 from haute.assistant._assets import example_index
 from haute.assistant._catalog import capability_manifest, compact_manifest
+from haute.assistant._config import EgressPolicy
 from haute.assistant._providers import (
     AssistantProvider,
     AssistantProviderError,
@@ -189,10 +190,24 @@ _PROMPT_IDENTITY_AND_EVIDENCE = (
     "Never assume how a column encodes its categories. A dtype does not tell you "
     "whether a status or indicator column holds Y/N, true/false, or descriptive "
     "labels, and a wrong guess produces code that runs, validates, and silently "
-    "returns nothing. When your code compares a column to a literal value, first call "
-    "`get_column_profiles` for that frame and use the levels it reports. If the tool "
-    "is unavailable or the column's values are withheld, do not guess a comparison: "
-    "begin the response with `NEEDS_INPUT:` and ask which values you should match. "
+    "returns nothing. "
+)
+
+# Which of these follows the identity paragraph depends on the project's
+# `allow_row_samples`: requiring a profile the policy refuses would end every
+# literal comparison in a failed tool call instead of a question.
+_PROMPT_COLUMN_VALUES_PROFILED = (
+    "When your code compares a column to a literal value, first call "
+    "`get_column_profiles` for that frame and use the levels it reports. If the "
+    "column's values are withheld, do not guess a comparison: begin the response "
+    "with `NEEDS_INPUT:` and ask which values you should match. "
+)
+
+_PROMPT_COLUMN_VALUES_ASKED = (
+    "This project's policy does not permit column value profiles. When your code "
+    "compares a column to a literal value the request does not state, do not guess "
+    "a comparison: begin the response with `NEEDS_INPUT:` and ask the analyst which "
+    "values to match. "
 )
 
 _PROMPT_INTENT_AND_RECIPE_ROUTING = (
@@ -220,10 +235,13 @@ _PROMPT_MUTATION_WORKFLOW = (
     "possible. Read their ports, "
     "wiring rules, closed config schemas, enums, and "
     "anti-patterns; do not use dry-run failures to discover the contract. Every newly "
-    "added node must be connected in the same plan. Explicit Polars code must start "
-    "from the node's named input parameters — `df` is only the output variable, "
-    "never pre-bound to an input — and assign the transformed result to `df` or "
-    "return a transformed frame. Call "
+    "added node must be connected in the same plan. What Polars code sees depends on "
+    "its node. On a `polars` node, code starts from a named input: each input is named by "
+    "its upstream node and `df` is only the output variable. On a Data Input, Rating "
+    "Step, Model Scoring, Expander or Explore node, code sees only `df`, the frame the "
+    "node produced. On a Load File node, `df` is the first input, further inputs are "
+    "available by name, and the loaded object is `obj`. Code must assign the "
+    "transformed result to `df` or return a transformed frame. Call "
     "`dry_run_graph_edits` with the "
     "complete operation batch, then call `apply_graph_plan` exactly once with the exact "
     "returned plan hash. Never resend or reconstruct operations at apply time. "
@@ -260,10 +278,35 @@ _PROMPT_UNAVAILABLE_OPERATIONS = (
 )
 
 
+def _egress_policy_section(egress: EgressPolicy) -> str:
+    """State the effective egress policy in words the model can act on."""
+
+    def permitted(allowed: bool) -> str:
+        return "permitted" if allowed else "not permitted"
+
+    return "\n".join(
+        (
+            "## Project egress policy",
+            f"- Provider trust: `{egress.trust}`",
+            f"- Highest sensitivity sent: `{egress.max_sensitivity}` (saved pipeline "
+            "metadata needs `internal`; saved node configuration needs `restricted`)",
+            f"- Project knowledge: {permitted(egress.allow_project_knowledge)}",
+            f"- Executable source: {permitted(egress.allow_executable_source)}"
+            + ("" if egress.allow_executable_source else "; `get_node_config` redacts node code"),
+            f"- Column value profiles: {permitted(egress.allow_row_samples)}"
+            + ("" if egress.allow_row_samples else "; `get_column_profiles` is refused"),
+        )
+    )
+
+
 def build_system_prompt(
-    *, pipeline_name: str, source_file: str, node_summary: str | None = None
+    *,
+    pipeline_name: str,
+    source_file: str,
+    egress: EgressPolicy,
+    node_summary: str | None = None,
 ) -> str:
-    """Assemble the stable knowledge and project-facts system prompt."""
+    """Assemble the stable knowledge, egress policy and project-facts system prompt."""
 
     # Bundle IDs are intentionally descriptive and are the only exemplar
     # material kept permanently in context. Summaries and complete narratives
@@ -382,6 +425,11 @@ def build_system_prompt(
     return "\n\n".join(
         (
             _PROMPT_IDENTITY_AND_EVIDENCE
+            + (
+                _PROMPT_COLUMN_VALUES_PROFILED
+                if egress.allow_row_samples
+                else _PROMPT_COLUMN_VALUES_ASKED
+            )
             + _PROMPT_INTENT_AND_RECIPE_ROUTING
             + _PROMPT_MUTATION_WORKFLOW
             + _PROMPT_DRY_RUN_RETRY
@@ -394,6 +442,7 @@ def build_system_prompt(
                 "only when the task needs it."
             ),
             "## Packaged exemplar pipelines\n" + "\n".join(exemplar_lines),
+            _egress_policy_section(egress),
             "## Project facts\n" + "\n".join(facts),
         )
     )

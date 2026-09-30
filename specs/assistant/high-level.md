@@ -205,6 +205,9 @@ that durable fact, in its original position after the mutation tool row.
   project's explicit `allow_row_samples` policy is therefore the authorization boundary.
   Its bounded collection owns the ordinary admitted preview-execution context, so upstream
   group-bys follow the same memory-admission contract as every other execution workflow.
+  The system prompt states the project's effective egress policy in words and requires a
+  profile before a literal comparison only when `allow_row_samples` permits one; otherwise
+  it tells the model to ask the analyst which values to match, beginning `NEEDS_INPUT:`.
 - `get_node_schema` — the column names and dtypes at any node's *output* **and on each of
   its inputs**, resolved by the
   same execution engine that runs the pipeline: the lazy plan is built up to that node —
@@ -262,9 +265,13 @@ commit reports the committed state and ledger evidence without replaying the
 mutation.
 
 Assistant-authored batches must leave every newly added node connected in the
-resulting graph. Explicit Polars code must start from the node's named input
-parameters (`df` is only the output variable, never pre-bound to an input) and
-assign the transformed frame to `df` or return a transformed frame; immutable
+resulting graph. What Polars code sees depends on its surface, and the system prompt
+and authoring guide state the same rule: on a Transform, code starts from a named
+input (each input is named by its upstream node, and `df` is only the output
+variable); on a Data Input, Rating Step, Model Scoring, Expander or Explore node, code
+sees only `df`, the frame the node produced; on a Load File node, `df` is the first
+input, further inputs are available by name and the loaded object is `obj`. Explicit
+code must assign the transformed frame to `df` or return a transformed frame; immutable
 expressions whose results would be discarded, and code that reads `df` before
 an assignment that definitely dominates that read across control flow, are
 rejected during dry-run. The derived input name `df` is reserved and rejected

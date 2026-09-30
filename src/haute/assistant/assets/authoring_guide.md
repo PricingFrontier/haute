@@ -28,12 +28,7 @@ def quotes(): ...
 
 @pipeline.polars
 def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
-    return quotes.with_columns(
-        vehicle_age=pl.col("vehicle_year").map_elements(
-            lambda year: 2026 - year,
-            return_dtype=pl.Int64,
-        )
-    )
+    return quotes.with_columns(vehicle_age=2026 - pl.col("vehicle_year"))
 
 
 @pipeline.output(config="config/quote_response/priced.json")
@@ -45,7 +40,7 @@ and performs the node's work (reading the source, scoring, rating, joining,
 assembling the response) when the file runs.  Such a node is a one-line
 declaration whose parameters name its inputs and whose body is `...` (or its
 docstring).  To add post-processing code to a Data Input, Rating Step, Model
-Score, Scenario Expander or Explore node, make its first parameter `df` — the
+Scoring, Expander or Explore node, make its first parameter `df` — the
 frame the node produced — and return the result:
 
 ```python
@@ -55,18 +50,16 @@ def frequency(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 ```
 
-An External File's code keeps its inputs by name, receives the loaded object
+A Load File node's code keeps its inputs by name, receives the loaded object
 as the keyword-only `obj`, and starts from `df = <first input>`.  Never call
 Haute's loader or scoring helpers from a function body, and never import from a
 `haute._` module.
 
-This is also the shape produced by `haute init`: its starter pipeline reads
-`config/data_input/raw_rows.json`, enriches the frame with a `polars` stage,
-and writes the terminal response through
-`config/quote_response/priced.json`.  Keep those project-relative sidecar
-references when authoring a real project.  The packaged examples use only
-self-contained decorators where possible so the parser guard can load them
-without inventing project sidecar files.
+`haute init` scaffolds a blank pipeline: `rating/main.py` declares the
+`haute.Pipeline` and no nodes, and the analyst adds nodes in the editor.
+Configured nodes keep their settings in project-relative `config/...` JSON
+sidecars, and the packaged examples do the same, so follow their sidecar
+references when authoring a real project.
 
 Use `api_input` for the live request source, `data_input` for configured file,
 database, lakehouse, Databricks, or inline tabular data, and `polars` for
@@ -102,15 +95,23 @@ path.  Preserve that convention when adding or changing a node.  Do not put
 secrets, credentials, or machine-specific absolute paths in pipeline source.
 
 Prefer lazy Polars expressions (`pl.col`, `with_columns`, `select`, `join`, and
-`drop`) over collecting a frame in a node.  A polars node's inputs are its
-named parameters (one per incoming edge) and `df` is only its output variable —
-`df` is never pre-bound to an input, so start from the input you mean by name
-(`df = quotes.filter(...)`) and never read `df` before assigning it.  Polars
-frames are immutable: explicit node code must assign the transformed result to
-`df` or return the transformed frame.  A bare `quotes.filter(...)` expression
-is discarded by the generated wrapper and is therefore invalid, and a polars
-node with no code at all raises if the pipeline is run — there is no implicit
-passthrough.
+`drop`) and vectorised arithmetic (`2026 - pl.col("vehicle_year")`) over
+collecting a frame or calling Python per row.  What code sees depends on its
+node:
+
+- On a `polars` node, code starts from a named input.  Each input is named by
+  its upstream node (one per incoming edge) and `df` is only the output
+  variable, so start from the input you mean (`df = quotes.filter(...)`) and
+  never read `df` before assigning it.
+- On a Data Input, Rating Step, Model Scoring, Expander or Explore node, code
+  sees only `df`, the frame the node produced.
+- On a Load File node, `df` is the first input, further inputs are available by
+  name, and the loaded object is `obj`.
+
+Polars frames are immutable: explicit node code must assign the transformed
+result to `df` or return the transformed frame.  A bare `quotes.filter(...)`
+expression is discarded and is therefore invalid, and a polars node with no
+logic at all raises if the pipeline is run — there is no implicit passthrough.
 Make joins explicit about their keys and join type, and name derived columns so
 downstream steps can refer to them without guessing.
 

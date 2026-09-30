@@ -19,6 +19,8 @@ import json
 import sys
 from pathlib import Path
 
+from haute.assistant._config import EgressPolicy
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_ROOT = PROJECT_ROOT / "tests" / "assistant_eval" / "golden"
 HASHES_FILE = "hashes.json"
@@ -26,6 +28,16 @@ HASHES_FILE = "hashes.json"
 GOLDEN_PIPELINE_NAME = "motor_pricing"
 GOLDEN_SOURCE_FILE = "motor_pricing.py"
 GOLDEN_NODE_SUMMARY = "3 nodes: `policies` (dataInput), `add_features` (polars), `premium` (output)"
+# A fixed policy, never the repository's haute.toml, so the snapshot does not
+# follow local configuration. Row samples are off, so the snapshot shows the
+# prompt that asks the analyst for literal values.
+GOLDEN_EGRESS_POLICY = EgressPolicy(
+    trust="organization",
+    max_sensitivity="restricted",
+    allow_project_knowledge=True,
+    allow_executable_source=True,
+    allow_row_samples=False,
+)
 HAUTE_VERSION_PLACEHOLDER = "<haute-version>"
 CAPABILITY_HASH_PLACEHOLDER = "<capability-hash>"
 
@@ -53,6 +65,7 @@ def render_golden() -> dict[str, str]:
     prompt = build_system_prompt(
         pipeline_name=GOLDEN_PIPELINE_NAME,
         source_file=GOLDEN_SOURCE_FILE,
+        egress=GOLDEN_EGRESS_POLICY,
         node_summary=GOLDEN_NODE_SUMMARY,
     )
     prompt = _replace_once(
