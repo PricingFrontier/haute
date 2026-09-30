@@ -162,7 +162,8 @@ an in-place or non-atomic fallback.
    published: the preview frame's Import (a forced `POST /api/input-cache/build`) is the one
    action that re-reads it.
 3. `schema_only=True` records nothing and never builds; the node builder's
-   `input_snapshot_missing` rejection remains the outcome for a missing generation.
+   `input_snapshot_missing` rejection remains the outcome for a missing generation,
+   except at the inferred schema tier described under snapshot resolution below.
 4. The cap gate: preparation runs only under an admitted `ExecutionContext` (its
    `admission` is present); without one it does nothing and resolution keeps its
    `input_snapshot_missing` rejection. With `current_native_memory_backend()` set the
@@ -493,8 +494,32 @@ Snapshot-mode execution contacts the configured provider only through automatic
 preparation, which is the explicit build path scheduled before planning under a hard cap.
 Resolution itself never builds: if no current snapshot exists when a node is resolved (a
 schema-only execution, or a caller outside an admitted execution context), it raises
-`PolarsIoConfigError` with the stable `input_snapshot_missing:` prefix and an instruction
-to build the snapshot or run the pipeline under an admitted execution, which prepares it.
+`InputSnapshotMissingError` (a `PolarsIoConfigError`) with the stable
+`input_snapshot_missing:` prefix and an instruction to build the snapshot or run the
+pipeline under an admitted execution, which prepares it.
+
+**Inferred schema tier.** `resolve_data_input(..., schema_only=True, node_id=...)` called
+while `recording_inferred_inputs()` is active (a context manager yielding the
+`{node_id: InferredInputSchema}` mapping it fills) does not raise for a missing generation
+when the input can be scanned. Eligibility is `inputType == "file"`, a format with a
+scanner, and an empty `scanner_rejected_arguments(fmt, config)`: the registry's one check
+of which configured arguments the scanner does not accept by name
+(`allowed_arguments` of the scanner) or by value (`_SCANNER_VALUE_DOMAINS`, for example a
+CSV `encoding` other than `utf8`/`utf8-lossy`), whatever the configured mode;
+`snapshot_input_plan` uses the same check to prefer the scanner for a configured eager
+read. An eligible input's file must exist; it is then opened by
+`scan_polars_input_for_schema(config)`, which invokes the scanner with the validated
+configured arguments. A scanner that infers types (`infer_schema_length` in its argument
+surface: CSV, NDJSON) and has no declared `schema` or `infer_schema: false` receives
+`infer_schema_length` equal to the configured value capped at `INFERRED_SCHEMA_ROWS`
+(10,000), or the cap when the configuration sets none or `None`; that value is the
+recorded `inference_rows`. Parquet and IPC read file metadata and a declared schema needs
+no inference, so they record `inference_rows=None`. The scan is returned uncollected, and
+the source cache is not written. Anything ineligible raises `InputSnapshotMissingError`
+naming the reason (`a <provider> input has no local file to scan`, `format '<name>' reads
+only eagerly`, or the reader-only argument names) and the remedy "Preview this input
+first, which builds its snapshot." Without an active collector, or when `schema_only` is
+false, a missing generation keeps the plain rejection.
 
 Direct mode is not a general compatibility path. It is valid only for a file-backed
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
@@ -742,7 +767,11 @@ failure sections above are the maintained answers.
   generation startup, and transient OS failures.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
-  typed conversion failures, and missing database rejection.
+  typed conversion failures, missing database rejection, and the inferred schema tier:
+  a CSV's separator and schema override reach the inferred schema with a bounded
+  inference count and no generation written, Parquet records no bound, and Excel, a
+  database without a snapshot, and a CSV encoding only the eager reader decodes are
+  refused with the preview remedy.
 - `tests/test_polars_io_registry.py`, `tests/test_polars_io_interface_contracts.py`, and
   `tests/test_bounded_sink_contract.py` cover registry/schema drift, validation, engine
   gates, and partitioned sink publication.

@@ -2282,7 +2282,14 @@ present a structural or schema result as execution evidence.
 - **Node builders receive the schema-only declaration.** `execute_lazy_graph`
   forwards its `schema_only` value to every builder through
   `NodeBuildContext.schema_only`, so a builder that would otherwise materialise
-  while the graph is being built honours it. There are two such builders.
+  while the graph is being built honours it. DATA_INPUT passes it to
+  `resolve_data_input(..., schema_only=...)`, which reaches the inferred schema tier
+  only while an `_input_providers.recording_inferred_inputs()` collector is active
+  (the assistant's plan verification); the builder records each inferred input under
+  its node id. Without a collector a missing snapshot keeps its `input_snapshot_missing`
+  rejection, so a caller that cannot report the weaker tier (the GLM training column
+  check) never validates against an inferred schema. There are two builders that would
+  otherwise materialise.
   MODEL_SCORE passes it to `ModelScorer(schema_only=...)`, and `_run_score_pipeline`
   then scores through the lazy row-local scan (`_score_row_local_scan`), never the
   batched path, which sinks and scores the whole input at build time; the scan

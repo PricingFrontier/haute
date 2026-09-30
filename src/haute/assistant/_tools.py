@@ -1629,8 +1629,21 @@ def _observe_project_source_evidence(
     result: Mapping[str, object],
     project_root: Path,
 ) -> None:
-    """Retain exact source facts returned to the provider for later plans."""
+    """Retain exact source facts returned to the provider for later plans.
 
+    Inspecting datasets again drops dataset evidence whose file no longer
+    exists: the model has looked at the project since, so a renamed dataset
+    stops binding its plans.
+    """
+
+    if name in {"list_datasets", "get_dataset_schema"}:
+        vanished = [
+            key
+            for key, evidence in observed.items()
+            if evidence.kind == "schema" and not evidence.path.is_file()
+        ]
+        for key in vanished:
+            del observed[key]
     if name == "get_dataset_schema":
         raw_path = result.get("path")
         raw_digest = result.get("source_digest")

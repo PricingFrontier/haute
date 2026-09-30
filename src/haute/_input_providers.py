@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import threading
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,8 @@ from haute._polars_io_registry import (
     read_polars_input,
     read_polars_input_for_snapshot,
     resolve_input_mode,
+    scan_polars_input_for_schema,
+    scanner_rejected_arguments,
     snapshot_input_plan,
     validate_data_input_config,
 )
@@ -42,6 +46,44 @@ from haute._source_cache import (
     SourceCacheIdentity,
     SourceCacheStore,
 )
+
+
+class InputSnapshotMissingError(PolarsIoConfigError):
+    """A snapshot-backed input has no published generation to read."""
+
+
+@dataclass(frozen=True, slots=True)
+class InferredInputSchema:
+    """How a Data Input's schema was inferred from its file for lack of a snapshot.
+
+    ``inference_rows`` is the ``infer_schema_length`` the scanner received, or
+    ``None`` when no type inference ran (file metadata or a declared schema).
+    """
+
+    format: str
+    inference_rows: int | None
+
+
+_INFERRED_INPUTS: ContextVar[dict[str, InferredInputSchema] | None] = ContextVar(
+    "haute_inferred_inputs", default=None
+)
+
+_PREVIEW_REMEDY = "Preview this input first, which builds its snapshot."
+
+
+@contextmanager
+def recording_inferred_inputs() -> Iterator[dict[str, InferredInputSchema]]:
+    """Admit the inferred schema tier and collect what it inferred, by node id.
+
+    Only a schema-only caller that reports the tier opens this: without it a
+    missing snapshot keeps its ``input_snapshot_missing`` rejection.
+    """
+    inferred: dict[str, InferredInputSchema] = {}
+    token = _INFERRED_INPUTS.set(inferred)
+    try:
+        yield inferred
+    finally:
+        _INFERRED_INPUTS.reset(token)
 
 
 def _base_path(base_dir: str | Path | None) -> Path:
@@ -288,23 +330,70 @@ def resolve_data_input(
     store: SourceCacheStore | None = None,
     base_dir: str | Path | None = None,
     profile: ExecutionProfile | str | None = None,
+    schema_only: bool = False,
+    node_id: str | None = None,
 ) -> pl.LazyFrame:
-    """Resolve canonical direct Parquet or an already-published snapshot."""
+    """Resolve canonical direct Parquet or an already-published snapshot.
+
+    A schema-only resolution inside :func:`recording_inferred_inputs` whose
+    snapshot is missing resolves at the inferred schema tier instead, recorded
+    under *node_id*.
+    """
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = _resolved_config_path(validated, base_dir)
         return read_polars_input(anchored, profile=profile)
 
     cache_store = store or SourceCacheStore(_cache_root())
-    return lease_input_generation(
-        cache_store,
-        source_cache_identity(validated, base_dir=base_dir),
-        missing_message=(
-            "input_snapshot_missing: This Data Input runs from a snapshot "
-            "that has not been built yet. Build the snapshot (or run a "
-            "preview, which builds it automatically) and try again."
-        ),
+    try:
+        return lease_input_generation(
+            cache_store,
+            source_cache_identity(validated, base_dir=base_dir),
+            missing_message=(
+                "input_snapshot_missing: This Data Input runs from a snapshot "
+                "that has not been built yet. Build the snapshot (or run a "
+                "preview, which builds it automatically) and try again."
+            ),
+        )
+    except InputSnapshotMissingError:
+        recorder = _INFERRED_INPUTS.get()
+        if not schema_only or recorder is None:
+            raise
+    if node_id is None:
+        raise ValueError("An inferred Data Input schema is recorded by node id; pass node_id.")
+    frame, inferred = _infer_input_schema(validated, base_dir=base_dir)
+    recorder[node_id] = inferred
+    return frame
+
+
+def _not_inferable(reason: str) -> InputSnapshotMissingError:
+    return InputSnapshotMissingError(
+        "input_snapshot_missing: This Data Input has no snapshot yet, and its schema "
+        f"cannot be inferred from its file because {reason}. {_PREVIEW_REMEDY}"
     )
+
+
+def _infer_input_schema(
+    config: dict[str, Any],
+    *,
+    base_dir: str | Path | None,
+) -> tuple[pl.LazyFrame, InferredInputSchema]:
+    """Scan a local file input's schema without a snapshot, or refuse with the remedy."""
+    provider = str(config["inputType"])
+    if provider != "file":
+        article = "an" if provider[0] in "aeiou" else "a"
+        raise _not_inferable(f"{article} {provider} input has no local file to scan")
+    anchored = _resolved_config_path(config, base_dir)
+    fmt = format_for_config(anchored)
+    if fmt.scanner is None:
+        raise _not_inferable(f"format {fmt.name!r} reads only eagerly")
+    rejected = scanner_rejected_arguments(fmt, anchored)
+    if rejected:
+        raise _not_inferable(f"only the eager reader accepts its argument(s) {rejected}")
+    if not Path(str(anchored["path"])).is_file():
+        raise PolarsIoConfigError(f"Data Input file {config['path']!r} does not exist.")
+    frame, inference_rows = scan_polars_input_for_schema(anchored)
+    return frame, InferredInputSchema(format=fmt.name, inference_rows=inference_rows)
 
 
 def lease_input_generation(
@@ -317,13 +406,13 @@ def lease_input_generation(
 
     Inside an execution context the lease is released by the context's
     cleanup, after collection; outside one, the returned plan owns it. A
-    missing generation raises ``PolarsIoConfigError`` with *missing_message*.
+    missing generation raises ``InputSnapshotMissingError`` with *missing_message*.
     """
     lease = store.lease(identity)
     try:
         generation = lease.__enter__()
     except FileNotFoundError:
-        raise PolarsIoConfigError(missing_message) from None
+        raise InputSnapshotMissingError(missing_message) from None
     release_lock = threading.Lock()
     released = False
 

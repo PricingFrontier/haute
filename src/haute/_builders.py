@@ -572,6 +572,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _profile: str | None = ctx.execution_profile,
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         _node_id: str = ctx.node.id,
+        _schema_only: bool = ctx.schema_only,
     ) -> _Frame:
         from haute._input_providers import resolve_data_input
 
@@ -584,6 +585,8 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 _config,
                 base_dir=_configured_pipeline_dir(),
                 profile=_profile,
+                schema_only=_schema_only,
+                node_id=_node_id,
             ),
             profile=_profile,
             required_output_columns=_columns,

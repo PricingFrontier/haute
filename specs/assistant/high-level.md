@@ -541,6 +541,11 @@ replacement plan from a previously returned dataset schema or project fact
 while silently dropping that evidence from the plan revision.
 Restart-redacted tool payloads contain no reusable source detail and seed no
 evidence, matching what the provider can actually observe after restart.
+When the model inspects datasets again (`list_datasets` or `get_dataset_schema`),
+dataset-schema evidence whose file no longer exists is dropped, so a dataset renamed
+after it was inspected blocks planning only until the model looks again. A missing or
+changed evidence file fails planning with `project_source_missing` or
+`stale_project_evidence` naming the project-relative file and the call that refreshes it.
 
 `dry_run_graph_edits` accepts the closed primitive operation union and explicit
 postconditions. It returns normalized operations; the base revision; a stable
@@ -589,7 +594,16 @@ with no executable target to resolve (for example deleting the only node) may
 declare `structural`. Neither tier's verifier collects rows or invokes
 external writes, and no row tier is selected implicitly; the schema tier does
 run the node code it resolves, which is why such a plan's egress is
-`schema-resolution` rather than `none`. Results name the tier
+`schema-resolution` rather than `none`. A local file Data Input with no snapshot yet (for
+example one the plan adds) is resolved at the IO layer's inferred schema tier: its schema
+comes from the format's lazy scanner with the node's own settings and bounded type
+inference, nothing is collected and no snapshot is written. The plan keeps the `schema`
+tier, and its evidence carries one `input_schema_inferred` record per such input naming
+the node, the tier `inferred`, the format, and the inference row bound (`null` for file
+metadata or a declared schema), so the plan says which schemas were inferred rather than
+read from a snapshot. An input that cannot be scanned this way (an eager-only format, a
+database or remote source, or a configuration only the eager reader accepts) fails the
+dry-run with the remedy to preview the input first. Results name the tier
 that actually ran and include bounded evidence, the resulting revision, graph
 fingerprint, ledger reference and warnings. Structural or plan verification is
 never described as row-level, model-quality, pricing, or commercial proof.

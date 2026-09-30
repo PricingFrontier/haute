@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-11 | Planned | P1 | A new local file input can be added and transformed in one plan. |
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
 | ASSIST-13 | Planned | P1 | The transcript is in order and each turn ends with a typed outcome. |
 | ASSIST-16 | Planned | P2 | Column profiles work downstream of joins and aggregations. |
@@ -109,46 +108,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-11 — New local file inputs pass dry-run on an inferred schema
-**Why:** A Data Input the plan adds has no snapshot yet, so schema-only
-dry-run fails with `input_snapshot_missing`, and splitting the plan leaves the
-new node disconnected: no tool sequence can add a CSV input and transform it.
-Separately, a dataset the model inspected and later renamed blocks every
-dry-run for the rest of the history window, and a row-count-only refresh
-produces a stale-evidence error that names no file.
-
-**Plan:** In schema-only execution, a missing snapshot for a local file whose
-format has a lazy scanner resolves the schema through that scanner with the
-Data Input's own configuration: CSV with its separator, header, quoting and
-schema overrides and a bounded type-inference row count (never
-`infer_schema_length=None`), NDJSON with the same bound, and Parquet and IPC
-from their file metadata. Nothing is collected and no snapshot is written.
-Formats that only read eagerly (JSON, Excel, ODS, Avro, IPC stream), database
-queries and remote sources fail loudly with the remedy "preview this input
-first". Eligibility is decided by the configuration as well as the format,
-reusing the I/O registry's check of which reader arguments and values the
-scanner accepts: a configuration only the eager reader supports (for example a
-CSV encoding the scanner cannot decode) gets the same refusal. The schema
-evidence records the tier `inferred`, the format and the
-inference bound, and the snapshot is still built at the first preview.
-Evidence for a dataset that no longer exists is dropped when the model
-re-inspects the project, and stale-evidence errors name the file. Specify the
-inferred tier in the execution-engine and assistant specifications first.
-
-**Acceptance:** A plan adding a CSV Data Input with a non-default separator
-and a schema override, a Transform and their edge applies at the inferred
-tier, and the resolved schema reflects both settings; an Excel input, a
-database input without a snapshot, and a CSV whose configured encoding only
-the eager reader supports are refused with the preview remedy; the dry-run
-creates no snapshot files; renaming an inspected dataset no longer blocks
-later dry-runs.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_input_providers.py`;
-`src/haute/assistant/_tools.py::get_dataset_schema`;
-`src/haute/assistant/_application.py::build_verified_plan`.
 
 ### ASSIST-12 — Every request is bound to the canvas pipeline
 **Why:** The panel always sends `pipeline: null`, and the server's default

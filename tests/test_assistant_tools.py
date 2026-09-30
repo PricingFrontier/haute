@@ -1980,6 +1980,75 @@ class TestExecutorArms:
         )
 
         assert result["error"]["code"] == "stale_project_evidence"
+        assert "data/quotes.parquet" in result["error"]["message"]
+
+    @pytest.mark.parametrize("replayed", [False, True], ids=["live-turn", "from-history"])
+    async def test_a_renamed_dataset_blocks_planning_only_until_datasets_are_listed(
+        self, project_root: Path, replayed: bool
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        pl.DataFrame({"id": [1]}).write_parquet(project_root / "data" / "extra.parquet")
+        first_turn = build_tool_executor("main.py")
+        schema = await first_turn("get_dataset_schema", {"path": "data/extra.parquet"})
+        (project_root / "data" / "extra.parquet").rename(project_root / "data" / "moved.parquet")
+        rename = {"ops": [{"op": "rename_node", "node": "enriched", "new_name": "renamed"}]}
+
+        blocked = await first_turn("dry_run_graph_edits", rename)
+        assert blocked["error"]["code"] == "project_source_missing"
+        assert "data/extra.parquet" in blocked["error"]["message"]
+
+        listed = await first_turn("list_datasets", {"project_root": "data"})
+        execute_tool = (
+            build_tool_executor(
+                "main.py",
+                prior_messages=[
+                    {"role": "tool", "name": name, "content": content, "is_error": False}
+                    for name, content in (
+                        ("get_dataset_schema", schema),
+                        ("list_datasets", listed),
+                    )
+                ],
+            )
+            if replayed
+            else first_turn
+        )
+        plan = await execute_tool("dry_run_graph_edits", rename)
+
+        assert "error" not in plan, plan
+        assert "schema:data/extra.parquet" not in plan["revision_sources"]
+
+    async def test_a_new_excel_input_is_refused_with_the_preview_remedy(self, project_root: Path):
+        from haute._sandbox import set_project_root
+        from haute.assistant._tools import build_tool_executor
+
+        set_project_root(project_root)  # restored by the autouse _restore_project_root
+        execute_tool = build_tool_executor("main.py")
+        result = await execute_tool(
+            "dry_run_graph_edits",
+            {
+                "ops": [
+                    {
+                        "op": "add_node",
+                        "node_type": "dataInput",
+                        "name": "book",
+                        "ref": "book",
+                        "config": {
+                            "inputType": "file",
+                            "format": "excel",
+                            "mode": "read",
+                            "path": "book.xlsx",
+                        },
+                    },
+                    {"op": "add_node", "node_type": "explore", "name": "look", "ref": "look"},
+                    {"op": "add_edge", "source": "$book", "target": "$look"},
+                ]
+            },
+        )
+
+        assert result["error"]["code"] == "schema_unresolvable"
+        assert "format 'excel' reads only eagerly" in result["error"]["message"]
+        assert "Preview this input first" in result["error"]["message"]
 
     async def test_new_turn_carries_provider_visible_schema_evidence_into_plan(
         self,

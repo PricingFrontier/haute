@@ -17,6 +17,7 @@ from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
 from haute._graph_utils import _sanitize_func_name
+from haute._input_providers import InferredInputSchema, recording_inferred_inputs
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
 from haute._types import NodeType, PipelineGraph
@@ -230,32 +231,53 @@ class _PreparedGraph:
         )
 
 
-def _resolve_lazy_output(prepared: _PreparedGraph, target: str) -> Any:
+def _resolve_lazy_output(
+    prepared: _PreparedGraph, target: str
+) -> tuple[Any, Mapping[str, InferredInputSchema]]:
     """Build one node's lazy output (a frame, or a frame per port) without rows.
 
     `schema_only=True` states the invariant this path already holds: callers
     read `collect_schema()` and never collect a frame or invoke a sink, so the
     engine's group-by materialisation-admission gate — which bounds peak memory
-    during materialisation — does not apply to it.
+    during materialisation — does not apply to it. The resolution records the
+    inferred schema tier, so a local file input with no snapshot yet resolves
+    from its file; the Data Inputs that did are returned by node id.
     """
 
-    lazy_outputs, *_ = execute_lazy_graph(
-        prepared.flattened,
-        _build_node_fn,
-        target_node_id=target,
-        preserve_node_ids={target},
-        preamble_ns=prepared.preamble_ns,
-        source=prepared.graph.active_source,
-        enforce_contracts=True,
-        schema_only=True,
-    )
-    return lazy_outputs[target]
+    with recording_inferred_inputs() as inferred:
+        lazy_outputs, *_ = execute_lazy_graph(
+            prepared.flattened,
+            _build_node_fn,
+            target_node_id=target,
+            preserve_node_ids={target},
+            preamble_ns=prepared.preamble_ns,
+            source=prepared.graph.active_source,
+            enforce_contracts=True,
+            schema_only=True,
+        )
+    return lazy_outputs[target], inferred
 
 
-def _resolve_target_evidence(prepared: _PreparedGraph, target: str) -> Mapping[str, object]:
-    """Resolve one terminal's schema through the production lazy engine."""
+def _inferred_input_evidence(node: str, inferred: InferredInputSchema) -> Mapping[str, object]:
+    return {
+        "kind": "input_schema_inferred",
+        "node": node,
+        "tier": "inferred",
+        "format": inferred.format,
+        "inference_rows": inferred.inference_rows,
+    }
 
-    output = _resolve_lazy_output(prepared, target)
+
+def _resolve_target_evidence(
+    prepared: _PreparedGraph, target: str
+) -> tuple[Mapping[str, object], Mapping[str, InferredInputSchema]]:
+    """Resolve one terminal's schema through the production lazy engine.
+
+    Returns the terminal's evidence and the inputs in its lineage whose schema
+    was inferred from their file.
+    """
+
+    output, inferred = _resolve_lazy_output(prepared, target)
     extra: dict[str, object]
     if isinstance(output, dict):
         ports = {port: _frame_schema(frame) for port, frame in sorted(output.items())}
@@ -283,7 +305,7 @@ def _resolve_target_evidence(prepared: _PreparedGraph, target: str) -> Mapping[s
         "column_count": column_count,
         "schema_sha256": schema_digest,
         **extra,
-    }
+    }, inferred
 
 
 def _failed_step(
@@ -351,6 +373,10 @@ def _schema_evidence(
     `baseline=None` is the strict mode used for post-save verification, where
     every target is one the plan already resolved: a failure there is a real
     verification failure and can never be excused.
+
+    The terminal records are followed by one `input_schema_inferred` record per
+    Data Input in a resolved terminal's lineage whose schema came from its file
+    because it has no snapshot yet, sorted by node id.
     """
 
     if not targets:
@@ -359,10 +385,13 @@ def _schema_evidence(
     prepared = _PreparedGraph.build(graph)
     prepared_baseline: _PreparedGraph | None = None
     evidence: list[Mapping[str, object]] = []
+    inferred_inputs: dict[str, InferredInputSchema] = {}
     warnings: list[str] = []
     for target in targets:
         try:
-            evidence.append(_resolve_target_evidence(prepared, target))
+            target_evidence, inferred = _resolve_target_evidence(prepared, target)
+            evidence.append(target_evidence)
+            inferred_inputs.update(inferred)
             continue
         except Exception as exc:
             failure = exc
@@ -387,6 +416,9 @@ def _schema_evidence(
             failure,
             step=_failed_step(graph, changed, failure),
         ) from failure
+    evidence.extend(
+        _inferred_input_evidence(node, inferred_inputs[node]) for node in sorted(inferred_inputs)
+    )
     return tuple(evidence), tuple(warnings)
 
 
@@ -527,7 +559,7 @@ def _prove_nodes_ready(graph: PipelineGraph, node_ids: Collection[str]) -> None:
         if prepared is None:
             prepared = _PreparedGraph.build(graph)
         try:
-            frame = _resolve_lazy_output(prepared, node_id)
+            frame, _inferred = _resolve_lazy_output(prepared, node_id)
             schema = {name: str(dtype) for name, dtype in frame.collect_schema().items()}
         except Exception as exc:
             raise SchemaUnresolvableError(node_id, exc, step=None) from exc

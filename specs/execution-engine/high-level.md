@@ -157,7 +157,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   inside a hard memory cap (in the current isolated worker, or a spawned one admitted from
   the execution's budget), warned before and recorded in the terminal diagnostics; a
   schema-only execution, or one without an admitted context, never builds and meets the
-  typed `input_snapshot_missing` rejection instead. Optional input code runs exactly once through `_exec_user_code` after
+  typed `input_snapshot_missing` rejection instead. The one exception is the inferred
+  schema tier: a schema-only caller that records inferred inputs resolves a missing local
+  file snapshot's schema through the format's lazy scanner with the node's own settings
+  and bounded type inference, collecting nothing and writing no snapshot, and records the
+  tier `inferred`; formats without a scanner, configurations only the eager reader
+  accepts, and non-file providers are refused with the remedy to preview the input
+  first. Optional input code runs exactly once through `_exec_user_code` after
   provider resolution. Direct source signatures — or, for a snapshot-backed input, the
   generation pointer together with the current source signature — along with source
   identity, mode, and code, participate in fingerprints without resolved secrets, so a

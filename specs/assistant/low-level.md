@@ -16,10 +16,10 @@
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes written with vectorised Polars expressions, the per-surface `df` rule the system prompt states, what `haute init` scaffolds (a blank pipeline), naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
 | `src/haute/assistant/assets/examples/<id>/pipeline.py` | Every example is a bundle; there is no other example format. The bundle source is parsed as data by `_assets.py`, never imported, and rendered in the same compact graph shape as the get-pipeline tool; its module docstring supplies the narrative and the index summary. `linear_pricing` teaches implicit wiring through a source, one Polars enrichment and an output; `branched_features` teaches parallel feature branches joined before the response with explicit connections. `model_lifecycle` ends its training branch at Model Training and feeds the response from Model Score; `online_scenario_optimisation` ends at the Optimisation node and feeds the response from the scored scenario frame; `ratebook_optimisation_apply` bands the raw rating column through a Banding node that is both the optimiser's `banding_source` and Apply Optimisation's ratebook input; `reusable_submodel` names its occurrence `enrichment`, apart from the `enriched` node inside its definition. A request for the removed `joined_reference` example is refused with `example_removed`, naming `reference_join`, which teaches the same edge join. |
 | `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
-| `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. It performs no writes. |
+| `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. `_evidence_manifest_entry` names the project-relative file in its missing-source and stale-evidence messages, with the tool call that refreshes it (listing datasets for a vanished dataset, reading a changed dataset's schema, querying project knowledge for a document). It performs no writes. |
 | `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries, edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. |
 | `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and document-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. |
-| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
@@ -254,7 +254,12 @@ orphaned halves).
   every authority-relevant field.
   A schema-tier plan carries a bounded, deterministic record for each verified
   terminal (`node`, output/port shape, column count, schema SHA-256); that
-  evidence is part of the hash rather than an informational afterthought.
+  evidence is part of the hash rather than an informational afterthought. After
+  the terminal records come `input_schema_inferred` records (`node`, `tier:
+  "inferred"`, `format`, `inference_rows`), one per Data Input in a resolved
+  terminal's lineage whose schema came from the IO layer's inferred schema tier,
+  deduplicated and sorted by node id. They carry no path or column name, and the
+  plan's tier stays `schema`.
 - **`SemanticDiff`**: closed added/removed/renamed/updated node records,
   added/removed edges, configuration changes, preamble change and sidecar
   change identities. Provider-visible identity lists are capped at 50 entries
@@ -443,7 +448,15 @@ excluded count; its path and content never cross the tool boundary.
    `execute_lazy_graph(..., enforce_contracts=True, schema_only=True)` +
    `collect_schema()`.
    No frame is collected and no sink is invoked, which is what `schema_only`
-   declares to the engine's group-by materialisation-admission gate. It then
+   declares to the engine's group-by materialisation-admission gate. Every such
+   resolution (`_application._resolve_lazy_output`, which `_prove_nodes_ready` also
+   uses) runs inside `_input_providers.recording_inferred_inputs()`, so a local file
+   Data Input with no snapshot resolves at the inferred schema tier and is recorded;
+   an input the tier cannot scan fails the dry-run as `schema_unresolvable` whose
+   message carries the IO layer's `input_snapshot_missing:` reason and the remedy
+   "Preview this input first, which builds its snapshot." The dry-run writes no
+   snapshot, and post-save verification re-resolves the same inputs the same way, so
+   the inferred records compare equal. It then
    binds the normalized operations, semantic diff, postconditions, tier, warnings,
    and closed schema evidence into the plan
    hash, and records the immutable validated plan. A schema failure aborts the
@@ -1275,7 +1288,13 @@ fixture for route tests). The implemented coverage is:
   `[source, free_code]` on the named Transform, a palette-default Rating Step filled
   with `[free_code]`, and a Load File whose free-code step uses `obj` and a second
   input by name each apply in one dry-run, reparse with their steps and no
-  `_steps_error` or `_steps_discarded`, and execute on fixture data.
+  `_steps_error` or `_steps_discarded`, and execute on fixture data. Project evidence
+  coverage pins a dataset changed after retrieval failing the dry-run with
+  `stale_project_evidence` naming the file, and a dataset renamed after inspection
+  blocking the dry-run with `project_source_missing` naming it until `list_datasets` runs
+  again, in the live turn and when replayed from history. A dry-run adding an Excel Data
+  Input is refused as `schema_unresolvable` whose tool message carries the reason and
+  the "Preview this input first" remedy.
 - **`tests/test_assistant_assets.py`** — the authoring guide loads non-empty via
   `importlib.resources`; every example is a content-addressed bundle (no
   single-file example remains) and parses through `parse_pipeline_to_graph`; the
@@ -1319,6 +1338,10 @@ fixture for route tests). The implemented coverage is:
   validation's 400; an `offset` the input lacks, a GLM with no family and a Load File whose
   path does not exist as `node_not_ready`. A valid GLM (`glm`, `poisson`, log link,
   `exposure` offset) applies, and an edit beside a saved empty modelling node applies.
+  A plan adding a CSV Data Input with a `;` separator and a schema override, a Transform
+  and their edge applies with an `input_schema_inferred` record (tier `inferred`, format
+  `csv`, the bounded row count), the Transform's resolved schema reflects both settings,
+  post-save verification reproduces that evidence, and no snapshot generation is written.
 - **`tests/test_assistant_project_knowledge.py`** — source attribution,
   sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
   policy, symlink containment, and metadata-only durable cache state.

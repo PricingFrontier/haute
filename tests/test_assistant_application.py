@@ -808,7 +808,7 @@ class TestOutputTargetEvidence:
             raise AssertionError("target evidence must never collect data")
 
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
-        evidence = _resolve_target_evidence(_PreparedGraph.build(graph), "out")
+        evidence, _inferred = _resolve_target_evidence(_PreparedGraph.build(graph), "out")
 
         assert evidence["kind"] == "node_schema_resolved"
         assert evidence["node"] == "out"
@@ -1351,3 +1351,95 @@ class TestWrittenNodesAreReady:
         await service.apply("main.py", plan.plan_hash)
 
         assert _reparsed_config(modelling_project, "train") == {}
+
+
+@pytest.fixture()
+def csv_project(project_root: Path) -> Path:
+    from haute._sandbox import set_project_root
+
+    set_project_root(project_root)  # restored by the autouse _restore_project_root
+    (project_root / "claims.csv").write_text("id;amount\n1;10\n2;20\n", encoding="utf-8")
+    return project_root
+
+
+def _add_input_and_transform(config: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {
+            "op": "add_node",
+            "node_type": "dataInput",
+            "name": "claims",
+            "ref": "c",
+            "config": config,
+        },
+        {
+            "op": "add_node",
+            "node_type": "polars",
+            "name": "doubled",
+            "ref": "d",
+            "config": {
+                "steps": _free_code_steps(
+                    "claims", "# Double amount\ndf = df.with_columns(y=pl.col('amount') * 2)"
+                )
+            },
+        },
+        {"op": "add_edge", "source": "$c", "target": "$d"},
+    ]
+
+
+class TestInferredInputSchemas:
+    """A new local file input resolves its schema from the file at dry-run."""
+
+    _CSV = {
+        "inputType": "file",
+        "format": "csv",
+        "path": "claims.csv",
+        "arguments": {"separator": ";", "schema_overrides": {"id": "str"}},
+    }
+
+    async def test_a_new_csv_input_and_its_transform_apply_at_the_inferred_tier(
+        self, csv_project: Path
+    ):
+        import json
+        from hashlib import sha256
+
+        from haute._input_providers import source_cache_identity
+        from haute._polars_io_registry import INFERRED_SCHEMA_ROWS
+        from haute._source_cache import SourceCacheStore
+
+        service = _service(csv_project)
+        plan = service.dry_run("main.py", _add_input_and_transform(self._CSV))
+
+        # The separator splits two columns and the override keeps `id` a string.
+        columns = [
+            {"name": "id", "dtype": "String"},
+            {"name": "amount", "dtype": "Int64"},
+            {"name": "y", "dtype": "Int64"},
+        ]
+        digest = sha256(
+            json.dumps({"columns": columns}, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert plan.verification_tier == "schema"
+        assert [dict(item) for item in plan.verification_evidence] == [
+            {
+                "kind": "node_schema_resolved",
+                "node": "doubled",
+                "shape": "frame",
+                "column_count": 3,
+                "schema_sha256": digest,
+            },
+            {
+                "kind": "input_schema_inferred",
+                "node": "claims",
+                "tier": "inferred",
+                "format": "csv",
+                "inference_rows": INFERRED_SCHEMA_ROWS,
+            },
+        ]
+
+        result = await service.apply("main.py", plan.plan_hash)
+
+        assert result.verification_evidence[-len(plan.verification_evidence) :] == (
+            plan.verification_evidence
+        )
+        identity = source_cache_identity(self._CSV, base_dir=csv_project)
+        assert SourceCacheStore(csv_project).status(identity).state == "missing"

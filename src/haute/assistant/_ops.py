@@ -820,7 +820,12 @@ def _evidence_manifest_entry(
     resolved, relative = _project_relative_path(project_root, evidence.path)
     if not resolved.is_file():
         raise AssistantOperationError(
-            "project_source_missing", f"Project source is missing: {relative}"
+            "project_source_missing",
+            f"Dataset {relative} inspected earlier no longer exists. Call list_datasets "
+            "to see the current datasets, then plan again."
+            if evidence.kind == "schema"
+            else f"Project source is missing: {relative}. Call get_project_knowledge "
+            "again, then plan again.",
         )
     if evidence.kind == "content":
         actual = sha256(resolved.read_bytes()).hexdigest()
@@ -831,7 +836,11 @@ def _evidence_manifest_entry(
     if actual != evidence.digest:
         raise AssistantOperationError(
             "stale_project_evidence",
-            "A retrieved project source changed; inspect it again before planning.",
+            f"Dataset {relative} changed after it was inspected. Call get_dataset_schema "
+            "on it again, then plan again."
+            if evidence.kind == "schema"
+            else f"Project source {relative} changed after it was retrieved. Call "
+            "get_project_knowledge again, then plan again.",
         )
     return f"{evidence.kind}:{relative}", actual
 
