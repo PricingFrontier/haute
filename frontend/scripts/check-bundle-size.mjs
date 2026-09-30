@@ -176,7 +176,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // loads lazily, fetched when a trace request starts; the always-needed request
 // surface (TraceStatePanel), trace store state and canvas projection stay eager.
 // The merged initial bundle is 279.5 KiB; 281 KiB keeps ~1.5 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 281
+// The connection drop menu adds ~0.6 KiB of deliberate eager core: creating the
+// chosen node and its edge runs in the canvas edge handlers on release, beside
+// the empty-canvas hit-test and the menu's type list. The menu itself stays
+// lazy. The merged initial bundle is 281.4 KiB; 283 KiB restores ~1.6 KiB of
+// headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 283
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
