@@ -79,6 +79,7 @@ to the build journeys the evaluation targets first.
 | ASSIST-21 | Planned | P2 | The model edits stepped nodes step by step and can see each node's authoring state. |
 | ASSIST-25 | Planned | P2 | Renaming a node rewrites the references that structured configs hold. |
 | ASSIST-26 | Planned | P2 | Structured cards after a free-code card keep their column help. |
+| ASSIST-27 | Planned | P1 | A new Quote Input can be added and used in one plan. |
 | ASSIST-30 | Planned | P1 | No regex over the user's words steers a turn. |
 | ASSIST-31 | Planned | P1 | After every apply the analyst sees a change card built from what was saved. |
 | ASSIST-32 | Planned | P1 | A multi-stage build can finish in one turn, with a change card per stage. |
@@ -155,6 +156,32 @@ code creates; checked in a browser pass on a scratch project.
 
 **Evidence:** `frontend/src/panels/editors/polarsSteps/derivedColumns.ts`.
 
+### ASSIST-27 — A new Quote Input dry-runs on its declared contract
+**Why:** A Quote Input's tables are read from a snapshot that only a preview
+builds, so a plan that adds a Quote Input, or a Source Switch over one, fails
+dry-run with `input_snapshot_missing`: the assistant cannot build a live
+pricing pipeline from scratch. The node card harness for `ASSIST-22` had to
+build the snapshots itself, as a preview would.
+
+**Plan:** Within the plan verification that admits the inferred tier
+(`recording_inferred_inputs`), a missing Quote Input snapshot resolves each
+declared table from the node's own request contract: every `tables[].columns[]`
+entry declares its `type`, so the schema needs no request data. The evidence
+records a declared tier per table. A contract that leaves a selected column
+without a type is refused with the remedy "preview this input first". Specify
+it in the io-layer and assistant specifications first.
+
+**Acceptance:** A plan adding a Quote Input with two declared tables and a
+Transform over one of them applies, and the evidence records the declared
+tier; a plan adding a Source Switch over a new Quote Input and a file input
+applies; a selected column without a type is refused with the preview remedy;
+the dry-run creates no snapshot files.
+
+**Dependencies:** None; builds on the inferred tier the file inputs use.
+
+**Evidence:** `src/haute/_api_input_schema.py`; `src/haute/_input_providers.py`;
+`src/haute/assistant/_application.py::build_verified_plan`.
+
 ### ASSIST-30 — A structural controller
 **Why:** Completion, routing and clarification are driven by regular
 expressions over the user's words, which misroute ordinary phrasing and turn
@@ -228,11 +255,13 @@ through the save service, only while the current revision is the change's
 result, and notes it in the chat; "Compare" opens the existing comparison
 view. Assistant updates carry their origin, ring and centre the changed nodes
 instead of re-fitting, and assistant saves use the change headline as the Git
-message.
+message. A plan's single-use record must not outlive the revision it applied
+to: after an undo restores that revision, dry-running the same change again
+issues a fresh plan instead of `plan_already_applied`.
 
 **Acceptance:** Undo restores the file byte for byte, removes an added
-sidecar, and refuses once a later save exists; a browser pass shows the
-changed nodes ringed.
+sidecar, and refuses once a later save exists; after an undo the same change
+dry-runs and applies again; a browser pass shows the changed nodes ringed.
 
 **Dependencies:** `ASSIST-15`, `ASSIST-31`.
 
