@@ -520,11 +520,9 @@ _EXAMPLE_IDS: dict[NodeType, tuple[str, ...]] = {
     NodeType.RATING_STEP: ("rating_step",),
 }
 _RECIPE_IDS: dict[NodeType, tuple[str, ...]] = {
-    NodeType.DATA_INPUT: ("parquet_showcase",),
     NodeType.BANDING: ("categorical_banding",),
-    NodeType.EDGE_JOIN: ("parquet_showcase", "reference_join"),
-    NodeType.POLARS: ("parquet_showcase",),
-    NodeType.OUTPUT: ("parquet_showcase", "response_output"),
+    NodeType.EDGE_JOIN: ("reference_join",),
+    NodeType.OUTPUT: ("response_output",),
     NodeType.RATING_STEP: ("rating_step",),
 }
 

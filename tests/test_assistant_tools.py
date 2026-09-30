@@ -1139,7 +1139,7 @@ class TestReadTools:
         assert result["recursive"] is True
         assert result["truncated"] is False
 
-    async def test_showcase_wording_cannot_rewrite_dataset_tool_arguments(self, project_root: Path):
+    async def test_executor_runs_the_dataset_listing_the_model_asked_for(self, project_root: Path):
         from haute.assistant._tools import build_tool_executor
 
         nested = project_root / "data" / "competitor_premiums"
@@ -1301,8 +1301,8 @@ class TestToolExecutorDispatch:
                 "column": "vehicle_year",
                 "output_column": "vehicle_year_band",
                 "rules": [
-                    {"value": 2019, "assignment": "older"},
-                    {"value": 2021, "assignment": "newer"},
+                    {"value": "2019", "assignment": "older"},
+                    {"value": "2021", "assignment": "newer"},
                 ],
                 "output_name": "year_response",
                 "output_columns": ["vehicle_year_band"],
@@ -1356,7 +1356,7 @@ class TestToolExecutorDispatch:
             "name": "year_band",
             "column": "vehicle_year",
             "output_column": "vehicle_year_band",
-            "rules": [{"value": 2019, "assignment": "older"}],
+            "rules": [{"value": "2019", "assignment": "older"}],
             "default": "unknown",
         }
         prior = await execute_tool("plan_recipe", arguments)
@@ -1459,7 +1459,7 @@ class TestToolExecutorDispatch:
                 "name": "year_banding",
                 "column": "vehicle_year",
                 "output_column": "vehicle_year_band",
-                "rules": [{"value": 2019, "assignment": "older"}],
+                "rules": [{"value": "2019", "assignment": "older"}],
                 "default": "unknown",
             },
         )
@@ -1694,7 +1694,7 @@ class TestToolExecutorDispatch:
                 "name": "year_band",
                 "column": "vehicle_year",
                 "output_column": "vehicle_year_band",
-                "rules": [{"value": 2019, "assignment": "older"}],
+                "rules": [{"value": "2019", "assignment": "older"}],
                 "output_name": "year_response",
                 "output_columns": ["vehicle_year_band", "vehicle_year_band"],
                 "default": "unknown",
@@ -1749,6 +1749,34 @@ class TestToolExecutorDispatch:
         assert error["expected_types"] == ["boolean"]
         assert "must be JSON boolean (true or false), but a string was sent" in error["message"]
         assert "True" not in error["message"]
+
+    @pytest.mark.parametrize(("value", "text_form"), [(True, '"true"'), (3, "digits")])
+    async def test_non_string_categorical_rule_value_is_refused_with_its_text_form(
+        self, project_root: Path, value: object, text_form: str
+    ):
+        """Banding matches the column's text form, so a boolean or number rule
+        would never match; the refusal says how to write the value instead."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "plan_recipe",
+            {
+                "recipe_id": "categorical_banding",
+                "source": "quotes",
+                "name": "Claims band",
+                "column": "has_claims",
+                "output_column": "claims_group",
+                "rules": [{"value": value, "assignment": "claimed"}],
+                "default": "other",
+            },
+        )
+
+        error = result["error"]
+        assert error["code"] == "invalid_request"
+        assert error["validation_reason"] == "wrong_type"
+        assert error["validation_path"] == "plan_recipe.rules[0].value"
+        assert text_form in error["message"]
 
     @pytest.mark.parametrize(
         ("name", "arguments"),

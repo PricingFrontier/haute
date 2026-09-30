@@ -645,17 +645,14 @@ class TestTurnReservation:
         store = SessionStore()
         monkeypatch.setattr(assistant_routes, "session_store", store)
         session = store.create("main.py")
-        original = (
-            "can you make a pipeline with the parquets in the data folder. "
-            "use as many nodee types as you can"
-        )
+        original = "Band region into discrete region groups."
         store.append(
             session,
             [
                 {"role": "user", "content": original},
                 {
                     "role": "assistant",
-                    "content": "NEEDS_INPUT: choose the two Parquet files.",
+                    "content": "NEEDS_INPUT: which regions go together?",
                 },
             ],
         )
@@ -677,7 +674,7 @@ class TestTurnReservation:
 
         provider = _ScriptedProvider(
             [
-                TextDelta("NEEDS_INPUT: choose the second Parquet file."),
+                TextDelta("NEEDS_INPUT: what is the default group?"),
                 TurnStop("end", ProviderUsage(1, 1)),
             ]
         )
@@ -687,7 +684,7 @@ class TestTurnReservation:
         response = await assistant_routes.post_assistant_message(
             AssistantMessageRequest(
                 session_id=session.id,
-                message="data/competitor_insight.parquet",
+                message="north and south are core",
             )
         )
         chunks = [chunk async for chunk in response.body_iterator]
@@ -695,7 +692,7 @@ class TestTurnReservation:
         assert any("completed" in chunk for chunk in chunks)
         assert set(captured) == {"source_file", "session_id", "prior_messages"}
         assert len(provider.calls) == 1
-        assert "Suggested recipe: `parquet_showcase`" in provider.calls[0]["system"]
+        assert "Suggested recipe: `categorical_banding`" in provider.calls[0]["system"]
         dataset_tool = next(
             tool for tool in provider.calls[0]["tools"] if tool["name"] == "list_datasets"
         )
@@ -704,7 +701,7 @@ class TestTurnReservation:
         recipe_tool = next(
             tool for tool in provider.calls[0]["tools"] if tool["name"] == "plan_recipe"
         )
-        assert len(recipe_tool["input_schema"]["oneOf"]) == 5
+        assert len(recipe_tool["input_schema"]["oneOf"]) == 4
 
     async def test_pre_stream_failure_after_reservation_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch

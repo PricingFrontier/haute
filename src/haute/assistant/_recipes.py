@@ -8,12 +8,10 @@ import math
 import re
 from collections.abc import Mapping
 from copy import deepcopy
-from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Any, cast
 
 from haute._cache import canonical_json
-from haute._graph_utils import _sanitize_func_name
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -32,6 +30,14 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return tuple(_freeze(item) for item in value)
     return value
+
+
+_CATEGORICAL_VALUE_DESCRIPTION = (
+    "Column value this rule matches, as text: banding casts the column to text before "
+    'matching, so a boolean is "true" or "false", an integer is its digits (e.g. "3"), '
+    "and a string is matched exactly."
+)
+_REFERENCE_JOIN_MODES = ("inner", "left", "right", "full", "semi", "anti")
 
 
 def _descriptor(
@@ -61,10 +67,7 @@ def _descriptor(
         "additionalProperties": False,
         "description": "One exact categorical value-to-band assignment.",
         "properties": {
-            "value": {
-                "type": ["string", "number", "boolean"],
-                "description": "Non-null finite JSON scalar matched exactly.",
-            },
+            "value": string_schema(_CATEGORICAL_VALUE_DESCRIPTION),
             "assignment": string_schema("Band label assigned when the value matches."),
         },
         "required": ["value", "assignment"],
@@ -130,15 +133,6 @@ def _descriptor(
         },
         "required": ["output_column", "operation", "base_value"],
     }
-    showcase_source = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "path": string_schema("Safe project-relative .parquet file path."),
-            "name": graph_name,
-        },
-        "required": ["path", "name"],
-    }
     schemas: dict[str, dict[str, object]] = {
         "categorical_banding": {
             "source": source,
@@ -160,7 +154,7 @@ def _descriptor(
             "reference_source": string_schema("Existing joining/reference graph node id."),
             "name": graph_name,
             "how": {
-                "enum": ["inner", "left", "right", "full", "semi", "anti", "cross"],
+                "enum": list(_REFERENCE_JOIN_MODES),
                 "description": "Join mode.",
             },
             "left_on": {
@@ -175,13 +169,6 @@ def _descriptor(
                 "description": "Ordered join columns on the joining/reference input.",
                 "items": string_schema("Joining/reference join column."),
             },
-        },
-        "parquet_showcase": {
-            "base": showcase_source,
-            "reference": showcase_source,
-            "join_name": graph_name,
-            "join_key": string_schema("Column present in both Parquet sources."),
-            "transform_name": graph_name,
         },
         "response_output": {
             "source": source,
@@ -204,8 +191,7 @@ def _descriptor(
     }
     for recipe_id, schema in schemas.items():
         schema["output_name"] = output_name
-        if recipe_id != "parquet_showcase":
-            schema["output_columns"] = output_columns
+        schema["output_columns"] = output_columns
     properties = schemas[identifier]
     return cast(
         Mapping[str, object],
@@ -250,19 +236,6 @@ _RECIPES = tuple(
                 ["reference_join"],
             ),
             _descriptor(
-                "parquet_showcase",
-                "Build a coherent multi-node showcase from two Parquet sources.",
-                [
-                    "base",
-                    "reference",
-                    "join_name",
-                    "join_key",
-                    "transform_name",
-                    "output_name",
-                ],
-                ["minimal_batch", "reference_join"],
-            ),
-            _descriptor(
                 "response_output",
                 "Create a mapped JSON response output.",
                 ["source", "output_name", "output_columns"],
@@ -281,18 +254,6 @@ _RECIPES = tuple(
 _BY_ID: dict[str, Mapping[str, object]] = {str(item["id"]): item for item in _RECIPES}
 _BANDING_ROUTE_TERMS = frozenset(
     {"band", "bands", "banded", "banding", "bucket", "bucketed", "bucketing"}
-)
-_SHOWCASE_AUTHORING_TERMS = frozenset({"author", "build", "create", "make"})
-_DATASET_DIRECTORY_PATTERNS = (
-    re.compile(
-        r"\b(?:in|from|under)\s+(?:the\s+)?([A-Za-z0-9_-]+)\s+(?:folder|directory)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:in|from|under)\s+(?:the\s+)?(?:folder|directory)\s+"
-        r"(?:called|named)\s+([A-Za-z0-9_-]+)\b",
-        re.IGNORECASE,
-    ),
 )
 _JOIN_ROUTE_TERMS = frozenset({"join", "joins", "joined", "joining"})
 _DISCRETE_ROUTE_CUES = frozenset({"categorical", "categories", "category", "discrete"})
@@ -335,17 +296,6 @@ def request_requires_material_clarification(request: str) -> bool:
     )
 
 
-def explicit_dataset_directory(request: str) -> str | None:
-    """Return one safe simple directory explicitly named by the user."""
-
-    for pattern in _DATASET_DIRECTORY_PATTERNS:
-        if (match := pattern.search(request)) is not None:
-            name = match.group(1)
-            if name.casefold() not in {"credentials", "secrets"}:
-                return name
-    return None
-
-
 def route_recipe_request(request: str) -> str | None:
     """Suggest one conservative recipe for prompt guidance, never as authority."""
 
@@ -356,17 +306,6 @@ def route_recipe_request(request: str) -> str | None:
     matches: list[str] = []
     has_banding_term = bool(token_set.intersection(_BANDING_ROUTE_TERMS))
     has_discrete_cue = bool(token_set.intersection(_DISCRETE_ROUTE_CUES))
-    has_showcase_cue = (
-        "showcase" in token_set
-        or any(left == "node" and right == "types" for left, right in zip(tokens, tokens[1:]))
-        or {"many", "types"}.issubset(token_set)
-    )
-    routes_parquet_showcase = (
-        "pipeline" in token_set
-        and bool(token_set.intersection({"parquet", "parquets"}))
-        and bool(token_set.intersection(_SHOWCASE_AUTHORING_TERMS))
-        and has_showcase_cue
-    )
     # Only categorical banding has a recipe; a numeric (range, bucket, or
     # breakpoint) banding request suggests none.
     routes_categorical_banding = has_banding_term and has_discrete_cue
@@ -376,8 +315,6 @@ def route_recipe_request(request: str) -> str | None:
         matches.append("reference_join")
     if any(left == "rating" and right == "step" for left, right in zip(tokens, tokens[1:])):
         matches.append("rating_step")
-    if routes_parquet_showcase:
-        matches.append("parquet_showcase")
     has_response_output = any(
         left == "response" and right == "output" for left, right in zip(tokens, tokens[1:])
     )
@@ -438,6 +375,16 @@ def _arguments(recipe_id: str, raw: object) -> dict[str, Any]:
 _CATEGORICAL_RULE_KEYS = frozenset({"value", "assignment"})
 
 
+def _categorical_text_form(value: object) -> str:
+    """The text a non-string rule value must be written as to match its rows."""
+
+    if isinstance(value, bool):
+        return json.dumps("true" if value else "false")
+    if isinstance(value, int):
+        return json.dumps(str(value))
+    return "the text the column holds for that value"
+
+
 def _validate_categorical_rules(raw: object) -> None:
     if not isinstance(raw, list) or not raw:
         raise RecipeError(
@@ -445,7 +392,7 @@ def _validate_categorical_rules(raw: object) -> None:
             "Argument 'rules' must be a non-empty list.",
             argument="rules",
         )
-    seen_values: set[tuple[type, object]] = set()
+    seen_values: set[str] = set()
     for index, rule in enumerate(raw):
         argument = f"rules[{index}]"
         if not isinstance(rule, Mapping) or set(rule) != _CATEGORICAL_RULE_KEYS:
@@ -455,24 +402,26 @@ def _validate_categorical_rules(raw: object) -> None:
                 argument=argument,
             )
         value = rule["value"]
-        if (
-            value is None
-            or not isinstance(value, str | int | float | bool)
-            or (isinstance(value, float) and not math.isfinite(value))
-        ):
+        if not isinstance(value, str):
             raise RecipeError(
                 "recipe_argument_invalid",
-                f"Argument {argument!r}.value must be a non-null finite JSON scalar.",
+                f"Argument {argument!r}.value must be a string: banding matches the "
+                f"column's text form, so write it as {_categorical_text_form(value)}.",
                 argument=f"{argument}.value",
             )
-        identity = (type(value), value)
-        if identity in seen_values:
+        if not value:
             raise RecipeError(
                 "recipe_argument_invalid",
-                f"Argument {argument!r}.value duplicates an earlier rule.",
+                f"Argument {argument!r}.value must be a non-empty string.",
                 argument=f"{argument}.value",
             )
-        seen_values.add(identity)
+        if value in seen_values:
+            raise RecipeError(
+                "recipe_argument_invalid",
+                f"Argument {argument!r}.value duplicates an earlier rule's value.",
+                argument=f"{argument}.value",
+            )
+        seen_values.add(value)
         assignment = rule["assignment"]
         if not isinstance(assignment, str) or not assignment.strip():
             raise RecipeError(
@@ -542,46 +491,6 @@ def _output_operations(
         },
         {"op": "add_edge", "source": source, "target": "$recipe_output"},
     ]
-
-
-_SHOWCASE_SOURCE_KEYS = frozenset({"path", "name"})
-
-
-def _showcase_source(value: object, *, argument: str) -> tuple[str, str]:
-    if not isinstance(value, Mapping) or set(value) != _SHOWCASE_SOURCE_KEYS:
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r} must contain exactly 'path' and 'name'.",
-            argument=argument,
-        )
-    path = value["path"]
-    name = value["name"]
-    if not isinstance(path, str) or not path.strip():
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r}.path must be a non-empty string.",
-            argument=f"{argument}.path",
-        )
-    if not isinstance(name, str) or not name.strip():
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r}.name must be a non-empty string.",
-            argument=f"{argument}.name",
-        )
-    parsed = PurePosixPath(path)
-    if (
-        "\\" in path
-        or re.match(r"^[A-Za-z]:", path)
-        or parsed.is_absolute()
-        or any(part in {"", ".", ".."} for part in parsed.parts)
-        or parsed.suffix.casefold() != ".parquet"
-    ):
-        raise RecipeError(
-            "recipe_argument_invalid",
-            f"Argument {argument!r}.path must be a safe project-relative .parquet path.",
-            argument=f"{argument}.path",
-        )
-    return path, name
 
 
 _RATING_TABLE_KEYS = frozenset({"factors", "output_column", "entries", "default_value"})
@@ -767,123 +676,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
             source=values["source"],
             source_port=values["source"],
         )
-    elif recipe_id == "parquet_showcase":
-        base_path, base_name = _showcase_source(values["base"], argument="base")
-        reference_path, reference_name = _showcase_source(values["reference"], argument="reference")
-        join_name = values["join_name"]
-        join_key = values["join_key"]
-        transform_name = values["transform_name"]
-        if not isinstance(join_key, str) or not join_key.strip():
-            raise RecipeError(
-                "recipe_argument_invalid",
-                "The parquet showcase join key must be a non-empty column name.",
-                argument="join_key",
-            )
-        key_text = f"{join_key}_text"
-        # A Transform is authored as steps: its source step starts from the
-        # join node's edge name (the sanitised join label), then one free-code
-        # card transforms df.
-        transform_steps = [
-            {"id": "start", "kind": "source", "input": _sanitize_func_name(join_name)},
-            {
-                "id": "logic",
-                "kind": "free_code",
-                "code": (
-                    "df = df.with_columns(\n"
-                    f"    pl.col({json.dumps(join_key)}).cast(pl.String)"
-                    f".alias({json.dumps(key_text)}),\n"
-                    '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
-                    ")"
-                ),
-            },
-        ]
-        showcase_values = {
-            **values,
-            "output_columns": [join_key, key_text, "showcase_stage"],
-        }
-        output_name = values["output_name"]
-        names = [base_name, reference_name, join_name, transform_name, output_name]
-        if len(names) != len(set(names)):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                "Every parquet showcase node name must be distinct.",
-                argument="name",
-            )
-        if base_path == reference_path:
-            raise RecipeError(
-                "recipe_argument_invalid",
-                "The base and reference Parquet paths must be distinct.",
-                argument="reference.path",
-            )
-        ref = None
-        operations = [
-            {
-                "op": "add_node",
-                "node_type": "dataInput",
-                "name": base_name,
-                "ref": "recipe_showcase_base",
-                "config": {
-                    "inputType": "file",
-                    "format": "parquet",
-                    "path": base_path,
-                    "mode": "scan",
-                },
-            },
-            {
-                "op": "add_node",
-                "node_type": "dataInput",
-                "name": reference_name,
-                "ref": "recipe_showcase_reference",
-                "config": {
-                    "inputType": "file",
-                    "format": "parquet",
-                    "path": reference_path,
-                    "mode": "scan",
-                },
-            },
-            {
-                "op": "add_node",
-                "node_type": "edgeJoin",
-                "name": join_name,
-                "ref": "recipe_showcase_join",
-                "config": {
-                    "how": "left",
-                    "leftOn": [join_key],
-                    "rightOn": [join_key],
-                },
-            },
-            {
-                "op": "add_edge",
-                "source": "$recipe_showcase_base",
-                "target": "$recipe_showcase_join",
-                "target_handle": "base",
-            },
-            {
-                "op": "add_edge",
-                "source": "$recipe_showcase_reference",
-                "target": "$recipe_showcase_join",
-                "target_handle": "join",
-            },
-            {
-                "op": "add_node",
-                "node_type": "polars",
-                "name": transform_name,
-                "ref": "recipe_showcase_transform",
-                "config": {"steps": transform_steps},
-            },
-            {
-                "op": "add_edge",
-                "source": "$recipe_showcase_join",
-                "target": "$recipe_showcase_transform",
-            },
-        ]
-        operations.extend(
-            _output_operations(
-                showcase_values,
-                source="$recipe_showcase_transform",
-                source_port=transform_name,
-            )
-        )
     elif recipe_id == "categorical_banding":
         _validate_categorical_rules(values["rules"])
         ref = "recipe_categorical_banding"
@@ -925,7 +717,7 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 "recipe_argument_invalid",
                 "base_source and reference_source must be distinct nodes.",
             )
-        if values["how"] not in {"inner", "left", "right", "full", "semi", "anti", "cross"}:
+        if values["how"] not in _REFERENCE_JOIN_MODES:
             raise RecipeError("recipe_argument_invalid", "Unsupported reference join mode.")
         ref = "recipe_reference_join"
         operations = [
@@ -1013,7 +805,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
 
 __all__ = [
     "RecipeError",
-    "explicit_dataset_directory",
     "is_explanation_only_request",
     "plan_recipe",
     "recipe_descriptor",

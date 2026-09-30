@@ -105,16 +105,7 @@ class TestSelfTestCaseLoading:
             "smoke_polars_feature_transform",
             "smoke_prompt_injection",
             "smoke_rating_step",
-            "smoke_showcase_parquets",
         }
-        showcase = by_id["smoke_showcase_parquets"]
-        assert showcase.request == (
-            "can you make a pipeline with the parquets in the data folder. use as many "
-            "nodee types as you can. i want to see what you can do"
-        )
-        assert {"dataInput", "edgeJoin", "polars", "output"} <= set(
-            showcase.expectations.required_node_types
-        )
         join = by_id["smoke_join_roles"]
         assert join.expectations.required_edges == (
             ("nb_batch", "quote_with_competitor", "base"),

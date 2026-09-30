@@ -156,8 +156,10 @@ end fails the turn as incomplete instead of falsely completing it. A successful
 round, the controller emits a concise deterministic success confirmation and completes
 without exposing another tool round in which the model could repeat or extend the mutation.
 A failed dry-run permits one materially corrected retry. If that retry also fails, the
-controller terminates the tool loop itself with a value-free `BLOCKED:` outcome naming the
-latest stable error code and stating that no graph changes were applied; the provider cannot
+controller terminates the tool loop itself with a `BLOCKED:` outcome naming the latest
+stable error code, repeating that dry-run error's message in the same bounded form the
+chat's tool row showed (so it carries nothing the tool result had not already shown the
+model), and stating that no graph changes were applied; the provider cannot
 continue guessing until the global tool-call limit is exhausted.
 The successful mutation result retains its graph fingerprint in neutral
 history; resume derives the same settled “Canvas updated” activity row from
@@ -587,8 +589,16 @@ examples, and stable failures. Planning never writes, and every planner output
 is parsed by the same primitive validator before it can enter dry-run or apply.
 A recipe cannot grant authority, choose an omitted pricing assumption, or
 bypass revision, egress, save, or verification policy. The categorical-banding recipe
-uses closed rules containing exactly a non-null finite JSON scalar `value` and non-empty
-`assignment`. There is no numeric-banding recipe. Recipe argument
+uses closed rules containing exactly a non-empty string `value` and non-empty
+`assignment`. Execution casts the banded column to text before matching, so a rule value
+is written in that text form: a boolean column's values are `"true"` and `"false"`, an
+integer column's values are their digits (`"3"`), and a string column's values are
+matched exactly. A boolean or numeric rule value is refused at planning with a message
+that states the text form it must take, and two rules with the same value are refused
+there too, so a recipe never saves rules that match no row or that collide once saved.
+There is no numeric-banding recipe. The reference-join recipe offers the join modes
+`inner`, `left`, `right`, `full`, `semi`, and `anti`; it always joins on explicit key
+lists, so it never offers `cross`. Recipe argument
 descriptions distinguish graph node names from output column names. The rating-step recipe
 uses a provider-facing positional contract instead of canonical dynamic row keys: each
 table declares one to three ordered `factors`, an `output_column`, a finite
@@ -597,13 +607,6 @@ numeric `value`. Optional combined outputs use closed `output_column`, `operatio
 and finite `base_value` fields. The planner validates alignment, scalar values,
 uniqueness, supported operations, and canonical rating normalisation before emitting
 Haute's dynamic-key sidecar form.
-The `parquet_showcase` recipe accepts two closed `{path, name}` file sources, an explicit
-join name/key, and Polars-transform and response-output node names. The provider does not
-author code or output mappings for this open-ended demonstration. From the validated shared
-join key, the planner generates a fixed Polars transform adding `<join_key>_text` and
-`showcase_stage`, then maps the join key and those two derived columns. It deterministically
-builds two scanned Parquet inputs, an exact-role left join, one connected transform, and one
-connected response output; it never runs the graph or materialises a sink.
 Within one tool executor, a successful recipe call retains its canonical operations and
 postconditions behind the returned recipe-plan hash while returning only recipe identity,
 version, and hash to the provider. Calling the same recipe again replaces the prior pending
@@ -624,19 +627,7 @@ substitute a generic node.
 For each turn, a conservative deterministic recognizer may suggest one recipe in the
 provider system guidance when a single unambiguous explicit pattern is present: a
 band/banding term plus categorical or discrete for categorical banding; join for a
-reference join; or the phrase rating step.
-An explicit request to build, create, author, or make a Parquet pipeline as a showcase of
-multiple node types suggests `parquet_showcase`. The showcase cue accepts `showcase`, the
-closed phrase `node types`, or `many … types`, so a harmless typo in the intervening noun
-does not discard an otherwise explicit authoring request. With two to eight discovered Parquet
-datasets, the route's advisory guidance asks the model to rank coherent pairs: a shared `quote_id`
-outranks a pair with exactly one other shared column, then larger combined distinct schema width
-wins, then project-relative path order breaks a tie. Within the selected pair, the model is guided
-to choose the wider schema as base, with path order breaking equal widths. When the request explicitly
-names a safe relative folder, advisory guidance directs the model to pass that folder as `project_root`
-and set `recursive=True` when calling `list_datasets`. The suggested recipe owns the safe connected
-transform and mapped output. Clarification is requested only when fewer than two or more than eight
-datasets are discovered, or when the bounded set has no coherent pair. When a routed turn ends with
+reference join; or the phrase rating step. When a routed turn ends with
 `NEEDS_INPUT:`, immediately following clarification turns retain that route while each
 intervening turn also ends with `NEEDS_INPUT:`. A normal answer, completed mutation, or
 unqualified assistant response closes the chain, so stale request guidance is never revived.

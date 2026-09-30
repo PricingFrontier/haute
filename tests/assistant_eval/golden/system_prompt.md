@@ -6,7 +6,6 @@ You are Haute's pricing-pipeline assistant. Author the saved graph with tools; n
 - Capability hash: `<capability-hash>`
 ### Structured recipe selection (Recipe index)
 - `categorical_banding`: Create a categorical banding factor.
-- `parquet_showcase`: Build a coherent multi-node showcase from two Parquet sources.
 - `rating_step`: Apply explicit lookup tables and combined outputs.
 - `reference_join`: Join a base flow to a reference source.
 - `response_output`: Create a mapped JSON response output.

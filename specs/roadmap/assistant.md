@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-07 | Planned | P1 | Every teaching bundle saves and solves in the editor, and dry-run catches name collisions. |
-| ASSIST-08 | Planned | P1 | Recipes produce configs that match rows and never advertise invalid options. |
 | ASSIST-10 | Planned | P1 | No row value or unpermitted source reaches the provider through errors or readiness. |
 | ASSIST-11 | Planned | P1 | A new local file input can be added and transformed in one plan. |
 | ASSIST-12 | Planned | P1 | The assistant edits exactly the pipeline the canvas shows. |
@@ -141,35 +140,6 @@ of Model Training is rejected at dry-run.
 `src/haute/assistant/assets/examples/ratebook_optimisation_apply/pipeline.py`;
 `src/haute/codegen.py::_error_on_name_collisions`;
 `tests/test_assistant_example_portfolio.py`.
-
-### ASSIST-08 — Recipe corrections
-**Why:** The categorical-banding recipe accepts boolean and numeric rule
-values, but the runtime compares the column's text form, so a true/false rule
-never matches and every row gets the default while dry-run reports success.
-Rules that collide once converted to text crash apply. The reference-join
-recipe advertises `cross`, which it can never produce. The `parquet_showcase`
-recipe exists only to pass one evaluation prompt and writes a literal
-showcase column into the response. When the dry-run budget runs out, the
-controller's `BLOCKED` text omits the error that caused it.
-
-**Plan:** Accept only string rule values in the recipe and state their text
-form, reject colliding rules at dry-run, remove `cross` and `parquet_showcase`
-with its self-test case and routing, and end a budget-exhausted turn with the
-last sanitised validator message. Canonical matching for non-string values in
-the product's own banding editor is a separate decision and is not changed
-here.
-
-**Acceptance:** A true/false recipe is refused at dry-run with the expected
-text form, and `"true"`/`"false"` rules match every row when executed;
-colliding rules fail at dry-run; the showcase recipe is absent from the
-catalogue, routing and evaluations; a budget-exhausted turn names the last
-error.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_recipes.py::_validate_categorical_rules`;
-`src/haute/_rating.py::banding_rule_claim_expr`;
-`src/haute/assistant/_recipes.py::plan_recipe`.
 
 ### ASSIST-10 — Egress corrections
 **Why:** Dry-run executes the model's code while resolving schemas, and an
@@ -322,7 +292,7 @@ express current contracts, and an unknown node-type name fails case loading.
 **Dependencies:** `ASSIST-08`.
 
 **Evidence:** `scripts/run_assistant_self_test.py::run_self_test_case`;
-`src/haute/_sandbox.py`; `tests/assistant_eval/self_test/smoke_showcase_parquets.json`.
+`src/haute/_sandbox.py`.
 
 ### ASSIST-18 — Renaming fails loudly on consumers it cannot reconcile
 **Why:** `rename_node` rewrites edge endpoints only; a consumer whose code,

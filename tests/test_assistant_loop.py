@@ -431,7 +431,7 @@ class TestMutationCompletionController:
             return {
                 "error": {
                     "code": "schema_unresolvable",
-                    "message": "value-bearing detail must not be echoed",
+                    "message": f"Node 'rated' references unknown column 'premium_{calls}'.",
                 }
             }
 
@@ -450,9 +450,43 @@ class TestMutationCompletionController:
         text = "".join(event.text for event in events if event.type == "text_delta")
         assert text == (
             "BLOCKED: graph validation failed after one corrected retry "
-            "(schema_unresolvable); no graph changes were applied."
+            "(schema_unresolvable); no graph changes were applied. "
+            "Last error: Node 'rated' references unknown column 'premium_2'."
         )
-        assert "value-bearing" not in text
+
+    async def test_blocker_repeats_the_error_exactly_as_the_tool_row_showed_it(
+        self, store, session_id
+    ):
+        """The blocker carries the last dry-run error in the bounded form the
+        chat's tool row already showed, never more of it than that."""
+
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ]
+                for index in range(1, 3)
+            ]
+        )
+        long_message = "Schema check failed: " + "x" * 400
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"error": {"code": "schema_unresolvable", "message": long_message}}
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        finished = [event for event in events if event.type == "tool_finished"]
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert finished[-1].summary != long_message
+        assert text.endswith("Last error: " + finished[-1].summary)
+        assert long_message not in text
 
     async def test_budget_refusal_inside_one_round_keeps_the_recorded_blocker(
         self, store, session_id
@@ -491,7 +525,9 @@ class TestMutationCompletionController:
         text = "".join(event.text for event in events if event.type == "text_delta")
         assert "rejected by its input schema" in text
         assert "(invalid_request)" in text
+        assert text.endswith("Last error: detail")
         assert "dry_run_retry_limit" not in text
+        assert "has already failed" not in text
 
     async def test_malformed_call_does_not_consume_the_plan_correction_budget(
         self, store, session_id
@@ -532,7 +568,7 @@ class TestMutationCompletionController:
         text = "".join(event.text for event in events if event.type == "text_delta")
         assert text == (
             "BLOCKED: graph validation failed after one corrected retry "
-            "(schema_unresolvable); no graph changes were applied."
+            "(schema_unresolvable); no graph changes were applied. Last error: detail"
         )
 
     async def test_repeated_malformed_calls_block_with_their_own_wording(self, store, session_id):
@@ -556,7 +592,7 @@ class TestMutationCompletionController:
             return {
                 "error": {
                     "code": "invalid_request",
-                    "message": "value-bearing detail must not be echoed",
+                    "message": "ops[1]: unknown field 'colour'.",
                     "validation_path": "dry_run_graph_edits.ops[1]",
                     "validation_reason": "unknown_field",
                 }
@@ -576,9 +612,8 @@ class TestMutationCompletionController:
         assert text == (
             "BLOCKED: the dry-run call was rejected by its input schema and the "
             "corrected call was rejected again (invalid_request); no graph changes "
-            "were applied."
+            "were applied. Last error: ops[1]: unknown field 'colour'."
         )
-        assert "value-bearing" not in text
 
     async def test_retries_unqualified_end_once_and_accepts_explicit_blocker(
         self, store, session_id
@@ -1192,16 +1227,11 @@ class TestSystemPrompt:
         assert "consider `plan_recipe`" in routed
         assert "output_name` and `output_columns` together" in routed
         assert "Preserve any explicit primary node name exactly" in routed
-        showcase = _request_routed_system_prompt(
+        broad = _request_routed_system_prompt(
             "base system",
             "Build a pipeline with the parquets and use many node types.",
         )
-        assert "two to eight discovered Parquet datasets" in showcase
-        assert "inspect every schema" in showcase
-        assert "wider schema" in showcase
-        assert "shared `quote_id`" in showcase
-        assert "combined distinct column count" in showcase
-        assert "do not ask about reversible demonstration choices" in showcase
+        assert broad == "base system"
         # Numeric banding has no recipe, so a range request gets no suggestion.
         numeric = _request_routed_system_prompt(
             "base system",
@@ -1248,7 +1278,7 @@ class TestSystemPrompt:
 
         assert tuple(inspect.signature(_provider_tools).parameters) == ("tools",)
         assert routed == tuple(TOOL_DEFINITIONS)
-        assert len(schema["oneOf"]) == 5
+        assert len(schema["oneOf"]) == 4
         assert schema["additionalProperties"] is False
 
     def test_build_system_prompt_pins_authority_and_untrusted_content_boundaries(self):
@@ -1362,7 +1392,6 @@ class TestSystemPrompt:
         assert "oneOf" not in schema
         assert schema["properties"]["recipe_id"]["enum"] == [
             "categorical_banding",
-            "parquet_showcase",
             "rating_step",
             "reference_join",
             "response_output",
@@ -1390,34 +1419,7 @@ class TestSystemPrompt:
         assert schema["required"] == ["recipe_id"]
         assert schema["additionalProperties"] is False
 
-    def test_full_recipe_contract_retains_parquet_showcase_fields_on_provider_wire(self):
-        from haute.assistant._loop import _provider_tools
-        from haute.assistant._providers import _portable_tools
-        from haute.assistant._tools import TOOL_DEFINITIONS
-
-        routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
-        schema = next(tool["input_schema"] for tool in routed if tool["name"] == "plan_recipe")
-
-        assert "oneOf" not in schema
-        assert "parquet_showcase" in schema["properties"]["recipe_id"]["enum"]
-        assert {
-            "recipe_id",
-            "base",
-            "reference",
-            "join_name",
-            "join_key",
-            "transform_name",
-            "output_name",
-        } <= set(schema["properties"])
-        for source_name in ("base", "reference"):
-            source_schema = schema["properties"][source_name]
-            assert set(source_schema["properties"]) == {"path", "name"}
-            assert set(source_schema["required"]) == {"path", "name"}
-            assert source_schema["additionalProperties"] is False
-        assert schema["required"] == ["recipe_id"]
-        assert schema["additionalProperties"] is False
-
-    def test_natural_showcase_prompt_does_not_rewrite_dataset_tool_schema(self):
+    def test_dataset_tool_schema_is_the_same_for_every_request(self):
         from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _portable_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
@@ -1438,39 +1440,34 @@ class TestSystemPrompt:
 
         session = store.lookup(session_id)
         assert session is not None
-        original = (
-            "can you make a pipeline with the parquets in the data folder. "
-            "use as many nodee types as you can"
-        )
+        original = "Band region into discrete region groups."
         store.append(
             session,
             [
                 {"role": "user", "content": original},
-                {"role": "assistant", "content": "NEEDS_INPUT: choose two Parquet files."},
+                {"role": "assistant", "content": "NEEDS_INPUT: which regions go together?"},
             ],
         )
         store.append(
             session,
             [
-                {"role": "user", "content": "data/competitor_insight.parquet"},
-                {"role": "assistant", "content": "NEEDS_INPUT: choose the second file."},
+                {"role": "user", "content": "north and south are core"},
+                {"role": "assistant", "content": "NEEDS_INPUT: what is the default group?"},
             ],
         )
 
-        continued = effective_authoring_request(session, "data/quotes.parquet")
-        assert route_recipe_request(continued) == "parquet_showcase"
+        continued = effective_authoring_request(session, "other")
+        assert route_recipe_request(continued) == "categorical_banding"
         assert original in continued
-        assert "data/quotes.parquet" in continued
+        assert "other" in continued
 
         session.history[-1] = type(session.history[-1]).from_messages(
             [
-                {"role": "user", "content": "data/competitor_insight.parquet"},
+                {"role": "user", "content": "north and south are core"},
                 {"role": "assistant", "content": "No changes were made."},
             ]
         )
-        assert effective_authoring_request(session, "data/quotes.parquet") == (
-            "data/quotes.parquet"
-        )
+        assert effective_authoring_request(session, "other") == "other"
 
 
 # ---------------------------------------------------------------------------

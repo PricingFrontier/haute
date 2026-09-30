@@ -292,7 +292,18 @@ columns, and an edge from the recipe node in the same canonical batch. The stand
 `response_output` recipe requires `source`, `output_name`, and `output_columns` and
 creates the same canonical mapping directly after the saved source. A bare output name or
 column list is a material ambiguity and fails recipe planning. A categorical-banding rule
-contains exactly a non-null finite JSON scalar `value` and non-empty `assignment`. The
+contains exactly a non-empty string `value` and non-empty `assignment`. Execution
+(`src/haute/_rating.py::_apply_banding`) casts the banded column to text and matches each row's
+text exactly, so the rule's `value` description states that text form: booleans are
+`"true"`/`"false"` and integers are their digits. Through the tool, the closed input
+schema refuses a boolean or numeric `value` as `invalid_request` with reason `wrong_type`
+at `plan_recipe.rules[N].value`, and the message repeats that description. A direct
+planner call refuses it with `recipe_argument_invalid` naming the argument and the text form
+it must take (`"true"` or `"false"` for a boolean, the digits for an integer). Planning
+refuses a `value` equal to an earlier rule's, because the saved banding sidecar keys rules by their text and
+refuses a repeated key when the plan is applied. The reference-join `how` enum is `inner`,
+`left`, `right`, `full`, `semi`, or `anti`; the recipe always emits `leftOn`/`rightOn`, so
+`cross` is neither advertised nor accepted. The
 rating-step recipe's provider-facing table contract is closed and positional: each
 table requires one to three unique ordered `factors`, an `output_column`, a finite numeric
 `default_value`, and non-empty entries. Every entry has exactly `factor_values` and a
@@ -304,16 +315,7 @@ to canonical dynamic-key rating tables and camel-case combined outputs, runs the
 rating validators, then includes the result in the `recipe_plan_hash` over recipe id,
 version, canonical operations, and postconditions.
 
-The `parquet_showcase` branch requires closed `base` and `reference` objects containing
-exactly a safe relative Parquet `path` and graph `name`, plus `join_name`, `join_key`,
-`transform_name`, and `output_name`. It accepts neither provider-authored transform code nor
-output columns. Planning emits two scanned file `dataInput` nodes, a left `edgeJoin` with
-exact base/join handles, a connected Polars node whose fixed code casts `join_key` to the
-derived `<join_key>_text` column and adds literal `showcase_stage`, and a connected canonical
-JSON response output mapping exactly `join_key`, `<join_key>_text`, and `showcase_stage`.
-Paths, names, generated code retention, mappings, primitive operations, and postconditions all
-pass their ordinary validators; planning and self-test never execute the graph or output.
-The source-bound executor retains that material by hash and replaces the previous pending
+The source-bound executor retains planned recipe material by hash and replaces the previous pending
 handle for the same recipe on correction. Its provider result is the closed opaque receipt
 `recipe_id`, `version`, and `recipe_plan_hash`; canonical operations and postconditions stay
 server-side. `dry_run_recipe_plan(recipe_plan_hash)` resolves only that executor's live
@@ -324,18 +326,7 @@ material. It rejects every additional property. A pending recipe makes primitive
 dry-run. Neither tool writes. A conservative current-request recognizer suggests a recipe id only
 when exactly one explicit domain pattern matches: categorical/discrete banding maps to
 `categorical_banding`; join maps to `reference_join`;
-and the phrase rating step maps to `rating_step`. An explicit request to build, create,
-author, or make a Parquet pipeline as a showcase of multiple node types maps to
-`parquet_showcase`; its showcase cue is `showcase`, `node types`, or the closed pair
-`many`/`types` even when the intervening noun is misspelled. Its current-turn
-contract requires dataset listing and every schema when two to eight Parquet datasets are
-discovered. It forms candidate pairs with shared `quote_id`, otherwise pairs with exactly one
-shared column; ranks candidates by `quote_id` first, descending combined distinct column count
-second, and the ordered project-relative path pair last; then chooses the wider member as base
-with stable path order breaking equal widths. It supplies only the selected source/key/node-name
-arguments while the recipe owns its schema-safe transform and mapped output, and calls the recipe
-rather than asking about reversible demonstration aesthetics. It asks only when the dataset count
-is outside two to eight or no candidate pair remains. If the assistant returns
+and the phrase rating step maps to `rating_step`. If the assistant returns
 `NEEDS_INPUT:`, route resolution scans backward only across consecutive turns whose final
 assistant text also begins `NEEDS_INPUT:` and reuses the first directly routed user request.
 Any other final response ends continuation, so an unrelated bare path cannot revive stale
@@ -617,8 +608,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    instead. Charging both to one budget spent the plan retry before the plan had ever
    been judged. Either exhausted budget ends the turn, so neither class can loop: the
    loop appends a deterministic assistant `BLOCKED:` message naming which class blocked
-   it, carrying only the latest stable error code and the fact that no graph changes were
-   applied, emits `completed`, and performs no further dry-run or provider round. The
+   it, carrying the latest stable error code, that failed dry-run's error message in the
+   same bounded one-line form the chat's tool row shows (`_result_summary`, at most 160
+   characters), and the fact that no graph changes were applied. The message is exactly
+   what the tool result already returned to the model, so the outcome adds no value the
+   model had not seen. It then emits `completed` and performs no further dry-run or
+   provider round. The
    system prompt states the same distinction.
 
    What the model sees is pinned by a checked-in golden snapshot under
@@ -770,7 +765,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    it needs, without the rejected value being echoed, and adding an explicit
    "send the value itself, not a JSON-encoded string of it" when a string arrived where an
    array or object was declared — the exact shape a gateway dialect produces, and one the
-   model cannot infer from a bare type complaint. None of these are persisted, because
+   model cannot infer from a bare type complaint. A `wrong_type` message also repeats the
+   field's own schema description when it has one, so a categorical rule `value` sent as a
+   boolean or number reads the text form it must take. None of these are persisted, because
    `_session._persisted_message` copies exactly `code`, `validation_path`, and
    `validation_reason`. A rejected key is content the model itself submitted and is
    already in provider history, so naming it back is not new egress — and it is what
@@ -1049,11 +1046,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   that navigation applies. `list_datasets(project_root, recursive)` defaults to a one-level
   listing; recursive mode walks only non-symlink descendants, returns deterministic
   project-relative POSIX paths, caps datasets and directories independently, and sets
-  `truncated=true` when either cap or the traversal bound is reached. For a routed
-  `parquet_showcase`, a safe folder explicitly named in the effective authoring request is
-  advertised as the provider schema's constant `project_root`; before canonical validation,
-  the source-bound executor replaces any model-supplied listing root and recursion value with
-  those routed constants. The assistant schema helper is separate from the UI
+  `truncated=true` when either cap or the traversal bound is reached. The `list_datasets`
+  schema is the same for every request wording, and the source-bound executor runs the
+  listing root and recursion value the model supplied. The assistant schema helper is separate from the UI
   schema/preview reader and never invokes the preview collector.
 - **The read shape names handles the way the write shape does.** The compact graph
   renderer emits each edge's ports as `source_handle`/`target_handle`, matching the
@@ -1245,8 +1240,7 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_self_test.py`** — closed prompt-case loading and
   selection plus a synthetic portfolio covering categorical banding,
   exact join roles, positional rating steps, Polars transforms, explicit mapped response
-  outputs, file input/output graph authoring without sink execution, broad parquet showcase
-  construction, material clarification for joins/rating/output mappings, prompt injection,
+  outputs, file input/output graph authoring without sink execution, material clarification for joins/rating/output mappings, prompt injection,
   and blocked pipeline execution/external writes. Loop-quality scoring requires a successful
   terminal outcome with bounded failed tool attempts and duplicate static reads, graph
   connectivity, and exact edge-join base/join port assertions. A null expected target handle

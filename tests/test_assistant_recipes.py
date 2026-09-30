@@ -18,15 +18,11 @@ from haute.assistant._ops import (
 
 EXPECTED_RECIPES = {
     "categorical_banding",
-    "parquet_showcase",
     "reference_join",
     "response_output",
     "rating_step",
 }
-DOWNSTREAM_OUTPUT_RECIPES = EXPECTED_RECIPES - {
-    "parquet_showcase",
-    "response_output",
-}
+DOWNSTREAM_OUTPUT_RECIPES = EXPECTED_RECIPES - {"response_output"}
 
 
 @pytest.mark.parametrize(
@@ -48,17 +44,8 @@ DOWNSTREAM_OUTPUT_RECIPES = EXPECTED_RECIPES - {
         ("Transform two columns with Polars.", None),
         ("Add categorical banding for region.", "categorical_banding"),
         ("Add a response output for quote_id.", "response_output"),
-        (
-            "Build a pipeline with the parquets and use many node types.",
-            "parquet_showcase",
-        ),
-        (
-            (
-                "can you make a pipeline with the parquets in the data folder. "
-                "use as many nodee types as you can"
-            ),
-            "parquet_showcase",
-        ),
+        # There is no showcase recipe: a broad demonstration request suggests none.
+        ("Build a pipeline with the parquets and use many node types.", None),
         (
             "Add a rating step and then a response output.",
             "rating_step",
@@ -103,10 +90,6 @@ def test_explanation_followed_by_explicit_authoring_still_routes_to_a_recipe() -
         ("Build a rating-step node.", "rating_step"),
         ("Add categorical banding for region.", "categorical_banding"),
         ("Add a response output for quote_id.", "response_output"),
-        (
-            "Build a pipeline with the parquets and use many node types.",
-            "parquet_showcase",
-        ),
     ],
 )
 def test_imperative_requests_still_route_past_the_explanation_guard(
@@ -153,18 +136,6 @@ def _arguments(recipe_id: str) -> dict[str, object]:
                 {"value": "south", "assignment": "core"},
             ],
             "default": "unknown",
-        }
-    if recipe_id == "parquet_showcase":
-        return {
-            "base": {"path": "data/nb_batch.parquet", "name": "nb_batch"},
-            "reference": {
-                "path": "data/competitor_insight.parquet",
-                "name": "competitor_insight",
-            },
-            "join_name": "quote_with_competitor",
-            "join_key": "quote_id",
-            "transform_name": "quote_features",
-            "output_name": "showcase_response",
         }
     if recipe_id == "reference_join":
         return {
@@ -245,6 +216,16 @@ class TestRecipeRegistry:
         assert rule["additionalProperties"] is False
         assert set(rule["required"]) == {"value", "assignment"}
         assert set(rule["properties"]) == {"value", "assignment"}
+        value = rule["properties"]["value"]
+        assert value["type"] == "string"
+        assert '"true"' in value["description"] and '"false"' in value["description"]
+        assert "digits" in value["description"]
+
+    def test_reference_join_never_advertises_a_cross_join(self):
+        from haute.assistant._recipes import recipe_descriptor
+
+        how = recipe_descriptor("reference_join")["argument_schema"]["properties"]["how"]
+        assert tuple(how["enum"]) == ("inner", "left", "right", "full", "semi", "anti")
 
     def test_there_is_no_numeric_banding_recipe(self):
         from haute.assistant._recipes import RecipeError, recipe_descriptor
@@ -296,6 +277,9 @@ class TestRecipePlanning:
             [{"value": "north", "assignment": "core", "extra": 1}],
             [{"value": None, "assignment": "core"}],
             [{"value": float("inf"), "assignment": "core"}],
+            [{"value": 3, "assignment": "core"}],
+            [{"value": 2.5, "assignment": "core"}],
+            [{"value": "", "assignment": "core"}],
             [{"value": "north", "assignment": " "}],
             [{"value": "north", "assignment": "core"}, {"value": "north", "assignment": "x"}],
         ],
@@ -309,6 +293,46 @@ class TestRecipePlanning:
             plan_recipe("categorical_banding", arguments)
         assert exc.value.code == "recipe_argument_invalid"
         assert exc.value.context["argument"].startswith("rules[")
+
+    @pytest.mark.parametrize(
+        ("value", "text_form"),
+        [(True, '"true"'), (False, '"false"'), (3, '"3"')],
+    )
+    def test_non_string_rule_value_is_refused_naming_its_text_form(self, value, text_form):
+        from haute.assistant._recipes import RecipeError, plan_recipe
+
+        arguments = _arguments("categorical_banding")
+        arguments["rules"] = [{"value": value, "assignment": "core"}]
+        with pytest.raises(RecipeError) as exc:
+            plan_recipe("categorical_banding", arguments)
+        assert exc.value.code == "recipe_argument_invalid"
+        assert exc.value.context["argument"] == "rules[0].value"
+        assert text_form in str(exc.value)
+
+    def test_rules_colliding_as_text_are_refused_at_planning(self):
+        """A rule value is the text the runtime compares, so the digits "1" and
+        an earlier "1" are one key; applying them would fail in the sidecar."""
+
+        from haute.assistant._recipes import RecipeError, plan_recipe
+
+        arguments = _arguments("categorical_banding")
+        arguments["rules"] = [
+            {"value": "1", "assignment": "one"},
+            {"value": "1", "assignment": "uno"},
+        ]
+        with pytest.raises(RecipeError) as exc:
+            plan_recipe("categorical_banding", arguments)
+        assert exc.value.code == "recipe_argument_invalid"
+        assert exc.value.context["argument"] == "rules[1].value"
+
+    def test_cross_join_mode_is_refused(self):
+        from haute.assistant._recipes import RecipeError, plan_recipe
+
+        arguments = _arguments("reference_join")
+        arguments["how"] = "cross"
+        with pytest.raises(RecipeError) as exc:
+            plan_recipe("reference_join", arguments)
+        assert exc.value.code == "recipe_argument_invalid"
 
     def test_missing_material_decision_fails_by_stable_code(self):
         from haute.assistant._recipes import RecipeError, plan_recipe
@@ -440,6 +464,27 @@ def test_categorical_banding_recipe_emits_canonical_rules() -> None:
     }
 
 
+def test_true_false_rules_from_the_recipe_match_every_boolean_row() -> None:
+    import polars as pl
+
+    from haute._rating import apply_banding_from_config
+    from haute.assistant._recipes import plan_recipe
+
+    arguments = _arguments("categorical_banding")
+    arguments["column"] = "has_claims"
+    arguments["rules"] = [
+        {"value": "true", "assignment": "claimed"},
+        {"value": "false", "assignment": "clean"},
+    ]
+    config = plan_recipe("categorical_banding", arguments)["operations"][0]["config"]
+
+    banded = apply_banding_from_config(
+        pl.LazyFrame({"has_claims": [True, False, True]}), config
+    ).collect()
+
+    assert banded["region_group"].to_list() == ["claimed", "clean", "claimed"]
+
+
 def test_response_output_recipe_emits_canonical_mapping_and_edge() -> None:
     from haute.assistant._recipes import plan_recipe
 
@@ -470,83 +515,6 @@ def test_response_output_recipe_emits_canonical_mapping_and_edge() -> None:
             "target": "$recipe_output",
         },
     ]
-
-
-def test_parquet_showcase_recipe_emits_one_connected_coherent_graph() -> None:
-    from haute.assistant._recipes import plan_recipe
-
-    recipe = plan_recipe("parquet_showcase", _arguments("parquet_showcase"))
-    nodes = [
-        operation["node_type"]
-        for operation in recipe["operations"]
-        if operation["op"] == "add_node"
-    ]
-    edges = [
-        (
-            operation["source"],
-            operation["target"],
-            operation.get("target_handle"),
-        )
-        for operation in recipe["operations"]
-        if operation["op"] == "add_edge"
-    ]
-
-    assert nodes == ["dataInput", "dataInput", "edgeJoin", "polars", "output"]
-    assert edges == [
-        ("$recipe_showcase_base", "$recipe_showcase_join", "base"),
-        ("$recipe_showcase_reference", "$recipe_showcase_join", "join"),
-        ("$recipe_showcase_join", "$recipe_showcase_transform", None),
-        ("$recipe_showcase_transform", "$recipe_output", None),
-    ]
-    transform = next(
-        operation for operation in recipe["operations"] if operation.get("node_type") == "polars"
-    )
-    assert transform["config"]["steps"] == [
-        {"id": "start", "kind": "source", "input": "quote_with_competitor"},
-        {
-            "id": "logic",
-            "kind": "free_code",
-            "code": (
-                "df = df.with_columns(\n"
-                '    pl.col("quote_id").cast(pl.String).alias("quote_id_text"),\n'
-                '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
-                ")"
-            ),
-        },
-    ]
-    output = next(
-        operation for operation in recipe["operations"] if operation.get("node_type") == "output"
-    )
-    assert [
-        (mapping["source_column"], mapping["output_path"])
-        for mapping in output["config"]["outputMapping"]
-    ] == [
-        ("quote_id", "$[:].quote_id"),
-        ("quote_id_text", "$[:].quote_id_text"),
-        ("showcase_stage", "$[:].showcase_stage"),
-    ]
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "../outside.parquet",
-        "C:/outside.parquet",
-        "data\\outside.parquet",
-        "data/not_parquet.csv",
-    ],
-)
-def test_parquet_showcase_rejects_unsafe_or_non_parquet_paths(path: str) -> None:
-    from haute.assistant._recipes import RecipeError, plan_recipe
-
-    arguments = _arguments("parquet_showcase")
-    arguments["base"]["path"] = path
-
-    with pytest.raises(RecipeError) as exc_info:
-        plan_recipe("parquet_showcase", arguments)
-
-    assert exc_info.value.code == "recipe_argument_invalid"
-    assert exc_info.value.context["argument"] == "base.path"
 
 
 def test_reference_join_recipe_emits_explicit_base_and_join_handles() -> None:

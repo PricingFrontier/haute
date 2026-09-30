@@ -145,7 +145,6 @@
         "recipe_id": {
           "enum": [
             "categorical_banding",
-            "parquet_showcase",
             "rating_step",
             "reference_join",
             "response_output"
@@ -175,7 +174,8 @@
             "description": "One exact categorical value-to-band assignment.",
             "properties": {
               "value": {
-                "description": "Non-null finite JSON scalar matched exactly."
+                "type": "string",
+                "description": "Column value this rule matches, as text: banding casts the column to text before matching, so a boolean is \"true\" or \"false\", an integer is its digits (e.g. \"3\"), and a string is matched exactly."
               },
               "assignment": {
                 "type": "string",
@@ -204,54 +204,6 @@
             "type": "string",
             "description": "Simple JSON-field column name to map to the same response field name."
           }
-        },
-        "base": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Safe project-relative .parquet file path."
-            },
-            "name": {
-              "type": "string",
-              "description": "New graph node name exactly as requested; distinct from every output column name."
-            }
-          },
-          "required": [
-            "path",
-            "name"
-          ],
-          "additionalProperties": false
-        },
-        "reference": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Safe project-relative .parquet file path."
-            },
-            "name": {
-              "type": "string",
-              "description": "New graph node name exactly as requested; distinct from every output column name."
-            }
-          },
-          "required": [
-            "path",
-            "name"
-          ],
-          "additionalProperties": false
-        },
-        "join_name": {
-          "type": "string",
-          "description": "New graph node name exactly as requested; distinct from every output column name."
-        },
-        "join_key": {
-          "type": "string",
-          "description": "Column present in both Parquet sources."
-        },
-        "transform_name": {
-          "type": "string",
-          "description": "New graph node name exactly as requested; distinct from every output column name."
         },
         "tables": {
           "type": "array",
@@ -356,8 +308,7 @@
             "right",
             "full",
             "semi",
-            "anti",
-            "cross"
+            "anti"
           ]
         },
         "left_on": {

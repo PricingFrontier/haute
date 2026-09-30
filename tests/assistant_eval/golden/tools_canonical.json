@@ -180,12 +180,9 @@
                 "description": "One exact categorical value-to-band assignment.",
                 "properties": {
                   "value": {
-                    "type": [
-                      "string",
-                      "number",
-                      "boolean"
-                    ],
-                    "description": "Non-null finite JSON scalar matched exactly."
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Column value this rule matches, as text: banding casts the column to text before matching, so a boolean is \"true\" or \"false\", an integer is its digits (e.g. \"3\"), and a string is matched exactly."
                   },
                   "assignment": {
                     "type": "string",
@@ -230,84 +227,6 @@
             "output_column",
             "rules",
             "default"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "recipe_id": {
-              "const": "parquet_showcase"
-            },
-            "base": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Safe project-relative .parquet file path."
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "New graph node name exactly as requested; distinct from every output column name."
-                }
-              },
-              "required": [
-                "path",
-                "name"
-              ]
-            },
-            "reference": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Safe project-relative .parquet file path."
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "New graph node name exactly as requested; distinct from every output column name."
-                }
-              },
-              "required": [
-                "path",
-                "name"
-              ]
-            },
-            "join_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "New graph node name exactly as requested; distinct from every output column name."
-            },
-            "join_key": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Column present in both Parquet sources."
-            },
-            "transform_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "New graph node name exactly as requested; distinct from every output column name."
-            },
-            "output_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Optional new response output graph node connected after the recipe node."
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "recipe_id",
-            "base",
-            "reference",
-            "join_name",
-            "join_key",
-            "transform_name",
-            "output_name"
           ]
         },
         {
@@ -481,8 +400,7 @@
                 "right",
                 "full",
                 "semi",
-                "anti",
-                "cross"
+                "anti"
               ],
               "description": "Join mode."
             },

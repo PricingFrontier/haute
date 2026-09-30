@@ -29,7 +29,6 @@ from haute.assistant._providers import (
     TurnStop,
 )
 from haute.assistant._recipes import (
-    explicit_dataset_directory,
     request_requires_material_clarification,
     route_recipe_request,
 )
@@ -526,23 +525,6 @@ def _request_routed_system_prompt(system_prompt: str, user_text: str) -> str:
         "primary node name exactly, including an `add NAME:` form. This route supplies no "
         "other recipe arguments; clarify any missing material choice."
     )
-    if recipe_id == "parquet_showcase":
-        dataset_root = explicit_dataset_directory(user_text)
-        route_guidance += (
-            "\n- For this demonstration, list datasets. With two to eight discovered "
-            "Parquet datasets, inspect every schema. Rank coherent pairs by shared "
-            "`quote_id` first; otherwise require exactly one shared column. Break candidate "
-            "ties by descending combined distinct column count, then ordered project-relative "
-            "paths. Within the selected pair, choose the wider schema as base (stable path "
-            "order breaks equal widths). Let the recipe generate its transform/output and "
-            "do not ask about reversible demonstration choices. Clarify only when the count "
-            "is outside two to eight or no coherent pair exists."
-        )
-        if dataset_root is not None:
-            route_guidance += (
-                f"\n- The user explicitly named dataset directory `{dataset_root}`. Call "
-                f"`list_datasets` with `project_root` = `{dataset_root}` and `recursive` = true."
-            )
     return "\n\n".join(
         (
             system_prompt,
@@ -817,6 +799,7 @@ async def run_turn(
     malformed_dry_run_calls = 0
     latest_dry_run_error_code = "unknown_error"
     latest_dry_run_blocker = "graph validation failed after one corrected retry"
+    latest_dry_run_message = ""
     round_calls: list[ToolCallRequest] = []
     round_results: list[dict[str, Any]] = []
     round_committed = False
@@ -893,6 +876,10 @@ async def run_turn(
                         # failure belongs to therefore still has room.
                         if event.name in _DRY_RUN_TOOLS and is_error and not refused_by_budget:
                             code = _stable_error_code(payload)
+                            # The chat's tool-row summary of the error the
+                            # model was just shown: the blocker repeats it and
+                            # so carries nothing that result did not.
+                            latest_dry_run_message = _result_summary(payload, is_error)
                             if code in _MALFORMED_CALL_ERROR_CODES:
                                 malformed_dry_run_calls += 1
                                 latest_dry_run_error_code = code
@@ -1009,7 +996,8 @@ async def run_turn(
                 ):
                     blocked_text = (
                         f"BLOCKED: {latest_dry_run_blocker} "
-                        f"({latest_dry_run_error_code}); no graph changes were applied."
+                        f"({latest_dry_run_error_code}); no graph changes were applied. "
+                        f"Last error: {latest_dry_run_message}"
                     )
                     turn_messages.append({"role": "assistant", "content": blocked_text})
                     yield AssistantTextDeltaEvent(text=blocked_text)

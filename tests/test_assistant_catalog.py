@@ -159,7 +159,6 @@ class TestCapabilityManifest:
         assert "config_schema" not in compact["node_index"][0]
         assert {item["id"] for item in compact["recipe_index"]} == {
             "categorical_banding",
-            "parquet_showcase",
             "reference_join",
             "response_output",
             "rating_step",
@@ -248,10 +247,10 @@ class TestResolvedDescriptors:
         assert by_id["dataOutput"].side_effects.startswith("writes")
         assert by_id["banding"].examples == ("discrete_banding",)
         assert by_id["banding"].recipes == ("categorical_banding",)
-        assert by_id["dataInput"].recipes == ("parquet_showcase",)
-        assert by_id["edgeJoin"].recipes == ("parquet_showcase", "reference_join")
-        assert by_id["polars"].recipes == ("parquet_showcase",)
-        assert by_id["output"].recipes == ("parquet_showcase", "response_output")
+        assert by_id["dataInput"].recipes == ()
+        assert by_id["edgeJoin"].recipes == ("reference_join",)
+        assert by_id["polars"].recipes == ()
+        assert by_id["output"].recipes == ("response_output",)
 
         assert all(
             any("connected" in anti_pattern for anti_pattern in node.anti_patterns)
@@ -347,7 +346,6 @@ class TestResolvedDescriptors:
         recipe_branches = recipe_schema["oneOf"]
         assert {branch["properties"]["recipe_id"]["const"] for branch in recipe_branches} == {
             "categorical_banding",
-            "parquet_showcase",
             "reference_join",
             "response_output",
             "rating_step",

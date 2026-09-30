@@ -1365,6 +1365,9 @@ def _validate_tool_value(
         expected = " or ".join(
             "boolean (true or false)" if name == "boolean" else name for name in expected_types
         )
+        # The field's own description says what a correct value looks like,
+        # e.g. the text form a categorical rule value must take.
+        description = schema.get("description")
         raise _ToolArgumentValidationError(
             path,
             "wrong_type",
@@ -1374,7 +1377,8 @@ def _validate_tool_value(
                 ". Send the value itself, not a JSON-encoded string of it"
                 if received == "string" and {"array", "object"} & set(expected_types)
                 else ""
-            ),
+            )
+            + (f". {description}" if isinstance(description, str) and description else ""),
             fields={"expected_types": list(expected_types), "received_type": received},
         )
 
