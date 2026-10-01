@@ -646,9 +646,8 @@ model; the error names the nodes the plan adds, by id and ref.
   `arguments` reach the provider as an object whose description gives each recipe's
   argument names, and the complete argument schema is the `recipe:<id>` reference.
   Unsupported validation vocabulary is
-  omitted. The complete operation schema remains available through `read_reference` and
-  remains the sole execution-time authority, so portability never weakens
-  validation. Some Databricks-hosted OpenAI-compatible models encode function
+  omitted. The complete canonical operation schema remains the sole execution-time
+  authority, so portability never weakens validation. Some Databricks-hosted OpenAI-compatible models encode function
   arguments whose declared type is an array, object, boolean, integer, or number as a JSON
   string. The Databricks adapter decodes only valid, correctly typed, schema-declared
   values. A value's declared type comes from the tool's canonical schema at that value's
