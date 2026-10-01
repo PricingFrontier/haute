@@ -22,7 +22,8 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import polars as pl
 
@@ -79,6 +80,7 @@ from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute.errors import (
     ContractMismatchError,
     SchemaMismatchError,
+    failing_node,
     is_public_contract_error,
     mark_failing_node,
 )
@@ -108,6 +110,88 @@ class WalkPurpose(StrEnum):
     """Walk a proven chunk suffix one chunk at a time (the chunked runner): the
     chunk plan fixes each node's output demand, the chunk is its start node's
     frame, and nothing is planned, contract-checked or captured."""
+    MEASURE = "measure"
+    """Measure checked nodes (the assistant's data check): build the lineage as
+    a display walk does, but at each checked node collect one-row aggregates
+    over its input frames and then its output ports, each cut to the row
+    bound, never a frame; record each failure against the node it is
+    attributed to and keep walking independent branches."""
+
+
+@dataclass(frozen=True, slots=True)
+class MeasuredInput:
+    """One input frame of a checked node, as a measuring walk hands it to its queries."""
+
+    position: int
+    """The input's position among the node's incoming edges (the frame order it is called with)."""
+    name: str
+    """The input's code-visible name (the producer's id when it has none)."""
+    producer: str
+    port: str | None
+    """The producer's frame the edge reads (its ``sourceHandle``)."""
+    role: str | None
+    """The edge's ``targetHandle``: an Edge Join's ``base`` or ``join``."""
+    frame: pl.LazyFrame
+    """The input frame cut to the walk's row bound."""
+
+
+class MeasurementQueries(Protocol):
+    """The one-row lazy aggregates a measuring walk collects at each checked node.
+
+    Each query is built from frames already cut to the row bound and must
+    produce exactly one row. Building a query, or resolving its schema, is
+    the node's own work, so a failure there is the node's; collecting an
+    input query reads the input, so a failure there is the producer's.
+    """
+
+    def input_query(self, node: GraphNode, measured: MeasuredInput) -> pl.LazyFrame:
+        """The aggregate over one input frame, which reads nothing but that frame."""
+        ...
+
+    def joint_query(self, node: GraphNode, inputs: Sequence[MeasuredInput]) -> pl.LazyFrame | None:
+        """An aggregate that reads several inputs together (an Edge Join's matches).
+
+        Built once every input's aggregate collected, so it may also raise a
+        failure the node's own configuration gave its input measurements: the
+        inputs are counted, and the failure is the node's.
+        """
+        ...
+
+    def output_query(
+        self,
+        node: GraphNode,
+        port: str | None,
+        frame: pl.LazyFrame,
+        inputs: Sequence[MeasuredInput],
+    ) -> pl.LazyFrame | None:
+        """The aggregate over one output port, or ``None`` to leave the port unmeasured."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class AttributedFailure:
+    """A failure a measuring walk recorded, against the node it is attributed to."""
+
+    node_id: str
+    error: Exception
+    at_or_upstream: bool
+    """Raised collecting an input of a checked node: the raising operation may
+    lie in an ancestor the walk does not measure."""
+
+
+@dataclass(frozen=True, slots=True)
+class NodeMeasurement:
+    """What a measuring walk learnt about one checked node: aggregates, never a frame."""
+
+    node_id: str
+    status: Literal["measured", "failed", "upstream_failed"]
+    inputs: tuple[tuple[str, Mapping[str, object]], ...] = ()
+    """Each input's name and aggregate row, in edge order, for those that collected."""
+    joint: Mapping[str, object] | None = None
+    outputs: tuple[tuple[str | None, Mapping[str, object]], ...] = ()
+    """Each measured output port and its aggregate row (``None`` for a single frame)."""
+    failure: AttributedFailure | None = None
+    """The node's own failure (``failed``) or the one it inherits (``upstream_failed``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +208,8 @@ class CollectPolicy:
     """A cap on the columns a collection keeps; the node's full schema is still reported."""
     record_failures: bool = False
     """Record a node's failure against the node and carry on, rather than raise."""
+    queries: MeasurementQueries | None = None
+    """A measuring walk's aggregates (``WalkPurpose.MEASURE`` only)."""
 
     def __post_init__(self) -> None:
         for limits in (self.row_limits_by_node, self.column_limits_by_node):
@@ -132,6 +218,12 @@ class CollectPolicy:
                     raise ValueError("collection limit keys must be node ids")
                 if type(limit) is not int or limit < 1:
                     raise ValueError("collection limits must be positive integers")
+        if (self.purpose is WalkPurpose.MEASURE) != (self.queries is not None):
+            raise ValueError("a measuring walk, and only a measuring walk, carries queries")
+        if self.purpose is WalkPurpose.MEASURE and (
+            type(self.row_limit) is not int or self.row_limit < 1
+        ):
+            raise ValueError("a measuring walk needs a positive row bound")
 
     @classmethod
     def sink(cls) -> CollectPolicy:
@@ -161,6 +253,27 @@ class CollectPolicy:
             row_limits_by_node=dict(row_limits_by_node or {}),
             column_limits_by_node=dict(column_limits_by_node or {}),
             record_failures=record_failures,
+        )
+
+    @classmethod
+    def measuring(
+        cls,
+        *,
+        checked: Iterable[str],
+        row_bound: int,
+        queries: MeasurementQueries,
+    ) -> CollectPolicy:
+        """Measure *checked* with *queries*, each measured frame cut to *row_bound* rows.
+
+        The bound is also the builders' interactive signal, as a preview's row
+        limit is, so a Model Score scores lazily rather than at build time.
+        """
+        return cls(
+            purpose=WalkPurpose.MEASURE,
+            collect=frozenset(checked),
+            row_limit=row_bound,
+            record_failures=True,
+            queries=queries,
         )
 
     def collects(self, node_id: str) -> bool:
@@ -229,6 +342,10 @@ class WalkResult:
     join_recipes: dict[str, JoinRecipe] = field(default_factory=dict)
     write_recipes: dict[str, WriteRecipe] = field(default_factory=dict)
     unshaped_frames: dict[str, pl.LazyFrame] = field(default_factory=dict)
+    measurements: dict[str, NodeMeasurement] = field(default_factory=dict)
+    """A measuring walk's record of each checked node it visited."""
+    attributed_failures: dict[str, AttributedFailure] = field(default_factory=dict)
+    """A measuring walk's failures, once per node each is attributed to, in walk order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +491,7 @@ class _Walk:
         self.policy = policy
         self.display = policy.purpose is WalkPurpose.DISPLAY
         self.chunk = policy.purpose is WalkPurpose.CHUNK
+        self.measuring = policy.purpose is WalkPurpose.MEASURE
         self.context = request.execution_context
         self.plan = request.snapshot_plan
         self.decision: SeedPlanDecision | None = (
@@ -443,6 +561,10 @@ class _Walk:
         self.fanout = self._fanout_counts() if self.display else {}
         self.runtime_demands: dict[projection_planner.ProjectionEdgeKey, frozenset[str]] = {}
         self.runtime_resolved: set[str] = set()
+        # What a measuring walk reports.
+        self.measurements: dict[str, NodeMeasurement] = {}
+        self.attributed: dict[str, AttributedFailure] = {}
+        self.ancestors_of: dict[str, frozenset[str]] = {}
 
     def _fanout_counts(self) -> dict[tuple[str, str | None], int]:
         """How many edges read each producer frame, counted by the selected source frame."""
@@ -455,6 +577,15 @@ class _Walk:
     # ------------------------------------------------------------------ run
 
     def run(self) -> WalkResult:
+        if self.measuring:
+            from haute._mlflow_io import disk_cache_only_model_loads
+
+            # A measuring walk loads a model only from the disk model cache:
+            # a model it does not find there is the node's failure, never a
+            # registry call or a download.
+            with disk_cache_only_model_loads():
+                self.prepare()
+                return self.walk({})
         self.prepare()
         return self.walk({})
 
@@ -543,6 +674,18 @@ class _Walk:
         )
 
     def _result(self) -> WalkResult:
+        if self.measuring:
+            # A measuring walk returns its records, never a frame.
+            return WalkResult(
+                frames={},
+                order=self.order,
+                run_order=self.run_order,
+                parents_of=self.parents_of,
+                node_map=self.node_map,
+                id_to_name=self.graph_plan.id_to_name,
+                measurements=self.measurements,
+                attributed_failures=self.attributed,
+            )
         frames = (
             {node_id: _plan_of(frame) for node_id, frame in self.frames.items()}
             if self.display
@@ -658,7 +801,7 @@ class _Walk:
         )
 
     def _plan_projection(self) -> _WalkProjection:
-        if self.display:
+        if self.display or self.measuring:
             return self._plan_display_projection()
         if self.chunk:
             return self._plan_chunk_projection()
@@ -828,37 +971,61 @@ class _Walk:
             for node_id in self.run_order
             if node_id not in self.seed_frames and node_id not in pass_through
         ]
-        request = self.request
         sink = self.policy.purpose is WalkPurpose.SINK
         with self._stage("lazy_build_functions" if sink else None):
-            funcs = _build_funcs(
-                build_order,
-                self.node_map,
-                self.graph_plan.id_to_name,
-                self.prepared.all_parents,
-                request.build_node_fn,
-                incoming_edges_by_target=self.prepared.incoming_edges_by_target,
-                all_incoming_edges_by_target=self.prepared.all_incoming_edges_by_target,
-                all_node_map=self.graph.node_map,
-                row_limit=self.policy.row_limit,
-                preamble_ns=request.preamble_ns,
-                source=request.source,
-                source_by_node=request.source_by_node,
-                required_output_columns_by_node=self.projection.builder_needed,
-                required_output_columns_by_port_by_node=self.projection.api_port_columns,
-                reuse_loaded_model_by_node=request.reuse_loaded_model_by_node,
-                execution_profile=self.context.profile if self.context is not None else None,
-                schema_only=request.schema_only,
-                submodels=self.graph.submodels,
-            )
+            if self.measuring:
+                funcs = self._build_funcs_parking_failures(build_order)
+            else:
+                funcs = self._build_funcs(build_order)
         self.funcs = funcs
         return NodeBoundaryRunner(
             prepared=self.prepared,
             funcs=funcs,
-            enforce_contracts=request.enforce_contracts,
+            enforce_contracts=self.request.enforce_contracts,
             execution_context=self.context,
             needed_columns=self.projection.needed_by_node,
         )
+
+    def _build_funcs(self, build_order: list[str]) -> dict[str, tuple[Callable[..., Any], bool]]:
+        request = self.request
+        return _build_funcs(
+            build_order,
+            self.node_map,
+            self.graph_plan.id_to_name,
+            self.prepared.all_parents,
+            request.build_node_fn,
+            incoming_edges_by_target=self.prepared.incoming_edges_by_target,
+            all_incoming_edges_by_target=self.prepared.all_incoming_edges_by_target,
+            all_node_map=self.graph.node_map,
+            row_limit=self.policy.row_limit,
+            preamble_ns=request.preamble_ns,
+            source=request.source,
+            source_by_node=request.source_by_node,
+            required_output_columns_by_node=self.projection.builder_needed,
+            required_output_columns_by_port_by_node=self.projection.api_port_columns,
+            reuse_loaded_model_by_node=request.reuse_loaded_model_by_node,
+            execution_profile=self.context.profile if self.context is not None else None,
+            schema_only=request.schema_only,
+            submodels=self.graph.submodels,
+        )
+
+    def _build_funcs_parking_failures(
+        self, build_order: list[str]
+    ) -> dict[str, tuple[Callable[..., Any], bool]]:
+        """Build each node's function alone, parking a builder's failure until its visit.
+
+        A failure raised while a node is built is that node's own, so it must
+        surface when the walk reaches the node, not abort the walk here.
+        """
+        funcs: dict[str, tuple[Callable[..., Any], bool]] = {}
+        for node_id in build_order:
+            try:
+                funcs.update(self._build_funcs([node_id]))
+            except Exception as exc:
+                if _is_execution_control(exc):
+                    raise
+                funcs[node_id] = (_raising(exc), not self.parents_of.get(node_id))
+        return funcs
 
     # ------------------------------------------------------------- walking
 
@@ -896,6 +1063,9 @@ class _Walk:
         self.captures.verify_inputs()
 
     def _walk_node(self, node_id: str) -> None:
+        if self.measuring:
+            self._measure_node(node_id)
+            return
         started = time.perf_counter()
         if not self.policy.record_failures:
             try:
@@ -1223,7 +1393,7 @@ class _Walk:
     def _record_recipes(self, boundary: NodeBoundary, inputs: Sequence[_Frame]) -> None:
         """The recipes a full write of this node can be chunked by."""
         node = boundary.node
-        if self.chunk:
+        if self.chunk or self.measuring:
             return
         join = _edge_join_recipe(boundary.fn, node, inputs)
         if join is not None:
@@ -1750,6 +1920,160 @@ class _Walk:
                 self.error_lines[node_id] = self.error_lines[parent]
                 break
 
+    # ------------------------------------------------------- measuring walk
+
+    def _measure_node(self, node_id: str) -> None:
+        """Build a lineage node, or measure a checked one, recording what fails where."""
+        inherited = self._failed_ancestor(node_id)
+        if inherited is not None:
+            self._record_inherited(node_id, inherited)
+            return
+        progress = _MeasureProgress()
+        try:
+            if self.policy.collects(node_id):
+                self._measure_checked(node_id, progress)
+            else:
+                self._keep(node_id, self._build_node(node_id, self.boundaries.open(node_id)))
+        except _AttributedError as attributed:
+            self._record_attributed(node_id, attributed.failure, progress)
+        except Exception as exc:
+            if type(exc) is MemoryError:
+                raise self._budget_error(exc) from exc
+            if _is_execution_control(exc):
+                raise
+            mark_failing_node(exc, node_id)
+            owner = failing_node(exc) or node_id
+            self._record_attributed(
+                node_id, AttributedFailure(owner, exc, at_or_upstream=False), progress
+            )
+
+    def _failed_ancestor(self, node_id: str) -> AttributedFailure | None:
+        """The earliest recorded failure in *node_id*'s lineage, in walk order."""
+        if not self.attributed:
+            return None
+        ancestors = self._ancestors(node_id)
+        for failed_id, failure in self.attributed.items():
+            if failed_id in ancestors:
+                return failure
+        return None
+
+    def _ancestors(self, node_id: str) -> frozenset[str]:
+        known = self.ancestors_of.get(node_id)
+        if known is None:
+            parents = self.parents_of.get(node_id, [])
+            known = frozenset(parents).union(*(self._ancestors(parent) for parent in parents))
+            self.ancestors_of[node_id] = known
+        return known
+
+    def _measure_checked(self, node_id: str, progress: _MeasureProgress) -> None:
+        """Measure the node's inputs, then build it and measure its output ports."""
+        boundary = self.boundaries.open(node_id)
+        inputs = [] if boundary.is_source else self._node_inputs(boundary)
+        measured = self._measured_inputs(boundary, inputs)
+        node = boundary.node
+        queries = self._queries()
+        for item in measured:
+            input_query = _resolved(queries.input_query(node, item))
+            row = _by_producer(item, partial(self._collect_row, node_id, input_query))
+            progress.inputs.append((item.name, row))
+        joint = queries.joint_query(node, measured)
+        if joint is not None:
+            progress.joint = self._collect_row(node_id, _resolved(joint))
+        built = self._shape_output(boundary, self.boundaries.invoke(boundary, inputs))
+        for port, frame in _output_ports(node_id, built.frame):
+            output_query = queries.output_query(node, port, frame.head(self._row_bound()), measured)
+            if output_query is not None:
+                progress.outputs.append((port, self._collect_row(node_id, _resolved(output_query))))
+        self._keep(node_id, built)
+        self.measurements[node_id] = NodeMeasurement(
+            node_id=node_id,
+            status="measured",
+            inputs=tuple(progress.inputs),
+            joint=progress.joint,
+            outputs=tuple(progress.outputs),
+        )
+
+    def _measured_inputs(
+        self, boundary: NodeBoundary, inputs: Sequence[_Frame]
+    ) -> list[MeasuredInput]:
+        """Each input cut to the row bound, its schema resolved as its producer's work."""
+        measured: list[MeasuredInput] = []
+        for position, (edge, frame) in enumerate(zip(boundary.incoming_edges, inputs, strict=True)):
+            item = MeasuredInput(
+                position=position,
+                name=self._edge_input_name(edge),
+                producer=edge.source,
+                port=edge.sourceHandle,
+                role=edge.targetHandle,
+                frame=_lazy(frame).head(self._row_bound()),
+            )
+            _by_producer(item, item.frame.collect_schema)
+            measured.append(item)
+        return measured
+
+    def _edge_input_name(self, edge: GraphEdge) -> str:
+        try:
+            return edge_input_name(edge, self.node_map[edge.source], submodels=self.graph.submodels)
+        except ValueError:
+            # An API Input edge without a port; the node's own build reports it.
+            return edge.source
+
+    def _collect_row(self, node_id: str, query: pl.LazyFrame) -> Mapping[str, object]:
+        """Collect one measurement aggregate: exactly one row, kept as plain values."""
+        collected = self._run_collect(node_id, query)
+        if collected.height != 1:
+            raise RuntimeError(
+                f"A measurement of node {node_id!r} returned {collected.height} rows, not one."
+            )
+        return collected.row(0, named=True)
+
+    def _keep(self, node_id: str, built: _NodeFrame) -> None:
+        """Keep the node's uncut plan for the nodes that read it."""
+        frame = built.frame
+        self.frames[node_id] = _bundle_plans(node_id, frame) if isinstance(frame, dict) else frame
+
+    def _queries(self) -> MeasurementQueries:
+        queries = self.policy.queries
+        assert queries is not None  # CollectPolicy guarantees it for MEASURE
+        return queries
+
+    def _row_bound(self) -> int:
+        bound = self.policy.row_limit
+        assert bound is not None  # CollectPolicy guarantees it for MEASURE
+        return bound
+
+    def _record_inherited(self, node_id: str, failure: AttributedFailure) -> None:
+        self.failed.add(node_id)
+        if self.policy.collects(node_id):
+            self.measurements[node_id] = NodeMeasurement(
+                node_id=node_id, status="upstream_failed", failure=failure
+            )
+
+    def _record_attributed(
+        self, node_id: str, failure: AttributedFailure, progress: _MeasureProgress
+    ) -> None:
+        """Record *failure* once against its node; the visited node fails or inherits it."""
+        logger.info(
+            "measured_node_failed",
+            node_id=node_id,
+            attributed_to=failure.node_id,
+            at_or_upstream=failure.at_or_upstream,
+            error_type=type(failure.error).__name__,
+        )
+        self.attributed.setdefault(failure.node_id, failure)
+        self.failed.add(failure.node_id)
+        self.frames.pop(failure.node_id, None)
+        if failure.node_id != node_id:
+            self._record_inherited(node_id, failure)
+        elif self.policy.collects(node_id):
+            self.measurements[node_id] = NodeMeasurement(
+                node_id=node_id,
+                status="failed",
+                inputs=tuple(progress.inputs),
+                joint=progress.joint,
+                failure=failure,
+            )
+
     def _replan_target_preview(self) -> None:
         """Re-plan a target-only preview's diagnostic from the frames it built.
 
@@ -1829,6 +2153,60 @@ def project_output(
     return frame.select(cached)
 
 
+@dataclass(slots=True)
+class _MeasureProgress:
+    """A checked node's measurements so far, kept when its own output fails."""
+
+    inputs: list[tuple[str, Mapping[str, object]]] = field(default_factory=list)
+    joint: Mapping[str, object] | None = None
+    outputs: list[tuple[str | None, Mapping[str, object]]] = field(default_factory=list)
+
+
+class _AttributedError(Exception):
+    """Carries a failure a measuring walk attributes to a node other than the visited one."""
+
+    def __init__(self, failure: AttributedFailure) -> None:
+        super().__init__(failure.node_id)
+        self.failure = failure
+
+
+def _is_execution_control(exc: BaseException) -> bool:
+    """A cancellation or the run's memory budget: it ends the walk, never a node."""
+    return isinstance(exc, (ExecutionCancelledError, ExecutionMemoryLimitExceededError))
+
+
+def _raising(exc: Exception) -> Callable[..., Any]:
+    """A node function that raises its builder's parked failure when invoked."""
+
+    def fail(*_frames: Any, **_named: Any) -> Any:
+        raise exc
+
+    return fail
+
+
+def _resolved(query: pl.LazyFrame) -> pl.LazyFrame:
+    """Resolve a measurement's schema as the node's own work, before anything is read."""
+    query.collect_schema()
+    return query
+
+
+def _by_producer(item: MeasuredInput, action: Callable[[], Any]) -> Any:
+    """Run *action*, which reads *item*'s frame; a failure is its producer's, at or upstream."""
+    try:
+        return action()
+    except Exception as exc:
+        if type(exc) is MemoryError or _is_execution_control(exc):
+            raise
+        raise _AttributedError(AttributedFailure(item.producer, exc, at_or_upstream=True)) from exc
+
+
+def _output_ports(node_id: str, frame: Any) -> list[tuple[str | None, pl.LazyFrame]]:
+    """A node's output ports: a bundle's frames by label, or its one frame as ``None``."""
+    if isinstance(frame, dict):
+        return list(_bundle_plans(node_id, frame).items())
+    return [(None, _lazy(frame))]
+
+
 def _lazy(frame: pl.LazyFrame | pl.DataFrame) -> pl.LazyFrame:
     return frame.lazy() if isinstance(frame, pl.DataFrame) else frame
 
@@ -1862,7 +2240,11 @@ def _bundle_plans(node_id: str, bundle: Mapping[str, Any]) -> dict[str, pl.LazyF
 
 
 __all__ = [
+    "AttributedFailure",
     "CollectPolicy",
+    "MeasuredInput",
+    "MeasurementQueries",
+    "NodeMeasurement",
     "PreparedWalk",
     "WalkPurpose",
     "WalkRequest",

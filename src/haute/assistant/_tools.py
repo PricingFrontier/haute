@@ -66,6 +66,7 @@ from haute._submodel_instances import (
 )
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
+from haute._validation_error import HauteValidationError
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
     CommittedVerificationError,
@@ -318,18 +319,22 @@ def _submitted_scalars(submitted: object) -> set[str]:
     return scalars
 
 
-def _config_setting_message(exc: ConfigSettingError, *, submitted: object) -> str:
+def _config_setting_message(
+    exc: ConfigSettingError, *, submitted: object, policy: EgressPolicy | None = None
+) -> str:
     """A config parser's refusal, unless it quotes configuration the model cannot read.
 
     Its column and output names are pipeline metadata; the configured values
     it quotes (a boundary, a category) are the node's saved configuration. The
     text is shown when the policy lets the model read saved configuration, or
-    when every quoted value is one the model's own operations sent.
+    when every quoted value is one the model's own operations sent. *policy*
+    is the caller's when it holds one; otherwise the project's is read.
     """
 
     if exc.values:
         try:
-            policy = resolve_egress_policy(Path.cwd().resolve())
+            if policy is None:
+                policy = resolve_egress_policy(Path.cwd().resolve())
             readable = _part_requirement(policy, "config") is None
         except Exception:  # noqa: BLE001 - an unreadable policy withholds
             readable = False
@@ -543,6 +548,128 @@ def _execution_failure(
         error_message=str(exc),
     )
     return f"{summary}. Its text is withheld because {withheld_because}.", columns
+
+
+_ROW_SAMPLES_WITHHELD = (
+    "[assistant.egress].allow_row_samples is false and the text can quote row values"
+)
+
+
+def execution_error_record(
+    exc: Exception,
+    *,
+    graph: PipelineGraph,
+    node: str,
+    submitted: object,
+    policy: EgressPolicy,
+) -> dict[str, object]:
+    """The structured record of an execution failure at *node*, under *policy*'s egress rules.
+
+    The cases :func:`_execution_failure` renders as text, as fields: an
+    authored-code failure (a Polars error, an exception raised from node or
+    step code, a preamble failure) is ``authored_code`` with its type, step or
+    line, the column names it names that the policy discloses, and its text
+    only under ``allow_row_samples``; a ``ConfigSettingError`` is
+    ``configuration`` with its message as :func:`_config_setting_message`
+    gives it and its fix; any other ``HauteValidationError`` (the rating miss
+    guard's ``RatingTableMissError``) is ``validation``, its text, which can
+    quote row values, only under ``allow_row_samples``; any other Haute
+    error, ``SourceCacheError`` or ``PolarsIoConfigError`` (and Haute's
+    incomplete-transform refusal) is ``haute`` with its own message; anything
+    else is ``internal``, logged, with the sanitized internal detail.
+    """
+
+    error_type = type(exc).__name__
+    if isinstance(exc, ConfigSettingError):
+        text = _config_setting_message(exc, submitted=submitted, policy=policy)
+        if exc.fix and text == str(exc):
+            text = f"{text} {exc.fix}"
+        return _error_record("configuration", error_type, text=text)
+    if (
+        isinstance(exc, PreambleError | pl.exceptions.PolarsError)
+        or user_code_line(exc) is not None
+    ):
+        return _authored_code_record(
+            exc, graph=graph, node=node, submitted=submitted, policy=policy
+        )
+    if isinstance(exc, HauteValidationError):
+        return _withheld_record("validation", exc, policy=policy)
+    if isinstance(exc, NotImplementedError) and str(exc).startswith(
+        (INCOMPLETE_TRANSFORM_MESSAGE, INCOMPLETE_STEPS_MESSAGE)
+    ):
+        return _error_record("haute", error_type, text=str(exc))
+    if isinstance(exc, (PathOutsideProjectError, InvalidPathError)):
+        return _error_record("haute", error_type, text=exc.message)
+    if isinstance(exc, (HauteError, SourceCacheError, PolarsIoConfigError)):
+        return _error_record("haute", error_type, text=str(exc))
+    logger.error(
+        "assistant_data_check_failed",
+        node=node,
+        error_class=error_type,
+        error_message=str(exc),
+    )
+    return _error_record("internal", error_type, text=_INTERNAL_ERROR_DETAIL)
+
+
+def _authored_code_record(
+    exc: Exception,
+    *,
+    graph: PipelineGraph,
+    node: str,
+    submitted: object,
+    policy: EgressPolicy,
+) -> dict[str, object]:
+    step: FailedStep | None = None
+    line: int | None
+    if isinstance(exc, PreambleError):
+        line = exc.source_line
+    else:
+        step = _failing_step(graph, node, exc)
+        line = None if step is not None else user_code_line(exc)
+    columns, _dropped = _polars_error_columns(
+        exc,
+        _FailureSite(graph=graph, node=node, submitted=submitted),
+        allow_executable_source=policy.allow_executable_source,
+    )
+    record = _withheld_record("authored_code", exc, policy=policy)
+    record["step"] = None if step is None else {"id": step.step_id, "number": step.number}
+    record["line"] = line
+    record["columns"] = list(columns)
+    return record
+
+
+def _withheld_record(
+    error_class: str, exc: Exception, *, policy: EgressPolicy
+) -> dict[str, object]:
+    """A record whose text can quote row values: shown only under ``allow_row_samples``."""
+
+    if policy.allow_row_samples:
+        return _error_record(error_class, type(exc).__name__, text=str(exc))
+    logger.info(
+        "assistant_execution_error_withheld",
+        operation="assistant_data_check",
+        error_class=type(exc).__name__,
+        error_message=str(exc),
+    )
+    return _error_record(error_class, type(exc).__name__, withheld=_ROW_SAMPLES_WITHHELD)
+
+
+def _error_record(
+    error_class: str,
+    error_type: str,
+    *,
+    text: str | None = None,
+    withheld: str | None = None,
+) -> dict[str, object]:
+    return {
+        "class": error_class,
+        "type": error_type,
+        "step": None,
+        "line": None,
+        "columns": [],
+        "text": text,
+        "withheld": withheld,
+    }
 
 
 def _node_id(raw: object) -> str | None:

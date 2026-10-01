@@ -73,14 +73,14 @@ from haute._polars_steps import (
 from haute._price_contour import price_contour
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, parse_combined_factor_bounds
 from haute._rating import (
-    _apply_banding_factors,
     _apply_rating_step_outputs,
     _apply_rating_table,
     _combine_rating_columns,
     _normalise_banding_factors,
-    _normalise_combined_outputs,
+    apply_banding_factors,
     banding_factor_is_active,
     is_rating_dtype_descriptor,
+    normalise_combined_outputs,
     rating_dtype_descriptor,
 )
 from haute._rating_step_config import normalise_rating_tables
@@ -825,7 +825,7 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         # Shared with apply_banding_from_config (generated standalone code)
         # so the canvas and the saved file cannot drift.
-        return _apply_banding_factors(lf, _factors_captured)
+        return apply_banding_factors(lf, _factors_captured)
 
     return ctx.func_name, banding_fn, False
 
@@ -841,7 +841,7 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
         if out:
             produced.add(out)
         referenced.update(t.get("factors") or [])
-    for combined in _normalise_combined_outputs(config):
+    for combined in normalise_combined_outputs(config):
         produced.add(combined["outputColumn"])
     return produced, referenced
 
@@ -861,7 +861,7 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # Incomplete post-rating steps must not rate the frame and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     tables = normalise_rating_tables(config)
-    combined_outputs = _normalise_combined_outputs(config)
+    combined_outputs = normalise_combined_outputs(config)
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 

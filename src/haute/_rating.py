@@ -12,6 +12,7 @@ import math
 import operator
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from os import PathLike
@@ -623,7 +624,7 @@ def banding_factor_is_active(factor: dict[str, Any]) -> bool:
     return bool(factor.get("column") and factor.get("outputColumn") and factor.get("rules"))
 
 
-def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
+def apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
     """Apply normalised banding *factors* to a frame, in order.
 
     The single application loop shared by the executor's banding node
@@ -678,7 +679,7 @@ def apply_banding_from_config(
             config_path, base_dir=Path(base_dir) if base_dir else None
         )
 
-    return _apply_banding_factors(lf, _normalise_banding_factors(resolved_config))
+    return apply_banding_factors(lf, _normalise_banding_factors(resolved_config))
 
 
 # ---------------------------------------------------------------------------
@@ -1158,30 +1159,44 @@ def _rating_internal_column(occupied: set[str], stem: str) -> str:
     return candidate
 
 
-def _apply_rating_table(
-    lf: _Frame,
-    table: dict[str, Any],
-    *,
-    input_schema: Any | None = None,
-) -> _Frame:
-    """Apply a single rating table lookup via a Polars left join.
+@dataclass(frozen=True, slots=True)
+class RatingTableLookup:
+    """One rating table's lookup, built exactly as execution builds it.
 
-    *table* must contain ``factors`` (list of column names to join on),
-    ``outputColumn``, ``entries`` (list of dicts with one key per factor
-    plus a ``value`` key), and optionally ``defaultValue`` and
-    ``onMissing``.
+    ``keyed_entries`` holds every authored entry's canonical key columns and
+    value, in authored order; ``lookup`` is what execution joins: deduplicated
+    by key with the last-authored entry kept, its value under
+    ``lookup_value_column``. ``default_value`` is the usable finite default, or
+    ``None``, in which case execution guards the lookup against misses.
+    """
 
-    Both join sides are canonicalised with :func:`_rating_key_expr`, so
-    int-like float keys (``25.0``) match string-keyed entries (``"25"``)
-    deterministically.
+    factors: tuple[str, ...]
+    output_column: str
+    original_dtypes: Mapping[str, pl.DataType]
+    key_columns: tuple[str, ...]
+    lookup_value_column: str
+    keyed_entries: pl.DataFrame
+    lookup: pl.DataFrame
+    default_value: float | None
+    default_note: str
+    on_missing: str
 
-    Miss policy (3a.3 — breaking change, release-noted): a lookup miss
-    with no usable ``defaultValue`` raises :class:`RatingTableMissError`
-    at materialisation.  ``"onMissing": "neutral"`` opts back in to the
-    old behaviour explicitly — the table output stays null (combined
-    outputs fill the operation's neutral element) and every miss is
-    counted and logged at WARNING.  A usable ``defaultValue`` always
-    fills misses with no error or warning.
+    def frame_key_exprs(self) -> list[pl.Expr]:
+        """The canonical key of each factor of the frame a lookup reads."""
+        return [
+            _rating_key_expr(factor, self.original_dtypes[factor]).alias(key_column)
+            for factor, key_column in zip(self.factors, self.key_columns, strict=True)
+        ]
+
+
+def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTableLookup | None:
+    """Build *table*'s lookup against a frame of *frame_schema*, or ``None`` for a no-op table.
+
+    Raises exactly what :func:`_apply_rating_table` raises for the table: a
+    malformed table, an absent factor, an unsupported factor dtype, or an
+    entry its factor dtype refuses. ``None`` is a table execution passes
+    through (no factors, output column or entries, or entries without a
+    ``value`` or a factor key).
     """
     raw_factors = table.get("factors")
     raw_entries = table.get("entries")
@@ -1200,12 +1215,11 @@ def _apply_rating_table(
     on_missing = _normalise_on_missing(table.get("onMissing"))
 
     if not factors or not output_col:
-        return lf
+        return None
 
     # Validate the declared input contract before every incomplete-table guard.
     # An entry-less lookup is still a no-op, but it must never hide a typo in a
     # required factor name.
-    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
     existing_cols = set(_schema_names(frame_schema))
     table_label = output_col
     for factor in factors:
@@ -1218,7 +1232,7 @@ def _apply_rating_table(
             )
 
     if not entries:
-        return lf
+        return None
 
     # These are cheap structural passthrough checks.  They intentionally
     # precede lookup construction: a malformed lookup entry remains a
@@ -1228,7 +1242,7 @@ def _apply_rating_table(
         if isinstance(entry, dict):
             entry_cols.update(entry.keys())
     if "value" not in entry_cols or any(factor not in entry_cols for factor in factors):
-        return lf
+        return None
 
     # Parse the default up front (B13: tolerate non-numeric/non-finite
     # values) — whether a usable default exists decides if the miss guard
@@ -1260,7 +1274,7 @@ def _apply_rating_table(
     # plan is returned to a caller.
     lookup = pl.DataFrame(entries)
     if "value" not in lookup.columns:
-        return lf
+        return None
     lookup = lookup.with_columns(pl.col("value").cast(pl.Float64, strict=True))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
@@ -1288,7 +1302,7 @@ def _apply_rating_table(
     # Guard: if any factor column is missing from entries, config is invalid.
     missing = [f for f in factors if f not in lookup.columns]
     if missing:
-        return lf
+        return None
     lookup = lookup.select([*factors, "value"])
 
     occupied = existing_cols | entry_cols | {output_col}
@@ -1302,7 +1316,7 @@ def _apply_rating_table(
     # dtype.  Canonical keys are then built from that typed value on both
     # sides of the join; JSON scalar widening therefore cannot change a key.
     lookup_schema = lookup.schema
-    lookup = lookup.with_columns(
+    keyed_entries = lookup.with_columns(
         [
             _coerce_rating_lookup_expr(
                 factor,
@@ -1327,59 +1341,112 @@ def _apply_rating_table(
     # report the same winning row. Deduplication happens after strict
     # originating-dtype coercion and key generation, so representational
     # aliases such as Float64 entry strings "25.0" and "25.00" form one group.
-    lookup = lookup.unique(subset=key_columns, keep="last")
-
     # Rename "value" to an internal name to avoid collision with any
     # input "value" column in the input frame (Bug #1/#2).
-    lookup = lookup.rename({"value": lookup_value_column})
+    deduplicated = keyed_entries.unique(subset=key_columns, keep="last").rename(
+        {"value": lookup_value_column}
+    )
+    return RatingTableLookup(
+        factors=tuple(factors),
+        output_column=output_col,
+        original_dtypes=original_dtypes,
+        key_columns=tuple(key_columns),
+        lookup_value_column=lookup_value_column,
+        keyed_entries=keyed_entries,
+        lookup=deduplicated,
+        default_value=default_val,
+        default_note=default_note,
+        on_missing=on_missing,
+    )
 
+
+def apply_rating_table_lookup(
+    lf: _Frame,
+    built: RatingTableLookup,
+    *,
+    frame_schema: Any,
+    guard_misses: bool = True,
+) -> _Frame:
+    """Join *built* onto *lf* and write its output column, as execution does.
+
+    Without *guard_misses* a lookup without a usable default leaves its
+    misses null instead of guarding them: a measurement reads the misses
+    itself and must not raise on them.
+    """
+    key_columns = list(built.key_columns)
+    lookup_value_column = built.lookup_value_column
     # Source factors stay untouched.  Temporary keys are collision-free and
     # removed after the lookup.
-    lf = lf.with_columns(
-        [
-            _rating_key_expr(factor, original_dtypes[factor]).alias(key_column)
-            for factor, key_column in zip(factors, key_columns)
-        ]
-    )
+    lf = lf.with_columns(built.frame_key_exprs())
 
     # Left join.  Preserve the input row order explicitly because Polars
     # streaming joins may otherwise emit hash-partition order.
-    lf = lf.join(lookup.lazy(), on=key_columns, how="left", maintain_order="left")
+    lf = lf.join(built.lookup.lazy(), on=key_columns, how="left", maintain_order="left")
 
     # Miss guard (3a.3): only when no usable default exists — a usable
     # defaultValue fills every miss below, so nothing can be silent.
     # Diagnostics relabel temporary keys with the public factor names.
-    if default_val is None:
+    if built.default_value is None and guard_misses:
         joined_schema = pl.Schema(
             {
                 **dict(zip(_schema_names(frame_schema), frame_schema.values(), strict=True)),
                 **dict.fromkeys(key_columns, pl.String()),
-                lookup_value_column: lookup.schema[lookup_value_column],
+                lookup_value_column: built.lookup.schema[lookup_value_column],
             }
         )
         lf = _apply_rating_miss_guard(
             lf,
-            factors,
+            list(built.factors),
             key_columns=key_columns,
             lookup_value_column=lookup_value_column,
-            table_label=table_label,
-            output_col=output_col,
-            on_missing=on_missing,
-            default_note=default_note,
+            table_label=built.output_column,
+            output_col=built.output_column,
+            on_missing=built.on_missing,
+            default_note=built.default_note,
             input_schema=joined_schema,
         )
 
     # Rename value → outputColumn, apply default
-    if default_val is not None:
+    if built.default_value is not None:
         lf = lf.with_columns(
-            pl.col(lookup_value_column).fill_null(default_val).alias(output_col),
+            pl.col(lookup_value_column).fill_null(built.default_value).alias(built.output_column),
         )
     else:
-        lf = lf.with_columns(pl.col(lookup_value_column).alias(output_col))
+        lf = lf.with_columns(pl.col(lookup_value_column).alias(built.output_column))
 
-    lf = lf.drop([*key_columns, lookup_value_column])
+    return lf.drop([*key_columns, lookup_value_column])
 
-    return lf
+
+def _apply_rating_table(
+    lf: _Frame,
+    table: dict[str, Any],
+    *,
+    input_schema: Any | None = None,
+) -> _Frame:
+    """Apply a single rating table lookup via a Polars left join.
+
+    *table* must contain ``factors`` (list of column names to join on),
+    ``outputColumn``, ``entries`` (list of dicts with one key per factor
+    plus a ``value`` key), and optionally ``defaultValue`` and
+    ``onMissing``.
+
+    Both join sides are canonicalised with :func:`_rating_key_expr`, so
+    int-like float keys (``25.0``) match string-keyed entries (``"25"``)
+    deterministically.
+
+    Miss policy (3a.3 — breaking change, release-noted): a lookup miss
+    with no usable ``defaultValue`` raises :class:`RatingTableMissError`
+    at materialisation.  ``"onMissing": "neutral"`` opts back in to the
+    old behaviour explicitly — the table output stays null (combined
+    outputs fill the operation's neutral element) and every miss is
+    counted and logged at WARNING.  A usable ``defaultValue`` always
+    fills misses with no error or warning.
+    """
+    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
+    built = rating_table_lookup(table, frame_schema)
+    if built is None:
+        return lf
+    return apply_rating_table_lookup(lf, built, frame_schema=frame_schema)
 
 
 def _combine_rating_columns(
@@ -1499,7 +1566,7 @@ def _rating_extrema_expr(
     return pl.when(guard).then(pl.lit(None)).otherwise(extrema).alias(output_col)
 
 
-def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
+def normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return strictly validated canonical combined-output definitions."""
     raw_outputs = config.get("combinedOutputs")
     if raw_outputs is None or raw_outputs == []:
@@ -1712,5 +1779,5 @@ def apply_rating_step_from_config(
     return _apply_rating_step_outputs(
         lf,
         normalise_rating_tables(resolved_config),
-        _normalise_combined_outputs(resolved_config),
+        normalise_combined_outputs(resolved_config),
     )

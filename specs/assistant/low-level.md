@@ -24,6 +24,7 @@
 | `src/haute/assistant/_change_record.py` | The value-free change builder: `graph_changes(before, after, diff)` turns a semantic diff and the graphs on either side of it into node chips (id, palette type name from the capability manifest, `added`/`changed`/`removed`/`renamed`, the earlier id of a renamed node, changed fields in words, step kinds and changed-step count) and added and removed edges, each bounded at 50; `change_record` adds the record's id (the saved plan's hash), the plan receipt, the save warnings and the commit and its parent; `touched_node_ids` lists the node ids a batch of records names, for the turn context update; `evidence_summary` reduces verification evidence to its counts and input names. The dry-run result, the apply result and the stream event all use these. |
 | `src/haute/assistant/_build_plan.py` | `BuildPlan`, one session's build plan (see Edge cases, **Build plan**): it holds the current `AssistantBuildPlan` snapshot, or none, and replaces it whole on every change, so a caller detects a change by identity. `update(items, complete)` sets or revises the items and claims one complete, all or nothing; `require_item` refuses an id the plan lacks before an apply saves; `record_change` records a committed change against an item; `undo` marks a change undone and reopens a complete item left with no change that is not undone. A refusal raises `BuildPlanError`, carrying a stable code, a message, `where`, `fix` and extra fields the tool error spreads. `build_plan_view` is the compact item list the tool result shows the model. It reads nothing from the project and imports no other assistant module. |
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery; `inspect_node` composes the schema, config and profile parts (`node_schema`, `node_config`, `column_profiles`), each behind its own egress check. `build_turn_context` gathers the turn context's facts (revision, brief nodes resolved schema-only and cached per revision, validated selection, policy-reduced preview error) on the same schema helpers as `inspect_node`'s schema part, and `build_context_update` the facts of the update after an apply (new revision and the brief entries of the nodes the saved change records name) from the same cache; `context_update` gathers them under the save lock and renders them for the loop. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor writes the schema/content evidence its successful results return into the session's `SourceEvidenceLedger` (`build_tool_executor(..., evidence=session.evidence)`; an executor built without one gets a fresh ledger of its own) through `_observe_project_source_evidence`, where a successful `find_data` first drops schema evidence whose file no longer exists; building the executor starts a turn on the ledger, and before each dry-run it releases carried evidence that no longer holds (see Edge cases, **Evidence ledger**). The executor also takes the session's `BuildPlan` (`plan=session.build_plan`; one built without it keeps a plan of its own): the build-plan tool updates it, and an `apply_graph_plan` naming an `item` is refused before it saves when the plan lacks that item and records its committed change against the item afterwards (see Edge cases, **Build plan**). `apply_graph_plan` is the only tool that writes the project; the mutation path is `dry_run_graph_edits` (its `recipe` operations expanded first) followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/assistant/_data_check.py` | The data check's engine (ASSIST-41, see [Approved change contract — data checks](#approved-change-contract--data-checks)): `run_data_check`, which decides eligibility on the server from configuration, file metadata and published-generation pointers, admits one preview-eager execution and runs the job pre-emptibly in the interactive worker under one absolute deadline, one check per session (a newer one supersedes, a cancelled turn stops it); the worker half `measure_candidate` (input verification and freshness, the binding read before and after the measuring walk, the walk's measurement queries, node records and findings); the closed result shapes (`DATA_CHECK_VIEW`); `fit_data_check`, the model-facing reduction; and `data_check_visibility`, the freshness comparison a consumer runs. Whether a check runs at all is its caller's decision. |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, the live `SourceEvidenceLedger` (never serialized), the session's `BuildPlan` (`build_plan`, persisted as its current snapshot under `build_plan`, and each turn's snapshot as the turn left it, `AssistantTurn.build_plan`, set only on a turn that changed the plan; item titles are redacted like assistant text, and a file without the keys, written before build plans, revives with no plan), timestamps), create/lookup/resume, `record_undo` (which also applies the undo to the build plan before it persists), `list_sessions` for the chat list, the compacted provider history (`provider_history`: earlier turns as `TurnRecord`s within `PROVIDER_HISTORY_CHARACTERS`; see Edge cases, **Compacted provider history**), and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence (`_PERSISTED_TOOL_EVIDENCE_KEYS`, which include a dry-run's operation count and an apply's applied-operation count), value-free validation diagnostics, and a successful apply's `change` record, validated against `AssistantChangeRecord` with its summary and assumptions redacted like assistant text; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. A neutral `context` message becomes a mid-conversation `system` message for the Anthropic models in `MID_CONVERSATION_SYSTEM_MODELS` and otherwise the leading text of the preceding user message; one that follows a round's tool results (the turn context update) is otherwise a text block after the tool-result blocks on the Anthropic wire and a user message after the tool messages on the OpenAI wire. The Anthropic adapter sends the system prompt as one text block carrying the request's one prompt-cache breakpoint, enables adaptive thinking with `ANTHROPIC_EFFORT` (`medium`) for the Claude models that take it (the configuration module's set, which readiness checks too) and refuses any other model at construction, emits `ThinkingStarted` when a thinking block opens and, before the stop, `ReplayContent` with the message's content blocks in order when it holds a thinking block, and sends an assistant message that carries that content back verbatim. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the history is the store's compacted provider history of earlier turns; the context message is the route's rendered turn context and is never stored), forwards text deltas and a content-free `thinking` status, carries each round's provider replay content into the next round's request only, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, continues the turn after a saving apply with the turn context update the route's refresher renders placed after that round's results (never stored), records every saved change id on the outcome, streams a build-plan-updated event after each tool call that changed the session's build plan and stores the plan with the turn when the turn changed it, sends one end-of-turn reminder when the model stops with a validated plan unapplied or a failed dry-run uncorrected and completes the turn `incomplete` on a second such stop, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
@@ -2724,6 +2725,7 @@ fixture for route tests). The implemented coverage is:
   preserve-marker round-trip through
   `save_graph_transactionally` (parse a marker-bearing pipeline → transactional save →
   markers and content survive on disk), independent of which layer supplies the blocks.
+- **`tests/test_assistant_data_check.py`** — the data check's engine on candidate graphs seeded under `tmp_path`. In-process, through the worker half under an admitted context: all-default banding, a 0.6 rating miss share, a filter that empties its input, an `m:1` join on duplicate keys reported as `join_validation_failed` in place of its execution failure, a partial join as informational `join_partial`, the remaining finding kinds and their exact-ratio thresholds (a 1-in-10 miss is advisory, 1-in-20 informational); a failing unchecked node read by two checked nodes reported once with both `upstream_failed` naming it while an independent branch measures; a rating miss guard that raises keeping its input and table measurements and reporting an advisory `rating_misses` in place of `execution_failed`; error records for authored code, configuration (input counts kept), validation, a preamble failure and an internal failure; a payload with no row or configuration value; a frame above 1,000,000 rows cut and marked `truncated`; each eligibility reason and its precedence, with an excluded Load File's loader never invoked and a source made stale after its snapshot was built demoted in the worker, which frees its place under the node cap; a registered or uncached run model `artifact_not_local`; a cached model that disappears failing as `ModelNotInDiskCacheError`, never a registry call; a refresh in progress making the nodes that read its input `input_not_prepared`; a preamble-only plan changing no node; no input snapshot, source cache or model cache entry gaining a file; a cached model file or an EBM's cached contract replaced during a check giving `source_changed`, and after one labelling the stored findings, as does a destination moved to another local folder with the old cached files untouched; findings hidden for another graph or scenario and labelled after an input refresh; each worker outcome mapped to its not-run reason; admission refusal and a defect as results; and the size reduction, an oversized check cut step by step within its allocation with the stored check whole, the omission note, nothing, and a reduced `no_checkable_nodes` result that still validates against the closed `not_run` shape. In process mode (spawned workers, marked `slow`): an end-to-end check whose cold snapshot generation is verified, and its parts hashed, only in the worker; an occupied slot and a second session reporting `worker_busy` without waiting; an editor request pre-empting a check, which reports `superseded_by_preview` while the request runs on the replacement worker; a row callback that never returns stopped at a shortened deadline with its worker terminated and the slot usable, a stopped turn reporting `cancelled`, and a newer check in the session superseding an older one; and a slow binding hash (through the test-only preload module `tests/_data_check_worker_hooks.py`), a delayed dispatch and a starting worker each ending at the deadline or as `worker_busy`. The shared extensions are proved where they live: `tests/test_interactive_worker_pool.py` (a pre-emptible request refused at once while unstarted or held, pre-empted by an editor request that then runs on the replacement, refused in the handoff window while the pre-empting request has not resumed, bounded by one deadline through a stuck job and a delayed dispatch, and refused while its slot's replacement starts), `tests/test_graph_walker.py` (the measuring walk's failure provenance, its row bound and its policy's validation) and `tests/test_source_cache.py` (the published-generation probe reads metadata and never a part).
 No automated test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provider
 wire behaviour is exercised with scripted SDK streams. `scripts/run_assistant_self_test.py`
 is also the explicit credentialed live runner (tier 1 of [the assistant evaluation](evaluation.md)): its `record` command loads the same project `.env` and
@@ -2782,8 +2784,9 @@ literal; `DATA_CHECK_DEADLINE_SECONDS = 30.0`, absolute from the check's start;
 `DATA_CHECK_MAX_FACTORS = 20`; `DATA_CHECK_MAX_TABLES = 20`;
 `DATA_CHECK_MAX_RULE_COUNTS = 100`; `DATA_CHECK_MAX_RULE_POSITIONS = 20`;
 `DATA_CHECK_DETAIL_BYTES = 32_000`; `DATA_CHECK_FINDINGS_BYTES = 16_000`;
-`RATING_MISS_ADVISORY_SHARE = 0.10`; `MOSTLY_DEFAULT_SHARE = 0.5`;
-`MOSTLY_NULL_SHARE = 0.5`. Thresholds compare exact ratios (`missed * 10 >=
+`RATING_MISS_ADVISORY_SHARE = Fraction(1, 10)`; `MOSTLY_DEFAULT_SHARE = Fraction(1, 2)`;
+`MOSTLY_NULL_SHARE = Fraction(1, 2)` (0.10, 0.5 and 0.5, held as fractions so no
+float rounding enters a comparison). Thresholds compare exact ratios (`missed * 10 >=
 rows` for 0.10, `defaulted * 2 >= rows` for 0.5) and shares are rounded to 4
 decimal places only when rendered. The admission operation name is
 `assistant_data_check`; the session supersession key and the worker affinity key
@@ -2795,7 +2798,7 @@ a snapshot's parts. In order: the worker mode
 (`resolve_interactive_execution_mode` in `src/haute/_interactive_workers.py`;
 `thread` ends the check as `worker_mode_unsupported`), the plan's tier, then
 eligibility. The changed nodes come from the plan's `SemanticDiff` through the
-same seed derivation `_diff_seed_nodes` uses (one shared helper with a flag for
+same seed derivation `diff_seed_nodes` uses (one shared helper with a flag for
 the preamble widening, not a copy). Eligibility applies the high-level
 precedence with: `SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`; a Load File's
 `fileType`; a Model Scoring node's locality, decided by the same
@@ -2861,7 +2864,7 @@ stays authoritative) remain readable. It then reads the start binding:
 - `identity_components`, the parts of that identity that are not files and cost
   only configuration reads: the resolved path of every signed file (the key set
   of `freshness_tokens`), and for each run-sourced Model Scoring node the
-  resolved MLflow backend identity `_mlflow_backend_signature` returns (in
+  resolved MLflow backend identity `mlflow_backend_signature` returns (in
   `src/haute/execution.py`: `resolve_backend(destination).identity`, secret-free,
   or its `unresolved` marker), whose digest also selects the node's disk model
   cache directory.
@@ -3211,3 +3214,67 @@ a dry-run whose own attributed result exceeds the limit is
   check on 100,000, 1,000,000 and 5,000,000 rows is recorded in the
   evaluation's evidence.
 - **Roadmap package.** [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run).
+
+**Engine delivered for the integration (ASSIST-41, first half).** The engine is
+`src/haute/assistant/_data_check.py`; the dry-run integration, the change card,
+the panel, the prompt and latency evidence remain. Its seams:
+
+- `run_data_check(request: DataCheckRequest, *, session_id: str, cancellation:
+  ExecutionCancellationToken | None = None) -> DataCheckResult` never raises
+  for an outcome: every not-run reason, a defect (`internal_error`) included, is
+  a result; only a cancellation of the awaiting task itself propagates, after
+  the worker has stopped. `DataCheckRequest` carries `plan_hash`,
+  `candidate_graph` (the `VerifiedPlan.result_graph`), `diff`,
+  `verification_tier`, `policy` and `submitted` (the operations the model
+  sent). The caller decides the egress gate and calls it after the plan is
+  stored, outside the save lock; it imports the module inside the dry-run
+  function, because the module imports `_MAX_PROFILE_ROWS`, `_json_size` and
+  `execution_error_record` from `_tools.py`.
+- Cancelling `cancellation` (the turn stopped) ends the check as `cancelled`;
+  one check runs per session under the key `data_check_session_key(session_id)`
+  and a newer one ends the older as `superseded` (supersession outranks a
+  stopped turn).
+- `DataCheckResult.check` is the stored model-facing object, never reduced, and
+  `DataCheckResult.binding` its `DataCheckBinding`; `as_dict()` is the stored
+  form with `binding`. It belongs beside the stored plan in the plan store.
+  `fit_data_check(result, room_bytes)` returns `{"data_check": ...}`,
+  `{"data_check_omitted": DATA_CHECK_OMITTED_NOTE}` or `{}`, where
+  `room_bytes` is `_MAX_TOOL_CONTEXT_BYTES` less the size of the fully
+  attributed dry-run result without the check. `data_check_visibility(result,
+  graph)` returns `current`, `earlier_inputs`, `other_scenario` or
+  `other_graph` for the graph a consumer shows. `DATA_CHECK_VIEW` (a Pydantic
+  `TypeAdapter`) validates the closed shapes.
+- Shared extensions: `InteractiveWorkerPool.run_preemptible` and
+  `run_preemptible_in_interactive_worker` with `InteractiveWorkerBusyError` and
+  `InteractiveWorkerPreemptedError` (`_interactive_workers.py`);
+  `WalkPurpose.MEASURE`, `CollectPolicy.measuring`, `MeasurementQueries`,
+  `NodeMeasurement` and `AttributedFailure` (`_graph_walker.py`);
+  `disk_cache_only_model_loads`, `DiskCachedRunModel` and
+  `disk_cached_run_model` (`_mlflow_io.py`), raising
+  `haute.errors.ModelNotInDiskCacheError`;
+  `SourceCacheStore.published_generation_id`; `input_snapshot_read_status`
+  (`routes/input_cache.py`, which the status route now calls, so a running build
+  or preparation reports `building` without reading the store);
+  `input_preparation_running`; `runtime_input_signed_paths` and the public
+  `mlflow_backend_signature` (`execution.py`); `freshness_record`
+  (`_json_shred/_source_proof.py`); `rating_table_lookup` and
+  `apply_rating_table_lookup` (`_rating.py`, which `_apply_rating_table` now
+  composes); `diff_seed_nodes(..., preamble_widens=...)`; and
+  `execution_error_record` (`_tools.py`).
+- Choices the contract left open: a measured frame is aggregated over every
+  column (a row count alone lets Polars prune a column and the failure it would
+  raise); the server passes every changed node no server-side reason excludes,
+  and the worker applies its own `input_not_prepared` before the node cap, so a
+  stale input frees a place under the cap; a structured measurement the node's
+  configuration refuses keeps the input counts and is the node's failure; a
+  finding that replaces an execution failure states its cause by its kind, and
+  the `failed` record keeps the error; the
+  measuring walk records contract, schema and public contract errors against
+  their node rather than raising them as a display walk does; a preamble
+  failure fails the nodes that bind the preamble, as a preview does;
+  `rows_emptied` reports the largest input's rows; a cross join reports
+  `matched_base_rows` and `duplicate_key_tuples` as null; a skipped factor or
+  table reports `truncated` as null; the freshness tokens cover the runtime
+  input files and the cached model files, while the preamble's utility modules
+  are covered by `graph_digest`; and a worker that demotes every candidate
+  returns `not_run` `no_checkable_nodes`.

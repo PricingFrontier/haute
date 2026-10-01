@@ -792,7 +792,7 @@ def test_remote_result_keeps_primary_error_when_release_is_invalid(
 
 def test_start_close_and_singleton_helpers_with_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     pool = InteractiveWorkerPool(size=2, polars_threads=2)
-    slots = [SimpleNamespace(lock=threading.Lock()), SimpleNamespace(lock=threading.Lock())]
+    slots = [SimpleNamespace(index=0), SimpleNamespace(index=1)]
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(
         pool,
@@ -833,7 +833,7 @@ def test_close_slot_defensive_cleanup_paths(monkeypatch: pytest.MonkeyPatch) -> 
             pass
 
     process = Process()
-    slot = worker_mod._WorkerSlot(0, _Queue(), _Queue(), process, threading.Lock(), 1, _cell())
+    slot = worker_mod._WorkerSlot(0, _Queue(), _Queue(), process, 1, _cell())
     monkeypatch.setattr(
         worker_mod, "_terminate_process", lambda proc: setattr(proc, "alive", False)
     )
@@ -929,9 +929,8 @@ def test_run_can_be_stopped_while_waiting_for_an_affinity_slot(
         def release(self) -> None:
             raise AssertionError("an unacquired lock must not be released")
 
-    slot = SimpleNamespace(lock=BusyLock())
+    pool._scheduling_locks = (BusyLock(),)  # type: ignore[assignment]
     monkeypatch.setattr(pool, "start", lambda: None)
-    monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
 
     with pytest.raises(InteractiveWorkerStoppedError) as exc_info:
         pool.run(
@@ -964,9 +963,10 @@ def test_run_keeps_waiting_for_slot_until_lock_is_acquired(
             self.released = True
 
     lock = EventuallyAvailableLock()
-    slot = SimpleNamespace(lock=lock, request_queue=_Queue())
+    pool._scheduling_locks = (lock,)  # type: ignore[assignment]
+    slot = SimpleNamespace(request_queue=_Queue())
     monkeypatch.setattr(pool, "start", lambda: None)
-    monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
+    monkeypatch.setattr(pool, "_current_slot", lambda _index: slot)
     monkeypatch.setattr(pool, "_wait_for_result", lambda *_args, **_kwargs: 7)
 
     result = pool.run(
@@ -984,17 +984,16 @@ def test_run_rechecks_closed_state_after_acquiring_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
-    lock = threading.Lock()
-    slot = SimpleNamespace(lock=lock)
     monkeypatch.setattr(pool, "start", lambda: None)
-    monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
     pool._closed = True
 
     with pytest.raises(RuntimeError, match="closed"):
         pool.run(_returns, affinity_key="closed", timeout_seconds=1)
 
+    lock = pool._scheduling_locks[0]
     assert lock.acquire(blocking=False)
     lock.release()
+    assert pool._pending == [0]
 
 
 def test_growth_limit_required_mode_uses_native_cap_when_baseline_is_unobservable(
@@ -1003,13 +1002,12 @@ def test_growth_limit_required_mode_uses_native_cap_when_baseline_is_unobservabl
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     slot = SimpleNamespace(
         index=0,
-        lock=threading.Lock(),
         process=SimpleNamespace(pid=42),
         request_queue=_Queue(),
     )
     replaced: list[object] = []
     monkeypatch.setattr(pool, "start", lambda: None)
-    monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
+    monkeypatch.setattr(pool, "_current_slot", lambda _index: slot)
     monkeypatch.setattr(pool, "_stop_and_replace", replaced.append)
     monkeypatch.setattr(worker_mod, "native_memory_caps_supported", lambda: True)
     monkeypatch.setattr(pool, "_wait_for_result", lambda *_args, **_kwargs: 7)
@@ -1035,13 +1033,12 @@ def test_optional_growth_limit_warns_and_continues_without_baseline(
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     slot = SimpleNamespace(
         index=0,
-        lock=threading.Lock(),
         process=SimpleNamespace(pid=42),
         request_queue=_Queue(),
     )
     warnings: list[dict[str, object]] = []
     monkeypatch.setattr(pool, "start", lambda: None)
-    monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
+    monkeypatch.setattr(pool, "_current_slot", lambda _index: slot)
     monkeypatch.setattr(pool, "_wait_for_result", lambda *_args, **_kwargs: 7)
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
     monkeypatch.setattr(
@@ -1067,12 +1064,11 @@ def test_unserialisable_worker_request_fails_before_queue_submission(
 ) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     slot = SimpleNamespace(
-        lock=threading.Lock(),
         process=SimpleNamespace(pid=42),
         request_queue=_Queue(),
     )
     monkeypatch.setattr(pool, "start", lambda: None)
-    monkeypatch.setattr(pool, "_slot_for_affinity", lambda _key: slot)
+    monkeypatch.setattr(pool, "_current_slot", lambda _index: slot)
 
     with pytest.raises(worker_mod.InteractiveWorkerProtocolError, match="not serialisable"):
         pool.run(lambda: None, affinity_key="lineage", timeout_seconds=1)
@@ -1080,15 +1076,20 @@ def test_unserialisable_worker_request_fails_before_queue_submission(
     assert slot.request_queue.values == []
 
 
-def test_slot_lookup_fails_loudly_for_closed_or_unstarted_pool() -> None:
+def test_slot_lookup_fails_loudly_for_closed_unstarted_or_unreplaced_slot() -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     pool._closed = True
     with pytest.raises(RuntimeError, match="closed"):
-        pool._slot_for_affinity("lineage")
+        pool._current_slot(0)
 
     pool._closed = False
     with pytest.raises(RuntimeError, match="did not start"):
-        pool._slot_for_affinity("lineage")
+        pool._current_slot(0)
+
+    # A replacement that failed to start leaves the retired slot behind.
+    pool._slots = [SimpleNamespace(closed=True)]  # type: ignore[list-item]
+    with pytest.raises(worker_mod.InteractiveWorkerStartError, match="replacement did not start"):
+        pool._current_slot(0)
 
 
 def _start_slot_test_pool(monkeypatch: pytest.MonkeyPatch, process):
@@ -1311,7 +1312,6 @@ def _close_slot(process, request_queue=None, result_queue=None):
         request_queue or _CloseQueue(),
         result_queue or _CloseQueue(),
         process,
-        threading.Lock(),
         1,
         _cell(),
     )
@@ -1816,3 +1816,265 @@ def test_close_slot_notes_native_cleanup_failure_after_primary_error(
     assert (
         "native memory resource cleanup failed: cgroup cleanup failed" in exc_info.value.__notes__
     )
+
+
+# --------------------------------------------------------------------------
+# Pre-emptible requests: never wait, yield to editor requests, one deadline
+# --------------------------------------------------------------------------
+
+
+def _worker_write_pid_then_sleep(path: str, seconds: float) -> int:
+    with open(path, "w", encoding="utf-8") as marker:
+        marker.write(str(os.getpid()))
+    time.sleep(seconds)
+    return os.getpid()
+
+
+def _await_marker(path: Any, *, timeout: float = 30.0) -> int:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        if text:
+            return int(text)
+        assert time.monotonic() < deadline, "the worker never started the job"
+        time.sleep(0.01)
+
+
+class _GatedSchedulingLock:
+    """A scheduling lock whose waiting acquisitions are held at a gate.
+
+    The pool's waiting acquisition passes a timeout and a pre-emptible one
+    passes ``blocking=False``; only the first is gated, which opens the window
+    between a pre-empted job's release and the waiting request's wake-up.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.gate = threading.Event()
+        self.released = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if timeout != -1:
+            self.gate.wait()
+            return self._lock.acquire(timeout=timeout)
+        return self._lock.acquire(blocking=blocking)
+
+    def release(self) -> None:
+        self._lock.release()
+        self.released.set()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> bool:
+        return self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+def test_preemptible_request_is_refused_at_once_while_unstarted_or_its_slot_is_held(
+    tmp_path: Any,
+) -> None:
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    try:
+        with pytest.raises(worker_mod.InteractiveWorkerBusyError, match="not running"):
+            pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 5)
+        assert pool._slots == []  # refusing never starts the pool
+
+        pool.start()
+        marker = tmp_path / "busy.pid"
+        holder = threading.Thread(
+            target=pool.run,
+            args=(_worker_write_pid_then_sleep, str(marker), 2.0),
+            kwargs={"affinity_key": "k", "timeout_seconds": 30},
+        )
+        holder.start()
+        _await_marker(marker)
+        started = time.monotonic()
+        with pytest.raises(worker_mod.InteractiveWorkerBusyError, match="another request"):
+            pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 30)
+        assert time.monotonic() - started < 0.5
+        holder.join(30)
+        assert (
+            pool.run_preemptible(_returns, 7, affinity_key="k", deadline=time.monotonic() + 30) == 7
+        )
+    finally:
+        pool.close()
+
+
+def test_an_editor_request_preempts_a_running_preemptible_job_and_runs_on_its_replacement(
+    tmp_path: Any,
+) -> None:
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    pool.start()
+    marker = tmp_path / "check.pid"
+    outcome: list[BaseException] = []
+
+    def run_check() -> None:
+        try:
+            pool.run_preemptible(
+                _worker_write_pid_then_sleep,
+                str(marker),
+                30.0,
+                affinity_key="check",
+                deadline=time.monotonic() + 30,
+            )
+        except BaseException as exc:
+            outcome.append(exc)
+
+    try:
+        check = threading.Thread(target=run_check)
+        check.start()
+        check_pid = _await_marker(marker)
+        check_process = pool._slots[0].process
+        preview_pid, value = pool.run(
+            _worker_identity, 3, affinity_key="preview", timeout_seconds=30
+        )
+        check.join(30)
+    finally:
+        pool.close()
+
+    assert [type(exc) for exc in outcome] == [worker_mod.InteractiveWorkerPreemptedError]
+    assert value == 3
+    assert preview_pid != check_pid
+    assert check_process.exitcode is not None and not check_process.is_alive()
+
+
+def test_a_preemptible_request_is_refused_while_a_preempting_request_has_not_resumed(
+    tmp_path: Any,
+) -> None:
+    """The scheduling lock is free between the replacement's release and the
+    waiting request's wake-up; the pending count still refuses a newcomer."""
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    gated = _GatedSchedulingLock()
+    pool._scheduling_locks = (gated,)  # type: ignore[assignment]
+    pool.start()
+    marker = tmp_path / "first.pid"
+    preview_result: list[tuple[int, int]] = []
+    failures: list[BaseException] = []
+
+    def run_check() -> None:
+        try:
+            pool.run_preemptible(
+                _worker_write_pid_then_sleep,
+                str(marker),
+                30.0,
+                affinity_key="check",
+                deadline=time.monotonic() + 30,
+            )
+        except worker_mod.InteractiveWorkerPreemptedError:
+            pass
+        except BaseException as exc:
+            failures.append(exc)
+
+    def run_preview() -> None:
+        preview_result.append(
+            pool.run(_worker_identity, 5, affinity_key="preview", timeout_seconds=30)
+        )
+
+    try:
+        check = threading.Thread(target=run_check)
+        check.start()
+        first_pid = _await_marker(marker)
+        preview = threading.Thread(target=run_preview)
+        preview.start()
+        assert gated.released.wait(30), "the pre-empted job never released its slot"
+        check.join(30)
+        assert pool._slots[0].generation == 2
+        assert not gated.locked()
+        with pytest.raises(worker_mod.InteractiveWorkerBusyError, match="editor request"):
+            pool.run_preemptible(_returns, 1, affinity_key="late", deadline=time.monotonic() + 30)
+        gated.gate.set()
+        preview.join(30)
+    finally:
+        gated.gate.set()
+        pool.close()
+
+    assert failures == []
+    assert preview_result and preview_result[0][1] == 5
+    assert preview_result[0][0] != first_pid
+
+
+def test_a_preemptible_deadline_bounds_a_stuck_job_and_a_delayed_dispatch() -> None:
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    pool.start()
+    try:
+        first_pid, _ = pool.run(_worker_identity, affinity_key="k", timeout_seconds=30)
+        started = time.monotonic()
+        with pytest.raises(InteractiveWorkerTimeoutError):
+            pool.run_preemptible(
+                _worker_sleep, 30.0, affinity_key="k", deadline=time.monotonic() + 0.5
+            )
+        # The deadline plus termination and the replacement's start.
+        assert time.monotonic() - started < 15
+        second_pid, _ = pool.run(_worker_identity, affinity_key="k", timeout_seconds=30)
+        assert second_pid != first_pid
+
+        slot = pool._slots[0]
+        real_queue = slot.request_queue
+
+        class _UnreadQueue:
+            """A request queue the worker is not draining: a put waits out its timeout."""
+
+            def put(self, _payload: object, timeout: float | None = None) -> None:
+                assert timeout is not None, "a pre-emptible submission must be bounded"
+                time.sleep(timeout)
+                raise queue.Full
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real_queue, name)
+
+        slot.request_queue = _UnreadQueue()
+        started = time.monotonic()
+        with pytest.raises(InteractiveWorkerTimeoutError):
+            pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 0.3)
+        assert time.monotonic() - started < 15
+        third_pid, _ = pool.run(_worker_identity, affinity_key="k", timeout_seconds=30)
+        assert third_pid not in {first_pid, second_pid}
+    finally:
+        pool.close()
+
+
+def test_a_preemptible_request_is_refused_while_its_slots_replacement_is_starting() -> None:
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    pool.start()
+    starting = threading.Event()
+    proceed = threading.Event()
+    real_start = pool._start_slot
+
+    def slow_start(*, index: int, generation: int) -> Any:
+        starting.set()
+        assert proceed.wait(30)
+        return real_start(index=index, generation=generation)
+
+    pool._start_slot = slow_start  # type: ignore[method-assign]
+    timed_out: list[BaseException] = []
+
+    def time_out() -> None:
+        try:
+            pool.run(_worker_sleep, 30.0, affinity_key="k", timeout_seconds=0.2)
+        except BaseException as exc:
+            timed_out.append(exc)
+
+    try:
+        runner = threading.Thread(target=time_out)
+        runner.start()
+        assert starting.wait(30)
+        started = time.monotonic()
+        with pytest.raises(worker_mod.InteractiveWorkerBusyError):
+            pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 30)
+        assert time.monotonic() - started < 0.5
+        proceed.set()
+        runner.join(30)
+        assert (
+            pool.run_preemptible(_returns, 9, affinity_key="k", deadline=time.monotonic() + 30) == 9
+        )
+    finally:
+        proceed.set()
+        pool.close()
+
+    assert [type(exc) for exc in timed_out] == [InteractiveWorkerTimeoutError]

@@ -1726,7 +1726,7 @@ as dry-run results omit revisions; the stored result keeps the whole binding.
 **Eligibility.** The changed nodes are the nodes the plan's semantic diff adds
 or whose configuration it writes, the new ids of nodes it renames, and the
 target of every edge it adds or removes, when present in the candidate graph:
-the seeds of `src/haute/assistant/_application.py::_diff_seed_nodes` without its
+the seeds of `src/haute/assistant/_application.py::diff_seed_nodes` without its
 widening to every node when the preamble changes, so a preamble-only plan checks
 nothing. They are taken in the candidate graph's topological order, ties broken
 by node id. Each changed node is given the first of these reasons that applies,

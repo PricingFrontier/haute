@@ -27,7 +27,7 @@ from haute._input_providers import (
 )
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
-from haute._rating import _normalise_combined_outputs, validate_banding_config
+from haute._rating import normalise_combined_outputs, validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
@@ -273,11 +273,16 @@ class CommittedVerificationError(AssistantOperationError):
         self.result = dict(result)
 
 
-def _diff_seed_nodes(graph: PipelineGraph, diff: SemanticDiff) -> frozenset[str]:
+def diff_seed_nodes(
+    graph: PipelineGraph, diff: SemanticDiff, *, preamble_widens: bool
+) -> frozenset[str]:
     """Return the surviving nodes this plan is directly answerable for.
 
-    Only the edge's target is seeded. Adding or removing an edge changes what
-    arrives at the target and therefore everything downstream of it; the
+    With *preamble_widens*, a plan that changes the preamble is answerable
+    for every node; without it (the data check's changed nodes) the
+    preamble widens nothing. Only the edge's target is seeded. Adding or
+    removing an edge changes what arrives at the target and therefore
+    everything downstream of it; the
     source's own output schema is unchanged and its other children are
     untouched. Seeding the source dragged every unrelated branch of a shared
     input into validation, so an edit was blocked — and blamed — by a node it
@@ -294,7 +299,7 @@ def _diff_seed_nodes(graph: PipelineGraph, diff: SemanticDiff) -> frozenset[str]
     ):
         seeds.add(target)
     seeds.intersection_update(present)
-    if diff.preamble_changed:
+    if preamble_widens and diff.preamble_changed:
         # A preamble replacement can change any node's behaviour, so the plan
         # is answerable for the whole graph.
         seeds = set(present)
@@ -308,7 +313,7 @@ def _schema_validation_targets(
     """Return affected terminal nodes whose lazy schemas prove executability."""
 
     present = {node.id for node in graph.nodes}
-    seeds = set(_diff_seed_nodes(graph, diff))
+    seeds = set(diff_seed_nodes(graph, diff, preamble_widens=True))
     if not seeds:
         return ()
 
@@ -698,7 +703,7 @@ def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collec
 
 def _parse_rating_step_config(config: dict[str, Any]) -> None:
     normalise_rating_step_config(config)
-    _normalise_combined_outputs(config)
+    normalise_combined_outputs(config)
 
 
 #: Each node type's config parser, which a node this plan writes must pass.
@@ -1004,14 +1009,15 @@ def build_verified_plan(
             source_file=source_file,
         )
         _prove_switches_route_their_scenarios(
-            prepared.result_graph, _diff_seed_nodes(prepared.result_graph, prepared.diff)
+            prepared.result_graph,
+            diff_seed_nodes(prepared.result_graph, prepared.diff, preamble_widens=True),
         )
         targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
         evidence, schema_warnings = _schema_evidence(
             prepared.result_graph,
             targets,
             baseline=snapshot.graph,
-            changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
+            changed=diff_seed_nodes(prepared.result_graph, prepared.diff, preamble_widens=True),
             submitted=operations,
         )
         _prove_categorical_factors_band_text(

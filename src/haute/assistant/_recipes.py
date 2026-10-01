@@ -582,11 +582,11 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
         "combinedOutputs": combined_outputs,
     }
     try:
-        from haute._rating import _normalise_combined_outputs
+        from haute._rating import normalise_combined_outputs
         from haute._rating_step_config import normalise_rating_step_config
 
         config = normalise_rating_step_config(config)
-        config["combinedOutputs"] = _normalise_combined_outputs(config)
+        config["combinedOutputs"] = normalise_combined_outputs(config)
     except ValueError as exc:
         raise RecipeError(
             "recipe_argument_invalid",

@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/_binning.py` | Equal-width bins over a numeric column (`equal_width_bins`), the one definition of "the histogram of this column" every surface that shows one uses. |
 | `src/haute/routes/_banding_stats.py` | Whole-dataset statistics for the factor being edited, over the shared data point its node reads; owned by [server-api](../server-api/low-level.md#banding-statistics). |
-| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_comparison_expr`, `banding_temporal_ordinal_expr`, `parse_breakpoint_boundary`, `breakpoints_kind`, `banding_categorical_claims`, `banding_interval_claims`, `require_banding_type`, `banding_rule_claim_expr`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`; a descriptor is the shared dtype codec's spec with rating's key names, restricted to the dtypes a rating factor supports), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
+| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_comparison_expr`, `banding_temporal_ordinal_expr`, `parse_breakpoint_boundary`, `breakpoints_kind`, `banding_categorical_claims`, `banding_interval_claims`, `require_banding_type`, `banding_rule_claim_expr`) and the banding-factor loop (`apply_banding_factors`), rating-table lookup (`_apply_rating_table`, composed of `rating_table_lookup`, which builds a table's canonical lookup and its authored keyed entries, and `apply_rating_table_lookup`, which joins it with or without the miss guard; the assistant's data check measures lookups through the same two), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`; a descriptor is the shared dtype codec's spec with rating's key names, restricted to the dtypes a rating factor supports), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
 | `src/haute/_rating_step_config.py` | Rating-table config normalisation: canonical ordered row-array validation and optional `factorDtypes` descriptor validation/preservation. |
 | `src/haute/_banding_config.py` | Banding config normalisation: compact key/value-map ⟷ canonical row-array conversion for `categorical`/`breakpoints` rules (`expand_banding_config_from_sidecar`, `compact_banding_config_for_sidecar`, `normalise_banding_rules`, `normalise_banding_factors`). |
 
@@ -18,7 +18,7 @@
   Every factor, draft or configured, names one of those two types; there is no
   default type, and any other value (the removed `continuous`, a pseudo-type such
   as `"age"`, or none) is rejected by `validate_banding_config`, by runtime
-  (`_apply_banding_factors` checks every factor, a draft included, before it skips
+  (`apply_banding_factors` checks every factor, a draft included, before it skips
   drafts, and `_apply_banding` checks again) and by the whole-data rule counts
   (`banding_rule_claim_expr`), each through `require_banding_type`. A configured factor also needs a non-empty
   `column`, `outputColumn`, and `rules`, and at least one rule usable for its type.
@@ -26,7 +26,7 @@
   validator before save/codegen. Runtime rejects blank assignments and invalid
   breakpoint sets. A factor with its type and otherwise-empty fields (the editor's
   new factor is `breakpoints`) is the documented draft no-op.
-  Execution (`_apply_banding_factors`) and the node's column contract
+  Execution (`apply_banding_factors`) and the node's column contract
   (`_builders._banding_columns`) share one test, `banding_factor_is_active`: a
   factor with an empty `column`, `outputColumn`, or `rules` is skipped, and the
   contract neither reads its column nor declares its output, so the two cannot
@@ -57,7 +57,7 @@
    (sidecar expansion plus shape rejection). The strict `validate_banding_config` validator is
    called at the save/codegen boundary (`src/haute/_config_validation.py`), while runtime enforces
    usable-rule checks inside `_apply_banding`.
-3. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
+3. `apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
 4. Inside `_apply_banding`: `breakpoints` rules are converted to interval rules first (`_breakpoints_to_rules`, each `{"op1", "val1", "op2"?, "val2"?, "assignment"}`, whose thresholds are the parsed boundaries: `float`, `date` or naive `datetime`); the column is read through `banding_comparison_expr(col, dtype, kind, output_column)`, which for numbers requires a numeric dtype and nulls NaN/Infinity, for dates takes a Date column as it is and a Datetime column's `.dt.date()`, and for dates and times takes a Datetime column's wall-clock time (`.dt.replace_time_zone(None)` when it has a zone), raising `ValueError` for any other pairing; float input columns are NaN/Infinity-sanitised to null (`banding_comparison_expr` — a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared interval-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`. The categorical remap is `banding_categorical_claims` with its indices dropped.
 
 ### Which rule claimed a row — `banding_rule_claim_expr` (`_rating.py`)
@@ -101,7 +101,7 @@ and a null claim is exactly a defaulted row:
 2. `normalise_rating_tables(config)` (from `_rating_step_config.py`) validates
    canonical row arrays and rejects duplicate non-empty table output columns,
    naming the later table index and duplicated column.
-3. `_normalise_combined_outputs(config)` validates `combinedOutputs`.
+3. `normalise_combined_outputs(config)` validates `combinedOutputs`.
 4. `_apply_rating_step_outputs(lf, tables, combined_outputs)`:
    a. Coerce `pl.DataFrame` input to `.lazy()`.
    b. Collect the frame schema **once** up front into a local `dict`, then thread it through every table call (`input_schema=schema`) instead of re-collecting after each table — this keeps schema resolution `O(n)` instead of `O(n²)` in the number of tables, since each `_apply_rating_table` call would otherwise re-run `collect_schema()` on a lazy plan that has grown by one join.
@@ -208,13 +208,13 @@ and a null claim is exactly a defaulted row:
   value/assignment pair raises `ValueError` naming the output column.
 - **Rating output columns are globally unique within one step.**
   `_rating_step_config` rejects duplicate `tables[].outputColumn` values before
-  execution, `_normalise_combined_outputs` rejects collisions with table or
+  execution, `normalise_combined_outputs` rejects collisions with table or
   combined outputs, and `_combine_rating_columns` rejects duplicate
   participants or an output name that would overwrite a participant.
 - **B15 entry-column pollution guard:** `_apply_rating_table` selects only `[*factors, "value"]` from the entries `DataFrame` before joining, so stray extra keys left in an entry dict (e.g. leftover UI state) never leak into the main frame as spurious columns.
 - **B14 fan-out guard:** the lookup side is deduplicated on its final typed temporary keys with `keep="last"` before the join, so aliases in the originating factor dtype can never fan out (multiply) rows in the output — the last-authored entry wins, matching trace enrichment's own reverse-walk resolution of "the winning row" for the same duplicate-key case.
 - **Bug #1/#2 (naming collision):** lookup keys and values use internal names reserved against every input, entry, and output column (starting from `__haute_rating_key_{n}__` and `__haute_lookup_val__`, then prefixing `_` until free), so user columns named `"value"` or like an internal stem remain untouched.
-- **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`outputColumn`/`rules`, or a completely empty rating-table draft / rating table with an empty entry list or no `outputColumn`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `_apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
+- **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`outputColumn`/`rules`, or a completely empty rating-table draft / rating table with an empty entry list or no `outputColumn`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
 - **Malformed collection shapes never become empty configs.**
   `normalise_banding_factors` raises `ValueError("banding factors must be a list")`
   for any non-`None`, non-list value, matching sidecar expansion. Rating-table
@@ -233,10 +233,10 @@ and a null claim is exactly a defaulted row:
 | Rating factor has an unsupported nested/binary/object/unknown dtype | `ValueError` naming the table/factor/dtype, supported scalar families, and upstream-cast remediation | rating dtype validation in `_apply_rating_table` | Eagerly, before the join |
 | Saved ratebook lacks factor dtype metadata or apply dtype differs | `RatingFactorDtypeContractError` (`SchemaMismatchError`) | `_apply_ratebook` | Eagerly, before lookup construction; public contract adapters map it to HTTP 422/background `contract_error` |
 | Unsupported `onMissing` value | `ValueError` | `_normalise_on_missing` | Eagerly |
-| Unsupported combine `operation` | `ValueError` | `_normalise_combine_operation` | Eagerly, from both `_combine_rating_columns` and `_normalise_combined_outputs` |
+| Unsupported combine `operation` | `ValueError` | `_normalise_combine_operation` | Eagerly, from both `_combine_rating_columns` and `normalise_combined_outputs` |
 | Duplicate non-empty `tables[].outputColumn` | `ValueError` naming the later table index and column | `_rating_step_config` output validation | Eagerly, at config normalisation |
 | Duplicate participant column, or a combined output that would overwrite one of its participant columns | `ValueError` | `_combine_rating_columns` | Eagerly, before constructing arithmetic expressions |
-| `combinedOutputs` item missing/non-finite `baseValue`, missing/duplicate `outputColumn`, or non-list `combinedOutputs` | `ValueError` | `_normalise_combined_outputs` | Eagerly, at config normalisation |
+| `combinedOutputs` item missing/non-finite `baseValue`, missing/duplicate `outputColumn`, or non-list `combinedOutputs` | `ValueError` | `normalise_combined_outputs` | Eagerly, at config normalisation |
 | `ratingStep.factors` not a list, too many factors (>3), a factor not a non-empty string, or a duplicate factor | `ValueError` | `_rating_step_config._validate_factors` | Eagerly, at config expand/compact |
 | Rating entry row missing a required factor, has a non-JSON factor scalar, or lacks literal `value` | `ValueError` | `_rating_step_config` normalisation helpers | Eagerly, at config validation |
 | Banding `factors` (or a compact rule map) not structurally valid; duplicate categorical/breakpoint rule key; empty categorical rule key | `ValueError` | `_banding_config.py` various | Eagerly, at config expand/compact |

@@ -27,6 +27,8 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -414,6 +416,99 @@ def _model_cache_key(
             backend_identity,
         )
     return (source_type, run_id, artifact_path, task, artifact_fingerprint, backend_identity)
+
+
+@dataclass(frozen=True, slots=True)
+class DiskCachedRunModel:
+    """Where the fast path of :func:`load_mlflow_model` finds one run artifact on disk.
+
+    The model file and, for an EBM, the contract it loads under, in the disk
+    model cache partition of one resolved backend.
+    """
+
+    artifact_path: str
+    model_path: Path
+    contract_artifact: str | None = None
+    contract_path: Path | None = None
+
+    @property
+    def files(self) -> tuple[Path, ...]:
+        return (
+            (self.model_path,)
+            if self.contract_path is None
+            else (
+                self.model_path,
+                self.contract_path,
+            )
+        )
+
+    def present(self) -> bool:
+        """Whether every file the fast path loads exists (a stat, never a read)."""
+        return all(path.is_file() for path in self.files)
+
+    def fingerprint(self) -> str:
+        """The byte identity the in-process model cache keys this artifact by."""
+        if self.contract_path is None or self.contract_artifact is None:
+            return _local_artifact_fingerprint(self.artifact_path, str(self.model_path))
+        return _ebm_identity_fingerprint(
+            self.artifact_path,
+            str(self.model_path),
+            self.contract_artifact,
+            str(self.contract_path),
+        )
+
+
+def _disk_cached_run_model(
+    backend: ResolvedBackend, run_id: str, artifact_path: str
+) -> DiskCachedRunModel | None:
+    """The disk-cache files of a run artifact, or ``None`` for a pyfunc, which has none."""
+    flavor = _flavor_from_artifact(artifact_path)
+    if flavor == "pyfunc":
+        return None
+    root = _disk_cache_root()
+    model_path = _artifact_cache_path(root, backend.digest, run_id, artifact_path)
+    if flavor != "ebm":
+        return DiskCachedRunModel(artifact_path, model_path)
+    # An EBM is only as current as the contract it loads under.
+    contract_artifact = _run_contract_artifact(artifact_path)
+    return DiskCachedRunModel(
+        artifact_path,
+        model_path,
+        contract_artifact,
+        _artifact_cache_path(root, backend.digest, run_id, contract_artifact),
+    )
+
+
+def disk_cached_run_model(
+    *, run_id: str, artifact_path: str, destination: str
+) -> DiskCachedRunModel | None:
+    """The disk-cache files a run artifact loads from, resolved from configuration alone.
+
+    Raises ``MlflowConfigError`` when the destination does not resolve and
+    ``ValueError`` for an invalid run id or artifact path; ``None`` for a
+    pyfunc directory, which loads by MLflow URI and is never cached on disk.
+    """
+    from haute._mlflow_utils import resolve_backend
+
+    _validate_artifact_path(artifact_path)
+    return _disk_cached_run_model(resolve_backend(destination), run_id, artifact_path)
+
+
+_DISK_CACHE_ONLY: ContextVar[bool] = ContextVar("haute_disk_cache_only_model_loads", default=False)
+
+
+@contextmanager
+def disk_cache_only_model_loads() -> Iterator[None]:
+    """Within this scope, :func:`load_mlflow_model` loads only from the disk model cache.
+
+    Where it would otherwise resolve the model through a tracking server or
+    registry and download it, it raises :class:`ModelNotInDiskCacheError`.
+    """
+    token = _DISK_CACHE_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _DISK_CACHE_ONLY.reset(token)
 
 
 def _local_artifact_fingerprint(artifact_path: str, local_path: str) -> str:
@@ -1557,37 +1652,20 @@ def load_mlflow_model(
                 return cached
         else:
             with _disk_cache_run_in_use(run_id):
-                local_path = _artifact_cache_path(
-                    _disk_cache_root(),
-                    backend.digest,
-                    run_id,
-                    artifact_path,
-                )
                 # An EBM is only as current as the contract it loads under, so
                 # its fast path needs the cached contract too.
-                contract_local: Path | None = None
-                if flavor == "ebm":
-                    contract_artifact = _run_contract_artifact(artifact_path)
-                    contract_local = _artifact_cache_path(
-                        _disk_cache_root(), backend.digest, run_id, contract_artifact
-                    )
-                if local_path.is_file() and (contract_local is None or contract_local.is_file()):
+                cached_files = _disk_cached_run_model(backend, run_id, artifact_path)
+                assert cached_files is not None  # only a pyfunc has no cached file
+                local_path = cached_files.model_path
+                contract_local = cached_files.contract_path
+                if cached_files.present():
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
                         version=version,
                         artifact_path=artifact_path,
                         task=task,
-                        artifact_fingerprint=(
-                            _local_artifact_fingerprint(artifact_path, str(local_path))
-                            if contract_local is None
-                            else _ebm_identity_fingerprint(
-                                artifact_path,
-                                str(local_path),
-                                contract_artifact,
-                                str(contract_local),
-                            )
-                        ),
+                        artifact_fingerprint=cached_files.fingerprint(),
                         backend_identity=backend.identity,
                     )
                     cached = _model_cache.get(fast_key)
@@ -1642,6 +1720,21 @@ def load_mlflow_model(
                     # The file vanished while this thread waited for the lock
                     # (e.g. a concurrent corrupt-retry deleted it).  Fall
                     # through to the full resolve + re-download path below.
+
+    if _DISK_CACHE_ONLY.get():
+        from haute.errors import ModelNotInDiskCacheError
+
+        reference = (
+            f"run {run_id!r}, artifact {artifact_path!r}"
+            if source_type == "run"
+            else f"registered model {registered_model!r}"
+        )
+        raise ModelNotInDiskCacheError(
+            f"The local model cache holds no model for {reference}, and this execution "
+            "loads models only from that cache. Preview the Model Scoring node in the "
+            "editor, which fills it.",
+            source_type=source_type,
+        )
 
     # The already-resolved backend is threaded in, so this load resolves the
     # destination exactly once no matter which path it takes.

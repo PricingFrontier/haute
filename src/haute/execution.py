@@ -126,6 +126,10 @@ _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
 }
+# The node types whose runtime inputs an execution identity signs.
+_RUNTIME_INPUT_NODE_TYPES = frozenset(
+    {*_SOURCE_PATH_CONFIG_BY_NODE_TYPE, NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY}
+)
 
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
@@ -879,7 +883,7 @@ def _snapshot_source_signature(
         return None
 
 
-def _mlflow_backend_signature(config: Mapping[str, object]) -> object:
+def mlflow_backend_signature(config: Mapping[str, object]) -> object:
     """Secret-free identity of the backend an MLflow-sourced node reads from.
 
     Returns ``resolve_backend(<node destination>).identity`` — never the
@@ -959,7 +963,7 @@ def _runtime_input_fingerprint_entry(
         NodeType.MODEL_SCORE,
         NodeType.OPTIMISER_APPLY,
     ) and config.get("sourceType") in ("run", "registered"):
-        files["mlflow_backend"] = _mlflow_backend_signature(config)
+        files["mlflow_backend"] = mlflow_backend_signature(config)
         if config.get("sourceType") == "registered":
             files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
@@ -1054,14 +1058,10 @@ def dataframe_graph_input_identity(
             ],
         }
     )
-    runtime_input_node_types = set(_SOURCE_PATH_CONFIG_BY_NODE_TYPE) | {
-        NodeType.MODEL_SCORE,
-        NodeType.OPTIMISER_APPLY,
-    }
     source_entries = [
         _runtime_input_fingerprint_entry(scoped_graph, node)
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
-        if node.data.nodeType in runtime_input_node_types
+        if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
     ]
     return RuntimeInputIdentity(
         {
@@ -1074,6 +1074,23 @@ def dataframe_graph_input_identity(
             ),
         }
     )
+
+
+def runtime_input_signed_paths(graph: PipelineGraph) -> tuple[Path, ...]:
+    """The resolved local files :func:`dataframe_graph_input_identity` signs for every node.
+
+    Paths only, read from configuration: listing them touches no file's
+    content. The preamble's imported utility modules, which the identity
+    signs through the preamble fingerprint, are not listed.
+    """
+    canonical = canonical_dataframe_execution_graph(graph)
+    paths = {
+        path.resolve()
+        for node in canonical.nodes
+        if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
+        for path in _runtime_file_signature_paths(canonical, node).values()
+    }
+    return tuple(sorted(paths, key=str))
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:

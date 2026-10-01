@@ -54,7 +54,7 @@ Out of scope (owned by neighbouring components):
 
 ## Behaviour
 
-**Banding** (`apply_banding_from_config` / `_apply_banding_factors`):
+**Banding** (`apply_banding_from_config` / `apply_banding_factors`):
 
 - Each banding "factor" reads one input column and writes one output column,
   and its `banding` is `breakpoints` or `categorical`. Any other value, or none,
@@ -205,7 +205,7 @@ Out of scope (owned by neighbouring components):
 
 - **[execution-engine](../execution-engine/high-level.md)** — `_builders.py`
   registers `BANDING` and `RATING_STEP` node builders that call
-  `_apply_banding_factors` and `_apply_rating_step_outputs` directly, and
+  `apply_banding_factors` and `_apply_rating_step_outputs` directly, and
   `_apply_ratebook` (optimiser scoring) reuses `_apply_rating_table` and
   `_combine_rating_columns` to apply a saved ratebook as a rating lookup.
 - **[pipeline-config](../pipeline-config/high-level.md)** — `_config_io.py`

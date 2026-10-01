@@ -162,6 +162,15 @@ class ExecutionError(HauteError):
     """Runtime execution failure."""
 
 
+class ModelNotInDiskCacheError(ExecutionError):
+    """A model load restricted to the local disk model cache found no cached model.
+
+    Raised where an unrestricted load would resolve the model through a
+    tracking server or registry and download it (the assistant's data check
+    never does either).
+    """
+
+
 class PreambleError(ExecutionError):
     """Raised when the pipeline preamble fails to compile or execute."""
 
