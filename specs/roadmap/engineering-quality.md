@@ -16,8 +16,6 @@ PR #280.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ENGQ-CI01 | Planned | P1 | The locked Python and npm dependencies carry no advisory that an upgrade within their caps fixes. |
-| ENGQ-CI02 | Decision | P1 | Every accepted advisory has a current, owner-approved review date, and the locked advisory audit passes on `main`. |
 | ENGQ-CI03 | Planned | P2 | The 21 model-training, export and scoring test modules take at most half their recorded coverage-lane time, with no assertion weakened and no training code newly uncovered. |
 | ENGQ-CI04 | Planned | P2 | Three tests that failed only under another xdist scheduler or a higher worker count pass regardless of their neighbours and runner load. |
 | ENGQ-CI05 | Planned | P3 | The compatibility shards are balanced by durations measured without coverage. |
@@ -26,81 +24,13 @@ PR #280.
 
 ## Planned improvements
 
-`ENGQ-CI01` and `ENGQ-CI02` come first: the locked advisory audit has been red
-on `main` since 30 September 2026, and `ENGQ-CI02` needs the owner's decision
-on each accepted risk. `ENGQ-CI03` is the largest further cut in CI time and
+`ENGQ-CI03` is the largest further cut in CI time and
 `ENGQ-CI04` removes known causes of flaky runs; both are independent of the
 other packages. `ENGQ-CI05` is balance tuning for the compatibility shards.
 `ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
 have deleted what they replace. `ENGQ-R05` reorganises the suite under the
 coverage rule the [engineering-quality specification](../engineering-quality/high-level.md)
 states.
-
-### ENGQ-CI01 — Upgrade the locked dependencies past their fixed advisories
-**Why:** The locked advisory audit (the `locked-advisory-audit` job in
-`.github/workflows/dependencies.yml`) has been red on `main` since its
-scheduled run on 30 September 2026. Besides the expired acceptance that
-`ENGQ-CI02` covers, its reports list blocking advisories that have fixed
-releases:
-- `pyjwt` 2.13.0 has twelve advisories, fixed in 2.14.0 and 2.15.0.
-- `urllib3` 2.7.0 has three, fixed in 2.8.0.
-- In the frontend lockfile, `brace-expansion` and `undici` have high-severity
-  advisories with fixes available.
-
-The audit blocks on every Python advisory and on every high or critical npm
-advisory. The frontend also has moderate advisories, which do not block, in
-`vitest` and `@vitest/coverage-v8` below 4.1.11.
-
-**Plan:** Upgrade `pyjwt` and `urllib3` in `uv.lock` with
-`uv lock --upgrade-package pyjwt --upgrade-package urllib3`. Within the
-current caps this resolves `pyjwt` 2.15.1 and `urllib3` 2.8.0, since
-`databricks-sql-connector` 4.5.0 accepts `pyjwt>=2.0.0,<3.0.0`. In `frontend/`, run `npm audit fix`
-without `--force`, and take `vitest` and `@vitest/coverage-v8` to 4.1.11. The
-PR's CI runs the full suites, the browser lanes and the audit on the upgrade.
-
-**Acceptance:** The audit's `pip-audit` and `npm audit` reports contain no
-finding for `pyjwt`, `urllib3`, `brace-expansion` or `undici`. `uv.lock` and
-`frontend/package-lock.json` change only in those packages, the two Vitest
-packages and their dependency closure. CI is green apart from the
-acceptances that `ENGQ-CI02` owns.
-
-**Dependencies:** None.
-
-**Evidence:** `.github/workflows/dependencies.yml`;
-`scripts/check_dependency_audit.py`; `uv.lock`; `frontend/package-lock.json`.
-
-### ENGQ-CI02 — Renew or retire the accepted dependency advisories
-**Why:** `security/accepted-risks.toml` accepts two advisories until a review
-date:
-- **MLflow PYSEC-2026-3865:** an SSRF in MLflow's AI Gateway proxy, which
-  haute never starts or mounts. Its acceptance passed its `review_by` of
-  2026-09-29, so since 30 September the audit stops with a policy error
-  (exit 2) before it evaluates any finding. MLflow 3.15.1 still has no fixed
-  release.
-- **cryptography PYSEC-2026-3552:** reaches its `review_by` on 2026-10-02.
-
-A third advisory needs a decision too. `oauthlib` 3.3.1 carries
-CVE-2026-49265, which is fixed only in 4.0.0. `databricks-sql-connector`
-4.5.0 requires `oauthlib>=3.1.0,<4.0.0`, so no upgrade within the
-`databricks` extra's caps fixes it.
-
-**Plan:** For each of these three advisories, first check whether a fixed
-release now resolves within the caps, and upgrade if it does. Otherwise,
-record an acceptance with the owner's approval, stating the exposure, a
-compensating control and a new review date. The owner chooses:
-- the review dates;
-- whether the `databricks` extra may carry `oauthlib` 3.x until the connector
-  admits 4.x.
-
-**Acceptance:** `scripts/check_dependency_audit.py` passes on `main`. Every
-entry in `security/accepted-risks.toml` names an owner, an approval date and
-a review date that has not passed. The daily scheduled audit is green.
-
-**Dependencies:** `ENGQ-CI01` for the upgradable advisories, and the owner's
-decision on each acceptance.
-
-**Evidence:** `security/accepted-risks.toml`;
-`scripts/check_dependency_audit.py`; `.github/workflows/dependencies.yml`.
 
 ### ENGQ-CI03 — Make the model-training tests cheaper
 **Why:** The CI study's per-test timings put most of the backend suite's
