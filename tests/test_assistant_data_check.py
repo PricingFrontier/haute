@@ -13,7 +13,8 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -1482,3 +1483,363 @@ async def test_an_admission_refusal_and_a_defect_are_results_never_errors(
     defect = await run_data_check(_request(graph, "big_only"), session_id="defect")
     assert defect.reason == "internal_error"
     DATA_CHECK_VIEW.validate_python(defect.check)
+
+
+# ---------------------------------------------------------------------------
+# The dry-run, the change card and a stopped turn
+# ---------------------------------------------------------------------------
+
+_PIPELINE = '''"""Pipeline: checked"""
+
+import haute
+
+pipeline = haute.Pipeline("checked")
+
+
+@pipeline.data_input(config="config/data_input/quotes.json")
+def quotes(): ...
+'''
+
+
+def _band_ops(name: str = "region_band") -> list[dict[str, Any]]:
+    """A categorical banding of quotes' regions whose one rule matches no quote."""
+    return [
+        {
+            "op": "add_node",
+            "node_type": "banding",
+            "name": name,
+            "config": {
+                "factors": [
+                    {
+                        "banding": "categorical",
+                        "column": "region",
+                        "outputColumn": f"{name}_group",
+                        "rules": [{"value": "Atlantis", "assignment": "Lost"}],
+                        "default": "Other",
+                    }
+                ]
+            },
+        },
+        {"op": "add_edge", "source": "quotes", "target": name},
+    ]
+
+
+@pytest.fixture()
+def pipeline(project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """*project*'s quotes as a saved pipeline the assistant's tools dry-run and apply."""
+    from haute.assistant import _tools
+    from haute.assistant._ops import PlanStore
+
+    (project / "config" / "data_input").mkdir(parents=True)
+    (project / "config" / "data_input" / "quotes.json").write_text(
+        json.dumps(make_file_input_config("data/quotes.parquet")), encoding="utf-8"
+    )
+    (project / "main.py").write_text(_PIPELINE, encoding="utf-8")
+    monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
+    monkeypatch.setattr(_tools, "mutations_readiness", lambda _root: (True, None))
+    return project
+
+
+def _policy_without_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The project's policy with aggregate statistics withheld, its files unchanged."""
+    from haute.assistant import _tools
+
+    withheld = replace(_POLICY, allow_aggregate_statistics=False)
+    monkeypatch.setattr(_tools, "resolve_egress_policy", lambda _root: withheld)
+
+
+async def _dry_run(ops: list[dict[str, Any]], *, session_id: str = "s") -> dict[str, Any]:
+    from haute.assistant._tools import build_tool_executor
+
+    execute = build_tool_executor("main.py", session_id=session_id)
+    return dict(await execute("dry_run_graph_edits", {"summary": "Band regions.", "ops": ops}))
+
+
+@pytest.mark.slow
+async def test_a_dry_runs_check_leaves_its_plan_hash_and_evidence_unchanged(
+    pipeline: Path, worker_pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.assistant import _tools
+
+    worker_pool.start()
+    checked = await _dry_run(_band_ops())
+
+    check = checked.pop("data_check")
+    assert check["outcome"] == "checked", check
+    DATA_CHECK_VIEW.validate_python(check)
+    assert [(finding["kind"], finding["node"]) for finding in check["findings"]] == [
+        ("banding_all_default", "region_band")
+    ]
+    stored = _tools._PLAN_STORE.data_check(checked["plan_hash"])
+    assert stored is not None and stored.check == check
+    assert stored.binding.plan_hash == checked["plan_hash"]
+
+    _policy_without_checks(monkeypatch)
+    unchecked = await _dry_run(_band_ops())
+
+    # The same plan, hash, tier, evidence, warnings and changes, without a check.
+    assert unchecked == checked
+    # A fresh dry-run that attempts no check leaves none beside the plan.
+    assert _tools._PLAN_STORE.data_check(checked["plan_hash"]) is None
+
+
+async def test_no_check_is_attempted_unless_the_policy_permits_one(
+    pipeline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.assistant._tools import DataCheckGate, dry_run_graph_edits
+
+    # Thread mode, as the replay suite runs: a check is attempted and reports why
+    # it could not run, and the dry-run is a success.
+    attempted = await _dry_run(_band_ops())
+    assert attempted["data_check"]["outcome"] == "not_run"
+    assert attempted["data_check"]["reason"] == "worker_mode_unsupported"
+
+    attempts: list[object] = []
+
+    async def never(request: DataCheckRequest, **_kwargs: object) -> DataCheckResult:
+        attempts.append(request)
+        raise AssertionError("no check may be attempted")
+
+    monkeypatch.setattr(data_check, "run_data_check", never)
+    _policy_without_checks(monkeypatch)
+    withheld = await _dry_run(_band_ops())
+    assert "plan_hash" in withheld
+    assert not {"data_check", "data_check_omitted"} & set(withheld)
+
+    public = replace(_POLICY, max_sensitivity="public")
+    ceiling = await dry_run_graph_edits(
+        "main.py",
+        _band_ops(),
+        summary="Band regions.",
+        config_visibility=None,
+        data_check=DataCheckGate(public, "s"),
+    )
+    assert "plan_hash" in ceiling
+    assert not {"data_check", "data_check_omitted"} & set(ceiling)
+    assert attempts == []
+
+
+async def test_the_check_is_sized_on_the_fully_attributed_dry_run_result(
+    pipeline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A check fits the room the attributed result leaves, so a successful
+    dry-run never becomes ``tool_result_too_large``."""
+    from haute.assistant import _tools
+
+    oversized = _oversized(pipeline, monkeypatch)
+
+    async def fake_check(_request: DataCheckRequest, **_kwargs: object) -> DataCheckResult:
+        return oversized
+
+    with monkeypatch.context() as withheld:
+        _policy_without_checks(withheld)
+        bare = await _dry_run(_band_ops())
+    bare_size = _tools._json_size(bare)
+    monkeypatch.setattr(data_check, "run_data_check", fake_check)
+
+    # Room for the note exactly: measured without the result's attribution, the
+    # room would also have fitted an emptied check, and the dry-run would fail.
+    note_cost = (
+        _tools._json_size(data_check.DATA_CHECK_OMITTED_NOTE)
+        + _tools._json_size("data_check_omitted")
+        + 2
+    )
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", bare_size + note_cost)
+    noted = await _dry_run(_band_ops())
+    assert "error" not in noted, noted
+    assert noted.pop("data_check_omitted") == data_check.DATA_CHECK_OMITTED_NOTE
+    assert noted == bare
+
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", bare_size + 2_000)
+    reduced = await _dry_run(_band_ops())
+    assert _tools._json_size(reduced) <= bare_size + 2_000
+    view = reduced.pop("data_check")
+    assert view["detail_truncated"] is True and view["nodes_omitted"] > 0
+    DATA_CHECK_VIEW.validate_python(view)
+    assert reduced == bare
+
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", bare_size + 10)
+    assert await _dry_run(_band_ops()) == bare
+    # Whatever reached the model, the stored check is whole.
+    assert _tools._PLAN_STORE.data_check(bare["plan_hash"]) is oversized
+
+
+async def _apply_with_check(
+    ops: list[dict[str, Any]], check: Callable[[PipelineGraph, str], DataCheckResult]
+) -> dict[str, Any]:
+    """Dry-run *ops*, keep *check(candidate graph, plan hash)* beside the plan, apply it."""
+    from haute.assistant import _tools
+
+    dry = _tools.application_service(session_id=None).dry_run(
+        "main.py", ops, summary="Band regions."
+    )
+    assert _tools._PLAN_STORE.record_data_check(
+        dry.plan.plan_hash, check(dry.result_graph, dry.plan.plan_hash)
+    )
+    applied = await _tools.apply_graph_plan("main.py", dry.plan.plan_hash, session_id="s")
+    assert "error" not in applied, applied
+    return dict(applied["change"])
+
+
+def _measured(node: str) -> Callable[[PipelineGraph, str], DataCheckResult]:
+    """The worker half of *node*'s check, run here on a plan's candidate graph."""
+
+    def measure(graph: PipelineGraph, plan_hash: str) -> DataCheckResult:
+        stored = _stored(graph, _measure(graph, node), node)
+        return DataCheckResult(stored.check, replace(stored.binding, plan_hash=plan_hash))
+
+    return measure
+
+
+async def test_an_apply_carries_its_plans_findings_labelled_against_the_saved_graph(
+    pipeline: Path,
+) -> None:
+    current = await _apply_with_check(_band_ops("region_band"), _measured("region_band"))
+    assert current["data_check"] == {
+        "visibility": "current",
+        "outcome": "checked",
+        "scenario": "live",
+        "findings": [
+            {
+                "severity": "advisory",
+                "node": "region_band",
+                "text": "All 10 rows fell into the default band of region_band_group.",
+            }
+        ],
+        "findings_omitted": 0,
+        "not_checked": None,
+    }
+
+    def then_refresh_quotes(graph: PipelineGraph, plan_hash: str) -> DataCheckResult:
+        measured = _measured("second_band")(graph, plan_hash)
+        refreshed = pl.DataFrame({**_QUOTES, "premium": [1.0] * 10})
+        refreshed.write_parquet(pipeline / "data" / "quotes.parquet")
+        return measured
+
+    earlier = await _apply_with_check(_band_ops("second_band"), then_refresh_quotes)
+    assert earlier["data_check"]["visibility"] == "earlier_inputs"
+    assert [finding["node"] for finding in earlier["data_check"]["findings"]] == ["second_band"]
+
+    def foreign(graph: PipelineGraph, plan_hash: str) -> DataCheckResult:
+        measured = _measured("third_band")(graph, plan_hash)
+        return DataCheckResult(
+            measured.check, replace(measured.binding, graph_digest="v8:another-graph")
+        )
+
+    other = await _apply_with_check(_band_ops("third_band"), foreign)
+    assert "data_check" not in other
+
+
+def test_a_card_hides_another_scenarios_findings_and_says_why_nothing_was_checked(
+    project: Path,
+) -> None:
+    from haute.assistant._change_record import change_data_check
+
+    graph = _seeded_graph(project)
+    stored = _stored(graph, _measure(graph, "region_band"), "region_band")
+    hidden = change_data_check(stored, "other_scenario")
+    assert hidden is not None
+    assert (hidden.visibility, hidden.scenario, hidden.findings) == ("other_scenario", "live", [])
+    assert change_data_check(stored, "other_graph") is None
+    assert change_data_check(None, "current") is None
+
+    binding = DataCheckBinding("plan", "digest", "live")
+    busy = data_check._not_run(binding, "worker_busy", time.monotonic())
+    card = change_data_check(busy, "current")
+    assert card is not None and card.findings == []
+    assert card.not_checked == "Data not checked: the preview worker was busy."
+    records = [
+        data_check._not_checked_record("premium", data_check._Exclusion("sink_only")),
+        data_check._not_checked_record("rates", data_check._input_not_prepared("quotes")),
+    ]
+    nothing = data_check._not_run(binding, "no_checkable_nodes", time.monotonic(), nodes=records)
+    named = change_data_check(nothing, "current")
+    assert named is not None and named.not_checked == (
+        "Data not checked: premium (it produces no data), rates (preview the input quotes first)."
+    )
+
+
+@pytest.mark.slow
+async def test_a_stopped_turn_cancels_its_check_and_keeps_the_dry_run(
+    pipeline: Path, worker_pool: Any
+) -> None:
+    """Stopping the turn while the check runs stops the check's worker; the
+    dry-run's result, with a ``cancelled`` check, is the turn's record of it."""
+    from haute.assistant import _tools
+    from haute.assistant._loop import run_turn
+    from haute.assistant._providers import ToolCallRequest, TurnStop
+    from haute.assistant._session import SessionStore
+    from haute.assistant._tools import build_tool_executor
+
+    worker_pool.start()
+    marker = pipeline / "stopped.started"
+    code = (
+        "# Wait in a row callback\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "def slow(series):\n"
+        f"    Path({marker.as_posix()!r}).write_text('started')\n"
+        "    time.sleep(120)\n"
+        "    return series\n"
+        "df = df.with_columns(pl.col('premium').map_batches(slow, return_dtype=pl.Float64))"
+    )
+    ops = [
+        {
+            "op": "add_node",
+            "node_type": "polars",
+            "name": "slow",
+            "config": {
+                "steps": [
+                    {"id": "start", "kind": "source", "input": "quotes"},
+                    {"id": "logic", "kind": "free_code", "code": code},
+                ]
+            },
+        },
+        {"op": "add_edge", "source": "quotes", "target": "slow"},
+    ]
+
+    class OneDryRun:
+        async def stream_turn(self, *, system: str, messages: object, tools: object) -> Any:
+            yield ToolCallRequest("dry", "dry_run_graph_edits", {"summary": "Slow.", "ops": ops})
+            yield TurnStop("tool_use", _one_token_usage())
+
+    store = SessionStore()
+    session = store.create("main.py")
+
+    async def consume() -> None:
+        async for _event in run_turn(
+            store,
+            session.id,
+            "add a slow node",
+            provider=OneDryRun(),  # type: ignore[arg-type]
+            tools=[],
+            execute_tool=build_tool_executor("main.py", session_id=session.id),
+            system_prompt="s",
+            turn_timeout=120.0,
+            max_tool_calls=8,
+        ):
+            pass
+
+    turn = asyncio.ensure_future(consume())
+    await _await_marker(marker)
+    check_process = worker_pool._slots[0].process
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    assert not check_process.is_alive()
+    [result] = [message for message in session.history[-1].messages if message.role == "tool"]
+    content = result.content
+    assert isinstance(content, dict) and "error" not in content
+    assert (content["data_check"]["outcome"], content["data_check"]["reason"]) == (
+        "not_run",
+        "cancelled",
+    )
+    stored = _tools._PLAN_STORE.data_check(str(content["plan_hash"]))
+    assert stored is not None and stored.reason == "cancelled"
+
+
+def _one_token_usage() -> Any:
+    from haute.assistant._providers import ProviderUsage
+
+    return ProviderUsage(input_tokens=1, output_tokens=1)

@@ -118,7 +118,7 @@
     "type": "function",
     "function": {
       "name": "dry_run_graph_edits",
-      "description": "Validate an exact graph-edit plan without writing. Say in `summary` what the plan does and list any `assumptions` you made; the analyst sees both on the change card. An operation {\"op\": \"recipe\", \"recipe\": <recipe id>, \"arguments\": {...}} expands into that recipe's nodes and edges inside the same plan; give it a `ref` to address the node it creates from later operations. Returns the plan hash to apply, the verification tier, an evidence summary, warnings and the plan's node and edge changes.",
+      "description": "Validate an exact graph-edit plan without writing. Say in `summary` what the plan does and list any `assumptions` you made; the analyst sees both on the change card. An operation {\"op\": \"recipe\", \"recipe\": <recipe id>, \"arguments\": {...}} expands into that recipe's nodes and edges inside the same plan; give it a `ref` to address the node it creates from later operations. Returns the plan hash to apply, the verification tier, an evidence summary, warnings and the plan's node and edge changes, and, when the egress policy permits aggregate statistics, `data_check`: value-free counts measured by running the changed nodes over the project's data.",
       "parameters": {
         "type": "object",
         "properties": {

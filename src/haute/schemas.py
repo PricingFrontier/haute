@@ -263,12 +263,54 @@ class AssistantGraphChanges(BaseModel):
     truncated: bool = False
 
 
+#: The most data-check findings one change card lists.
+ASSISTANT_MAX_DATA_FINDINGS = 20
+
+
+class AssistantDataFinding(BaseModel):
+    """One data-check finding on a change card, worded from its counts and names.
+
+    ``text`` says what was measured in plain words ("All 1,204 rows fell into
+    the default band of age_band."): counts, shares, node, column and port
+    names, never a row value, a configuration value or an error's own text.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    severity: Literal["advisory", "informational"]
+    node: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class AssistantChangeDataCheck(BaseModel):
+    """The data check of the dry-run whose plan a change saved, as its card shows it.
+
+    ``visibility`` compares the check's binding with the graph the apply
+    saved: ``current``; ``earlier_inputs`` when an input or a cached model it
+    read has changed since; ``other_scenario`` when the graph runs another
+    scenario, which keeps no findings, only the ``scenario`` they described.
+    A check bound to another graph is not carried at all. ``not_checked`` is
+    one line saying why the check, or some of the changed nodes, did not run.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    visibility: Literal["current", "earlier_inputs", "other_scenario"]
+    outcome: Literal["checked", "not_run"]
+    scenario: str = Field(min_length=1)
+    findings: list[AssistantDataFinding] = Field(max_length=ASSISTANT_MAX_DATA_FINDINGS)
+    findings_omitted: int = Field(ge=0)
+    not_checked: str | None
+
+
 class AssistantChangeRecord(BaseModel):
     """The value-free change card of one saved plan.
 
     ``id`` is the hash of the plan it saved; a plan applies once, so it names
     this change. ``summary`` and ``assumptions`` are the model's own words from
     the plan's dry-run; everything else is built from what was saved.
+    ``data_check`` is the plan's data check, or ``None`` when no check was
+    attempted or its findings describe another graph.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -285,6 +327,8 @@ class AssistantChangeRecord(BaseModel):
     # The editor document revision the save produced: Undo is allowed only while
     # the pipeline is still at it.
     revision: str = Field(min_length=1)
+    # A record saved before data checks existed has none.
+    data_check: AssistantChangeDataCheck | None = None
 
 
 #: The most items one build plan holds.
@@ -482,6 +526,14 @@ class AssistantToolStartedEvent(BaseModel):
     summary: str = ""
 
 
+class AssistantToolProgressEvent(BaseModel):
+    """A running tool moved to a new stage: its activity row's title until it finishes."""
+
+    type: Literal["tool_progress"] = "tool_progress"
+    id: str
+    title: str
+
+
 class AssistantToolFinishedEvent(BaseModel):
     type: Literal["tool_finished"] = "tool_finished"
     id: str
@@ -525,6 +577,7 @@ AssistantStreamEvent = Annotated[
     AssistantTextDeltaEvent
     | AssistantThinkingEvent
     | AssistantToolStartedEvent
+    | AssistantToolProgressEvent
     | AssistantToolFinishedEvent
     | AssistantChangeAppliedEvent
     | AssistantBuildPlanUpdatedEvent

@@ -19,6 +19,7 @@ from haute.assistant._catalog import (
     capability_manifest,
     compact_manifest,
     materialise_json,
+    tool_progress_reporter,
     tool_title,
 )
 from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV
@@ -44,6 +45,7 @@ from haute.schemas import (
     AssistantTextDeltaEvent,
     AssistantThinkingEvent,
     AssistantToolFinishedEvent,
+    AssistantToolProgressEvent,
     AssistantToolStartedEvent,
     AssistantTurnOutcome,
     AssistantTurnOutcomeKind,
@@ -335,6 +337,15 @@ _PROMPT_DRY_RUN_RETRY = (
     "planning: correct the named fields against the tool schema and resend the same plan. "
 )
 
+_PROMPT_DATA_CHECK = (
+    "A dry-run can return `data_check`: advisory and informational findings measured by "
+    "running the planned graph's changed nodes over the project's data. When an advisory "
+    "finding shows the plan is wrong (every row in a band's default, a join that matches "
+    "nothing, a filter that empties its input), correct the plan and dry-run again before "
+    "applying; informational findings need no action, and neither a clean check nor one "
+    "that did not run proves the plan correct. "
+)
+
 _PROMPT_OUTCOME_CONTRACT = (
     "When mutation intent is known, you must not end after merely announcing a future "
     "tool call: complete the dry-run/apply sequence. If material intent is ambiguous, "
@@ -497,6 +508,7 @@ def build_system_prompt(*, source_file: str) -> str:
             + _PROMPT_INTENT_AND_RECIPE_ROUTING
             + _PROMPT_MUTATION_WORKFLOW
             + _PROMPT_DRY_RUN_RETRY
+            + _PROMPT_DATA_CHECK
             + _PROMPT_OUTCOME_CONTRACT
             + _PROMPT_UNAVAILABLE_OPERATIONS,
             manifest_section,
@@ -732,40 +744,59 @@ async def _aclose_quietly(stream: object) -> None:
         logger.error("assistant_provider_stream_close_failed", exc_info=True)
 
 
-async def _execute_shielded(
-    execute_tool: ToolExecutor,
-    request: ToolCallRequest,
-) -> tuple[Mapping[str, Any], BaseException | None]:
-    """Run one tool while shielding only a transactional graph apply.
+class _RunningTool:
+    """One tool call running beside the turn, and the progress titles it reports.
 
-    Cancellation arrives as ``CancelledError``; a response-teardown
-    ``aclose()`` arrives as ``GeneratorExit`` at this await.  A graph
-    apply already executing must complete because it owns the transactional
-    save/publish pair.  Read and dry-run tools are cancelled so they cannot
-    defeat the turn's wall-clock bound.  In either case a matched result is
-    returned for history before the caller re-raises the interrupt.
+    The call runs as its own task, so the turn can stream each title the call
+    reports (`report_tool_progress`) while it runs. An interrupt never reaches
+    the call while the turn waits: cancellation arrives as ``CancelledError``
+    at the wait, and a response-teardown ``aclose()`` as ``GeneratorExit`` at
+    the turn's yield of a progress event. Either way `settle` decides the
+    call's result: a graph apply already executing completes, because it owns
+    the transactional save/publish pair, while read and dry-run tools are
+    cancelled so they cannot defeat the turn's wall-clock bound. A matched
+    result is returned for history before the caller re-raises the interrupt.
     """
 
-    task = asyncio.ensure_future(execute_tool(request.name, dict(request.arguments)))
-    try:
-        return await asyncio.shield(task), None
-    except (asyncio.CancelledError, GeneratorExit) as exc:
-        if request.name in _CANCELLATION_SHIELDED_TOOLS:
-            return await task, exc
+    def __init__(self, execute_tool: ToolExecutor, request: ToolCallRequest) -> None:
+        self._request = request
+        self._titles: asyncio.Queue[str] = asyncio.Queue()
+        # The task copies the reporter with the rest of the context.
+        with tool_progress_reporter(self._titles.put_nowait):
+            self._task = asyncio.ensure_future(execute_tool(request.name, dict(request.arguments)))
 
-        task.cancel()
+    async def progress(self) -> str | None:
+        """The next title the call reports, or ``None`` once the call has finished."""
+
+        if not self._titles.empty():
+            return self._titles.get_nowait()
+        if self._task.done():
+            return None
+        title = asyncio.ensure_future(self._titles.get())
         try:
-            result = await task
+            await asyncio.wait({self._task, title}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not title.done():
+                title.cancel()
+        return title.result() if title.done() and not title.cancelled() else None
+
+    async def settle(self, interrupt: BaseException | None) -> Mapping[str, Any]:
+        """The call's result: awaited whole, or, after *interrupt*, cancelled unless shielded."""
+
+        if interrupt is None or self._request.name in _CANCELLATION_SHIELDED_TOOLS:
+            return await self._task
+        self._task.cancel()
+        try:
+            return await self._task
         except asyncio.CancelledError:
-            result = _TOOL_INTERRUPTED_RESULT
+            return _TOOL_INTERRUPTED_RESULT
         except Exception:  # noqa: BLE001 - interruption outcome must remain sanitized
             logger.error(
                 "assistant_interrupted_tool_failed",
-                tool_name=request.name,
+                tool_name=self._request.name,
                 exc_info=True,
             )
-            result = _TOOL_INTERRUPTED_RESULT
-        return result, exc
+            return _TOOL_INTERRUPTED_RESULT
 
 
 class TurnReservation:
@@ -955,18 +986,30 @@ async def run_turn(
                         refused_by_budget = (
                             event.name in _DRY_RUN_TOOLS and dry_runs.stop is not None
                         )
+                        interrupt: BaseException | None = None
                         if refused_by_budget:
                             payload = _DRY_RUN_REFUSED_RESULT
-                            interrupt = None
                         elif (
                             event.name == "apply_graph_plan"
                             # Every adapter streams a message's text before its calls.
                             and _prefixed_outcome("".join(round_text), ()) is not None
                         ):
                             payload = _APPLY_IN_OUTCOME_MESSAGE_RESULT
-                            interrupt = None
                         else:
-                            payload, interrupt = await _execute_shielded(execute_tool, event)
+                            running = _RunningTool(execute_tool, event)
+                            while interrupt is None:
+                                try:
+                                    title = await running.progress()
+                                except (asyncio.CancelledError, GeneratorExit) as exc:
+                                    interrupt = exc
+                                    break
+                                if title is None:
+                                    break
+                                try:
+                                    yield AssistantToolProgressEvent(id=event.id, title=title)
+                                except (asyncio.CancelledError, GeneratorExit) as exc:
+                                    interrupt = exc
+                            payload = await running.settle(interrupt)
                         is_error = "error" in payload
                         if event.name in _DRY_RUN_TOOLS and not refused_by_budget:
                             if is_error:

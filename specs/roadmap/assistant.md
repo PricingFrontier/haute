@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-41 | Planned | P1 | A dry-run reports advisory findings when changed nodes produce implausible data. |
 | ASSIST-42 | Planned | P2 | One call answers why a saved node fails or why a column is null. |
 | ASSIST-43 | Planned | P2 | Evaluation scores data findings as an extra layer and measures recovery from them. |
 | ASSIST-44 | Deferred | P3 | Near-certain data bugs block apply unless explicitly accepted. |
@@ -86,32 +85,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-41 — Advisory data findings after dry-run
-**Why:** A model that must choose to call a check tool often will not, and the
-analyst never sees the data-level consequences of a plan.
-
-**Plan:** When the permission allows, run the specified check automatically
-after an eligible schema-tier dry-run, outside the save lock and the plan
-hash, and attach advisory findings to the dry-run result and the change card:
-rows in and out, null shares of new columns, per-rule banding counts, rating
-misses and unused entries, join matches, and execution errors; ineligible
-nodes report why they were not checked. The check implements the contract in
-[the assistant specification's approved change contract](../assistant/high-level.md#approved-change-contract--data-checks)
-and [its low-level counterpart](../assistant/low-level.md#approved-change-contract--data-checks);
-landing it folds both into present-tense sections and removes them.
-
-**Acceptance:** Seeded scenarios report all-default banding, a 60% rating
-miss share, an emptied filter and a failed many-to-one join validation; a
-partial join is informational; a payload test finds no data or configuration
-values; latency is recorded on 100k, 1M and 5M rows.
-
-**Dependencies:** `ASSIST-40`.
-
-**Evidence:** `src/haute/_rating.py::banding_rule_claim_expr`;
-`src/haute/assistant/_application.py::build_verified_plan`;
-`src/haute/_interactive_workers.py::InteractiveWorkerPool`;
-`src/haute/_graph_walker.py::CollectPolicy`.
 
 ### ASSIST-42 — Inspect a saved node's data
 **Why:** "Why is `total_incurred` null for some quotes?" can only be answered

@@ -54,6 +54,27 @@ export interface AssistantChangeNode {
   steps_changed: number
 }
 
+/** One data-check finding on a change card, worded by the backend from counts and names. */
+export interface AssistantDataFinding {
+  severity: "advisory" | "informational"
+  node: string
+  text: string
+}
+
+/**
+ * The data check of the dry-run whose plan a change saved, mirrored from
+ * `schemas.py`. `other_scenario` keeps no findings, only the scenario they
+ * described; `not_checked` is one line on what the check did not look at.
+ */
+export interface AssistantChangeDataCheck {
+  visibility: "current" | "earlier_inputs" | "other_scenario"
+  outcome: "checked" | "not_run"
+  scenario: string
+  findings: AssistantDataFinding[]
+  findings_omitted: number
+  not_checked: string | null
+}
+
 /** The value-free change card of one saved plan, mirrored from `schemas.py`. */
 export interface AssistantChangeRecord {
   /** The hash of the plan the change saved; the turn outcome lists it. */
@@ -72,6 +93,8 @@ export interface AssistantChangeRecord {
   parent_sha: string | null
   /** The editor document revision the save produced; Undo needs the canvas still at it. */
   revision: string
+  /** The plan's data check; null when none ran or a record predates data checks. */
+  data_check: AssistantChangeDataCheck | null
 }
 
 /** One saved change recorded against a build-plan item, by its change card's id. */
@@ -102,6 +125,8 @@ export type AssistantStreamEvent =
   /** The model is thinking; the event carries none of the thinking. */
   | { type: "thinking" }
   | { type: "tool_started"; id: string; name: string; title: string; summary: string }
+  /** A running tool moved to a new stage: its row's title until it finishes. */
+  | { type: "tool_progress"; id: string; title: string }
   | {
       type: "tool_finished"
       id: string
@@ -146,17 +171,20 @@ function requireNullableString(value: unknown, path: string): string | null {
   return value
 }
 
-function requireNullableLiteral<T extends string>(
-  value: unknown,
-  path: string,
-  allowed: readonly T[],
-): T | null {
-  if (value === null) return null
+function requireLiteral<T extends string>(value: unknown, path: string, allowed: readonly T[]): T {
   const result = requireString(value, path)
   if (!allowed.includes(result as T)) {
     invalidAssistantPayload(path, allowed.map((item) => JSON.stringify(item)).join(" or "))
   }
   return result as T
+}
+
+function requireNullableLiteral<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T | null {
+  return value === null ? null : requireLiteral(value, path, allowed)
 }
 
 function parseAssistantStatus(value: unknown): AssistantStatus {
@@ -259,6 +287,38 @@ function parseChangeNode(value: unknown, path: string): AssistantChangeNode {
   }
 }
 
+function parseDataCheck(value: unknown, path: string): AssistantChangeDataCheck | null {
+  if (value === null) return null
+  const check = requireRecord(value, path)
+  if (!Array.isArray(check.findings)) invalidAssistantPayload(`${path}.findings`, "an array")
+  const omitted = requireNumber(check.findings_omitted, `${path}.findings_omitted`)
+  if (!Number.isInteger(omitted) || omitted < 0) {
+    invalidAssistantPayload(`${path}.findings_omitted`, "a non-negative integer")
+  }
+  return {
+    visibility: requireLiteral(check.visibility, `${path}.visibility`, [
+      "current",
+      "earlier_inputs",
+      "other_scenario",
+    ] as const),
+    outcome: requireLiteral(check.outcome, `${path}.outcome`, ["checked", "not_run"] as const),
+    scenario: requireString(check.scenario, `${path}.scenario`),
+    findings: check.findings.map((raw, index) => {
+      const finding = requireRecord(raw, `${path}.findings[${index}]`)
+      return {
+        severity: requireLiteral(finding.severity, `${path}.findings[${index}].severity`, [
+          "advisory",
+          "informational",
+        ] as const),
+        node: requireString(finding.node, `${path}.findings[${index}].node`),
+        text: requireString(finding.text, `${path}.findings[${index}].text`),
+      }
+    }),
+    findings_omitted: omitted,
+    not_checked: requireNullableString(check.not_checked, `${path}.not_checked`),
+  }
+}
+
 /** Parse a change record field by field; any missing or mistyped field throws. */
 function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord {
   const record = requireRecord(value, path)
@@ -284,6 +344,7 @@ function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord 
     git_sha: requireNullableString(record.git_sha, `${path}.git_sha`),
     parent_sha: requireNullableString(record.parent_sha, `${path}.parent_sha`),
     revision: requireString(record.revision, `${path}.revision`),
+    data_check: parseDataCheck(record.data_check, `${path}.data_check`),
   }
 }
 
@@ -376,6 +437,12 @@ function parseEvent(payload: string): AssistantStreamEvent {
         name: requireString(parsed.name, "stream event.name"),
         title: requireString(parsed.title, "stream event.title"),
         summary: requireString(parsed.summary, "stream event.summary"),
+      }
+    case "tool_progress":
+      return {
+        type,
+        id: requireString(parsed.id, "stream event.id"),
+        title: requireString(parsed.title, "stream event.title"),
       }
     case "tool_finished":
       return {

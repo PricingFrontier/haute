@@ -10,7 +10,9 @@ decorators, sidecar folders, or singleton rules.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType, UnionType
@@ -960,6 +962,8 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "evidence",
             "warnings",
             "changes",
+            "data_check",
+            "data_check_omitted",
         ),
         "apply_graph_plan": (
             "plan_hash",
@@ -1026,6 +1030,8 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "find_data": {"schema", "project_revision"},
         # The build-plan item the change was recorded against, only for an apply naming one.
         "apply_graph_plan": {"item"},
+        # The data check, or the note that it did not fit, only when the policy runs one.
+        "dry_run_graph_edits": {"data_check", "data_check_omitted"},
     }
     success_required = [
         field
@@ -1214,7 +1220,9 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             '"arguments": {...}} expands into that recipe\'s nodes and edges inside the '
             "same plan; give it a `ref` to address the node it creates from later "
             "operations. Returns the plan hash to apply, the verification tier, an "
-            "evidence summary, warnings and the plan's node and edge changes."
+            "evidence summary, warnings and the plan's node and edge changes, and, when the "
+            "egress policy permits aggregate statistics, `data_check`: value-free counts "
+            "measured by running the changed nodes over the project's data."
         ),
         "apply_graph_plan": (
             "Apply one exact validated plan hash under revision authority. Returns the "
@@ -1717,6 +1725,37 @@ _TOOL_TITLES: dict[str, str] = {
 }
 
 
+#: A dry-run's activity-row title while its data check runs.
+DATA_CHECK_PROGRESS_TITLE = "Checking the data"
+#: The running tool call's progress reporter; the loop sets one for each call.
+_TOOL_PROGRESS: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "assistant_tool_progress", default=None
+)
+
+
+@contextmanager
+def tool_progress_reporter(report: Callable[[str], None]) -> Iterator[None]:
+    """Make *report* receive the progress titles of the tool calls started inside."""
+
+    token = _TOOL_PROGRESS.set(report)
+    try:
+        yield
+    finally:
+        _TOOL_PROGRESS.reset(token)
+
+
+def report_tool_progress(title: str) -> None:
+    """Retitle the running tool call's activity row while it runs.
+
+    The loop streams the title as a ``tool_progress`` event. A tool called
+    outside a turn has no activity row, so nothing receives it.
+    """
+
+    report = _TOOL_PROGRESS.get()
+    if report is not None:
+        report(title)
+
+
 def _changes(count: int) -> str:
     return f"{count} change" if count == 1 else f"{count} changes"
 
@@ -1747,6 +1786,7 @@ def tool_title(
 
 
 __all__ = [
+    "DATA_CHECK_PROGRESS_TITLE",
     "EDGE_NAME_PLACEHOLDER",
     "INSPECT_NODE_PARTS",
     "MANIFEST_SCHEMA_VERSION",
@@ -1762,7 +1802,9 @@ __all__ = [
     "compact_manifest",
     "materialise_json",
     "new_logic_steps",
+    "report_tool_progress",
     "step_grammar",
+    "tool_progress_reporter",
     "tool_title",
     "validate_manifest_complete",
 ]

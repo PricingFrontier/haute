@@ -205,6 +205,33 @@ describe("sendMessage transcript flow", () => {
     })
   })
 
+  it("retitles a running row with the stage it reports, until it finishes", async () => {
+    const titles: string[] = []
+    const events: AssistantStreamEvent[] = [
+      { type: "tool_started", id: "t1", name: "dry_run_graph_edits", title: "Checking 2 changes", summary: "{}" },
+      { type: "tool_progress", id: "t1", title: "Checking the data" },
+      { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", title: "Checking 2 changes", is_error: false, summary: "ok" },
+      { type: "tool_progress", id: "t1", title: "Late stage" },
+      completed(),
+    ]
+    vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
+      for (const event of events) {
+        opts.onEvent(event)
+        const row = useAssistantStore.getState().entries.find((entry) => entry.kind === "activity")
+        if (row?.kind === "activity") titles.push(`${row.state}: ${row.title}`)
+      }
+    })
+    await useAssistantStore.getState().sendMessage("band ages", SEND_OPTS)
+
+    expect(titles).toEqual([
+      "running: Checking 2 changes",
+      "running: Checking the data",
+      "ok: Checking 2 changes",
+      "ok: Checking 2 changes",
+      "ok: Checking 2 changes",
+    ])
+  })
+
   it("marks failed tool activity as error state", async () => {
     scriptStream([
       { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
@@ -330,6 +357,7 @@ const CHANGE: AssistantChangeRecord = {
   git_sha: "c".repeat(40),
   parent_sha: "d".repeat(40),
   revision: "e".repeat(64),
+  data_check: null,
 }
 
 async function liveEntries(events: AssistantStreamEvent[]): Promise<TranscriptEntry[]> {

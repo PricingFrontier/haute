@@ -70,6 +70,7 @@ from haute._validation_error import HauteValidationError
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
     CommittedVerificationError,
+    DryRunResult,
     FailedStep,
     InvalidConfigError,
     PipelineApplicationService,
@@ -80,9 +81,11 @@ from haute.assistant._application import (
 from haute.assistant._assets import authoring_guide, example_index, load_example
 from haute.assistant._build_plan import BuildPlan, BuildPlanError, build_plan_view
 from haute.assistant._catalog import (
+    DATA_CHECK_PROGRESS_TITLE,
     INSPECT_NODE_PARTS,
     capability_manifest,
     materialise_json,
+    report_tool_progress,
     step_grammar,
 )
 from haute.assistant._change_record import touched_node_ids
@@ -2445,6 +2448,18 @@ def _recipe_operation_error(exc: RecipeOperationError) -> dict[str, object]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class DataCheckGate:
+    """What lets a dry-run check its plan's data: a policy that permits it, and the session.
+
+    Only a policy whose `permits_data_checks` holds opens a gate; the session
+    keys the check's supersession and its worker affinity.
+    """
+
+    policy: EgressPolicy
+    session_id: str
+
+
 async def dry_run_graph_edits(
     source_file: str,
     ops_payload: object,
@@ -2454,6 +2469,7 @@ async def dry_run_graph_edits(
     assumptions: Sequence[str] = (),
     postconditions: object = (),
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
+    data_check: DataCheckGate | None = None,
 ) -> dict[str, object]:
     """Validate and retain an exact graph-edit plan and its receipt without writing.
 
@@ -2461,7 +2477,9 @@ async def dry_run_graph_edits(
     operation by its index in *ops_payload*, and a recipe operation's by its
     `recipe` too. *config_visibility* says what the model has seen of saved
     node configuration, so a blind rewrite of a saved list or map is refused;
-    the executor always passes it, and None checks no rewrite.
+    the executor always passes it, and None checks no rewrite. With a
+    *data_check* gate, a plan that validated is then checked against the
+    project's data (`_checked_dry_run`); without one no check is attempted.
     """
 
     try:
@@ -2470,7 +2488,7 @@ async def dry_run_graph_edits(
         return _recipe_operation_error(exc)
     try:
         async with save_lock:
-            result = await asyncio.to_thread(
+            dry_run = await asyncio.to_thread(
                 partial(
                     application_service(project_sources, session_id=None).dry_run,
                     source_file,
@@ -2482,7 +2500,6 @@ async def dry_run_graph_edits(
                     config_visibility=config_visibility,
                 )
             )
-        return result.as_dict()
     except LocatedPlanError as exc:
         op_index = exc.where.get("op_index")
         if isinstance(op_index, int) and op_index in batch.recipes:
@@ -2494,6 +2511,61 @@ async def dry_run_graph_edits(
         # domain layer. Reusing it for an unexpected exception told the model
         # its plan was rejected when nothing had judged the plan at all.
         return _error("operation_failed", _error_message(exc, operation="dry_run_graph_edits"))
+    result = dry_run.as_dict()
+    if data_check is None or not data_check.policy.permits_data_checks:
+        return result
+    # A batch that dry-ran validated as operation objects.
+    operations = cast(Sequence[Mapping[str, object]], batch.operations)
+    return await _checked_dry_run(result, dry_run, operations, data_check)
+
+
+async def _checked_dry_run(
+    result: dict[str, object],
+    dry_run: DryRunResult,
+    operations: Sequence[Mapping[str, object]],
+    gate: DataCheckGate,
+) -> dict[str, object]:
+    """Check a stored plan's data and add what fits of the check to its dry-run result.
+
+    The plan is stored and the save lock released before the check starts, so
+    the check never reaches the plan, its hash or its evidence. The whole
+    check is kept beside the plan; the result carries what `fit_data_check`
+    leaves in the room the fully attributed result has under the tool-result
+    limit, so a check never turns a dry-run into an error. A stopped turn
+    (this call cancelled) stops the check, which then reports `cancelled`,
+    and the dry-run still returns its result for the turn's history.
+    """
+
+    # The data check imports this module, so it is imported where it is used.
+    from haute.assistant._data_check import DataCheckRequest, fit_data_check, run_data_check
+
+    plan = dry_run.plan
+    request = DataCheckRequest(
+        plan_hash=plan.plan_hash,
+        candidate_graph=dry_run.result_graph,
+        diff=plan.diff,
+        verification_tier=plan.verification_tier,
+        policy=gate.policy,
+        submitted=tuple(operations),
+    )
+    report_tool_progress(DATA_CHECK_PROGRESS_TITLE)
+    stopped = ExecutionCancellationToken()
+    running = asyncio.ensure_future(
+        run_data_check(request, session_id=gate.session_id, cancellation=stopped)
+    )
+    try:
+        check = await asyncio.shield(running)
+    except asyncio.CancelledError:
+        stopped.cancel()
+        check = await running
+        # The stop is answered: this call returns the dry-run with its check.
+        current = asyncio.current_task()
+        if current is not None:
+            current.uncancel()
+    if not _PLAN_STORE.record_data_check(plan.plan_hash, check):
+        logger.info("assistant_data_check_not_stored", plan_hash=plan.plan_hash)
+    attributed = _attributed_tool_result("dry_run_graph_edits", result)
+    return {**result, **fit_data_check(check, _MAX_TOOL_CONTEXT_BYTES - _json_size(attributed))}
 
 
 async def apply_graph_plan(
@@ -3417,6 +3489,7 @@ def build_tool_executor(
                     assumptions=arguments.get("assumptions", ()),
                     postconditions=arguments.get("postconditions", ()),
                     project_sources=ledger.sources(),
+                    data_check=DataCheckGate(policy, session_id),
                 ),
             )
         if name == "update_build_plan":

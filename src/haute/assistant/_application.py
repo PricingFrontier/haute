@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
 from haute._banding_config import normalise_banding_factors
@@ -33,6 +33,7 @@ from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import new_logic_steps
 from haute.assistant._change_record import (
+    change_data_check,
     change_headline,
     change_record,
     evidence_summary,
@@ -82,7 +83,10 @@ from haute.modelling._train_config import (
 from haute.routes._helpers import commit_pipeline_graph, parse_pipeline_to_graph, save_lock
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._training_preparation import build_training_feature_selection
-from haute.schemas import AssistantChangeRecord, AssistantGraphChanges
+from haute.schemas import AssistantChangeDataCheck, AssistantChangeRecord, AssistantGraphChanges
+
+if TYPE_CHECKING:
+    from haute.assistant._data_check import DataCheckResult
 
 _MAX_SCHEMA_TARGETS = 100
 
@@ -98,10 +102,15 @@ GraphValidator = Callable[[PipelineGraph], Sequence[str]]
 
 @dataclass(frozen=True, slots=True)
 class DryRunResult:
-    """One validated, stored plan and the compact view the dry-run tool returns."""
+    """One validated, stored plan and the compact view the dry-run tool returns.
+
+    *result_graph* is the plan's candidate graph, which the data check
+    measures; the view never carries it.
+    """
 
     plan: GraphEditPlan
     changes: AssistantGraphChanges
+    result_graph: PipelineGraph
 
     def as_dict(self) -> dict[str, object]:
         """What the model needs to apply the plan: no echoed operations, digests or revisions."""
@@ -1044,6 +1053,23 @@ def build_verified_plan(
     return VerifiedPlan(result_graph=prepared.result_graph, plan=plan)
 
 
+def _card_data_check(
+    check: DataCheckResult | None, graph: PipelineGraph
+) -> AssistantChangeDataCheck | None:
+    """The change card's view of *check*, labelled against *graph*, the graph saved.
+
+    The freshness comparison re-derives configuration and re-observes file
+    tokens; it never hashes a file.
+    """
+
+    if check is None:
+        return None
+    # The data check imports this module, so it is imported where it is used.
+    from haute.assistant._data_check import data_check_visibility
+
+    return change_data_check(check, data_check_visibility(check, graph))
+
+
 class PipelineApplicationService:
     """Canonical inspect, plan, apply, and verify service."""
 
@@ -1178,6 +1204,7 @@ class PipelineApplicationService:
         return DryRunResult(
             plan=verified.plan,
             changes=graph_changes(graph, verified.result_graph, verified.plan.diff),
+            result_graph=verified.result_graph,
         )
 
     def _prepare_apply(
@@ -1315,12 +1342,15 @@ class PipelineApplicationService:
                 )
             plan = self.plan_store.begin_apply(plan_hash)
             receipt = self.plan_store.receipt(plan_hash)
+            stored_check = self.plan_store.data_check(plan_hash)
             try:
                 before, after, recomputed = await asyncio.to_thread(
                     self._prepare_apply,
                     source_file,
                     plan,
                 )
+                # The graph this apply saves: its findings show only if they describe it.
+                card_check = await asyncio.to_thread(_card_data_check, stored_check, after)
             except BaseException:
                 self.plan_store.abort_apply(plan_hash)
                 raise
@@ -1352,6 +1382,7 @@ class PipelineApplicationService:
                         git_sha=response.git_sha,
                         parent_sha=parent_sha,
                         revision=response.source_revision,
+                        data_check=card_check,
                     )
 
                 planned = saved_record(graph_changes(before, after, recomputed.diff))

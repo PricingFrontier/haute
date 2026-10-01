@@ -22,9 +22,13 @@ from pathlib import Path
 from threading import RLock
 from time import monotonic
 from types import MappingProxyType
-from typing import Any, Literal, NoReturn, TypeAlias, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:
+    # The data check imports this module, so only its type is named here.
+    from haute.assistant._data_check import DataCheckResult
 
 from haute._code_extraction import normalise_user_code
 from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
@@ -3308,6 +3312,7 @@ class _StoredPlan:
     expires_at: float
     state: Literal["validated", "applying", "applied", "aborted"] = "validated"
     result: object | None = None
+    data_check: DataCheckResult | None = None
 
 
 class PlanStore:
@@ -3316,6 +3321,9 @@ class PlanStore:
     Plans awaiting use live in a bounded :class:`LRUCache`. An ``applying``
     record is a pinned lease: neither capacity pressure nor its TTL removes it
     until ``complete_apply`` or ``abort_apply`` records its terminal result.
+    Beside each plan it keeps the whole data check of the plan's latest
+    dry-run, outside the plan's authority: the check never changes the plan
+    or its hash, and a fresh dry-run of the same plan clears it.
     """
 
     def __init__(self, *, max_size: int = 100, ttl_seconds: float = 600.0) -> None:
@@ -3355,6 +3363,9 @@ class PlanStore:
                 elif existing.state == "applying" or monotonic() < existing.expires_at:
                     if existing.state == "validated":
                         existing.receipt = receipt
+                        # This dry-run's own check, or none when its policy
+                        # attempts none, replaces the earlier one.
+                        existing.data_check = None
                     return
                 else:
                     self._records.pop(plan.plan_hash)
@@ -3382,6 +3393,29 @@ class PlanStore:
     def receipt(self, plan_hash: str) -> PlanReceipt:
         with self._lock:
             return self._record(plan_hash).receipt
+
+    def record_data_check(self, plan_hash: str, check: DataCheckResult) -> bool:
+        """Keep *check* beside its validated plan; ``False`` when it cannot stay there.
+
+        The check runs after its dry-run stored the plan and returned the
+        save lock. A plan that has left the store meanwhile (expired or
+        evicted) is answered ``plan_not_found`` by its apply, and one another
+        session has begun applying keeps the check its apply read, so neither
+        takes this check.
+        """
+
+        with self._lock:
+            record = self._records.get(plan_hash)
+            if record is None or record.state != "validated":
+                return False
+            record.data_check = check
+            return True
+
+    def data_check(self, plan_hash: str) -> DataCheckResult | None:
+        """The stored check of the plan's latest dry-run, or ``None`` when none ran."""
+
+        with self._lock:
+            return self._record(plan_hash).data_check
 
     def begin_apply(self, plan_hash: str) -> GraphEditPlan:
         with self._lock:

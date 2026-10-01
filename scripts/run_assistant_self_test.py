@@ -35,6 +35,11 @@ import polars as pl
 import haute
 from haute import _git
 from haute._git_state import write_working_branch
+from haute._interactive_workers import (
+    resolve_interactive_execution_mode,
+    shutdown_interactive_worker_pool,
+    start_interactive_worker_pool,
+)
 from haute._mlflow_utils import allow_file_store_if_local
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
@@ -1321,6 +1326,26 @@ def _working_directory(path: Path) -> Iterator[None]:
         pipeline_dir.cache_clear()
 
 
+@contextmanager
+def _preview_workers() -> Iterator[None]:
+    """The interactive preview workers a data check runs in, as the server starts them.
+
+    Started inside the fixture copy, so the spawned workers resolve its paths,
+    and shut down with the case. A check never starts the pool itself, so
+    without this every check would report ``worker_busy``. Thread mode (the
+    replay suite) has no workers and leaves any pool alone.
+    """
+
+    if resolve_interactive_execution_mode() != "process":
+        yield
+        return
+    start_interactive_worker_pool()
+    try:
+        yield
+    finally:
+        shutdown_interactive_worker_pool()
+
+
 async def _run_turn(
     turn: SelfTestTurn,
     *,
@@ -1495,7 +1520,7 @@ async def run_self_test_case(
     shutil.copytree(source_fixture, project_root)
     prepare_fixture_models(project_root)
     _append_assistant_config(project_root, config)
-    with _working_directory(project_root):
+    with _working_directory(project_root), _preview_workers():
         source_file = "pipeline.py"
         prepare_fixture_snapshots(project_root, source_file)
         _initialize_mutation_gate(project_root)

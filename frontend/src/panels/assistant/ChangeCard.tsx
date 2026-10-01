@@ -1,6 +1,11 @@
 import { AlertTriangle, GitCommitHorizontal, GitCompare, Undo2 } from "lucide-react"
 
-import type { AssistantChangeNode, AssistantChangeRecord } from "../../api/assistant"
+import type {
+  AssistantChangeDataCheck,
+  AssistantChangeNode,
+  AssistantChangeRecord,
+  AssistantDataFinding,
+} from "../../api/assistant"
 import useAssistantStore, { undoDisabledReason } from "../../stores/useAssistantStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGitStore from "../../stores/useGitStore"
@@ -64,6 +69,62 @@ function NodeChip({ node }: { node: AssistantChangeNode }) {
       )}
       {steps !== null && <div style={{ color: "var(--text-secondary)" }}>{steps}</div>}
     </li>
+  )
+}
+
+function Finding({ finding }: { finding: AssistantDataFinding }) {
+  return (
+    <li data-testid="assistant-data-finding" data-severity={finding.severity}>
+      <span className="font-mono">{finding.node}</span>: {finding.text}
+    </li>
+  )
+}
+
+/**
+ * What the data check of the applied plan measured: advisory findings plainly,
+ * informational ones folded away, and what it did not check. Findings that
+ * describe another scenario stay hidden; findings from inputs that have changed
+ * since say so.
+ */
+function DataCheck({ check }: { check: AssistantChangeDataCheck }) {
+  const muted = { color: "var(--text-muted)" }
+  if (check.visibility === "other_scenario") {
+    return (
+      <div data-testid="assistant-change-data-check" style={muted}>
+        Data findings hidden: they describe the {check.scenario} scenario.
+      </div>
+    )
+  }
+  const advisory = check.findings.filter((finding) => finding.severity === "advisory")
+  const informational = check.findings.filter((finding) => finding.severity === "informational")
+  return (
+    <div data-testid="assistant-change-data-check" className="space-y-1">
+      {check.visibility === "earlier_inputs" && (
+        <div style={muted}>Data findings measured on inputs that have changed since.</div>
+      )}
+      {advisory.length > 0 && (
+        <ul className="space-y-0.5" style={{ color: "var(--warning-strong)" }}>
+          {advisory.map((finding, index) => <Finding key={index} finding={finding} />)}
+        </ul>
+      )}
+      {informational.length > 0 && (
+        <details style={{ color: "var(--text-secondary)" }}>
+          <summary className="cursor-pointer">
+            {informational.length} informational {informational.length === 1 ? "finding" : "findings"}
+          </summary>
+          <ul className="space-y-0.5 pl-3">
+            {informational.map((finding, index) => <Finding key={index} finding={finding} />)}
+          </ul>
+        </details>
+      )}
+      {check.findings_omitted > 0 && (
+        <div style={muted}>{check.findings_omitted} more findings are not listed.</div>
+      )}
+      {check.outcome === "checked" && check.findings.length + check.findings_omitted === 0 && (
+        <div style={muted}>Data checked: no findings.</div>
+      )}
+      {check.not_checked !== null && <div style={muted}>{check.not_checked}</div>}
+    </div>
   )
 }
 
@@ -181,6 +242,7 @@ export default function ChangeCard({ change }: { change: AssistantChangeRecord }
           More changes were saved than this card lists.
         </div>
       )}
+      {change.data_check !== null && <DataCheck check={change.data_check} />}
       {change.warnings.map((warning, index) => (
         <div
           key={index}

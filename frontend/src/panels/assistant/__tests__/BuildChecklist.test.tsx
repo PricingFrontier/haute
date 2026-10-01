@@ -30,6 +30,7 @@ function change(id: string, summary: string): AssistantChangeRecord {
     git_sha: null,
     parent_sha: null,
     revision: "e".repeat(64),
+    data_check: null,
   }
 }
 

@@ -25,6 +25,20 @@ You can close the panel while it works. The toolbar's Assistant button shows a s
 
 When you ask for something in several stages, such as a source, a banding, a rating and a response, the assistant lists the stages in a **Checklist** above the message box. Each stage shows whether the assistant has marked it done and the changes saved for it; click a change to scroll to its change card. A stage with saved changes that is not marked done is still in progress, and undoing a stage's only change opens it again. If the assistant stops before the end, the open stages stay on the list, and asking it to continue picks them up.
 
+### Checking the data
+
+When the project allows it (`allow_aggregate_statistics`, below), the assistant checks each change against your data before it saves it: it runs the nodes the change adds or edits the way a preview does, writes nothing, and reads back counts only. While it does, the activity row reads **Checking the data**. If the counts show the change is wrong, such as every row falling into a band's default or a join that matches nothing, the assistant corrects the change before saving it.
+
+The change card then shows what the check found:
+
+- Findings worth a look are listed under the node they concern, for example "All 1,204 rows fell into the default band of age_band."
+- Findings that are often intended, such as a join that matches most but not all rows, are folded under **informational findings**; click the line to open them.
+- **Data checked: no findings.** means the check ran and found nothing to flag. It does not prove the change is right.
+- **Data not checked:** says why the check could not run, for example because the preview worker was busy, and **Not checked:** names nodes it skipped and what would let them be checked, such as previewing an input first.
+- **Data findings measured on inputs that have changed since.** means a data file changed after the check ran.
+
+Only counts reach the model, never the values in your data.
+
 ### Pointing it at nodes and errors
 
 Nodes you select on the canvas are sent with your message, so "join this onto the quotes" means the selected node. The chip above the message box names them.
@@ -114,7 +128,7 @@ The egress policy decides what project material the assistant may send to the mo
 | `allow_project_knowledge` | Whether the assistant may use background facts about the project: a summary of the saved pipeline, a digest of `haute.toml` without its values, and the project's own documentation. |
 | `allow_executable_source` | Whether the assistant may read the code in your nodes and in the pipeline's imports. Without it, code is withheld when the assistant inspects a node. |
 | `allow_row_samples` | Whether actual values from your data may be sent: profiles of a column's values, and error messages that quote a value. Without it, the assistant sees column names and types, and an error is reported by its type and the step that raised it. |
-| `allow_aggregate_statistics` | Whether the assistant may run the nodes it changes over your data, as a preview does, to check what they produce, and send the model counts and shares from that check: how many rows each node reads and keeps, how many of a new column's values are missing, how many rows fall into each band, how many rows a rating table has no entry for, and how many rows a join matches. The values themselves are never sent. Without it, the assistant checks only that a change fits the pipeline's columns and types, not that its data comes out right. |
+| `allow_aggregate_statistics` | Whether the assistant may run the nodes it changes over your data, as a preview does, to check what they produce, and send the model counts and shares from that check: how many rows each node reads and keeps, how many of a new column's values are missing, how many rows fall into each band, how many rows a rating table has no entry for, and how many rows a join matches. The values themselves are never sent. What the check found appears on each change card (see [Checking the data](#checking-the-data)). Without it, the assistant checks only that a change fits the pipeline's columns and types, not that its data comes out right. |
 
 An `external` endpoint must use `max_sensitivity = "public"` and cannot allow executable source, row samples or aggregate statistics. In practice that means an external service gets an assistant that can neither read nor edit the pipeline, so use `organization` for your own Databricks workspace.
 

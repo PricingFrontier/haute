@@ -60,7 +60,7 @@ Out of scope:
   deliberately absent from the v1 tool surface (see Design rationale). The one execution
   the assistant may cause beyond schema resolution is the bounded, value-free data check
   that `[assistant.egress].allow_aggregate_statistics` authorises, specified under
-  [Approved change contract — data checks](#approved-change-contract--data-checks); it is
+  [Data checks](#data-checks); it is
   not a tool the model calls.
 - Submodel creation, dissolution, or edits *inside* a submodel's own graph — v1 tools
   operate on the top-level flat graph only and reject submodel-internal targets loudly.
@@ -426,6 +426,10 @@ Chips and edges are bounded at 50 each, with a flag when more were cut. The reco
 holds a configuration value, a step's free-code text or `# intent` comment, a column
 value or an error message: it names what changed, not what it changed to. There is no
 second, hand-maintained list of editor labels; a field reads as its key in words.
+When the plan's dry-run ran a [data check](#data-checks), the record also carries it
+as the card shows it: each finding worded from its counts and names, the label that
+says whether the findings describe the saved graph, and one line on what was not
+checked.
 
 `dry_run_graph_edits` takes a required `summary` of at most 400 characters, saying in
 one or two plain sentences what the plan does, and an optional list of up to five
@@ -606,7 +610,10 @@ operations, which the model wrote, or the revision, digests and postconditions, 
 the server reads. An apply returns the number of operations applied, the
 verification tier, the evidence summary of the post-save verification and the change
 record, whose id is the plan hash, stated once; the expected and actual diffs, which a
-successful apply proves equal, are not repeated. In both, a chip field that holds its default (no earlier name, no changed
+successful apply proves equal, are not repeated. When the egress policy permits
+aggregate statistics, a successful dry-run also carries its plan's
+[data check](#data-checks) under `data_check`, or the note that it did not fit under
+`data_check_omitted`. In both, a chip field that holds its default (no earlier name, no changed
 fields, no step list, no changed steps), an empty edge or warning list and a false flag
 are left out, and the evidence summary names inferred and declared inputs only when
 there are any. A four-node batch's dry-run and apply results each stay under one kilobyte.
@@ -869,7 +876,7 @@ model; the error names the nodes the plan adds, by id and ref.
   boundary is explicit so the model is told what it cannot do, rather than discovering it by
   erroring. Checking data is the one carve-out, and it is not a tool. A dry-run proves
   schemas only, so a plan that runs but computes the wrong data passes it; the
-  [data check](#approved-change-contract--data-checks) measures the changed nodes' data
+  [data check](#data-checks) measures the changed nodes' data
   under its own permission, `allow_aggregate_statistics`, and its own contract (what it
   executes, what it returns, what it is bound to), because a data check is an execution
   capability and graph-plan authority does not authorise execution. It runs automatically
@@ -1095,7 +1102,7 @@ deployment, Git or other external-side-effect tool must define its own
 explicit runtime authorization instead of reusing graph-plan authority. The
 data check is such a definition: its authorization is
 `[assistant.egress].allow_aggregate_statistics`, never the plan's authority,
-and [its contract](#approved-change-contract--data-checks) bounds it to
+and [its contract](#data-checks) bounds it to
 measuring the lineage of the plan's changed nodes, value-free, issuing no sink,
 external-write, training, optimisation, deployment or Git operation of its own.
 It does not contain the project and model-authored Python that lineage runs,
@@ -1283,7 +1290,7 @@ samples or aggregate statistics. Project configuration may narrow but never
 widen these class ceilings.
 
 **Aggregate statistics.** `allow_aggregate_statistics` authorises the
-[data check](#approved-change-contract--data-checks): executing the lineage of
+[data check](#data-checks): executing the lineage of
 the nodes a plan changes over project data in the preview worker, and sending
 the model value-free counts and shares derived from those rows (rows in and
 out, null shares, per-rule banding counts, rating misses, join matches), never
@@ -1313,15 +1320,15 @@ and when it is false:
 
 `- Aggregate data statistics: not permitted; no data check runs, so a dry-run proves schemas, never that the data came out right`
 
-Until the check is delivered, the flag is validated, part of the policy hash
-and stated in the turn context, and gates nothing else.
+The flag, under a ceiling above `public`, is what lets a dry-run run its data
+check; nothing else reads it.
 
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
 executable source is available only through `inspect_node`'s config part when
 `allow_executable_source` permits it. Rows are read only behind a flag of their
 own: `inspect_node`'s profile part returns a frame's values under
-`allow_row_samples`, and the [data check](#approved-change-contract--data-checks)
+`allow_row_samples`, and the [data check](#data-checks)
 returns value-free counts under `allow_aggregate_statistics`. Resolving a schema still runs the
 preamble and node code over the project's inputs, and that code, or Polars
 itself when a cast or computation meets a bad value, can put row values in an
@@ -1397,31 +1404,21 @@ revisions, decisions, graph-update evidence, and value-free validation path/reas
 metadata; it does not copy raw row, source, document, configuration payloads, or
 deterministic payload digests into restartable history.
 
-## Approved change contract — data checks
+## Data checks
 
-This section specifies the data check before it is built. The permission it
-relies on, `allow_aggregate_statistics`, is delivered and described under
-[Egress and project knowledge](#egress-and-project-knowledge); every other
-record here is unresolved until its roadmap package lands, when it folds into
-the sections above and this section is removed. The
-[low-level contract](low-level.md#approved-change-contract--data-checks) names
-the seams, constants, the closed result shapes and a worked example.
-
-- **Current limitation.** A dry-run proves schemas only. Plan construction, the
-  schema tier and apply's verification collect no rows, so a plan that runs but
-  computes the wrong data validates, applies and reports success: every row in a
-  banding default, a filter that empties its input, an Edge Join that matches
-  nothing, a rating table most rows miss, a join that multiplies rows on
-  duplicate keys. The one capability that reads data, `inspect_node`'s profile
-  part, reads one frame of the saved graph, needs `allow_row_samples`, and runs
-  only when the model chooses to call it.
-- **Unresolved target.** After an eligible dry-run, a data check measures the
-  nodes the plan changes in the plan's candidate graph and returns value-free
-  advisory and informational findings, exactly as the records below specify.
-  [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run)
-  builds it and attaches its result to the dry-run result and the change card.
-  ASSIST-42 measures the saved graph under the same contract, ASSIST-43 scores
-  findings in evaluation, and ASSIST-44 decides whether any finding may block.
+A dry-run proves schemas only: plan construction, the schema tier and apply's
+verification collect no rows, so a plan that runs but computes the wrong data
+would validate, apply and report success (every row in a banding default, a
+filter that empties its input, an Edge Join that matches nothing, a rating table
+most rows miss, a join that multiplies rows on duplicate keys). The data check
+closes that gap. After an eligible dry-run, when the egress policy permits it,
+it measures the nodes the plan changes in the plan's candidate graph and returns
+value-free advisory and informational findings, which the dry-run result
+carries to the model and the change card shows the analyst. It runs without
+being asked: `inspect_node`'s profile part, which reads one frame of the saved
+graph under `allow_row_samples`, remains the only data read the model requests.
+The [low-level specification](low-level.md#data-checks) names the seams,
+constants, the closed result shapes and a worked example.
 
 **What the check executes.** The check executes the lineage of its checked
 nodes in the dry-run's candidate graph: the `result_graph` of the
@@ -1793,73 +1790,62 @@ is `internal` or `restricted`; [Egress and project knowledge](#egress-and-projec
 gives the flag's rules and the turn-context line. Graph-plan authority never
 authorises a check.
 
-- **Non-goals.** No assistant execution tool: the check runs automatically and
-  the model cannot invoke, widen or target it, so the system prompt's statement
-  that no execution tool is available stays true and running or materialising a
-  pipeline stays unavailable. No containment of project or model-authored Python
-  beyond what previews have. No blocking finding (ASSIST-44), no check of the
-  saved graph (ASSIST-42) and no evaluation scoring (ASSIST-43). A data check
-  never replaces the evaluation's independent execution goldens. No check of an
-  inactive scenario, of a lineage through an opaque Load File or a non-local
-  model or optimiser artifact, or of a join inside code or a step list, and no
-  configurable bound, deadline, cap or threshold. The thresholds (0.10 for
-  rating misses, 0.5 for mostly-default bands and mostly-null columns) are
-  starting values that ASSIST-43's evaluation measures. In the evaluation's
-  `motor_pricing` fixture the harness logs the CatBoost model into the project
-  copy's local MLflow folder, which fills no disk model cache, so its scored
-  lineage is `artifact_not_local` until the fixture preparation loads each
-  fixture model once through the preview's loader, as it already builds input
-  snapshots the way a preview does; ASSIST-43 needs that step before recovery
-  cases downstream of scoring can be checked.
-- **Failure and compatibility semantics.** A `haute.toml` whose
-  `[assistant.egress]` lacks `allow_aggregate_statistics` fails with a
-  configuration error naming the key; there is no default and no migration. A
-  check that cannot run, an ineligible node and a failing node are reasons and
-  statuses in the result, never dry-run errors, and the dry-run's plan and
-  response are the same whatever the check reports. Findings are never shown for
-  a graph whose digest or scenario differs from theirs.
-- **Acceptance evidence.** Seeded candidate graphs report `banding_all_default`,
-  an advisory `rating_misses` at a 0.6 miss share, `rows_emptied` for a filter
-  and `join_validation_failed` for an `m:1` join on duplicate keys; a partial
-  join reports an informational `join_partial`; an unchecked node that two
-  checked nodes both read and that raises is reported once, with both nodes
-  `upstream_failed` naming it, while an independent branch still measures; a
-  rating step whose miss guard raises keeps its input and table measurements
-  and reports `rating_misses` in place of `execution_failed`; a payload test finds no data or configuration value in a
-  check result; a frame above 1,000,000 rows reports `truncated`; a check whose
-  worker slot is occupied reports `worker_busy` without waiting; checks from two
-  sessions run side by side or report `worker_busy`, never wait for each other;
-  an editor preview queued while a check runs makes the check report
-  `superseded_by_preview`, and the preview then runs on the replacement worker
-  (a new process, after the check's process has exited) and succeeds; under a
-  shortened deadline, a binding read that hashes a slow input, a delayed
-  dispatch and a slot whose worker is still starting each end the check at its
-  deadline or as `worker_busy`, never waiting beyond the deadline plus
-  termination; a free-code callback that never reaches a checkpoint is stopped at
-  the deadline with its worker process terminated and the slot usable again;
-  thread mode reports `worker_mode_unsupported`; an excluded Load File's loader
-  is never invoked; a Model Scoring node runs only from the disk model cache and
-  is `artifact_not_local` otherwise; replacing the cached model file or an EBM's
-  cached contract with the graph configuration unchanged ends a running check
-  as `source_changed` and labels earlier findings; a refresh in progress while
-  the previous generation is readable makes the nodes that read it
-  `input_not_prepared`; admission refusal and a stopped turn report their
-  reasons with the dry-run unchanged; the size reduction is measured on the
-  fully attributed response, an oversized result is cut within its allocation
-  while the dry-run's fields are unchanged, and a successful dry-run that leaves
-  no room for the smallest result carries the omission note and stays
-  successful, and a `no_checkable_nodes` result reduced for size still matches
-  the closed `not_run` shape; a cold snapshot generation is verified, and its
-  parts hashed, only in the worker, never on the server; a check arriving after
-  a pre-emption's replacement worker is installed but before the queued preview
-  resumes is `worker_busy`; changing a run-sourced model's destination
-  configuration, with the graph and the old cached files unchanged, labels the
-  stored findings; with the flag
-  false no check is attempted; a change card never shows findings for another
-  graph digest, hides them after a scenario-only change, and labels them after
-  a same-scenario input refresh; and latency is recorded on 100,000, 1,000,000
-  and 5,000,000 rows.
-- **Roadmap package.** [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run).
+**Where the findings appear.** The dry-run tool starts the check once its plan is
+stored and the save lock released, under the turn's session, and attaches what fits
+of the result to the dry-run result under `data_check`, or the omission note under
+`data_check_omitted`. The whole result is kept beside the plan in the plan store,
+and a later identical dry-run replaces it, so a dry-run whose policy no longer
+permits a check leaves none behind. While the check runs, the dry-run's activity
+row reads "Checking the data": a `tool_progress` stream event retitles a running
+tool's row. Stopping the turn stops the check, which reports `cancelled`, and the
+dry-run's result, carrying that check, is still the turn's record of the call. An
+apply reads the stored check and labels it against the graph it saves with the
+freshness comparison: `current`; `earlier_inputs`, which the card labels;
+`other_scenario`, whose card keeps no findings and names the checked scenario;
+and for another graph digest the change record carries no check at all. The
+change record words each finding for the analyst from its counts and names ("All
+1,204 rows fell into the default band of age_band.", "903 of 1,204 base rows
+(75%) matched a join row."), never with a row value, a configuration value or an
+error's own text (an execution failure is named by its exception type and the
+step or line that raised it), at most 20 with the number omitted, and adds one
+line on what was not checked: why the whole check did not run, or which changed
+nodes it skipped and what would let them be checked (a node that produces no
+data, such as a Quote Response, is named only when nothing was checked). The
+card shows advisory findings plainly, folds informational ones away, labels
+findings measured on inputs that have changed since, and says when a check that
+ran found nothing. A persisted change record keeps its check, and a record saved
+before data checks existed has none.
+
+**What the model is told.** One paragraph of the system prompt says that a
+dry-run can return `data_check`; that when an advisory finding shows the plan is
+wrong (every row in a band's default, a join that matches nothing, a filter that
+empties its input) the model corrects the plan and dry-runs again before
+applying; that informational findings need no action; and that neither a clean
+check nor one that did not run proves the plan correct. The dry-run tool's
+description names `data_check`.
+
+**What it is not.** The check is not an assistant execution tool: it runs
+automatically and the model cannot invoke, widen or target it, so the system
+prompt's statement that no execution tool is available stays true and running or
+materialising a pipeline stays unavailable. It contains project or
+model-authored Python no more than a preview does. No finding blocks an apply,
+the saved graph is never checked, the evaluation does not score findings, and a
+data check never replaces the evaluation's independent execution goldens. It
+checks no inactive scenario, no lineage through an opaque Load File or a
+non-local model or optimiser artifact, and no join inside code or a step list,
+and it has no configurable bound, deadline, cap or threshold. The thresholds
+(0.10 for rating misses, 0.5 for mostly-default bands and mostly-null columns)
+are starting values for the evaluation to measure. In the evaluation's
+`motor_pricing` fixture the harness logs the CatBoost model into the project
+copy's local MLflow folder, which fills no disk model cache, so a check of its
+scored lineage reports `artifact_not_local`.
+
+**Failures.** A `haute.toml` whose `[assistant.egress]` lacks
+`allow_aggregate_statistics` fails with a configuration error naming the key;
+there is no default. A check that cannot run, an ineligible node and a failing
+node are reasons and statuses in the result, never dry-run errors, and the
+dry-run's plan and response are the same whatever the check reports. Findings
+are never shown for a graph whose digest or scenario differs from theirs.
 
 ## Provider qualification
 
@@ -1888,12 +1874,15 @@ see [the assistant evaluation](evaluation.md#tiers).
   own. Both declare `schema_only`, the engine flag stating that a caller resolves schemas
   and never materialises, so the engine's group-by memory-admission gate — which bounds
   peak memory during materialisation — does not refuse an aggregation neither of them
-  runs.
+  runs. The [data check](#data-checks) collects through the walker's measuring purpose
+  and runs in an interactive worker through the pool's pre-emptible acquisition, so an
+  editor preview always takes the worker back from it.
 - **[sandbox-security](../sandbox-security/high-level.md)** — assistant-authored node code
   (e.g. a `polars` body) is validated and sandboxed identically to human-authored code; the
   assistant adds no bypass.
 - **[frontend-assistant-ui](../frontend-assistant-ui/high-level.md)** — the sole consumer of the
-  assistant HTTP surface; owns the clean-canvas send gate.
+  assistant HTTP surface; owns the clean-canvas send gate and renders each change card,
+  its data check included.
 - **[frontend-graph-canvas](../frontend-graph-canvas/high-level.md)** — receives assistant
   mutations as ordinary `pipeline_document_update` frames over `/ws/sync`; its dirty-state
   banner and apply/rollback behaviour are unchanged. A frame's assistant `origin` makes

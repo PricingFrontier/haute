@@ -92,10 +92,16 @@ transcript, each headed by the plain-words title the backend writes ("Reading th
 pipeline", "Checking 3 changes", "Applying 3 changes") rather than the tool's name, with
 failures marked distinctly — so the analyst can follow what the agent actually did, in
 order: text streamed after a tool row renders below it as a new text segment, never back
-in an earlier bubble. After each apply a change card shows what was saved: the plan's
-summary and the assumptions it made, one chip per node added, changed, removed or renamed
-with its palette type, the fields it changed in words and its step kinds, the edges added
-and removed, the save's warnings, and the short commit id. The card never shows a
+in an earlier bubble. A running row takes the title of each stage the backend reports
+("Checking the data" while a dry-run's data check runs). After each apply a change card
+shows what was saved: the plan's summary and the assumptions it made, one chip per node
+added, changed, removed or renamed with its palette type, the fields it changed in words
+and its step kinds, the edges added and removed, the save's warnings, and the short
+commit id. When the plan's dry-run checked its data, the card also shows what the check
+measured, in the backend's words: advisory findings plainly, informational ones folded
+under a count, a label when the inputs have changed since, "Data checked: no findings."
+when a check found nothing, and one line on what was not checked; findings that describe
+another scenario stay hidden behind a line naming it. The card never shows a
 configuration value or step code. The canvas itself updates via live-sync, not via this
 panel: when an assistant save or undo lands, the canvas rings the nodes it changed and
 centres them, instead of fitting the whole graph.

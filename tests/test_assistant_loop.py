@@ -1927,6 +1927,94 @@ class TestCancellation:
         session = store.lookup(session_id)
         assert session is not None and not session.lock.locked()
 
+    async def test_a_running_tool_streams_each_stage_it_reports(self, store, session_id):
+        """A tool's progress titles stream as `tool_progress` events while the call
+        still runs, between its started and finished rows."""
+
+        from haute.assistant._catalog import report_tool_progress
+        from haute.assistant._loop import run_turn
+
+        release = asyncio.Event()
+
+        async def staged_tool(name: str, arguments: dict) -> dict:
+            report_tool_progress("Checking the data")
+            await release.wait()
+            return {"nodes": []}
+
+        provider = ScriptedProvider(
+            [
+                [ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())],
+                [TextDelta("Read."), TurnStop("end", _usage())],
+            ]
+        )
+        events = []
+        async for event in run_turn(
+            store,
+            session_id,
+            "read",
+            provider=provider,
+            tools=[],
+            execute_tool=staged_tool,
+            system_prompt="s",
+            turn_timeout=5.0,
+            max_tool_calls=8,
+        ):
+            events.append(event)
+            if event.type == "tool_progress":
+                # The call is still waiting: the event arrived while it ran.
+                assert not release.is_set()
+                release.set()
+
+        assert [event.type for event in events[:3]] == [
+            "tool_started",
+            "tool_progress",
+            "tool_finished",
+        ]
+        assert (events[1].id, events[1].title) == ("t1", "Checking the data")
+        assert _assert_single_terminal(events).type == "completed"
+
+    async def test_closing_at_a_progress_event_cancels_a_read_tool(self, store, session_id):
+        """A turn closed while it streams a read tool's progress cancels that call,
+        and the call's matched result is the interrupted one."""
+
+        from haute.assistant._catalog import report_tool_progress
+        from haute.assistant._loop import run_turn
+
+        cancelled = {"value": False}
+
+        async def slow_read_tool(name: str, arguments: dict) -> dict:
+            report_tool_progress("Reading the pipeline")
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled["value"] = True
+                raise
+            return {"nodes": []}
+
+        turn = run_turn(
+            store,
+            session_id,
+            "read",
+            provider=ScriptedProvider(
+                [[ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())]]
+            ),
+            tools=[],
+            execute_tool=slow_read_tool,
+            system_prompt="s",
+            turn_timeout=5.0,
+            max_tool_calls=8,
+        )
+        while (await anext(turn)).type != "tool_progress":
+            pass
+        await turn.aclose()
+
+        assert cancelled["value"] is True
+        session = store.lookup(session_id)
+        assert session is not None and not session.lock.locked()
+        [result] = [message for message in session.history[-1].messages if message.role == "tool"]
+        assert result.tool_call_id == "t1"
+        assert result.content["error"]["code"] == "tool_interrupted"
+
     async def test_wall_clock_timeout_cancels_inflight_read_tool(self, store, session_id):
         """A stalled inspection must not defeat the turn's wall-clock bound."""
 
@@ -1991,7 +2079,7 @@ class TestCancellation:
 class TestDisconnectHistoryIntegrity:
     @pytest.mark.parametrize(
         "close_at",
-        ["tool_started", "tool_finished", "change_applied"],
+        ["tool_started", "tool_progress", "tool_finished", "change_applied"],
     )
     async def test_closing_at_each_tool_yield_never_persists_an_orphan(
         self,
@@ -2003,9 +2091,11 @@ class TestDisconnectHistoryIntegrity:
         boundary. History committed from each boundary must remain acceptable
         to both providers: every call id has one matching result id."""
 
+        from haute.assistant._catalog import report_tool_progress
         from haute.assistant._loop import run_turn
 
         async def execute_tool(name: str, arguments: dict) -> dict:
+            report_tool_progress("Saving the plan")
             return dict(_APPLIED)
 
         turn = run_turn(

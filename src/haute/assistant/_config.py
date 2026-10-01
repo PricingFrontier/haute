@@ -78,6 +78,11 @@ class EgressPolicy:
     allow_aggregate_statistics: bool
 
     @property
+    def permits_data_checks(self) -> bool:
+        """Whether a dry-run runs a data check: the flag, under a ceiling above ``public``."""
+        return self.allow_aggregate_statistics and self.max_sensitivity != "public"
+
+    @property
     def policy_hash(self) -> str:
         payload = {
             "allow_aggregate_statistics": self.allow_aggregate_statistics,

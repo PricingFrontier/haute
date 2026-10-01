@@ -390,6 +390,18 @@ export function settleOutcome(
   return [...settled, { kind: "outcome", outcome }]
 }
 
+/** Retitle a running tool's row with the stage it reports, such as checking the data. */
+function retitleTool(
+  entries: TranscriptEntry[],
+  event: Extract<AssistantStreamEvent, { type: "tool_progress" }>,
+): TranscriptEntry[] {
+  return entries.map((entry) =>
+    entry.kind === "activity" && entry.id === event.id && entry.state === "running"
+      ? { ...entry, title: event.title }
+      : entry,
+  )
+}
+
 function settleTool(
   entries: TranscriptEntry[],
   event: Extract<AssistantStreamEvent, { type: "tool_finished" }>,
@@ -675,6 +687,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
               break
             case "tool_started":
               set((state) => ({ entries: appendActivity(state.entries, toolStartedEntry(event)) }))
+              break
+            case "tool_progress":
+              set((state) => ({ entries: retitleTool(state.entries, event) }))
               break
             case "tool_finished":
               set((state) => ({ entries: settleTool(state.entries, event) }))

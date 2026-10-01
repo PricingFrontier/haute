@@ -7,9 +7,8 @@ ports: rows in and out, null counts of new and changed columns, per-rule
 banding claims, rating misses and unused entries, Edge Join matches and
 duplicated keys, and execution failures with their provenance. It returns
 counts and shares only, never a row value or a configuration value, and its
-findings are advisory or informational. The approved change contract is
-"Approved change contract — data checks" in ``specs/assistant/high-level.md``
-and ``specs/assistant/low-level.md``.
+findings are advisory or informational. The specification is "Data checks"
+in ``specs/assistant/high-level.md`` and ``specs/assistant/low-level.md``.
 
 This module owns the check whole: eligibility (on the server, reading only
 configuration, file metadata and published-generation pointers), the job

@@ -1030,6 +1030,10 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
         "dry_run_graph_edits",
         "apply_graph_plan",
     ]
+    # The project profile permits aggregate statistics, so the transcript keeps the
+    # dry-run's data check as the model saw it: in thread mode, why it did not run.
+    (dry_run,) = [event for event in events if event.get("tool") == "dry_run_graph_edits"]
+    assert dry_run["result"]["data_check"]["reason"] == "worker_mode_unsupported"
     assert events[-1]["outcome"]["kind"] == "applied"
 
 

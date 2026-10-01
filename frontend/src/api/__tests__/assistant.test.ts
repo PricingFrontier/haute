@@ -63,6 +63,7 @@ const CHANGE: AssistantChangeRecord = {
   git_sha: null,
   parent_sha: null,
   revision: "e".repeat(64),
+  data_check: null,
 }
 
 const PLAN: AssistantBuildPlan = {
@@ -419,6 +420,30 @@ describe("streamAssistantMessage", () => {
     expect(events).toEqual([{ type: "build_plan_updated", build_plan: PLAN }])
   })
 
+  it("parses a running tool's progress and a change card's data check", async () => {
+    const checked = {
+      ...CHANGE,
+      data_check: {
+        visibility: "earlier_inputs",
+        outcome: "checked",
+        scenario: "live",
+        findings: [
+          { severity: "advisory", node: "age_band", text: "All 1,204 rows fell into the default band of age_band." },
+        ],
+        findings_omitted: 0,
+        not_checked: "Not checked: rates (preview the input quotes first).",
+      },
+    }
+    const events = await collectEvents([
+      'data: {"type":"tool_progress","id":"t1","title":"Checking the data"}\n\n',
+      `data: ${JSON.stringify({ type: "change_applied", change: checked })}\n\n`,
+    ])
+    expect(events).toEqual([
+      { type: "tool_progress", id: "t1", title: "Checking the data" },
+      { type: "change_applied", change: checked },
+    ])
+  })
+
   it("parses the field-less thinking status", async () => {
     const events = await collectEvents([
       'data: {"type":"thinking"}\n\n',
@@ -471,6 +496,10 @@ describe("streamAssistantMessage", () => {
     ["completed applied with no saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "applied", detail: null, changes: [] } }],
     ["completed answered with a saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: null, changes: ["plan-1"] } }],
     ["change_applied without its id", { type: "change_applied", change: { ...CHANGE, id: undefined } }],
+    ["change_applied without its data check", { type: "change_applied", change: { ...CHANGE, data_check: undefined } }],
+    ["change_applied with an unknown data-check visibility", { type: "change_applied", change: { ...CHANGE, data_check: { visibility: "other_graph", outcome: "checked", scenario: "live", findings: [], findings_omitted: 0, not_checked: null } } }],
+    ["change_applied with a finding of no severity", { type: "change_applied", change: { ...CHANGE, data_check: { visibility: "current", outcome: "checked", scenario: "live", findings: [{ node: "n", text: "t" }], findings_omitted: 0, not_checked: null } } }],
+    ["tool_progress without a title", { type: "tool_progress", id: "id" }],
     ["build_plan_updated without its plan", { type: "build_plan_updated" }],
     ["build_plan_updated with a non-boolean undone", { type: "build_plan_updated", build_plan: { items: [{ ...PLAN.items[1], changes: [{ id: "c", undone: "no" }] }] } }],
     ["failed", { type: "failed", message: null }],

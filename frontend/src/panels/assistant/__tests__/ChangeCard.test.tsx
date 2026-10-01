@@ -9,7 +9,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 
-import type { AssistantChangeNode, AssistantChangeRecord } from "../../../api/assistant"
+import type {
+  AssistantChangeDataCheck,
+  AssistantChangeNode,
+  AssistantChangeRecord,
+} from "../../../api/assistant"
 import useAssistantStore from "../../../stores/useAssistantStore"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGitStore from "../../../stores/useGitStore"
@@ -71,6 +75,7 @@ function record(overrides: Partial<AssistantChangeRecord> = {}): AssistantChange
     git_sha: "0123456789abcdef0123456789abcdef01234567",
     parent_sha: "fedcba9876543210fedcba9876543210fedcba98",
     revision: "e".repeat(64),
+    data_check: null,
     ...overrides,
   }
 }
@@ -133,6 +138,104 @@ describe("change card", () => {
   it("renders as a transcript entry", () => {
     render(<TranscriptEntryView entry={{ kind: "change", change: record() }} />)
     expect(screen.getByTestId("assistant-change-card")).toHaveTextContent("Commit 0123456")
+  })
+})
+
+describe("data check on the change card", () => {
+  function checked(overrides: Partial<AssistantChangeDataCheck> = {}): AssistantChangeDataCheck {
+    return {
+      visibility: "current",
+      outcome: "checked",
+      scenario: "live",
+      findings: [
+        { severity: "advisory", node: "bands", text: "All 1,204 rows fell into the default band of age_band." },
+        { severity: "informational", node: "joined", text: "903 of 1,204 base rows (75%) matched a join row." },
+      ],
+      findings_omitted: 0,
+      not_checked: null,
+      ...overrides,
+    }
+  }
+
+  it("shows advisory findings plainly and folds informational ones away", () => {
+    render(<ChangeCard change={record({ data_check: checked() })} />)
+
+    const section = screen.getByTestId("assistant-change-data-check")
+    const findings = within(section).getAllByTestId("assistant-data-finding")
+    expect(findings.map((item) => item.getAttribute("data-severity"))).toEqual([
+      "advisory",
+      "informational",
+    ])
+    expect(findings[0]).toHaveTextContent("bands: All 1,204 rows fell into the default band of age_band.")
+    expect(findings[0]).toBeVisible()
+    const folded = findings[1].closest("details")
+    expect(folded).not.toBeNull()
+    expect(folded).not.toHaveAttribute("open")
+    expect(within(section).getByText("1 informational finding")).toBeInTheDocument()
+    expect(section).not.toHaveTextContent("no findings")
+  })
+
+  it("says when the check found nothing, did not run, or skipped nodes", () => {
+    const { rerender } = render(
+      <ChangeCard change={record({ data_check: checked({ findings: [] }) })} />,
+    )
+    expect(screen.getByTestId("assistant-change-data-check")).toHaveTextContent(
+      "Data checked: no findings.",
+    )
+
+    rerender(
+      <ChangeCard
+        change={record({
+          data_check: checked({
+            outcome: "not_run",
+            findings: [],
+            not_checked: "Data not checked: the preview worker was busy.",
+          }),
+        })}
+      />,
+    )
+    const notRun = screen.getByTestId("assistant-change-data-check")
+    expect(notRun).toHaveTextContent("Data not checked: the preview worker was busy.")
+    expect(notRun).not.toHaveTextContent("no findings")
+
+    rerender(
+      <ChangeCard
+        change={record({
+          data_check: checked({
+            findings_omitted: 3,
+            not_checked: "Not checked: rates (preview the input quotes first).",
+          }),
+        })}
+      />,
+    )
+    const partial = screen.getByTestId("assistant-change-data-check")
+    expect(partial).toHaveTextContent("3 more findings are not listed.")
+    expect(partial).toHaveTextContent("Not checked: rates (preview the input quotes first).")
+  })
+
+  it("labels findings from changed inputs and hides another scenario's", () => {
+    const { rerender } = render(
+      <ChangeCard change={record({ data_check: checked({ visibility: "earlier_inputs" }) })} />,
+    )
+    const earlier = screen.getByTestId("assistant-change-data-check")
+    expect(earlier).toHaveTextContent("Data findings measured on inputs that have changed since.")
+    expect(within(earlier).getAllByTestId("assistant-data-finding")).toHaveLength(2)
+
+    rerender(
+      <ChangeCard
+        change={record({
+          data_check: checked({ visibility: "other_scenario", scenario: "batch", findings: [] }),
+        })}
+      />,
+    )
+    const hidden = screen.getByTestId("assistant-change-data-check")
+    expect(hidden).toHaveTextContent("Data findings hidden: they describe the batch scenario.")
+    expect(within(hidden).queryByTestId("assistant-data-finding")).toBeNull()
+  })
+
+  it("shows no data check section when none ran", () => {
+    render(<ChangeCard change={record()} />)
+    expect(screen.queryByTestId("assistant-change-data-check")).toBeNull()
   })
 })
 

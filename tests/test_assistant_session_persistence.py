@@ -323,6 +323,68 @@ class TestWriteThrough:
             "<redacted>"
         )
 
+    def test_a_change_cards_data_check_revives_and_an_older_card_has_none(self, tmp_path: Path):
+        data_check = {
+            "visibility": "earlier_inputs",
+            "outcome": "checked",
+            "scenario": "live",
+            "findings": [
+                {
+                    "severity": "advisory",
+                    "node": "age_band",
+                    "text": "All 1,204 rows fell into the default band of age_band.",
+                }
+            ],
+            "findings_omitted": 0,
+            "not_checked": "Not checked: rates (preview the input quotes first).",
+        }
+
+        def applied(change_id: str, **extra: object) -> dict[str, object]:
+            change = {
+                "id": change_id,
+                "summary": "Band ages.",
+                "changes": {"nodes": []},
+                "git_sha": None,
+                "parent_sha": None,
+                "revision": "e" * 64,
+                **extra,
+            }
+            return {
+                "messages": [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {"change": change},
+                        "is_error": False,
+                    },
+                ],
+                "outcome": {"kind": "applied", "detail": None, "changes": [change_id]},
+                "undone": [],
+            }
+
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        # A card saved before data checks existed has no data_check key at all.
+        store.append(session, applied("a" * 64))
+        store.append(session, applied("b" * 64, data_check=data_check))
+
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        older, checked = (
+            AssistantChangeRecord.model_validate(turn.messages[-1].content["change"])
+            for turn in revived.history
+        )
+        assert older.data_check is None
+        assert checked.data_check is not None
+        assert checked.data_check.model_dump(mode="json") == data_check
+
     def test_a_malformed_change_record_fails_when_the_message_is_built(self):
         with pytest.raises(ValueError):
             AssistantMessage(
