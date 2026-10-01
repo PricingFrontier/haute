@@ -144,7 +144,10 @@ as `<layer>: <reason>`, and a case passes only when every layer passes.
 
 1. **Protocol.** The turn completes; its outcome is the expected one, where the
    last explicit `NEEDS_INPUT:` or `BLOCKED:` marker in the accumulated
-   assistant text decides a non-mutation outcome; an applied outcome applied a
+   assistant text decides a non-mutation outcome, and a turn whose typed
+   outcome is `incomplete` (the model stopped with a dry-run unfinished) is
+   observed as `incomplete`, which no case can expect, so it never passes as
+   `unchanged`; an applied outcome applied a
    plan, emitted a graph update and changed the graph, and any other outcome
    changed nothing; no canary value leaked; and the round-trip, tool-call,
    failed-call and duplicate-static-read limits hold.

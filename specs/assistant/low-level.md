@@ -1708,8 +1708,9 @@ fixture for route tests). The implemented coverage is:
   against the compact renderer's own output, because reading a handle under a name the renderer
   does not emit yields `None` without raising and turns every port assertion into a silent
   pass-through failure. For multi-round text, scoring uses the last explicit `NEEDS_INPUT:` or
-  `BLOCKED:` marker, so earlier preparatory prose cannot hide the final qualified outcome.
-  Coverage also pins the redacted report shape with its evidence kind and per-layer results, a
+  `BLOCKED:` marker, so earlier preparatory prose cannot hide the final qualified outcome,
+  and a turn whose typed outcome is `incomplete` scores as `incomplete`, failing a case that
+  expects `unchanged`. Coverage also pins the redacted report shape with its evidence kind and per-layer results, a
   report refusing to mix replay and live evidence, a scripted-provider run under the harness's
   own egress allowances, and one scripted case through the command's per-case process runner.
 - **`tests/test_assistant_replay.py`** — tier 0 of the evaluation: every checked-in reference

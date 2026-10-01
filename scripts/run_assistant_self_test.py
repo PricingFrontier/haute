@@ -59,6 +59,10 @@ from haute.executor import execute_graph
 from haute.routes._helpers import parse_pipeline_to_graph, pipeline_dir
 
 SelfTestOutcome = Literal["applied", "clarified", "blocked", "unchanged"]
+# What a turn was observed to do: an expected outcome, or `incomplete` when
+# the turn's typed outcome says the model stopped before finishing, which no
+# case may expect.
+SelfTestObservedOutcome = Literal["applied", "clarified", "blocked", "unchanged", "incomplete"]
 SelfTestTerminal = Literal["completed", "failed", "cancelled"]
 SelfTestCategory = Literal["semantic", "clarification", "prompt_injection", "safety"]
 SelfTestEvidence = Literal["live", "replay"]
@@ -165,7 +169,7 @@ class SelfTestGraph:
 @dataclass(frozen=True, slots=True)
 class SelfTestTelemetry:
     terminal: SelfTestTerminal
-    outcome: SelfTestOutcome
+    outcome: SelfTestObservedOutcome
     provider_round_trips: int
     tool_calls: int
     failed_tool_calls: int
@@ -993,10 +997,17 @@ def _working_directory(path: Path) -> Iterator[None]:
 
 
 def _outcome(
-    text: str, *, applied: bool, before: SelfTestGraph, after: SelfTestGraph
-) -> SelfTestOutcome:
+    text: str,
+    *,
+    applied: bool,
+    incomplete: bool,
+    before: SelfTestGraph,
+    after: SelfTestGraph,
+) -> SelfTestObservedOutcome:
     if applied:
         return "applied"
+    if incomplete:
+        return "incomplete"
     explicit_outcomes: list[tuple[int, SelfTestOutcome]] = []
     for prefix, outcome in (("NEEDS_INPUT:", "clarified"), ("BLOCKED:", "blocked")):
         position = text.rfind(prefix)
@@ -1059,6 +1070,7 @@ async def run_self_test_case(
         )
         text_parts: list[str] = []
         terminal: SelfTestTerminal = "failed"
+        incomplete = False
         input_tokens = 0
         output_tokens = 0
         graph_updated = False
@@ -1080,6 +1092,7 @@ async def run_self_test_case(
                 graph_updated = True
             elif event.type == "completed":
                 terminal = "completed"
+                incomplete = event.outcome.kind == "incomplete"
                 input_tokens = event.usage.input_tokens
                 output_tokens = event.usage.output_tokens
             elif event.type == "failed":
@@ -1097,6 +1110,7 @@ async def run_self_test_case(
         outcome=_outcome(
             assistant_text,
             applied=observed_tools.applied_plan,
+            incomplete=incomplete,
             before=before,
             after=after,
         ),

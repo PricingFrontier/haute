@@ -305,6 +305,7 @@ class TestSelfTestScoring:
             _outcome(
                 "I inspected the graph.NEEDS_INPUT: supply factor values.",
                 applied=False,
+                incomplete=False,
                 before=graph,
                 after=graph,
             )
@@ -314,6 +315,7 @@ class TestSelfTestScoring:
             _outcome(
                 "NEEDS_INPUT: an earlier question.BLOCKED: no execution tool is available.",
                 applied=False,
+                incomplete=False,
                 before=graph,
                 after=graph,
             )
@@ -324,11 +326,36 @@ class TestSelfTestScoring:
             _outcome(
                 "NEEDS_INPUT: earlier prose before the successful apply.",
                 applied=True,
+                incomplete=False,
                 before=graph,
                 after=changed,
             )
             == "applied"
         )
+
+    def test_a_turn_that_stopped_before_finishing_matches_no_expected_outcome(self) -> None:
+        """An unchanged graph after an `incomplete` turn is not the `unchanged`
+        outcome a case can expect: the model stopped with a dry-run unfinished."""
+
+        from scripts.run_assistant_self_test import _outcome
+
+        graph = _graph(node_types={"quotes": "polars"})
+        observed = _outcome(
+            "The plan is ready.", applied=False, incomplete=True, before=graph, after=graph
+        )
+
+        assert observed == "incomplete"
+        result = score_self_test(
+            _case(required_node_types=(), required_edges=(), outcome="unchanged"),
+            before=graph,
+            after=graph,
+            telemetry=_telemetry(outcome=observed, applied_plan=False, graph_updated=False),
+            provider="replay",
+            model="trajectory",
+            evidence="replay",
+        )
+        assert result.passed is False
+        assert any("outcome was incomplete; expected unchanged" in r for r in result.reasons)
 
     def test_accepts_applied_connected_join_with_exact_ports(self) -> None:
         before = _graph(node_types={"quotes": "dataInput", "competitors": "dataInput"})
