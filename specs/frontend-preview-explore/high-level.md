@@ -30,6 +30,10 @@ Modelling and optimiser result presentation belongs to
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids. Row limits, column
   limits, and the table's rendering do not depend on where the rows came from.
+- A data preview's table stays where the user scrolled it when it shows a new result, whether
+  from Refresh, an automatic recalculation or after an error. A table scrolled fully right
+  stays fully right as it gains columns, so a column just added at the end is in view, and one
+  scrolled to the bottom stays at the bottom.
 - A preview's rows being computed from shared snapshots instead of recomputed is how the
   pipeline is meant to work, so the panel says nothing about it; its status row carries
   warnings and errors only. A preview is current

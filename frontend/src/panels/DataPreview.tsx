@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react"
+import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, type MouseEvent, type ReactNode } from "react"
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
@@ -93,6 +93,38 @@ type ColumnWindow = {
 type ColumnSearchEntry = {
   column: ColumnInfo
   normalizedName: string
+}
+
+/**
+ * Where the user scrolled the table to. Each axis keeps its offset, or its far
+ * end when it was left there, so a column added to a table scrolled fully
+ * right comes into view.
+ */
+type ScrollPlace = {
+  top: number
+  left: number
+  atBottom: boolean
+  atRight: boolean
+}
+
+// Offsets can be fractional, so within a pixel of the end is the end.
+function isAtFarEnd(offset: number, maxOffset: number): boolean {
+  return maxOffset > 0 && maxOffset - offset < 1
+}
+
+function readScrollPlace(el: HTMLElement): ScrollPlace {
+  return {
+    top: el.scrollTop,
+    left: el.scrollLeft,
+    atBottom: isAtFarEnd(el.scrollTop, el.scrollHeight - el.clientHeight),
+    atRight: isAtFarEnd(el.scrollLeft, el.scrollWidth - el.clientWidth),
+  }
+}
+
+/** Scrolls `el` to `place`; the browser clamps an offset past the table's end. */
+function scrollToPlace(el: HTMLElement, place: ScrollPlace): void {
+  el.scrollTop = place.atBottom ? el.scrollHeight - el.clientHeight : place.top
+  el.scrollLeft = place.atRight ? el.scrollWidth - el.clientWidth : place.left
 }
 
 /**
@@ -306,28 +338,47 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
   const [viewHeight, setViewHeight] = useState(0)
   const [viewWidth, setViewWidth] = useState(0)
   const rafRef = useRef(0)
+  const scrollPlaceRef = useRef<ScrollPlace | null>(null)
+  // The offsets the table was last put back at. Putting it back raises a
+  // scroll event, as does a narrower table clamping it there, and neither is
+  // the user moving it.
+  const placedOffsetsRef = useRef<{ top: number; left: number } | null>(null)
 
-  // Loading, an error or collapsing the panel replaces the scroll container,
-  // and its replacement starts unscrolled, so the row and column windows
-  // restart from the new container's offsets. A frame still pending from the
-  // old container would put them back where that one was scrolled.
   const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
     setScrollElement(node)
-    cancelAnimationFrame(rafRef.current)
     if (node) {
       setViewHeight(node.clientHeight)
       setViewWidth(node.clientWidth)
-      setScrollTop(node.scrollTop)
-      setScrollLeft(node.scrollLeft)
     }
   }, [])
+
+  // Put the table back where the user left it when loading, an error or
+  // collapsing the panel replaces its scroll container (the replacement starts
+  // unscrolled), and when a new result, a column search or a resized panel
+  // changes how far it scrolls. The row and column windows start there; a
+  // frame still pending from before would move them back.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const place = scrollPlaceRef.current
+    if (!el || !place) return
+    scrollToPlace(el, place)
+    placedOffsetsRef.current = { top: el.scrollTop, left: el.scrollLeft }
+    cancelAnimationFrame(rafRef.current)
+    setScrollTop(el.scrollTop)
+    setScrollLeft(el.scrollLeft)
+  }, [scrollElement, data, filteredColumns, viewWidth, viewHeight])
 
   const handleTableScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const nextScrollTop = el.scrollTop
     const nextScrollLeft = el.scrollLeft
+    const placed = placedOffsetsRef.current
+    if (!placed || placed.top !== nextScrollTop || placed.left !== nextScrollLeft) {
+      placedOffsetsRef.current = null
+      scrollPlaceRef.current = readScrollPlace(el)
+    }
     cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       setScrollTop(nextScrollTop)

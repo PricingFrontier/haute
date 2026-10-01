@@ -35,6 +35,7 @@
 | `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, immediate unsaved-submodel drill/render identity coverage, and downstream trace highlighting. |
 | `frontend/e2e/active-node-reveal.spec.ts` | Deterministic Chromium witness that the active node stays visible beside its inspector and preview pane: a clicked node panned into the canvas corner is moved inside the narrowed canvas at unchanged zoom, and node search centres its node in that canvas at zoom 0.8. |
 | `frontend/e2e/box-selection.spec.ts` | Chromium witness that a box selection ends once the editor changes the selection: after a box select, a node dropped from the palette follows its first drag and opens its own context menu on the first right-click. |
+| `frontend/e2e/data-preview-scroll.spec.ts` | Chromium witness that a data preview keeps its scroll place: a preview scrolled fully right with the wheel stays fully right, with the new column in view, through two Refreshes that each add a column. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |

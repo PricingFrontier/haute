@@ -57,6 +57,72 @@ function makePreview(overrides: Partial<PreviewData> = {}): PreviewData {
   }
 }
 
+const EMULATED_VIEWPORT = { width: 960, height: 200 }
+const EMULATED_HEADER_HEIGHT = 44
+
+/**
+ * jsdom lays nothing out. Give the preview's scroll container a viewport, the
+ * extent of the table it holds, and offsets clamped to that extent, as a
+ * browser does. Returns the function that removes the emulation.
+ */
+function emulateScrollContainerLayout(): () => void {
+  const isContainer = (el: HTMLElement) => el.dataset.testid === "data-preview-scroll"
+  const inherited = (el: HTMLElement, name: string) => Reflect.get(Element.prototype, name, el) as number
+  const scrollWidth = (el: HTMLElement) =>
+    Math.max(EMULATED_VIEWPORT.width, parseFloat(el.querySelector("table")?.style.width ?? "0"))
+  const scrollHeight = (el: HTMLElement) =>
+    Math.max(
+      EMULATED_VIEWPORT.height,
+      Array.from(el.querySelectorAll<HTMLElement>("tbody > tr")).reduce(
+        (height, row) => height + parseFloat(row.style.height),
+        EMULATED_HEADER_HEIGHT,
+      ),
+    )
+  const axes = {
+    scrollTop: (el: HTMLElement) => scrollHeight(el) - EMULATED_VIEWPORT.height,
+    scrollLeft: (el: HTMLElement) => scrollWidth(el) - EMULATED_VIEWPORT.width,
+  }
+  const offsets = new WeakMap<HTMLElement, Record<keyof typeof axes, number>>()
+  const clampedOffset = (el: HTMLElement, axis: keyof typeof axes, value: number) => {
+    const stored = { ...(offsets.get(el) ?? { scrollTop: 0, scrollLeft: 0 }) }
+    stored[axis] = Math.min(Math.max(0, value), axes[axis](el))
+    offsets.set(el, stored)
+    return stored[axis]
+  }
+  const getters = {
+    clientWidth: () => EMULATED_VIEWPORT.width,
+    clientHeight: () => EMULATED_VIEWPORT.height,
+    scrollWidth,
+    scrollHeight,
+  }
+  for (const [name, get] of Object.entries(getters)) {
+    Object.defineProperty(HTMLElement.prototype, name, {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isContainer(this) ? get(this) : inherited(this, name)
+      },
+    })
+  }
+  for (const axis of Object.keys(axes) as (keyof typeof axes)[]) {
+    Object.defineProperty(HTMLElement.prototype, axis, {
+      configurable: true,
+      // A narrower table clamps the offset, which then stays clamped.
+      get(this: HTMLElement) {
+        return isContainer(this) ? clampedOffset(this, axis, offsets.get(this)?.[axis] ?? 0) : inherited(this, axis)
+      },
+      set(this: HTMLElement, value: number) {
+        if (isContainer(this)) clampedOffset(this, axis, value)
+        else Reflect.set(Element.prototype, axis, value, this)
+      },
+    })
+  }
+  return () => {
+    for (const name of [...Object.keys(getters), ...Object.keys(axes)]) {
+      Reflect.deleteProperty(HTMLElement.prototype, name)
+    }
+  }
+}
+
 describe("DataPreview", () => {
   beforeEach(() => {
     resizeObserverStats.constructed = 0
@@ -670,44 +736,117 @@ describe("DataPreview", () => {
     expect(screen.getByText("value-79")).toBeInTheDocument()
   })
 
-  describe("a result shown after loading", () => {
-    // Refresh shows the loading state, which replaces the scroll container;
-    // the new container starts unscrolled, so the row and column windows have
-    // to start there too, or the cells render beyond blank spacers.
-    const columns = Array.from({ length: 120 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
-    const rows = Array.from({ length: 100 }, (_, row) =>
-      Object.fromEntries(columns.map((col, c) => [col.name, `r${row}-c${c}`])),
-    )
-    const scrollablePreview = (status: PreviewData["status"] = "ok") =>
-      makePreview({ status, column_count: columns.length, columns, preview: rows, row_count: rows.length })
-    const scrollFar = () =>
-      fireEvent.scroll(screen.getByTestId("data-preview-scroll"), {
-        target: { scrollTop: 80 * 28, scrollLeft: 80 * 160 },
-      })
+  describe("the place the table was scrolled to", () => {
+    // Refresh shows the loading state, which replaces the scroll container,
+    // and a recalculated result can change how far the table scrolls; either
+    // way the table stays where the user left it.
+    let removeLayout: () => void
+    beforeEach(() => {
+      removeLayout = emulateScrollContainerLayout()
+    })
+    afterEach(() => removeLayout())
 
-    it("starts at the top-left of its new scroll container", async () => {
-      const { rerender } = render(<DataPreview data={scrollablePreview()} />)
-      scrollFar()
+    const table = ({ columns = 120, rows = 100, status = "ok" as PreviewData["status"] } = {}) => {
+      const columnInfo = Array.from({ length: columns }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+      const preview = Array.from({ length: rows }, (_, row) =>
+        Object.fromEntries(columnInfo.map((col, c) => [col.name, `r${row}-c${c}`])),
+      )
+      return makePreview({ status, column_count: columns, columns: columnInfo, preview, row_count: rows })
+    }
+    const scrollContainer = () => screen.getByTestId("data-preview-scroll")
+    // The emulated container clamps offsets, so a huge one is the far end.
+    const FAR = 1e9
+    const scrollTo = (target: { scrollTop?: number; scrollLeft?: number }) =>
+      fireEvent.scroll(scrollContainer(), { target })
+    const nextFrame = () =>
+      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+
+    it("keeps its offsets across Refresh", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollTop: 80 * 28, scrollLeft: 80 * 160 })
       await waitFor(() => {
         expect(screen.getByText("r80-c80")).toBeInTheDocument()
       })
 
-      rerender(<DataPreview data={scrollablePreview("loading")} />)
-      rerender(<DataPreview data={scrollablePreview()} />)
+      rerender(<DataPreview data={table({ status: "loading" })} />)
+      rerender(<DataPreview data={table()} />)
 
-      expect(screen.getByText("col_0")).toBeInTheDocument()
-      expect(screen.getByText("r0-c0")).toBeInTheDocument()
+      expect(scrollContainer().scrollTop).toBe(80 * 28)
+      expect(scrollContainer().scrollLeft).toBe(80 * 160)
+      expect(screen.getByText("r80-c80")).toBeInTheDocument()
+    })
+
+    it("keeps its offsets when the panel is collapsed and expanded", async () => {
+      render(<DataPreview data={table()} />)
+      scrollTo({ scrollTop: 80 * 28, scrollLeft: 80 * 160 })
+      await waitFor(() => {
+        expect(screen.getByText("r80-c80")).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+      fireEvent.click(screen.getByLabelText("Expand preview panel"))
+
+      expect(scrollContainer().scrollTop).toBe(80 * 28)
+      expect(scrollContainer().scrollLeft).toBe(80 * 160)
+      expect(screen.getByText("r80-c80")).toBeInTheDocument()
+    })
+
+    it("stays at the far right and bottom when Refresh adds a column and rows", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollTop: FAR, scrollLeft: FAR })
+      await waitFor(() => {
+        expect(screen.getByText("r99-c119")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 121, rows: 120 })} />)
+
+      const container = scrollContainer()
+      expect(container.scrollLeft).toBe(container.scrollWidth - container.clientWidth)
+      expect(container.scrollTop).toBe(container.scrollHeight - container.clientHeight)
+      expect(screen.getByText("r119-c120")).toBeInTheDocument()
+    })
+
+    it("stays at the far right when a recalculated result adds a column", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollLeft: FAR })
+      await waitFor(() => {
+        expect(screen.getByText("col_119")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ columns: 121 })} />)
+
+      const container = scrollContainer()
+      expect(container.scrollLeft).toBe(container.scrollWidth - container.clientWidth)
+      expect(screen.getByText("col_120")).toBeInTheDocument()
+    })
+
+    it("goes back to where the user left it after a narrower result clamped it", async () => {
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollLeft: 80 * 160 })
+      await waitFor(() => {
+        expect(screen.getByText("col_80")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ columns: 20 })} />)
+      // The browser reports the clamp with a scroll event; it is not the user's.
+      fireEvent.scroll(scrollContainer())
+      await nextFrame()
+      rerender(<DataPreview data={table()} />)
+
+      expect(scrollContainer().scrollLeft).toBe(80 * 160)
+      expect(screen.getByText("col_80")).toBeInTheDocument()
     })
 
     it("drops a scroll frame still pending from the replaced container", async () => {
-      const { rerender } = render(<DataPreview data={scrollablePreview()} />)
-      scrollFar()
-      rerender(<DataPreview data={scrollablePreview("loading")} />)
-      rerender(<DataPreview data={scrollablePreview()} />)
+      const { rerender } = render(<DataPreview data={table()} />)
+      scrollTo({ scrollLeft: FAR })
+      rerender(<DataPreview data={table({ status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 200 })} />)
 
-      await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+      await nextFrame()
 
-      expect(screen.getByText("r0-c0")).toBeInTheDocument()
+      expect(screen.getByText("col_199")).toBeInTheDocument()
     })
   })
 

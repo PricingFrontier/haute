@@ -74,7 +74,9 @@
    change and filters it without rebuilding that index per keystroke.
 2. A `ResizeObserver` and scroll handler determine the row/column windows. Scroll updates are
    coalesced to animation frames; row virtualisation begins after 50 rows and horizontal windows
-   render spacer cells for skipped columns.
+   render spacer cells for skipped columns. The scroll handler also records where the user left
+   the table, which a new scroll container or a change in the table's size puts back (see Edge
+   cases and invariants).
 3. One delegated tbody click handler reads row/column dataset attributes and calls the supplied
    trace callback. Embedded mode omits outer frame chrome; normal mode uses the shared frame.
 4. The status bar of an `ok` preview states its row and column counts and any execution
@@ -321,10 +323,16 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 - A multi-frame preview may have no flat columns: selected-frame columns supply the visible schema
   and header count. Preview-only columns remain visible with an unknown/empty dtype.
 - `null`/`undefined` display separately from Haute non-finite-float sentinel objects. Table
-  windows clamp if a changed result becomes narrower while horizontally scrolled. Loading, an
-  error or collapsing the panel replaces the table's scroll container, so the next result starts
-  at the top-left of a new container: the row and column windows restart there, and a scroll
-  frame still pending from the replaced container is dropped.
+  windows clamp if a changed result becomes narrower while horizontally scrolled.
+- The table keeps the place the user scrolled it to. Each axis keeps its offset, clamped to the
+  table's extent, except that an axis the user left at its far end (within a pixel) stays at
+  the far end. The place is put back when loading, an error or collapsing the panel replaces
+  the scroll container, and when a new result, a column search or a resized panel changes how
+  far the table scrolls; that covers Refresh, automatic recalculation, and switching to another
+  node or frame. Only the user's scrolling moves the place: the scroll event raised by putting
+  it back, or by a narrower table clamping it, does not, so a table that narrows and widens again
+  returns to where the user left it. The row and column windows start from the restored
+  offsets, and a scroll frame still pending from before is dropped.
 - The cache action is disabled while the point cannot be built or a build is already running. A
   profile response that is neither a completed result nor a started/joined job publishes nothing
   rather than a false success.
@@ -419,8 +427,9 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
 `frontend/src/panels/explore/__tests__/` and
-`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation (including windows
-restarting in a replaced scroll container), frames, search, trace click
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation (including the
+scroll place kept, and the far right and bottom held, across Refresh, collapsing the panel, a
+recalculated result and a table that narrows and widens again), frames, search, trace click
 delegation, boundary/rejected execution diagnostics, the status bar naming no seeded
 nodes, pivot identity/result/job lifecycle,
 overview/chart card ordering and config, the data-cache state and profile lifecycle, chart
@@ -438,6 +447,9 @@ visual helpers are exercised through these component tests rather than owning st
 
 Generic browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
+`frontend/e2e/data-preview-scroll.spec.ts` scrolls a preview fully right with the wheel and
+checks that it stays fully right, with the new column in view, through two Refreshes that each
+add a column.
 Explore owns a dedicated browser journey in `frontend/e2e/explore.spec.ts`: it authors and
 connects an Explore node, caches the whole dataset, reloads the application, opens Pivots,
 asserts that the profile's post-code schema populates the field palette, commits a Pivot
