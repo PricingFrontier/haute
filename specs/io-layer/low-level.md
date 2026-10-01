@@ -504,9 +504,11 @@ pipeline under an admitted execution, which prepares it.
 and `declared`, a `{(node_id, table_label): DeclaredTableSchema}` mapping. Resolvers
 reach it only through `schema_tier_recorder(schema_only)`, which returns the active
 recorder for a schema-only resolution and `None` otherwise, so the weaker tiers are open
-only to a schema-only caller that reports them.
+only to a schema-only caller that reports them. A resolver states a schema-only read by
+naming the node it records under, `schema_tier_node=<node id>` (`None`, the default, is a
+full read), so a schema-only read without a node to record under cannot be expressed.
 
-**Inferred schema tier.** `resolve_data_input(..., schema_only=True, node_id=...)` called
+**Inferred schema tier.** `resolve_data_input(..., schema_tier_node=<node id>)` called
 while `recording_schema_tiers()` is active does not raise for a missing generation
 when the input can be scanned. Eligibility is `inputType == "file"`, a format with a
 scanner, and an empty `scanner_rejected_arguments(fmt, config)`: the registry's one check
@@ -529,11 +531,11 @@ it requires and whether a snapshot build must infer from the whole file. The sca
 the source cache is not written. Anything ineligible raises `InputSnapshotMissingError`
 naming the reason (`a <provider> input has no local file to scan`, `format '<name>' reads
 only eagerly`, or the reader-only argument names) and the remedy "Preview this input
-first, which builds its snapshot." Without an active collector, or when `schema_only` is
-false, a missing generation keeps the plain rejection.
+first, which builds its snapshot." Without an active collector, or without a
+`schema_tier_node`, a missing generation keeps the plain rejection.
 
 **Declared schema tier.** A structured API Input table read from the store
-(`load_v2_api_source(..., read_snapshots=True, schema_only=True, node_id=...)`, see
+(`load_v2_api_source(..., read_snapshots=True, schema_tier_node=<node id>)`, see
 [JSON shredding](../json-shredding/low-level.md)) whose generation is missing while the
 recorder is active resolves as an empty `LazyFrame` under the table's declared frame
 schema (`_declared_frame_schema` of its demanded columns), recorded as

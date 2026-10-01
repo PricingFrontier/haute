@@ -585,6 +585,7 @@ class SavePipelineService:
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
         self._validate_unique_sanitized_names(graph)
+        self._validate_quote_input_tables_do_not_shadow_nodes(graph)
         self._validate_codegen_function_names(graph)
         self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(source_file)
@@ -974,6 +975,54 @@ class SavePipelineService:
                     "node name may be used in only one module:\n" + "\n".join(parts)
                 ),
             )
+
+    @staticmethod
+    def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:
+        """Refuse a Quote Input table labelled like another node's function name.
+
+        A table's label is its frame handle, the input name a consumer's
+        parameter carries. The parser also infers an edge from any parameter
+        named like a node, so a consumer of frame ``quotes`` beside a node
+        ``quotes`` would be bound to both and the saved file would not reload.
+        Names are global across the pipeline and its submodels (see
+        :meth:`_validate_unique_sanitized_names`); the Quote Input's own name
+        is exempt, since its explicit connection already covers that edge.
+        """
+        scoped = [
+            graph,
+            *(g for _, g in SavePipelineService._iter_named_embedded_submodel_graphs(graph)),
+        ]
+        structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
+        labels_by_name = {
+            _sanitize_func_name(node.data.label): node.data.label
+            for scoped_graph in scoped
+            for node in scoped_graph.nodes
+            if node.data.nodeType not in structural_types
+        }
+        for scoped_graph in scoped:
+            for node in scoped_graph.nodes:
+                if node.data.nodeType != NodeType.API_INPUT:
+                    continue
+                tables = node.data.config.get("tables")
+                if not isinstance(tables, list):
+                    continue
+                own_name = _sanitize_func_name(node.data.label)
+                for table in tables:
+                    label = table.get("label") if isinstance(table, dict) else None
+                    if not isinstance(label, str) or label == own_name:
+                        continue
+                    clashing = labels_by_name.get(label)
+                    if clashing is None:
+                        continue
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Quote Input {node.data.label!r} has a table {label!r} named "
+                            f"like the node {clashing!r}. A step or parameter reading "
+                            f"{label!r} would read both, so the pipeline could not be "
+                            "reloaded. Rename the table or the node. Nothing was saved."
+                        ),
+                    )
 
     @staticmethod
     def _iter_named_embedded_submodel_graphs(

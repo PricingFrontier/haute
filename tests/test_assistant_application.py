@@ -1598,3 +1598,32 @@ class TestDeclaredQuoteInputSchemas:
         # A preview meets the same refusal, so the remedy is the column's type.
         assert isinstance(refused.value.failure, ApiInputSchemaError)
         assert "column=age" in str(refused.value.failure)
+
+    def test_a_table_labelled_like_an_existing_node_is_refused_at_dry_run(self, project_root: Path):
+        """A parameter named `quotes` would bind both the frame and the node `quotes`.
+
+        Dry-run passed and apply then failed reparsing its own file, so save
+        validation, which dry-run runs, refuses it before anything is written.
+        """
+        from fastapi import HTTPException
+
+        config = {
+            "path": "quote.json",
+            "tables": [_quote_table("quotes", "$[:]", {"quote_id": "str", "age": "int"})],
+        }
+        ops = _add_quote_input_and_transform(config)
+        ops[1]["config"]["steps"][0]["input"] = "quotes"  # type: ignore[index]
+        ops[2]["source_handle"] = "quotes"
+        source = project_root / "main.py"
+        service = _service(project_root)
+
+        with pytest.raises(HTTPException) as raised:
+            service.dry_run("main.py", ops)
+
+        assert raised.value.status_code == 400
+        detail = str(raised.value.detail)
+        assert "table 'quotes'" in detail
+        assert "Quote Input 'quote'" in detail
+        assert "node 'quotes'" in detail
+        assert source.read_text(encoding="utf-8") == PIPELINE_SOURCE
+        assert len(service.plan_store) == 0

@@ -57,7 +57,12 @@
   edge whose source type is in `SINK_ONLY_NODE_TYPES` (HTTP 400 naming the node,
   its type and the edge's target), and runs
   `haute.codegen.check_function_name_collisions` (its `ParseError` becomes HTTP
-  400) after the scoped sanitized-name check. `save()`
+  400) after the scoped sanitized-name check. It also refuses (HTTP 400 naming the
+  table, the Quote Input and the node) a Quote Input table whose label equals the
+  sanitised name of another node anywhere in the pipeline or its submodels: the
+  table's frame handle is the input name its consumers' parameters carry, so the
+  parser would bind such a parameter to both the frame and the node and the saved
+  file would not reload. `save()`
   calls it before staging, and dry-run calls the same method.
 - `AssistantMessageRequest` is a strict request containing only `session_id`
   and `message`; graph-authoring confirmation payloads are rejected as unknown
@@ -385,7 +390,8 @@ concurrent plain saves, but does not coordinate another worker process):
 1. Flatten submodel occurrences and validate singleton node types (at most one
    `apiInput`/`output`/`liveSwitch`) across the resulting executable pipeline, then validate
    unique sanitized node names (per-graph, then cross-module against every embedded submodel
-   graph) and that no node carries a `_load_error` marker. A submodel boundary cannot hide a
+   graph), that no Quote Input table is labelled like another node's sanitized name, and
+   that no node carries a `_load_error` marker. A submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
    as another executable singleton.
 2. Resolve and validate `source_file` against the active pipeline root.

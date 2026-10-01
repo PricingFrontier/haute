@@ -22,7 +22,12 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Literal
 
-from haute._polars_steps import STEPPED_NODE_TYPES, PolarsStepError, render_node_steps
+from haute._polars_steps import (
+    STEP_KINDS,
+    STEPPED_NODE_TYPES,
+    PolarsStepError,
+    render_node_steps,
+)
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._config import EgressPolicy
@@ -46,7 +51,8 @@ class StepSummary:
 
     `reads` are the input names a source, join or concat step reads; `intent`
     is the text of a free-code step's leading `#` comment line, which is
-    executable source. `id` and `kind` are None when the saved step lacks them.
+    executable source. `id` is None when the saved step lacks one, and `kind`
+    when it holds none of `STEP_KINDS`.
     """
 
     id: str | None
@@ -91,7 +97,10 @@ def _text_field(step: Mapping[str, Any], key: str) -> str | None:
 def _step_summary(step: object) -> StepSummary:
     if not isinstance(step, Mapping):
         return StepSummary(None, None)
+    # An incomplete list's kind is saved text; only a known kind is shown.
     kind = _text_field(step, "kind")
+    if kind not in STEP_KINDS:
+        kind = None
     reads: tuple[str, ...] = ()
     if kind in ("source", "join") and (name := _text_field(step, "input")) is not None:
         reads = (name,)

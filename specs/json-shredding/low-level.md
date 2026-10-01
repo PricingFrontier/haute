@@ -414,7 +414,7 @@ per-column walk reports it. The reader is built from closures over the parsed
 specs; no source text is generated or executed.
 
 **Runtime load** — `load_v2_api_source(data_path, config, *, port_columns=None,
-read_snapshots=False, store=None, schema_only=False, node_id=None)`:
+read_snapshots=False, store=None, schema_tier_node=None)`:
 1. Validate the v2 schema at this public boundary, then require at least one
    emit-true table and at least one selected column (the latter two raise
    `RuntimeError` with an actionable configuration message otherwise).
@@ -437,8 +437,8 @@ read_snapshots=False, store=None, schema_only=False, node_id=None)`:
    (`input_snapshot_missing: ...`): automatic preparation publishes the tables
    before an admitted execution, so this reaches only a run that was not prepared.
    The one exception is the IO layer's declared schema tier
-   ([IO layer](../io-layer/low-level.md)): with `schema_only=True` and a `node_id`
-   while the schema tier recorder is active, a table with no generation resolves as
+   ([IO layer](../io-layer/low-level.md)): with a `schema_tier_node` (a schema-only
+   read, named by the node it records under) while the schema tier recorder is active, a table with no generation resolves as
    an empty frame under its declared frame schema and is recorded by node id and
    label, without reading the source.
 4. Otherwise (generated standalone code, which runs without a project store),

@@ -71,7 +71,7 @@ def test_missing_snapshot_is_reported_as_a_config_error(tmp_path: Path) -> None:
 def _infer(config: dict, tmp_path: Path, store: SourceCacheStore) -> tuple[pl.LazyFrame, dict]:
     with recording_schema_tiers() as recorded:
         frame = resolve_data_input(
-            config, store=store, base_dir=tmp_path, schema_only=True, node_id="claims"
+            config, store=store, base_dir=tmp_path, schema_tier_node="claims"
         )
     return frame, dict(recorded.inferred)
 
@@ -220,8 +220,7 @@ def test_schema_only_without_a_recorder_keeps_the_missing_snapshot_rejection(
             config,
             store=SourceCacheStore(tmp_path),
             base_dir=tmp_path,
-            schema_only=True,
-            node_id="claims",
+            schema_tier_node="claims",
         )
 
 

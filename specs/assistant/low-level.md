@@ -229,7 +229,9 @@ orphaned halves).
     error whose `where.step` names that id. The operation needs a node holding a `steps`
     list on a stepped surface: a code-mode node is refused pointing at `update_node
     {code}`, and a stepped-type node with neither steps nor code is refused pointing at
-    `update_node {steps}` with the surface's free-code form.
+    `update_node {steps}` with the surface's free-code form. An instance (`instanceOf`
+    set) runs its original's configuration, so it is refused pointing at the original
+    node, the one to edit.
   - All three node operations follow the stepped-node write contract in Edge cases: a write
     that would change how a stepped-type node is authored is refused, and a write that
     does not land in the materialised config fails the plan with `op_not_applied`.
@@ -574,13 +576,18 @@ excluded count; its path and content never cross the tool boundary.
    each node it adds or updates whose type carries code (the seven stepped types;
    instances excepted) — every such node, never a truncated subset. It is appended to
    the automatic or supplied postconditions, without duplicates, so a replayed plan
-   carries the identical list. The caps agree by construction: a plan holds at most
-   `MAX_PLAN_OPERATIONS` (100) operations, each adding or updating at most one node, so
-   it seals at most 100 `node_config` postconditions; a caller declares at most
-   `MAX_DECLARED_POSTCONDITIONS` (100), enforced by `dry_run`; and the sealed list,
-   which apply replays through `build_verified_plan`, holds at most
-   `MAX_SEALED_POSTCONDITIONS` (their sum, 200). A list over its cap fails loudly as
-   `invalid_plan`; no check is dropped. The automatic structural postconditions (one
+   carries the identical list. A plan holds at most `MAX_PLAN_OPERATIONS` (100)
+   operations. Each adds or updates at most one node, except `rename_node`, which also
+   writes every code-carrying consumer whose structured references it rewrites and so
+   adds one `node_config` per such consumer; the number of `node_config` postconditions
+   is therefore not bounded by the operation count. A caller declares at most
+   `MAX_DECLARED_POSTCONDITIONS` (100), enforced by `dry_run`; and the sealed list (the
+   declared or automatic list plus every `node_config`), which apply replays through
+   `build_verified_plan`, is checked in `prepare_graph_edit` against
+   `MAX_SEALED_POSTCONDITIONS` (`MAX_DECLARED_POSTCONDITIONS + MAX_PLAN_OPERATIONS`,
+   200). A list over its cap fails the plan loudly as `invalid_plan` before anything is
+   saved; no check is dropped, so a plan whose renames rewrite too many consumers is
+   refused rather than sealed with a truncated list. The automatic structural postconditions (one
    `node_exists`/`edge_exists`/`node_absent`/`edge_absent` per change, then
    `preamble_digest` and `graph_shape`) are a bounded summary of at most 50, whose
    identity entries give way before the two whole-graph checks; they may omit identities
@@ -1255,7 +1262,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
     key, since steps would replace the analyst's code and converting code into steps
     is out of scope. A stepped-type node with no `steps` and no code has nothing to
     lose and accepts a step list;
-  - in `add_node` of a stepped type: a `code` key or a `steps` value that is not a list.
+  - in `add_node` of a stepped type: a `code` key or a `steps` value that is not a list;
+  - on a node that is, or that the operation leaves, an instance (`instanceOf` set,
+    whatever its type): any `steps` or `code` key, since an instance runs its original's
+    configuration and its own would never be read. The refusal names the original and
+    points there; writing `instanceOf: null` with the logic detaches the node first and
+    the rules above then apply.
   Code-mode nodes keep `code` editing. Each refusal names the node, its surface
   (`STEPPED_SURFACE_LABELS`) and the free-code form to write instead: on a surface
   whose steps choose their input (`start == "input"`, the Transform)
@@ -1264,7 +1276,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   `[{"id": "logic", "kind": "free_code", "code": "..."}]`.
   `edit_steps` keeps the same transitions: it only changes a list the node already
   holds, so it never switches a node between steps and code, and it is refused on a
-  code-mode node (edit its `code` instead) and on a stepped-type node without a list.
+  code-mode node (edit its `code` instead), on a stepped-type node without a list, and on
+  an instance (edit its original instead).
   After each operation's `with_config`, every key the model wrote must hold the written
   value in the materialised config (a key written as `null` must be absent; for
   `edit_steps`, `steps` must hold the edited list), and when the operation wrote `steps`
@@ -1280,8 +1293,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   (`stepped` when its `steps` list renders, `incomplete` when the list does not render
   or the node has neither steps nor code, `code` otherwise), whether the editor
   discarded its steps (`_steps_discarded`, a code-mode node), one entry per step (its
-  id, its kind, the input names a source, join or concat step reads, and a free-code
-  step's intent, the text of a first line that is a `#` comment) and, for a list that
+  id, its kind when it is one of `haute._polars_steps.STEP_KINDS`, otherwise none, which
+  `get_pipeline` reports as `null` and the brief as `unknown`, so an incomplete list's
+  saved text cannot break a line; the input names a source, join or concat step reads;
+  and a free-code step's intent, the text of a first line that is a `#` comment) and, for a list that
   does not render, the id of the step its error names. Both views are `internal`
   project metadata while a step's other fields are `restricted` configuration, so the
   rendering is value-free and follows the policy: a free-code step's intent is
@@ -1503,7 +1518,9 @@ fixture for route tests). The implemented coverage is:
   branch or an instance); the stepped-node transition refusals and
   `op_not_applied` landing check; `edit_steps` inserting, replacing and removing in
   order with deterministic assigned ids, its refusals on an unknown or duplicate step
-  id, a code-mode node and a node without a list, its `steps[<id>]` diff entries, and
+  id, a code-mode node, a node without a list and an instance (as are `add_node` and
+  `update_node` writing an instance's `steps` or `code`, each pointing at the
+  original), its `steps[<id>]` diff entries, and
   an edited free-code step reaching the authored-step checks with `where.step` set;
   a rename rewriting each structured consumer field in one plan and listing them in
   the diff, its collision refusals, the `rename_has_consumers` refusal for each code

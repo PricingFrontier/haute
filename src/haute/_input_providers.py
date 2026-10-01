@@ -358,14 +358,13 @@ def resolve_data_input(
     store: SourceCacheStore | None = None,
     base_dir: str | Path | None = None,
     profile: ExecutionProfile | str | None = None,
-    schema_only: bool = False,
-    node_id: str | None = None,
+    schema_tier_node: str | None = None,
 ) -> pl.LazyFrame:
     """Resolve canonical direct Parquet or an already-published snapshot.
 
-    A schema-only resolution inside :func:`recording_schema_tiers` whose
-    snapshot is missing resolves at the inferred schema tier instead, recorded
-    under *node_id*.
+    A schema-only resolution (*schema_tier_node*, the node it records under)
+    inside :func:`recording_schema_tiers` whose snapshot is missing resolves at
+    the inferred schema tier instead, recorded under that node.
     """
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
@@ -384,13 +383,11 @@ def resolve_data_input(
             ),
         )
     except InputSnapshotMissingError:
-        recorder = schema_tier_recorder(schema_only)
-        if recorder is None:
+        recorder = schema_tier_recorder(schema_tier_node is not None)
+        if recorder is None or schema_tier_node is None:
             raise
-    if node_id is None:
-        raise ValueError("An inferred Data Input schema is recorded by node id; pass node_id.")
     frame, inferred = _infer_input_schema(validated, base_dir=base_dir)
-    recorder.inferred[node_id] = inferred
+    recorder.inferred[schema_tier_node] = inferred
     return frame
 
 

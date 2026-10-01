@@ -216,6 +216,16 @@ def _free_code_form(node_type: NodeType) -> str:
     return json.dumps(new_logic_steps(node_type, "..."))
 
 
+def _refuse_instance_logic(node_id: str, original: str, field: str) -> NoReturn:
+    _invalid(
+        f"Node {node_id!r} is an instance of {original!r}: it runs {original!r}'s "
+        f"steps and code, so its own {field} would never be read. Edit {original!r} "
+        "instead; every instance of it follows.",
+        where={"node": node_id, "field": field},
+        fix=f"Make the change on the original node {original!r}.",
+    )
+
+
 def _check_stepped_write(
     node_type: NodeType,
     node_id: str,
@@ -229,9 +239,15 @@ def _check_stepped_write(
     holding steps renders its ``code`` from them, so a ``code`` write would be
     overwritten and removing ``steps`` would switch it to code mode, an analyst
     action in the editor. A code-mode node with code would lose that code to a
-    step list, and converting code into steps is out of scope.
+    step list, and converting code into steps is out of scope. An instance runs
+    its original's configuration, so its own logic would never be read.
     """
 
+    original = written.get("instanceOf", (before or {}).get("instanceOf"))
+    if original:
+        for field in ("steps", "code"):
+            if field in written:
+                _refuse_instance_logic(node_id, str(original), field)
     if node_type not in STEPPED_NODE_TYPES:
         return
     label = STEPPED_SURFACE_LABELS[node_type]
@@ -447,6 +463,8 @@ def _apply_edit_steps(
         )
     label = STEPPED_SURFACE_LABELS[node_type]
     config = node.data.config
+    if original := config.get("instanceOf"):
+        _refuse_instance_logic(node_id, str(original), "steps")
     steps = config.get("steps")
     if not isinstance(steps, list):
         if str(config.get("code") or "").strip():

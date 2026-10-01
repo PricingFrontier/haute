@@ -526,6 +526,67 @@ class TestEditSteps:
 
         assert excinfo.value.fix is not None and _FRAME_FORM in excinfo.value.fix
 
+    @pytest.mark.parametrize(
+        ("ops", "field"),
+        [
+            (_edit_steps("copy", {"remove": "logic"}), "steps"),
+            (
+                [
+                    {
+                        "op": "update_node",
+                        "node": "copy",
+                        "config": {"steps": [{"id": "start", "kind": "source", "input": "src"}]},
+                    }
+                ],
+                "steps",
+            ),
+            ([{"op": "update_node", "node": "copy", "config": {"code": "df = src"}}], "code"),
+            (
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "twin",
+                        "config": {"instanceOf": "stepped", "code": "df = src"},
+                    }
+                ],
+                "code",
+            ),
+        ],
+    )
+    def test_an_instance_is_refused_pointing_at_its_original(self, ops: list[dict], field: str):
+        """An instance runs its original's configuration; its own would never be read."""
+
+        base = _stepped_graph()
+        graph = _graph([*base.nodes, _node("copy", instanceOf="stepped")], list(base.edges))
+
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(graph, ops)
+
+        assert "instance of 'stepped'" in str(excinfo.value)
+        assert excinfo.value.where["field"] == field
+        assert excinfo.value.fix is not None
+        assert "'stepped'" in excinfo.value.fix and "update_node {steps" not in excinfo.value.fix
+
+    def test_detaching_an_instance_writes_its_own_steps(self):
+        base = _stepped_graph()
+        graph = _graph([*base.nodes, _node("copy", instanceOf="stepped")], list(base.edges))
+        steps = [{"id": "start", "kind": "source", "input": "src"}]
+
+        out = _apply(
+            graph,
+            [
+                {
+                    "op": "update_node",
+                    "node": "copy",
+                    "config": {"instanceOf": None, "steps": steps},
+                }
+            ],
+        )
+
+        config = _get(out, "copy").data.config
+        assert "instanceOf" not in config and config["steps"] == steps
+
     def test_a_node_type_without_steps_is_refused(self):
         graph = _graph([_node("out", "output", fields=["x"])])
 

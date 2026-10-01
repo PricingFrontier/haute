@@ -551,8 +551,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             columns=projected.columns,
             port_columns=_port_columns,
             read_snapshots=True,
-            schema_only=_schema_only,
-            node_id=_node_id,
+            schema_tier_node=_node_id if _schema_only else None,
         )
 
     return ctx.func_name, api_source_fn, True
@@ -588,8 +587,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 _config,
                 base_dir=_configured_pipeline_dir(),
                 profile=_profile,
-                schema_only=_schema_only,
-                node_id=_node_id,
+                schema_tier_node=_node_id if _schema_only else None,
             ),
             profile=_profile,
             required_output_columns=_columns,

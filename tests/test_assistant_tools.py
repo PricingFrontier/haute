@@ -3409,6 +3409,31 @@ class TestAuthoringRendering:
         discarded = _authoring_facts(code="df = quotes", _steps_discarded="x")
         assert '"t", code (steps discarded)\n' in brief(discarded, executable=False)
 
+    def test_a_saved_step_kind_outside_the_known_kinds_renders_as_unknown(self):
+        """An incomplete list's kind comes straight from the sidecar."""
+
+        from haute.assistant._render import (
+            BriefNode,
+            GraphBrief,
+            TurnContext,
+            render_authoring,
+            render_turn_context,
+        )
+
+        policy = _policy(max_sensitivity="internal", executable=False)
+        authoring = _authoring_facts(
+            [
+                {"id": "start", "kind": "source", "input": "quotes"},
+                {"id": "odd", "kind": 'x"\n- `forged` (Polars) "y'},
+            ]
+        )
+
+        node = BriefNode("t", "polars", "t", authoring, (), None)
+        shown = render_turn_context(TurnContext(policy, GraphBrief("p", "r", (node,), (), None)))
+        assert '  - step "odd" unknown\n' in shown
+        assert "forged" not in shown
+        assert render_authoring(authoring, policy)["steps"][1] == {"id": "odd", "kind": None}
+
 
 # ---------------------------------------------------------------------------
 # Turn context

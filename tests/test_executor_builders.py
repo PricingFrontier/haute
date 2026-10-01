@@ -722,8 +722,7 @@ class TestBuildApiInput:
             columns=None,
             port_columns=None,
             read_snapshots=False,
-            schema_only=False,
-            node_id=None,
+            schema_tier_node=None,
         ):
             captured["profile"] = profile
             captured["columns"] = columns
@@ -777,8 +776,7 @@ class TestBuildApiInput:
             columns=None,
             port_columns=None,
             read_snapshots=False,
-            schema_only=False,
-            node_id=None,
+            schema_tier_node=None,
         ):
             captured["columns"] = columns
             captured["port_columns"] = port_columns

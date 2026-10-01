@@ -378,9 +378,7 @@ def test_a_schema_only_read_resolves_an_unbuilt_table_at_the_declared_tier(
     data = tmp_path / "request.json"
 
     with recording_schema_tiers() as recorded:
-        out = _read(
-            data, cfg, port_columns={"root": frozenset({"id"})}, schema_only=True, node_id="quote"
-        )
+        out = _read(data, cfg, port_columns={"root": frozenset({"id"})}, schema_tier_node="quote")
 
     assert out["root"].collect_schema() == pl.Schema({"id": pl.Int64})
     assert recorded.declared == {("quote", "root"): DeclaredTableSchema(column_count=2)}
@@ -400,9 +398,9 @@ def test_the_declared_tier_is_open_only_to_a_recording_schema_only_read(
     with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing: .*'root'"):
         if recorder:
             with recording_schema_tiers():
-                _read(data, cfg, node_id="quote")
+                _read(data, cfg)
         else:
-            _read(data, cfg, schema_only=True, node_id="quote")
+            _read(data, cfg, schema_tier_node="quote")
 
 
 def test_never_cached_jsonl_shreds_in_memory(tmp_path: Path) -> None:
