@@ -624,9 +624,14 @@ tool.
   validation. Some Databricks-hosted OpenAI-compatible models encode function
   arguments whose declared type is an array, object, boolean, integer, or number as a JSON
   string. The Databricks adapter decodes only valid, correctly typed, schema-declared
-  top-level values. Numeric results must be finite, booleans never satisfy integer or number
-  declarations, and string or null declarations are never decoded. The adapter does not
-  infer a type from an undeclared or ambiguous schema. An
+  top-level values. A field's declared type comes from the tool's canonical top-level
+  properties or, for a tool whose input is a closed object union such as `plan_recipe`
+  (shown to the provider as one merged object whose `rules`, `tables` and
+  `output_columns` are arrays), from the single canonical branch its discriminator value
+  (`recipe_id`) selects. An unknown or ambiguous discriminator selects no branch, and
+  nothing is decoded. Numeric results must be finite, booleans never satisfy integer or
+  number declarations, and string or null declarations are never decoded. The adapter
+  does not infer a type from an undeclared or ambiguous schema. An
   invalid or wrong-type encoding is left unchanged for the canonical tool validator to
   reject as a structured, recoverable tool result; it is never guessed, repaired, or
   executed, and it does not terminate the provider stream.
@@ -1119,13 +1124,19 @@ Loud, typed, and never averaged away:
   field but never repeats a URL or credential-bearing value.
 - **Provider failures** (bad key, rate limit, overloaded, network, malformed stream) raise an
   assistant-specific `HauteError` subclass whose hand-authored message carries the provider
-  name and failure class but never the raw provider response body. Databricks alone owns a
-  documented, bounded retry for a rate-limit exception raised before a response stream exists:
-  two retries on the same model and endpoint, after one and three seconds. Its SDK-level
-  retries are disabled so this is one observable bound, not a nested retry cascade. Once any
-  stream exists, failures are never retried because replay could duplicate partial text or
-  tool calls. Exhausted request failures and stream failures become the terminal `failed`
-  event. There is never an unbounded retry or fallback to a different provider or model.
+  name and failure class but never the raw provider response body. Databricks owns a
+  documented, bounded retry for a rate-limit, connection, or timeout exception raised before
+  a response stream exists: such a failure produced no partial output, so it is safe to send
+  again. It makes two retries on the same model and endpoint, after one and three seconds.
+  Its SDK-level retries are disabled so this is one observable bound, not a nested retry
+  cascade. The direct OpenAI and Anthropic adapters keep their SDKs' own bounded request
+  retries (two), which already cover the same pre-stream connection and timeout failures,
+  and have no adapter retry on top. Every OpenAI-compatible client is built with explicit
+  timeouts: a thirty-second connect timeout, long enough for a serving endpoint's cold
+  connection, and a read timeout equal to the turn timeout. Once any stream exists,
+  failures are never retried because replay could duplicate partial text or tool calls.
+  Exhausted request failures and stream failures become the terminal `failed` event. There
+  is never an unbounded retry or fallback to a different provider or model.
 - **Tool-level failures** (unknown node id, invalid op, save-layer validation rejection,
   missing dataset, a schema the engine cannot resolve — unfetched Databricks cache, missing
   trained artifact, invalid node code) are structured tool results returned to the model —

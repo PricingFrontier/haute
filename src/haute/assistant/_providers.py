@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any, Literal, Protocol, TypeAlias
 
+from haute._env import int_env
 from haute._logging import get_logger
-from haute.assistant._config import AssistantConfig
+from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV, AssistantConfig
 from haute.errors import ConfigError, HauteError
 
 logger = get_logger(component="assistant.providers")
@@ -93,8 +94,33 @@ def _provider_error(provider: str, failure_class: str, detail: str) -> Assistant
     return AssistantProviderError(provider, failure_class, detail)
 
 
-def _is_rate_limit_error(error: Exception) -> bool:
-    return "rate" in type(error).__name__.lower()
+#: Failure categories a request raised before any response stream exists may
+#: retry: none produced partial output, so resending cannot duplicate text or
+#: tool calls.
+_PRE_STREAM_RETRYABLE_CATEGORIES = frozenset({"rate_limit", "connection"})
+
+#: Connect bound for OpenAI-compatible clients. The SDK default (five seconds)
+#: timed out live against a Databricks serving endpoint's cold connection.
+_PROVIDER_CONNECT_TIMEOUT_SECONDS = 30.0
+
+
+def _failure_category(error: Exception) -> str:
+    """Classify an SDK exception by its class name, without logging."""
+
+    class_name = type(error).__name__.lower()
+    if "auth" in class_name or "permission" in class_name:
+        return "authentication"
+    if "rate" in class_name or "ratelimit" in class_name:
+        return "rate_limit"
+    if any(word in class_name for word in ("connection", "timeout", "network")):
+        return "connection"
+    if "status" in class_name or class_name in {
+        "badrequesterror",
+        "internalservererror",
+        "apierror",
+    }:
+        return "status"
+    return "stream"
 
 
 def _classify_sdk_error(provider: str, error: Exception) -> AssistantProviderError:
@@ -112,22 +138,9 @@ def _classify_sdk_error(provider: str, error: Exception) -> AssistantProviderErr
         error_class=type(error).__name__,
         detail=str(error),
     )
-    class_name = type(error).__name__.lower()
-    if "auth" in class_name or "permission" in class_name:
-        category = "authentication"
-    elif "rate" in class_name or "ratelimit" in class_name:
-        category = "rate_limit"
-    elif any(word in class_name for word in ("connection", "timeout", "network")):
-        category = "connection"
-    elif "status" in class_name or class_name in {
-        "badrequesterror",
-        "internalservererror",
-        "apierror",
-    }:
-        category = "status"
-    else:
-        category = "stream"
-    return _provider_error(provider, category, "the provider request could not be completed")
+    return _provider_error(
+        provider, _failure_category(error), "the provider request could not be completed"
+    )
 
 
 def _usage_value(value: object, provider: str, field: str) -> int:
@@ -567,6 +580,67 @@ def _portable_tools(
     return projected
 
 
+def _same_json_value(left: object, right: object) -> bool:
+    """Compare JSON values exactly, so ``True`` never equals ``1``."""
+
+    return type(left) is type(right) and left == right
+
+
+def _discriminated_branch_properties(
+    schema: Mapping[str, object],
+    arguments: Mapping[str, Any],
+) -> Mapping[str, object] | None:
+    """Return the properties of the one closed-object branch the arguments select.
+
+    A discriminator is a property every branch declares with ``const``/``enum``
+    values. The branch is selected only when exactly one branch admits every
+    discriminator value the arguments carry; otherwise there is no declared
+    type to decode against, and the canonical validator names the problem.
+    """
+
+    raw_branches: object = None
+    for keyword in ("oneOf", "anyOf"):
+        if keyword in schema:
+            raw_branches = schema[keyword]
+            break
+    if not isinstance(raw_branches, Sequence) or isinstance(raw_branches, (str, bytes)):
+        return None
+    branch_properties: list[Mapping[str, object]] = []
+    for branch in raw_branches:
+        properties = branch.get("properties") if isinstance(branch, Mapping) else None
+        if not isinstance(properties, Mapping):
+            return None
+        branch_properties.append(properties)
+    if not branch_properties:
+        return None
+
+    def allowed_values(properties: Mapping[str, object], name: str) -> tuple[object, ...] | None:
+        property_schema = properties.get(name)
+        if not isinstance(property_schema, Mapping):
+            return None
+        return _portable_allowed_values(property_schema)
+
+    discriminators = [
+        name
+        for name in branch_properties[0]
+        if all(allowed_values(properties, name) is not None for properties in branch_properties)
+    ]
+    if not discriminators or not all(name in arguments for name in discriminators):
+        return None
+    selected = [
+        properties
+        for properties in branch_properties
+        if all(
+            any(
+                _same_json_value(arguments[name], allowed)
+                for allowed in allowed_values(properties, name) or ()
+            )
+            for name in discriminators
+        )
+    ]
+    return selected[0] if len(selected) == 1 else None
+
+
 def _normalise_databricks_tool_arguments(
     arguments: Mapping[str, Any],
     schema: Mapping[str, object],
@@ -579,11 +653,18 @@ def _normalise_databricks_tool_arguments(
     compatible JSON type are eligible. Strings, nulls, nested values, ambiguous
     schemas, and non-finite numbers are left untouched. Invalid or wrong-type
     encodings remain strings so canonical tool validation can reject them as
-    recoverable invalid input.
+    recoverable invalid input. A closed object union without top-level
+    properties (``plan_recipe``) declares its fields on the one branch its
+    discriminator value selects; no selected branch means no eligible field.
     """
 
-    properties = schema.get("properties")
-    if not isinstance(properties, Mapping):
+    top_level = schema.get("properties")
+    properties = (
+        top_level
+        if isinstance(top_level, Mapping)
+        else _discriminated_branch_properties(schema, arguments)
+    )
+    if properties is None:
         return dict(arguments)
     normalised = dict(arguments)
     for field, value in arguments.items():
@@ -636,10 +717,17 @@ def _load_anthropic_client(config: AssistantConfig) -> Any:
 
 def _load_openai_client(config: AssistantConfig, provider: str = "openai") -> Any:
     try:
+        import httpx  # the openai SDK's own transport dependency
         import openai
     except (ImportError, ModuleNotFoundError) as exc:
         raise _provider_error(provider, "dependency", "the openai SDK is not installed") from exc
-    kwargs: dict[str, Any] = {"api_key": config.api_key}
+    # The read bound follows the turn timeout so a stalled stream cannot
+    # outlive the turn that owns it.
+    read_timeout = float(int_env(TURN_TIMEOUT_ENV, DEFAULT_TURN_TIMEOUT))
+    kwargs: dict[str, Any] = {
+        "api_key": config.api_key,
+        "timeout": httpx.Timeout(read_timeout, connect=_PROVIDER_CONNECT_TIMEOUT_SECONDS),
+    }
     if config.base_url is not None:
         kwargs["base_url"] = config.base_url
     if provider == "databricks":
@@ -967,7 +1055,9 @@ class OpenAIProvider:
     """Normalize the OpenAI Chat Completions streaming API."""
 
     provider_name = "openai"
-    rate_limit_retry_delays: tuple[float, ...] = ()
+    #: Adapter-level pre-stream retry delays. Empty here: the direct OpenAI
+    #: client keeps the SDK's own bounded request retries instead.
+    pre_stream_retry_delays: tuple[float, ...] = ()
 
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
         self.config = config
@@ -984,21 +1074,24 @@ class OpenAIProvider:
         return arguments
 
     async def _create_stream(self, request: Mapping[str, Any]) -> Any:
-        for retry_index in range(len(self.rate_limit_retry_delays) + 1):
+        """Open the response stream, retrying only failures raised before it exists."""
+
+        delays = self.pre_stream_retry_delays
+        for retry_index in range(len(delays) + 1):
             try:
                 return await self.client.chat.completions.create(**request)
             except Exception as exc:
-                if retry_index >= len(self.rate_limit_retry_delays) or not _is_rate_limit_error(
-                    exc
-                ):
+                category = _failure_category(exc)
+                if retry_index >= len(delays) or category not in _PRE_STREAM_RETRYABLE_CATEGORIES:
                     raise
-                delay = self.rate_limit_retry_delays[retry_index]
+                delay = delays[retry_index]
                 logger.warning(
                     "assistant_provider_request_retry",
                     provider=self.provider_name,
-                    failure_class="rate_limit",
+                    failure_class=category,
+                    error_class=type(exc).__name__,
                     retry=retry_index + 1,
-                    max_retries=len(self.rate_limit_retry_delays),
+                    max_retries=len(delays),
                     delay_seconds=delay,
                 )
                 await asyncio.sleep(delay)
@@ -1216,7 +1309,7 @@ class DatabricksProvider(OpenAIProvider):
     """Databricks identity over its OpenAI-compatible Chat Completions API."""
 
     provider_name = "databricks"
-    rate_limit_retry_delays = (1.0, 3.0)
+    pre_stream_retry_delays = (1.0, 3.0)
 
     def _normalise_tool_arguments(
         self,

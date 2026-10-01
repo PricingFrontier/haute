@@ -21,6 +21,7 @@ from haute.assistant._catalog import (
     materialise_json,
     tool_title,
 )
+from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV
 from haute.assistant._providers import (
     AssistantProvider,
     AssistantProviderError,
@@ -46,7 +47,6 @@ from haute.schemas import (
 
 logger = get_logger(component="assistant.loop")
 
-DEFAULT_TURN_TIMEOUT = 600
 _MUTATION_OUTCOME_PREFIXES: dict[str, AssistantTurnOutcomeKind] = {
     "NEEDS_INPUT:": "needs_input",
     "BLOCKED:": "blocked",
@@ -788,9 +788,7 @@ async def run_turn(
         reservation = await reserve_turn(store, session_id)
     session = reservation.session
 
-    timeout_seconds = _resolved_limit(
-        turn_timeout, "HAUTE_ASSISTANT_TURN_TIMEOUT", DEFAULT_TURN_TIMEOUT
-    )
+    timeout_seconds = _resolved_limit(turn_timeout, TURN_TIMEOUT_ENV, DEFAULT_TURN_TIMEOUT)
     tool_limit = int(
         _resolved_limit(max_tool_calls, "HAUTE_ASSISTANT_MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS)
     )

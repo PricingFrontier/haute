@@ -486,9 +486,33 @@ class _SequencedOpenAIClient:
                 outcome = outer.outcomes.pop(0)
                 if isinstance(outcome, Exception):
                     raise outcome
+                if isinstance(outcome, _FailingOpenAIStream):
+                    return outcome
                 return _FakeOpenAIStream(outcome)
 
         self.chat = SimpleNamespace(completions=_Completions())
+
+
+class _FailingOpenAIStream:
+    """A response stream that exists, yields its chunks, then fails mid-stream."""
+
+    def __init__(self, chunks, error: Exception):
+        self._chunks = chunks
+        self._error = error
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        for chunk in self._chunks:
+            yield chunk
+        raise self._error
+
+
+def _sdk_timeout() -> Exception:
+    """The installed OpenAI SDK's own pre-stream timeout, as raised live."""
+
+    return openai.APITimeoutError(request=httpx.Request("POST", "https://workspace.example"))
 
 
 def _openai_text_tool_chunks():
@@ -1088,7 +1112,7 @@ class TestDatabricksProvider:
         rate_limit_error = type("RateLimitError", (Exception,), {})
 
         class ImmediateRetryProvider(DatabricksProvider):
-            rate_limit_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = (0.0, 0.0)
 
         client = _SequencedOpenAIClient(
             [
@@ -1114,7 +1138,7 @@ class TestDatabricksProvider:
         rate_limit_error = type("RateLimitError", (Exception,), {})
 
         class ImmediateRetryProvider(DatabricksProvider):
-            rate_limit_retry_delays = (0.0,)
+            pre_stream_retry_delays = (0.0,)
 
         client = _SequencedOpenAIClient(
             [rate_limit_error("secret-one"), rate_limit_error("secret-two")]
@@ -1129,6 +1153,225 @@ class TestDatabricksProvider:
         assert exc_info.value.failure_class == "rate_limit"
         assert "secret" not in str(exc_info.value)
         assert client.calls == 2
+
+    def test_pre_stream_retry_is_two_retries_after_one_and_three_seconds(self):
+        assert DatabricksProvider.pre_stream_retry_delays == (1.0, 3.0)
+        # The direct OpenAI client keeps the SDK's own bounded retries instead,
+        # so no provider nests an adapter retry over an SDK retry.
+        assert OpenAIProvider.pre_stream_retry_delays == ()
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            _sdk_timeout(),
+            openai.APIConnectionError(request=httpx.Request("POST", "https://workspace.example")),
+        ],
+        ids=["timeout", "connection"],
+    )
+    async def test_retries_pre_stream_timeout_or_connection_failure(self, error: Exception):
+        """Live: four of sixteen Databricks turns died on `Request timed out.`
+        before any response stream existed. No partial output was produced,
+        so the request is as safe to resend as a rate-limited one."""
+
+        import structlog.testing
+
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = (0.0, 0.0)
+
+        client = _SequencedOpenAIClient([error, _openai_text_tool_chunks()])
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+
+        assert events[0] == TextDelta(text="Hi")
+        assert isinstance(events[-1], TurnStop)
+        assert client.calls == 2
+        (retry,) = [
+            entry for entry in captured if entry["event"] == "assistant_provider_request_retry"
+        ]
+        assert retry["failure_class"] == "connection"
+        assert retry["error_class"] == type(error).__name__
+        assert retry["retry"] == 1
+
+    async def test_exhausted_pre_stream_timeouts_fail_typed(self):
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = (0.0, 0.0)
+
+        client = _SequencedOpenAIClient([_sdk_timeout(), _sdk_timeout(), _sdk_timeout()])
+        with pytest.raises(AssistantProviderError) as exc_info:
+            await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+        assert exc_info.value.provider == "databricks"
+        assert exc_info.value.failure_class == "connection"
+        assert "timed out" not in str(exc_info.value)
+        assert client.calls == 3
+
+    async def test_timeout_after_the_stream_exists_is_never_retried(self):
+        """Replaying a started stream could duplicate text or tool calls."""
+
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = (0.0, 0.0)
+
+        first_chunk = _openai_text_tool_chunks()[:1]
+        client = _SequencedOpenAIClient(
+            [
+                _FailingOpenAIStream(first_chunk, _sdk_timeout()),
+                _openai_text_tool_chunks(),
+            ]
+        )
+        events: list = []
+        with pytest.raises(AssistantProviderError) as exc_info:
+            async for event in ImmediateRetryProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            ).stream_turn(system=_SYSTEM, messages=_MESSAGES, tools=_TOOLS):
+                events.append(event)
+        assert events == [TextDelta(text="Hi")]
+        assert exc_info.value.failure_class == "connection"
+        assert client.calls == 1
+
+    async def test_non_transient_pre_stream_failure_is_not_retried(self):
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = (0.0, 0.0)
+
+        authentication_error = type("AuthenticationError", (Exception,), {})
+        client = _SequencedOpenAIClient(
+            [authentication_error("secret"), _openai_text_tool_chunks()]
+        )
+        with pytest.raises(AssistantProviderError) as exc_info:
+            await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+        assert exc_info.value.failure_class == "authentication"
+        assert client.calls == 1
+
+    async def test_decodes_plan_recipe_arrays_from_the_selected_recipe_branch(self):
+        """Live: `plan_recipe.output_columns must be JSON array, but a string
+        was sent` about ten times, because the recipe union has no top-level
+        properties and so none of its array fields was eligible."""
+
+        from haute.assistant._tools import (
+            _OPERATION_INPUT_SCHEMAS,
+            TOOL_DEFINITIONS,
+            _validate_tool_value,
+        )
+
+        definition = next(tool for tool in TOOL_DEFINITIONS if tool["name"] == "plan_recipe")
+        rules = [
+            {"value": "A", "assignment": "low"},
+            {"value": "B", "assignment": "high"},
+        ]
+        tables = [
+            {
+                "factors": ["region"],
+                "output_column": "region_factor",
+                "entries": [{"factor_values": ["north"], "value": 1.1}],
+                "default_value": 1.0,
+            }
+        ]
+        cases = [
+            (
+                {
+                    "recipe_id": "categorical_banding",
+                    "source": "policies",
+                    "name": "vehicle_band",
+                    "column": "vehicle_group",
+                    "output_column": "vehicle_band",
+                    "rules": json.dumps(rules),
+                    "default": "other",
+                    "output_name": "quote",
+                    "output_columns": '["vehicle_band"]',
+                },
+                {"rules": rules, "output_columns": ["vehicle_band"]},
+            ),
+            (
+                {
+                    "recipe_id": "rating_step",
+                    "source": "policies",
+                    "name": "region_rating",
+                    "tables": json.dumps(tables),
+                },
+                {"tables": tables},
+            ),
+        ]
+        for arguments, decoded in cases:
+            client = _FakeOpenAIClient(_openai_tool_chunks("plan_recipe", arguments))
+            events = await _collect(
+                DatabricksProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                ),
+                tools=[definition],
+            )
+
+            (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+            assert tool.arguments == {**arguments, **decoded}
+            _validate_tool_value(
+                tool.arguments, _OPERATION_INPUT_SCHEMAS["plan_recipe"], path="plan_recipe"
+            )
+
+    @pytest.mark.parametrize(
+        ("recipe_id", "field", "encoded"),
+        [
+            # A Python literal, not JSON: never repaired.
+            ("categorical_banding", "rules", "[{'value': 'A', 'assignment': 'low'}]"),
+            # Valid JSON of the wrong type for the selected branch.
+            ("categorical_banding", "output_columns", '"vehicle_band"'),
+            # No branch is selected, so no field is eligible.
+            ("not_a_recipe", "output_columns", '["vehicle_band"]'),
+            # A non-string discriminator never matches a declared string constant.
+            (1, "output_columns", '["vehicle_band"]'),
+        ],
+    )
+    async def test_plan_recipe_invalid_encodings_are_left_for_the_validator(
+        self, recipe_id: object, field: str, encoded: str
+    ):
+        from haute.assistant._tools import (
+            _OPERATION_INPUT_SCHEMAS,
+            TOOL_DEFINITIONS,
+            _ToolArgumentValidationError,
+            _validate_tool_value,
+        )
+
+        definition = next(tool for tool in TOOL_DEFINITIONS if tool["name"] == "plan_recipe")
+        arguments = {
+            "recipe_id": recipe_id,
+            "source": "policies",
+            "name": "vehicle_band",
+            "column": "vehicle_group",
+            "output_column": "vehicle_band",
+            "rules": [{"value": "A", "assignment": "low"}],
+            "default": "other",
+            "output_name": "quote",
+            "output_columns": ["vehicle_band"],
+            field: encoded,
+        }
+        client = _FakeOpenAIClient(_openai_tool_chunks("plan_recipe", arguments))
+        events = await _collect(
+            DatabricksProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            ),
+            tools=[definition],
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments[field] == encoded
+        with pytest.raises(_ToolArgumentValidationError):
+            _validate_tool_value(
+                tool.arguments, _OPERATION_INPUT_SCHEMAS["plan_recipe"], path="plan_recipe"
+            )
 
     async def test_decodes_only_schema_declared_top_level_compatible_types(self):
         arguments = {
@@ -1551,13 +1794,43 @@ class TestLazyClientLoaders:
             base_url="https://workspace.cloud.databricks.com/serving-endpoints",
         )
 
+        monkeypatch.delenv("HAUTE_ASSISTANT_TURN_TIMEOUT", raising=False)
         provider = DatabricksProvider(config)
         assert provider.client is client
         assert captured == {
             "api_key": "sk-test-secret",
             "base_url": "https://workspace.cloud.databricks.com/serving-endpoints",
             "max_retries": 0,
+            "timeout": httpx.Timeout(600.0, connect=30.0),
         }
+
+    @pytest.mark.parametrize(
+        ("provider_cls", "provider"),
+        [(OpenAIProvider, "openai"), (DatabricksProvider, "databricks")],
+    )
+    def test_openai_compatible_clients_get_explicit_timeouts(
+        self, monkeypatch: pytest.MonkeyPatch, provider_cls, provider: str
+    ):
+        """The SDK's five-second connect default timed out live against a cold
+        serving endpoint; the read bound follows the turn timeout."""
+
+        import sys
+
+        captured: dict[str, object] = {}
+
+        def fake_client(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=fake_client))
+        monkeypatch.setenv("HAUTE_ASSISTANT_TURN_TIMEOUT", "120")
+        provider_cls(_config(provider, base_url="https://workspace.example/serving"))
+
+        timeout = captured["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 30.0
+        assert timeout.read == 120.0
+        assert ("max_retries" in captured) is (provider == "databricks")
 
     def test_installed_sdks_construct_real_clients(self):
         anthropic_provider = AnthropicProvider(_config("anthropic"))

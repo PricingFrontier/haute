@@ -29,6 +29,9 @@ ProviderTrust = Literal["local", "organization", "external"]
 Sensitivity = Literal["public", "internal", "restricted"]
 
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
+#: Wall-clock bound on one assistant turn, overridable by ``TURN_TIMEOUT_ENV``.
+DEFAULT_TURN_TIMEOUT = 600
+TURN_TIMEOUT_ENV = "HAUTE_ASSISTANT_TURN_TIMEOUT"
 _MAX_OUTPUT_TOKENS_ENV = "HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS"
 _PROVIDER_SDKS: dict[AssistantProvider, str] = {
     "anthropic": "anthropic",
@@ -619,8 +622,10 @@ __all__ = [
     "EgressPolicy",
     "AssistantProvider",
     "AssistantReadiness",
+    "DEFAULT_TURN_TIMEOUT",
     "ProviderTrust",
     "Sensitivity",
+    "TURN_TIMEOUT_ENV",
     "assistant_readiness",
     "mutations_readiness",
     "resolve_assistant_config",

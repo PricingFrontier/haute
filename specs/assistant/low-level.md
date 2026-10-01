@@ -1195,12 +1195,19 @@ the turn that follows.
   is the OpenAI-compatible protocol Databricks model-serving endpoints implement.
   `DatabricksProvider` uses the URL derived by `_config`, attributes errors as
   `databricks`, and otherwise reuses this exact stream path; adapter tests assert the
-  emitted request for both shapes. Databricks client construction disables the OpenAI
-  SDK's internal retries. `DatabricksProvider` retries only a pre-stream SDK rate-limit
-  exception, at most twice, after one and three seconds, against the identical
-  model/endpoint request. Each retry is logged by provider identity and ordinal without
-  the raw response. A failure after a stream object exists is never retried; exhausted
-  rate limits retain the sanitized `databricks`/`rate_limit` failure.
+  emitted request for both shapes. Every OpenAI-compatible client is constructed with an
+  explicit `httpx.Timeout`: a thirty-second connect timeout (the SDK default of five seconds
+  failed live against a Databricks serving endpoint before any stream existed) and a read
+  timeout equal to `HAUTE_ASSISTANT_TURN_TIMEOUT`. Databricks client construction disables
+  the OpenAI SDK's internal retries. `DatabricksProvider` retries only a pre-stream SDK
+  exception classified `rate_limit` or `connection` (connection, timeout, or network
+  failures), at most twice, after one and three seconds, against the identical
+  model/endpoint request. Each retry is logged by provider identity, failure class, SDK
+  exception class name, and ordinal without the raw response. A failure after a stream
+  object exists is never retried; exhausted retries retain the sanitized `databricks`
+  failure class (`rate_limit` or `connection`). The direct OpenAI client keeps the SDK's
+  own two request retries, which cover the same pre-stream connection and timeout
+  failures, so no provider nests two retry layers.
   Before either provider request, every canonical tool
   input schema is projected to a portable wire schema with a forty-property budget per
   tool. It retains object/array shape, property names, descriptions, common required fields,
@@ -1221,7 +1228,12 @@ the turn that follows.
   Databricks alone performs one schema-directed compatibility pass over its top-level
   fields: when the advertised input schema declares a field as `array` or `object` but
   the provider returned a string, valid finite JSON with the declared container type is
-  decoded and then proceeds through the unchanged closed tool validator. Invalid JSON or a
+  decoded and then proceeds through the unchanged closed tool validator. A tool whose
+  canonical input is a closed object union without top-level properties (`plan_recipe`)
+  has its fields' declared types read from the one branch selected by the discriminator
+  every branch constrains to `const`/`enum` values (`recipe_id`), compared by exact JSON
+  type and value; when no branch or more than one branch matches, no field is eligible.
+  Invalid JSON or a
   decoded scalar/wrong container remains the original string; the canonical validator
   returns `invalid_request`, nothing executes, and the model can retry in the same turn.
   Declared string fields, nested values already carried inside a decoded container, unknown
