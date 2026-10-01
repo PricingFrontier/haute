@@ -325,7 +325,7 @@ second, hand-maintained list of editor labels; a field reads as its key in words
 one or two plain sentences what the plan does, and an optional list of up to five
 `assumptions` the model made (each at most 400 characters, with no control character other
 than whitespace). The bound fits the summaries models write: the summary is presentation,
-never authority, and a 160-character bound refused a third of a live run's first dry-runs.
+never authority, and a tighter bound refused ordinary summaries in live runs.
 They are stored as the plan's receipt in the
 plan store beside the plan, outside the hashed plan authority, so wording never changes a
 plan hash; a later identical dry-run replaces the receipt of a plan not yet applied. A
