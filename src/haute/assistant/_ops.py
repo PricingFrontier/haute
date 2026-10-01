@@ -16,7 +16,7 @@ import json
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from threading import RLock
@@ -566,10 +566,44 @@ class ConfigVisibility:
     has seen in the running turn: an ``inspect_node`` config part that returned
     it, or a node an earlier apply of the turn added. An earlier turn's reads
     do not count, because compaction drops their results from the history.
+    A read follows its node through a rename and ends at its deletion, within
+    a plan (``renamed``, ``deleted``) and across the turn's saves (``saved``).
     """
 
     withheld: bool
     read: frozenset[str] = frozenset()
+
+    def renamed(self, old_id: str, new_id: str) -> ConfigVisibility:
+        """This visibility once node *old_id* is renamed *new_id*.
+
+        The read moves with the node: *new_id* is read exactly when *old_id*
+        was, whatever node held that id before.
+        """
+
+        read = self.read - {old_id, new_id}
+        return replace(self, read=read | {new_id} if old_id in self.read else read)
+
+    def deleted(self, node_id: str) -> ConfigVisibility:
+        """This visibility once node *node_id* is deleted: its read is dropped."""
+
+        return replace(self, read=self.read - {node_id})
+
+    def saved(self, changes: SemanticChanges) -> ConfigVisibility:
+        """This visibility once a plan whose complete identities are *changes* is saved.
+
+        Its renames move reads in operation order, a node it removed loses its
+        read, and a node it added counts as read, because the model wrote all
+        of it; an id a rename produced takes the renamed node's read instead.
+        A node renamed onto an id the plan freed therefore never inherits the
+        read of the node that held it.
+        """
+
+        visibility = self
+        for old_id, new_id in changes.nodes_renamed:
+            visibility = visibility.renamed(old_id, new_id)
+        renamed_to = {new_id for _old_id, new_id in changes.nodes_renamed}
+        added = set(changes.nodes_added) - renamed_to
+        return replace(visibility, read=(visibility.read - set(changes.nodes_removed)) | added)
 
 
 def _saved_entries_changed(
@@ -1394,7 +1428,8 @@ def _apply_ops_with_refs(
     operations expanded; every index a failure or ``writers`` reports is one.
     *config_visibility*, given for a model's dry-run, says what the model has
     seen of saved node configuration, which refuses a blind rewrite of a saved
-    list or map (``_refuse_blind_rewrite``).
+    list or map (``_refuse_blind_rewrite``); its reads follow the batch's
+    renames and deletions as they are applied.
     """
 
     def position(index: int) -> int:
@@ -1413,6 +1448,7 @@ def _apply_ops_with_refs(
     writers: dict[str, int] = {}
     step_changes: set[str] = set()
     rename_changes: dict[str, set[str]] = {}
+    visibility = config_visibility
 
     for index, op in enumerate(parsed_ops):
         try:
@@ -1426,7 +1462,7 @@ def _apply_ops_with_refs(
                     refs,
                     nested_ids,
                     new_node_ids=new_node_ids,
-                    visibility=config_visibility,
+                    visibility=visibility,
                 )
                 writers[written] = position(index)
             elif isinstance(op, EditStepsOp):
@@ -1447,9 +1483,13 @@ def _apply_ops_with_refs(
                     consumer, _, field_name = change.partition(":")
                     writers[consumer] = position(index)
                     rename_changes.setdefault(consumer, set()).add(field_name)
+                if visibility is not None:
+                    visibility = visibility.renamed(old_id, new_id)
             elif isinstance(op, DeleteNodeOp):
                 deleted = _apply_delete_node(working, op, refs, nested_ids, new_node_ids)
                 rename_changes.pop(deleted, None)
+                if visibility is not None:
+                    visibility = visibility.deleted(deleted)
             elif isinstance(op, AddEdgeOp):
                 writers.setdefault(_apply_add_edge(working, op, refs, nested_ids), position(index))
             elif isinstance(op, DeleteEdgeOp):
@@ -3416,6 +3456,21 @@ class PlanStore:
 
         with self._lock:
             return self._record(plan_hash).data_check
+
+    def applied_changes(self, plan_hash: str) -> SemanticChanges | None:
+        """The complete identity changes of a plan this store saw applied.
+
+        ``None`` while the plan is not applied or once it has left the store.
+        A read has no side effect: unlike ``get`` it neither promotes nor
+        expires the record, because what an apply saved stays true after the
+        plan's authority to apply has lapsed.
+        """
+
+        with self._lock:
+            record = self._records.peek(plan_hash)
+            if record is None or record.state != "applied":
+                return None
+            return record.plan.diff.complete
 
     def begin_apply(self, plan_hash: str) -> GraphEditPlan:
         with self._lock:

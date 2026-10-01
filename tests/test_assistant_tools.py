@@ -4626,6 +4626,71 @@ async def test_a_readable_node_is_rewritten_only_after_this_turn_read_or_added_i
     assert "error" not in result, result
 
 
+async def test_a_read_follows_its_node_through_the_turns_applies(
+    steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A read moves with its node through a later apply's rename and ends at a
+    deletion, so a node renamed onto a deleted read node's id is unread; a save
+    that commits without verifying drops every read."""
+
+    import haute.assistant._tools as tools_module
+    from haute.assistant._application import PipelineApplicationService
+    from haute.assistant._ops import AssistantOperationError
+
+    steps = [
+        {"id": "start", "kind": "source", "input": "quotes"},
+        {"id": "logic", "kind": "free_code", "code": "# Keep all\ndf = df"},
+    ]
+    await _apply_ops(_august_ops(_AUGUST_ONLY))
+    await _apply_ops(
+        [
+            {"op": "add_node", "node_type": "polars", "name": "extra", "config": {"steps": steps}},
+            {"op": "add_edge", "source": "quotes", "target": "extra"},
+        ]
+    )
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: _policy(max_sensitivity="restricted", executable=False),
+    )
+    execute = tools_module.build_tool_executor("main.py")
+
+    async def apply(ops: list[dict[str, object]]) -> Mapping[str, object]:
+        plan = await execute("dry_run_graph_edits", {"summary": "Change the graph.", "ops": ops})
+        assert "error" not in plan, plan
+        return await execute("apply_graph_plan", {"plan_hash": plan["plan_hash"]})
+
+    def retype(node: str) -> dict[str, object]:
+        kept_two = [steps[0], {**steps[1], "code": "# Keep two\ndf = df.head(2)"}]
+        return {
+            "summary": "Retype the steps.",
+            "ops": [{"op": "update_node", "node": node, "config": {"steps": kept_two}}],
+        }
+
+    assert "config" in await execute("inspect_node", {"node": "august_totals", "parts": ["config"]})
+    assert "error" not in await apply([{"op": "delete_node", "node": "august_totals"}])
+    renamed = await apply([{"op": "rename_node", "node": "extra", "new_name": "august_totals"}])
+    assert "error" not in renamed, renamed
+    refused = await execute("dry_run_graph_edits", retype("august_totals"))
+    assert refused["error"]["code"] == "config_unread"
+    assert refused["error"]["where"] == {"op_index": 0, "node": "august_totals", "field": "steps"}
+
+    assert "config" in await execute("inspect_node", {"node": "august_totals", "parts": ["config"]})
+    moved = await apply([{"op": "rename_node", "node": "august_totals", "new_name": "kept"}])
+    assert "error" not in moved, moved
+    assert "error" not in await execute("dry_run_graph_edits", retype("kept"))
+
+    def unverified(*_args: object) -> None:
+        raise AssistantOperationError("verification_failed", "The saved diff does not match.")
+
+    monkeypatch.setattr(PipelineApplicationService, "_verify_commit", unverified)
+    committed = await apply([{"op": "delete_node", "node": "rated"}])
+    assert committed["error"]["code"] == "verification_failed" and "change" in committed
+    assert (await execute("dry_run_graph_edits", retype("kept")))["error"]["code"] == (
+        "config_unread"
+    )
+
+
 class TestStepAuthoringViews:
     """The model sees how each stepped node is authored, and edits one step
     without resending the steps it may not read."""

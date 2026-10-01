@@ -604,6 +604,41 @@ class TestBlindRewriteGuard:
         )
         assert _get(read, "bands").data.config["factors"] == [_LICENCE]
 
+    def test_a_read_follows_its_node_through_a_rename_and_ends_at_its_deletion(self):
+        """A node renamed onto the id of a read node the batch deleted is unread,
+        while the read node stays read under its new id."""
+
+        graph = _graph(
+            [
+                _node("bands", "banding", factors=[_AGE, _REGION]),
+                _node("other", "banding", factors=[_LICENCE]),
+            ]
+        )
+        with pytest.raises(AssistantOperationError) as caught:
+            _readable(
+                graph,
+                [
+                    {"op": "delete_node", "node": "bands"},
+                    {"op": "rename_node", "node": "other", "new_name": "bands"},
+                    {"op": "update_node", "node": "bands", "config": {"factors": [_AGE]}},
+                ],
+                read={"bands"},
+            )
+        error = caught.value
+        assert error.code == "config_unread"
+        assert error.where == {"op_index": 2, "node": "bands", "field": "factors"}
+        assert "'licence_band'" in str(error)
+
+        renamed = _readable(
+            graph,
+            [
+                {"op": "rename_node", "node": "bands", "new_name": "age_bands"},
+                {"op": "update_node", "node": "age_bands", "config": {"factors": [_LICENCE]}},
+            ],
+            read={"bands"},
+        )
+        assert _get(renamed, "age_bands").data.config["factors"] == [_LICENCE]
+
     def test_a_readable_rewrite_of_a_node_this_turn_did_not_read_is_refused(self):
         """Readable configuration the model did not read this turn is as unseen as
         withheld configuration: the dropped rows are named by their output paths

@@ -1389,7 +1389,12 @@ to it, a map key with an equal value; new entries may be added) or the model has
 seen that node's configuration in the running turn: an `inspect_node` config
 part returned it, or an apply of the turn added the node. An earlier turn's read
 does not count, because compaction drops its result from what the model sees. A
-node the plan adds is the model's own and is not guarded. The located,
+read follows its node: a rename carries it to the new id, later in the same plan
+and in the turn's later applies, and a deletion ends it, so a node renamed onto
+the id of a read node that was deleted is unread. A save that commits without
+verifying ends every read of the turn, because the saved graph is not known to be
+the one the model read. A node the plan adds is the model's own and is not
+guarded. The located,
 retryable error names the node, the key and the saved entries it would change
 or drop by their metadata identities only (an output column, an output path, a
 pivot or step id, an input name), counting them where a list or map has none.

@@ -1383,9 +1383,25 @@ the turn that follows.
    part's requirement is unmet), and otherwise `read`, the nodes whose saved
    configuration the running turn has seen. The executor is built per turn and records
    a node when a successful `inspect_node` result carries its config part (after the
-   result bound, so a result too large to return records nothing) and each node a
-   successful apply's change record lists as `added`; an earlier turn's reads do not
-   count, because compaction drops their results. An `update_node` on a node the plan
+   result bound, so a result too large to return records nothing); an earlier turn's
+   reads do not count, because compaction drops their results. A read follows its
+   node. Within a batch `_apply_ops_with_refs` applies each `rename_node` to the
+   visibility as it applies the operation (`ConfigVisibility.renamed`: the new id is
+   read exactly when the old id was, whatever node held the new id before) and each
+   `delete_node` (`ConfigVisibility.deleted` drops the read), so a later
+   `update_node` is judged against the reads as they stand at that operation. Across
+   applies, after an apply whose result carries a change record (its save
+   committed), the executor reads the applied plan's complete, untruncated
+   `SemanticChanges` from the plan store without side effect
+   (`PlanStore.applied_changes`, `None` once the plan has left the store) and
+   carries its reads through them (`_carry_config_reads`, `ConfigVisibility.saved`):
+   the renames in operation order, then the removed nodes' reads dropped, then each
+   added node recorded except an id a rename produced, which takes the renamed
+   node's read instead. A save that committed but failed verification, or whose
+   plan the store no longer holds, drops every read, since the saved graph is not
+   known to be the one the turn read; an apply that saved nothing leaves them. The
+   change card's node chips are not the source, because they are capped and keep
+   only each final id's last rename. An `update_node` on a node the plan
    did not add, and not seen this turn under a readable policy, that replaces a key
    whose current value is a non-empty list or map is refused
    (`_refuse_blind_rewrite`) unless the new value keeps every entry: each list entry
@@ -2234,7 +2250,9 @@ fixture for route tests). The implemented coverage is:
   unless they are input names, a step list pointed at `edit_steps`), while keeping every
   saved entry and a node the plan adds pass; under a readable policy a rewrite of a node
   the turn has not read is `config_unread` naming the dropped response rows by output
-  path, with a fix to read the node's config, and one the turn read passes; without a
+  path, with a fix to read the node's config, and one the turn read passes; a read
+  follows its node through a rename in the batch, while a node the batch renames onto
+  the id of a read node it deleted is `config_unread`; without a
   visibility nothing is guarded; a submodel edit is a
   `submodel_boundary` error; ref resolution (unknown ref, duplicate ref,
   ref shadowing an existing id); each unknown node reference case naming its fix (a ref
@@ -2290,7 +2308,10 @@ fixture for route tests). The implemented coverage is:
   retyping a saved step list as a located, retryable `config_withheld` under an
   `internal` policy and `config_unread` under `restricted`; under `restricted` it allows
   the rewrite once that executor's turn read the node's config or added the node, and
-  not after a read by an earlier turn's executor; a submodel occurrence's schema part
+  not after a read by an earlier turn's executor; a read follows its node through a
+  later apply's rename and ends at an apply's deletion, so a node a later apply renames
+  onto the deleted read node's id is `config_unread`, and an apply that commits but
+  fails verification drops every read; a submodel occurrence's schema part
   names its `factored` output and `vehicles` input ports, its consumer's input is named
   by the port, its config part and an inner node stay `submodel_boundary`, and the turn
   context lists the occurrence's input and output port and the consumer's input from the

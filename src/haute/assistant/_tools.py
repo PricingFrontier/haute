@@ -101,6 +101,7 @@ from haute.assistant._ops import (
     PlanStore,
     ProjectSourceEvidence,
     RenameConsumersError,
+    SemanticChanges,
     SourceEvidenceLedger,
     build_project_snapshot,
     dataset_schema_digest,
@@ -3463,21 +3464,29 @@ def _build_plan_error(exc: BuildPlanError) -> dict[str, object]:
     return _error(exc.code, exc.message, **located, fix=exc.fix, **exc.fields)
 
 
-def _added_node_ids(result: Mapping[str, object]) -> tuple[str, ...]:
-    """The nodes a successful apply's change record lists as added."""
+def _carry_config_reads(
+    seen: set[str], result: Mapping[str, object], changes: SemanticChanges | None
+) -> None:
+    """Carry the turn's config reads, *seen*, through one apply's save.
 
-    if "error" in result:
-        return ()
-    change = result.get("change")
-    changes = change.get("changes") if isinstance(change, Mapping) else None
-    nodes = changes.get("nodes") if isinstance(changes, Mapping) else None
-    if not isinstance(nodes, list):
-        raise RuntimeError("a saved apply must carry its change record's nodes")
-    return tuple(
-        entry["id"]
-        for entry in nodes
-        if isinstance(entry, Mapping) and entry.get("change") == "added"
+    An apply that saved nothing (its result carries no change record) leaves
+    them. A verified save moves them through its plan's complete identity
+    *changes* (``ConfigVisibility.saved``). A save committed without
+    verification, or one whose plan the store no longer holds, drops them
+    all: the saved graph is not known to be the one the turn read.
+    """
+
+    if not isinstance(result.get("change"), Mapping):
+        if "error" not in result:
+            raise RuntimeError("a saved apply must carry its change record")
+        return
+    carried = (
+        frozenset()
+        if "error" in result or changes is None
+        else ConfigVisibility(withheld=False, read=frozenset(seen)).saved(changes).read
     )
+    seen.clear()
+    seen.update(carried)
 
 
 def build_tool_executor(
@@ -3501,8 +3510,9 @@ def build_tool_executor(
     build_plan = BuildPlan() if plan is None else plan
     ledger.begin_turn()
     # The nodes whose saved configuration this turn has seen: an inspect_node
-    # config part returned to the model, or a node an apply of the turn added.
-    # The executor lives for one turn, so earlier turns' reads never count.
+    # config part returned to the model, or a node an apply of the turn added,
+    # carried through each later save's renames and deletions. The executor
+    # lives for one turn, so earlier turns' reads never count.
     seen_config: set[str] = set()
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
@@ -3614,19 +3624,15 @@ def build_tool_executor(
                     build_plan.require_item(item)
                 except BuildPlanError as exc:
                     return _attributed_tool_result(name, _build_plan_error(exc))
-            result = await apply_graph_plan(
-                source_file,
-                arguments.get("plan_hash", ""),
-                session_id=session_id,
-            )
+            plan_hash = arguments.get("plan_hash", "")
+            result = await apply_graph_plan(source_file, plan_hash, session_id=session_id)
             change = result.get("change")
             if item is not None and isinstance(change, Mapping):
                 # The save committed, verified or not: its change counts toward the item.
                 build_plan.record_change(item, str(change["id"]))
                 result = {**result, "item": item}
-            applied = _bounded_tool_result(name, result)
-            seen_config.update(_added_node_ids(applied))
-            return applied
+            _carry_config_reads(seen_config, result, _PLAN_STORE.applied_changes(plan_hash))
+            return _bounded_tool_result(name, result)
 
         try:
             operation: Callable[[], dict[str, object]] | None = None
