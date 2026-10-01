@@ -2629,6 +2629,130 @@ def _json_type_name(value: object) -> str:
 
 #: Characters of the model's own JSON text shown on each side of a decode error.
 _JSON_ERROR_EXCERPT = 30
+#: Each JSON bracket that opens a container, with the one that closes it.
+_JSON_OPENERS = {"{": "}", "[": "]"}
+#: The most still-open brackets a decode error names, innermost first.
+_JSON_OPENERS_SHOWN = 3
+
+
+@dataclass(frozen=True)
+class _JsonOpener:
+    """A bracket of JSON text still open: ``{`` or ``[``, its character position,
+    and the key it is the value of (``None`` for an item of a list or the top level)."""
+
+    char: str
+    position: int
+    key: str | None
+
+
+@dataclass(frozen=True)
+class _JsonScan:
+    """JSON text scanned up to a position: the brackets still open there, outermost
+    first, and whether a complete value ends there, rather than a key, a ``,`` or
+    ``:``, an opening bracket, or a string still being read."""
+
+    opened: tuple[_JsonOpener, ...]
+    after_value: bool
+
+
+def _scan_json_brackets(text: str, end: int) -> _JsonScan:
+    """Scan *text* up to character *end*, skipping the contents of strings and their escapes.
+
+    *end* is a decode error's position, so the text before it is a valid JSON
+    prefix: a closer there that does not close the innermost bracket is a bug.
+    """
+
+    opened: list[_JsonOpener] = []
+    string_start: int | None = None
+    key: str | None = None
+    # The last token read: "open", ",", ":", "key" or "value" ("" before any).
+    last = ""
+    index = 0
+    while index < end:
+        char = text[index]
+        if string_start is not None:
+            if char == "\\":
+                index += 1
+            elif char == '"':
+                if opened and opened[-1].char == "{" and last in ("open", ","):
+                    key, last = text[string_start + 1 : index], "key"
+                else:
+                    last = "value"
+                string_start = None
+        elif char == '"':
+            string_start = index
+        elif char in _JSON_OPENERS:
+            opened.append(_JsonOpener(char, index, key))
+            key, last = None, "open"
+        elif char in "]}":
+            if not opened or _JSON_OPENERS[opened.pop().char] != char:
+                raise RuntimeError(f"JSON text before a decode error closes {char!r} at {index}")
+            key, last = None, "value"
+        elif char in ",:":
+            last = char
+            if char == ",":
+                key = None
+        elif not char.isspace():
+            last = "value"  # a number, true, false or null
+        index += 1
+    return _JsonScan(tuple(opened), string_start is None and last == "value")
+
+
+def _json_opener_role(opened: Sequence[_JsonOpener], index: int) -> str:
+    """Where the bracket *opened[index]* sits: the key it is the value of, or the list it is in."""
+
+    opener = opened[index]
+    if opener.key is not None:
+        return f'the value of "{opener.key}"'
+    if index == 0:
+        return "the top level"
+    parent = opened[index - 1]
+    if parent.key is not None:
+        return f'an item of "{parent.key}"'
+    if index == 1:
+        return "an item of the top-level list"
+    return f"an item of the list from character {parent.position}"
+
+
+def _json_bracket_diagnosis(text: str, position: int) -> tuple[str, str] | None:
+    """The brackets a decode error at *position* leaves open, and the likely fix.
+
+    Only a fault the brackets explain is diagnosed: after a complete value, a
+    closer at *position* that does not close the innermost open bracket, or the
+    text ending with brackets open. Anything else (every bracket closed, an error
+    inside a string, after a key, a ``,`` or a ``:``, or at another character)
+    is another fault, and None is returned.
+    """
+
+    scan = _scan_json_brackets(text, position)
+    if not scan.after_value or not scan.opened:
+        return None
+    innermost = scan.opened[-1]
+    if text[position:].strip():
+        found = text[position]
+        expected = _JSON_OPENERS[innermost.char]
+        if found not in "]}" or found == expected:
+            return None
+        place = f"character {position}"
+        noun = "object" if innermost.char == "{" else "list"
+        fix = (
+            f'Close the {noun} opened at character {innermost.position} with "{expected}" '
+            f'before the "{found}" at character {position}'
+        )
+    else:
+        place = "the end of the text"
+        closers = "".join(_JSON_OPENERS[opener.char] for opener in reversed(scan.opened))
+        fix = f'Close them at the end of the text with "{closers}"'
+    depth = len(scan.opened)
+    shown = ", ".join(
+        f'"{scan.opened[index].char}" from character {scan.opened[index].position} '
+        f"({_json_opener_role(scan.opened, index)})"
+        for index in reversed(range(max(0, depth - _JSON_OPENERS_SHOWN), depth))
+    )
+    return (
+        f"brackets still open at {place}, innermost first: {shown}.",
+        f"{fix}, then resend the call.",
+    )
 
 
 def _refuse_undecodable_json_text(text: str, path: str) -> None:
@@ -2637,8 +2761,10 @@ def _refuse_undecodable_json_text(text: str, path: str) -> None:
     A provider that sends containers as JSON text (Databricks' Qwen dialect)
     cannot send the value itself, so a text that opens like JSON but does not
     decode is refused at the decoder's character with the text around it: the
-    model's own argument, already in its history. Text that decodes returns,
-    for the plain wrong-type refusal.
+    model's own argument, already in its history. When brackets left open
+    explain the error, the message names them and the fix says how to close
+    them; the text is never repaired. Text that decodes returns, for the plain
+    wrong-type refusal.
     """
 
     try:
@@ -2653,17 +2779,18 @@ def _refuse_undecodable_json_text(text: str, path: str) -> None:
             + text[exc.pos : end]
             + ("..." if end < len(text) else "")
         )
+        message = f"{path} is JSON text with an error at character {exc.pos} ({exc.msg}): {excerpt}"
+        fix = (
+            "Correct the JSON text at that character and resend the call. Inside a "
+            "string such as a step's code, escape each double quote as \\\" and each "
+            "newline as \\n, and close the string before the next key."
+        )
+        diagnosis = _json_bracket_diagnosis(text, exc.pos)
+        if diagnosis is not None:
+            still_open, fix = diagnosis
+            message = f"{message}; {still_open}"
         raise _ToolArgumentValidationError(
-            path,
-            "invalid_json_text",
-            f"{path} is JSON text with an error at character {exc.pos} ({exc.msg}): {excerpt}",
-            fields={
-                "fix": (
-                    "Correct the JSON text at that character and resend the call. Inside a "
-                    "string such as a step's code, escape each double quote as \\\" and each "
-                    "newline as \\n, and close the string before the next key."
-                )
-            },
+            path, "invalid_json_text", message, fields={"fix": fix}
         ) from None
 
 

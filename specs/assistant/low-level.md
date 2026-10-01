@@ -1402,7 +1402,22 @@ the turn that follows.
    spot and resend, escaping quotes and newlines inside a string such as a step's code.
    A model whose provider sends containers as JSON text cannot send the value itself, so
    the live evaluation of 2026-10-01 saw Qwen resend the same broken text after the
-   type-only message until the identical-request stop ended the turn. The excerpt is the
+   type-only message until the identical-request stop ended the turn, and a later run
+   saw it resend a text lacking one `}` after the located message alone. So when
+   brackets left open explain the error, the message adds them and the `fix` says how
+   to close them. The text up to the error is scanned with string contents and their
+   escapes skipped; a bracket fault is a complete value ending there followed either by
+   a closer that does not close the innermost open bracket or by the end of the text.
+   The message then adds, after the excerpt and a semicolon, at most the three innermost
+   still-open brackets, each with its character and where it sits (`brackets still open
+   at character 358, innermost first: "{" from character 59 (an item of "edits"), "["
+   from character 58 (the value of "edits"), "{" from character 1 (an item of the
+   top-level list).`), and the `fix` is
+   `Close the object opened at character 59 with "}" before the "]" at character 358,
+   then resend the call.`, or `Close them at the end of the text with "}]", then resend
+   the call.` when the text ends. Any other fault (every bracket closed, an error inside
+   a string, after a key, `,` or `:`, or at another character) keeps the located message
+   and the escaping fix. The text is diagnosed, never repaired. The excerpt is the
    model's own argument, already in its history, like a rejected key. Each different
    text is progress for the dry-run budget, because the budget compares the whole
    arguments of a call whose error names no operation. A `wrong_type` message also repeats the
@@ -1732,9 +1747,10 @@ the turn that follows.
   stepped surface (instances excepted) is rendered with the product's renderer
   (`render_polars_steps`, against the node's incoming input names in the surface's start
   mode), so an invalid step list is an op error naming its step (`where.step` holds the
-  id of the step the renderer's error names) and the surface's
-  free-code form (a palette-default Transform left at `steps: []` is refused this way,
-  because a Transform's steps must choose their input). Each `free_code` step
+  id of the step the renderer's error names), worded as the step-render rule below
+  describes (a palette-default Transform left at `steps: []` gets the surface's
+  free-code form, because a Transform's steps must choose their input), except that a
+  step reading an upstream node that is not wired in gets the `add_edge` fix. Each `free_code` step
   is then checked on its own code. A top-level bare expression that calls a method on
   `df` or on an incoming input (`df.filter(...)` alone) is refused naming the node, the
   step's number and its id, because its result is discarded; the rendered program's
@@ -1789,7 +1805,21 @@ the turn that follows.
   `op_not_applied` naming the node and the key, or the step error with `where.step` set
   to the id of the step it names. A palette-default node's own `_steps_error` (a
   Transform's empty step list) is not the operation's write and does not trip this
-  check.
+  check. Both step-render refusals (`_ops._unrendered_steps`) tell a step the surface
+  cannot hold from one that is only incomplete. Only the first points at the free-code
+  form: a list-level error, a step that is not an object or has no kind in
+  `STEP_KINDS`, a `source` step on a `frame` surface, a `join` or `concat` on a surface
+  whose code sees only `df`, and a Transform whose first step is not its `source` or
+  that has a later one. Any other step error names the step by kind and id with the
+  renderer's message, and the `fix` completes it where it stands (`its filter step
+  'keep' cannot be rendered (Step 1: Missing field(s) ...)`, fix `Complete the filter
+  step 'keep': ...`; `Correct the free_code step ...` for code that does not parse). A
+  `pivot` step on an Explore instead gets the fix that an analyst's pivot table is a
+  `pivots` entry in the Explore's config, not a step, since a pivot step only reshapes
+  the frame: read `node:explore` with `read_reference` for the entry's shape and add it
+  with `update_node`. In the 2026-10-01 evaluation, a pivot step without pivot columns
+  on an Explore was redirected to free code, which took the model further from the
+  `pivots` entry the analyst asked for.
 - **The model sees how each stepped node is authored, without values.** `get_pipeline`
   and the turn context's graph brief carry, for every node of a stepped type (an
   instance has none: its configuration is its original's), `_render.node_authoring`'s
@@ -2255,7 +2285,13 @@ fixture for route tests). The implemented coverage is:
   and received JSON types for both a stringified container and a lone object sent where a
   batch was declared, while JSON text with an unterminated code string is
   `invalid_json_text` naming the decoder's message, the character and the marked
-  excerpt, with a fix. The rendered graph is asserted to
+  excerpt, with a fix. The bracket scan is pinned on a text missing the `}` of an edit
+  object around code holding its own brackets and escaped quotes (the brackets still
+  open, innermost first, and where each sits), an unterminated string (its brackets are
+  not counted and no value ends in it) and balanced but invalid text; the message names
+  the innermost three open brackets with the closing fix for the missing brace and for a
+  text ending open, and keeps the located message and escaping fix for the other two.
+  The rendered graph is asserted to
   name edge handles in the operation vocabulary. Dataset
   coverage pins installed-registry extension parity and rejects direct hidden,
   state-directory, and credential-file listing/schema inspection; preview

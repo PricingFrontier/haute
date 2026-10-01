@@ -789,15 +789,43 @@ class TestSteppedWrites:
         ],
     )
     def test_a_steps_write_that_cannot_render_is_not_applied(self, op: dict):
+        """An incomplete step of a kind the surface holds is named with its problem
+        and completed where it stands, never redirected to free code."""
+
         from haute.assistant._ops import AssistantOperationError
 
         with pytest.raises(AssistantOperationError) as excinfo:
             _apply(_stepped_graph(), [op])
 
         assert excinfo.value.code == "op_not_applied"
-        assert "Step 1" in str(excinfo.value)
-        assert _FRAME_FORM in str(excinfo.value)
+        assert "its filter step 'keep' cannot be rendered (Step 1: Missing field(s)" in str(
+            excinfo.value
+        )
+        assert excinfo.value.fix is not None
+        assert excinfo.value.fix.startswith("Complete the filter step 'keep': Missing field(s)")
+        assert "free_code" not in str(excinfo.value) + excinfo.value.fix
         assert excinfo.value.where["step"] == "keep"
+
+    @pytest.mark.parametrize(
+        "step",
+        [
+            {"id": "start", "kind": "source", "input": "src"},
+            {"id": "start", "kind": "pivot_table"},
+        ],
+    )
+    def test_a_step_the_surface_cannot_hold_points_at_the_free_code_form(self, step: dict):
+        from haute.assistant._ops import AssistantOperationError
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(
+                _stepped_graph(),
+                [{"op": "update_node", "node": "rated", "config": {"steps": [step]}}],
+            )
+
+        assert excinfo.value.code == "op_not_applied"
+        assert "its steps cannot be rendered (Step 1: " in str(excinfo.value)
+        assert excinfo.value.fix == f"Write the steps as {_FRAME_FORM}."
+        assert excinfo.value.where["step"] == "start"
 
 
 def _edit_steps(node: str, *edits: dict) -> list[dict]:
@@ -968,6 +996,41 @@ class TestEditSteps:
             "field": "steps",
             "step": "logic",
         }
+
+    def test_a_pivot_step_on_an_explore_points_at_its_pivots_config(self):
+        """Seen live: asked for a pivot table on an Explore, the model wrote a
+        pivot step without pivot columns, and the redirect to free code took it
+        further from the `pivots` entry the analyst meant."""
+
+        from haute.assistant._ops import AssistantOperationError
+
+        graph = _graph(
+            [_node("src"), _node("premium_explore", "explore", steps=[])],
+            [_edge("src", "premium_explore")],
+        )
+        pivot = {
+            "id": "pivot_premium_by_region",
+            "kind": "pivot",
+            "index": ["region"],
+            "on": "region",
+            "values": "premium",
+            "agg": "sum",
+            "columns": [],
+        }
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(graph, _edit_steps("premium_explore", {"insert_after": None, "step": pivot}))
+
+        assert excinfo.value.code == "op_not_applied"
+        assert str(excinfo.value).endswith(
+            "edit_steps on node 'premium_explore' did not land: its pivot step "
+            "'pivot_premium_by_region' cannot be rendered (Step 1: Add at least one pivot column.)."
+        )
+        assert excinfo.value.where["step"] == "pivot_premium_by_region"
+        fix = excinfo.value.fix
+        assert fix is not None
+        assert "pivots entry" in fix and '"node:explore"' in fix and "update_node" in fix
+        assert "free_code" not in str(excinfo.value) + fix
 
     @pytest.mark.parametrize(
         "edit",

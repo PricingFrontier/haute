@@ -212,7 +212,9 @@ a round of closing text and no calls, and a multi-stage trajectory applies one
 plan per stage in one turn. The `smoke_staged_pricing_build` trajectory works as
 the system prompt asks of a request with several stages: it sets a build plan of
 four items first, names each stage's item on that stage's apply and claims the
-item complete once the apply has saved. The case's expectations hold no plan
+item complete once the apply has saved. `motor_loaded_premium_build` (the join
+with its data input, the loaded-premium Transform and the rewired output) does the
+same with three items. The case's expectations hold no plan
 assertion, because a live model chooses its own item ids; the replay test asserts
 the plan the trajectory leaves. The loop ends a turn without another round after a
 save that fails verification, and a recorded call can be ignored there, so after

@@ -9,6 +9,34 @@
           "text": "",
           "calls": [
             {
+              "id": "plan",
+              "tool": "update_build_plan",
+              "arguments": {
+                "items": [
+                  {
+                    "id": "join",
+                    "title": "Region loadings join"
+                  },
+                  {
+                    "id": "loaded",
+                    "title": "Loaded premium"
+                  },
+                  {
+                    "id": "output",
+                    "title": "Batch output"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
               "id": "join_dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
@@ -71,7 +99,8 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "join_dry.plan_hash"
-                }
+                },
+                "item": "join"
               },
               "result": {
                 "status": "ok"
@@ -82,6 +111,16 @@
         {
           "text": "",
           "calls": [
+            {
+              "id": "join_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "join"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
             {
               "id": "load_dry",
               "tool": "dry_run_graph_edits",
@@ -129,7 +168,8 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "load_dry.plan_hash"
-                }
+                },
+                "item": "loaded"
               },
               "result": {
                 "status": "ok"
@@ -140,6 +180,16 @@
         {
           "text": "",
           "calls": [
+            {
+              "id": "load_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "loaded"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
             {
               "id": "out_dry",
               "tool": "dry_run_graph_edits",
@@ -173,7 +223,23 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "out_dry.plan_hash"
-                }
+                },
+                "item": "output"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "out_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "output"
               },
               "result": {
                 "status": "ok"

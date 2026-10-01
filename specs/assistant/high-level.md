@@ -666,7 +666,12 @@ removed as a whole but never edited in place. Its errors name the step id; it is
 refused on a code-mode node, whose `code` is edited instead.
 Every key an operation writes must hold the written value once the node's config is
 materialised, and a written step list must render; otherwise the plan fails with
-`op_not_applied`. Dry-run then generates the planned source in memory and reparses each
+`op_not_applied`. A step list that does not render points at the free-code form only for
+what the surface cannot hold (an unknown step kind, a start step where `df` is already
+bound, a join where the code sees only `df`); a step that is merely incomplete is named
+with its problem, to be completed where it stands. A pivot step on an Explore is instead
+pointed at the node's `pivots` config, because an analyst's pivot table is a `pivots`
+entry and a pivot step only reshapes the frame. Dry-run then generates the planned source in memory and reparses each
 stepped node the plan touches through the parser, so steps a save would discard fail the
 plan before apply. After save, a per-node `node_config` postcondition checks each added
 or updated code-carrying node's authored config against the reparse: its `steps`, or its

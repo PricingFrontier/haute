@@ -41,6 +41,7 @@ from haute._lru_cache import LRUCache
 from haute._node_config_recovery import _DISCRIMINANTS
 from haute._output_assembler import is_active_mapping_entry
 from haute._polars_steps import (
+    STEP_KINDS,
     STEPPED_NODE_TYPES,
     STEPPED_SURFACE_LABELS,
     PolarsStepError,
@@ -343,24 +344,22 @@ def _require_landed(
             )
     if "steps" in written and "_steps_error" in config:
         node_type = node.data.nodeType
-        form = _free_code_form(node_type)
         try:
             render_node_steps(node_type, config["steps"])
         except PolarsStepError as exc:
             step = _step_id_at(config["steps"], exc.step_index)
+            detail, fix = _unrendered_steps(node_type, config["steps"], exc)
         else:  # pragma: no cover - `_steps_error` is this rendering's own failure
             raise AssertionError("A node carrying _steps_error rendered its steps")
         raise AssistantOperationError(
             "op_not_applied",
-            f"{operation} on node {node.id!r} did not land: its steps cannot be rendered "
-            f"({config['_steps_error']}). New logic on a {STEPPED_SURFACE_LABELS[node_type]} "
-            f"is written as {form}.",
+            f"{operation} on node {node.id!r} did not land: {detail}",
             where={
                 "node": node.id,
                 "field": "steps",
                 **({} if step is None else {"step": step}),
             },
-            fix=f"Write the steps as {form}.",
+            fix=fix,
         )
 
 
@@ -372,6 +371,56 @@ def _step_id_at(steps: Sequence[object], index: int | None) -> str | None:
     step = steps[index]
     step_id = step.get("id") if isinstance(step, Mapping) else None
     return step_id if isinstance(step_id, str) and step_id else None
+
+
+#: Where an analyst's pivot table goes when a pivot step on an Explore does not render.
+_EXPLORE_PIVOT_FIX = (
+    "An analyst's pivot table is a pivots entry in the Explore's config, not a step; a "
+    'pivot step only reshapes the frame. Call read_reference with "node:explore" for the '
+    "entry's shape and add it with update_node."
+)
+
+
+def _unrendered_steps(
+    node_type: NodeType, steps: Sequence[object], exc: PolarsStepError
+) -> tuple[str, str]:
+    """What a step list that does not render says after its node, and the fix.
+
+    A step of a kind its surface holds that fails its own fields (a pivot
+    without a pivot column, free code that does not parse) is named with its
+    problem, to be completed where it stands; a pivot step on an Explore points
+    at the node's ``pivots`` config instead, where an analyst's pivot table
+    lives. Only what the surface cannot hold points at its free-code form: a
+    list-level problem, a step that is not an object or of no known kind, a
+    ``source`` step where the surface already binds ``df``, a ``join`` or
+    ``concat`` where the code sees only ``df``, and a Transform whose steps do
+    not start from their input.
+    """
+
+    index = exc.step_index
+    step = None if index is None else steps[index]
+    kind = step.get("kind") if isinstance(step, Mapping) else None
+    surface = stepped_surface_for(node_type)
+    if (
+        index is None
+        or kind not in STEP_KINDS
+        or (kind == "source" if surface.start == "frame" else (index == 0) != (kind == "source"))
+        or (surface.inputs == "none" and kind in ("join", "concat"))
+    ):
+        form = _free_code_form(node_type)
+        return (
+            f"its steps cannot be rendered ({exc}). New logic on a "
+            f"{STEPPED_SURFACE_LABELS[node_type]} is written as {form}.",
+            f"Write the steps as {form}.",
+        )
+    step_id = _step_id_at(steps, index)
+    name = f"{kind} step {step_id!r}" if step_id else f"{kind} step {index + 1}"
+    if kind == "pivot" and node_type == NodeType.EXPLORE:
+        fix = _EXPLORE_PIVOT_FIX
+    else:
+        verb = "Correct" if kind == "free_code" else "Complete"
+        fix = f"{verb} the {name}: {exc.message}"
+    return f"its {name} cannot be rendered ({exc}).", fix
 
 
 def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[str, Any]:
@@ -2881,12 +2930,12 @@ def _validate_assistant_authored_steps(
     except PolarsStepError as exc:
         step = _step_id_at(steps, exc.step_index)
         unwired = _unwired_step_input(result, node, steps, exc.step_index, input_names)
+        detail, fix = _unrendered_steps(node_type, steps, exc)
         _invalid(
-            f"Node {node.id!r} has an invalid step list: {exc} New logic on a "
-            f"{label} is written as {form}.",
+            f"Node {node.id!r} has an invalid step list: {detail}",
             where={"node": node.id, "field": "steps", **({} if step is None else {"step": step})},
             fix=(
-                f"Write the steps as {form}."
+                fix
                 if unwired is None
                 else f"Connect {unwired!r} to {node.id!r} in the same plan: "
                 f'{{"op": "add_edge", "source": "{unwired}", "target": "{node.id}"}}.'

@@ -1972,6 +1972,86 @@ class TestToolExecutorDispatch:
         assert "not a JSON-encoded string" not in error["message"]
         assert "character" in error["fix"] and "escape" in error["fix"]
 
+    # Seen live (simplified): the edit object around a free-code step lacks its
+    # "}", so "]" arrives while it is open. The code's own brackets are text.
+    _MISSING_BRACE = '[{"op": "edit_steps", "edits": [{"step": {"code": "x = {\\"a\\": [1"}]}]'
+    _UNTERMINATED = '[{"op": "update_node", "code": "df[\\"a\\"]}]'
+    _BALANCED = '[{"op": "add_node" "node": "x"}]'
+
+    def test_the_bracket_scan_skips_strings_and_their_escapes(self):
+        from haute.assistant._tools import _JsonOpener, _scan_json_brackets
+
+        text = self._MISSING_BRACE
+        edits = text.index('[{"step"')
+        scan = _scan_json_brackets(text, text.index("}]}]") + 1)
+        assert scan.opened == (
+            _JsonOpener("[", 0, None),
+            _JsonOpener("{", 1, None),
+            _JsonOpener("[", edits, "edits"),
+            _JsonOpener("{", edits + 1, None),
+        )
+        assert scan.after_value
+
+        # The brackets inside the string that never closes are not counted, and
+        # no value ends inside it.
+        scan = _scan_json_brackets(self._UNTERMINATED, len(self._UNTERMINATED))
+        assert scan.opened == (_JsonOpener("[", 0, None), _JsonOpener("{", 1, None))
+        assert not scan.after_value
+
+        scan = _scan_json_brackets(self._BALANCED, len(self._BALANCED))
+        assert scan.opened == () and scan.after_value
+
+    @pytest.mark.parametrize(
+        ("text", "still_open", "fix"),
+        [
+            (
+                _MISSING_BRACE,
+                'brackets still open at character 67, innermost first: "{" from character 32 '
+                '(an item of "edits"), "[" from character 31 (the value of "edits"), "{" from '
+                "character 1 (an item of the top-level list).",
+                'Close the object opened at character 32 with "}" before the "]" at '
+                "character 67, then resend the call.",
+            ),
+            (
+                '[{"op": "add_node", "config": {"steps": []',
+                'brackets still open at the end of the text, innermost first: "{" from '
+                'character 30 (the value of "config"), "{" from character 1 (an item of the '
+                'top-level list), "[" from character 0 (the top level).',
+                'Close them at the end of the text with "}}]", then resend the call.',
+            ),
+            (_UNTERMINATED, None, None),
+            (_BALANCED, None, None),
+        ],
+        ids=["missing_brace", "ends_open", "unterminated_string", "balanced"],
+    )
+    def test_undecodable_text_names_the_brackets_its_error_leaves_open(
+        self, text: str, still_open: str | None, fix: str | None
+    ):
+        """Seen live: the located error alone did not show Qwen which "}" it had
+        left out, and it resent the same text. A fault the brackets explain names
+        the innermost three still open and how to close them; any other fault
+        keeps the located message and the escaping fix. Nothing is repaired."""
+
+        from haute.assistant._tools import (
+            _refuse_undecodable_json_text,
+            _ToolArgumentValidationError,
+        )
+
+        with pytest.raises(_ToolArgumentValidationError) as excinfo:
+            _refuse_undecodable_json_text(text, "ops")
+
+        message = str(excinfo.value)
+        assert excinfo.value.reason == "invalid_json_text"
+        assert message.startswith("ops is JSON text with an error at character ")
+        if still_open is None:
+            assert "brackets still open" not in message
+            assert excinfo.value.fields["fix"].startswith(
+                "Correct the JSON text at that character and resend the call."
+            )
+        else:
+            assert "<<here>>" in message and message.endswith(f"; {still_open}")
+            assert excinfo.value.fields["fix"] == fix
+
     async def test_wrong_type_spells_the_json_boolean_literals_without_the_value(
         self, project_root: Path
     ):
