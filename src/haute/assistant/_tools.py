@@ -1944,7 +1944,9 @@ async def inspect_node(
 
     A denied part is listed under ``withheld`` with the setting it needs while
     the permitted parts answer; when every part is denied the call is refused.
-    A part that fails fails the call, naming the part. The parts read the
+    A part that fails is reported under ``part_errors`` with its error while
+    the other parts answer; when no permitted part answers, the call fails
+    with the first failing part's error, naming the part. The parts read the
     saved graph under the save lock; the data part's check runs after the
     lock is released, and a check that does not run is its answer.
     """
@@ -1984,6 +1986,8 @@ async def inspect_node(
             **({"available": available} if available else {}),
         )
     result: dict[str, object] = {"node": node}
+    # Each failed part's error, in part order, as the call would have returned it.
+    failures: dict[str, dict[str, object]] = {}
     revisions: set[object] = set()
     data_request: NodeDataCheckRequest | None = None
     async with save_lock:
@@ -1993,9 +1997,8 @@ async def inspect_node(
                     _prepare_node_data, source_file, node, column, policy
                 )
                 if isinstance(prepared, dict):
-                    return {
-                        "error": {**cast(Mapping[str, object], prepared["error"]), "part": part}
-                    }
+                    failures[part] = prepared
+                    continue
                 data_request, revision = prepared
                 revisions.add(revision)
                 continue
@@ -2005,14 +2008,22 @@ async def inspect_node(
                 answer = await asyncio.to_thread(node_config, source_file, node)
             else:
                 answer = await column_profiles(source_file, node, input_name, session_id=session_id)
-            error = answer.get("error")
-            if isinstance(error, Mapping):
-                return {"error": {**error, "part": part}}
+            if isinstance(answer.get("error"), Mapping):
+                failures[part] = answer
+                continue
             revisions.add(answer.pop("project_revision"))
             answer.pop("node")
             result[part] = answer
+    if len(failures) == len(permitted):
+        part, failure = next(iter(failures.items()))
+        return {"error": {**cast(Mapping[str, object], failure["error"]), "part": part}}
     if len(revisions) != 1:
         raise RuntimeError("inspect_node parts described different project revisions")
+    if failures:
+        result["part_errors"] = {
+            part: dict(cast(Mapping[str, object], _with_retryable(failure)["error"]))
+            for part, failure in failures.items()
+        }
     if withheld:
         result["withheld"] = withheld
     result["project_revision"] = revisions.pop()

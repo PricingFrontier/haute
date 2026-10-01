@@ -4,8 +4,8 @@
   "turn_context_2.md": "ec1a54e8eb98305dc2a748c9cc1fc4ec970129d440964b434640712487f18902",
   "context_update.md": "cd554f07042df087772623b58686c3861610237c5d60e18760ceef0da4dea25a",
   "turn_records.md": "bb0c18845696ff7ac5da954564826a771349250162d2187296c1326f9518997e",
-  "tools_canonical.json": "e704206cfecfe1db418bf724bffba6e51c1bd63afeac09b90385ef75fa60f411",
-  "tools_anthropic.json": "5cb5eded246c9b9313538913eab3d53d0e167876023de6bfb285a2abc49a85d1",
-  "tools_openai.json": "564d0508741ba5951ba608088c2ac7c57b5a666b8359ed147d7a46d11670a7ee",
-  "tools_databricks.json": "af9e64edc4dd8ef9dc4bd9deb92f8b9ec46a49f768133b3117eaa76a98ebf395"
+  "tools_canonical.json": "44a897731ced4a14087de8ba378afc8853d1b0eef9587fc7825a50672d363f61",
+  "tools_anthropic.json": "fc77fa4de57030c35d11b1e9d5ce9c5b7640d8eab75a81380dab3df0db16a030",
+  "tools_openai.json": "ca11f548a506a2c948c1766cdbd210c15f2bfe2f7a55f5baed698096f541e45b",
+  "tools_databricks.json": "2833631b0b5b048d834ab763b0a328df5abdd4f3af45ce1b0c767a7a9a0c7207"
 }

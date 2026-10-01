@@ -936,6 +936,7 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "profile",
             "data",
             "data_omitted",
+            "part_errors",
             "withheld",
             "project_revision",
         ),
@@ -1027,8 +1028,17 @@ def _operation_output_schema(name: str) -> dict[str, object]:
     )
     optional_success_fields = {
         # Each part answers only when the call asked for it and the policy permits it;
-        # a data part that does not fit the result is replaced by its omission note.
-        "inspect_node": {"schema", "config", "profile", "data", "data_omitted", "withheld"},
+        # a data part that does not fit the result is replaced by its omission note,
+        # and a part that failed beside one that answered is under `part_errors`.
+        "inspect_node": {
+            "schema",
+            "config",
+            "profile",
+            "data",
+            "data_omitted",
+            "part_errors",
+            "withheld",
+        },
         # A file's schema, and the revision its evidence enters, only for a `path`.
         "find_data": {"schema", "project_revision"},
         # The build-plan item the change was recorded against, only for an apply naming one.
@@ -1207,7 +1217,9 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "Edge Join matches and findings; with `column`, that column's null count at each "
             "node whose output has it and `first_null_node`, where its nulls appear or grow. "
             'A check that cannot run returns `outcome` "not_run" with its reason. A part the '
-            "egress policy does not permit is listed under `withheld` with the setting it needs."
+            "egress policy does not permit is listed under `withheld` with the setting it needs. "
+            "A part that fails is reported under `part_errors` with its error while the other "
+            "parts still answer."
         ),
         "find_data": (
             "List the safe installed-format data files in one project directory, "

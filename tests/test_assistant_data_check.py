@@ -1865,9 +1865,13 @@ def _one_token_usage() -> Any:
 
 def _inspect(graph: PipelineGraph, node: str, column: str | None = None) -> dict[str, Any]:
     """An inspection's worker half, in-process, as the object the data part returns."""
-    scope = data_check._inspection_scope(
-        NodeDataCheckRequest(graph, node, column, _POLICY), flatten_graph(graph)
-    )
+    return dict(_inspected(NodeDataCheckRequest(graph, node, column, _POLICY)).check)
+
+
+def _inspected(request: NodeDataCheckRequest) -> DataCheckResult:
+    """An inspection's worker half, in-process, as the check the data part fits."""
+    graph = request.graph
+    scope = data_check._inspection_scope(request, flatten_graph(graph))
     exclusions = server_exclusions(graph, scope.flat, scope.nodes)
     job = data_check._scope_job(scope, exclusions)
     assert job is not None
@@ -1892,7 +1896,7 @@ def _inspect(graph: PipelineGraph, node: str, column: str | None = None) -> dict
         inspection=True,
     )
     NODE_DATA_VIEW.validate_python(result.check)
-    return dict(result.check)
+    return result
 
 
 def _record(view: Mapping[str, Any], node: str) -> Mapping[str, Any]:
@@ -2159,6 +2163,62 @@ async def test_the_data_part_answers_in_thread_mode_and_is_withheld_without_the_
     assert withheld["withheld"] == [
         {"part": "data", "required_policy": "allow_aggregate_statistics = true"}
     ]
+
+
+async def test_a_failing_schema_part_leaves_the_data_part_to_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live: schema and data on a node whose step reads a missing column. The
+    schema part's failure made the whole call an error, so the data part, which
+    exists to diagnose a broken node, never answered. Each part answers alone."""
+    import shutil
+
+    from haute.assistant import _tools
+
+    copy = tmp_path / "p"
+    shutil.copytree(Path(__file__).parent / "assistant_eval" / "projects" / "broken_pricing", copy)
+    monkeypatch.chdir(copy)
+    set_project_root(copy)
+    quotes = json.loads((copy / "config" / "data_input" / "quotes.json").read_text("utf-8"))
+    build_test_input_snapshot(quotes, base_dir=copy)
+    monkeypatch.setattr(_tools, "resolve_egress_policy", lambda _root: _POLICY)
+
+    async def in_process(
+        request: NodeDataCheckRequest,
+        *,
+        session_id: str,
+        cancellation: ExecutionCancellationToken,
+    ) -> DataCheckResult:
+        return _inspected(request)
+
+    monkeypatch.setattr(data_check, "run_node_data_check", in_process)
+
+    result = dict(
+        await _tools.build_tool_executor("pipeline.py", session_id="s")(
+            "inspect_node", {"node": "rating_features", "parts": ["data", "schema"]}
+        )
+    )
+
+    assert "error" not in result, result
+    assert "schema" not in result
+    failed = _record(result["data"], "rating_features")
+    assert (failed["status"], failed["error"]["step"]) == ("failed", {"id": "logic", "number": 2})
+    assert [(finding["kind"], finding["node"]) for finding in result["data"]["findings"]] == [
+        ("execution_failed", "rating_features")
+    ]
+    [(part, error)] = result["part_errors"].items()
+    assert part == "schema"
+    assert (error["code"], error["step"], error["retryable"]) == (
+        "schema_unresolvable",
+        "logic",
+        True,
+    )
+    assert [column["name"] for column in error["inputs"]["quotes"]][:2] == [
+        "quote_id",
+        "driver_age",
+    ]
+    assert "part" not in error
+    assert len(str(result["project_revision"])) == 64
 
 
 async def test_a_stopped_turn_stops_an_inspection_whose_check_runs_outside_the_save_lock(

@@ -662,6 +662,9 @@ def _inspect_node_finished(payload: Mapping[str, Any]) -> str:
         segments.append(_data_check_words(check, inspection=True))
     elif "data_omitted" in payload:
         segments.append(_DATA_CHECK_TOO_LARGE)
+    failed = payload.get("part_errors")
+    if isinstance(failed, Mapping) and failed:
+        segments.append(f"{', '.join(str(part) for part in failed)} failed")
     withheld = payload.get("withheld")
     held = [
         entry["part"]

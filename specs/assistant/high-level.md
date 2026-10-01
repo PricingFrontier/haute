@@ -498,8 +498,11 @@ it:
   against the egress policy on its own, so a part the policy denies is listed under
   `withheld` with the `[assistant.egress]` setting it needs while the permitted parts
   still answer; a call whose every part is denied is refused with
-  `egress_policy_denied`, carrying the same `withheld` list. A part that fails to resolve
-  fails the call, naming the part.
+  `egress_policy_denied`, carrying the same `withheld` list. Each part also answers or
+  fails on its own: a part that fails (a schema the engine cannot resolve, say) is
+  reported under `part_errors` with its located error while the other parts still
+  answer, so a schema failure never hides the data part that diagnoses it. The call
+  itself fails, naming the part, only when no requested part answered.
   - `schema` (`internal`) — the column names and dtypes at the node's *output* **and on
     each of its inputs**, resolved by the
     same execution engine that runs the pipeline: the lazy plan is built up to that node —

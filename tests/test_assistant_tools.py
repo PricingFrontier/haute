@@ -842,7 +842,10 @@ class TestInspectNode:
         assert result["error"]["validation_reason"] == "input_without_profile"
         assert result["error"]["retryable"] is True
 
-    async def test_a_failing_part_fails_the_call_and_names_the_part(self, project_root: Path):
+    async def test_a_call_whose_every_part_fails_fails_naming_the_first(self, project_root: Path):
+        """Only a call no requested part answers is an error, and it carries
+        the first failing part's error with `part` naming it."""
+
         from haute.assistant._tools import build_tool_executor
 
         result = await build_tool_executor("main.py")(

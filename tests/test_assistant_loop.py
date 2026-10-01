@@ -1942,6 +1942,16 @@ _FINISHED_SUMMARY_CASES: list[tuple[str, dict[str, Any], str]] = [
     ),
     (
         "inspect_node",
+        {
+            "node": "rating_features",
+            "data": _check("advisory"),
+            "part_errors": {"schema": {"code": "schema_unresolvable", "message": "m"}},
+            "project_revision": "r",
+        },
+        "Data checked: 1 advisory finding; schema failed",
+    ),
+    (
+        "inspect_node",
         {"node": "value_band", "data": _not_run("no_checkable_nodes"), "project_revision": "r"},
         "Data not checked: no node in its lineage could be checked",
     ),
