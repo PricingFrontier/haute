@@ -323,16 +323,18 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 - A multi-frame preview may have no flat columns: selected-frame columns supply the visible schema
   and header count. Preview-only columns remain visible with an unknown/empty dtype.
 - `null`/`undefined` display separately from Haute non-finite-float sentinel objects. Table
-  windows clamp if a changed result becomes narrower while horizontally scrolled.
+  windows clamp to a changed result narrower or shorter than the offsets the table was scrolled
+  to, so it shows its last columns or rows, never a spacer longer than the result.
 - The table keeps the place the user scrolled it to. Each axis keeps its offset, clamped to the
   table's extent, except that an axis the user left at its far end (within a pixel) stays at
   the far end. The place is put back when loading, an error or collapsing the panel replaces
   the scroll container, and when a new result, a column search or a resized panel changes how
   far the table scrolls; that covers Refresh, automatic recalculation, and switching to another
-  node or frame. Only the user's scrolling moves the place: the scroll event raised by putting
-  it back, or by a narrower table clamping it, does not, so a table that narrows and widens again
-  returns to where the user left it. The row and column windows start from the restored
-  offsets, and a scroll frame still pending from before is dropped.
+  node or frame. Only the user's scrolling moves the place, and only along the axis scrolled:
+  the scroll event raised by putting it back, or by a narrower or shorter table clamping it,
+  does not, so a table that narrows or shortens and grows again returns to where the user left
+  it, even if the user scrolled the other axis meanwhile. The row and column windows start from
+  the restored offsets, and a scroll frame still pending from before is dropped.
 - The cache action is disabled while the point cannot be built or a build is already running. A
   profile response that is neither a completed result nor a started/joined job publishes nothing
   rather than a false success.
@@ -429,7 +431,8 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/explore/__tests__/` and
 `frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation (including the
 scroll place kept, and the far right and bottom held, across Refresh, collapsing the panel, a
-recalculated result and a table that narrows and widens again), frames, search, trace click
+recalculated result, and a table that narrows or shortens, showing its last columns or rows, and
+grows again while the user scrolls the other axis), frames, search, trace click
 delegation, boundary/rejected execution diagnostics, the status bar naming no seeded
 nodes, pivot identity/result/job lifecycle,
 overview/chart card ordering and config, the data-cache state and profile lifecycle, chart

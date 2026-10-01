@@ -28,7 +28,11 @@ export function useRecordedNodeColumns(data: HauteNodeData, activeSource: string
   const [kept, setKept] = useState<KeptColumns | null>(null)
   const keptApplies = kept !== null && kept.source === activeSource && sameSettings(kept.config, config)
   const recorded = data._columnsSource === activeSource ? data._availableColumns : undefined
-  if (recorded === undefined) return keptApplies ? kept.columns : undefined
+  if (recorded === undefined) {
+    // Going back to the kept source or settings does not preview the node again.
+    if (kept !== null && !keptApplies) setKept(null)
+    return keptApplies ? kept.columns : undefined
+  }
   const fingerprint = columnFingerprint(recorded)
   if (keptApplies && kept.fingerprint === fingerprint) return kept.columns
   setKept({ source: activeSource, config, fingerprint, columns: recorded })

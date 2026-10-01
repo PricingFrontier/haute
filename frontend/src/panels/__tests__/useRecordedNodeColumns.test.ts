@@ -64,7 +64,10 @@ describe("useRecordedNodeColumns", () => {
     const hook = render(scored())
 
     hook.rerender({ nodeData: edited({ output_column: "pred_freq", code: "" }), source: "live" })
+    expect(hook.result.current).toBeUndefined()
 
+    // Changing it back does not bring back columns no preview has recorded since.
+    hook.rerender({ nodeData: edited({ output_column: "prediction", code: "" }), source: "live" })
     expect(hook.result.current).toBeUndefined()
   })
 
@@ -75,6 +78,10 @@ describe("useRecordedNodeColumns", () => {
     hook.rerender({ nodeData: scored(), source: "batch" })
     expect(hook.result.current).toBeUndefined()
     hook.rerender({ nodeData: edited({ output_column: "prediction", code: "" }), source: "batch" })
+    expect(hook.result.current).toBeUndefined()
+
+    // Switching back does not bring them back either.
+    hook.rerender({ nodeData: edited({ output_column: "prediction", code: "" }), source: "live" })
     expect(hook.result.current).toBeUndefined()
   })
 

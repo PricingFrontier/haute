@@ -96,35 +96,28 @@ type ColumnSearchEntry = {
 }
 
 /**
- * Where the user scrolled the table to. Each axis keeps its offset, or its far
- * end when it was left there, so a column added to a table scrolled fully
- * right comes into view.
+ * Where the user left one axis of the table: its offset, or its far end when
+ * it was left there, so a column added to a table scrolled fully right comes
+ * into view.
  */
-type ScrollPlace = {
-  top: number
-  left: number
-  atBottom: boolean
-  atRight: boolean
-}
+type AxisPlace = { offset: number; atEnd: boolean }
+
+/** Where the user scrolled the table to, kept per axis. */
+type ScrollPlace = { top: AxisPlace; left: AxisPlace }
 
 // Offsets can be fractional, so within a pixel of the end is the end.
-function isAtFarEnd(offset: number, maxOffset: number): boolean {
-  return maxOffset > 0 && maxOffset - offset < 1
+function readAxisPlace(offset: number, maxOffset: number): AxisPlace {
+  return { offset, atEnd: maxOffset > 0 && maxOffset - offset < 1 }
 }
 
-function readScrollPlace(el: HTMLElement): ScrollPlace {
-  return {
-    top: el.scrollTop,
-    left: el.scrollLeft,
-    atBottom: isAtFarEnd(el.scrollTop, el.scrollHeight - el.clientHeight),
-    atRight: isAtFarEnd(el.scrollLeft, el.scrollWidth - el.clientWidth),
-  }
+function axisOffset(place: AxisPlace, maxOffset: number): number {
+  return place.atEnd ? maxOffset : place.offset
 }
 
 /** Scrolls `el` to `place`; the browser clamps an offset past the table's end. */
 function scrollToPlace(el: HTMLElement, place: ScrollPlace): void {
-  el.scrollTop = place.atBottom ? el.scrollHeight - el.clientHeight : place.top
-  el.scrollLeft = place.atRight ? el.scrollWidth - el.clientWidth : place.left
+  el.scrollTop = axisOffset(place.top, el.scrollHeight - el.clientHeight)
+  el.scrollLeft = axisOffset(place.left, el.scrollWidth - el.clientWidth)
 }
 
 /**
@@ -339,10 +332,10 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
   const [viewWidth, setViewWidth] = useState(0)
   const rafRef = useRef(0)
   const scrollPlaceRef = useRef<ScrollPlace | null>(null)
-  // The offsets the table was last put back at. Putting it back raises a
-  // scroll event, as does a narrower table clamping it there, and neither is
-  // the user moving it.
-  const placedOffsetsRef = useRef<{ top: number; left: number } | null>(null)
+  // The offset each axis was last put back at, until the user moves that axis.
+  // Putting the table back raises a scroll event, as does a narrower or shorter
+  // table clamping it there, and neither is the user moving it.
+  const placedOffsetsRef = useRef<{ top: number | null; left: number | null }>({ top: null, left: null })
 
   const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
@@ -374,11 +367,17 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
     if (!el) return
     const nextScrollTop = el.scrollTop
     const nextScrollLeft = el.scrollLeft
+    // An axis still at the offset it was put back at keeps its place: the user
+    // scrolled the other axis, or did not scroll at all.
+    const place = scrollPlaceRef.current
     const placed = placedOffsetsRef.current
-    if (!placed || placed.top !== nextScrollTop || placed.left !== nextScrollLeft) {
-      placedOffsetsRef.current = null
-      scrollPlaceRef.current = readScrollPlace(el)
+    const keepTop = place !== null && placed.top === nextScrollTop
+    const keepLeft = place !== null && placed.left === nextScrollLeft
+    scrollPlaceRef.current = {
+      top: keepTop ? place.top : readAxisPlace(nextScrollTop, el.scrollHeight - el.clientHeight),
+      left: keepLeft ? place.left : readAxisPlace(nextScrollLeft, el.scrollWidth - el.clientWidth),
     }
+    placedOffsetsRef.current = { top: keepTop ? placed.top : null, left: keepLeft ? placed.left : null }
     cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       setScrollTop(nextScrollTop)
@@ -495,8 +494,12 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
         let startIdx = 0
         let endIdx = totalRows
         if (shouldVirtualize) {
-          startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-          endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
+          // Until the browser clamps it, the offset can lie past a shorter
+          // result's end; the window then holds the result's last rows, not a
+          // spacer taller than the result.
+          const rowScrollTop = Math.min(scrollTop, Math.max(0, totalRows * ROW_HEIGHT - effectiveViewHeight))
+          startIdx = Math.max(0, Math.floor(rowScrollTop / ROW_HEIGHT) - OVERSCAN)
+          endIdx = Math.min(totalRows, Math.ceil((rowScrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
         }
         const topPad = startIdx * ROW_HEIGHT
         const bottomPad = (totalRows - endIdx) * ROW_HEIGHT

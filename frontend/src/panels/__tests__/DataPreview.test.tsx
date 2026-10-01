@@ -832,10 +832,39 @@ describe("DataPreview", () => {
       // The browser reports the clamp with a scroll event; it is not the user's.
       fireEvent.scroll(scrollContainer())
       await nextFrame()
+      // Scrolling down while it is clamped moves only the vertical place.
+      scrollTo({ scrollTop: 30 * 28 })
+      await nextFrame()
       rerender(<DataPreview data={table()} />)
 
       expect(scrollContainer().scrollLeft).toBe(80 * 160)
-      expect(screen.getByText("col_80")).toBeInTheDocument()
+      expect(scrollContainer().scrollTop).toBe(30 * 28)
+      expect(screen.getByText("r30-c80")).toBeInTheDocument()
+    })
+
+    it("shows a shorter result's last rows, and the user's row again when the rows return", async () => {
+      const { rerender } = render(<DataPreview data={table({ columns: 20, rows: 1000 })} />)
+      scrollTo({ scrollTop: 900 * 28 })
+      await waitFor(() => {
+        expect(screen.getByText("r900-c0")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={table({ columns: 20, status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 20, rows: 100 })} />)
+      // The browser reports the clamp with a scroll event; it is not the user's.
+      fireEvent.scroll(scrollContainer())
+      await nextFrame()
+      expect(screen.getByText("r99-c0")).toBeInTheDocument()
+
+      // Scrolling right while it is clamped moves only the horizontal place.
+      scrollTo({ scrollLeft: 10 * 160 })
+      await nextFrame()
+      rerender(<DataPreview data={table({ columns: 20, status: "loading" })} />)
+      rerender(<DataPreview data={table({ columns: 20, rows: 1000 })} />)
+
+      expect(scrollContainer().scrollTop).toBe(900 * 28)
+      expect(scrollContainer().scrollLeft).toBe(10 * 160)
+      expect(screen.getByText("r900-c10")).toBeInTheDocument()
     })
 
     it("drops a scroll frame still pending from the replaced container", async () => {
