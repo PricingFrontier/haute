@@ -123,10 +123,10 @@ class ApplicationResult:
     change: AssistantChangeRecord
 
     def as_dict(self) -> dict[str, object]:
-        """The compact apply result: the change record is the diff, stated once."""
+        """The compact apply result: the change record is the diff, stated once, and
+        its id is the plan hash."""
 
         return {
-            "plan_hash": self.plan_hash,
             "applied_operations": self.applied_operations,
             "verification_tier": self.verification_tier,
             "evidence": evidence_summary(self.verification_evidence),
@@ -1022,6 +1022,7 @@ class PipelineApplicationService:
                     )
                 )
                 change = change_record(
+                    plan.plan_hash,
                     receipt,
                     graph_changes(before, reparsed, actual_diff),
                     warnings=response.warnings or (),

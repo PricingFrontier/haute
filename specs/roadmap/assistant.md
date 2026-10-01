@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-32 | Planned | P1 | A multi-stage build can finish in one turn, with a change card per stage. |
 | ASSIST-33 | Planned | P2 | The analyst can undo or compare the latest assistant change in one click. |
 | ASSIST-34 | Planned | P2 | Long turns never collide with analyst edits, and setup is explained. |
 | ASSIST-35 | Planned | P2 | About nine task-shaped tools replace fifteen, and recipes compose with primitive operations. |
@@ -95,25 +94,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-32 — Several applies per turn
-**Why:** A successful apply ends the turn, so the rest of a multi-part
-request is silently dropped and a pipeline has to be built one user message
-per stage.
-
-**Plan:** Allow further dry-run and apply rounds after an apply, within the
-turn's tool-call and time budgets, with the affected nodes' brief refreshed
-after each apply and a change card per apply. Committed changes are recorded
-separately from any claim that the request is complete. Amend the
-terminal-apply rule in the specification with its recorded rationale.
-
-**Acceptance:** A replayed source, features, banding, rating and response
-build finishes in one turn with a change card per stage; the one-apply and
-multi-apply variants are compared on the configured model once it answers.
-
-**Dependencies:** `ASSIST-14`, `ASSIST-23`, `ASSIST-30`, `ASSIST-31`.
-
-**Evidence:** `src/haute/assistant/_loop.py::run_turn`.
 
 ### ASSIST-33 — Undo, Compare and canvas focus
 **Why:** Every assistant apply clears the canvas undo stack and re-fits the
@@ -195,7 +175,8 @@ script and held-out format into this one harness.
 
 **Acceptance:** Every case replays in CI; compare reports per-area results and
 flips; the first live baseline on the configured model is recorded once the
-endpoint answers.
+endpoint answers, with the comparison of one apply per turn against several
+applies per turn that `ASSIST-32` left for live evidence.
 
 **Dependencies:** `ASSIST-20`, `ASSIST-35`.
 

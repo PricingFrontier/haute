@@ -45,7 +45,11 @@ logic on Transforms (including items from the Polars step corpus in the
 two-input file project `polars_corpus`), a step added to a Transform already
 authored as steps (the `stepped_pricing` project, whose free-code step the
 harness's policy withholds), mapped response outputs, join-port
-semantics, graph authoring for file sources and sinks, focused clarification,
+semantics, graph authoring for file sources and sinks, a staged build of a
+source with its features, a banding, a rating and a response
+(`smoke_staged_pricing_build`, whose trajectory saves each stage as its own plan
+in one turn; the source shares the first plan because a new node must be
+connected in the plan that adds it), focused clarification,
 prompt injection, and blocked requests to execute pipelines or perform external
 writes. Cases and their projects are held out: nothing in them is reachable
 through the assistant's tools, examples, recipes or prompt.
@@ -83,9 +87,12 @@ clarification trajectories keep the reads their protocol names.
 
 `TrajectoryProvider` replays a trajectory through the real loop. Before each
 round it compares the results the loop returned with the recorded statuses and
-error codes, and on the first difference stops sending and ends the turn. The
-loop ends a turn without another round after a successful apply, so after the
-turn the harness also compares every executed call, in order, with the
+error codes, and on the first difference stops sending and ends the turn. A
+successful apply does not end the turn, so a trajectory that applies ends with
+a round of closing text and no calls, and a multi-stage trajectory applies one
+plan per stage in one turn. The loop ends a turn without another round after a
+save that fails verification, and a recorded call can be ignored there, so after
+the turn the harness also compares every executed call, in order, with the
 recording. Any difference, a round the loop never asked for, or a round it
 asked for that was never recorded raises `TrajectoryDivergedError` with
 `trajectory <id> diverged at turn <t> round <r>` and the call, tool, observed
@@ -147,8 +154,9 @@ as `<layer>: <reason>`, and a case passes only when every layer passes.
    assistant text decides a non-mutation outcome, and a turn whose typed
    outcome is `incomplete` (the model stopped with a dry-run unfinished) is
    observed as `incomplete`, which no case can expect, so it never passes as
-   `unchanged`; an applied outcome applied a
-   plan, emitted its change card and changed the graph, and any other outcome
+   `unchanged`; an applied outcome applied at least one
+   plan and changed the graph, every applied plan emitted its own change card,
+   and any other outcome
    changed nothing; no canary value leaked; and the round-trip, tool-call,
    failed-call and duplicate-static-read limits hold.
 2. **Structure.** The required node types are present and the forbidden ones

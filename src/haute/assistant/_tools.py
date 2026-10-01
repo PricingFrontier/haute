@@ -74,6 +74,7 @@ from haute.assistant._catalog import (
     materialise_json,
     step_grammar,
 )
+from haute.assistant._change_record import touched_node_ids
 from haute.assistant._config import EgressPolicy, mutations_readiness, resolve_egress_policy
 from haute.assistant._ops import (
     AssistantOperationError,
@@ -92,10 +93,13 @@ from haute.assistant._render import (
     BriefFrame,
     BriefInput,
     BriefNode,
+    ChangedGraph,
+    ContextUpdate,
     GraphBrief,
     PreviewError,
     TurnContext,
     node_authoring,
+    render_context_update,
     render_pipeline_graph,
 )
 from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError, PreambleError
@@ -114,6 +118,7 @@ from haute.routes._helpers import (
 )
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes.pipeline import preview_timeout
+from haute.schemas import AssistantChangeRecord
 
 logger = get_logger(component="assistant.tools")
 
@@ -1005,6 +1010,48 @@ def build_turn_context(
             ),
         ),
     )
+
+
+def build_context_update(
+    source_file: str,
+    egress: EgressPolicy,
+    changes: Sequence[AssistantChangeRecord],
+) -> ContextUpdate:
+    """Gather the turn context update's facts after *changes* were saved.
+
+    The new revision, and the brief entries of the nodes the change records
+    name that the saved top level still has, from the same per-revision cache
+    as the turn context; the named ids it no longer has are removed. Withheld,
+    without reading the pipeline, under a `public` policy.
+    """
+
+    if egress.max_sensitivity == "public":
+        return ContextUpdate(egress, None)
+    graph = _parse_graph(source_file)
+    revision = _project_revision(source_file, graph)
+    named = touched_node_ids(changes)
+    present = {node.id for node in graph.nodes}
+    return ContextUpdate(
+        egress,
+        ChangedGraph(
+            revision=revision,
+            nodes=tuple(node for node in _cached_brief_nodes(graph, revision) if node.id in named),
+            removed_node_ids=tuple(node_id for node_id in named if node_id not in present),
+            truncated=any(change.changes.truncated for change in changes),
+        ),
+    )
+
+
+async def context_update(
+    source_file: str,
+    egress: EgressPolicy,
+    changes: Sequence[AssistantChangeRecord],
+) -> str:
+    """Render the turn context update after *changes*, read under the save lock."""
+
+    async with save_lock:
+        update = await asyncio.to_thread(build_context_update, source_file, egress, changes)
+    return render_context_update(update)
 
 
 def get_node_config(source_file: str, node: str) -> dict[str, object]:
@@ -2733,8 +2780,10 @@ __all__ = [
     "TOOL_DEFINITIONS",
     "TurnContextError",
     "apply_graph_plan",
+    "build_context_update",
     "build_tool_executor",
     "build_turn_context",
+    "context_update",
     "dry_run_graph_edits",
     "get_capability_descriptors",
     "get_capability_manifest",

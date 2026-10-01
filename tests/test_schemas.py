@@ -328,12 +328,17 @@ class TestAssistantTurnOutcome:
     @pytest.mark.parametrize(
         "payload",
         [
-            {"kind": "applied", "detail": None},
-            {"kind": "answered", "detail": None},
-            {"kind": "needs_input", "detail": "Which column?"},
-            {"kind": "blocked", "detail": "The file is missing."},
-            {"kind": "committed_unverified", "detail": "Verification failed."},
-            {"kind": "incomplete", "detail": "A dry-run validated a plan that was never applied."},
+            {"kind": "applied", "detail": None, "changes": ["a" * 64, "b" * 64]},
+            {"kind": "answered", "detail": None, "changes": []},
+            {"kind": "needs_input", "detail": "Which column?", "changes": []},
+            {"kind": "needs_input", "detail": "Which band edges?", "changes": ["a" * 64]},
+            {"kind": "blocked", "detail": "The file is missing.", "changes": ["a" * 64]},
+            {"kind": "committed_unverified", "detail": "Verification failed.", "changes": []},
+            {
+                "kind": "incomplete",
+                "detail": "A dry-run validated a plan that was never applied.",
+                "changes": [],
+            },
         ],
     )
     def test_valid_outcomes(self, payload):
@@ -344,12 +349,15 @@ class TestAssistantTurnOutcome:
     @pytest.mark.parametrize(
         "payload",
         [
-            {"kind": "applied", "detail": "extra"},
-            {"kind": "needs_input", "detail": None},
-            {"kind": "blocked", "detail": "  "},
-            {"kind": "committed_unverified"},
-            {"kind": "incomplete", "detail": None},
-            {"kind": "finished", "detail": None},
+            {"kind": "applied", "detail": "extra", "changes": ["a" * 64]},
+            {"kind": "needs_input", "detail": None, "changes": []},
+            {"kind": "blocked", "detail": "  ", "changes": []},
+            {"kind": "committed_unverified", "changes": []},
+            {"kind": "incomplete", "detail": None, "changes": []},
+            {"kind": "finished", "detail": None, "changes": []},
+            {"kind": "applied", "detail": None, "changes": []},
+            {"kind": "answered", "detail": None, "changes": ["a" * 64]},
+            {"kind": "blocked", "detail": "The file is missing."},
         ],
     )
     def test_detail_must_match_the_kind(self, payload):

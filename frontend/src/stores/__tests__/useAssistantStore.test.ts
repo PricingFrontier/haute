@@ -88,7 +88,7 @@ function scriptStream(events: AssistantStreamEvent[]) {
   })
 }
 
-function completed(outcome: AssistantTurnOutcome = { kind: "answered", detail: null }): AssistantStreamEvent {
+function completed(outcome: AssistantTurnOutcome = { kind: "answered", detail: null, changes: [] }): AssistantStreamEvent {
   return { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome }
 }
 
@@ -145,7 +145,7 @@ describe("sendMessage transcript flow", () => {
     expect(assistant).toMatchObject({ text: "Hello", streaming: false })
     expect(entries[entries.length - 1]).toEqual({
       kind: "outcome",
-      outcome: { kind: "answered", detail: null },
+      outcome: { kind: "answered", detail: null, changes: [] },
     })
   })
 
@@ -201,7 +201,7 @@ describe("sendMessage transcript flow", () => {
       { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
       { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying 2 changes", is_error: false, summary: "ok" },
       { type: "change_applied", change: CHANGE },
-      completed({ kind: "applied", detail: null }),
+      completed({ kind: "applied", detail: null, changes: ["plan-1"] }),
     ])
     await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
     const { entries } = useAssistantStore.getState()
@@ -269,6 +269,7 @@ describe("sendMessage transcript flow", () => {
 const HISTORY_TEXT = { name: "", title: "", summary: "", is_error: false }
 
 const CHANGE: AssistantChangeRecord = {
+  id: "a".repeat(64),
   summary: "Add an age band after quotes.",
   assumptions: [],
   changes: {
@@ -331,14 +332,14 @@ describe("transcript order and turn outcomes", () => {
     const entries = await liveEntries([
       { type: "text_delta", text: "I checked the columns. " },
       { type: "text_delta", text: "NEEDS_INPUT: Which values of status mean active?" },
-      completed({ kind: "needs_input", detail: "Which values of status mean active?" }),
+      completed({ kind: "needs_input", detail: "Which values of status mean active?", changes: [] }),
     ])
 
     expect(entries.slice(1)).toEqual([
       { kind: "assistant", text: "I checked the columns.", streaming: false },
       {
         kind: "outcome",
-        outcome: { kind: "needs_input", detail: "Which values of status mean active?" },
+        outcome: { kind: "needs_input", detail: "Which values of status mean active?", changes: [] },
       },
     ])
   })
@@ -349,17 +350,18 @@ describe("transcript order and turn outcomes", () => {
       { type: "tool_started", id: "t1", name: "dry_run_graph_edits", title: "Checking the plan", summary: "{}" },
       { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", title: "Checking the plan", is_error: true, summary: "bad" },
       { type: "text_delta", text: `BLOCKED: ${detail}` },
-      completed({ kind: "blocked", detail }),
+      completed({ kind: "blocked", detail, changes: [] }),
     ])
 
     expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "outcome"])
-    expect(entries[2]).toEqual({ kind: "outcome", outcome: { kind: "blocked", detail } })
+    expect(entries[2]).toEqual({ kind: "outcome", outcome: { kind: "blocked", detail, changes: [] } })
   })
 
   it("keeps the saved-but-unverified statement beside its outcome", async () => {
     const outcome: AssistantTurnOutcome = {
       kind: "committed_unverified",
       detail: "The plan was committed, but structural verification failed.",
+      changes: [],
     }
     const entries = await liveEntries([
       { type: "text_delta", text: "Graph changes were saved, but post-save verification failed." },
@@ -380,6 +382,7 @@ describe("transcript order and turn outcomes", () => {
     const outcome: AssistantTurnOutcome = {
       kind: "incomplete",
       detail: "The last dry-run failed and no later dry-run succeeded.",
+      changes: [],
     }
     const entries = await liveEntries([
       { type: "text_delta", text: "I will look again." },
@@ -395,7 +398,7 @@ describe("transcript order and turn outcomes", () => {
   it("interrupts a turn whose outcome does not match its reply", async () => {
     const entries = await liveEntries([
       { type: "text_delta", text: "Here is the answer." },
-      completed({ kind: "needs_input", detail: "Which column?" }),
+      completed({ kind: "needs_input", detail: "Which column?", changes: [] }),
     ])
 
     expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "interrupted" })
@@ -410,7 +413,7 @@ describe("transcript order and turn outcomes", () => {
       { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
       { type: "text_delta", text: "The plan is ready." },
       { type: "text_delta", text: `NEEDS_INPUT: ${detail}` },
-      completed({ kind: "needs_input", detail }),
+      completed({ kind: "needs_input", detail, changes: [] }),
     ])
     vi.mocked(createAssistantSession).mockResolvedValue({
       sessionId: "session-1",
@@ -422,7 +425,7 @@ describe("transcript order and turn outcomes", () => {
         // One stored row per provider round: a controller continuation split these.
         { kind: "assistant", text: "The plan is ready.", ...HISTORY_TEXT },
         { kind: "assistant", text: `NEEDS_INPUT: ${detail}`, ...HISTORY_TEXT },
-        { kind: "outcome", outcome: { kind: "needs_input", detail } },
+        { kind: "outcome", outcome: { kind: "needs_input", detail, changes: [] } },
       ],
     })
 
@@ -438,7 +441,7 @@ describe("transcript order and turn outcomes", () => {
       { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
       { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying 2 changes", is_error: false, summary: "ok" },
       { type: "change_applied", change: CHANGE },
-      completed({ kind: "applied", detail: null }),
+      completed({ kind: "applied", detail: null, changes: ["plan-1"] }),
     ])
     vi.mocked(createAssistantSession).mockResolvedValue({
       sessionId: "session-1",
@@ -454,7 +457,7 @@ describe("transcript order and turn outcomes", () => {
           is_error: false,
         },
         { kind: "change", change: CHANGE },
-        { kind: "outcome", outcome: { kind: "applied", detail: null } },
+        { kind: "outcome", outcome: { kind: "applied", detail: null, changes: ["plan-1"] } },
       ],
     })
 

@@ -2,7 +2,8 @@
 
 The snapshot is the session-stable system prompt for one fixed source file,
 the turn context of two turns of that project rendered from fixed data, the
-canonical tool definitions, and each provider adapter's wire projection of
+turn context update after an apply in the second turn, the canonical tool
+definitions, and each provider adapter's wire projection of
 them, plus a sha256 of each rendered file. The system prompt is rendered once
 per turn and must come out identical, so the snapshot shows one prefix for
 both turns. The Haute version and the capability hash in the prompt are
@@ -28,6 +29,8 @@ from haute.assistant._render import (
     BriefFrame,
     BriefInput,
     BriefNode,
+    ChangedGraph,
+    ContextUpdate,
     GraphBrief,
     PreviewError,
     StepsProblem,
@@ -125,6 +128,25 @@ GOLDEN_TURNS = (
         ),
     ),
 )
+# The second turn saves a categorical banding in place of the incomplete
+# Transform; the update names the new node and the node it reads from.
+_SAVED_BANDS = BriefNode(
+    "region_band",
+    "banding",
+    "Region band",
+    None,
+    (BriefInput("add_features", "add_features", _FEATURE_COLUMNS),),
+    (BriefFrame(None, (*_FEATURE_COLUMNS, "region_group")),),
+)
+GOLDEN_UPDATE = ContextUpdate(
+    GOLDEN_TURNS[1].egress,
+    ChangedGraph(
+        revision="<revision-3>",
+        nodes=(_ADD_FEATURES, _SAVED_BANDS),
+        removed_node_ids=("region_bands",),
+        truncated=False,
+    ),
+)
 HAUTE_VERSION_PLACEHOLDER = "<haute-version>"
 CAPABILITY_HASH_PLACEHOLDER = "<capability-hash>"
 
@@ -146,7 +168,7 @@ def render_golden() -> dict[str, str]:
     from haute.assistant._catalog import capability_manifest
     from haute.assistant._loop import build_system_prompt
     from haute.assistant._providers import _openai_tools, _portable_tools
-    from haute.assistant._render import render_turn_context
+    from haute.assistant._render import render_context_update, render_turn_context
     from haute.assistant._tools import TOOL_DEFINITIONS
 
     manifest = capability_manifest()
@@ -171,6 +193,7 @@ def render_golden() -> dict[str, str]:
             f"turn_context_{number}.md": render_turn_context(context) + "\n"
             for number, context in enumerate(GOLDEN_TURNS, start=1)
         },
+        "context_update.md": render_context_update(GOLDEN_UPDATE) + "\n",
         "tools_canonical.json": _json_text(TOOL_DEFINITIONS),
         "tools_anthropic.json": _json_text(portable),
         "tools_openai.json": _json_text(_openai_tools(portable)),

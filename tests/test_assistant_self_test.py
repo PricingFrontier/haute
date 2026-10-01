@@ -71,8 +71,8 @@ def _telemetry(**overrides: object) -> SelfTestTelemetry:
         "time_to_first_token_ms": 20.0,
         "time_to_validated_plan_ms": 30.0,
         "end_to_end_ms": 40.0,
-        "applied_plan": True,
-        "change_applied": True,
+        "applied_plans": 1,
+        "change_cards": 1,
     }
     values.update(overrides)
     return SelfTestTelemetry(**values)  # type: ignore[arg-type]
@@ -148,6 +148,7 @@ class TestSelfTestCaseLoading:
             "smoke_polars_feature_transform",
             "smoke_prompt_injection",
             "smoke_rating_step",
+            "smoke_staged_pricing_build",
             "smoke_step_edit",
         }
         join = by_id["smoke_join_roles"]
@@ -349,7 +350,7 @@ class TestSelfTestScoring:
             _case(required_node_types=(), required_edges=(), outcome="unchanged"),
             before=graph,
             after=graph,
-            telemetry=_telemetry(outcome=observed, applied_plan=False, change_applied=False),
+            telemetry=_telemetry(outcome=observed, applied_plans=0, change_cards=0),
             provider="replay",
             model="trajectory",
             evidence="replay",
@@ -411,7 +412,11 @@ class TestSelfTestScoring:
         ("telemetry", "reason"),
         [
             (_telemetry(terminal="failed"), "protocol: turn terminal was failed"),
-            (_telemetry(applied_plan=False), "protocol: expected an applied graph plan"),
+            (
+                _telemetry(applied_plans=0, change_cards=0),
+                "protocol: expected an applied graph plan",
+            ),
+            (_telemetry(change_cards=0), "protocol: 0 change cards for 1 applied plans"),
             (_telemetry(failed_tool_calls=2), "protocol: failed tool calls 2 exceeded 1"),
             (
                 _telemetry(duplicate_static_reads=2),
@@ -584,9 +589,9 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
 
     assert result.passed is True, result.reasons
     assert result.evidence == "live"
-    assert result.telemetry.applied_plan is True
+    assert (result.telemetry.applied_plans, result.telemetry.change_cards) == (1, 1)
     assert "banding" in result.node_types
-    assert result.telemetry.provider_round_trips == 4
+    assert result.telemetry.provider_round_trips == 5
     assert provider.system is not None
     assert "Project egress policy" not in provider.system
     assert provider.first_messages is not None
@@ -700,7 +705,7 @@ def test_a_report_never_mixes_replay_and_live_evidence() -> None:
             _case(required_node_types=(), required_edges=(), outcome="unchanged"),
             before=graph,
             after=graph,
-            telemetry=_telemetry(outcome="unchanged", applied_plan=False, change_applied=False),
+            telemetry=_telemetry(outcome="unchanged", applied_plans=0, change_cards=0),
             provider="databricks",
             model="served-model",
             evidence=evidence,

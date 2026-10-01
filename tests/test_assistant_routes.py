@@ -265,6 +265,7 @@ def _persistent_store(monkeypatch: pytest.MonkeyPatch, project_root: Path) -> Se
 
 #: A saved plan's change record, as an apply result carries it.
 _CHANGE = {
+    "id": "a" * 64,
     "summary": "Add an age band after quotes.",
     "assumptions": ["Ages are whole years."],
     "changes": {
@@ -316,7 +317,7 @@ class TestSessionResume:
                         "is_error": False,
                     },
                 ],
-                "outcome": {"kind": "applied", "detail": None},
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
             },
         )
 
@@ -340,7 +341,11 @@ class TestSessionResume:
             AssistantChangeRecord.model_validate(_CHANGE)
         )
         # The stored outcome closes the resumed turn, as the live completed event did.
-        assert body["history"][4]["outcome"] == {"kind": "applied", "detail": None}
+        assert body["history"][4]["outcome"] == {
+            "kind": "applied",
+            "detail": None,
+            "changes": ["a" * 64],
+        }
 
     def test_tool_error_entries_carry_the_error_flag_and_message(
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch

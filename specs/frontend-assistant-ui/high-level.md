@@ -90,12 +90,14 @@ holding the model's question, in place of the raw `NEEDS_INPUT:` text, with a on
 reply "You choose, and tell me what you picked." that sends that message as the next turn
 (available on the latest turn only, under the same send gate as the composer). `blocked`
 renders a blocked card with the reason, in place of the raw `BLOCKED:` text, stating that
-nothing was saved. `committed_unverified` renders a card stating that the changes were
+nothing was saved, or how many changes the turn saved before it was blocked, whose cards
+are above it; a question card counts the changes saved before the question the same way. `committed_unverified` renders a card stating that the changes were
 saved but the post-save check failed, with the check's error and a prompt to review the
 pipeline or return to the previous save in the Git panel; it never says that nothing
 changed. `incomplete` renders a card titled "Stopped before finishing" that tells the
-analyst to ask it to continue, states that nothing was saved, and shows the reason the
-controller gave.
+analyst to ask it to continue, states that nothing was saved (or how many changes were),
+and shows the reason the controller gave. A turn may save several changes, each with its
+own change card, before it ends.
 
 **Graph authoring applies without a second permission prompt.** The user's
 message authorizes graph authoring. A validated plan may therefore apply

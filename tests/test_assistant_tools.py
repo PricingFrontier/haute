@@ -2713,17 +2713,22 @@ class TestActionableErrors:
                 if last.get("role") == "tool":
                     results.append(last["content"])
                 self.rounds += 1
+                usage = ProviderUsage(input_tokens=1, output_tokens=1)
                 if self.rounds <= len(attempts):
                     yield ToolCallRequest(
                         f"dry-{self.rounds}",
                         "dry_run_graph_edits",
                         {"summary": "Total August premium.", "ops": attempts[self.rounds - 1]},
                     )
-                else:
+                elif self.rounds == len(attempts) + 1:
                     yield ToolCallRequest(
                         "apply", "apply_graph_plan", {"plan_hash": last["content"]["plan_hash"]}
                     )
-                yield TurnStop("tool_use", ProviderUsage(input_tokens=1, output_tokens=1))
+                else:
+                    # The apply does not end the turn; the model closes it.
+                    yield TurnStop("end", usage)
+                    return
+                yield TurnStop("tool_use", usage)
 
         store = SessionStore()
         session_id = store.create("main.py").id
@@ -3578,6 +3583,82 @@ class TestTurnContext:
         assert context.graph is None
         text = render_turn_context(context)
         assert "saved graph, its revision and the canvas selection are withheld" in text
+        assert "rated" not in text
+
+    def test_the_update_after_an_apply_names_the_changed_nodes_and_the_new_revision(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._render import render_context_update
+        from haute.assistant._tools import build_context_update, build_turn_context, get_pipeline
+        from haute.schemas import (
+            AssistantChangeEdge,
+            AssistantChangeNode,
+            AssistantChangeRecord,
+            AssistantGraphChanges,
+        )
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        saved = AssistantChangeRecord(
+            id="a" * 64,
+            summary="Rate quotes and drop the old band.",
+            changes=AssistantGraphChanges(
+                nodes=[
+                    AssistantChangeNode(id="rated", type="Polars", change="changed"),
+                    AssistantChangeNode(id="old_band", type="Banding", change="removed"),
+                ],
+                edges_added=[AssistantChangeEdge(source="quotes", target="rated")],
+                truncated=True,
+            ),
+            git_sha=None,
+            parent_sha=None,
+        )
+
+        update = build_context_update("main.py", _turn_policy(), [saved])
+
+        graph = update.graph
+        assert graph is not None
+        revision = get_pipeline("main.py")["project_revision"]
+        assert graph.revision == revision
+        whole = build_turn_context("main.py", _turn_policy()).graph
+        assert whole is not None
+        assert graph.nodes == tuple(node for node in whole.nodes if node.id in {"quotes", "rated"})
+        assert (graph.removed_node_ids, graph.truncated) == (("old_band",), True)
+        text = render_context_update(update)
+        assert text.startswith("## Turn context update\n")
+        assert f"- Base revision: `{revision}`" in text
+        assert "\n- `quotes` (" in text and "\n- `rated` (" in text
+        assert "august_totals" not in text
+        assert "Removed: `old_band`" in text
+        assert "call `get_pipeline`" in text
+
+    def test_the_update_is_withheld_under_a_public_policy(
+        self, steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant import _tools
+        from haute.assistant._render import render_context_update
+        from haute.schemas import AssistantChangeNode, AssistantChangeRecord, AssistantGraphChanges
+
+        def refuse(_source_file: str):
+            raise AssertionError("a public policy must not read the pipeline")
+
+        monkeypatch.setattr(_tools, "_parse_graph", refuse)
+        saved = AssistantChangeRecord(
+            id="a" * 64,
+            summary="Rate quotes.",
+            changes=AssistantGraphChanges(
+                nodes=[AssistantChangeNode(id="rated", type="Polars", change="changed")]
+            ),
+            git_sha=None,
+            parent_sha=None,
+        )
+
+        update = _tools.build_context_update(
+            "main.py", _turn_policy(max_sensitivity="public"), [saved]
+        )
+
+        assert update.graph is None
+        text = render_context_update(update)
+        assert "saved graph and its revision are withheld" in text
         assert "rated" not in text
 
     def test_a_node_the_saved_top_level_lacks_is_refused(self, steps_first_project: Path):

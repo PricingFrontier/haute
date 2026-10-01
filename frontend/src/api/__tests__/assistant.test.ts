@@ -37,6 +37,7 @@ let mockFetch: ReturnType<typeof vi.fn>
 const NO_CONTEXT = { selectedNodeIds: [], previewErrorNodeId: null }
 
 const CHANGE: AssistantChangeRecord = {
+  id: "a".repeat(64),
   summary: "Rename the pricing node.",
   assumptions: ["Nothing reads it by name."],
   changes: {
@@ -204,7 +205,7 @@ describe("createAssistantSession", () => {
           name: "",
           summary: "",
           is_error: false,
-          outcome: { kind: "needs_input", detail: "Which column?" },
+          outcome: { kind: "needs_input", detail: "Which column?", changes: [] },
         },
         {
           kind: "outcome",
@@ -212,7 +213,7 @@ describe("createAssistantSession", () => {
           name: "",
           summary: "",
           is_error: false,
-          outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied." },
+          outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied.", changes: [] },
         },
       ],
     }))
@@ -220,10 +221,10 @@ describe("createAssistantSession", () => {
     const { history } = await createAssistantSession("main.py", "abc123")
     expect(history).toEqual([
       { kind: "user", text: "go", name: "", title: "", summary: "", is_error: false },
-      { kind: "outcome", outcome: { kind: "needs_input", detail: "Which column?" } },
+      { kind: "outcome", outcome: { kind: "needs_input", detail: "Which column?", changes: [] } },
       {
         kind: "outcome",
-        outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied." },
+        outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied.", changes: [] },
       },
     ])
   })
@@ -262,7 +263,7 @@ describe("createAssistantSession", () => {
     ["a change row without its record", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: null }] }],
     ["a change row with an unknown change kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], change: "moved" }] } } }] }],
     ["an outcome row without its outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", text: "", name: "", summary: "", is_error: false, outcome: null }] }],
-    ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", outcome: { kind: "blocked", detail: null } }] }],
+    ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", outcome: { kind: "blocked", detail: null, changes: [] } }] }],
   ])("rejects %s", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
     await expect(createAssistantSession("main.py")).rejects.toThrow(/assistant|session|history/i)
@@ -318,14 +319,14 @@ describe("streamAssistantMessage", () => {
     const events = await collectEvents([
       'data: {"type":"text_del',
       'ta","text":"Hi"}\n\ndata: {"type":"comp',
-      'leted","usage":{"input_tokens":1,"output_tokens":2},"outcome":{"kind":"answered","detail":null}}\n\n',
+      'leted","usage":{"input_tokens":1,"output_tokens":2},"outcome":{"kind":"answered","detail":null,"changes":[]}}\n\n',
     ])
     expect(events).toEqual([
       { type: "text_delta", text: "Hi" },
       {
         type: "completed",
         usage: { input_tokens: 1, output_tokens: 2 },
-        outcome: { kind: "answered", detail: null },
+        outcome: { kind: "answered", detail: null, changes: [] },
       },
     ])
   })
@@ -336,7 +337,7 @@ describe("streamAssistantMessage", () => {
         'data: {"type":"tool_started","id":"t1","name":"get_pipeline","title":"Reading the pipeline","summary":"{}"}\n\n' +
         'data: {"type":"tool_finished","id":"t1","name":"get_pipeline","title":"Reading the pipeline","is_error":false,"summary":"ok"}\n\n' +
         `data: ${JSON.stringify({ type: "change_applied", change: CHANGE })}\n\n` +
-        'data: {"type":"completed","usage":{"input_tokens":1,"output_tokens":1},"outcome":{"kind":"answered","detail":null}}\n\n',
+        'data: {"type":"completed","usage":{"input_tokens":1,"output_tokens":1},"outcome":{"kind":"answered","detail":null,"changes":[]}}\n\n',
     ])
     expect(events.map((event) => event.type)).toEqual([
       "text_delta",
@@ -354,7 +355,7 @@ describe("streamAssistantMessage", () => {
       "\n\n",
       'data: {"type":"text_delta","text":"x"}\n\n',
       ": ping\n\n",
-      'data: {"type":"completed","usage":{"input_tokens":0,"output_tokens":0},"outcome":{"kind":"answered","detail":null}}\n\n',
+      'data: {"type":"completed","usage":{"input_tokens":0,"output_tokens":0},"outcome":{"kind":"answered","detail":null,"changes":[]}}\n\n',
     ])
     expect(events.map((event) => event.type)).toEqual(["text_delta", "completed"])
   })
@@ -381,13 +382,17 @@ describe("streamAssistantMessage", () => {
     ["change_applied with a negative step count", { type: "change_applied", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], steps_changed: -1 }] } } }],
     ["completed usage object", { type: "completed", usage: [] }],
     ["completed nested input_tokens", { type: "completed", usage: { input_tokens: "1", output_tokens: 2 } }],
-    ["completed nested output_tokens", { type: "completed", usage: { input_tokens: 1 }, outcome: { kind: "answered", detail: null } }],
+    ["completed nested output_tokens", { type: "completed", usage: { input_tokens: 1 }, outcome: { kind: "answered", detail: null, changes: [] } }],
     ["completed without an outcome", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 } }],
     ["completed outcome kind", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: 1, detail: null } }],
-    ["completed answered with a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: "x" } }],
-    ["completed question without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "needs_input", detail: null } }],
-    ["completed blocker with a blank detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: " " } }],
-    ["completed incomplete without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "incomplete", detail: null } }],
+    ["completed answered with a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: "x", changes: [] } }],
+    ["completed question without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "needs_input", detail: null, changes: [] } }],
+    ["completed blocker with a blank detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: " ", changes: [] } }],
+    ["completed incomplete without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "incomplete", detail: null, changes: [] } }],
+    ["completed without its saved changes", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: "x" } }],
+    ["completed applied with no saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "applied", detail: null, changes: [] } }],
+    ["completed answered with a saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: null, changes: ["plan-1"] } }],
+    ["change_applied without its id", { type: "change_applied", change: { ...CHANGE, id: undefined } }],
     ["failed", { type: "failed", message: null }],
     ["cancelled discriminator", { type: 1 }],
   ])("rejects malformed %s before invoking the callback", async (_label, event) => {

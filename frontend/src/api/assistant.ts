@@ -21,13 +21,19 @@ export interface AssistantUsage {
 }
 
 /**
- * How a completed turn ended. The detail is the model's question, the blocker,
- * the verification error of a save that committed, or the controller's reason
- * the model stopped before finishing.
+ * How a completed turn ended, and what it saved. The detail is the model's
+ * question, the blocker, the verification error of a save that committed, or
+ * the controller's reason the model stopped before finishing. `changes` are the
+ * ids of the change cards the turn saved, in order: at least one for `applied`,
+ * none for `answered`, and any number before a question, blocker or stop.
  */
 export type AssistantTurnOutcome =
-  | { kind: "applied" | "answered"; detail: null }
-  | { kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"; detail: string }
+  | { kind: "applied" | "answered"; detail: null; changes: string[] }
+  | {
+      kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"
+      detail: string
+      changes: string[]
+    }
 
 /** One edge a saved plan added or removed, by its endpoint node ids. */
 export interface AssistantChangeEdge {
@@ -50,6 +56,8 @@ export interface AssistantChangeNode {
 
 /** The value-free change card of one saved plan, mirrored from `schemas.py`. */
 export interface AssistantChangeRecord {
+  /** The hash of the plan the change saved; the turn outcome lists it. */
+  id: string
   summary: string
   assumptions: string[]
   changes: {
@@ -158,18 +166,25 @@ function parseAssistantStatus(value: unknown): AssistantStatus {
 function parseTurnOutcome(value: unknown, path: string): AssistantTurnOutcome {
   const payload = requireRecord(value, path)
   const kind = requireString(payload.kind, `${path}.kind`)
+  const changes = requireStringArray(payload.changes, `${path}.changes`)
   switch (kind) {
     case "applied":
     case "answered":
       if (payload.detail !== null) invalidAssistantPayload(`${path}.detail`, "null")
-      return { kind, detail: null }
+      if (kind === "applied" && changes.length === 0) {
+        invalidAssistantPayload(`${path}.changes`, "at least one saved change")
+      }
+      if (kind === "answered" && changes.length > 0) {
+        invalidAssistantPayload(`${path}.changes`, "no saved change")
+      }
+      return { kind, detail: null, changes }
     case "needs_input":
     case "blocked":
     case "committed_unverified":
     case "incomplete": {
       const detail = requireString(payload.detail, `${path}.detail`)
       if (!detail.trim()) invalidAssistantPayload(`${path}.detail`, "a non-empty string")
-      return { kind, detail }
+      return { kind, detail, changes }
     }
     default:
       throw new Error(`Unknown assistant turn outcome kind: ${kind}`)
@@ -221,6 +236,7 @@ function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord 
   const changes = requireRecord(record.changes, `${path}.changes`)
   if (!Array.isArray(changes.nodes)) invalidAssistantPayload(`${path}.changes.nodes`, "an array")
   return {
+    id: requireString(record.id, `${path}.id`),
     summary: requireString(record.summary, `${path}.summary`),
     assumptions: requireStringArray(record.assumptions, `${path}.assumptions`),
     changes: {

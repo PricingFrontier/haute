@@ -295,7 +295,8 @@ class TestMutationEndToEnd:
         assert events[-1].type == "completed", [repr(event) for event in events]
         finished = next(event for event in events if event.type == "tool_finished")
         assert finished.is_error is False
-        assert len(provider.calls) == 2
+        # The apply does not end the turn: the model's closing round follows it.
+        assert len(provider.calls) == 3
         session = store.lookup(session_id)
         assert session is not None
         tool_messages = [

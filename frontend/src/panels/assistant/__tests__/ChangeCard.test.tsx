@@ -29,6 +29,7 @@ function chip(node: Partial<AssistantChangeNode> & Pick<AssistantChangeNode, "id
 
 function record(overrides: Partial<AssistantChangeRecord> = {}): AssistantChangeRecord {
   return {
+    id: "b".repeat(64),
     summary: "Band driver age, rate it and price the quote.",
     assumptions: ["Drivers under 25 are the young band."],
     changes: {

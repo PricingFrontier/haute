@@ -200,6 +200,40 @@ def test_a_turn_context_is_a_system_message_only_where_the_model_accepts_one():
     assert "claude-sonnet-5" not in MID_CONVERSATION_SYSTEM_MODELS
 
 
+def test_a_turn_context_update_follows_the_round_s_tool_results():
+    """After an apply's round the update travels after that round's results:
+    the same system message where the model accepts one, otherwise text after
+    the `tool_result` blocks or a user message after the tool messages."""
+
+    from haute.assistant._providers import _anthropic_messages, _openai_messages
+
+    update = "## Turn context update\nrevision two"
+    turn = [*_CONTEXT_TURN, {"role": "context", "content": update}]
+
+    system = _anthropic_messages(turn, system_context=True)
+    assert [message["role"] for message in system] == [
+        "user",
+        "system",
+        "assistant",
+        "user",
+        "system",
+    ]
+    assert system[-1] == {"role": "system", "content": update}
+    folded = _anthropic_messages(turn, system_context=False)
+    assert [message["role"] for message in folded] == ["user", "assistant", "user"]
+    assert [block["type"] for block in folded[-1]["content"]] == ["tool_result", "text"]
+    assert folded[-1]["content"][-1] == {"type": "text", "text": update}
+    openai_messages = _openai_messages(_SYSTEM, turn)
+    assert [message["role"] for message in openai_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert openai_messages[-1] == {"role": "user", "content": update}
+
+
 def test_a_turn_context_that_follows_no_user_message_fails_loudly():
     from haute.assistant._providers import _anthropic_messages, _openai_messages
 
@@ -208,6 +242,15 @@ def test_a_turn_context_that_follows_no_user_message_fails_loudly():
         _anthropic_messages(orphan, system_context=False)
     with pytest.raises(RuntimeError, match="must follow a user text message"):
         _openai_messages(_SYSTEM, orphan)
+    after_text = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "context", "content": "## Turn context"},
+    ]
+    with pytest.raises(RuntimeError, match="must follow a user text message or tool results"):
+        _anthropic_messages(after_text, system_context=False)
+    with pytest.raises(RuntimeError, match="must follow a user text message or tool results"):
+        _openai_messages(_SYSTEM, after_text)
 
 
 # ---------------------------------------------------------------------------

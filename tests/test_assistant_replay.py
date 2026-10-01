@@ -230,6 +230,67 @@ async def test_the_first_request_carries_the_columns_the_first_dry_run_reads(
     assert '"driver_age"' in context["content"]
 
 
+class _RecordingProvider(TrajectoryProvider):
+    """A trajectory provider that keeps the messages of every provider request."""
+
+    def __init__(self, trajectory) -> None:
+        super().__init__(trajectory)
+        self.requests: list[tuple[dict[str, object], ...]] = []
+
+    async def stream_turn(self, *, system, messages, tools):
+        self.requests.append(tuple(dict(message) for message in messages))
+        async for event in super().stream_turn(system=system, messages=messages, tools=tools):
+            yield event
+
+
+async def test_a_staged_build_saves_each_stage_in_one_turn_with_a_card_each(
+    tmp_path: Path,
+) -> None:
+    """The source with its features, the banding, the rating and the response are
+    four plans saved in one turn, each with its change card; each later stage
+    reads the columns the earlier ones produced from the turn context update,
+    never from a read call."""
+
+    trajectory = next(item for item in TRAJECTORIES if item.id == "smoke_staged_pricing_build")
+    provider = _RecordingProvider(trajectory)
+    result = await run_self_test_case(
+        CASES[trajectory.case],
+        projects_root=PROJECTS_ROOT,
+        config=replay_config(trajectory),
+        work_dir=tmp_path,
+        provider_factory=lambda _config: provider,
+        evidence="replay",
+    )
+    provider.verify(result.tool_diagnostics)
+
+    assert result.reasons == ()
+    assert (result.telemetry.applied_plans, result.telemetry.change_cards) == (4, 4)
+    calls = [
+        call.tool for trajectory_round in trajectory.turns[0] for call in trajectory_round.calls
+    ]
+    assert not set(calls) & _READ_TOOLS
+    # The request that plans the banding follows the first apply's round.
+    banding = next(
+        messages
+        for messages in provider.requests
+        if any(message.get("name") == "apply_graph_plan" for message in messages)
+    )
+    update = banding[-1]
+    assert update["role"] == "context"
+    assert str(update["content"]).startswith("## Turn context update\n")
+    assert "- `quote_features` (" in str(update["content"])
+    assert '"vehicle_value_k"' in str(update["content"])
+    assert '"region"' in str(update["content"])
+    assert banding[-2]["name"] == "apply_graph_plan"
+    updates = [
+        message
+        for message in provider.requests[-1]
+        if message["role"] == "context"
+        and str(message["content"]).startswith("## Turn context update")
+    ]
+    assert len(updates) == 4
+
+
 async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_layer(
     tmp_path: Path,
 ) -> None:

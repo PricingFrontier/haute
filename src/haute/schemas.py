@@ -179,19 +179,23 @@ _OUTCOME_KINDS_WITH_DETAIL = frozenset(
 
 
 class AssistantTurnOutcome(BaseModel):
-    """How a completed assistant turn ended.
+    """How a completed assistant turn ended, and what it saved.
 
     ``detail`` is the model's question (``needs_input``), the sanitized blocker
     (``blocked``), the verification error of a save that committed
     (``committed_unverified``) or the controller's reason the model stopped
     with a dry-run unfinished (``incomplete``); ``applied`` and ``answered``
-    carry none.
+    carry none. ``changes`` are the ids of the change records the turn saved,
+    in order, whatever the kind says about finishing the request: ``applied``
+    saved at least one and ``answered`` none, while any other kind may follow
+    saved changes.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: AssistantTurnOutcomeKind
     detail: str | None
+    changes: list[str]
 
     @model_validator(mode="after")
     def _detail_matches_kind(self) -> AssistantTurnOutcome:
@@ -200,6 +204,10 @@ class AssistantTurnOutcome(BaseModel):
                 raise ValueError(f"a {self.kind} outcome requires a non-empty detail")
         elif self.detail is not None:
             raise ValueError(f"a {self.kind} outcome carries no detail")
+        if self.kind == "applied" and not self.changes:
+            raise ValueError("an applied outcome names the changes it saved")
+        if self.kind == "answered" and self.changes:
+            raise ValueError("an answered outcome saved no change")
         return self
 
 
@@ -257,12 +265,14 @@ class AssistantGraphChanges(BaseModel):
 class AssistantChangeRecord(BaseModel):
     """The value-free change card of one saved plan.
 
-    ``summary`` and ``assumptions`` are the model's own words from the plan's
-    dry-run; everything else is built from what was saved.
+    ``id`` is the hash of the plan it saved; a plan applies once, so it names
+    this change. ``summary`` and ``assumptions`` are the model's own words from
+    the plan's dry-run; everything else is built from what was saved.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    id: str = Field(min_length=1)
     # Bounded where the model writes it (the dry-run receipt), not here: a
     # persisted record redacts it, which can lengthen it.
     summary: str = Field(min_length=1)

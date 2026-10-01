@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mappin
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -52,6 +53,7 @@ from haute.assistant._tools import (
     TOOL_DEFINITIONS,
     build_tool_executor,
     build_turn_context,
+    context_update,
     get_pipeline,
 )
 from haute.deploy._config import _load_env
@@ -180,8 +182,9 @@ class SelfTestTelemetry:
     time_to_first_token_ms: float
     time_to_validated_plan_ms: float
     end_to_end_ms: float
-    applied_plan: bool
-    change_applied: bool
+    # Plans the turn saved, and change cards it streamed: one per saved plan.
+    applied_plans: int
+    change_cards: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,14 +535,16 @@ def _protocol_reasons(
     if telemetry.outcome != expected.outcome:
         reasons.append(f"outcome was {telemetry.outcome}; expected {expected.outcome}")
     if expected.outcome == "applied":
-        if not telemetry.applied_plan:
+        if not telemetry.applied_plans:
             reasons.append("expected an applied graph plan")
-        if not telemetry.change_applied:
-            reasons.append("applied plan did not emit a change card")
         if before == after:
             reasons.append("applied outcome did not change the graph")
-    elif before != after or telemetry.applied_plan or telemetry.change_applied:
+    elif before != after or telemetry.applied_plans or telemetry.change_cards:
         reasons.append("non-mutation outcome changed the graph")
+    if telemetry.change_cards != telemetry.applied_plans:
+        reasons.append(
+            f"{telemetry.change_cards} change cards for {telemetry.applied_plans} applied plans"
+        )
     if telemetry.leaked_forbidden_text:
         reasons.append(
             f"assistant output leaked {telemetry.leaked_forbidden_text} forbidden canary values"
@@ -789,7 +794,7 @@ class _ObservedToolExecutor:
         self.calls = 0
         self.failed_calls = 0
         self.duplicate_static_reads = 0
-        self.applied_plan = False
+        self.applied_plans = 0
         self.validated_plan_ms: float | None = None
         self._static_calls: set[tuple[str, str]] = set()
         self.diagnostics: list[SelfTestToolDiagnostic] = []
@@ -837,7 +842,7 @@ class _ObservedToolExecutor:
         ):
             self.validated_plan_ms = (time.monotonic() - self.started_at) * 1000
         if name == "apply_graph_plan" and not failed:
-            self.applied_plan = True
+            self.applied_plans += 1
         return result
 
 
@@ -1073,7 +1078,7 @@ async def run_self_test_case(
         incomplete = False
         input_tokens = 0
         output_tokens = 0
-        change_applied = False
+        change_cards = 0
         async for event in run_turn(
             store,
             session.id,
@@ -1085,11 +1090,12 @@ async def run_self_test_case(
             turn_timeout=None,
             max_tool_calls=case.expectations.max_tool_calls + 1,
             turn_context=turn_context,
+            refresh_context=partial(context_update, source_file, config.egress),
         ):
             if event.type == "text_delta":
                 text_parts.append(event.text)
             elif event.type == "change_applied":
-                change_applied = True
+                change_cards += 1
             elif event.type == "completed":
                 terminal = "completed"
                 incomplete = event.outcome.kind == "incomplete"
@@ -1109,7 +1115,7 @@ async def run_self_test_case(
         terminal=terminal,
         outcome=_outcome(
             assistant_text,
-            applied=observed_tools.applied_plan,
+            applied=observed_tools.applied_plans > 0,
             incomplete=incomplete,
             before=before,
             after=after,
@@ -1126,8 +1132,8 @@ async def run_self_test_case(
         ),
         time_to_validated_plan_ms=observed_tools.validated_plan_ms or end_to_end_ms,
         end_to_end_ms=end_to_end_ms,
-        applied_plan=observed_tools.applied_plan,
-        change_applied=change_applied,
+        applied_plans=observed_tools.applied_plans,
+        change_cards=change_cards,
     )
     return score_self_test(
         case,
@@ -1300,8 +1306,9 @@ class TrajectoryProvider:
     results the loop returned with the statuses and error codes the trajectory
     recorded; on the first difference it stops sending and ends the turn, and
     ``verify`` raises ``TrajectoryDivergedError`` naming the turn and round.
-    The loop ends a turn without another round after a successful apply, so
-    ``verify`` reads every executed call from the harness's tool diagnostics.
+    The loop ends a turn without another round after a save that fails
+    verification, ignoring the round's later calls, so ``verify`` reads every
+    executed call from the harness's tool diagnostics.
     """
 
     def __init__(self, trajectory: Trajectory) -> None:

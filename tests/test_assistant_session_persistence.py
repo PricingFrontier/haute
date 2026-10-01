@@ -30,7 +30,7 @@ def _turn(text: str = "hi", reply: str = "hello") -> dict:
             {"role": "user", "content": text},
             {"role": "assistant", "content": reply},
         ],
-        "outcome": {"kind": "answered", "detail": None},
+        "outcome": {"kind": "answered", "detail": None, "changes": []},
     }
 
 
@@ -189,7 +189,11 @@ class TestWriteThrough:
         store = _store(tmp_path)
         session = store.create("rating/main.py")
         turn = _turn("go", "NEEDS_INPUT: is provider-secret-canary the key?")
-        turn["outcome"] = {"kind": "needs_input", "detail": "is provider-secret-canary the key?"}
+        turn["outcome"] = {
+            "kind": "needs_input",
+            "detail": "is provider-secret-canary the key?",
+            "changes": ["a" * 64],
+        }
         store.append(session, turn)
 
         raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
@@ -197,12 +201,14 @@ class TestWriteThrough:
         stored = json.loads(raw)["history"][0]["outcome"]
         assert stored["kind"] == "needs_input"
         assert "<redacted>" in stored["detail"]
+        assert stored["changes"] == ["a" * 64]
 
     def test_an_apply_change_record_revives_with_its_text_redacted(
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
         change = {
+            "id": "a" * 64,
             "summary": "Use provider-secret-canary as the band label.",
             "assumptions": ["provider-secret-canary is safe to show."],
             "changes": {
@@ -236,7 +242,7 @@ class TestWriteThrough:
                         "is_error": False,
                     },
                 ],
-                "outcome": {"kind": "applied", "detail": None},
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
             },
         )
 
@@ -249,11 +255,9 @@ class TestWriteThrough:
         record = AssistantChangeRecord.model_validate(content["change"])
         assert "<redacted>" in record.summary and "<redacted>" in record.assumptions[0]
         assert record.changes == AssistantChangeRecord.model_validate(change).changes
-        assert (record.git_sha, record.parent_sha, content["applied_operations"]) == (
-            "c" * 40,
-            "d" * 40,
-            2,
-        )
+        assert (record.id, record.git_sha, record.parent_sha) == ("a" * 64, "c" * 40, "d" * 40)
+        assert content["applied_operations"] == 2
+        assert revived.history[0].outcome.changes == ["a" * 64]
 
     def test_a_change_summary_lengthened_by_redaction_still_revives(
         self, tmp_path: Path, monkeypatch
@@ -279,6 +283,7 @@ class TestWriteThrough:
                         "name": "apply_graph_plan",
                         "content": {
                             "change": {
+                                "id": "a" * 64,
                                 "summary": summary,
                                 "changes": {"nodes": []},
                                 "git_sha": None,
@@ -288,7 +293,7 @@ class TestWriteThrough:
                         "is_error": False,
                     },
                 ],
-                "outcome": {"kind": "applied", "detail": None},
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
             },
         )
 
@@ -328,7 +333,11 @@ class TestRevival:
         assert revived.source_file == "rating/main.py"
         assert [m.content for m in revived.history[0].messages] == ["hi", "hello"]
         assert revived.history[0].outcome is not None
-        assert revived.history[0].outcome.model_dump() == {"kind": "answered", "detail": None}
+        assert revived.history[0].outcome.model_dump() == {
+            "kind": "answered",
+            "detail": None,
+            "changes": [],
+        }
         assert not revived.lock.locked()
 
     def test_a_turn_record_without_an_outcome_key_is_invalid(self, tmp_path: Path):

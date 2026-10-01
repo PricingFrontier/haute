@@ -185,6 +185,14 @@ function OutcomeCard({ testId, icon: Icon, tone, title, children }: OutcomeCardP
   )
 }
 
+/** What a turn saved before it ended, whose change cards are above the outcome. */
+function savedLine(changes: readonly string[]): string {
+  if (changes.length === 0) return "Nothing was saved."
+  return changes.length === 1
+    ? "1 change was saved, shown above."
+    : `${changes.length} changes were saved, shown above.`
+}
+
 function OutcomeEntry({
   entry,
   reply,
@@ -206,6 +214,9 @@ function OutcomeEntry({
           title="Assistant needs your input"
         >
           <AssistantMarkdown text={outcome.detail} streaming={false} />
+          {outcome.changes.length > 0 && (
+            <p style={{ color: "var(--text-secondary)" }}>{savedLine(outcome.changes)}</p>
+          )}
           {reply && (
             <button
               type="button"
@@ -230,7 +241,7 @@ function OutcomeEntry({
           title="Assistant is blocked"
         >
           <AssistantMarkdown text={outcome.detail} streaming={false} />
-          <p style={{ color: "var(--text-secondary)" }}>Nothing was saved.</p>
+          <p style={{ color: "var(--text-secondary)" }}>{savedLine(outcome.changes)}</p>
         </OutcomeCard>
       )
     case "committed_unverified":
@@ -256,7 +267,9 @@ function OutcomeEntry({
           tone="warning"
           title="Stopped before finishing"
         >
-          <p style={{ color: "var(--text-primary)" }}>Ask it to continue. Nothing was saved.</p>
+          <p style={{ color: "var(--text-primary)" }}>
+            Ask it to continue. {savedLine(outcome.changes)}
+          </p>
           <p className="break-words" style={{ color: "var(--text-muted)" }}>{outcome.detail}</p>
         </OutcomeCard>
       )

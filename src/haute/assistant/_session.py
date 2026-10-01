@@ -388,12 +388,15 @@ def _persisted_text(text: str) -> str:
 
 
 def _persisted_outcome(outcome: AssistantTurnOutcome | None) -> JSONValue:
-    """Store a turn outcome; its detail is model-derived text and is redacted like it."""
+    """Store a turn outcome; its detail is model-derived text and is redacted like it.
+
+    Its change ids are plan hashes, kept as they are.
+    """
 
     if outcome is None:
         return None
     detail = None if outcome.detail is None else _persisted_text(outcome.detail)
-    return {"kind": outcome.kind, "detail": detail}
+    return {"kind": outcome.kind, "detail": detail, "changes": list(outcome.changes)}
 
 
 def _persisted_change(change: JSONValue) -> JSONValue:

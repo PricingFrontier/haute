@@ -47,11 +47,11 @@ from haute.schemas import AssistantChangeRecord
 TERMINAL_TYPES = {"completed", "failed", "cancelled"}
 #: A successful apply result as the tool returns it: compact, with its change record.
 _APPLIED: dict[str, Any] = {
-    "plan_hash": "a" * 64,
     "applied_operations": 2,
     "verification_tier": "schema",
     "evidence": {"schemas_resolved": 1},
     "change": {
+        "id": "a" * 64,
         "summary": "Add an age band after quotes.",
         "changes": {
             "nodes": [{"id": "age_band", "type": "Banding", "change": "added"}],
@@ -113,6 +113,7 @@ async def _run(
     turn_timeout: float = 5.0,
     max_tool_calls: int = 8,
     turn_context: str | None = None,
+    refresh_context=None,
 ):
     from haute.assistant._loop import run_turn
 
@@ -131,6 +132,7 @@ async def _run(
         turn_timeout=turn_timeout,
         max_tool_calls=max_tool_calls,
         turn_context=turn_context,
+        refresh_context=refresh_context,
     ):
         events.append(event)
     return events
@@ -428,6 +430,7 @@ class TestMutationCompletionController:
         assert terminal.outcome.model_dump() == {
             "kind": "blocked",
             "detail": "no valid plan was produced.",
+            "changes": [],
         }
         assert len(provider.calls) == 3
         controller = provider.calls[2]["messages"][-1]
@@ -471,6 +474,7 @@ class TestMutationCompletionController:
         assert terminal.outcome.model_dump() == {
             "kind": "incomplete",
             "detail": "A dry-run validated a plan that was never applied.",
+            "changes": [],
         }
         assert len(provider.calls) == 4
         reminders = [
@@ -500,6 +504,7 @@ class TestMutationCompletionController:
                     ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
                     TurnStop("tool_use", _usage()),
                 ],
+                [TextDelta("Saved."), TurnStop("end", _usage())],
             ]
         )
 
@@ -518,7 +523,11 @@ class TestMutationCompletionController:
         )
 
         terminal = _assert_single_terminal(events)
-        assert terminal.outcome.model_dump() == {"kind": "applied", "detail": None}
+        assert terminal.outcome.model_dump() == {
+            "kind": "applied",
+            "detail": None,
+            "changes": ["a" * 64],
+        }
         messages = [message for call in provider.calls for message in call["messages"]]
         assert all(message["role"] != "controller" for message in messages)
         assert {message["content"] for message in messages if message["role"] == "context"} == {
@@ -714,6 +723,7 @@ class TestMutationCompletionController:
                     ToolCallRequest("apply", "apply_graph_plan", {"plan_hash": "h"}),
                     TurnStop("tool_use", _usage()),
                 ],
+                [TextDelta("Saved."), TurnStop("end", _usage())],
             ]
         )
         errors = iter(
@@ -949,6 +959,7 @@ class TestMutationCompletionController:
         assert terminal.outcome.model_dump() == {
             "kind": "incomplete",
             "detail": "The last dry-run failed and no later dry-run succeeded.",
+            "changes": [],
         }
         assert len(provider.calls) == 3
         assert _stored_outcome(store, session_id) == terminal.outcome
@@ -1016,7 +1027,12 @@ class TestMutationCompletionController:
         assert len(provider.calls) == 3
         assert provider.calls[2]["messages"][-1]["role"] == "controller"
 
-    async def test_successful_apply_is_a_deterministic_terminal(self, store, session_id):
+    async def test_a_successful_apply_streams_its_card_and_the_turn_continues(
+        self, store, session_id
+    ):
+        """An apply no longer ends the turn: the provider is asked again, and the
+        model's closing reply follows the card."""
+
         provider = ScriptedProvider(
             [
                 [
@@ -1031,7 +1047,7 @@ class TestMutationCompletionController:
                     ),
                     TurnStop("tool_use", _usage()),
                 ],
-                [TextDelta("Applied successfully."), TurnStop("end", _usage())],
+                [TextDelta("Added the age band."), TurnStop("end", _usage())],
             ]
         )
 
@@ -1051,11 +1067,12 @@ class TestMutationCompletionController:
         )
 
         assert _assert_single_terminal(events).type == "completed"
-        assert len(provider.calls) == 2
+        assert len(provider.calls) == 3
         assert [event.type for event in events if event.type != "tool_started"] == [
             "tool_finished",
             "tool_finished",
             "change_applied",
+            "text_delta",
             "completed",
         ]
         (card,) = [event for event in events if event.type == "change_applied"]
@@ -1071,14 +1088,15 @@ class TestMutationCompletionController:
             ("tool_finished", "Applying 2 changes"),
         ]
         stored = store.lookup(session_id).history[-1].messages
-        assert stored[-1].role == "tool" and stored[-1].content == _APPLIED
+        assert stored[-2].role == "tool" and stored[-2].content == _APPLIED
+        assert (stored[-1].role, stored[-1].content) == ("assistant", "Added the age band.")
         assert all(
             message["role"] != "controller"
             for call in provider.calls
             for message in call["messages"]
         )
 
-    async def test_successful_apply_ignores_later_tools_in_the_same_round(self, store, session_id):
+    async def test_a_later_call_in_the_apply_round_runs(self, store, session_id):
         provider = ScriptedProvider(
             [
                 [
@@ -1091,9 +1109,10 @@ class TestMutationCompletionController:
                         "apply_graph_plan",
                         {"plan_hash": "a" * 64},
                     ),
-                    ToolCallRequest("late-1", "dry_run_graph_edits", {"ops": []}),
+                    ToolCallRequest("read-1", "get_pipeline", {}),
                     TurnStop("tool_use", _usage()),
                 ],
+                [TextDelta("Saved."), TurnStop("end", _usage())],
             ]
         )
         executed: list[str] = []
@@ -1104,7 +1123,7 @@ class TestMutationCompletionController:
                 return {"plan_hash": "a" * 64}
             if name == "apply_graph_plan":
                 return dict(_APPLIED)
-            raise AssertionError(name)
+            return {"nodes": []}
 
         events = await _run(
             store,
@@ -1114,9 +1133,9 @@ class TestMutationCompletionController:
             execute_tool=execute_tool,
         )
 
-        assert _assert_single_terminal(events).type == "completed"
-        assert executed == ["dry_run_graph_edits", "apply_graph_plan"]
-        assert len(provider.calls) == 2
+        assert _assert_single_terminal(events).outcome.kind == "applied"
+        assert executed == ["dry_run_graph_edits", "apply_graph_plan", "get_pipeline"]
+        assert len(provider.calls) == 3
 
 
 def _dry_run_then(*rounds: list[object]) -> ScriptedProvider:
@@ -1137,6 +1156,222 @@ def _stored_outcome(store: SessionStore, session_id: str) -> object:
     return session.history[-1].outcome
 
 
+def _applied(plan_hash: str) -> dict[str, Any]:
+    """A successful apply result whose change record is named by *plan_hash*."""
+
+    return {**_APPLIED, "change": {**_APPLIED["change"], "id": plan_hash}}
+
+
+def _plan(index: int) -> list[object]:
+    """One provider round dry-running plan *index*."""
+
+    return [
+        ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": [{"plan": index}]}),
+        TurnStop("tool_use", _usage()),
+    ]
+
+
+def _apply(index: int) -> list[object]:
+    """One provider round applying plan *index*."""
+
+    return [
+        ToolCallRequest(f"apply-{index}", "apply_graph_plan", {"plan_hash": str(index) * 64}),
+        TurnStop("tool_use", _usage()),
+    ]
+
+
+async def _staged_executor(name: str, arguments: dict) -> dict:
+    """Dry-runs validate the plan they name; applies save it."""
+
+    if name == "dry_run_graph_edits":
+        return {"plan_hash": str(arguments["ops"][0]["plan"]) * 64}
+    if name == "apply_graph_plan":
+        return _applied(arguments["plan_hash"])
+    raise AssertionError(name)
+
+
+class TestSeveralAppliesPerTurn:
+    """A saved apply does not end the turn, and the outcome lists every save."""
+
+    async def test_two_plans_applied_in_one_turn_stream_a_card_each(self, store, session_id):
+        provider = ScriptedProvider(
+            [_plan(1), _apply(1), _plan(2), _apply(2), [TurnStop("end", _usage())]]
+        )
+
+        events = await _run(
+            store,
+            session_id,
+            "Add a source, then its features",
+            provider=provider,
+            execute_tool=_staged_executor,
+        )
+
+        terminal = _assert_single_terminal(events)
+        cards = [event.change.id for event in events if event.type == "change_applied"]
+        assert cards == ["1" * 64, "2" * 64]
+        assert terminal.outcome.model_dump() == {
+            "kind": "applied",
+            "detail": None,
+            "changes": ["1" * 64, "2" * 64],
+        }
+        assert _stored_outcome(store, session_id) == terminal.outcome
+        assert not [event for event in events if event.type == "text_delta"]
+
+    async def test_the_round_after_an_apply_carries_the_refreshed_context(self, store, session_id):
+        """The update follows the apply's results in every later round, and the
+        stored turn holds neither context."""
+
+        provider = ScriptedProvider(
+            [_plan(1), _apply(1), _plan(2), _apply(2), [TurnStop("end", _usage())]]
+        )
+        refreshed: list[list[str]] = []
+
+        async def refresh(changes) -> str:
+            refreshed.append([change.id for change in changes])
+            return f"## Turn context update\nafter {len(refreshed)}"
+
+        await _run(
+            store,
+            session_id,
+            "Add a source, then its features",
+            provider=provider,
+            execute_tool=_staged_executor,
+            turn_context="## Turn context",
+            refresh_context=refresh,
+        )
+
+        assert refreshed == [["1" * 64], ["2" * 64]]
+        roles = [
+            (message["role"], message.get("name") or message.get("content"))
+            for message in provider.calls[4]["messages"]
+        ]
+        assert roles[:2] == [
+            ("user", "Add a source, then its features"),
+            ("context", "## Turn context"),
+        ]
+        updates = [index for index, (role, _) in enumerate(roles) if role == "context"][1:]
+        assert [roles[index] for index in updates] == [
+            ("context", "## Turn context update\nafter 1"),
+            ("context", "## Turn context update\nafter 2"),
+        ]
+        assert [roles[index - 1] for index in updates] == [
+            ("tool", "apply_graph_plan"),
+            ("tool", "apply_graph_plan"),
+        ]
+        assert [message["role"] for message in provider.calls[1]["messages"]][-1] == "tool"
+        stored = {message.role for message in store.lookup(session_id).history[-1].messages}
+        assert "context" not in stored
+
+    async def test_a_turn_whose_second_plan_fails_reports_the_first_change_as_saved(
+        self, store, session_id
+    ):
+        provider = ScriptedProvider(
+            [
+                _plan(1),
+                _apply(1),
+                _plan(2),
+                [TextDelta("BLOCKED: the rating table is missing."), TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "dry_run_graph_edits" and arguments["ops"][0]["plan"] == 2:
+                return {"error": {"code": "invalid_ops", "message": "No rating table."}}
+            return await _staged_executor(name, arguments)
+
+        events = await _run(
+            store, session_id, "Band and rate", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {
+            "kind": "blocked",
+            "detail": "the rating table is missing.",
+            "changes": ["1" * 64],
+        }
+        assert _stored_outcome(store, session_id) == terminal.outcome
+        assert [event.change.id for event in events if event.type == "change_applied"] == ["1" * 64]
+
+    async def test_a_spent_dry_run_budget_after_a_save_says_the_change_stays_saved(
+        self, store, session_id
+    ):
+        provider = ScriptedProvider([_plan(1), _apply(1), _plan(2), _plan(2)])
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "dry_run_graph_edits" and arguments["ops"][0]["plan"] == 2:
+                return {"error": {"code": "invalid_ops", "message": "No rating table."}}
+            return await _staged_executor(name, arguments)
+
+        events = await _run(
+            store, session_id, "Band and rate", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.kind == "blocked"
+        assert terminal.outcome.changes == ["1" * 64]
+        assert "the earlier change this turn saved stays saved" in terminal.outcome.detail
+        assert "no further graph changes were applied" in terminal.outcome.detail
+
+    async def test_the_dry_run_budget_starts_afresh_after_a_saving_apply(self, store, session_id):
+        """Three failures before each of two plans would spend one turn-wide
+        budget of four; a saved plan is progress, so both plans apply."""
+
+        failures = iter(range(100))
+
+        def failing(stage: int) -> list[list[object]]:
+            return [
+                [
+                    ToolCallRequest(
+                        f"bad-{stage}-{index}",
+                        "dry_run_graph_edits",
+                        {"ops": [{"plan": 0, "attempt": f"{stage}-{index}"}]},
+                    ),
+                    TurnStop("tool_use", _usage()),
+                ]
+                for index in range(3)
+            ]
+
+        provider = ScriptedProvider(
+            [
+                *failing(1),
+                _plan(1),
+                _apply(1),
+                *failing(2),
+                _plan(2),
+                _apply(2),
+                [TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "dry_run_graph_edits" and arguments["ops"][0]["plan"] == 0:
+                return {
+                    "error": {
+                        "code": "invalid_ops",
+                        "message": "wrong",
+                        "where": {"op_index": 0},
+                        "fix": f"fix {next(failures)}",
+                    }
+                }
+            return await _staged_executor(name, arguments)
+
+        events = await _run(
+            store,
+            session_id,
+            "Band and rate",
+            provider=provider,
+            execute_tool=execute_tool,
+            max_tool_calls=20,
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {
+            "kind": "applied",
+            "detail": None,
+            "changes": ["1" * 64, "2" * 64],
+        }
+
+
 class TestTurnOutcome:
     """The completed event carries how the turn ended, and the turn stores it."""
 
@@ -1146,7 +1381,11 @@ class TestTurnOutcome:
         events = await _run(store, session_id, "What does this do?", provider=provider)
 
         terminal = _assert_single_terminal(events)
-        assert terminal.outcome.model_dump() == {"kind": "answered", "detail": None}
+        assert terminal.outcome.model_dump() == {
+            "kind": "answered",
+            "detail": None,
+            "changes": [],
+        }
         assert _stored_outcome(store, session_id) == terminal.outcome
 
     async def test_a_question_is_needs_input_even_without_a_mutation_attempt(
@@ -1168,6 +1407,7 @@ class TestTurnOutcome:
         assert terminal.outcome.model_dump() == {
             "kind": "needs_input",
             "detail": "Which values of status mean active?",
+            "changes": [],
         }
         assert _stored_outcome(store, session_id) == terminal.outcome
 
@@ -1187,6 +1427,7 @@ class TestTurnOutcome:
         assert terminal.outcome.model_dump() == {
             "kind": "blocked",
             "detail": "the claims file is missing.",
+            "changes": [],
         }
 
     async def test_an_exhausted_dry_run_budget_is_blocked_with_its_reason(self, store, session_id):
@@ -1215,7 +1456,8 @@ class TestTurnOutcome:
             [
                 ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
                 TurnStop("tool_use", _usage()),
-            ]
+            ],
+            [TextDelta("Saved."), TurnStop("end", _usage())],
         )
 
         async def execute_tool(name: str, arguments: dict) -> dict:
@@ -1228,7 +1470,11 @@ class TestTurnOutcome:
         )
 
         terminal = _assert_single_terminal(events)
-        assert terminal.outcome.model_dump() == {"kind": "applied", "detail": None}
+        assert terminal.outcome.model_dump() == {
+            "kind": "applied",
+            "detail": None,
+            "changes": ["a" * 64],
+        }
         assert _stored_outcome(store, session_id) == terminal.outcome
 
     async def test_a_save_that_fails_verification_ends_committed_unverified(
@@ -1272,6 +1518,7 @@ class TestTurnOutcome:
         assert terminal.outcome.model_dump() == {
             "kind": "committed_unverified",
             "detail": verification_message,
+            "changes": [],
         }
         assert executed == ["dry_run_graph_edits", "apply_graph_plan"]
         assert len(provider.calls) == 2
@@ -1433,7 +1680,7 @@ class TestCancellation:
             started.set()
             await asyncio.sleep(0.1)
             finished["value"] = True
-            return {"ok": True}
+            return dict(_APPLIED)
 
         provider = ScriptedProvider(
             [
@@ -1735,7 +1982,9 @@ class TestSystemPrompt:
         assert "every retry must change what the error names" in prompt
         assert "at most one materially corrected" not in prompt
         assert "exact returned plan hash" in prompt
-        assert "exactly once" in prompt
+        assert "a plan applies once" in prompt
+        assert "A saved apply does not end the turn" in prompt
+        assert "exactly once" not in prompt
         assert "Never resend or reconstruct operations" in prompt
         assert "Every newly added node must be connected" in prompt
         assert "assign the transformed result to `df`" in prompt

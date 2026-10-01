@@ -176,19 +176,36 @@ came from is stale. On Claude models that accept a
 system message mid-conversation the block is sent as one; every other model receives it
 as the leading text of the analyst's message.
 
+**Turn context update.** After a provider round in which an apply saved, the next round
+also carries a turn context update, built after the save from the saved project under the
+same policy: the new base revision, the brief entry of every node the round's saved
+changes added, changed or renamed or connected an edge to, the ids of the nodes they
+removed, and a pointer to `get_pipeline` when a change card was cut at its bound. It
+follows that round's tool results, as a mid-conversation system message where the turn
+context is one and otherwise as text after the results, and like the turn context it is
+never stored with the turn. Under a `public` policy it says only that the graph and its
+revision are withheld. So a later stage of a multi-part request dry-runs from the columns
+the earlier stages produced without reading the graph.
+
 **Turns.** Posting a user message starts a turn, streamed back as typed server-sent events:
 assistant text deltas, tool-call started/finished activity (the tool's name, a plain-words
 title written beside the tool such as "Reading the pipeline", "Checking 3 changes" or
 "Applying 3 changes", and a compact argument and result summary), a change-applied event
 after each successful apply carrying its change card (see **Change cards**), and exactly
 one terminal event — completed (with token usage and
-a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome says
-how the turn ended: `applied` (a plan was saved and verified), `answered` (the model
-replied and left no dry-run unfinished), `needs_input` with the model's question,
-`blocked` with the sanitized blocker (nothing was saved), `committed_unverified` with
+a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome
+records what the turn saved separately from whether it finished the request: its
+`changes` list the id of every change the turn saved and verified, in order (each is its
+change card's id, the hash of the plan that saved it), and its kind says how the turn
+ended: `applied` (at least one change was saved and the model then ended without a
+question, a blocker or an unfinished dry-run), `answered` (nothing was saved and the model
+replied with no dry-run unfinished), `needs_input` with the model's question,
+`blocked` with the sanitized blocker, `committed_unverified` with
 the verification error when a save committed but its post-save verification failed, or
 `incomplete` with the controller's reason when the model stopped, after one reminder,
-with a validated plan unapplied or a failed dry-run uncorrected (nothing was saved). The
+with a validated plan unapplied or a failed dry-run uncorrected. A `needs_input`,
+`blocked`, `committed_unverified` or `incomplete` turn may follow changes the same turn
+saved, and its `changes` then name them; with an empty list nothing was saved. The
 outcome is stored with the turn, so a resumed chat shows the same outcome the live turn
 ended with. One turn may be in flight per session; a second
 send while one is running is rejected with 409, not queued. A turn ends when the model stops
@@ -212,14 +229,15 @@ result materially and that the analyst has not delegated.
 The controller is structural: nothing it does depends on the words of the request. It
 tracks one fact across the turn's dry-runs, the state the latest one left: a **validated
 plan** (the latest dry-run succeeded) or a **failed dry-run** (the latest dry-run failed);
-only an apply that saves clears it, and that apply ends the turn. When the model ends a
+only an apply that saves clears it. When the model ends a
 round with text that does not begin `NEEDS_INPUT:` or `BLOCKED:` while that state is
 open, the controller sends one internal, non-transcript reminder naming it (apply the
 validated plan with its exact hash, or correct and dry-run the failed plan, or report a
 question or blocker) and requests one more provider round. A second such end completes
 the turn with the `incomplete` outcome, whose detail names the open state, so the
 analyst sees that the assistant stopped before finishing rather than a failure or a
-false success. A turn with no open state ends `answered`, so a question such as “Can you
+false success. A turn with no open state ends `applied` when it saved a change and
+`answered` otherwise, so a question such as “Can you
 explain the rating step?” or “Why does the join produce nulls?” ends as an answered turn.
 This replaces a controller that, once the model attempted any dry-run or apply, required
 a successful apply or an explicit marker and failed the turn on a second unqualified
@@ -227,31 +245,48 @@ end, and that also retained a recipe route across a chain of `NEEDS_INPUT:` turn
 matching the analyst's words with regular expressions. Its rationale was that a turn
 must never claim completion falsely; the typed `incomplete` outcome keeps that
 guarantee, while the word matching misrouted ordinary phrasing and turned delegated
-choices into questions, and a failed turn hid a resumable state behind an error. A successful
-`apply_graph_plan` is itself the terminal mutation outcome: after consuming that provider
-round, the controller completes with the `applied` outcome without exposing another tool
-round in which the model could repeat or extend the mutation. The turn says what it saved
-through the change card streamed with the apply, and adds no text of its own. This
-replaces a fixed confirmation sentence ("Graph changes applied successfully.") that the
-controller appended to the transcript and the provider history. The sentence existed so
-the turn ended with a deterministic success statement rather than model prose that could
-overclaim; the change card is that statement, built from what was saved, while the
-sentence told the analyst nothing about what changed.
-An apply that commits its save but fails post-save verification (`verification_failed`) is
-terminal in the same way: the controller emits a deterministic statement that the changes
-were saved but not verified and completes with the `committed_unverified` outcome, so the
-model cannot apply a second plan over an unverified save and no later text or blocker can
-report that nothing changed.
-A failed dry-run may be corrected while each correction makes progress. A turn allows
-up to four failed dry-runs across both dry-run tools, and the controller ends the
-turn earlier when the model makes no progress: it resends a plan identical to one
-that already failed, or the same diagnostic (its code, `where` and `fix`) repeats
-while the operation it points at is unchanged. When either happens the controller
-terminates the tool loop itself with a `BLOCKED:` outcome naming why it stopped and
-the latest stable error code, repeating that dry-run error's message in the same
-bounded form the chat's tool row showed (so it carries nothing the tool result had
-not already shown the model), and stating that no graph changes were applied; the
-provider cannot continue guessing until the global tool-call limit is exhausted.
+choices into questions, and a failed turn hid a resumable state behind an error.
+
+**Several applies per turn.** A successful `apply_graph_plan` does not end the turn. The
+model reads the apply's result and the turn context update, and may dry-run and apply
+further plans within the turn's tool-call and time budgets, so a request with several
+parts (a source, its features, a banding, a rating and a response) is built in one turn
+with a change card per saved plan. The turn says what each apply saved through the
+change card streamed with it, and adds no text of its own. This replaces a rule that made
+a successful apply the terminal mutation outcome: after consuming that provider round, the
+controller completed with `applied` "without exposing another tool round in which the
+model could repeat or extend the mutation". Repeating is already impossible, because a
+plan is single-use: applying its hash again returns `plan_already_applied` with no write,
+and any further change needs a new dry-run against the new revision. Extending is what an
+analyst asks for when a request has several parts; the rule silently dropped every part
+after the first and made a pipeline take one message per stage. The guarantee that
+mattered, that a turn never claims more than it saved, now rests on the outcome's
+`changes`, which list exactly the saved changes whatever the model says afterwards.
+The change cards also replaced a fixed confirmation sentence ("Graph changes applied
+successfully.") that the controller appended to the transcript and the provider history.
+The sentence existed so the turn ended with a deterministic success statement rather than
+model prose that could overclaim; each change card is that statement, built from what was
+saved, while the sentence told the analyst nothing about what changed.
+An apply that commits its save but fails post-save verification (`verification_failed`)
+still ends the turn at once: later tool calls in its round are ignored, the controller
+emits a deterministic statement that the changes were saved but not verified and
+completes with the `committed_unverified` outcome, so the model cannot apply a further
+plan over an unverified save and no later text or blocker can report that nothing
+changed.
+A failed dry-run may be corrected while each correction makes progress. Each plan
+allows up to four failed dry-runs across both dry-run tools, counted from the start of
+the turn or from the latest apply that saved (a saved plan is progress, and a request
+that failed against the earlier revision may succeed against the new one), and the
+controller ends the turn earlier when the model makes no progress: it resends a plan
+identical to one that already failed since then, or the same diagnostic (its code,
+`where` and `fix`) repeats while the operation it points at is unchanged. When either
+happens the controller terminates the tool loop itself with a `BLOCKED:` outcome naming
+why it stopped and the latest stable error code, repeating that dry-run error's message
+in the same bounded form the chat's tool row showed (so it carries nothing the tool
+result had not already shown the model), and stating that no graph changes were applied,
+or, after earlier saves in the turn, that those changes stay saved and no further change
+was applied; the provider cannot continue guessing until the global tool-call limit is
+exhausted.
 This replaces a rule that allowed "one materially corrected retry" so that the
 provider "cannot continue guessing". That rule treated every second failure as
 guessing, but a plan often holds several independent, fixable faults that a dry-run
@@ -265,7 +300,8 @@ the apply's tool row.
 
 **Change cards.** After every successful apply the service builds a value-free change
 record from what was saved: the actual semantic diff, the graph before the plan and the
-graph reparsed after the save. It holds the plan's summary and assumptions (below); one
+graph reparsed after the save. It holds its id, the hash of the plan it saved (a plan
+applies once, so the id names one change); the plan's summary and assumptions (below); one
 chip per node the plan added, changed, removed or renamed, naming the node, its palette
 type name (for example "Polars" or "Banding"), what happened to it, the earlier name of
 a renamed node, the configuration fields it changed in plain words derived from their keys
@@ -383,10 +419,10 @@ tier, an evidence summary (how many schemas resolved, and which inputs were reso
 an inferred or declared schema), the validation warnings, and the plan's change chips and
 edges built by the same builder as the change card. It does not echo the normalized
 operations, which the model wrote, or the revision, digests and postconditions, which only
-the server reads. An apply returns the plan hash, the number of operations applied, the
+the server reads. An apply returns the number of operations applied, the
 verification tier, the evidence summary of the post-save verification and the change
-record; the expected and actual diffs, which a successful apply proves equal, are not
-repeated. In both, a chip field that holds its default (no earlier name, no changed
+record, whose id is the plan hash, stated once; the expected and actual diffs, which a
+successful apply proves equal, are not repeated. In both, a chip field that holds its default (no earlier name, no changed
 fields, no step list, no changed steps), an empty edge or warning list and a false flag
 are left out, and the evidence summary names inferred and declared inputs only when
 there are any. A four-node batch's dry-run and apply results each stay under one kilobyte.

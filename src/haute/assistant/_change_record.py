@@ -147,6 +147,7 @@ def graph_changes(
 
 
 def change_record(
+    plan_hash: str,
     receipt: PlanReceipt,
     changes: AssistantGraphChanges,
     *,
@@ -154,9 +155,10 @@ def change_record(
     git_sha: str | None,
     parent_sha: str | None,
 ) -> AssistantChangeRecord:
-    """The change card of one saved plan."""
+    """The change card of one saved plan, identified by the plan's hash."""
 
     return AssistantChangeRecord(
+        id=plan_hash,
         summary=receipt.summary,
         assumptions=list(receipt.assumptions),
         changes=changes,
@@ -164,6 +166,26 @@ def change_record(
         git_sha=git_sha,
         parent_sha=parent_sha,
     )
+
+
+def touched_node_ids(records: Sequence[AssistantChangeRecord]) -> tuple[str, ...]:
+    """Every node id the records name, once each, in the order they name them.
+
+    A chip names its node and a renamed node's earlier id; an added or removed
+    edge names both endpoints. Ids a later save removed are included, so a
+    caller can tell what no longer exists.
+    """
+
+    ids: dict[str, None] = {}
+    for record in records:
+        for chip in record.changes.nodes:
+            if chip.renamed_from is not None:
+                ids[chip.renamed_from] = None
+            ids[chip.id] = None
+        for edge in (*record.changes.edges_added, *record.changes.edges_removed):
+            ids[edge.source] = None
+            ids[edge.target] = None
+    return tuple(ids)
 
 
 def evidence_summary(evidence: Sequence[Mapping[str, object]]) -> dict[str, object]:
@@ -194,4 +216,5 @@ __all__ = [
     "evidence_summary",
     "field_words",
     "graph_changes",
+    "touched_node_ids",
 ]

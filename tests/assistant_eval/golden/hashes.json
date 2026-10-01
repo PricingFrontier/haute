@@ -1,7 +1,8 @@
 {
-  "system_prompt.md": "5b664fba95bcadd7e0ff2c9f46e3633b9fee5facbced101a4fcebecedd47a192",
+  "system_prompt.md": "8ce2de425daae92a99f15872761eec8c0c1724661910fe50edda8b2488a8af32",
   "turn_context_1.md": "8b8783d413ddc251a61410369334bf3962d335a68f1785d858583df203d49d7c",
   "turn_context_2.md": "fbb94330ae56d7cbef519c7afafbd4d1f8c540b13f7db48ffaf68b6f26c49fdc",
+  "context_update.md": "cd554f07042df087772623b58686c3861610237c5d60e18760ceef0da4dea25a",
   "tools_canonical.json": "f4968f3167f7405ff8d58e6f2cde475aa6e32d650132378270211855dffd0f8f",
   "tools_anthropic.json": "8a13d88b895032463f4a1366a30caaf2d45b3bf9cfbb4b8deb0793b2d15ad46b",
   "tools_openai.json": "d720b82e671581ac432481da9c0cf867e05339f90f811b0ac425e7ff7848b54a"

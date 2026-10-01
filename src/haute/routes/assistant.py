@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from haute.assistant._tools import (
     TurnContextError,
     build_tool_executor,
     build_turn_context,
+    context_update,
 )
 from haute.errors import ConfigError, HauteError, InvalidPathError, PathOutsideProjectError
 from haute.routes._helpers import (
@@ -256,6 +258,7 @@ async def _event_stream(
     system_prompt: str,
     reservation: _loop.TurnReservation,
     turn_context: str,
+    refresh_context: _loop.ContextRefresher,
 ) -> AsyncIterator[str]:
     """Frame loop events as server-sent events."""
 
@@ -271,6 +274,7 @@ async def _event_stream(
         max_tool_calls=None,
         reservation=reservation,
         turn_context=turn_context,
+        refresh_context=refresh_context,
     )
     try:
         async for event in turn:
@@ -412,6 +416,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             system_prompt=system_prompt,
             reservation=reservation,
             turn_context=turn_context,
+            refresh_context=partial(context_update, session.source_file, config.egress),
         ),
         media_type="text/event-stream",
         reservation=reservation,

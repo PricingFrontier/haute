@@ -107,11 +107,12 @@ _INCOMPLETE_DETAILS: dict[_OpenState, str] = {
 }
 
 
-def _prefixed_outcome(response_text: str) -> AssistantTurnOutcome | None:
+def _prefixed_outcome(response_text: str, changes: Sequence[str]) -> AssistantTurnOutcome | None:
     """Read a final round's `NEEDS_INPUT:`/`BLOCKED:` outcome, or None without one.
 
     The marker must open the stripped text and be followed by detail; the
-    detail is the rest of the text, stripped.
+    detail is the rest of the text, stripped. *changes* are the ids of the
+    changes the turn saved before it, which the outcome lists.
     """
 
     text = response_text.strip()
@@ -119,7 +120,7 @@ def _prefixed_outcome(response_text: str) -> AssistantTurnOutcome | None:
         if text.startswith(prefix):
             detail = text[len(prefix) :].strip()
             if detail:
-                return AssistantTurnOutcome(kind=kind, detail=detail)
+                return AssistantTurnOutcome(kind=kind, detail=detail, changes=list(changes))
     return None
 
 
@@ -127,6 +128,8 @@ DEFAULT_MAX_TOOL_CALLS = 40
 _INTERNAL_ERROR_DETAIL = "The assistant turn failed unexpectedly."
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[Mapping[str, Any]]]
+# Renders the turn context update after a round's applies saved these changes.
+ContextRefresher = Callable[[Sequence[AssistantChangeRecord]], Awaitable[str]]
 
 
 class UnknownSessionError(HauteError):
@@ -184,9 +187,11 @@ _PROMPT_TURN_CONTEXT = (
     "step ids, its inputs with their columns and its output columns, and a preview "
     "error when the analyst shares "
     "one. It describes the saved graph as the turn starts; when the analyst says "
-    '"this node" or "the selected nodes", they mean the selection. When the brief '
-    "names the nodes and columns an edit needs, dry-run from it without reading the "
-    "graph first. "
+    '"this node" or "the selected nodes", they mean the selection. After each apply '
+    "that saves, a `## Turn context update` follows the apply's result with the new "
+    "base revision and the entries of the nodes the change touched. When the brief or "
+    "an update names the nodes and columns an edit needs, dry-run from it without "
+    "reading the graph first. "
 )
 
 _PROMPT_INTENT_AND_RECIPE_ROUTING = (
@@ -271,8 +276,11 @@ _PROMPT_MUTATION_WORKFLOW = (
     "added node must be connected in the same plan. "
     + _steps_first_rule()
     + "Call `dry_run_graph_edits` with the "
-    "complete operation batch, then call `apply_graph_plan` exactly once with the exact "
-    "returned plan hash. Never resend or reconstruct operations at apply time. "
+    "complete operation batch, then call `apply_graph_plan` with the exact returned "
+    "plan hash; a plan applies once. Never resend or reconstruct operations at apply "
+    "time. A saved apply does not end the turn: when the request has further parts, "
+    "dry-run and apply each next part the same way, building on what the update shows "
+    "was saved, until the whole request is saved; then reply in one or two sentences. "
 )
 
 _PROMPT_DRY_RUN_RETRY = (
@@ -280,7 +288,8 @@ _PROMPT_DRY_RUN_RETRY = (
     "node, field and step, `fix` is one concrete correction, `context.inputs` lists each "
     "input's columns and `did_you_mean` lists close names. Apply the fix and dry-run the "
     "corrected plan; a plan can hold several independent faults, reported one at a time. "
-    "A turn allows up to four failed dry-runs and ends early when a failed plan is resent "
+    "Each plan allows up to four failed dry-runs, counted afresh after a saved apply, and "
+    "the turn ends early when a failed plan is resent "
     "unchanged or the same error returns for an unchanged operation, so every retry must "
     "change what the error names. Prefer the linked recipe or example when correcting a "
     "specialist operation. When an error is not `retryable`, or you cannot correct it, "
@@ -554,7 +563,9 @@ class _DryRunProgress:
         self._requests.add(request)
         self._diagnostics.add(diagnostic)
 
-    def blocker(self) -> str:
+    def blocker(self, saved: int) -> str:
+        """The `BLOCKED:` text, saying what stays saved when *saved* changes were."""
+
         if self.stop is None:
             raise RuntimeError("the dry-run budget has not stopped the turn")
         what = (
@@ -562,9 +573,18 @@ class _DryRunProgress:
             if self.malformed
             else "graph validation failed"
         )
+        if saved:
+            earlier = (
+                "the earlier change this turn saved stays"
+                if saved == 1
+                else f"the {saved} earlier changes this turn saved stay"
+            )
+            applied = f"{earlier} saved and no further graph changes were applied"
+        else:
+            applied = "no graph changes were applied"
         return (
             f"BLOCKED: {what} {_DRY_RUN_STOP_REASONS[self.stop]} ({self.code}); "
-            f"no graph changes were applied. Last error: {self.message}"
+            f"{applied}. Last error: {self.message}"
         )
 
 
@@ -747,6 +767,7 @@ async def run_turn(
     max_tool_calls: int | None,
     reservation: TurnReservation | None = None,
     turn_context: str | None = None,
+    refresh_context: ContextRefresher | None = None,
 ) -> AsyncGenerator[AssistantStreamEvent, None]:
     """Stream one complete provider/tool turn for a live session.
 
@@ -757,7 +778,10 @@ async def run_turn(
 
     ``turn_context`` is the rendered turn context. It becomes one ``context``
     message after the user message in every provider round; it is never stored
-    with the turn.
+    with the turn. ``refresh_context`` renders the turn context update after a
+    round whose applies saved changes; it becomes a ``context`` message after
+    that round's tool results, likewise never stored. A successful apply does
+    not end the turn.
     """
 
     if reservation is None:
@@ -785,9 +809,10 @@ async def run_turn(
     tool_count = 0
     # Read only from dry-run results: the state the latest dry-run left.
     open_state: _OpenState | None = None
-    mutation_applied = False
+    # The ids of the changes this turn saved, in order; every outcome lists them.
+    saved_changes: list[str] = []
     # The tool-row summary of an apply whose save committed but whose
-    # post-save verification failed; like a successful apply, it ends the turn.
+    # post-save verification failed; unlike a successful apply, it ends the turn.
     committed_unverified_detail: str | None = None
     reminder_sent = False
     turn_outcome: AssistantTurnOutcome | None = None
@@ -807,6 +832,7 @@ async def run_turn(
                 round_calls = []
                 round_results = []
                 round_committed = False
+                round_changes: list[AssistantChangeRecord] = []
                 stop: TurnStop | None = None
                 # The stream is owned so the outer finally can aclose() it:
                 # an abnormal turn exit must shut the provider's SDK stream
@@ -821,9 +847,9 @@ async def run_turn(
                         round_text.append(event.text)
                         yield AssistantTextDeltaEvent(text=event.text)
                     elif isinstance(event, ToolCallRequest):
-                        if mutation_applied or committed_unverified_detail is not None:
+                        if committed_unverified_detail is not None:
                             logger.warning(
-                                "assistant_tool_ignored_after_apply",
+                                "assistant_tool_ignored_after_unverified_save",
                                 tool_name=event.name,
                             )
                             continue
@@ -863,9 +889,15 @@ async def run_turn(
                             if is_error:
                                 dry_runs.record_failure(event, payload)
                             open_state = "failed" if is_error else "validated"
-                        applied = event.name == "apply_graph_plan" and not is_error
-                        if applied:
-                            mutation_applied = True
+                        change: AssistantChangeRecord | None = None
+                        if event.name == "apply_graph_plan" and not is_error:
+                            # A saved plan clears the open state and is progress:
+                            # the dry-run budget starts afresh for the next plan.
+                            change = AssistantChangeRecord.model_validate(payload["change"])
+                            saved_changes.append(change.id)
+                            round_changes.append(change)
+                            open_state = None
+                            dry_runs = _DryRunProgress()
                         if (
                             event.name == "apply_graph_plan"
                             and _stable_error_code(payload) == _COMMITTED_UNVERIFIED_ERROR_CODE
@@ -880,10 +912,8 @@ async def run_turn(
                                 is_error=is_error,
                                 summary=_result_summary(payload, is_error),
                             )
-                        if applied and interrupt is None:
-                            yield AssistantChangeAppliedEvent(
-                                change=AssistantChangeRecord.model_validate(payload["change"])
-                            )
+                        if change is not None and interrupt is None:
+                            yield AssistantChangeAppliedEvent(change=change)
                         if interrupt is not None:
                             # Re-raise the original interrupt (CancelledError
                             # or GeneratorExit) now that the completed tool
@@ -911,26 +941,23 @@ async def run_turn(
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                 )
-                if mutation_applied or committed_unverified_detail is not None:
+                if committed_unverified_detail is not None:
                     _append_round(turn_messages, round_text, round_calls, round_results)
                     round_committed = True
-                    if mutation_applied:
-                        # The change card streamed with the apply says what was
-                        # saved; the turn adds no text of its own.
-                        turn_outcome = AssistantTurnOutcome(kind="applied", detail=None)
-                    else:
-                        closing_text = _MUTATION_COMMITTED_UNVERIFIED_DETAIL
-                        turn_outcome = AssistantTurnOutcome(
-                            kind="committed_unverified", detail=committed_unverified_detail
-                        )
-                        turn_messages.append({"role": "assistant", "content": closing_text})
-                        yield AssistantTextDeltaEvent(text=closing_text)
+                    closing_text = _MUTATION_COMMITTED_UNVERIFIED_DETAIL
+                    turn_outcome = AssistantTurnOutcome(
+                        kind="committed_unverified",
+                        detail=committed_unverified_detail,
+                        changes=list(saved_changes),
+                    )
+                    turn_messages.append({"role": "assistant", "content": closing_text})
+                    yield AssistantTextDeltaEvent(text=closing_text)
                     yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
                 if stop.reason == "end":
                     _append_round(turn_messages, round_text, round_calls, round_results)
                     round_committed = True
-                    explicit_outcome = _prefixed_outcome("".join(round_text))
+                    explicit_outcome = _prefixed_outcome("".join(round_text), saved_changes)
                     if explicit_outcome is None and open_state is not None and not reminder_sent:
                         request_messages.extend(
                             [
@@ -954,20 +981,28 @@ async def run_turn(
                         turn_outcome = explicit_outcome
                     elif open_state is not None:
                         turn_outcome = AssistantTurnOutcome(
-                            kind="incomplete", detail=_INCOMPLETE_DETAILS[open_state]
+                            kind="incomplete",
+                            detail=_INCOMPLETE_DETAILS[open_state],
+                            changes=list(saved_changes),
                         )
                     else:
-                        turn_outcome = AssistantTurnOutcome(kind="answered", detail=None)
+                        # Each change card streamed with its apply says what was
+                        # saved; the turn adds no text of its own.
+                        turn_outcome = AssistantTurnOutcome(
+                            kind="applied" if saved_changes else "answered",
+                            detail=None,
+                            changes=list(saved_changes),
+                        )
                     yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
 
                 _append_round(turn_messages, round_text, round_calls, round_results)
                 round_committed = True
                 if dry_runs.stop is not None:
-                    blocked_text = dry_runs.blocker()
+                    blocked_text = dry_runs.blocker(len(saved_changes))
                     turn_messages.append({"role": "assistant", "content": blocked_text})
                     yield AssistantTextDeltaEvent(text=blocked_text)
-                    turn_outcome = _prefixed_outcome(blocked_text)
+                    turn_outcome = _prefixed_outcome(blocked_text, saved_changes)
                     if turn_outcome is None:
                         raise RuntimeError("the dry-run blocker must be a BLOCKED: outcome")
                     yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
@@ -982,6 +1017,12 @@ async def run_turn(
                         if message is not None
                     ]
                 )
+                if round_changes and refresh_context is not None:
+                    # After the round's results, which stay contiguous on
+                    # every wire; never stored with the turn.
+                    request_messages.append(
+                        {"role": "context", "content": await refresh_context(round_changes)}
+                    )
     except _TurnLimitError as exc:
         yield AssistantFailedEvent(message=str(exc))
     except TimeoutError:
@@ -1012,6 +1053,7 @@ async def run_turn(
 
 __all__ = [
     "ConcurrentTurnError",
+    "ContextRefresher",
     "DEFAULT_MAX_TOOL_CALLS",
     "DEFAULT_TURN_TIMEOUT",
     "TurnReservation",

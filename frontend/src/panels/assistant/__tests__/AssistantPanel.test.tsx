@@ -79,7 +79,7 @@ describe("transcript", () => {
           summary: "3 nodes",
         },
         { kind: "assistant", text: "It has three nodes.", streaming: false },
-        { kind: "outcome", outcome: { kind: "answered", detail: null } },
+        { kind: "outcome", outcome: { kind: "answered", detail: null, changes: [] } },
       ],
     })
     renderPanel()
@@ -102,7 +102,7 @@ describe("transcript", () => {
     seed({
       entries: [
         { kind: "user", text: "keep active policies" },
-        { kind: "outcome", outcome: { kind: "needs_input", detail: "Which values mean active?" } },
+        { kind: "outcome", outcome: { kind: "needs_input", detail: "Which values mean active?", changes: [] } },
       ],
     })
     renderPanel()
@@ -119,9 +119,9 @@ describe("transcript", () => {
     seed({
       entries: [
         { kind: "user", text: "keep active policies" },
-        { kind: "outcome", outcome: { kind: "needs_input", detail: "Which values mean active?" } },
+        { kind: "outcome", outcome: { kind: "needs_input", detail: "Which values mean active?", changes: [] } },
         { kind: "user", text: "Y and N" },
-        { kind: "outcome", outcome: { kind: "applied", detail: null } },
+        { kind: "outcome", outcome: { kind: "applied", detail: null, changes: ["plan-1"] } },
       ],
     })
     renderPanel()
@@ -135,7 +135,7 @@ describe("transcript", () => {
     seed({
       entries: [
         { kind: "user", text: "keep active policies" },
-        { kind: "outcome", outcome: { kind: "needs_input", detail: "Which values mean active?" } },
+        { kind: "outcome", outcome: { kind: "needs_input", detail: "Which values mean active?", changes: [] } },
       ],
     })
     renderPanel()

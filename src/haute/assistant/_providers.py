@@ -682,8 +682,23 @@ def _with_leading_context(previous: dict[str, Any] | None, context: object) -> N
         or not isinstance(previous.get("content"), str)
         or not isinstance(context, str)
     ):
-        raise RuntimeError("a turn context message must follow a user text message")
+        raise RuntimeError("a turn context message must follow a user text message or tool results")
     previous["content"] = f"{context}\n\n## Analyst message\n{previous['content']}"
+
+
+def _is_anthropic_tool_results(message: Mapping[str, Any] | None) -> bool:
+    """Whether *message* is the user message carrying one round's tool results."""
+
+    content = None if message is None else message.get("content")
+    return (
+        message is not None
+        and message.get("role") == "user"
+        and isinstance(content, list)
+        and bool(content)
+        and all(
+            isinstance(block, Mapping) and block.get("type") == "tool_result" for block in content
+        )
+    )
 
 
 def _anthropic_messages(
@@ -701,10 +716,17 @@ def _anthropic_messages(
         role = message.get("role")
         content = message.get("content")
         if role == "context":
+            previous = translated[-1] if translated else None
             if system_context:
                 translated.append({"role": "system", "content": content})
+            elif previous is not None and _is_anthropic_tool_results(previous):
+                # A turn context update after an apply's round: text after the
+                # round's results, in the same user message.
+                if not isinstance(content, str):
+                    raise RuntimeError("a turn context message must be text")
+                previous["content"].append({"type": "text", "text": content})
             else:
-                _with_leading_context(translated[-1] if translated else None, content)
+                _with_leading_context(previous, content)
         elif role == "tool":
             result_block = {
                 "type": "tool_result",
@@ -915,7 +937,13 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
         elif role == "controller":
             translated.append({"role": "user", "content": content})
         elif role == "context":
-            _with_leading_context(translated[-1], content)
+            if translated[-1].get("role") == "tool":
+                # A turn context update after an apply's round follows its results.
+                if not isinstance(content, str):
+                    raise RuntimeError("a turn context message must be text")
+                translated.append({"role": "user", "content": content})
+            else:
+                _with_leading_context(translated[-1], content)
         else:
             translated.append({"role": role, "content": content})
     return translated
