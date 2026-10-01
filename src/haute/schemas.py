@@ -263,7 +263,9 @@ class AssistantChangeRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    summary: str = Field(min_length=1, max_length=ASSISTANT_RECEIPT_TEXT_LIMIT)
+    # Bounded where the model writes it (the dry-run receipt), not here: a
+    # persisted record redacts it, which can lengthen it.
+    summary: str = Field(min_length=1)
     assumptions: list[str] = Field(default=[], max_length=ASSISTANT_MAX_ASSUMPTIONS)
     changes: AssistantGraphChanges
     warnings: list[str] = []

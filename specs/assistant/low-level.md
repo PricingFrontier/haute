@@ -1872,7 +1872,9 @@ fixture for route tests). The implemented coverage is:
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,
   tool-error round-trip, turn-outcome revival, an outcome detail redacted like assistant
   text, an apply's change record revived as the same record with its summary and
-  assumptions redacted like assistant text, a turn record without its `outcome` key treated as invalid, internal-controller
+  assumptions redacted like assistant text (a summary that redaction lengthens past the
+  dry-run's 160-character bound still revives, since the bound is the receipt's, not the
+  record's), a turn record without its `outcome` key treated as invalid, internal-controller
   revival/transcript hiding, absence of
   deterministic payload digests, safe validation path/reason retention, and non-fatal
   persist failures. Listing coverage pins recency ordering and per-pipeline scoping,

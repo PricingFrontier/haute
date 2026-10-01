@@ -255,6 +255,50 @@ class TestWriteThrough:
             2,
         )
 
+    def test_a_change_summary_lengthened_by_redaction_still_revives(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "abc123")
+        summary = "x" * 153 + " abc123"
+        assert len(summary) == 160
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {
+                            "change": {
+                                "summary": summary,
+                                "changes": {"nodes": []},
+                                "git_sha": None,
+                                "parent_sha": None,
+                            }
+                        },
+                        "is_error": False,
+                    },
+                ],
+                "outcome": {"kind": "applied", "detail": None},
+            },
+        )
+
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        content = revived.history[0].messages[-1].content
+        assert isinstance(content, dict)
+        revived_summary = AssistantChangeRecord.model_validate(content["change"]).summary
+        assert len(revived_summary) > 160 and revived_summary.endswith("<redacted>")
+
     def test_a_malformed_change_record_fails_when_the_message_is_built(self):
         with pytest.raises(ValueError):
             AssistantMessage(
