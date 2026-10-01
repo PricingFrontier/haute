@@ -1680,7 +1680,12 @@ the turn that follows.
 - **Every scenario a Source Switch routes is validated** — a switch the plan touches (a
   written node or an edge target) whose `input_scenario_map` routes a scenario only to
   inputs no incoming edge provides fails as `scenario_unrouted`, located at the switch and
-  `input_scenario_map`, naming the scenario and the inputs. Then, outside strict
+  `input_scenario_map`, naming the scenario, the inputs it routes to and the inputs the
+  switch's incoming edges do provide, and saying how an input is named: by its edge's
+  source node, or a Quote Input's table label, never by `add_edge`'s `target_handle`. When
+  an edge into the switch carries a target handle the scenario routes to, the error names
+  the input that edge provides and its fix maps that input to the scenario and lists it in
+  `inputs` in place of the handle (`_unrouted_scenario`). Then, outside strict
   verification, each target that resolved under the active scenario is resolved again
   under every other scenario a switch in the flattened graph maps; a failure there is the
   `schema_unresolvable` error naming the scenario, unless the target is not the plan's own
@@ -2238,7 +2243,10 @@ fixture for route tests). The implemented coverage is:
   on a number column points at breakpoints; a response row naming no incoming edge, and
   a step reading an unconnected node, carry the fix that names the edge; a
   `response_output` after a node the plan adds saves that node's name; a switch routing a
-  scenario to a dropped input is `scenario_unrouted`, and an edit that fails only under
+  scenario to a dropped input is `scenario_unrouted`; the live renewal plan's shape (a new
+  Data Input wired into the switch with a `target_handle`, and that handle mapped to the new
+  scenario) is `scenario_unrouted` listing the inputs the switch's edges provide and naming
+  the one that edge provides, and the mapping its fix gives dry-runs; an edit that fails only under
   the batch scenario fails naming it, while the brief lists the switch's scenarios;
   `ask`-like tools, `update_node` with `edits` and bound rejections name their fix; a
   submodel boundary is final and says to block; a denied config part names the permitted

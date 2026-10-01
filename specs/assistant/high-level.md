@@ -2030,7 +2030,10 @@ Loud, typed, and never averaged away:
   refused as not retryable, saying the assistant cannot read or edit it and should report
   a blocker asking the analyst to edit it in the editor.
 - **Every scenario a Source Switch routes is validated** — a dry-run refuses a switch the
-  plan touches that routes a scenario to no connected input (`scenario_unrouted`), and
+  plan touches that routes a scenario to no connected input (`scenario_unrouted`), naming
+  the inputs its incoming edges do provide; an input is named by its edge's source node (a
+  Quote Input's table label), never by an edge's target handle, so a plan that maps the
+  handle it gave a new edge is told the name that edge provides and the mapping to write; and
   resolves every target again under each other scenario a switch maps, so dropping an input
   a batch scenario needs fails loudly instead of passing because only the live scenario
   was checked.

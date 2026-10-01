@@ -29,7 +29,7 @@ from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
 from haute._rating import normalise_combined_outputs, validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import new_logic_steps
 from haute.assistant._change_record import (
@@ -673,8 +673,9 @@ def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collec
 
     Under that scenario the switch would have no input, so a plan that drops
     an input a scenario routes to, or routes one to an input no edge
-    connects, fails here with the switch, the scenario and the inputs named:
-    all pipeline metadata.
+    connects, fails here with the switch, the scenario, the inputs it routes
+    to and the inputs its incoming edges do provide named: all pipeline
+    metadata.
     """
 
     nodes = {node.id: node for node in graph.nodes}
@@ -685,29 +686,71 @@ def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collec
         routing = node.data.config.get("input_scenario_map")
         if not isinstance(routing, Mapping):
             continue
-        connected: set[str] = set()
+        provided: dict[str, GraphEdge] = {}
         for edge in graph.edges:
             if edge.target != node_id or edge.source not in nodes:
                 continue
             try:
-                connected.add(edge_input_name(edge, nodes[edge.source]))
+                provided[edge_input_name(edge, nodes[edge.source])] = edge
             except ValueError:
                 continue  # a malformed edge is save validation's verdict, not this one's
         for scenario in sorted({value for value in routing.values() if isinstance(value, str)}):
             routed = sorted(str(name) for name, value in routing.items() if value == scenario)
-            if connected & set(routed):
+            if set(provided) & set(routed):
                 continue
-            names = ", ".join(repr(name) for name in routed)
-            raise AssistantOperationError(
-                "scenario_unrouted",
-                f"Source Switch {node_id!r} routes scenario {scenario!r} to {names}, which no "
-                "incoming edge provides, so under that scenario it would have no input.",
-                where={"node": node_id, "field": "input_scenario_map"},
-                fix=(
-                    f"Connect {routed[0]!r} to {node_id!r} with add_edge, or route scenario "
-                    f"{scenario!r} to an input that is connected."
-                ),
-            )
+            raise _unrouted_scenario(node_id, scenario, routed, provided)
+
+
+def _unrouted_scenario(
+    switch: str, scenario: str, routed: Sequence[str], provided: Mapping[str, GraphEdge]
+) -> AssistantOperationError:
+    """``scenario_unrouted``, naming the inputs the switch's incoming edges provide.
+
+    An input is named by its edge's source node (a Quote Input's table label),
+    never by the edge's target handle, so a plan that maps the handle it gave
+    an edge is told the name that edge provides.
+    """
+
+    message = (
+        f"Source Switch {switch!r} routes scenario {scenario!r} to "
+        f"{', '.join(repr(name) for name in routed)}, which no incoming edge provides, so "
+        "under that scenario it would have no input."
+    )
+    if not provided:
+        return AssistantOperationError(
+            "scenario_unrouted",
+            f"{message} It has no incoming edge.",
+            where={"node": switch, "field": "input_scenario_map"},
+            fix=f"Connect a node named {routed[0]!r} to {switch!r} with add_edge.",
+        )
+    inputs = ", ".join(repr(name) for name in sorted(provided))
+    message += (
+        f" Its incoming edges provide {inputs}: an input is named by its edge's source "
+        "node (a Quote Input's table label), never by add_edge's target_handle."
+    )
+    handled = [name for name in sorted(provided) if provided[name].targetHandle in routed]
+    if handled:
+        name = handled[0]
+        edge = provided[name]
+        return AssistantOperationError(
+            "scenario_unrouted",
+            f"{message} The edge from {edge.source!r} has target_handle "
+            f"{edge.targetHandle!r}, which does not name an input; it provides {name!r}.",
+            where={"node": switch, "field": "input_scenario_map"},
+            fix=(
+                f"Map {name!r} to {scenario!r} in input_scenario_map, and list {name!r} in "
+                f"inputs in place of {edge.targetHandle!r}."
+            ),
+        )
+    return AssistantOperationError(
+        "scenario_unrouted",
+        message,
+        where={"node": switch, "field": "input_scenario_map"},
+        fix=(
+            f"Route scenario {scenario!r} to one of {inputs}, or connect a node named "
+            f"{routed[0]!r} to {switch!r} with add_edge."
+        ),
+    )
 
 
 def _parse_rating_step_config(config: dict[str, Any]) -> None:

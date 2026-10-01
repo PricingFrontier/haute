@@ -3501,6 +3501,97 @@ async def test_a_dry_run_validates_every_scenario_a_switch_maps(steps_first_proj
     )
 
 
+async def test_an_unrouted_scenario_names_the_inputs_the_edges_provide(
+    steps_first_project: Path,
+):
+    """The live run's renewal plan: an edge's target_handle does not name a Source
+    Switch input, its source node does, so mapping the handle leaves the scenario
+    unrouted. The error lists the inputs the edges provide, says how they are
+    named, and gives the mapping that routes the scenario; that mapping passes."""
+
+    from haute.assistant._tools import build_tool_executor
+
+    _egress_toml(steps_first_project, max_sensitivity="internal")
+    execute = build_tool_executor("main.py")
+    saved = await execute(
+        "dry_run_graph_edits",
+        {
+            "summary": "Route quotes or regions.",
+            "ops": [
+                {
+                    "op": "add_node",
+                    "node_type": "liveSwitch",
+                    "name": "policies",
+                    "config": {
+                        "input_scenario_map": {"quotes": "live", "regions": "nb_batch"},
+                        "inputs": ["quotes", "regions"],
+                    },
+                },
+                {"op": "add_edge", "source": "quotes", "target": "policies"},
+                {"op": "add_edge", "source": "regions", "target": "policies"},
+            ],
+        },
+    )
+    assert "error" not in await execute("apply_graph_plan", {"plan_hash": saved["plan_hash"]})
+
+    def renewal_ops(name: str) -> list[dict[str, object]]:
+        return [
+            {
+                "op": "add_node",
+                "node_type": "dataInput",
+                "name": "renewal_quotes",
+                "ref": "renewal_quotes_node",
+                "config": {"path": "quotes.parquet"},
+            },
+            {
+                "op": "update_node",
+                "node": "policies",
+                "config": {
+                    "input_scenario_map": {
+                        "quotes": "live",
+                        "regions": "nb_batch",
+                        name: "renewal_batch",
+                    },
+                    "inputs": ["quotes", "regions", name],
+                },
+            },
+            {
+                "op": "add_edge",
+                "source": "$renewal_quotes_node",
+                "target": "policies",
+                "target_handle": "renewal_batch_queue",
+            },
+        ]
+
+    unrouted = await execute(
+        "dry_run_graph_edits",
+        {"summary": "Add the renewal batch.", "ops": renewal_ops("renewal_batch_queue")},
+    )
+
+    error = unrouted["error"]
+    assert (error["code"], error["retryable"]) == ("scenario_unrouted", True)
+    assert error["where"] == {"op_index": 1, "node": "policies", "field": "input_scenario_map"}
+    assert error["message"] == (
+        "Source Switch 'policies' routes scenario 'renewal_batch' to 'renewal_batch_queue', "
+        "which no incoming edge provides, so under that scenario it would have no input. Its "
+        "incoming edges provide 'quotes', 'regions', 'renewal_quotes': an input is named by "
+        "its edge's source node (a Quote Input's table label), never by add_edge's "
+        "target_handle. The edge from 'renewal_quotes' has target_handle "
+        "'renewal_batch_queue', which does not name an input; it provides 'renewal_quotes'."
+    )
+    assert error["fix"] == (
+        "Map 'renewal_quotes' to 'renewal_batch' in input_scenario_map, and list "
+        "'renewal_quotes' in inputs in place of 'renewal_batch_queue'."
+    )
+
+    routed = await execute(
+        "dry_run_graph_edits",
+        {"summary": "Add the renewal batch.", "ops": renewal_ops("renewal_quotes")},
+    )
+
+    assert "error" not in routed, routed
+
+
 class TestActionableErrors:
     """A tool error says where it happened, what the node's inputs hold and how
     to fix it, through the executor the model calls."""
