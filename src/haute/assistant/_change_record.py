@@ -25,6 +25,8 @@ from haute.schemas import (
 
 #: The most node chips, and edges each way, one card lists.
 CHANGE_LIST_LIMIT = 50
+#: The longest change headline, the Git commit subject of an apply, in characters.
+CHANGE_HEADLINE_LIMIT = 100
 #: A configuration-change key naming one step: `steps[<id>]` or `steps[<id>].<field>`.
 _STEP_KEY = re.compile(r"^steps\[(?P<id>[^\]]+)\]")
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -171,9 +173,22 @@ def change_record(
 
 
 def change_headline(summary: str) -> str:
-    """A change's summary on one line: the Git commit message of its save."""
+    """A change's summary on one line: the Git commit message of its save.
 
-    return " ".join(summary.split())
+    The whitespace is collapsed, and a line longer than `CHANGE_HEADLINE_LIMIT`
+    is cut at the last word boundary that leaves room for a closing ellipsis
+    within the limit, or inside a single word longer than that.
+    """
+
+    line = " ".join(summary.split())
+    if len(line) <= CHANGE_HEADLINE_LIMIT:
+        return line
+    head = line[: CHANGE_HEADLINE_LIMIT - 1]
+    if line[len(head)] != " ":
+        boundary = head.rfind(" ")
+        if boundary > 0:
+            head = head[:boundary]
+    return head.rstrip() + "\N{HORIZONTAL ELLIPSIS}"
 
 
 def touched_node_ids(records: Sequence[AssistantChangeRecord]) -> tuple[str, ...]:
@@ -219,6 +234,7 @@ def evidence_summary(evidence: Sequence[Mapping[str, object]]) -> dict[str, obje
 
 
 __all__ = [
+    "CHANGE_HEADLINE_LIMIT",
     "CHANGE_LIST_LIMIT",
     "change_headline",
     "change_record",

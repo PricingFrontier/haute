@@ -1108,8 +1108,9 @@ the turn that follows.
    `verification_failed`, `tool_result_too_large`), and true for every other code,
    each of which is a rejection a corrected call can clear. The plan domain locates
    its failures: `OpValidationError` and `AssistantOperationError` carry `where` (any
-   of `op_index`, `node`, `field`, `step`), `fix` (one concrete correction) and `graph`
-   (the graph the failure was judged against); `OpValidationError` requires its `fix`,
+   of `op_index`, `node`, `field`, `step`), `fix` (one concrete correction), `graph`
+   (the graph the failure was judged against) and `did_you_mean` (close names the
+   failure found itself, empty unless set); `OpValidationError` requires its `fix`,
    so every `invalid_ops` failure carries one. `_apply_ops_with_refs` stamps the
    failing operation's index, and records which operation last wrote each node (added,
    updated or renamed it), so a failure found after the whole batch — the
@@ -1124,7 +1125,9 @@ the turn that follows.
    `max_sensitivity` is not `public`), so a public policy refuses the call as
    `egress_policy_denied` before any column is resolved. `did_you_mean` is the
    `difflib` close matches (at most three, cutoff 0.6) of each column an execution
-   failure names that no input provides, among those input and column names only.
+   failure names that no input provides, among those input and column names only; for
+   an unknown node reference (see Edge cases) it is the failure's own close node ids of
+   the working graph, the ids `get_pipeline` already lists plus those the batch added.
    `schema_unresolvable` always carries a `fix` naming the step or node to correct,
    and the replacement name when `did_you_mean` has one. An unknown tool name carries
    the valid names and its close matches among them. None of these fields is
@@ -1279,6 +1282,26 @@ the turn that follows.
 
 - **Ops apply in order against the evolving graph** — `add_node` followed by `add_edge`
   addressing the new node via `$ref` within one batch is valid and covered by tests.
+- **An unknown node reference says the fix** — when an operation's `node`, `source` or
+  `target` names no node of the working graph, `_resolve_node_id` raises
+  `UnknownNodeReferenceError` (an `OpValidationError` carrying the reference and its
+  role), and `_apply_ops_with_refs` rewrites its message and `fix` from the whole batch;
+  `where` carries the operation's index. The first matching case decides:
+  1. a bare word an earlier `add_node` declared as its `ref` — write `$<ref>` or the
+     node's id;
+  2. a reference a later `add_node` of the batch would satisfy (its sanitised id, its
+     name, or its ref with or without `$`) — move that `add_node`, named by its index,
+     before this operation;
+  3. an unknown `$<ref>` — the refs declared so far, each with its node id;
+  4. anything else — the nodes the batch has added so far (id and ref), and that each
+     dry-run is a whole plan: a node an earlier failed dry-run proposed is not in the
+     graph, so the plan adds it before wiring it. `did_you_mean` carries up to three
+     close node ids of the working graph (`difflib`, cutoff 0.6).
+
+  The reference is never resolved on the model's behalf: the live run's two unknown
+  references (`join_node`, `enriched_quotes`) were already id-shaped, and sanitisation
+  preserves case, so neither was a display name, and accepting a bare ref would make
+  `$` optional in one place only.
 - **Revision checks and the write are one critical section.** Dry-run is serialized
   with saves while it captures the exact saved sources. Apply reloads and verifies
   those sources, replays the exact plan, saves, reparses, verifies, and publishes
@@ -1502,8 +1525,12 @@ the turn that follows.
   tool layer's publisher adds the chat's session id.
 - **Assistant saves name their change** — `save_graph_transactionally` takes a
   `commit_message`, which the save passes to `commit_save`; an apply passes
-  `change_headline(summary)` (whitespace collapsed to one line) and an undo `Undo: ` and
-  the undone change's headline. `PlanReceipt` refuses a control character other than
+  `change_headline(summary)` and an undo `Undo: ` and the undone change's headline.
+  `change_headline` collapses the summary's whitespace to one line and, past
+  `CHANGE_HEADLINE_LIMIT` (100) characters, cuts it at the last space that leaves room
+  for a closing `…` within the limit (inside the word when there is no such space), so a
+  summary as long as the receipt's 400-character bound still makes a one-line commit
+  subject. `PlanReceipt` refuses a control character other than
   whitespace, because the ledger history parser delimits commits with control
   characters.
 - **Undo restores only the latest change** — the comparison of the current document
@@ -1630,7 +1657,9 @@ fixture for route tests). The implemented coverage is:
 
 - **`tests/test_assistant_ops.py`** — every op's happy path and rejection paths; op ordering
   within a batch (add then connect via `$ref`); ref resolution (unknown ref, duplicate ref,
-  ref shadowing an existing id); all-or-nothing on mid-batch validation failure;
+  ref shadowing an existing id); each unknown node reference case naming its fix (a ref
+  without `$`, an `add_node` later in the batch by id or ref, an undeclared `$ref`, and a
+  node no operation adds with its close ids in `did_you_mean`); all-or-nothing on mid-batch validation failure;
   shallow-merge/null-removes semantics; unknown-config-key rejection; submodel-target and
   submodel-type rejection; ambiguous edge match; deterministic positions evaluated
   post-batch (property: same batch, same graph → same positions); and the
@@ -1654,7 +1683,9 @@ fixture for route tests). The implemented coverage is:
   Also covers canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions (a fresh identical dry-run of an
   applied plan issues it again; a repeated apply without one is refused),
-  a plan summary with a control character refused,
+  a plan summary with a control character refused, a two-sentence summary within the
+  400-character bound accepted and one past it refused, the change headline cut at a
+  word boundary,
   stale/altered-plan rejection before save,
   unrelated-diff detection, and truthful verification evidence.
 - **`tests/test_assistant_catalog.py`** — completeness against `NodeType` (mirror of the
@@ -1716,7 +1747,9 @@ fixture for route tests). The implemented coverage is:
   `context.inputs`, the `[source, free_code]` form and the by-name `fix`; a misspelt
   column is `schema_unresolvable` with `did_you_mean` and the replacement `fix`; a
   public policy refuses the dry-run before any column is named; an unknown tool names
-  its close match; and three independent errors, each corrected from its error,
+  its close match; the live join shape (an `add_edge` to a node whose `add_node` comes
+  later) names that operation's index and the move as its `fix`; an edge to a node no
+  operation adds carries the plan's added nodes and `did_you_mean` node ids; and three independent errors, each corrected from its error,
   converge in one scripted turn through the real tools to an applied outcome.
   Contract tests assert that the saved `active_source`
   is passed to the engine; crafted/mocked execution results cover submodel-boundary
@@ -1989,7 +2022,7 @@ fixture for route tests). The implemented coverage is:
   tool-error round-trip, turn-outcome revival, an outcome detail redacted like assistant
   text, a turn's `undone` records revived, an apply's change record revived as the same record with its summary and
   assumptions redacted like assistant text (a summary that redaction lengthens past the
-  dry-run's 160-character bound still revives, since the bound is the receipt's, not the
+  dry-run's `ASSISTANT_RECEIPT_TEXT_LIMIT` bound still revives, since the bound is the receipt's, not the
   record's), a turn record without its `outcome` key treated as invalid, internal-controller
   revival/transcript hiding, absence of
   deterministic payload digests, safe validation path/reason retention, and non-fatal

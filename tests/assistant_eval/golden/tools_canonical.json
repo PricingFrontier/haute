@@ -518,15 +518,15 @@
         "summary": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160,
-          "description": "One plain sentence saying what the plan does."
+          "maxLength": 400,
+          "description": "One or two plain sentences saying what the plan does."
         },
         "assumptions": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 160
+            "maxLength": 400
           },
           "maxItems": 5,
           "description": "Choices you made that the analyst did not state, one sentence each."

@@ -1850,7 +1850,8 @@ def _located_error(
     has already required the policy that permits that metadata, the one
     `get_node_schema` needs. `fix`, when given, composes the correction from
     the close matches of `named_columns`; otherwise the failure's own `fix`
-    is used.
+    is used. Without close column matches, `did_you_mean` is the failure's
+    own close names, such as the node ids near an unknown node reference.
     """
 
     envelope: dict[str, object] = dict(fields)
@@ -1864,6 +1865,7 @@ def _located_error(
         envelope["context"] = {"inputs": inputs}
     matches = _close_matches(named_columns, inputs)
     suggestions = list(dict.fromkeys(match for close in matches.values() for match in close))
+    suggestions = suggestions or list(exc.did_you_mean)
     if suggestions:
         envelope["did_you_mean"] = suggestions[:3]
     correction = fix(matches) if fix is not None else exc.fix

@@ -321,16 +321,20 @@ holds a configuration value, a step's free-code text or `# intent` comment, a co
 value or an error message: it names what changed, not what it changed to. There is no
 second, hand-maintained list of editor labels; a field reads as its key in words.
 
-`dry_run_graph_edits` takes a required `summary` of at most 160 characters, saying in
-plain words what the plan does, and an optional list of up to five `assumptions` the
-model made (each at most 160 characters, with no control character other than
-whitespace). They are stored as the plan's receipt in the
+`dry_run_graph_edits` takes a required `summary` of at most 400 characters, saying in
+one or two plain sentences what the plan does, and an optional list of up to five
+`assumptions` the model made (each at most 400 characters, with no control character other
+than whitespace). The bound fits the summaries models write: the summary is presentation,
+never authority, and a 160-character bound refused a third of a live run's first dry-runs.
+They are stored as the plan's receipt in the
 plan store beside the plan, outside the hashed plan authority, so wording never changes a
 plan hash; a later identical dry-run replaces the receipt of a plan not yet applied. A
 recipe plan's receipt is its recipe's index summary with no assumptions. The change card
-shows both. The summary, its whitespace collapsed to one line, is the change's headline:
-the Git commit message of the save the apply makes, in place of the default message that
-names the changed files.
+shows both as written. The change's headline is derived from the summary: its whitespace
+collapsed to one line and, when that is longer than 100 characters, cut at the last word
+boundary within them with an ellipsis ending the 100 (a single word longer than that is
+cut inside it). The headline is the Git commit message of the save the apply makes, in
+place of the default message that names the changed files.
 
 **Undo and Compare.** The analyst can undo an assistant change from its card with one
 click, and compare the pipeline before it with the current one. Undo
@@ -581,8 +585,13 @@ column names; column names are schema metadata and never row values, and the dry
 and apply tools run only under a policy that permits saved project metadata (the same
 permission `get_node_schema` needs), so they disclose nothing that tool would not.
 `did_you_mean` lists close matches to a misspelt name, drawn only from names the error
-may already disclose: those input and column names, and the tool names for an unknown
-tool.
+may already disclose: those input and column names, the node ids of the pipeline and of
+the plan for an unknown node reference, and the tool names for an unknown tool. An
+operation naming a node that does not exist says why and how to correct it: a ref
+written without its `$`, a node the plan adds only later (move that `add_node` earlier),
+an undeclared ref, or a node no operation adds, since each dry-run is a whole plan and
+a node a failed dry-run proposed was never kept. The reference is not guessed for the
+model; the error names the nodes the plan adds, by id and ref.
 
 ## Design rationale
 

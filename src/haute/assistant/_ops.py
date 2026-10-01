@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import difflib
 import json
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
@@ -107,6 +108,29 @@ def _invalid(
     raise OpValidationError(message, where=where, fix=fix)
 
 
+class UnknownNodeReferenceError(OpValidationError):
+    """An operation named a node the working graph does not hold.
+
+    ``reference`` is the node, source or target exactly as the model sent it
+    and ``role`` says which it was (``"edge target"``). The raise site sees
+    one operation, so the batch loop rewrites the message and the fix from the
+    whole plan (see ``_explain_unknown_reference``).
+    """
+
+    def __init__(
+        self,
+        reference: str,
+        role: str,
+        message: str,
+        *,
+        fix: str,
+        did_you_mean: Sequence[str] = (),
+    ) -> None:
+        super().__init__(message, fix=fix, did_you_mean=did_you_mean)
+        self.reference = reference
+        self.role = role
+
+
 def _mapping(value: object) -> Mapping[str, Any] | None:
     if isinstance(value, BaseModel):
         dumped = value.model_dump(mode="python")
@@ -146,11 +170,13 @@ def _resolve_node_id(
         try:
             node_id = refs[ref]
         except KeyError:
-            _invalid(
+            raise UnknownNodeReferenceError(
+                raw_id,
+                role,
                 f"Unknown batch reference {raw_id!r}",
                 fix=f"Declare ref {ref!r} on an earlier add_node in the same plan, "
                 "or use the node's id.",
-            )
+            ) from None
     else:
         node_id = raw_id
 
@@ -164,7 +190,9 @@ def _resolve_node_id(
 
     index = _node_index(graph, node_id)
     if index is None:
-        _invalid(
+        raise UnknownNodeReferenceError(
+            raw_id,
+            role,
             f"Unknown {role} node {raw_id!r}",
             fix="Use a node id get_pipeline lists, or a $ref an earlier add_node declared.",
         )
@@ -991,6 +1019,98 @@ def locate_plan_error(
         exc.graph = graph
 
 
+def _explain_unknown_reference(
+    exc: UnknownNodeReferenceError,
+    ops: Sequence[GraphEditOp],
+    index: int,
+    refs: Mapping[str, str],
+    new_node_ids: Sequence[str],
+    graph: PipelineGraph,
+) -> UnknownNodeReferenceError:
+    """Say why operation *index* named no node, and the exact fix, from the batch.
+
+    The first matching case decides: a bare word an earlier ``add_node``
+    declared as its ref; a node a later ``add_node`` adds; an undeclared
+    ``$ref``; otherwise a node no operation adds, with close node ids. The
+    reference is never resolved on the model's behalf.
+    """
+
+    reference, role = exc.reference, exc.role
+    is_ref = reference.startswith("$")
+    bare = reference[1:] if is_ref else reference
+    head = (
+        f"Unknown batch reference {reference!r}" if is_ref else f"Unknown {role} node {reference!r}"
+    )
+
+    def unknown(message: str, fix: str, close: Sequence[str] = ()) -> UnknownNodeReferenceError:
+        return UnknownNodeReferenceError(
+            reference, role, f"{head}: {message}", fix=fix, did_you_mean=close
+        )
+
+    if not is_ref and reference in refs:
+        declared_at = next(
+            position
+            for position, op in enumerate(ops[:index])
+            if isinstance(op, AddNodeOp) and op.ref == reference
+        )
+        node_id = refs[reference]
+        return unknown(
+            f"{reference!r} is the ref add_node declared at operation {declared_at} for "
+            f"node {node_id!r}, and a ref is used with a leading $.",
+            f"Write '${reference}', the ref add_node declared at operation {declared_at}, "
+            f"or the node's id {node_id!r}.",
+        )
+
+    for later, op in enumerate(ops[index + 1 :], start=index + 1):
+        if not isinstance(op, AddNodeOp):
+            continue
+        added_id = _sanitize_func_name(op.name)
+        names = {op.ref} if is_ref else {op.ref, op.name, added_id}
+        if bare in names:
+            return unknown(
+                f"add_node {added_id!r} at operation {later} comes after this operation, "
+                "and operations apply in order.",
+                f"Move add_node {added_id!r} (operation {later}) before operation {index}.",
+            )
+
+    if is_ref:
+        declared = ", ".join(f"'${ref}' (id {node_id!r})" for ref, node_id in refs.items())
+        return unknown(
+            f"no add_node before this operation declared ref {bare!r}. "
+            + (
+                f"Refs declared so far: {declared}."
+                if declared
+                else "This plan declares no ref before it."
+            ),
+            f"Declare ref {bare!r} on an add_node before this operation, or use a declared "
+            "ref or a node id get_pipeline lists.",
+        )
+
+    ref_of = {node_id: ref for ref, node_id in refs.items()}
+    added = ", ".join(
+        f"{node_id!r} (${ref_of[node_id]})" if node_id in ref_of else repr(node_id)
+        for node_id in new_node_ids
+    )
+    candidates = [node.id for node in graph.nodes if node.data.nodeType not in _SUBMODEL_TYPES]
+    close = difflib.get_close_matches(reference, candidates, n=3, cutoff=0.6)
+    add = (
+        f"add {reference!r} with add_node before operation {index}: each dry run is a "
+        "whole plan, and a node a failed dry run proposed was never kept."
+    )
+    return unknown(
+        "no node has this id and no operation of this plan adds it. "
+        + (
+            f"Nodes this plan adds so far: {added}."
+            if added
+            else "This plan adds no node before it."
+        ),
+        f"Use {close[0]!r} if that is the node you meant; otherwise {add}"
+        if close
+        else f"A{add[1:]} Otherwise use a node id get_pipeline lists.",
+        close,
+    )
+
+
 def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> AppliedOps:
     """Apply a batch to a copy of *graph*.
 
@@ -1055,10 +1175,17 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
                     fix="Use an op the dry_run_graph_edits schema lists.",
                 )
         except LocatedPlanError as exc:
-            exc.where = {"op_index": index, **exc.where}
-            if exc.graph is None:
-                exc.graph = working
-            raise
+            failure = exc
+            if isinstance(exc, UnknownNodeReferenceError):
+                failure = _explain_unknown_reference(
+                    exc, parsed_ops, index, refs, new_node_ids, working
+                )
+            failure.where = {"op_index": index, **failure.where}
+            if failure.graph is None:
+                failure.graph = working
+            if failure is exc:
+                raise
+            raise failure from None
         except ValidationError as exc:
             raise OpValidationError(
                 f"Invalid graph edit operation at index {index}: {exc}",
@@ -2703,7 +2830,10 @@ class PlanReceipt:
                 "invalid_request",
                 "A plan summary and each assumption must be non-empty and at most "
                 f"{ASSISTANT_RECEIPT_TEXT_LIMIT} characters.",
-                fix="Say in one short sentence what the plan does.",
+                fix=(
+                    "Say in one or two plain sentences, at most "
+                    f"{ASSISTANT_RECEIPT_TEXT_LIMIT} characters, what the plan does."
+                ),
             )
         if any(
             unicodedata.category(char) == "Cc" and char not in _RECEIPT_WHITESPACE

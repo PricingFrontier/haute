@@ -358,7 +358,7 @@
       "properties": {
         "summary": {
           "type": "string",
-          "description": "One plain sentence saying what the plan does."
+          "description": "One or two plain sentences saying what the plan does."
         },
         "assumptions": {
           "type": "array",

@@ -211,8 +211,9 @@ class AssistantTurnOutcome(BaseModel):
         return self
 
 
-#: The longest plan summary or assumption a dry-run accepts, in characters.
-ASSISTANT_RECEIPT_TEXT_LIMIT = 160
+#: The longest plan summary or assumption a dry-run accepts, in characters: room
+#: for one or two sentences. The receipt is presentation, never authority.
+ASSISTANT_RECEIPT_TEXT_LIMIT = 400
 #: The most assumptions one dry-run records.
 ASSISTANT_MAX_ASSUMPTIONS = 5
 

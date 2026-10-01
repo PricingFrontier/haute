@@ -1223,7 +1223,7 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                     "type": "string",
                     "minLength": 1,
                     "maxLength": ASSISTANT_RECEIPT_TEXT_LIMIT,
-                    "description": "One plain sentence saying what the plan does.",
+                    "description": "One or two plain sentences saying what the plan does.",
                 },
                 "assumptions": {
                     "type": "array",

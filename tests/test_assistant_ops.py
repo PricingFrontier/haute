@@ -245,6 +245,111 @@ class TestRefs:
                 ],
             )
 
+    def test_ref_without_its_dollar_names_the_ref_and_the_id(self):
+        """The live join shape: the model declared ref 'join_node' and wired it bare."""
+        base = _graph([_node("quotes", "dataInput"), _node("rates", "dataInput")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "attach_regional_rates_join",
+                        "ref": "join_node",
+                    },
+                    {"op": "add_edge", "source": "quotes", "target": "join_node"},
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 1}
+        assert str(exc).startswith("Unknown edge target node 'join_node'")
+        assert exc.fix == (
+            "Write '$join_node', the ref add_node declared at operation 0, or the "
+            "node's id 'attach_regional_rates_join'."
+        )
+
+    @pytest.mark.parametrize("target", ["enriched_quotes", "$out", "out"])
+    def test_a_node_added_later_in_the_batch_names_the_move(self, target: str):
+        """The live output shape: the edge to the output preceded its add_node."""
+        base = _graph([_node("quote_with_competitor")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {"op": "add_edge", "source": "quote_with_competitor", "target": target},
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "enriched_quotes",
+                        "ref": "out",
+                    },
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 0}
+        assert "comes after this operation" in str(exc)
+        assert exc.fix == "Move add_node 'enriched_quotes' (operation 1) before operation 0."
+
+    def test_an_undeclared_ref_lists_the_refs_declared_so_far(self):
+        base = _graph([_node("src")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {"op": "add_node", "node_type": "polars", "name": "derive", "ref": "d"},
+                    {"op": "add_edge", "source": "src", "target": "$ghost"},
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 1}
+        assert str(exc) == (
+            "Unknown batch reference '$ghost': no add_node before this operation declared "
+            "ref 'ghost'. Refs declared so far: '$d' (id 'derive')."
+        )
+        assert exc.fix == (
+            "Declare ref 'ghost' on an add_node before this operation, or use a declared "
+            "ref or a node id get_pipeline lists."
+        )
+
+    def test_a_node_no_operation_adds_says_a_dry_run_is_a_whole_plan(self):
+        """The live retry shape: after a failed dry-run the model resent only the
+        edge to the output it had proposed, so no operation added it."""
+        base = _graph([_node("nb_batch", "dataInput")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {"op": "add_node", "node_type": "polars", "name": "joined", "ref": "q"},
+                    {"op": "add_edge", "source": "nb_batch", "target": "$q"},
+                    {"op": "add_edge", "source": "$q", "target": "enriched_quotes"},
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 2}
+        assert str(exc) == (
+            "Unknown edge target node 'enriched_quotes': no node has this id and no "
+            "operation of this plan adds it. Nodes this plan adds so far: 'joined' ($q)."
+        )
+        assert exc.fix == (
+            "Add 'enriched_quotes' with add_node before operation 2: each dry run is a "
+            "whole plan, and a node a failed dry run proposed was never kept. Otherwise "
+            "use a node id get_pipeline lists."
+        )
+        assert exc.did_you_mean == ()
+
+    def test_a_misspelt_node_id_suggests_the_close_id(self):
+        base = _graph([_node("quote_with_competitor")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(base, [{"op": "update_node", "node": "quote_with_competitr", "config": {}}])
+        exc = excinfo.value
+        assert exc.did_you_mean == ("quote_with_competitor",)
+        assert "This plan adds no node before it." in str(exc)
+        assert exc.fix is not None and exc.fix.startswith(
+            "Use 'quote_with_competitor' if that is the node you meant; otherwise add "
+            "'quote_with_competitr' with add_node before operation 0"
+        )
+
     def test_ref_shadowing_existing_id_disambiguated_by_prefix(self):
         """``$x`` targets the batch-created node; bare ``x`` the existing one."""
         base = _graph([_node("x", "edgeJoin", suffix="_old")])
@@ -1873,7 +1978,9 @@ class TestSemanticPlans:
 
         assert excinfo.value.where == {"op_index": 1}
         assert excinfo.value.fix == (
-            "Use a node id get_pipeline lists, or a $ref an earlier add_node declared."
+            "Add 'b' with add_node before operation 1: each dry run is a whole plan, and "
+            "a node a failed dry run proposed was never kept. Otherwise use a node id "
+            "get_pipeline lists."
         )
 
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
@@ -2375,6 +2482,24 @@ class TestPlanStore:
         # Whitespace, including a line break, is ordinary text.
         assert PlanReceipt("Rename\nthe node.\t").summary == "Rename\nthe node.\t"
 
+    def test_a_receipt_holds_a_two_sentence_summary_and_refuses_one_past_the_bound(self):
+        """A live run's summaries ran past 160 characters; the bound fits two sentences."""
+        from haute.assistant._ops import AssistantOperationError, PlanReceipt
+        from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT
+
+        assert ASSISTANT_RECEIPT_TEXT_LIMIT == 400
+        summary = (
+            "Join the competitor insight onto the new-business batch by quote id, keeping "
+            "every quote in the batch. Write the enriched quotes to a new output node so "
+            "the analyst can review the competitor premium beside our own."
+        )
+        assert 160 < len(summary) <= ASSISTANT_RECEIPT_TEXT_LIMIT
+        assert PlanReceipt(summary, (summary,)).summary == summary
+        with pytest.raises(AssistantOperationError) as exc:
+            PlanReceipt("x" * (ASSISTANT_RECEIPT_TEXT_LIMIT + 1))
+        assert exc.value.code == "invalid_request"
+        assert "400 characters" in str(exc.value)
+
     def test_aborted_plan_requires_a_fresh_identical_put_before_retry(self, tmp_path: Path):
         from haute.assistant._ops import (
             AssistantOperationError,
@@ -2420,3 +2545,39 @@ class TestPlanStore:
         store.put(plan, _RECEIPT)
 
         assert store.begin_apply(plan.plan_hash) == plan
+
+
+class TestChangeHeadline:
+    """The Git commit subject a summary yields: one line, cut at a word boundary."""
+
+    def test_a_short_summary_is_its_headline_on_one_line(self):
+        from haute.assistant._change_record import change_headline
+
+        assert change_headline("  Add an age band\nafter\tquotes.  ") == (
+            "Add an age band after quotes."
+        )
+
+    def test_a_long_summary_is_cut_at_a_word_boundary_with_an_ellipsis(self):
+        from haute.assistant._change_record import CHANGE_HEADLINE_LIMIT, change_headline
+
+        assert CHANGE_HEADLINE_LIMIT == 100
+        summary = (
+            "Join the competitor insight onto the new-business batch by quote id, keeping "
+            "every quote in the batch.\nWrite the enriched quotes to a new output node."
+        )
+        headline = change_headline(summary)
+        assert headline == (
+            "Join the competitor insight onto the new-business batch by quote id, keeping "
+            "every quote in the…"
+        )
+        assert len(headline) <= CHANGE_HEADLINE_LIMIT
+        # Exactly at the limit, nothing is cut.
+        exact = "word " * 19 + "abcde"
+        assert len(exact) == CHANGE_HEADLINE_LIMIT
+        assert change_headline(exact) == exact
+
+    def test_a_single_word_past_the_limit_is_cut_inside_it(self):
+        from haute.assistant._change_record import CHANGE_HEADLINE_LIMIT, change_headline
+
+        headline = change_headline("x" * 150)
+        assert headline == "x" * (CHANGE_HEADLINE_LIMIT - 1) + "…"

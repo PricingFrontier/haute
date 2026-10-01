@@ -2692,6 +2692,65 @@ class TestActionableErrors:
         assert error["fix"] == "Call dry_run_graph_edits instead."
         assert error["retryable"] is True
 
+    async def test_an_edge_to_a_node_added_later_in_the_plan_names_the_move(
+        self, steps_first_project: Path
+    ):
+        """The live join failure: the model wired the join before adding it, and
+        wrote a two-sentence summary the 160-character bound had refused."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        summary = (
+            "Attach the regional rates to each quote by joining the rates table onto "
+            "the quotes on region, keeping every quote. Quotes whose region has no rate "
+            "keep a null rate so the analyst can see which regions are missing."
+        )
+        assert 160 < len(summary) <= 400
+
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": summary,
+                "ops": [
+                    {"op": "add_edge", "source": "quotes", "target": "join_node"},
+                    {"op": "add_node", "node_type": "polars", "name": "join_node", "ref": "j"},
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert error["code"] == "invalid_ops"
+        assert error["where"] == {"op_index": 0}
+        assert error["message"].startswith("Unknown edge target node 'join_node'")
+        assert error["fix"] == "Move add_node 'join_node' (operation 1) before operation 0."
+
+    async def test_an_edge_to_a_node_no_operation_adds_suggests_close_ids(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Test plan.",
+                "ops": [
+                    {"op": "add_node", "node_type": "polars", "name": "enriched", "ref": "e"},
+                    {"op": "add_edge", "source": "quotes", "target": "$e"},
+                    {"op": "add_edge", "source": "$e", "target": "august_total"},
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert error["code"] == "invalid_ops"
+        assert error["where"] == {"op_index": 2}
+        assert "Nodes this plan adds so far: 'enriched' ($e)." in error["message"]
+        assert error["did_you_mean"] == ["august_totals"]
+        assert error["fix"].startswith("Use 'august_totals' if that is the node you meant")
+
     async def test_three_independent_errors_converge_in_one_turn(self, steps_first_project: Path):
         """A scripted replay through the real tools: three different faults,
         each corrected from its error, then the guide's form applies."""

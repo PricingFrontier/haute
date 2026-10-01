@@ -10,7 +10,7 @@ import pytest
 
 from haute.assistant._ops import AssistantOperationError, PlanStore
 from haute.assistant._wire_ops import OpValidationError
-from haute.schemas import AssistantChangeRecord
+from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT, AssistantChangeRecord
 
 PIPELINE_SOURCE = """\
 import polars as pl
@@ -928,7 +928,7 @@ class TestChangeCard:
         ("summary", "assumptions"),
         [
             pytest.param("", (), id="empty-summary"),
-            pytest.param("x" * 161, (), id="long-summary"),
+            pytest.param("x" * (ASSISTANT_RECEIPT_TEXT_LIMIT + 1), (), id="long-summary"),
             pytest.param("Rename quotes.", ("",), id="empty-assumption"),
             pytest.param("Rename quotes.", ("a",) * 6, id="too-many-assumptions"),
         ],

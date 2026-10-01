@@ -17,7 +17,7 @@ import pytest
 import structlog.testing
 
 from haute.assistant._session import MAX_PERSISTED_SESSIONS, AssistantMessage, SessionStore
-from haute.schemas import AssistantChangeRecord
+from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT, AssistantChangeRecord
 
 
 def _store(tmp_path: Path, **kwargs: object) -> SessionStore:
@@ -278,8 +278,8 @@ class TestWriteThrough:
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "abc123")
-        summary = "x" * 153 + " abc123"
-        assert len(summary) == 160
+        summary = "x" * (ASSISTANT_RECEIPT_TEXT_LIMIT - 7) + " abc123"
+        assert len(summary) == ASSISTANT_RECEIPT_TEXT_LIMIT
         store = _store(tmp_path)
         session = store.create("rating/main.py")
         store.append(
@@ -319,7 +319,9 @@ class TestWriteThrough:
         content = revived.history[0].messages[-1].content
         assert isinstance(content, dict)
         revived_summary = AssistantChangeRecord.model_validate(content["change"]).summary
-        assert len(revived_summary) > 160 and revived_summary.endswith("<redacted>")
+        assert len(revived_summary) > ASSISTANT_RECEIPT_TEXT_LIMIT and revived_summary.endswith(
+            "<redacted>"
+        )
 
     def test_a_malformed_change_record_fails_when_the_message_is_built(self):
         with pytest.raises(ValueError):

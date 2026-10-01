@@ -31,7 +31,8 @@ class LocatedPlanError(HauteError):
     ``fix`` is one concrete correction; ``graph`` is the graph the failure was
     judged against, from which the tool boundary resolves the located node's
     input columns. The operation layer stamps ``op_index`` and ``graph`` when
-    the raise site cannot know them.
+    the raise site cannot know them. ``did_you_mean`` holds close names the
+    failure itself found, such as node ids near an unknown node reference.
     """
 
     def __init__(
@@ -40,10 +41,12 @@ class LocatedPlanError(HauteError):
         *,
         where: Mapping[str, object] | None = None,
         fix: str | None = None,
+        did_you_mean: Sequence[str] = (),
     ) -> None:
         super().__init__(message)
         self.where: dict[str, object] = dict(where or {})
         self.fix = fix
+        self.did_you_mean: tuple[str, ...] = tuple(did_you_mean)
         self.graph: PipelineGraph | None = None
 
 
@@ -59,8 +62,9 @@ class OpValidationError(LocatedPlanError):
         *,
         fix: str,
         where: Mapping[str, object] | None = None,
+        did_you_mean: Sequence[str] = (),
     ) -> None:
-        super().__init__(message, where=where, fix=fix)
+        super().__init__(message, where=where, fix=fix, did_you_mean=did_you_mean)
 
 
 class _OpModel(BaseModel):
