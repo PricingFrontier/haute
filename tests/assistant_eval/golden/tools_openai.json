@@ -7,8 +7,10 @@
       "parameters": {
         "type": "object",
         "properties": {},
+        "required": [],
         "additionalProperties": false
-      }
+      },
+      "strict": true
     }
   },
   {
@@ -23,9 +25,13 @@
             "type": "string"
           },
           "parts": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "description": "The parts to return; omit for [\"schema\"].",
             "items": {
+              "type": "string",
               "enum": [
                 "schema",
                 "config",
@@ -34,15 +40,21 @@
             }
           },
           "input": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Profile this input of the node instead of the node's own output, named exactly as the schema part reports it under 'inputs'. Only with the \"profile\" part."
           }
         },
         "required": [
-          "node"
+          "node",
+          "parts",
+          "input"
         ],
         "additionalProperties": false
-      }
+      },
+      "strict": true
     }
   },
   {
@@ -54,19 +66,34 @@
         "type": "object",
         "properties": {
           "directory": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Project-relative directory to list; omit for the project root."
           },
           "recursive": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "path": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Project-relative data file whose columns and dtypes to return."
           }
         },
+        "required": [
+          "directory",
+          "recursive",
+          "path"
+        ],
         "additionalProperties": false
-      }
+      },
+      "strict": true
     }
   },
   {
@@ -88,7 +115,8 @@
           "ids"
         ],
         "additionalProperties": false
-      }
+      },
+      "strict": true
     }
   },
   {
@@ -103,15 +131,20 @@
             "type": "string"
           },
           "limit": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "description": "At least 1, at most 10."
           }
         },
         "required": [
-          "query"
+          "query",
+          "limit"
         ],
         "additionalProperties": false
-      }
+      },
+      "strict": true
     }
   },
   {
@@ -124,189 +157,971 @@
         "properties": {
           "summary": {
             "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
             "description": "One or two plain sentences saying what the plan does."
           },
           "assumptions": {
             "type": "array",
-            "description": "Choices you made that the analyst did not state, one sentence each.",
             "items": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "maxItems": 5,
+            "description": "Choices you made that the analyst did not state, one sentence each."
           },
           "ops": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "op": {
-                  "enum": [
-                    "add_node",
-                    "update_node",
-                    "edit_steps",
-                    "rename_node",
-                    "delete_node",
-                    "add_edge",
-                    "delete_edge",
-                    "update_preamble",
-                    "recipe"
-                  ]
-                },
-                "node_type": {
-                  "type": "string",
-                  "description": "Node type id, exactly as the prompt's node index lists it.",
-                  "enum": [
-                    "apiInput",
-                    "dataInput",
-                    "dataOutput",
-                    "polars",
-                    "edgeJoin",
-                    "modelScore",
-                    "banding",
-                    "ratingStep",
-                    "output",
-                    "explore",
-                    "externalFile",
-                    "liveSwitch",
-                    "modelling",
-                    "optimiser",
-                    "scenarioExpander",
-                    "optimiserApply",
-                    "constant",
-                    "submodel",
-                    "submodelPort"
-                  ]
-                },
-                "name": {
-                  "type": "string",
-                  "description": "add_node: the new node's name, which becomes its id. When the analyst names the node (\"add X\", \"as X\", \"called X\", \"named X\"), use exactly that name, with no suffix such as _node or _input."
-                },
-                "config": {
-                  "type": "object",
-                  "description": "Config keys, as the node type's descriptor config schema lists them. add_node starts the node from the palette's config for its type and writes these keys over it. update_node merges shallowly: each key written replaces that key's whole value, so send a nested object or list complete; keys not written keep their saved values; a JSON null removes the key."
-                },
-                "ref": {
-                  "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\"."
-                },
-                "node": {
-                  "type": "string",
-                  "description": "Node id, or a batch-local $ref declared by an earlier add_node."
-                },
-                "edits": {
-                  "type": "array",
-                  "description": "edit_steps changes an existing steps list by step id: each edit inserts a step after one ({insert_after, step}), replaces one whole ({replace, step}) or removes one ({remove}), applied in order. Steps not named stay as saved, so a free-code step you cannot read is kept, replaced or removed, never edited in place.",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "insert_after": {
-                        "description": "edit_steps: the id of the step the new step follows; null inserts it at the start."
-                      },
-                      "step": {
-                        "type": "object",
-                        "description": "edit_steps: the whole step, in the shape the step_grammar of the \"guide\" reference gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>."
-                      },
-                      "replace": {
-                        "type": "string",
-                        "description": "edit_steps: the id of the step to replace whole."
-                      },
-                      "remove": {
-                        "type": "string",
-                        "description": "edit_steps: the id of the step to remove."
-                      }
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "add_node",
+                      "default": "add_node",
+                      "title": "Op",
+                      "type": "string"
                     },
-                    "additionalProperties": false
-                  }
+                    "node_type": {
+                      "description": "Node type id, exactly as the prompt's node index lists it.",
+                      "enum": [
+                        "apiInput",
+                        "dataInput",
+                        "dataOutput",
+                        "polars",
+                        "edgeJoin",
+                        "modelScore",
+                        "banding",
+                        "ratingStep",
+                        "output",
+                        "explore",
+                        "externalFile",
+                        "liveSwitch",
+                        "modelling",
+                        "optimiser",
+                        "scenarioExpander",
+                        "optimiserApply",
+                        "constant",
+                        "submodel",
+                        "submodelPort"
+                      ],
+                      "title": "NodeType",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "add_node: the new node's name, which becomes its id. When the analyst names the node (\"add X\", \"as X\", \"called X\", \"named X\"), use exactly that name, with no suffix such as _node or _input.",
+                      "title": "Name",
+                      "type": "string"
+                    },
+                    "config": {
+                      "additionalProperties": true,
+                      "description": "Config keys, as the node type's descriptor config schema lists them. add_node starts the node from the palette's config for its type and writes these keys over it.",
+                      "title": "Config",
+                      "type": "object"
+                    },
+                    "ref": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\".",
+                      "title": "Ref"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "node_type",
+                    "name"
+                  ],
+                  "title": "AddNodeOp",
+                  "type": "object"
                 },
-                "new_name": {
-                  "type": "string"
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "update_node",
+                      "default": "update_node",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "node": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Node",
+                      "type": "string"
+                    },
+                    "config": {
+                      "additionalProperties": true,
+                      "description": "update_node merges shallowly: each key written replaces that key's whole value, so send a nested object or list complete; keys not written keep their saved values; a JSON null removes the key.",
+                      "title": "Config",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "node",
+                    "config"
+                  ],
+                  "title": "UpdateNodeOp",
+                  "type": "object"
                 },
-                "source": {
-                  "type": "string",
-                  "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "edit_steps",
+                      "default": "edit_steps",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "node": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Node",
+                      "type": "string"
+                    },
+                    "edits": {
+                      "description": "edit_steps changes an existing steps list by step id: each edit inserts a step after one ({insert_after, step}), replaces one whole ({replace, step}) or removes one ({remove}), applied in order. Steps not named stay as saved, so a free-code step you cannot read is kept, replaced or removed, never edited in place.",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "insert_after": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "edit_steps: the id of the step the new step follows; null inserts it at the start.",
+                                "title": "Insert After"
+                              },
+                              "step": {
+                                "additionalProperties": true,
+                                "description": "edit_steps: the whole step, in the shape the step_grammar of the \"guide\" reference gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>.",
+                                "title": "Step",
+                                "type": "object"
+                              }
+                            },
+                            "required": [
+                              "insert_after",
+                              "step"
+                            ],
+                            "title": "StepInsert",
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "replace": {
+                                "description": "edit_steps: the id of the step to replace whole.",
+                                "title": "Replace",
+                                "type": "string"
+                              },
+                              "step": {
+                                "additionalProperties": true,
+                                "description": "edit_steps: the whole step, in the shape the step_grammar of the \"guide\" reference gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>.",
+                                "title": "Step",
+                                "type": "object"
+                              }
+                            },
+                            "required": [
+                              "replace",
+                              "step"
+                            ],
+                            "title": "StepReplace",
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "remove": {
+                                "description": "edit_steps: the id of the step to remove.",
+                                "title": "Remove",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "remove"
+                            ],
+                            "title": "StepRemove",
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "title": "Edits",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "node",
+                    "edits"
+                  ],
+                  "title": "EditStepsOp",
+                  "type": "object"
                 },
-                "target": {
-                  "type": "string",
-                  "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "rename_node",
+                      "default": "rename_node",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "node": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Node",
+                      "type": "string"
+                    },
+                    "new_name": {
+                      "title": "New Name",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "node",
+                    "new_name"
+                  ],
+                  "title": "RenameNodeOp",
+                  "type": "object"
                 },
-                "source_handle": {
-                  "description": "Output port on the source node, exactly as get_pipeline reports it under an edge's 'source_handle'. Required only when the source emits several frames, such as an apiInput table; omit it for an ordinary single-output node."
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "delete_node",
+                      "default": "delete_node",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "node": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Node",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "node"
+                  ],
+                  "title": "DeleteNodeOp",
+                  "type": "object"
                 },
-                "target_handle": {
-                  "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports."
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "add_edge",
+                      "default": "add_edge",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "source": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Source",
+                      "type": "string"
+                    },
+                    "target": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Target",
+                      "type": "string"
+                    },
+                    "source_handle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Output port on the source node, exactly as get_pipeline reports it under an edge's 'source_handle'. Required only when the source emits several frames, such as an apiInput table; omit it for an ordinary single-output node.",
+                      "title": "Source Handle"
+                    },
+                    "target_handle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports.",
+                      "title": "Target Handle"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "source",
+                    "target"
+                  ],
+                  "title": "AddEdgeOp",
+                  "type": "object"
                 },
-                "preamble": {},
-                "recipe": {
-                  "enum": [
-                    "categorical_banding",
-                    "rating_step",
-                    "reference_join",
-                    "response_output"
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "delete_edge",
+                      "default": "delete_edge",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "source": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Source",
+                      "type": "string"
+                    },
+                    "target": {
+                      "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
+                      "title": "Target",
+                      "type": "string"
+                    },
+                    "source_handle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Output port on the source node, exactly as get_pipeline reports it under an edge's 'source_handle'. Required only when the source emits several frames, such as an apiInput table; omit it for an ordinary single-output node.",
+                      "title": "Source Handle"
+                    },
+                    "target_handle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports.",
+                      "title": "Target Handle"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "source",
+                    "target"
+                  ],
+                  "title": "DeleteEdgeOp",
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "op": {
+                      "const": "update_preamble",
+                      "default": "update_preamble",
+                      "title": "Op",
+                      "type": "string"
+                    },
+                    "preamble": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Preamble"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "preamble"
+                  ],
+                  "title": "UpdatePreambleOp",
+                  "type": "object"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "recipe"
+                    },
+                    "recipe": {
+                      "const": "categorical_banding"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "source",
+                        "name",
+                        "column",
+                        "output_column",
+                        "rules",
+                        "default"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Existing saved graph node id that supplies the recipe input."
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "New graph node name exactly as requested; distinct from every output column name."
+                        },
+                        "column": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Existing categorical input column to band."
+                        },
+                        "output_column": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "New output column that receives the band label; not the graph node name."
+                        },
+                        "rules": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "Closed exact value-to-assignment categorical rules.",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "description": "One exact categorical value-to-band assignment.",
+                            "properties": {
+                              "value": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Column value this rule matches, as text: banding casts the column to text before matching, so a boolean is \"true\" or \"false\", an integer is its digits (e.g. \"3\"), and a string is matched exactly."
+                              },
+                              "assignment": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Band label assigned when the value matches."
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "assignment"
+                            ]
+                          }
+                        },
+                        "default": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Fallback band label when no rule matches."
+                        },
+                        "output_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Optional new response output graph node connected after the recipe node."
+                        },
+                        "output_columns": {
+                          "type": "array",
+                          "minItems": 1,
+                          "uniqueItems": true,
+                          "description": "Columns selected into the optional response output.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Simple JSON-field column name to map to the same response field name."
+                          }
+                        }
+                      },
+                      "description": "categorical_banding arguments: source, name, column, output_column, rules [{value, assignment}], default; optional output_name, output_columns."
+                    },
+                    "ref": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\".",
+                      "title": "Ref"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "op",
+                    "recipe",
+                    "arguments"
                   ]
                 },
-                "arguments": {
+                {
                   "type": "object",
-                  "description": "categorical_banding arguments: source, name, column, output_column, rules [{value, assignment}], default; optional output_name, output_columns. rating_step arguments: source, name, tables [{factors, output_column, entries [{factor_values, value}], default_value}]; optional combined_outputs [{output_column, operation, base_value}], output_name, output_columns. reference_join arguments: base_source, reference_source, name, how, left_on, right_on; optional output_name, output_columns. response_output arguments: source, output_name, output_columns."
+                  "properties": {
+                    "op": {
+                      "const": "recipe"
+                    },
+                    "recipe": {
+                      "const": "rating_step"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "source",
+                        "name",
+                        "tables"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Existing saved graph node id that supplies the recipe input."
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "New graph node name exactly as requested; distinct from every output column name."
+                        },
+                        "tables": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "Closed positional rating-table configurations.",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "factors": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 3,
+                                "uniqueItems": true,
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "description": "Existing factor column, in row-value order."
+                                }
+                              },
+                              "output_column": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "New output column produced by this table."
+                              },
+                              "entries": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "description": "One positional rating-table row.",
+                                  "properties": {
+                                    "factor_values": {
+                                      "type": "array",
+                                      "minItems": 1,
+                                      "maxItems": 3,
+                                      "description": "Non-null finite JSON scalar values aligned positionally with factors.",
+                                      "items": {
+                                        "type": [
+                                          "string",
+                                          "number",
+                                          "boolean"
+                                        ],
+                                        "description": "One factor value; null and non-finite numbers are invalid."
+                                      }
+                                    },
+                                    "value": {
+                                      "type": "number",
+                                      "description": "Finite numeric rating value for this factor combination."
+                                    }
+                                  },
+                                  "required": [
+                                    "factor_values",
+                                    "value"
+                                  ]
+                                }
+                              },
+                              "default_value": {
+                                "type": "number",
+                                "description": "Finite fallback rating value when no entry matches."
+                              }
+                            },
+                            "required": [
+                              "factors",
+                              "output_column",
+                              "entries",
+                              "default_value"
+                            ]
+                          }
+                        },
+                        "combined_outputs": {
+                          "type": "array",
+                          "description": "Optional closed combined-output configurations.",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "output_column": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "New combined rating output column."
+                              },
+                              "operation": {
+                                "enum": [
+                                  "multiply",
+                                  "add",
+                                  "min",
+                                  "max"
+                                ]
+                              },
+                              "base_value": {
+                                "type": "number",
+                                "description": "Finite numeric base included in the combination."
+                              }
+                            },
+                            "required": [
+                              "output_column",
+                              "operation",
+                              "base_value"
+                            ]
+                          }
+                        },
+                        "output_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Optional new response output graph node connected after the recipe node."
+                        },
+                        "output_columns": {
+                          "type": "array",
+                          "minItems": 1,
+                          "uniqueItems": true,
+                          "description": "Columns selected into the optional response output.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Simple JSON-field column name to map to the same response field name."
+                          }
+                        }
+                      },
+                      "description": "rating_step arguments: source, name, tables [{factors, output_column, entries [{factor_values, value}], default_value}]; optional combined_outputs [{output_column, operation, base_value}], output_name, output_columns."
+                    },
+                    "ref": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\".",
+                      "title": "Ref"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "op",
+                    "recipe",
+                    "arguments"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "recipe"
+                    },
+                    "recipe": {
+                      "const": "reference_join"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "base_source",
+                        "reference_source",
+                        "name",
+                        "how",
+                        "left_on",
+                        "right_on"
+                      ],
+                      "properties": {
+                        "base_source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Existing main/base graph node id."
+                        },
+                        "reference_source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Existing joining/reference graph node id."
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "New graph node name exactly as requested; distinct from every output column name."
+                        },
+                        "how": {
+                          "enum": [
+                            "inner",
+                            "left",
+                            "right",
+                            "full",
+                            "semi",
+                            "anti"
+                          ],
+                          "description": "Join mode."
+                        },
+                        "left_on": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "Ordered join columns on the main/base input.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Main/base join column."
+                          }
+                        },
+                        "right_on": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "Ordered join columns on the joining/reference input.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Joining/reference join column."
+                          }
+                        },
+                        "output_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Optional new response output graph node connected after the recipe node."
+                        },
+                        "output_columns": {
+                          "type": "array",
+                          "minItems": 1,
+                          "uniqueItems": true,
+                          "description": "Columns selected into the optional response output.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Simple JSON-field column name to map to the same response field name."
+                          }
+                        }
+                      },
+                      "description": "reference_join arguments: base_source, reference_source, name, how, left_on, right_on; optional output_name, output_columns."
+                    },
+                    "ref": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\".",
+                      "title": "Ref"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "op",
+                    "recipe",
+                    "arguments"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "recipe"
+                    },
+                    "recipe": {
+                      "const": "response_output"
+                    },
+                    "arguments": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "source",
+                        "output_name",
+                        "output_columns"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Existing saved graph node id that supplies the recipe input."
+                        },
+                        "output_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Optional new response output graph node connected after the recipe node."
+                        },
+                        "output_columns": {
+                          "type": "array",
+                          "minItems": 1,
+                          "uniqueItems": true,
+                          "description": "Columns selected into the optional response output.",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Simple JSON-field column name to map to the same response field name."
+                          }
+                        }
+                      },
+                      "description": "response_output arguments: source, output_name, output_columns."
+                    },
+                    "ref": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\".",
+                      "title": "Ref"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "op",
+                    "recipe",
+                    "arguments"
+                  ]
                 }
-              },
-              "additionalProperties": false,
-              "required": [
-                "op"
               ]
-            }
+            },
+            "maxItems": 100
           },
           "postconditions": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "enum": [
-                    "node_exists",
-                    "node_absent",
-                    "edge_exists",
-                    "edge_absent",
-                    "graph_shape",
-                    "preamble_digest"
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "node_exists",
+                        "node_absent"
+                      ]
+                    },
+                    "node": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "node"
                   ]
                 },
-                "node": {
-                  "type": "string"
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "edge_exists",
+                        "edge_absent"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "target": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source_handle": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "target_handle": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "source",
+                    "target"
+                  ]
                 },
-                "source": {
-                  "type": "string"
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "graph_shape"
+                    },
+                    "nodes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "edges": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "nodes",
+                    "edges"
+                  ]
                 },
-                "target": {
-                  "type": "string"
-                },
-                "source_handle": {
-                  "type": "string"
-                },
-                "target_handle": {
-                  "type": "string"
-                },
-                "nodes": {
-                  "type": "integer",
-                  "description": "At least 0."
-                },
-                "edges": {
-                  "type": "integer",
-                  "description": "At least 0."
-                },
-                "sha256": {
-                  "type": "string"
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "preamble_digest"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "sha256"
+                  ]
                 }
-              },
-              "additionalProperties": false,
-              "required": [
-                "kind"
               ]
-            }
+            },
+            "maxItems": 100
           }
         },
+        "additionalProperties": false,
         "required": [
           "summary",
           "ops"
-        ],
-        "additionalProperties": false
+        ]
       }
     }
   },
@@ -319,13 +1134,14 @@
         "type": "object",
         "properties": {
           "plan_hash": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
           }
         },
+        "additionalProperties": false,
         "required": [
           "plan_hash"
-        ],
-        "additionalProperties": false
+        ]
       }
     }
   }

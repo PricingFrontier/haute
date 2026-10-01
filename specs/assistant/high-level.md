@@ -691,8 +691,25 @@ model; the error names the nodes the plan adds, by id and ref.
   readiness reason rather than an import crash. A Databricks serving endpoint speaks the
   OpenAI protocol, so the public `DatabricksProvider` reuses that wire implementation while
   retaining a truthful provider identity, Databricks-specific error attribution, and the
-  standard Databricks `.env` contract. All provider adapters advertise the same conservative
-  wire-schema projection. It preserves names, descriptions, required fields, single scalar
+  standard Databricks `.env` contract. Each provider lane receives the tool-schema
+  projection it handles best, and both projections derive from one canonical input schema
+  per tool, which `_wire_ops`' operation models and the operation descriptors generate;
+  neither is written by hand. The **canonical projection** is that schema itself:
+  `dry_run_graph_edits.ops` is a discriminated union whose branches keep their own
+  required fields. Anthropic and OpenAI receive it, and on those two lanes a closed read
+  tool, one whose canonical schema reduces to closed objects without composition, is sent
+  in strict mode, so the provider decodes its arguments against the schema: in the subset
+  of JSON Schema strict decoding accepts, with a removed numeric bound stated in the
+  description, and on OpenAI with every property required and each optional one nullable,
+  a `null` for which the adapter reads as omitted. A tool that mutates the project, or whose
+  schema has open objects or a union, is never strict. Databricks receives the
+  **compatible projection** by default, because its live baselines were measured on it;
+  the evaluation's `canonical_tools` variant sends that lane the canonical projection,
+  never strict, so the two can be compared on the configured model. A probe of the
+  configured Databricks models on 2026-10-01 found that they accept the canonical union and
+  flat objects of up to twenty-four keys, so Databricks' documented sixteen-key limit does
+  not decide the lane; the low-level specification records it. The compatible projection
+  is a flat, bounded wire schema. It preserves names, descriptions, required fields, single scalar
   types, enums, and container shapes. A discriminated composition whose branches are closed
   objects is merged into one closed generation object: branch properties are unioned, the
   discriminator constants become one enum, and only requirements common to every branch
@@ -709,11 +726,12 @@ model; the error names the nodes the plan adds, by id and ref.
   Unsupported validation vocabulary is
   omitted, except a number's `minimum` and `maximum`, which the projection states in its
   description, and a rejection by a bound names the bound. The complete canonical operation schema remains the sole execution-time
-  authority, so portability never weakens validation. Some Databricks-hosted OpenAI-compatible models encode function
+  authority, so no projection weakens validation. Some Databricks-hosted OpenAI-compatible models encode function
   arguments whose declared type is an array, object, boolean, integer, or number as a JSON
-  string. The Databricks adapter decodes only valid, correctly typed, schema-declared
+  string, under either projection. The Databricks adapter decodes only valid, correctly typed, schema-declared
   values. A value's declared type comes from the tool's canonical schema at that value's
-  position: the top-level properties, an object's declared properties and an array's
+  position, whichever projection was sent, because both derive from it and only the
+  canonical one keeps the union whose branch decides a recipe's argument types: the top-level properties, an object's declared properties and an array's
   declared items, at any depth. Within a closed object union the declared types come from
   the single canonical branch the discriminator values select, narrowed one discriminator
   at a time: an operation in `dry_run_graph_edits` selects its branch by `op`, and a

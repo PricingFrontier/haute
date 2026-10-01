@@ -2173,15 +2173,16 @@ class TestSystemPrompt:
         assert "`inspect_node`'s config part redacts node code" in restricted
 
     def test_recipe_operations_reach_the_provider_wire_within_the_property_budget(self):
-        """The recipe branches merge into the operation object: `recipe` is one enum,
-        `arguments` an object whose description names each recipe's arguments, and
-        the primitive edit and postcondition items keep their contracts."""
+        """In the compatible projection the recipe branches merge into the operation
+        object: `recipe` is one enum, `arguments` an object whose description names
+        each recipe's arguments, and the primitive edit and postcondition items keep
+        their contracts."""
 
         from haute.assistant._loop import _provider_tools
-        from haute.assistant._providers import _portable_tools
+        from haute.assistant._providers import _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
+        routed = _compatible_tools(_provider_tools(TOOL_DEFINITIONS))
         schema = next(
             tool["input_schema"] for tool in routed if tool["name"] == "dry_run_graph_edits"
         )
@@ -2206,10 +2207,10 @@ class TestSystemPrompt:
 
     def test_dataset_tool_schema_is_the_same_for_every_request(self):
         from haute.assistant._loop import _provider_tools
-        from haute.assistant._providers import _portable_tools
+        from haute.assistant._providers import _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
+        routed = _compatible_tools(_provider_tools(TOOL_DEFINITIONS))
         schema = next(tool["input_schema"] for tool in routed if tool["name"] == "find_data")
 
         assert schema["properties"]["directory"]["type"] == "string"

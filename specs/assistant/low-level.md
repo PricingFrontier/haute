@@ -12,7 +12,7 @@
 | `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `example_index()` lists only bundles whose manifest sets `teaching: true`, and `load_example(name)` refuses any other name as an unknown example; for a teaching bundle it materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view, its node configurations rendered with their values, with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
 | `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and the deterministic `expand_recipe_operations`, which expands each recipe operation of a dry-run batch in place through `expand_recipe`. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Each expansion is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code with the index of the `recipe` operation. |
 | `src/haute/assistant/_project_knowledge.py` | Source-linked project-knowledge extraction, bounded query selection, and disposable content-addressed index. Derives a saved-graph fact, a value-free `haute.toml` digest fact, and allowlisted UTF-8 documentation evidence; labels unmarked document sensitivity as restricted; records source digest/extraction version/evidence class; filters by `EgressPolicy`; and atomically refreshes metadata-only cache state under `.haute/assistant/knowledge/`. An allowlisted document that is not valid UTF-8 fails the read with a typed, project-relative error instead of silently disappearing. Dataset schemas remain a separate schema-only tool result. |
-| `scripts/run_assistant_self_test.py` | Developer-facing evaluation harness, outside the installed package, for both tiers of [the assistant evaluation](evaluation.md), and its live runner. It loads the closed case format v4 (`load_self_test_cases`: area, split, egress profile, inapplicable variants and one or more turns, each with its expectations) and reference trajectories (`load_trajectories`), copies each case's project fixture into a caller-supplied empty work directory, logs the fixture's model artefacts into the copy's local MLflow folder and writes their run ids over the Model Scoring placeholders (`prepare_fixture_models`), writes the case's egress profile (one of `EGRESS_PROFILES`, as `egress_policy` defines it) at the invoking project's provider trust, never the invoking project's own allowances, into the copy (`self_test_config`; `evaluation_trust` refuses an external provider), binds the sandbox project root to that copy for the case and restores it afterwards, builds every snapshot-backed input's snapshot as a preview does (`prepare_fixture_snapshots`), initializes the real Git mutation gate, and runs every turn of the case in one session through the provider-neutral loop with the real tool executor, built each turn on the session's evidence ledger as the message route builds it (`run_self_test_case`). `TrajectoryProvider` and `replay_self_test_case` replay a trajectory with `$result` substitution and raise `TrajectoryDivergedError` when a tool result's status or error code differs from the recording. After each turn the harness executes that turn's golden nodes of the flattened saved graph under their scenarios and compares each with its golden by column name (`execute_goldens`) and `score_turn` scores the protocol (from the completed event's typed outcome and its saved changes), structure, configuration (subsets matched recursively, same-length lists element by element), collateral, editor and execution layers and any efficiency limits; `frames_equal` is the one frame comparison and `config_digest` the per-node configuration digest. `VARIANTS` names the configuration variants; the one-apply-per-turn variant is applied by the observed provider, which ends the turn in place of the round after a saving apply, and a case is never run under a variant it lists as inapplicable. The command (`python -m scripts.run_assistant_self_test`) has `record`, which runs each selected case that applies to the variant live in its own spawned process inside a directory the parent removes once that process has exited, and writes the report, with the inapplicable cases listed as not applicable, and, on request, transcripts; `compare` and `list` make no provider call. |
+| `scripts/run_assistant_self_test.py` | Developer-facing evaluation harness, outside the installed package, for both tiers of [the assistant evaluation](evaluation.md), and its live runner. It loads the closed case format v4 (`load_self_test_cases`: area, split, egress profile, inapplicable variants and one or more turns, each with its expectations) and reference trajectories (`load_trajectories`), copies each case's project fixture into a caller-supplied empty work directory, logs the fixture's model artefacts into the copy's local MLflow folder and writes their run ids over the Model Scoring placeholders (`prepare_fixture_models`), writes the case's egress profile (one of `EGRESS_PROFILES`, as `egress_policy` defines it) at the invoking project's provider trust, never the invoking project's own allowances, into the copy (`self_test_config`; `evaluation_trust` refuses an external provider), binds the sandbox project root to that copy for the case and restores it afterwards, builds every snapshot-backed input's snapshot as a preview does (`prepare_fixture_snapshots`), initializes the real Git mutation gate, and runs every turn of the case in one session through the provider-neutral loop with the real tool executor, built each turn on the session's evidence ledger as the message route builds it (`run_self_test_case`). `TrajectoryProvider` and `replay_self_test_case` replay a trajectory with `$result` substitution and raise `TrajectoryDivergedError` when a tool result's status or error code differs from the recording. After each turn the harness executes that turn's golden nodes of the flattened saved graph under their scenarios and compares each with its golden by column name (`execute_goldens`) and `score_turn` scores the protocol (from the completed event's typed outcome and its saved changes), structure, configuration (subsets matched recursively, same-length lists element by element), collateral, editor and execution layers and any efficiency limits; `frames_equal` is the one frame comparison and `config_digest` the per-node configuration digest. `VARIANTS` names the configuration variants; the one-apply-per-turn variant is applied by the observed provider, which ends the turn in place of the round after a saving apply, the canonical-tools variant by rebuilding the case's Databricks provider with the canonical tool projection (`canonical_tools_provider`; any other provider is refused before the case runs, since the other lanes already receive it), and a case is never run under a variant it lists as inapplicable. The command (`python -m scripts.run_assistant_self_test`) has `record`, which runs each selected case that applies to the variant live in its own spawned process inside a directory the parent removes once that process has exited, and writes the report, with the inapplicable cases listed as not applicable, and, on request, transcripts; `compare` and `list` make no provider call. |
 | `scripts/assistant_eval_report.py` | The evaluation's report and comparison, outside the installed package: `report_payload` builds the closed content-redacted report v4 (run identity, per-area counts of cases run, passed and not applicable with the median of each efficiency metric, per-case egress profile, layers, first failing layer, reasons and metrics, per-turn outcome, saved-change count, graph structure and value-free tool diagnostics, and the cases not applicable to the run's variant, listed apart) from results of one evidence kind, `write_report` writes it atomically, `compare_reports` compares two reports of one evidence kind per area (counts, flips with their first failing layer among the cases both ran, each report's not-applicable cases, cases only one report holds, metric medians and their differences), `write_transcript` writes one live case's local-only transcript, and `load_support_matrix` reads the closed support matrix v2 that attributes a live report to a configuration. |
 | `src/haute/assistant/assets/examples/<id>/manifest.json` | Closed executable-bundle manifest (`schema_version=1`, stable id/version, summary, source, `fast`/`ordinary`/`negative` assertion tier, required `engineering`/`pricing` review class, required boolean `teaching`, and a closed-role resource inventory). `teaching: false` marks a test fixture that is validated and materialised but never offered to the model: `deployment_safety` and `invalid_adversarial` are the test fixtures, every other bundle teaches. Review class records the required discipline rather than asserting approval; model-validation and optimisation fixtures use `pricing`, while purely mechanical fixtures use `engineering`. Every bundle includes its project configuration, source, synthetic input, graph/schema expectations, golden request/output, boundary cases, paired prompts, and semantic assertions. Assertion files have only `target`, non-empty `required_columns`, optional `row_count`, and a non-empty closed `checks` list. Golden arrays retain production row order, so order-unstable operators are followed by an explicit stable pipeline sort rather than normalized by the verifier. Every declared resource resolves inside its bundle, exists, and matches its recorded SHA-256 digest. |
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes written with vectorised Polars expressions, the per-surface `df` rule the system prompt states, what `haute init` scaffolds (a blank pipeline), naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
@@ -409,7 +409,7 @@ with exactly `AddNodeOp`'s `ref` schema. Canonical validation selects the branch
 and then by `recipe`, so an argument error names its path, such as
 `dry_run_graph_edits.ops[0].arguments.rules[1].value`. Each branch's `arguments`
 description names the recipe and its argument fields, required first, with the keys of
-any object items, because the portable projection reduces the differing `arguments`
+any object items, because the compatible projection reduces the differing `arguments`
 schemas to one object with their descriptions joined; the full schema is the
 `recipe:<id>` reference. Every request receives the same operation union; nothing in the
 request's wording changes tool availability or schema shape.
@@ -986,9 +986,10 @@ the turn that follows.
    (`turn_records.md`: the omission note, then an `applied` turn with two saved changes
    and a later undo and a `needs_input` turn with no saves, each as its user and
    assistant messages), the canonical
-   `TOOL_DEFINITIONS`, the portable projection the Anthropic adapter sends
-   (`_portable_tools`), the OpenAI Chat Completions function projection of it (which
-   the Databricks adapter reuses unchanged), and a sha256 of each file.
+   `TOOL_DEFINITIONS`, the tools each provider lane sends (`tools_anthropic.json` and
+   `tools_openai.json` in the canonical projection with their strict read tools, and
+   `tools_databricks.json` in the compatible projection, the two OpenAI-dialect files as
+   Chat Completions functions), and a sha256 of each file.
    `scripts/update_assistant_prompt_golden.py` renders them; by default it fails with
    a unified diff per changed file, and `--write` is the only update path. The Haute
    version and the capability hash, which change on every release, are replaced with
@@ -1416,8 +1417,38 @@ the turn that follows.
   failures, so no provider nests two retry layers. These adapters send no cache control,
   thinking or effort; an assistant message carrying `provider_content` never reaches them
   (only the Anthropic adapter emits replay content) and raises if it does.
-  Before either provider request, every canonical tool
-  input schema is projected to a portable wire schema with a forty-property budget per
+  Before a provider request, the adapter projects every canonical tool input schema for
+  its lane (`_canonical_tools` or `_compatible_tools`), either way from the one canonical
+  schema. The **canonical**
+  projection, which the Anthropic and OpenAI lanes send and the Databricks lane sends
+  only under the evaluation's `canonical_tools` variant, is the canonical input schema
+  unchanged, except that a strict tool is sent its strict schema. A tool is strict only on
+  the Anthropic and OpenAI lanes, only when it is a read operation (an operation not in
+  `_catalog.MUTATING_OPERATION_IDS`), and only when its canonical schema reduces to the
+  strict subset (`_strict_tool_schema`): at every level an object closed by
+  `additionalProperties: false` with declared properties, no `oneOf`, `anyOf`, `allOf` or
+  `$ref`, no nullable or multi-typed value, and every value typed or enumerated. The
+  reduction keeps types, descriptions, enumerations, properties, required fields, items
+  and closure, declares an enumeration's single JSON type, drops every other validation
+  keyword (Anthropic's strict mode refuses `minimum`, `maximum`, `minLength`, `maxLength`,
+  `maxItems` and `uniqueItems` with an HTTP 400) and states a number's `minimum` and
+  `maximum` in its description as the compatible projection does. On the Anthropic lane
+  an optional property stays optional. OpenAI's strict mode requires every property, so on
+  that lane each optional property is required and nullable (`"type": ["string",
+  "null"]`, with `null` added to an enumeration), and the OpenAI adapter removes a `null`
+  it receives for an optional property of a tool it sent strict before validation; the
+  reduction refuses a schema whose optional property is already nullable, so that `null`
+  always means omitted. The Anthropic tool carries `"strict": true` beside its
+  `input_schema` and the OpenAI function beside its `parameters`; a tool that is not
+  strict carries no `strict` key. The strict tools are `get_pipeline`, `inspect_node`,
+  `find_data`, `read_reference` and `get_project_knowledge`: `dry_run_graph_edits` reads
+  but its operation union and open `config` and step objects do not reduce, and
+  `apply_graph_plan` mutates. Together they stay within Anthropic's documented strict
+  limits of twenty strict tools, twenty-four optional parameters and sixteen union-typed
+  parameters per request. The Databricks lane is never strict: strict mode was not part of
+  the probe below, and a variant changes one thing. The **compatible** projection, which the
+  Databricks lane sends by default (`DatabricksProvider(tool_projection="compatible")`), is
+  a flat wire schema with a forty-property budget per
   tool. It retains object/array shape, property names, descriptions, common required fields,
   single scalar types, enums, and closed-object declarations; nullable scalar unions project
   to their non-null generation type. For a composition of closed object branches that fits
@@ -1433,15 +1464,37 @@ the turn that follows.
   container. Patterns and other unsupported validation vocabulary are omitted; a number's
   `minimum` and `maximum` are dropped as keywords but stated in its description ("At
   least 1, at most 10."), after any description of its own.
+  **The Databricks schema probe (2026-10-01).** Non-streaming `chat.completions` requests on
+  the assistant's configured Databricks credential sent `databricks-qwen35-122b-a10b` and
+  `databricks-gpt-oss-120b` the canonical `dry_run_graph_edits` schema (101 property keys
+  in all, at most 8 per object, with `anyOf` and `oneOf`, 18,108 characters; its
+  compatible projection then had 32 keys, at most 15 per object, no composition and 4,782
+  characters; every other tool has at most 3 keys) and flat objects of 16, 17 and 24 keys.
+  Both models accepted every schema without an HTTP 400, so Databricks' documented limit
+  of sixteen keys and no composition is not enforced on them, and the compatible
+  projection is kept as the lane's default for its measured baselines, not for a limit.
+  Qwen sent arrays (`ops`, `assumptions`) as JSON-encoded strings under both projections,
+  which the decoding pass below resolves whichever projection was sent. gpt-oss-120b sent
+  real arrays under the canonical union and, given the compatible projection, read the
+  reference first; one of its samples with 24 flat keys made no tool call and leaked its
+  reasoning into the content, a single sample from which nothing is concluded. Both Qwen
+  samples composed a wrong banding configuration because neither read a reference: the
+  probe measures schema acceptance only, not which projection yields better plans, which
+  is what the `canonical_tools` variant measures live. Separately, two `ops` strings from
+  the live evaluation that failed `json.loads` held brackets the model had mismatched, not
+  truncated output.
   `_tools` independently validates
-  the decoded call against the unchanged canonical operation schema, so the projection is a
+  the decoded call against the unchanged canonical operation schema, so a projection is a
   generation contract rather than an authorization or validation fallback. After the outer
   function-arguments object is parsed,
   Databricks alone performs one schema-directed compatibility pass over it
   (`_normalise_databricks_tool_arguments`): when the canonical input schema declares a
   value as an array, object, boolean, integer or number but the provider returned a
   string, valid finite JSON of the declared type is decoded and then proceeds through the
-  unchanged closed tool validator. The pass walks the declared schema, not the value: an
+  unchanged closed tool validator. The pass reads the canonical schema whichever projection
+  the lane sent, so it decodes the same under both: the compatible projection keeps no
+  union to select a branch from, and both projections derive from the canonical schema.
+  The pass walks the declared schema, not the value: an
   object's declared properties, an array's declared items, and within a closed object
   union the one branch the value selects. A branch is selected by discriminators, the
   properties every remaining branch constrains to `const`/`enum` values, compared by
@@ -1728,14 +1781,17 @@ the turn that follows.
   HTTPS workspace-root URL with no query, fragment, or non-root path, strips
   only a trailing slash, derives `/serving-endpoints`, and reads only
   `DATABRICKS_TOKEN` for authentication.
-- **Provider compatibility is schema-directed and fail-closed.** Every provider receives
-  the same portable wire-schema projection while the ordinary tool validator retains the
-  complete canonical schema. Only the Databricks adapter may decode a stringified top-level
-  tool argument, only when that field's advertised schema exclusively declares one or more
+- **Provider compatibility is schema-directed and fail-closed.** Each provider lane
+  receives its projection of the canonical schema (canonical for Anthropic and OpenAI,
+  with strict read tools; compatible for Databricks unless the `canonical_tools` variant
+  runs) while the ordinary tool validator retains the complete canonical schema. Only the
+  Databricks adapter may decode a stringified tool argument, only when the canonical
+  schema at that value's position exclusively declares one or more
   compatible JSON types from `object`, `array`, `boolean`, `integer`, and `number`, and only
   when the decoded finite JSON has a declared type. Python booleans do not satisfy integer
   or number declarations. String and null declarations, undeclared types, ambiguous schemas,
-  non-finite numbers, and nested string values are not decoded. A value that cannot be
+  and non-finite numbers are not decoded. Only the OpenAI adapter removes a `null`, and only
+  for an optional property of a tool it sent strict. A value that cannot be
   decoded safely is preserved solely so canonical validation can reject it as a recoverable
   tool result; it is never passed to an operation.
 - **Submodel boundaries**: ops may only target top-level nodes; `add_node` of
@@ -2226,7 +2282,9 @@ fixture for route tests). The implemented coverage is:
   report's not-applicable cases (never a flip or a one-sided case), one-sided cases and metric
   differences, and refusing reports of different evidence kinds; a case refused under a variant
   it is inapplicable to, and the one-apply-per-turn variant ending a scripted multi-stage turn at
-  its first saving apply without another provider request once that mark is cleared; `record`
+  its first saving apply without another provider request once that mark is cleared; the
+  canonical-tools variant rebuilding a Databricks provider, on its own client, to send the
+  canonical projection, and refusing an OpenAI configuration before the case runs; `record`
   refusing, before it resolves a provider, a variant no selected case applies to; a transcript
   written only under a Git-ignored directory and refused elsewhere; the support matrix
   attributing a run to its configuration; each egress profile's exact policy at the invoking
@@ -2282,19 +2340,33 @@ fixture for route tests). The implemented coverage is:
   OpenAI content-delta dialects (plain string, and gateway content-part lists where `text`
   parts stream, `reasoning` parts stay unsurfaced, and unknown part types or non-text
   shapes raise `malformed_stream`); the Databricks adapter reuses the
-  OpenAI-compatible request while preserving `databricks` failure attribution; all three
-  adapters advertise the same budgeted portable wire schemas, including merged
-  discriminated graph-operation fields and discriminator enums; the Databricks adapter decodes valid
+  OpenAI-compatible request while preserving `databricks` failure attribution; each lane
+  sends its projection: Anthropic and OpenAI the canonical schema itself for every
+  non-strict tool (the operation union with each branch's required fields), strict
+  exactly for the five closed read tools, in their reduced schemas (OpenAI's with every
+  property required and the optional ones nullable), and Databricks by default the
+  budgeted compatible schemas, including merged discriminated graph-operation fields and
+  discriminator enums, with no `strict` key, or the canonical schemas, still not strict,
+  when constructed with `tool_projection="canonical"`; both projections of every
+  production tool derive from the canonical one (the compatible projection of the
+  canonical schema is the Databricks wire schema, and the strict reduction keeps every
+  property, required field and description); the strict reduction refuses a union, an open
+  object and an already-nullable optional property, and the strict read tools stay
+  within Anthropic's strict limits; the OpenAI adapter removes a `null` for an optional
+  property of a strict tool and leaves every other value, and every other adapter's,
+  untouched; the Databricks adapter decodes valid
   schema-declared array, object, boolean, integer, and finite-number strings from
   the live dialect at the top level and inside a `recipe` operation's arguments (its
-  `arguments` object itself, and its `rules` and `output_columns` arrays), leaves declared
+  `arguments` object itself, and its `rules` and `output_columns` arrays), identically
+  under either projection, leaves declared
   strings (a rule's `"3"` value), nulls, undeclared objects, an operation whose branch no
   discriminator selects, and the other adapters untouched, carries invalid/wrong-type encodings to the canonical validator for a
   recoverable `invalid_request` result, and logs each undecoded eligible field by shape
   alone — asserting both warning events and that the rejected value never reaches the log;
   it wraps a plain-text `assumptions` into a one-item list and decodes `recursive: "True"`
   and `"False"`, each logged by shape, but leaves a string opening like a list a string;
-  the portable projection states `get_project_knowledge.limit`'s bounds in its description.
+  the compatible projection and the strict reduction state `get_project_knowledge.limit`'s
+  bounds in its description.
   On the OpenAI wire a compacted history's leading note leads the next user message, the
   first record's request or, with no record kept, the current message, so no two user
   messages are consecutive.
@@ -2316,7 +2388,7 @@ fixture for route tests). The implemented coverage is:
   thinking block. The OpenAI wire refuses replay content.
 - **`tests/test_assistant_prompt_golden.py`** — the rendered system prompt, the two
   turn contexts, the turn context update, the compacted turn records, canonical
-  tool definitions and both provider wire projections match the golden files; the
+  tool definitions and the Anthropic, OpenAI and Databricks wire tools match the golden files; the
   release version and capability hash are normalised out; an added prompt sentence
   and an edited wire-operation field description each fail with the changed lines in
   the unified diff of every affected file and of the hashes file.

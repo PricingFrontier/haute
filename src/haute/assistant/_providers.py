@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol, TypeAlias
 
 from haute._env import int_env
 from haute._logging import get_logger
+from haute.assistant._catalog import MUTATING_OPERATION_IDS, OPERATION_IDS
 from haute.assistant._config import (
     DEFAULT_TURN_TIMEOUT,
     TURN_TIMEOUT_ENV,
@@ -367,8 +368,8 @@ def _matches_declared_json_type(value: object, expected: frozenset[str]) -> bool
     return False
 
 
-def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
-    """Return a provider-portable declared type for one schema fragment."""
+def _compatible_schema_type(schema: Mapping[str, object]) -> str | None:
+    """Return the compatible projection's declared type for one schema fragment."""
 
     raw_type = schema.get("type")
     if isinstance(raw_type, str):
@@ -390,7 +391,7 @@ def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
         for branch in branches:
             if not isinstance(branch, Mapping):
                 return None
-            branch_type = _portable_schema_type(branch)
+            branch_type = _compatible_schema_type(branch)
             if branch_type is None and isinstance(branch.get("properties"), Mapping):
                 branch_type = "object"
             if branch_type is None:
@@ -401,7 +402,7 @@ def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
     return None
 
 
-def _portable_allowed_values(schema: Mapping[str, object]) -> tuple[object, ...] | None:
+def _allowed_values(schema: Mapping[str, object]) -> tuple[object, ...] | None:
     if "const" in schema:
         return (schema["const"],)
     enum = schema.get("enum")
@@ -417,14 +418,14 @@ class _SchemaBudget:
     remaining: int = 40
 
 
-def _portable_property_schema(
+def _compatible_property_schema(
     schemas: Sequence[Mapping[str, object]],
     budget: _SchemaBudget,
 ) -> dict[str, object]:
     if schemas and all(schema == schemas[0] for schema in schemas[1:]):
-        return _portable_tool_schema(schemas[0], budget)
+        return _compatible_tool_schema(schemas[0], budget)
 
-    allowed = [_portable_allowed_values(schema) for schema in schemas]
+    allowed = [_allowed_values(schema) for schema in schemas]
     if allowed and all(values is not None for values in allowed):
         combined: list[object] = []
         for values in allowed:
@@ -434,13 +435,13 @@ def _portable_property_schema(
                     combined.append(value)
         return {"enum": combined}
 
-    types = [_portable_schema_type(schema) for schema in schemas]
+    types = [_compatible_schema_type(schema) for schema in schemas]
     if types and types[0] is not None and all(value == types[0] for value in types):
         projected: dict[str, object] = {"type": types[0]}
         if types[0] == "array":
             item_schemas = [schema.get("items") for schema in schemas]
             if all(isinstance(items, Mapping) for items in item_schemas):
-                projected["items"] = _portable_tool_schema(
+                projected["items"] = _compatible_tool_schema(
                     {"oneOf": item_schemas},
                     budget,
                 )
@@ -457,14 +458,14 @@ def _portable_property_schema(
     return {}
 
 
-def _portable_required_names(schema: Mapping[str, object]) -> tuple[str, ...]:
+def _required_names(schema: Mapping[str, object]) -> tuple[str, ...]:
     required = schema.get("required")
     if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
         return ()
     return tuple(item for item in required if isinstance(item, str))
 
 
-def _portable_composed_object(
+def _compatible_composed_object(
     schema: Mapping[str, object],
     budget: _SchemaBudget,
 ) -> dict[str, object] | None:
@@ -491,7 +492,7 @@ def _portable_composed_object(
     for branch in branches:
         properties = branch.get("properties")
         if (
-            _portable_schema_type(branch) != "object"
+            _compatible_schema_type(branch) != "object"
             or not isinstance(properties, Mapping)
             or branch.get("additionalProperties") is not False
         ):
@@ -514,9 +515,9 @@ def _portable_composed_object(
             property_schema = properties.get(name)
             if isinstance(property_schema, Mapping):
                 property_schemas.append(property_schema)
-        projected_properties[name] = _portable_property_schema(property_schemas, budget)
+        projected_properties[name] = _compatible_property_schema(property_schemas, budget)
 
-    branch_required = [_portable_required_names(branch) for branch in branches]
+    branch_required = [_required_names(branch) for branch in branches]
     required_sets = [set(names) for names in branch_required]
     required = [
         name
@@ -534,7 +535,7 @@ def _portable_composed_object(
 
 
 def _numeric_bounds(schema: Mapping[str, object]) -> str | None:
-    """A number's `minimum` and `maximum` in words, which the wire subset drops."""
+    """A number's `minimum` and `maximum` in words, which the wire subsets drop."""
 
     bounds = [
         f"{word} {schema[keyword]}"
@@ -544,7 +545,17 @@ def _numeric_bounds(schema: Mapping[str, object]) -> str | None:
     return f"{', '.join(bounds)}.".capitalize() if bounds else None
 
 
-def _portable_tool_schema(
+def _description_with_bounds(schema: Mapping[str, object]) -> str:
+    """A fragment's description followed by its numeric bounds in words, or ``""``."""
+
+    return " ".join(
+        part
+        for part in (schema.get("description"), _numeric_bounds(schema))
+        if isinstance(part, str) and part
+    )
+
+
+def _compatible_tool_schema(
     schema: Mapping[str, object],
     budget: _SchemaBudget | None = None,
 ) -> dict[str, object]:
@@ -552,19 +563,15 @@ def _portable_tool_schema(
 
     if budget is None:
         budget = _SchemaBudget()
-    composed = _portable_composed_object(schema, budget)
+    composed = _compatible_composed_object(schema, budget)
     if composed is not None:
         return composed
     projected: dict[str, object] = {}
-    projected_type = _portable_schema_type(schema)
+    projected_type = _compatible_schema_type(schema)
     if projected_type is not None:
         projected["type"] = projected_type
 
-    description = " ".join(
-        part
-        for part in (schema.get("description"), _numeric_bounds(schema))
-        if isinstance(part, str) and part
-    )
+    description = _description_with_bounds(schema)
     if description:
         projected["description"] = description
 
@@ -581,7 +588,7 @@ def _portable_tool_schema(
             return {"type": projected_type or "object"}
         budget.remaining -= len(property_names)
         projected_properties = {
-            str(name): _portable_tool_schema(value, budget)
+            str(name): _compatible_tool_schema(value, budget)
             for name, value in properties.items()
             if isinstance(value, Mapping)
         }
@@ -596,33 +603,211 @@ def _portable_tool_schema(
 
     items = schema.get("items")
     if isinstance(items, Mapping):
-        projected["items"] = _portable_tool_schema(items, budget)
+        projected["items"] = _compatible_tool_schema(items, budget)
 
     if schema.get("additionalProperties") is False:
         projected["additionalProperties"] = False
     return projected
 
 
-def _portable_tools(
-    tools: Sequence[Mapping[str, Any]],
-) -> list[dict[str, object]]:
-    """Return one common, conservative tool contract for every provider wire API."""
+#: Which projection of the canonical tool schemas a provider lane sends.
+ToolProjection: TypeAlias = Literal["compatible", "canonical"]
+#: Whose strict-mode rules a strict tool's schema follows.
+StrictDialect: TypeAlias = Literal["anthropic", "openai"]
 
-    projected: list[dict[str, object]] = []
+#: The operations a strict tool can be: those that only read the project.
+_READ_OPERATION_IDS = frozenset(OPERATION_IDS) - MUTATING_OPERATION_IDS
+
+
+def _tool_parts(
+    tools: Sequence[Mapping[str, Any]],
+) -> Iterator[tuple[str, str, Mapping[str, object]]]:
+    """Each canonical tool's name, description and input schema."""
+
     for tool in tools:
         name = tool.get("name")
         schema = tool.get("input_schema")
         if not isinstance(name, str) or not isinstance(schema, Mapping):
             raise TypeError("Tool definitions require a string name and mapping input_schema")
         description = tool.get("description", "")
-        projected.append(
-            {
-                "name": name,
-                "description": description if isinstance(description, str) else "",
-                "input_schema": _portable_tool_schema(schema),
-            }
+        yield name, description if isinstance(description, str) else "", schema
+
+
+def _compatible_tools(
+    tools: Sequence[Mapping[str, Any]],
+) -> list[dict[str, object]]:
+    """The compatible projection: one flat, bounded wire schema per tool.
+
+    The Databricks lane's default, on which its live baselines were measured.
+    """
+
+    return [
+        {"name": name, "description": description, "input_schema": _compatible_tool_schema(schema)}
+        for name, description, schema in _tool_parts(tools)
+    ]
+
+
+class _NotStrictError(Exception):
+    """A canonical schema fragment the strict subset cannot express."""
+
+
+def _json_type_name(value: object) -> str:
+    """The JSON type of one enumerated scalar; strict decoding enumerates no other."""
+
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    raise _NotStrictError
+
+
+def _strict_schema(
+    schema: Mapping[str, object], dialect: StrictDialect, *, nullable: bool
+) -> dict[str, object]:
+    """Reduce one canonical fragment to the keywords strict decoding accepts.
+
+    Types, descriptions, enumerations, properties, required fields, items and
+    closure survive; every other validation keyword, which Anthropic's strict
+    mode refuses with an HTTP 400, is dropped (the canonical validator still
+    enforces it), and a number's bounds are stated in its description. An
+    enumeration without a type declares its one JSON type. Under the OpenAI
+    dialect every property is required and each optional one nullable, since
+    OpenAI's strict mode requires every property. Raises `_NotStrictError` for a
+    composition, an object that is not closed or declares no properties, a
+    nullable or multi-typed value, and a value with neither a type nor an
+    enumeration of one JSON type.
+    """
+
+    if any(keyword in schema for keyword in ("oneOf", "anyOf", "allOf", "$ref", "not")):
+        raise _NotStrictError
+    allowed = _allowed_values(schema)
+    raw_type = schema.get("type")
+    if isinstance(raw_type, str):
+        json_type = raw_type
+    elif raw_type is None and allowed is not None:
+        types = {_json_type_name(value) for value in allowed}
+        if len(types) != 1:
+            raise _NotStrictError
+        (json_type,) = types
+    else:
+        raise _NotStrictError
+    projected: dict[str, object] = {"type": [json_type, "null"] if nullable else json_type}
+    description = _description_with_bounds(schema)
+    if description:
+        projected["description"] = description
+    if allowed is not None:
+        projected["enum"] = [*allowed, None] if nullable else list(allowed)
+    if json_type == "object":
+        properties = schema.get("properties")
+        if schema.get("additionalProperties") is not False or not isinstance(properties, Mapping):
+            raise _NotStrictError
+        required = _required_names(schema)
+        projected_properties: dict[str, object] = {}
+        for name, value in properties.items():
+            if not isinstance(value, Mapping):
+                raise _NotStrictError
+            projected_properties[str(name)] = _strict_schema(
+                value, dialect, nullable=dialect == "openai" and name not in required
+            )
+        projected["properties"] = projected_properties
+        projected["required"] = (
+            list(projected_properties)
+            if dialect == "openai"
+            else [name for name in required if name in projected_properties]
         )
+        projected["additionalProperties"] = False
+    elif json_type == "array":
+        items = schema.get("items")
+        if not isinstance(items, Mapping):
+            raise _NotStrictError
+        projected["items"] = _strict_schema(items, dialect, nullable=False)
     return projected
+
+
+def _strict_tool_schema(
+    schema: Mapping[str, object], dialect: StrictDialect
+) -> dict[str, object] | None:
+    """A tool's strict input schema, or None when its canonical schema cannot be strict."""
+
+    try:
+        return _strict_schema(schema, dialect, nullable=False)
+    except _NotStrictError:
+        return None
+
+
+def _canonical_tools(
+    tools: Sequence[Mapping[str, Any]],
+    strict: StrictDialect | None,
+) -> list[dict[str, object]]:
+    """The canonical projection: each tool's canonical input schema itself.
+
+    Under a *strict* dialect, a read operation whose schema reduces to the
+    strict subset is sent that reduction with ``"strict": true``; no other tool
+    carries a ``strict`` key.
+    """
+
+    projected: list[dict[str, object]] = []
+    for name, description, schema in _tool_parts(tools):
+        strict_schema = (
+            _strict_tool_schema(schema, strict)
+            if strict is not None and name in _READ_OPERATION_IDS
+            else None
+        )
+        if strict_schema is None:
+            projected.append(
+                {
+                    "name": name,
+                    "description": description,
+                    # Its own copy: the canonical definitions are the validator's.
+                    "input_schema": copy.deepcopy(dict(schema)),
+                }
+            )
+        else:
+            projected.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "input_schema": strict_schema,
+                    "strict": True,
+                }
+            )
+    return projected
+
+
+def _without_strict_nulls(value: Any, schema: Mapping[str, object]) -> Any:
+    """Omit each `null` an OpenAI strict schema allows only because a property is optional.
+
+    The strict reduction made every optional property required and nullable and
+    refuses a property that was nullable already, so such a `null` says only
+    that the model left the property out. A `null` anywhere else is kept for
+    the canonical validator.
+    """
+
+    if isinstance(value, Mapping):
+        properties = schema.get("properties")
+        if not isinstance(properties, Mapping):
+            return value
+        required = _required_names(schema)
+        kept: dict[str, Any] = {}
+        for key, item in value.items():
+            declared = properties.get(key)
+            if item is None and isinstance(declared, Mapping) and key not in required:
+                continue
+            kept[key] = (
+                _without_strict_nulls(item, declared) if isinstance(declared, Mapping) else item
+            )
+        return kept
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            return [_without_strict_nulls(item, items) for item in value]
+    return value
 
 
 def _same_json_value(left: object, right: object) -> bool:
@@ -668,7 +853,7 @@ def _discriminated_branch_properties(
         property_schema = properties.get(name)
         if not isinstance(property_schema, Mapping):
             return None
-        return _portable_allowed_values(property_schema)
+        return _allowed_values(property_schema)
 
     used: set[str] = set()
     while True:
@@ -977,7 +1162,8 @@ class AnthropicProvider:
     Every request marks the tool definitions and the frozen system prompt as
     one prompt-cache breakpoint and runs adaptive thinking at
     `ANTHROPIC_EFFORT`, so only the models in `ADAPTIVE_THINKING_MODELS` are
-    accepted. A round whose message holds a thinking block ends with its
+    accepted. It sends the canonical tool projection, the closed read tools in
+    strict mode. A round whose message holds a thinking block ends with its
     content blocks in stream order (`ReplayContent`), for the loop to send back
     verbatim within the turn.
     """
@@ -1007,7 +1193,7 @@ class AnthropicProvider:
         pending_text: dict[int, list[str]] = {}
         finished: dict[int, dict[str, Any]] = {}
         thought = False
-        wire_tools = _portable_tools(tools)
+        wire_tools = _canonical_tools(tools, "anthropic")
 
         try:
             stream = self.client.messages.stream(
@@ -1266,40 +1452,60 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
 
 
 def _openai_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool["input_schema"],
-            },
+    """Wire tools as Chat Completions functions, `strict` beside the parameters."""
+
+    functions: list[dict[str, Any]] = []
+    for tool in tools:
+        function: dict[str, Any] = {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool["input_schema"],
         }
-        for tool in tools
-    ]
+        if "strict" in tool:
+            function["strict"] = tool["strict"]
+        functions.append({"type": "function", "function": function})
+    return functions
 
 
 class OpenAIProvider:
-    """Normalize the OpenAI Chat Completions streaming API."""
+    """Normalize the OpenAI Chat Completions streaming API.
+
+    It sends the canonical tool projection, the closed read tools in strict
+    mode, and omits the `null` a strict tool's optional property comes back as.
+    """
 
     provider_name = "openai"
     #: Adapter-level pre-stream retry delays. Empty here: the direct OpenAI
     #: client keeps the SDK's own bounded request retries instead.
     pre_stream_retry_delays: tuple[float, ...] = ()
+    #: The lane's projection of the tool schemas, and whose strict rules its
+    #: strict tools follow (None: no tool is sent strict).
+    tool_projection: ToolProjection = "canonical"
+    strict_dialect: StrictDialect | None = "openai"
 
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
         self.config = config
         self.client = _load_openai_client(config, self.provider_name) if client is None else client
+
+    def _wire_tools(self, tools: Sequence[Mapping[str, Any]]) -> list[dict[str, object]]:
+        """The tools as this lane sends them."""
+
+        if self.tool_projection == "compatible":
+            return _compatible_tools(tools)
+        return _canonical_tools(tools, self.strict_dialect)
 
     def _normalise_tool_arguments(
         self,
         name: str,
         arguments: dict[str, Any],
         input_schemas: Mapping[str, Mapping[str, object]],
+        strict_tools: frozenset[str],
     ) -> dict[str, Any]:
         """Apply provider-specific wire normalisation before tool validation."""
 
-        return arguments
+        if name not in strict_tools:
+            return arguments
+        return dict(_without_strict_nulls(arguments, input_schemas[name]))
 
     async def _create_stream(self, request: Mapping[str, Any]) -> Any:
         """Open the response stream, retrying only failures raised before it exists."""
@@ -1340,7 +1546,8 @@ class OpenAIProvider:
         saw_text = False
         calls: dict[int, dict[str, Any]] = {}
         stream: Any | None = None
-        wire_tools = _portable_tools(tools)
+        wire_tools = self._wire_tools(tools)
+        strict_tools = frozenset(str(tool["name"]) for tool in wire_tools if "strict" in tool)
         input_schemas = _tool_input_schemas(tools)
 
         request: dict[str, Any] = {
@@ -1467,6 +1674,7 @@ class OpenAIProvider:
                                     name,
                                     arguments,
                                     input_schemas,
+                                    strict_tools,
                                 )
                                 yield ToolCallRequest(call_id, name, arguments)
                             emitted_tools = True
@@ -1534,16 +1742,35 @@ class OpenAIProvider:
 
 
 class DatabricksProvider(OpenAIProvider):
-    """Databricks identity over its OpenAI-compatible Chat Completions API."""
+    """Databricks identity over its OpenAI-compatible Chat Completions API.
+
+    The lane sends the compatible tool projection, on which its live baselines
+    were measured, unless built with ``tool_projection="canonical"``, which only
+    the evaluation's `canonical_tools` variant does. It never sends a tool
+    strict, and it decodes arguments by the canonical schema whichever
+    projection it sent.
+    """
 
     provider_name = "databricks"
     pre_stream_retry_delays = (1.0, 3.0)
+    strict_dialect = None
+
+    def __init__(
+        self,
+        config: AssistantConfig,
+        client: Any | None = None,
+        *,
+        tool_projection: ToolProjection = "compatible",
+    ) -> None:
+        super().__init__(config, client)
+        self.tool_projection = tool_projection
 
     def _normalise_tool_arguments(
         self,
         name: str,
         arguments: dict[str, Any],
         input_schemas: Mapping[str, Mapping[str, object]],
+        strict_tools: frozenset[str],
     ) -> dict[str, Any]:
         schema = input_schemas.get(name)
         if schema is None:
@@ -1578,5 +1805,6 @@ __all__ = [
     "TextDelta",
     "ThinkingStarted",
     "ToolCallRequest",
+    "ToolProjection",
     "TurnStop",
 ]

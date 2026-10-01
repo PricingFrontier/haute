@@ -5,6 +5,7 @@
   "context_update.md": "cd554f07042df087772623b58686c3861610237c5d60e18760ceef0da4dea25a",
   "turn_records.md": "1032b1126492146f99a8b5e955d1fa7f59c8d3e99c8910ce67a783081b407f6e",
   "tools_canonical.json": "d24cb641fd36eb8b2b1e4ed396c7d11580b7b9b85fa9c3acebfea43646383a23",
-  "tools_anthropic.json": "55bb1f5bd4d4129d5f94bd6bb31b3fd3eae77337b5911719b20821e5a674e2b7",
-  "tools_openai.json": "06751a1fa3add8b5a9325d5fc2dddefa8df91feabf5fe3f176d0810a1c3feeff"
+  "tools_anthropic.json": "dafd9a022d3bdf2bab0597758d677cbc33d546e7748fbaf2e316c54ef1d06d67",
+  "tools_openai.json": "2762d07f7687d90dfc06a59c29d59f6d53a2864faf68fc949b8a6c9686164422",
+  "tools_databricks.json": "06751a1fa3add8b5a9325d5fc2dddefa8df91feabf5fe3f176d0810a1c3feeff"
 }

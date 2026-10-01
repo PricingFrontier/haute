@@ -273,6 +273,15 @@ ends `blocked`, but the variant ends the turn at its save) and
 `smoke_staged_pricing_build` (it saves stage by stage in one turn). Such a case
 is never run under that variant (the harness refuses to), and the report and
 `compare` show it as not applicable rather than as a failure.
+`canonical_tools` sends the Databricks lane the canonical tool-schema projection
+(the operation union with each branch's required fields, never strict) in place of
+its default compatible projection: the harness rebuilds the case's Databricks
+provider on the same client with the canonical projection, so the variant has no
+product setting or `haute.toml` key. It measures the Databricks lane only, because
+the Anthropic and OpenAI lanes already receive the canonical projection, so a run
+under another provider is refused before any case runs. Comparing a
+`canonical_tools` report with a `multi_apply` one measures which projection the
+configured Databricks model builds better from.
 
 The live runner is a measurement and diagnostic loop, not a gate. Model
 qualification was a separate repeated-trial lane over held-out scenarios that

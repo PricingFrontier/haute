@@ -49,6 +49,7 @@ from haute.assistant._config import (
 from haute.assistant._loop import build_system_prompt, run_turn
 from haute.assistant._providers import (
     AssistantProvider,
+    DatabricksProvider,
     ProviderEvent,
     ProviderUsage,
     TextDelta,
@@ -110,7 +111,7 @@ SelfTestArea = Literal[
 SelfTestSplit = Literal["development", "holdout"]
 SelfTestEvidence = Literal["live", "replay"]
 #: A configuration variant a live run can measure.
-SelfTestVariant = Literal["multi_apply", "one_apply_per_turn"]
+SelfTestVariant = Literal["multi_apply", "one_apply_per_turn", "canonical_tools"]
 #: The named egress profile a case runs under (see ``egress_policy``).
 SelfTestEgress = Literal["project", "metadata_only"]
 ProviderFactory = Callable[[AssistantConfig], AssistantProvider]
@@ -1422,6 +1423,22 @@ async def _run_turn(
     )
 
 
+_CANONICAL_TOOLS_PROVIDER_ONLY = (
+    "the canonical_tools variant measures the Databricks lane; the Anthropic and OpenAI "
+    "lanes already receive the canonical tool projection"
+)
+
+
+def canonical_tools_provider(provider: AssistantProvider) -> DatabricksProvider:
+    """The ``canonical_tools`` variant's provider: *provider*'s Databricks lane, on
+    its own configuration and client, sending the canonical tool projection in
+    place of its default compatible one. Any other provider is refused."""
+
+    if not isinstance(provider, DatabricksProvider):
+        raise ValueError(_CANONICAL_TOOLS_PROVIDER_ONLY)
+    return DatabricksProvider(provider.config, client=provider.client, tool_projection="canonical")
+
+
 async def run_self_test_case(
     case: SelfTestCase,
     *,
@@ -1442,11 +1459,14 @@ async def run_self_test_case(
     *work_dir*, which must be empty; the caller owns its removal. A
     *transcript* list, when given, receives each turn's request, text, tool
     calls with their payloads and outcome. A case is never run under a
-    variant it is inapplicable to.
+    variant it is inapplicable to, and the ``canonical_tools`` variant runs only
+    on a Databricks configuration.
     """
 
     if variant in case.inapplicable_variants:
         raise ValueError(f"case {case.id} does not apply to the {variant} variant")
+    if variant == "canonical_tools" and config.provider != "databricks":
+        raise ValueError(_CANONICAL_TOOLS_PROVIDER_ONLY)
     config = self_test_config(config, case.egress)
     source_fixture = (projects_root.resolve() / case.project_fixture).resolve()
     if (
@@ -1471,6 +1491,8 @@ async def run_self_test_case(
         store = SessionStore()
         session = store.create(source_file)
         provider = provider_factory(config)
+        if variant == "canonical_tools":
+            provider = canonical_tools_provider(provider)
         turns = [
             await _run_turn(
                 turn,

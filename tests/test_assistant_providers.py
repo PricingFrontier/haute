@@ -936,6 +936,28 @@ _NESTED_TOOLS = [
 ]
 
 
+def _schema_nodes(value):
+    """Every mapping in a JSON schema, depth first."""
+
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _schema_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _schema_nodes(child)
+
+
+#: The closed read tools, the only ones the Anthropic and OpenAI lanes send strict.
+_STRICT_READ_TOOLS = {
+    "get_pipeline",
+    "inspect_node",
+    "find_data",
+    "read_reference",
+    "get_project_knowledge",
+}
+
+
 class TestOpenAIProvider:
     async def test_normalises_text_and_tool_stream(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())
@@ -1577,11 +1599,13 @@ class TestDatabricksProvider:
         assert exc_info.value.failure_class == "authentication"
         assert client.calls == 1
 
-    async def test_decodes_recipe_arguments_by_the_selected_recipe_branch(self):
+    @pytest.mark.parametrize("projection", ["compatible", "canonical"])
+    async def test_decodes_recipe_arguments_by_the_selected_recipe_branch(self, projection: str):
         """Live: `output_columns must be JSON array, but a string was sent` about
         ten times on the recipe tool. A recipe operation selects its branch by `op`
         and then `recipe`, so its arguments decode by that recipe's schema, the
-        `arguments` object itself included."""
+        `arguments` object itself included. Qwen stringifies arrays under either
+        projection, and decoding reads the canonical schema whichever was sent."""
 
         from haute.assistant._tools import (
             _OPERATION_INPUT_SCHEMAS,
@@ -1639,10 +1663,14 @@ class TestDatabricksProvider:
             DatabricksProvider(
                 _config("databricks", base_url="https://workspace.example/serving"),
                 client=client,
+                tool_projection=projection,  # type: ignore[arg-type]
             ),
             tools=[definition],
         )
 
+        (sent,) = client.captured_kwargs["tools"]
+        operation = sent["function"]["parameters"]["properties"]["ops"]["items"]
+        assert ("oneOf" in operation) is (projection == "canonical")
         (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
         assert tool.arguments["ops"] == [
             {"op": "recipe", "recipe": "categorical_banding", "arguments": banding},
@@ -1790,61 +1818,91 @@ class TestDatabricksProvider:
         (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
         assert tool.arguments == {"ops": [operation]}
 
-    async def test_all_providers_advertise_the_same_portable_production_schema(self):
+    async def test_each_lane_sends_its_projection_of_the_production_tools(self):
+        """Anthropic and OpenAI receive the canonical schemas, strict exactly for the
+        closed read tools; Databricks receives the compatible projection by default and
+        the canonical one, never strict, when built for the canonical_tools variant.
+        Every lane's wire tools are its projection of the canonical definitions."""
+
         from haute.assistant._loop import _provider_tools
+        from haute.assistant._providers import (
+            _canonical_tools,
+            _compatible_tools,
+            _openai_tools,
+        )
         from haute.assistant._tools import TOOL_DEFINITIONS
 
         routed_tools = _provider_tools(TOOL_DEFINITIONS)
-
-        canonical_definition = next(
-            tool for tool in routed_tools if tool["name"] == "dry_run_graph_edits"
+        canonical = {tool["name"]: tool["input_schema"] for tool in routed_tools}
+        databricks = _config(
+            "databricks", base_url="https://workspace.cloud.databricks.com/serving-endpoints"
         )
-        canonical = canonical_definition["input_schema"]
-
-        anthropic_client = _FakeAnthropicClient(_anthropic_text_tool_events())
-        openai_client = _FakeOpenAIClient(_openai_text_tool_chunks())
-        databricks_client = _FakeOpenAIClient(_openai_text_tool_chunks())
-
-        await _collect(
-            AnthropicProvider(_config("anthropic"), client=anthropic_client),
-            tools=routed_tools,
-        )
-        await _collect(
-            OpenAIProvider(_config("openai"), client=openai_client),
-            tools=routed_tools,
-        )
-        await _collect(
+        clients = {
+            "anthropic": _FakeAnthropicClient(_anthropic_text_tool_events()),
+            "openai": _FakeOpenAIClient(_openai_text_tool_chunks()),
+            "databricks": _FakeOpenAIClient(_openai_text_tool_chunks()),
+            "databricks_canonical": _FakeOpenAIClient(_openai_text_tool_chunks()),
+        }
+        providers = [
+            AnthropicProvider(_config("anthropic"), client=clients["anthropic"]),
+            OpenAIProvider(_config("openai"), client=clients["openai"]),
+            DatabricksProvider(databricks, client=clients["databricks"]),
             DatabricksProvider(
-                _config(
-                    "databricks",
-                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
-                ),
-                client=databricks_client,
+                databricks, client=clients["databricks_canonical"], tool_projection="canonical"
             ),
-            tools=routed_tools,
+        ]
+        for provider in providers:
+            await _collect(provider, tools=routed_tools)
+
+        sent = {lane: client.captured_kwargs["tools"] for lane, client in clients.items()}
+        assert sent == {
+            "anthropic": _canonical_tools(routed_tools, "anthropic"),
+            "openai": _openai_tools(_canonical_tools(routed_tools, "openai")),
+            "databricks": _openai_tools(_compatible_tools(routed_tools)),
+            "databricks_canonical": _openai_tools(_canonical_tools(routed_tools, None)),
+        }
+        assert [tool["name"] for tool in sent["anthropic"]] == list(canonical)
+        assert {tool["name"] for tool in sent["anthropic"] if "strict" in tool} == (
+            _STRICT_READ_TOOLS
+        )
+        assert all(tool["strict"] is True for tool in sent["anthropic"] if "strict" in tool)
+        functions = {
+            lane: {tool["function"]["name"]: tool["function"] for tool in tools}
+            for lane, tools in sent.items()
+            if lane != "anthropic"
+        }
+        assert {name for name, function in functions["openai"].items() if "strict" in function} == (
+            _STRICT_READ_TOOLS
+        )
+        assert all(
+            "strict" not in function
+            for lane in ("databricks", "databricks_canonical")
+            for function in functions[lane].values()
         )
 
-        assert anthropic_client.captured_kwargs is not None
-        assert openai_client.captured_kwargs is not None
-        assert databricks_client.captured_kwargs is not None
-        anthropic_schemas = {
-            tool["name"]: tool["input_schema"] for tool in anthropic_client.captured_kwargs["tools"]
-        }
-        openai_schemas = {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in openai_client.captured_kwargs["tools"]
-        }
-        databricks_schemas = {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in databricks_client.captured_kwargs["tools"]
-        }
+        # The canonical lanes send a tool that is not strict its canonical schema:
+        # the operation union, with each branch's own required fields.
+        anthropic_schemas = {tool["name"]: tool["input_schema"] for tool in sent["anthropic"]}
+        for name in ("dry_run_graph_edits", "apply_graph_plan"):
+            assert anthropic_schemas[name] == canonical[name]
+            assert functions["openai"][name]["parameters"] == canonical[name]
+            assert functions["databricks_canonical"][name]["parameters"] == canonical[name]
+        for name in _STRICT_READ_TOOLS:
+            assert functions["databricks_canonical"][name]["parameters"] == canonical[name]
+        branches = canonical["dry_run_graph_edits"]["properties"]["ops"]["items"]["oneOf"]
+        rename = next(
+            branch
+            for branch in branches
+            if branch["properties"]["op"].get("const") == "rename_node"
+        )
+        assert rename["required"] == ["op", "node", "new_name"]
 
-        assert anthropic_schemas == openai_schemas == databricks_schemas
-        assert set(anthropic_schemas) == {tool["name"] for tool in routed_tools}
-        anthropic_wire = anthropic_schemas["dry_run_graph_edits"]
-        assert anthropic_wire != canonical
-        assert canonical["properties"]["ops"]["items"].get("oneOf")
-        operation_item = anthropic_wire["properties"]["ops"]["items"]
+        # The compatible projection merges the union into one closed object.
+        compatible_schemas = {
+            name: function["parameters"] for name, function in functions["databricks"].items()
+        }
+        compatible_wire = compatible_schemas["dry_run_graph_edits"]
+        operation_item = compatible_wire["properties"]["ops"]["items"]
         assert operation_item["type"] == "object"
         assert operation_item["required"] == ["op"]
         assert operation_item["additionalProperties"] is False
@@ -1878,7 +1936,7 @@ class TestDatabricksProvider:
                 "recipe",
             ]
         }
-        postcondition_item = anthropic_wire["properties"]["postconditions"]["items"]
+        postcondition_item = compatible_wire["properties"]["postconditions"]["items"]
         assert postcondition_item["type"] == "object"
         assert postcondition_item["additionalProperties"] is False
         assert "kind" in postcondition_item["properties"]
@@ -1888,21 +1946,188 @@ class TestDatabricksProvider:
         assert "categorical_banding arguments:" in arguments_wire["description"]
         assert "rules [{value, assignment}]" in arguments_wire["description"]
 
-        def objects(value):
-            if isinstance(value, dict):
-                yield value
-                for child in value.values():
-                    yield from objects(child)
-            elif isinstance(value, list):
-                for child in value:
-                    yield from objects(child)
-
         unsupported = {"oneOf", "anyOf", "allOf", "$ref", "pattern", "prefixItems"}
-        for wire_schema in anthropic_schemas.values():
-            wire_objects = list(objects(wire_schema))
+        for wire_schema in compatible_schemas.values():
+            wire_objects = list(_schema_nodes(wire_schema))
             assert all(unsupported.isdisjoint(value) for value in wire_objects)
             assert all(not isinstance(value.get("type"), list) for value in wire_objects)
             assert sum(len(value.get("properties", {})) for value in wire_objects) <= 40
+
+    def test_the_strict_reduction_keeps_every_property_of_a_closed_read_tool(self):
+        """Strict decoding refuses validation keywords such as `minimum` and
+        `uniqueItems`, so the reduction drops them and keeps every property,
+        description and required field. OpenAI's strict mode requires every
+        property, so there each optional one is required and nullable."""
+
+        from haute.assistant._providers import _strict_tool_schema
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        canonical = {tool["name"]: tool["input_schema"] for tool in TOOL_DEFINITIONS}
+        inspect = canonical["inspect_node"]
+        parts = {
+            "type": "array",
+            "description": inspect["properties"]["parts"]["description"],
+            "items": {"type": "string", "enum": ["schema", "config", "profile"]},
+        }
+        source = {"type": "string", "description": inspect["properties"]["input"]["description"]}
+        assert _strict_tool_schema(inspect, "anthropic") == {
+            "type": "object",
+            "properties": {"node": {"type": "string"}, "parts": parts, "input": source},
+            "required": ["node"],
+            "additionalProperties": False,
+        }
+        assert _strict_tool_schema(inspect, "openai") == {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string"},
+                "parts": {**parts, "type": ["array", "null"]},
+                "input": {**source, "type": ["string", "null"]},
+            },
+            "required": ["node", "parts", "input"],
+            "additionalProperties": False,
+        }
+
+        refused = {
+            "minimum",
+            "maximum",
+            "minLength",
+            "maxLength",
+            "minItems",
+            "maxItems",
+            "uniqueItems",
+            "pattern",
+            "title",
+            "default",
+            "oneOf",
+            "anyOf",
+            "allOf",
+            "$ref",
+        }
+        for name in _STRICT_READ_TOOLS:
+            for dialect in ("anthropic", "openai"):
+                reduced = _strict_tool_schema(canonical[name], dialect)
+                assert reduced is not None, (name, dialect)
+                assert set(reduced["properties"]) == set(canonical[name]["properties"])
+                nodes = list(_schema_nodes(reduced))
+                assert all(refused.isdisjoint(node) for node in nodes if "type" in node)
+                assert all(
+                    node.get("additionalProperties") is False
+                    for node in nodes
+                    if isinstance(node.get("properties"), dict)
+                )
+                required = set(canonical[name].get("required", ()))
+                if dialect == "anthropic":
+                    assert set(reduced["required"]) == required
+                else:
+                    assert reduced["required"] == list(canonical[name]["properties"])
+        # The operation union and its open config objects never reduce.
+        assert _strict_tool_schema(canonical["dry_run_graph_edits"], "anthropic") is None
+
+    @pytest.mark.parametrize("dialect", ["anthropic", "openai"])
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            # A union.
+            {
+                "type": "object",
+                "properties": {"op": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
+                "additionalProperties": False,
+            },
+            # An open object, at the top or below it.
+            {"type": "object", "properties": {}},
+            {
+                "type": "object",
+                "properties": {"config": {"type": "object"}},
+                "additionalProperties": False,
+            },
+            # An optional property that is already nullable, so a null would not
+            # say whether it was omitted.
+            {
+                "type": "object",
+                "properties": {"handle": {"type": ["string", "null"]}},
+                "additionalProperties": False,
+            },
+            # A value with no declared type.
+            {"type": "object", "properties": {"value": {}}, "additionalProperties": False},
+        ],
+    )
+    def test_the_strict_reduction_refuses_what_strict_mode_cannot_express(
+        self, schema: dict, dialect: str
+    ):
+        from haute.assistant._providers import _strict_tool_schema
+
+        assert _strict_tool_schema(schema, dialect) is None  # type: ignore[arg-type]
+
+    def test_the_strict_tools_stay_within_anthropic_strict_limits(self):
+        """Anthropic documents at most twenty strict tools per request, and across
+        their schemas twenty-four optional parameters and sixteen union-typed ones."""
+
+        from haute.assistant._providers import _canonical_tools
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        strict = [
+            tool["input_schema"]
+            for tool in _canonical_tools(TOOL_DEFINITIONS, "anthropic")
+            if tool.get("strict")
+        ]
+        nodes = [node for schema in strict for node in _schema_nodes(schema)]
+        optional = sum(
+            len(set(node["properties"]) - set(node.get("required", ())))
+            for node in nodes
+            if isinstance(node.get("properties"), dict)
+        )
+        unions = sum(1 for node in nodes if "anyOf" in node or isinstance(node.get("type"), list))
+
+        assert len(strict) <= 20
+        assert optional <= 24
+        assert unions <= 16
+
+    async def test_a_null_for_an_optional_property_of_a_strict_tool_means_omitted(self):
+        """OpenAI's strict schema makes each optional property nullable, so the
+        model sends `null` for one it leaves out; the adapter omits it before the
+        canonical validator, which declares the property a string."""
+
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks("inspect_node", {"node": "quotes", "parts": None, "input": None})
+        )
+        events = await _collect(
+            OpenAIProvider(_config("openai"), client=client), tools=TOOL_DEFINITIONS
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == {"node": "quotes"}
+
+    @pytest.mark.parametrize(
+        ("provider", "name", "arguments"),
+        [
+            # A required property's null reaches the validator, which refuses it.
+            ("openai", "inspect_node", {"node": None}),
+            # A tool sent without strict is never normalised.
+            ("openai", "dry_run_graph_edits", {"summary": "s", "ops": [], "postconditions": None}),
+            # Neither is any tool on the Databricks lane, which is never strict.
+            ("databricks", "inspect_node", {"node": "quotes", "parts": None}),
+        ],
+    )
+    async def test_every_other_null_reaches_the_validator_unchanged(
+        self, provider: str, name: str, arguments: dict
+    ):
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        client = _FakeOpenAIClient(_openai_tool_chunks(name, arguments))
+        adapter = (
+            OpenAIProvider(_config("openai"), client=client)
+            if provider == "openai"
+            else DatabricksProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            )
+        )
+        events = await _collect(adapter, tools=TOOL_DEFINITIONS)
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == arguments
 
     async def test_openai_provider_does_not_apply_databricks_compatibility(self):
         arguments = {
@@ -2028,12 +2253,13 @@ class TestDatabricksProvider:
             ),
         ],
     )
+    @pytest.mark.parametrize("projection", ["compatible", "canonical"])
     async def test_decodes_a_plain_text_list_and_a_python_boolean_by_the_declared_type(
-        self, tool_name: str, arguments: dict, decoded: dict, event: str
+        self, tool_name: str, arguments: dict, decoded: dict, event: str, projection: str
     ):
         """Qwen sends a declared list of sentences as one plain sentence and a
         boolean as Python's `True`: each decodes by its declared schema, logged by
-        shape, never by value."""
+        shape, never by value, under either projection."""
 
         import structlog.testing
 
@@ -2050,6 +2276,7 @@ class TestDatabricksProvider:
                         base_url="https://workspace.cloud.databricks.com/serving-endpoints",
                     ),
                     client=client,
+                    tool_projection=projection,  # type: ignore[arg-type]
                 ),
                 tools=[definition],
             )
@@ -2060,23 +2287,28 @@ class TestDatabricksProvider:
         assert entry["field"] in arguments
         assert "Keep the default" not in repr(captured)
 
-    def test_the_portable_projection_keeps_numeric_bounds_in_the_description(self):
-        """The wire subset drops `minimum` and `maximum`; their values travel in the
-        description, so the model can see the bound it would otherwise only learn
-        from a rejection."""
+    @pytest.mark.parametrize("lane", ["compatible", "anthropic", "openai"])
+    def test_the_projections_keep_numeric_bounds_in_the_description(self, lane: str):
+        """The compatible projection and the strict reduction drop `minimum` and
+        `maximum`; their values travel in the description, so the model can see the
+        bound it would otherwise only learn from a rejection."""
 
-        from haute.assistant._providers import _portable_tools
+        from haute.assistant._providers import _canonical_tools, _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        (knowledge,) = [
-            tool
-            for tool in _portable_tools(TOOL_DEFINITIONS)
-            if tool["name"] == "get_project_knowledge"
-        ]
+        wire = (
+            _compatible_tools(TOOL_DEFINITIONS)
+            if lane == "compatible"
+            else _canonical_tools(TOOL_DEFINITIONS, lane)  # type: ignore[arg-type]
+        )
+        (knowledge,) = [tool for tool in wire if tool["name"] == "get_project_knowledge"]
         limit = knowledge["input_schema"]["properties"]["limit"]
 
         assert "maximum" not in limit
-        assert limit == {"type": "integer", "description": "At least 1, at most 10."}
+        assert limit == {
+            "type": ["integer", "null"] if lane == "openai" else "integer",
+            "description": "At least 1, at most 10.",
+        }
 
     async def test_a_list_looking_string_is_never_wrapped(self):
         """A string that opens like a JSON array but does not parse stays a string,

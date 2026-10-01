@@ -1,0 +1,332 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "get_pipeline",
+      "description": "Inspect the saved pipeline graph and its project revision.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "inspect_node",
+      "description": "Inspect one saved top-level node in the parts you name (default [\"schema\"]). \"schema\": the node's output columns and dtypes and the columns arriving on each of its inputs, keyed by the name the node's own code uses. A node reporting unresolved_reason 'node_has_no_code' is an empty transform already wired into the graph and awaiting its code: write that code onto it with update_node rather than adding a parallel node beside it. \"config\": the node's complete saved configuration. \"profile\": the values in the node's output, or in the input named by `input`: per column, the distinct levels of a small-cardinality categorical with their counts, or the min/max of a numeric or date column, alongside a null count and, where the dtype can be counted, a distinct count. Temporal and decimal bounds are reported in their written form ('2024-01-01', '12.50'). Profile instead of assuming how a column encodes its categories - a 'fault' or 'status' column may hold Y/N, true/false, or a description, and the schema alone cannot tell you which. A profile returns no rows: a value appears only as a distinct level, and a high-cardinality column is withheld. A part the egress policy does not permit is listed under `withheld` with the setting it needs.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "array",
+            "description": "The parts to return; omit for [\"schema\"].",
+            "items": {
+              "enum": [
+                "schema",
+                "config",
+                "profile"
+              ]
+            }
+          },
+          "input": {
+            "type": "string",
+            "description": "Profile this input of the node instead of the node's own output, named exactly as the schema part reports it under 'inputs'. Only with the \"profile\" part."
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "find_data",
+      "description": "List the safe installed-format data files in one project directory, optionally recursively, and, when `path` names a data file, also return its column names and dtypes without reading rows.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string",
+            "description": "Project-relative directory to list; omit for the project root."
+          },
+          "recursive": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string",
+            "description": "Project-relative data file whose columns and dtypes to return."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_reference",
+      "description": "Read packaged library reference by id, one to twelve ids per call: \"guide\" (the authoring guide and the structured step grammar: each step kind's fields and the closed vocabularies), \"node:<node type id>\" (a node type's complete descriptor; its card holds a minimal and a realistic configuration with real values and the meaning of each field), \"recipe:<recipe id>\" (a recipe's full argument schema) and \"example:<example name>\" (a teaching example: its narrative and every node's configuration with its values).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_project_knowledge",
+      "description": "Retrieve bounded policy-filtered project facts and untrusted documentation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "At least 1, at most 10."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "dry_run_graph_edits",
+      "description": "Validate an exact graph-edit plan without writing. Say in `summary` what the plan does and list any `assumptions` you made; the analyst sees both on the change card. An operation {\"op\": \"recipe\", \"recipe\": <recipe id>, \"arguments\": {...}} expands into that recipe's nodes and edges inside the same plan; give it a `ref` to address the node it creates from later operations. Returns the plan hash to apply, the verification tier, an evidence summary, warnings and the plan's node and edge changes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "One or two plain sentences saying what the plan does."
+          },
+          "assumptions": {
+            "type": "array",
+            "description": "Choices you made that the analyst did not state, one sentence each.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "enum": [
+                    "add_node",
+                    "update_node",
+                    "edit_steps",
+                    "rename_node",
+                    "delete_node",
+                    "add_edge",
+                    "delete_edge",
+                    "update_preamble",
+                    "recipe"
+                  ]
+                },
+                "node_type": {
+                  "type": "string",
+                  "description": "Node type id, exactly as the prompt's node index lists it.",
+                  "enum": [
+                    "apiInput",
+                    "dataInput",
+                    "dataOutput",
+                    "polars",
+                    "edgeJoin",
+                    "modelScore",
+                    "banding",
+                    "ratingStep",
+                    "output",
+                    "explore",
+                    "externalFile",
+                    "liveSwitch",
+                    "modelling",
+                    "optimiser",
+                    "scenarioExpander",
+                    "optimiserApply",
+                    "constant",
+                    "submodel",
+                    "submodelPort"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "description": "add_node: the new node's name, which becomes its id. When the analyst names the node (\"add X\", \"as X\", \"called X\", \"named X\"), use exactly that name, with no suffix such as _node or _input."
+                },
+                "config": {
+                  "type": "object",
+                  "description": "Config keys, as the node type's descriptor config schema lists them. add_node starts the node from the palette's config for its type and writes these keys over it. update_node merges shallowly: each key written replaces that key's whole value, so send a nested object or list complete; keys not written keep their saved values; a JSON null removes the key."
+                },
+                "ref": {
+                  "description": "Declares a batch-local handle for this new node. Write the bare name here without a leading '$' (for example \"agg\"); later operations in the same batch address it as \"$agg\"."
+                },
+                "node": {
+                  "type": "string",
+                  "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+                },
+                "edits": {
+                  "type": "array",
+                  "description": "edit_steps changes an existing steps list by step id: each edit inserts a step after one ({insert_after, step}), replaces one whole ({replace, step}) or removes one ({remove}), applied in order. Steps not named stay as saved, so a free-code step you cannot read is kept, replaced or removed, never edited in place.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "insert_after": {
+                        "description": "edit_steps: the id of the step the new step follows; null inserts it at the start."
+                      },
+                      "step": {
+                        "type": "object",
+                        "description": "edit_steps: the whole step, in the shape the step_grammar of the \"guide\" reference gives its kind. Omit id to have one assigned: a replacement keeps the id it replaces, an insertion gets <kind>_<n>."
+                      },
+                      "replace": {
+                        "type": "string",
+                        "description": "edit_steps: the id of the step to replace whole."
+                      },
+                      "remove": {
+                        "type": "string",
+                        "description": "edit_steps: the id of the step to remove."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "new_name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Node id, or a batch-local $ref declared by an earlier add_node."
+                },
+                "source_handle": {
+                  "description": "Output port on the source node, exactly as get_pipeline reports it under an edge's 'source_handle'. Required only when the source emits several frames, such as an apiInput table; omit it for an ordinary single-output node."
+                },
+                "target_handle": {
+                  "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports."
+                },
+                "preamble": {},
+                "recipe": {
+                  "enum": [
+                    "categorical_banding",
+                    "rating_step",
+                    "reference_join",
+                    "response_output"
+                  ]
+                },
+                "arguments": {
+                  "type": "object",
+                  "description": "categorical_banding arguments: source, name, column, output_column, rules [{value, assignment}], default; optional output_name, output_columns. rating_step arguments: source, name, tables [{factors, output_column, entries [{factor_values, value}], default_value}]; optional combined_outputs [{output_column, operation, base_value}], output_name, output_columns. reference_join arguments: base_source, reference_source, name, how, left_on, right_on; optional output_name, output_columns. response_output arguments: source, output_name, output_columns."
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "op"
+              ]
+            }
+          },
+          "postconditions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "node_exists",
+                    "node_absent",
+                    "edge_exists",
+                    "edge_absent",
+                    "graph_shape",
+                    "preamble_digest"
+                  ]
+                },
+                "node": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "source_handle": {
+                  "type": "string"
+                },
+                "target_handle": {
+                  "type": "string"
+                },
+                "nodes": {
+                  "type": "integer",
+                  "description": "At least 0."
+                },
+                "edges": {
+                  "type": "integer",
+                  "description": "At least 0."
+                },
+                "sha256": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ]
+            }
+          }
+        },
+        "required": [
+          "summary",
+          "ops"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "apply_graph_plan",
+      "description": "Apply one exact validated plan hash under revision authority. Returns the change record the analyst sees, built from what was saved.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_hash"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+]

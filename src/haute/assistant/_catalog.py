@@ -1057,8 +1057,8 @@ def _argument_names(schema: Mapping[str, object], names: Sequence[str]) -> str:
 def _recipe_arguments_description(recipe_id: str, schema: Mapping[str, object]) -> str:
     """One line naming a recipe's arguments, required first.
 
-    The portable projection keeps only the description of a property whose
-    schema differs between branches, so this line is how a provider learns
+    The compatible projection keeps only the description of a property whose
+    schema differs between branches, so this line is how that lane learns
     each recipe's argument names; the `recipe:<id>` reference has the schema.
     """
 
@@ -1128,6 +1128,8 @@ OPERATION_IDS = (
     "dry_run_graph_edits",
     "apply_graph_plan",
 )
+#: The operations that change the project; every other operation only reads.
+MUTATING_OPERATION_IDS = frozenset({"apply_graph_plan"})
 #: The parts `inspect_node` can return, in the order it answers them.
 INSPECT_NODE_PARTS = ("schema", "config", "profile")
 #: Ids one `read_reference` call may name.
@@ -1286,7 +1288,7 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             ["plan_hash"],
         ),
     }
-    mutation = name == "apply_graph_plan"
+    mutation = name in MUTATING_OPERATION_IDS
     plan_bound = name == "apply_graph_plan"
     errors = [
         {
@@ -1628,6 +1630,7 @@ __all__ = [
     "INSPECT_NODE_PARTS",
     "MANIFEST_SCHEMA_VERSION",
     "MAX_REFERENCE_IDS",
+    "MUTATING_OPERATION_IDS",
     "NEW_LOGIC_EXAMPLE_CODE",
     "CapabilityManifest",
     "NodeCapabilityDescriptor",

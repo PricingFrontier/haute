@@ -17,6 +17,7 @@ import pytest
 from haute._sandbox import bound_project_root
 from haute._types import GraphEdge, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
+from haute.assistant._providers import DatabricksProvider, OpenAIProvider
 from haute.assistant._render import render_pipeline_graph
 from haute.routes._helpers import parse_pipeline_to_graph
 from scripts.assistant_eval_report import (
@@ -42,6 +43,7 @@ from scripts.run_assistant_self_test import (
     SelfTestTurnResult,
     TrajectoryProvider,
     _golden_frame,
+    canonical_tools_provider,
     load_self_test_cases,
     load_trajectory,
     main,
@@ -1141,6 +1143,46 @@ async def test_an_external_provider_is_refused_before_the_case_runs(tmp_path: Pa
             work_dir=tmp_path,
             provider_factory=unexpected_provider,
         )
+
+
+def test_canonical_tools_rebuilds_the_databricks_lane_with_the_canonical_projection() -> None:
+    """The variant changes only the projection the Databricks adapter sends: the
+    rebuilt provider keeps the configuration and the client it was built with."""
+
+    config = replace(_scripted_config(_PERMISSIVE_EGRESS), provider="databricks")
+    client = object()
+    lane = DatabricksProvider(config, client=client)
+
+    rebuilt = canonical_tools_provider(lane)
+
+    assert isinstance(rebuilt, DatabricksProvider)
+    assert (rebuilt.config, rebuilt.client) == (config, client)
+    assert (lane.tool_projection, rebuilt.tool_projection) == ("compatible", "canonical")
+    with pytest.raises(ValueError, match="measures the Databricks lane"):
+        canonical_tools_provider(
+            OpenAIProvider(_scripted_config(_PERMISSIVE_EGRESS), client=client)
+        )
+
+
+async def test_canonical_tools_refuses_another_provider_before_the_case_runs(
+    tmp_path: Path,
+) -> None:
+    """The Anthropic and OpenAI lanes already receive the canonical projection, so
+    a run under them would be a mislabelled multi_apply run."""
+
+    def unexpected_provider(_config: AssistantConfig) -> TrajectoryProvider:
+        raise AssertionError("no provider may be created for a refused variant")
+
+    with pytest.raises(ValueError, match="measures the Databricks lane"):
+        await run_self_test_case(
+            _load_case("smoke_categorical_banding"),
+            projects_root=PROJECTS_ROOT,
+            config=_scripted_config(_PERMISSIVE_EGRESS),
+            work_dir=tmp_path,
+            provider_factory=unexpected_provider,
+            variant="canonical_tools",
+        )
+    assert list(tmp_path.iterdir()) == []
 
 
 _RUN = RunIdentity(

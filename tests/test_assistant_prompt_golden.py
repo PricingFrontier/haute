@@ -64,6 +64,7 @@ def test_a_changed_prompt_sentence_or_wire_description_fails_with_the_changed_li
         "tools_canonical.json",
         "tools_anthropic.json",
         "tools_openai.json",
+        "tools_databricks.json",
         "hashes.json",
     ):
         assert f"--- golden/{name}" in diffs

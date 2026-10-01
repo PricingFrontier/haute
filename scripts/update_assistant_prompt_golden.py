@@ -4,8 +4,8 @@ The snapshot is the session-stable system prompt for one fixed source file,
 the turn context of two turns of that project rendered from fixed data, the
 turn context update after an apply in the second turn, the compacted history
 of fixed earlier turns, the canonical tool
-definitions, and each provider adapter's wire projection of
-them, plus a sha256 of each rendered file. The system prompt is rendered once
+definitions, and the tools each provider lane sends (its projection of
+them), plus a sha256 of each rendered file. The system prompt is rendered once
 per turn and must come out identical, so the snapshot shows one prefix for
 both turns. The Haute version and the capability hash in the prompt are
 replaced with fixed placeholders, because both change on every release while
@@ -263,7 +263,7 @@ def render_golden() -> dict[str, str]:
 
     from haute.assistant._catalog import capability_manifest
     from haute.assistant._loop import build_system_prompt
-    from haute.assistant._providers import _openai_tools, _portable_tools
+    from haute.assistant._providers import _canonical_tools, _compatible_tools, _openai_tools
     from haute.assistant._render import render_context_update, render_turn_context
     from haute.assistant._tools import TOOL_DEFINITIONS
 
@@ -282,7 +282,6 @@ def render_golden() -> dict[str, str]:
         f"- Capability hash: `{manifest.capability_hash}`",
         f"- Capability hash: `{CAPABILITY_HASH_PLACEHOLDER}`",
     )
-    portable = _portable_tools(TOOL_DEFINITIONS)
     files = {
         "system_prompt.md": prompt + "\n",
         **{
@@ -292,8 +291,11 @@ def render_golden() -> dict[str, str]:
         "context_update.md": render_context_update(GOLDEN_UPDATE) + "\n",
         "turn_records.md": render_golden_history() + "\n",
         "tools_canonical.json": _json_text(TOOL_DEFINITIONS),
-        "tools_anthropic.json": _json_text(portable),
-        "tools_openai.json": _json_text(_openai_tools(portable)),
+        "tools_anthropic.json": _json_text(_canonical_tools(TOOL_DEFINITIONS, "anthropic")),
+        "tools_openai.json": _json_text(
+            _openai_tools(_canonical_tools(TOOL_DEFINITIONS, "openai"))
+        ),
+        "tools_databricks.json": _json_text(_openai_tools(_compatible_tools(TOOL_DEFINITIONS))),
     }
     files[HASHES_FILE] = _json_text(
         {

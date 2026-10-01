@@ -99,7 +99,7 @@ _TARGET_HANDLE_DESCRIPTION = (
     "polars, which binds inputs by source name and has no input ports."
 )
 _NODE_TYPE_DESCRIPTION = "Node type id, exactly as the prompt's node index lists it."
-# The portable provider projection flattens the operation union into one
+# The compatible provider projection flattens the operation union into one
 # object and joins distinct descriptions, so each text names its operation.
 _ADD_CONFIG_DESCRIPTION = (
     "Config keys, as the node type's descriptor config schema lists them. "

@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-38 | Planned | P3 | Each provider gets the tool-schema shape it handles best. |
 | ASSIST-39 | Planned | P3 | A multi-stage build shows a checklist of its stages. |
 | ASSIST-40 | Planned | P1 | Data checks have a specified execution contract and their own egress permission. |
 | ASSIST-41 | Planned | P1 | A dry-run reports advisory findings when changed nodes produce implausible data. |
@@ -89,25 +88,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-38 — Tool-schema projections per provider
-**Why:** Every provider receives one conservative projection that strips
-per-operation required fields, while Databricks documents a limit of sixteen
-keys and no composition that the projection exceeds.
-
-**Plan:** Derive two projections from the wire operation models: a flat
-compatible projection within Databricks' limits, and the canonical
-discriminated union with per-operation requirements for Anthropic and OpenAI,
-strict only on closed read tools. Probe the configured Databricks models
-against the documented limit first.
-
-**Acceptance:** Tests show both projections derive from the wire models, the
-compatible one within sixteen keys; the probe result is recorded here.
-
-**Dependencies:** `ASSIST-35`.
-
-**Evidence:** `src/haute/assistant/_providers.py::_portable_tools`;
-`src/haute/assistant/_wire_ops.py`.
 
 ### ASSIST-39 — A checklist for multi-stage builds
 **Why:** A long build gives the analyst no view of what remains, and a model
