@@ -34,6 +34,7 @@ from fastapi.testclient import TestClient
 
 from haute.assistant._providers import TextDelta, TurnStop
 from haute.assistant._session import SessionStore
+from haute.schemas import AssistantChangeRecord
 
 pytestmark = pytest.mark.usefixtures("project_root")
 
@@ -262,6 +263,19 @@ def _persistent_store(monkeypatch: pytest.MonkeyPatch, project_root: Path) -> Se
     return fresh
 
 
+#: A saved plan's change record, as an apply result carries it.
+_CHANGE = {
+    "summary": "Add an age band after quotes.",
+    "assumptions": ["Ages are whole years."],
+    "changes": {
+        "nodes": [{"id": "age_band", "type": "Banding", "change": "added"}],
+        "edges_added": [{"source": "quotes", "target": "age_band"}],
+    },
+    "git_sha": "c" * 40,
+    "parent_sha": "d" * 40,
+}
+
+
 class TestSessionResume:
     """POST /session with a prior session_id: resume is an offer, never an error."""
 
@@ -292,14 +306,15 @@ class TestSessionResume:
                         "role": "tool",
                         "tool_call_id": "c1",
                         "name": "apply_graph_plan",
-                        "content": {"applied": 1, "graph_fingerprint": "abc123"},
+                        "content": {
+                            "plan_hash": "a" * 64,
+                            "applied_operations": 2,
+                            "verification_tier": "schema",
+                            "evidence": {"schemas_resolved": 1},
+                            "change": _CHANGE,
+                        },
                         "is_error": False,
                     },
-                    {
-                        "role": "controller",
-                        "content": "Continue the mutation workflow.",
-                    },
-                    {"role": "assistant", "content": "Done"},
                 ],
                 "outcome": {"kind": "applied", "detail": None},
             },
@@ -311,26 +326,21 @@ class TestSessionResume:
         body = resumed.json()
         assert body["session_id"] == session_id
         kinds = [entry["kind"] for entry in body["history"]]
-        assert kinds == ["user", "assistant", "tool", "tool", "assistant", "outcome"]
+        assert kinds == ["user", "assistant", "tool", "change", "outcome"]
         assert body["history"][0]["text"] == "add a node"
         assert body["history"][1]["text"] == "Working on it"
         tool = body["history"][2]
         assert tool["name"] == "apply_graph_plan"
+        # The finished title the live row showed, read from the persisted result.
+        assert tool["title"] == "Applying 2 changes"
         assert "redacted" in tool["summary"]
-        assert "graph_fingerprint" in tool["summary"]
         assert tool["is_error"] is False
-        graph_updated = body["history"][3]
-        assert graph_updated == {
-            "kind": "tool",
-            "text": "",
-            "name": "graph_updated",
-            "summary": "Canvas updated",
-            "is_error": False,
-            "outcome": None,
-        }
-        assert body["history"][4]["text"] == "Done"
+        # The stored change record follows its tool entry, as the live card did.
+        assert AssistantChangeRecord.model_validate(body["history"][3]["change"]) == (
+            AssistantChangeRecord.model_validate(_CHANGE)
+        )
         # The stored outcome closes the resumed turn, as the live completed event did.
-        assert body["history"][5]["outcome"] == {"kind": "applied", "detail": None}
+        assert body["history"][4]["outcome"] == {"kind": "applied", "detail": None}
 
     def test_tool_error_entries_carry_the_error_flag_and_message(
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch

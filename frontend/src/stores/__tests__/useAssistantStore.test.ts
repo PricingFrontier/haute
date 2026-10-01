@@ -37,6 +37,7 @@ import {
   getAssistantStatus,
   listAssistantSessions,
   streamAssistantMessage,
+  type AssistantChangeRecord,
   type AssistantSessionList,
   type AssistantSessionResult,
   type AssistantStreamEvent,
@@ -150,8 +151,8 @@ describe("sendMessage transcript flow", () => {
 
   it("settles activity rows from started to ok with the summary", async () => {
     scriptStream([
-      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "3 nodes" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("read", SEND_OPTS)
@@ -169,8 +170,8 @@ describe("sendMessage transcript flow", () => {
 
   it("marks failed tool activity as error state", async () => {
     scriptStream([
-      { type: "tool_started", id: "t1", name: "apply_graph_plan", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "apply_graph_plan", is_error: true, summary: "no" },
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying the plan", is_error: true, summary: "no" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
@@ -194,16 +195,25 @@ describe("sendMessage transcript flow", () => {
     expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(true)
   })
 
-  it("appends a canvas-updated activity row for graph_updated", async () => {
+  it("appends the change card a change_applied event carries, after the apply row", async () => {
     scriptStream([
-      { type: "graph_updated", fingerprint: "fp-1" },
-      completed(),
+      { type: "text_delta", text: "Adding the band." },
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying 2 changes", is_error: false, summary: "ok" },
+      { type: "change_applied", change: CHANGE },
+      completed({ kind: "applied", detail: null }),
     ])
     await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
-    const activity = useAssistantStore
-      .getState()
-      .entries.find((entry) => entry.kind === "activity")
-    expect(activity).toMatchObject({ name: "graph_updated", state: "ok" })
+    const { entries } = useAssistantStore.getState()
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "user",
+      "assistant",
+      "activity",
+      "change",
+      "outcome",
+    ])
+    expect(entries[2]).toMatchObject({ title: "Applying 2 changes", state: "ok" })
+    expect(entries[3]).toEqual({ kind: "change", change: CHANGE })
   })
 
   it("renders a backend cancelled event as a stopped marker without a toast", async () => {
@@ -230,7 +240,7 @@ describe("sendMessage transcript flow", () => {
 
   it("leaves the transcript unchanged for a tool_finished with no matching row", async () => {
     scriptStream([
-      { type: "tool_finished", id: "ghost", name: "get_pipeline", is_error: false, summary: "" },
+      { type: "tool_finished", id: "ghost", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
@@ -256,7 +266,32 @@ describe("sendMessage transcript flow", () => {
   })
 })
 
-const HISTORY_TEXT = { name: "", summary: "", is_error: false }
+const HISTORY_TEXT = { name: "", title: "", summary: "", is_error: false }
+
+const CHANGE: AssistantChangeRecord = {
+  summary: "Add an age band after quotes.",
+  assumptions: [],
+  changes: {
+    nodes: [
+      {
+        id: "age_band",
+        type: "Banding",
+        change: "added",
+        renamed_from: null,
+        fields: [],
+        steps: null,
+        steps_changed: 0,
+      },
+    ],
+    edges_added: [{ source: "quotes", target: "age_band" }],
+    edges_removed: [],
+    preamble_changed: false,
+    truncated: false,
+  },
+  warnings: [],
+  git_sha: "c".repeat(40),
+  parent_sha: "d".repeat(40),
+}
 
 async function liveEntries(events: AssistantStreamEvent[]): Promise<TranscriptEntry[]> {
   scriptStream(events)
@@ -268,8 +303,8 @@ describe("transcript order and turn outcomes", () => {
   it("keeps text and tool rows in stream order", async () => {
     const entries = await liveEntries([
       { type: "text_delta", text: "Reading the pipeline." },
-      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "3 nodes" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
       { type: "text_delta", text: "It has " },
       { type: "text_delta", text: "three nodes." },
       completed(),
@@ -284,8 +319,8 @@ describe("transcript order and turn outcomes", () => {
 
   it("drops the empty placeholder when a tool row comes first", async () => {
     const entries = await liveEntries([
-      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "ok" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "ok" },
       completed(),
     ])
 
@@ -311,8 +346,8 @@ describe("transcript order and turn outcomes", () => {
   it("replaces a blocker that follows a tool row with the blocked outcome", async () => {
     const detail = "graph validation failed after one corrected retry (x); no graph changes were applied."
     const entries = await liveEntries([
-      { type: "tool_started", id: "t1", name: "dry_run_graph_edits", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", is_error: true, summary: "bad" },
+      { type: "tool_started", id: "t1", name: "dry_run_graph_edits", title: "Checking the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", title: "Checking the plan", is_error: true, summary: "bad" },
       { type: "text_delta", text: `BLOCKED: ${detail}` },
       completed({ kind: "blocked", detail }),
     ])
@@ -371,8 +406,8 @@ describe("transcript order and turn outcomes", () => {
     const detail = "Which values of status mean active?"
     const live = await liveEntries([
       { type: "text_delta", text: "Reading." },
-      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "3 nodes" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
       { type: "text_delta", text: "The plan is ready." },
       { type: "text_delta", text: `NEEDS_INPUT: ${detail}` },
       completed({ kind: "needs_input", detail }),
@@ -383,11 +418,43 @@ describe("transcript order and turn outcomes", () => {
       history: [
         { kind: "user", text: "go", ...HISTORY_TEXT },
         { kind: "assistant", text: "Reading.", ...HISTORY_TEXT },
-        { kind: "tool", text: "", name: "get_pipeline", summary: "3 nodes", is_error: false },
+        { kind: "tool", text: "", name: "get_pipeline", title: "Reading the pipeline", summary: "3 nodes", is_error: false },
         // One stored row per provider round: a controller continuation split these.
         { kind: "assistant", text: "The plan is ready.", ...HISTORY_TEXT },
         { kind: "assistant", text: `NEEDS_INPUT: ${detail}`, ...HISTORY_TEXT },
         { kind: "outcome", outcome: { kind: "needs_input", detail } },
+      ],
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+
+    const strip = (entries: TranscriptEntry[]) =>
+      entries.map((entry) => (entry.kind === "activity" ? { ...entry, id: "" } : entry))
+    expect(strip(useAssistantStore.getState().entries)).toEqual(strip(live))
+  })
+
+  it("renders a resumed apply with its titled row and change card as the live turn did", async () => {
+    const live = await liveEntries([
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying 2 changes", is_error: false, summary: "ok" },
+      { type: "change_applied", change: CHANGE },
+      completed({ kind: "applied", detail: null }),
+    ])
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [
+        { kind: "user", text: "go", ...HISTORY_TEXT },
+        {
+          kind: "tool",
+          text: "",
+          name: "apply_graph_plan",
+          title: "Applying 2 changes",
+          summary: "ok",
+          is_error: false,
+        },
+        { kind: "change", change: CHANGE },
+        { kind: "outcome", outcome: { kind: "applied", detail: null } },
       ],
     })
 
@@ -529,12 +596,13 @@ describe("chat list navigation", () => {
       sessionId: "old-session",
       sourceFile: "main.py",
       history: [
-        { kind: "user", text: "add nb_batch", name: "", summary: "", is_error: false },
-        { kind: "assistant", text: "Adding it now.", name: "", summary: "", is_error: false },
+        { kind: "user", text: "add nb_batch", name: "", title: "", summary: "", is_error: false },
+        { kind: "assistant", text: "Adding it now.", name: "", title: "", summary: "", is_error: false },
         {
           kind: "tool",
           text: "",
           name: "get_node_schema",
+          title: "Reading a node's columns",
           summary: "No node x",
           is_error: true,
         },
@@ -552,6 +620,7 @@ describe("chat list navigation", () => {
     expect(entries[2]).toMatchObject({
       kind: "activity",
       name: "get_node_schema",
+      title: "Reading a node's columns",
       state: "error",
       summary: "No node x",
     })
@@ -673,7 +742,7 @@ describe("chat list navigation", () => {
       .mockResolvedValueOnce({
         sessionId: "quick",
         sourceFile: "main.py",
-        history: [{ kind: "user", text: "quick chat", name: "", summary: "", is_error: false }],
+        history: [{ kind: "user", text: "quick chat", name: "", title: "", summary: "", is_error: false }],
       })
 
     const slow = useAssistantStore.getState().openSession("slow", "main.py")

@@ -181,7 +181,7 @@ class SelfTestTelemetry:
     time_to_validated_plan_ms: float
     end_to_end_ms: float
     applied_plan: bool
-    graph_updated: bool
+    change_applied: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -534,11 +534,11 @@ def _protocol_reasons(
     if expected.outcome == "applied":
         if not telemetry.applied_plan:
             reasons.append("expected an applied graph plan")
-        if not telemetry.graph_updated:
-            reasons.append("applied plan did not emit a graph update")
+        if not telemetry.change_applied:
+            reasons.append("applied plan did not emit a change card")
         if before == after:
             reasons.append("applied outcome did not change the graph")
-    elif before != after or telemetry.applied_plan or telemetry.graph_updated:
+    elif before != after or telemetry.applied_plan or telemetry.change_applied:
         reasons.append("non-mutation outcome changed the graph")
     if telemetry.leaked_forbidden_text:
         reasons.append(
@@ -1073,7 +1073,7 @@ async def run_self_test_case(
         incomplete = False
         input_tokens = 0
         output_tokens = 0
-        graph_updated = False
+        change_applied = False
         async for event in run_turn(
             store,
             session.id,
@@ -1088,8 +1088,8 @@ async def run_self_test_case(
         ):
             if event.type == "text_delta":
                 text_parts.append(event.text)
-            elif event.type == "graph_updated":
-                graph_updated = True
+            elif event.type == "change_applied":
+                change_applied = True
             elif event.type == "completed":
                 terminal = "completed"
                 incomplete = event.outcome.kind == "incomplete"
@@ -1127,7 +1127,7 @@ async def run_self_test_case(
         time_to_validated_plan_ms=observed_tools.validated_plan_ms or end_to_end_ms,
         end_to_end_ms=end_to_end_ms,
         applied_plan=observed_tools.applied_plan,
-        graph_updated=graph_updated,
+        change_applied=change_applied,
     )
     return score_self_test(
         case,

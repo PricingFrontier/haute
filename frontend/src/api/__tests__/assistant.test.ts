@@ -28,12 +28,38 @@ import {
   getAssistantStatus,
   listAssistantSessions,
   streamAssistantMessage,
+  type AssistantChangeRecord,
   type AssistantStreamEvent,
 } from "../assistant"
 
 let mockFetch: ReturnType<typeof vi.fn>
 
 const NO_CONTEXT = { selectedNodeIds: [], previewErrorNodeId: null }
+
+const CHANGE: AssistantChangeRecord = {
+  summary: "Rename the pricing node.",
+  assumptions: ["Nothing reads it by name."],
+  changes: {
+    nodes: [
+      {
+        id: "premium",
+        type: "Polars",
+        change: "renamed",
+        renamed_from: "priced",
+        fields: [],
+        steps: ["source", "free_code"],
+        steps_changed: 0,
+      },
+    ],
+    edges_added: [],
+    edges_removed: [],
+    preamble_changed: false,
+    truncated: false,
+  },
+  warnings: [],
+  git_sha: null,
+  parent_sha: null,
+}
 
 beforeEach(() => {
   mockFetch = vi.fn()
@@ -139,8 +165,16 @@ describe("createAssistantSession", () => {
 
   it("offers a remembered session id and surfaces returned history", async () => {
     const history = [
-      { kind: "user", text: "hi", name: "", summary: "", is_error: false },
-      { kind: "tool", text: "", name: "get_pipeline", summary: "{}", is_error: false },
+      { kind: "user", text: "hi", name: "", title: "", summary: "", is_error: false },
+      {
+        kind: "tool",
+        text: "",
+        name: "get_pipeline",
+        title: "Reading the pipeline",
+        summary: "{}",
+        is_error: false,
+      },
+      { kind: "change", change: CHANGE },
     ]
     mockFetch.mockReturnValueOnce(
       jsonResponse({ session_id: "abc123", source_file: "main.py", history }),
@@ -163,7 +197,7 @@ describe("createAssistantSession", () => {
       session_id: "abc123",
       source_file: "main.py",
       history: [
-        { kind: "user", text: "go", name: "", summary: "", is_error: false, outcome: null },
+        { kind: "user", text: "go", name: "", title: "", summary: "", is_error: false, outcome: null },
         {
           kind: "outcome",
           text: "",
@@ -185,7 +219,7 @@ describe("createAssistantSession", () => {
 
     const { history } = await createAssistantSession("main.py", "abc123")
     expect(history).toEqual([
-      { kind: "user", text: "go", name: "", summary: "", is_error: false },
+      { kind: "user", text: "go", name: "", title: "", summary: "", is_error: false },
       { kind: "outcome", outcome: { kind: "needs_input", detail: "Which column?" } },
       {
         kind: "outcome",
@@ -221,9 +255,12 @@ describe("createAssistantSession", () => {
     ["a missing source file", { session_id: "abc", history: [] }],
     ["a non-array history", { session_id: "abc", source_file: "main.py", history: {} }],
     ["a non-object history entry", { session_id: "abc", source_file: "main.py", history: [null] }],
-    ["an unknown history kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "other", text: "", name: "", summary: "", is_error: false }] }],
-    ["a missing history field", { session_id: "abc", source_file: "main.py", history: [{ kind: "user", text: "", name: "", summary: "" }] }],
-    ["a wrong history field primitive", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: "false" }] }],
+    ["an unknown history kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "other", text: "", name: "", title: "", summary: "", is_error: false }] }],
+    ["a missing history field", { session_id: "abc", source_file: "main.py", history: [{ kind: "user", text: "", name: "", title: "", summary: "" }] }],
+    ["a tool row without its title", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: false }] }],
+    ["a wrong history field primitive", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", title: "", summary: "", is_error: "false" }] }],
+    ["a change row without its record", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: null }] }],
+    ["a change row with an unknown change kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], change: "moved" }] } } }] }],
     ["an outcome row without its outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", text: "", name: "", summary: "", is_error: false, outcome: null }] }],
     ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", outcome: { kind: "blocked", detail: null } }] }],
   ])("rejects %s", async (_label, payload) => {
@@ -296,16 +333,19 @@ describe("streamAssistantMessage", () => {
   it("applies multiple frames arriving in one chunk in order", async () => {
     const events = await collectEvents([
       'data: {"type":"text_delta","text":"a"}\n\n' +
-        'data: {"type":"tool_started","id":"t1","name":"get_pipeline","summary":"{}"}\n\n' +
-        'data: {"type":"tool_finished","id":"t1","name":"get_pipeline","is_error":false,"summary":"ok"}\n\n' +
+        'data: {"type":"tool_started","id":"t1","name":"get_pipeline","title":"Reading the pipeline","summary":"{}"}\n\n' +
+        'data: {"type":"tool_finished","id":"t1","name":"get_pipeline","title":"Reading the pipeline","is_error":false,"summary":"ok"}\n\n' +
+        `data: ${JSON.stringify({ type: "change_applied", change: CHANGE })}\n\n` +
         'data: {"type":"completed","usage":{"input_tokens":1,"output_tokens":1},"outcome":{"kind":"answered","detail":null}}\n\n',
     ])
     expect(events.map((event) => event.type)).toEqual([
       "text_delta",
       "tool_started",
       "tool_finished",
+      "change_applied",
       "completed",
     ])
+    expect(events[3]).toEqual({ type: "change_applied", change: CHANGE })
   })
 
   it("ignores keep-alive and empty frames", async () => {
@@ -332,9 +372,13 @@ describe("streamAssistantMessage", () => {
 
   it.each([
     ["text_delta", { type: "text_delta" }],
-    ["tool_started", { type: "tool_started", id: "id", name: "tool", summary: false }],
-    ["tool_finished", { type: "tool_finished", id: "id", name: "tool", is_error: "false", summary: "done" }],
-    ["graph_updated", { type: "graph_updated", fingerprint: 1 }],
+    ["tool_started", { type: "tool_started", id: "id", name: "tool", title: "Tool", summary: false }],
+    ["tool_started without a title", { type: "tool_started", id: "id", name: "tool", summary: "{}" }],
+    ["tool_finished", { type: "tool_finished", id: "id", name: "tool", title: "Tool", is_error: "false", summary: "done" }],
+    ["change_applied without its record", { type: "change_applied" }],
+    ["change_applied with a mistyped commit", { type: "change_applied", change: { ...CHANGE, git_sha: 1 } }],
+    ["change_applied with a non-list of fields", { type: "change_applied", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], fields: "output column" }] } } }],
+    ["change_applied with a negative step count", { type: "change_applied", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], steps_changed: -1 }] } } }],
     ["completed usage object", { type: "completed", usage: [] }],
     ["completed nested input_tokens", { type: "completed", usage: { input_tokens: "1", output_tokens: 2 } }],
     ["completed nested output_tokens", { type: "completed", usage: { input_tokens: 1 }, outcome: { kind: "answered", detail: null } }],

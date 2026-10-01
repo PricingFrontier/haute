@@ -154,7 +154,7 @@ def test_trace_and_schema_dry_run_match_declared_evidence(tmp_path: Path):
         mutations_readiness=lambda _root: (True, None),
         publish_document_update=lambda _source: "f" * 64,
     )
-    plan = service.dry_run("pipeline.py", request["operations"])
+    plan = service.dry_run("pipeline.py", request["operations"], summary="Test plan.").plan
     assert (destination / "pipeline.py").read_bytes() == before
     assert list(plan.diff.nodes_removed) == request["expected_nodes_removed"]
     assert plan.verification_tier == "schema"

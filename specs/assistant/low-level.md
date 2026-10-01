@@ -20,9 +20,10 @@
 | `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
 | `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. `_evidence_manifest_entry` names the project-relative file in its missing-source and stale-evidence messages, with the tool call that refreshes it (listing datasets for a vanished dataset, reading a changed dataset's schema, querying project knowledge for a document). It performs no writes. |
 | `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries (a live pipeline's node configs as their key names and count; with `config_values=True`, which only the example loader passes, each config whole as JSON values), edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. It also owns the turn context: the frozen `TurnContext`/`BriefNode`/`BriefInput` data, the egress policy words with the column-value rule, and the pure bounded `render_turn_context`, which the route, the self-test harness and the golden script share. |
-| `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and document-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. |
+| `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and document-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. It returns a `DryRunResult` (the plan and the compact view the dry-run tool returns) and an `ApplicationResult` whose `as_dict` is the compact apply result carrying the change record; the record's parent commit comes from `_git.commit_parent`. |
+| `src/haute/assistant/_change_record.py` | The value-free change builder: `graph_changes(before, after, diff)` turns a semantic diff and the graphs on either side of it into node chips (id, palette type name from the capability manifest, `added`/`changed`/`removed`/`renamed`, the earlier id of a renamed node, changed fields in words, step kinds and changed-step count) and added and removed edges, each bounded at 50; `change_record` adds the plan receipt, the save warnings and the commit and its parent; `evidence_summary` reduces verification evidence to its counts and input names. The dry-run result, the apply result and the stream event all use these. |
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. `build_turn_context` gathers the turn context's facts (revision, brief nodes resolved schema-only and cached per revision, validated selection, policy-reduced preview error) on the same schema helpers as `get_node_schema`. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
-| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
+| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence (`_PERSISTED_TOOL_EVIDENCE_KEYS`, which include a dry-run's operation count and an apply's applied-operation count), value-free validation diagnostics, and a successful apply's `change` record, validated against `AssistantChangeRecord` with its summary and assumptions redacted like assistant text; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. A neutral `context` message becomes a mid-conversation `system` message for the Anthropic models in `MID_CONVERSATION_SYSTEM_MODELS` and otherwise the leading text of the preceding user message. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the context message is the route's rendered turn context and is never stored), forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, sends one end-of-turn reminder when the model stops with a validated plan unapplied or a failed dry-run uncorrected and completes the turn `incomplete` on a second such stop, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Every one of the last three carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
@@ -309,7 +310,22 @@ orphaned halves).
   lock. An applied record cannot return to validated. A failed pre-commit
   application becomes aborted and cannot be applied directly again; an
   identical fresh dry-run may replace that aborted record and reissue the same
-  deterministic hash after complete revalidation.
+  deterministic hash after complete revalidation. Each record also holds the plan's
+  `PlanReceipt` (summary and assumptions), outside the hashed authority: `put` requires
+  one, an identical dry-run of a still-valid validated plan replaces it, and
+  `receipt(plan_hash)` returns it to the apply that builds the change record.
+- **`AssistantChangeRecord`** (`schemas.py`): `summary`, `assumptions`, `changes` (an
+  `AssistantGraphChanges`: `nodes`, `edges_added`, `edges_removed`, `preamble_changed`,
+  `truncated`), `warnings`, `git_sha`, `parent_sha`. A node chip is an
+  `AssistantChangeNode`: `id`, `type` (palette display name), `change`, `renamed_from`,
+  `fields`, `steps` (step kinds in order, `null` for a node without a step list) and
+  `steps_changed`; an edge is `{source, target}`. All models are closed (`extra="forbid"`).
+  A field is a top-level config key in lower-case words (camel case and underscores
+  split); `<node>:steps[<id>]` identities, from `edit_steps` and from renames rewriting a
+  step's input, count toward `steps_changed` instead, and an `update_node` that writes
+  `steps` adds the field `steps`. The record is value-free by construction: it is built
+  only from node ids, node types, config keys, step kinds and edge endpoints, never from
+  a config value, step code or an intent comment.
 - **`PipelineApplicationService`**: the only stateful assistant mutation
   service. `inspect`, `dry_run`, `apply`, and `verify` return closed
   Pydantic models or stable `AssistantOperationError` codes.
@@ -657,12 +673,13 @@ prior `session_id`,
 in-memory candidate or promoting a disk-backed candidate. When it matches,
 return it unchanged
 with `history`: the stored turns mapped to transcript entries (`user`/`assistant` text
-entries, and `tool` entries carrying the tool name, the same compact result summary the
-live stream uses, and the error flag) so the panel rehydrates the conversation.
-A successful mutation tool result's persisted `graph_fingerprint` additionally
-derives a settled `graph_updated` activity entry immediately after that tool
-entry, matching the live “Canvas updated” row without duplicating provider
-history. A turn stored with an outcome ends with one `outcome` entry carrying that
+entries, and `tool` entries carrying the tool name, its title, the same compact result
+summary the live stream uses, and the error flag) so the panel rehydrates the
+conversation. A resumed tool entry's title is the finished title computed from the
+persisted result, whose arguments are redacted (see **Tool titles**). A successful
+apply's persisted `change` record additionally yields one `change` entry carrying that
+record immediately after the apply's tool entry, matching the live `change_applied`
+event without duplicating provider history. A turn stored with an outcome ends with one `outcome` entry carrying that
 `AssistantTurnOutcome`, the same value the live `completed` event carried; a failed or
 cancelled turn has none. Stored assistant text is returned as stored, so the panel
 derives the same display from a resumed turn as from the live one. Any other
@@ -825,8 +842,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    the system prompt once per turn and refuses to write when the two renderings differ,
    so the snapshot shows one prefix shared by both turns.
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
-   `tool_started`; execute; append the result to the pending provider messages before
-   emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
+   `tool_started` with the call's started title; execute; append the result to the
+   pending provider messages before emitting `tool_finished` with the finished title
+   (+`change_applied` carrying the result's `change` record for a successful apply); on
+   `TurnStop("tool_use")`
    re-invoke the provider with the accumulated results. The loop tracks one **open state**,
    read only from tool results and never from the request's wording: the latest
    `dry_run_graph_edits` or `dry_run_recipe_plan` result decides it, a *validated plan* when
@@ -835,9 +854,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    not change it. The loop also tracks whether
    `apply_graph_plan` has succeeded. A successful apply is terminal after the current stream
    reaches its stop event: any later tool-call events in that same provider round are ignored,
-   the loop records the successful apply and its result, emits the deterministic assistant
-   text `Graph changes applied successfully.`, emits `completed` with usage and the
-   `applied` outcome, and does not invoke the provider again. An `apply_graph_plan` result
+   the loop records the successful apply and its result, emits `completed` with usage and
+   the `applied` outcome, and does not invoke the provider again. It adds no assistant
+   text: the change card already streamed says what was saved, so the turn's stored
+   messages end with the apply's round (an Anthropic request then carries the next user
+   message after that round's tool results, which the Messages API joins into one user
+   turn). An `apply_graph_plan` result
    whose error code is `verification_failed` means the save committed but its post-save
    verification failed; it is terminal in the same way (later tool calls in the round are
    ignored and the provider is not invoked again): the loop records the deterministic
@@ -866,6 +888,18 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    `tool_started`, the round commit filters the unmatched call; closing at either later
    event retains the already-recorded result. Thus every persisted call id has exactly one
    matching result id on every generator-close boundary.
+
+   **Tool titles.** `_catalog.tool_title(name, arguments, result)` writes each activity
+   row's title beside the operation descriptors, in plain words: a read names what it
+   reads ("Reading the pipeline", "Reading a node's columns"), `dry_run_recipe_plan` reads
+   "Checking the recipe plan", `dry_run_graph_edits` "Checking the plan" and
+   `apply_graph_plan` "Applying the plan". A started row reads the arguments, so a dry-run
+   counts its operations ("Checking 3 changes"). A finished row reads only the result: a
+   dry-run counts the result's `operations` and an apply its `applied_operations`
+   ("Applying 3 changes"), and a failed call, whose result counts nothing, keeps the plain
+   title. A resumed row, whose arguments are redacted, therefore reads the same as the
+   live finished row; `operations` and `applied_operations` are persisted result evidence
+   for that reason. A name no tool has is titled by its name.
 5. Tool execution: read tools run via `asyncio.to_thread`, except `get_column_profiles`,
    which prepares on a thread and collects in the interactive preview worker (see
    **Column value profiles**). Reads whose answer depends on
@@ -956,8 +990,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       failure never resolves the consumer the profile did not ask for; a
       frame that does not resolve contributes nothing and is never an error of its own;
       (b) in dry-run and apply, every string in the operations the model submitted for
-      this plan (apply's are the plan's `normalized_operations`, which the dry-run
-      result returned to the model), with the identifiers, keyword names and string
+      this plan (apply's are the plan's `normalized_operations`: for a primitive plan
+      the parsed form of operations the model wrote itself, and for a recipe plan the
+      packaged recipe's template text filled with the model's own arguments, so neither
+      is project data), with the identifiers, keyword names and string
       literals of each string that parses as Python; and (c) only when
       `[assistant.egress].allow_executable_source` is true, the identifiers, keyword
       names and string literals of the preamble and every node's code in the graph that
@@ -1374,12 +1410,13 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   report `"ready"` — the state in which the save service ledger-captures — so every assistant
   edit is *expected* to be captured. If capture still fails after a successful save (the
   service's documented degrade-to-warning path), the warning propagates into the tool
-  result and the chat activity row — never swallowed — and, per the service's own design,
+  result and the change card — never swallowed — and, per the service's own design,
   the next successful capture sweeps the orphaned delta up from working-tree state. Read
   tools carry no precondition.
-- **The `graph_updated` fingerprint is the post-save re-parse fingerprint** — the same value
-  `/ws/sync` clients receive, so the frontend can correlate the chat event with the canvas
-  update.
+- **The change record describes the reparsed save** — its chips come from the actual diff
+  between the graph the plan started from and the graph reparsed after the commit, never
+  from the requested operations alone, and its commit is the one the save made. The
+  canvas updates through the `/ws/sync` document update, not through the chat event.
 - **One `PipelineDocumentUpdatePayload` contract**: the assistant publishes the identical
   payload shape the watcher publishes; no assistant-specific frame type exists on `/ws/sync`.
 - **Bounded retention, turn-atomic**: the provider request carries the most recent
@@ -1532,7 +1569,9 @@ fixture for route tests). The implemented coverage is:
   Source, sink-only and single-input sets and palette names are asserted equal to the
   product registries and to the editor's `nodeTypes.ts` declarations, read from source.
   Also pins merged I/O enums, palette defaults, resolved schema agreement, closed operation
-  metadata, deterministic canonical hashing, cache reuse/invalidation,
+  metadata, a plain-words activity title for every operation (counted from a dry-run's
+  arguments or result and an apply's result, the plain title for a failed call),
+  deterministic canonical hashing, cache reuse/invalidation,
   manifest compatibility identity, and the compact/full projection boundary. Every
   node descriptor carries its card without the test fixture: two configurations in
   order for an authorable type, a not-authorable note otherwise, and the banding card's
@@ -1647,7 +1686,14 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_application.py`** — saved-state inspection, exact
   no-write planning, single-use authority, stale-state rejection,
   transactional apply, semantic-diff verification, postconditions, and
-  committed verification-failure reporting. Schema-validation scope is pinned against a
+  committed verification-failure reporting. The change card is pinned here too: for a
+  four-node batch (a Data Input, a stepped Transform, a Banding and an Output) the
+  record names each chip with its palette type, step kinds and changed fields in words,
+  holds no configuration value, step code or intent comment, and carries the commit and
+  its parent; an `edit_steps` and a rename show as a changed-step count and a renamed
+  chip; and the dry-run and apply results the provider receives for that batch each stay
+  under one kilobyte with no echoed operations or repeated diffs. A repeated identical
+  dry-run replaces the receipt of a plan not yet applied. Schema-validation scope is pinned against a
   fixture whose saved pipeline already contains one unresolvable node: an authored
   group-by validates at schema tier, a new branch off a shared input does not drag that
   input's other branches into validation, untouched collateral that already failed
@@ -1789,6 +1835,8 @@ fixture for route tests). The implemented coverage is:
   dry-runs and applies ends `applied` with no reminder and no clarification in its context
   message; successful apply terminates with deterministic text and no later
   provider/tool round, and explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally.
+  A successful apply streams one `change_applied` event carrying the result's record and
+  no assistant text, and tool rows carry the started and finished titles.
   The turn context follows the user message in every round as the route rendered it, is
   absent when the route sends none, and is never stored; the system prompt takes only the
   source file and holds no policy or pipeline facts, states the delegation rule, and the
@@ -1803,7 +1851,9 @@ fixture for route tests). The implemented coverage is:
   palette name, and no longer teaches `df` as a code-only output variable.
 - **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
-  transcript rehydration (a stored turn outcome closes its turn as an `outcome` entry),
+  transcript rehydration (a stored turn outcome closes its turn as an `outcome` entry,
+  a stored apply's change record follows its tool entry as a `change` entry, and tool
+  entries carry their finished titles),
   adapter construction, atomic concurrent-send reservation, and
   lock release on pre-stream failure, disconnect, and mid-stream send failure. The list
   endpoint pins the requested pipeline's conversations with their titles and counts, an
@@ -1821,7 +1871,8 @@ fixture for route tests). The implemented coverage is:
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,
   tool-error round-trip, turn-outcome revival, an outcome detail redacted like assistant
-  text, a turn record without its `outcome` key treated as invalid, internal-controller
+  text, an apply's change record revived as the same record with its summary and
+  assumptions redacted like assistant text, a turn record without its `outcome` key treated as invalid, internal-controller
   revival/transcript hiding, absence of
   deterministic payload digests, safe validation path/reason retention, and non-fatal
   persist failures. Listing coverage pins recency ordering and per-pipeline scoping,

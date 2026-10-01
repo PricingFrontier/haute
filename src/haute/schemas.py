@@ -203,24 +203,98 @@ class AssistantTurnOutcome(BaseModel):
         return self
 
 
+#: The longest plan summary or assumption a dry-run accepts, in characters.
+ASSISTANT_RECEIPT_TEXT_LIMIT = 160
+#: The most assumptions one dry-run records.
+ASSISTANT_MAX_ASSUMPTIONS = 5
+
+
+class AssistantChangeEdge(BaseModel):
+    """One edge a saved plan added or removed, by its endpoint node ids."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: str
+    target: str
+
+
+class AssistantChangeNode(BaseModel):
+    """One node chip on a change card: which node, its palette type and what happened.
+
+    ``fields`` names the configuration fields the plan changed in plain words,
+    never their values; ``steps`` lists a stepped node's step kinds after the
+    change (``None`` for a node without a step list) and ``steps_changed`` how
+    many steps the plan inserted, replaced, removed or rewired.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    type: str
+    change: Literal["added", "changed", "removed", "renamed"]
+    renamed_from: str | None = None
+    fields: list[str] = []
+    steps: list[str] | None = None
+    steps_changed: int = Field(default=0, ge=0)
+
+
+class AssistantGraphChanges(BaseModel):
+    """A plan's node chips and edges, each list bounded; ``truncated`` when cut.
+
+    An empty list and a false flag are the defaults, which the compact tool
+    results the model reads leave out.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    nodes: list[AssistantChangeNode]
+    edges_added: list[AssistantChangeEdge] = []
+    edges_removed: list[AssistantChangeEdge] = []
+    preamble_changed: bool = False
+    truncated: bool = False
+
+
+class AssistantChangeRecord(BaseModel):
+    """The value-free change card of one saved plan.
+
+    ``summary`` and ``assumptions`` are the model's own words from the plan's
+    dry-run; everything else is built from what was saved.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    summary: str = Field(min_length=1, max_length=ASSISTANT_RECEIPT_TEXT_LIMIT)
+    assumptions: list[str] = Field(default=[], max_length=ASSISTANT_MAX_ASSUMPTIONS)
+    changes: AssistantGraphChanges
+    warnings: list[str] = []
+    git_sha: str | None
+    parent_sha: str | None
+
+
 class AssistantTranscriptEntry(BaseModel):
     """One rehydratable transcript item from a resumed session's history.
 
-    An ``outcome`` entry closes a completed turn with its stored outcome; it is
-    the only kind that carries ``outcome``.
+    An ``outcome`` entry closes a completed turn with its stored outcome and a
+    ``change`` entry carries an apply's change record; each is the only kind
+    that carries its field.
     """
 
-    kind: Literal["user", "assistant", "tool", "outcome"]
+    kind: Literal["user", "assistant", "tool", "outcome", "change"]
     text: str = ""
     name: str = ""
+    # A tool entry's plain-words activity title.
+    title: str = ""
     summary: str = ""
     is_error: bool = False
     outcome: AssistantTurnOutcome | None = None
+    change: AssistantChangeRecord | None = None
 
     @model_validator(mode="after")
-    def _outcome_only_on_outcome_entries(self) -> AssistantTranscriptEntry:
+    def _payload_only_on_its_entries(self) -> AssistantTranscriptEntry:
         if (self.kind == "outcome") != (self.outcome is not None):
             raise ValueError("exactly the outcome entry carries an outcome")
+        if (self.kind == "change") != (self.change is not None):
+            raise ValueError("exactly the change entry carries a change record")
         return self
 
 
@@ -297,6 +371,8 @@ class AssistantToolStartedEvent(BaseModel):
     type: Literal["tool_started"] = "tool_started"
     id: str
     name: str
+    # The activity row's plain-words title, written beside the tool.
+    title: str
     # Compact rendering of the call's arguments for the chat activity row.
     summary: str = ""
 
@@ -305,14 +381,17 @@ class AssistantToolFinishedEvent(BaseModel):
     type: Literal["tool_finished"] = "tool_finished"
     id: str
     name: str
+    title: str
     is_error: bool
     # Compact rendering of the result (or the error message) for the row.
     summary: str = ""
 
 
-class AssistantGraphUpdatedEvent(BaseModel):
-    type: Literal["graph_updated"] = "graph_updated"
-    fingerprint: str
+class AssistantChangeAppliedEvent(BaseModel):
+    """A plan was saved: the change card built from what was saved."""
+
+    type: Literal["change_applied"] = "change_applied"
+    change: AssistantChangeRecord
 
 
 class AssistantCompletedEvent(BaseModel):
@@ -334,7 +413,7 @@ AssistantStreamEvent = Annotated[
     AssistantTextDeltaEvent
     | AssistantToolStartedEvent
     | AssistantToolFinishedEvent
-    | AssistantGraphUpdatedEvent
+    | AssistantChangeAppliedEvent
     | AssistantCompletedEvent
     | AssistantFailedEvent
     | AssistantCancelledEvent,

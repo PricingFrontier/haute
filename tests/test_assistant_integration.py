@@ -63,7 +63,11 @@ class ExactPlanProvider:
         self.calls.append([dict(message) for message in messages])
         round_number = len(self.calls)
         if round_number == 1:
-            yield ToolCallRequest("t1", "dry_run_graph_edits", {"ops": ADD_NODE_OPS})
+            yield ToolCallRequest(
+                "t1",
+                "dry_run_graph_edits",
+                {"summary": "Add an age band after quotes.", "ops": ADD_NODE_OPS},
+            )
             yield TurnStop("tool_use", _usage())
             return
         if round_number == 2:
@@ -170,15 +174,18 @@ class TestMutationEndToEnd:
         # The preserve block survives byte-identically.
         assert PRESERVED_BLOCK in saved
 
-        # The bus got exactly the watcher-shaped document payload with the
-        # post-save fingerprint, matching the loop's graph_updated event.
+        # The bus got exactly the watcher-shaped document payload, and the
+        # chat a change card of the node the save added.
         assert len(published) == 1
         # Regression: publish must run on the event-loop thread — the
         # /ws/sync broadcast subscriber schedules onto the running loop and
         # silently skips when publish happens on a worker thread.
         assert publish_threads == [loop_thread]
-        graph_updated = next(event for event in events if event.type == "graph_updated")
-        assert published[0]["document_fingerprint"] == graph_updated.fingerprint
+        card = next(event for event in events if event.type == "change_applied")
+        assert card.change.summary == "Add an age band after quotes."
+        assert [(node.id, node.change) for node in card.change.changes.nodes] == [
+            ("Age_band", "added")
+        ]
         document = published[0]["document"]
         assert document["load_status"] == "ready"
         node_ids = {node["authored_id"] for node in document["nodes"]}
@@ -206,7 +213,7 @@ class TestMutationEndToEnd:
         )
         assert finished.is_error is True
         assert (project_root / "main.py").read_text(encoding="utf-8") == original
-        assert not [event for event in events if event.type == "graph_updated"]
+        assert not [event for event in events if event.type == "change_applied"]
 
     async def test_save_lock_excludes_concurrent_writers_through_publish(
         self, project_root: Path, mutations_ready, monkeypatch: pytest.MonkeyPatch
@@ -353,7 +360,8 @@ class TestMutationEndToEnd:
         stale_plan = service.dry_run(
             "main.py",
             [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
-        )
+            summary="Test plan.",
+        ).plan
         assert stale_plan.base_revision != pre_mutation_revision
 
         # POST /api/git/move service function: src/haute/_git_archive.py::move_to_commit
@@ -369,7 +377,7 @@ class TestMutationEndToEnd:
             node.id for node in pre_mutation_graph.nodes
         }
 
-        restored_plan = service.dry_run("main.py", ADD_NODE_OPS)
+        restored_plan = service.dry_run("main.py", ADD_NODE_OPS, summary="Test plan.").plan
         assert restored_plan.base_revision == pre_mutation_revision
 
         with pytest.raises(AssistantOperationError) as exc:

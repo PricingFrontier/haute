@@ -70,7 +70,14 @@ describe("transcript", () => {
       entries: [
         { kind: "user", text: "go" },
         { kind: "assistant", text: "Reading the pipeline.", streaming: false },
-        { kind: "activity", id: "t1", name: "get_pipeline", state: "ok", summary: "3 nodes" },
+        {
+          kind: "activity",
+          id: "t1",
+          name: "get_pipeline",
+          title: "Reading the pipeline",
+          state: "ok",
+          summary: "3 nodes",
+        },
         { kind: "assistant", text: "It has three nodes.", streaming: false },
         { kind: "outcome", outcome: { kind: "answered", detail: null } },
       ],

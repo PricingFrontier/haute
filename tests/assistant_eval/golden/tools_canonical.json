@@ -511,10 +511,26 @@
   },
   {
     "name": "dry_run_graph_edits",
-    "description": "Validate an exact graph-edit plan and report revision, semantic diff, postconditions, authority and verification tier without writing.",
+    "description": "Validate an exact graph-edit plan without writing. Say in `summary` what the plan does and list any `assumptions` you made; the analyst sees both on the change card. Returns the plan hash to apply, the verification tier, an evidence summary, warnings and the plan's node and edge changes.",
     "input_schema": {
       "type": "object",
       "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "One plain sentence saying what the plan does."
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "maxItems": 5,
+          "description": "Choices you made that the analyst did not state, one sentence each."
+        },
         "ops": {
           "type": "array",
           "items": {
@@ -1010,13 +1026,14 @@
       },
       "additionalProperties": false,
       "required": [
+        "summary",
         "ops"
       ]
     }
   },
   {
     "name": "apply_graph_plan",
-    "description": "Apply one exact validated plan hash under revision authority.",
+    "description": "Apply one exact validated plan hash under revision authority. Returns the change record the analyst sees, built from what was saved.",
     "input_schema": {
       "type": "object",
       "properties": {

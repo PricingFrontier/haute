@@ -20,7 +20,10 @@ import pytest
 
 from haute._graph_utils import _sanitize_func_name
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from haute.assistant._ops import OpValidationError, apply_ops, parse_ops
+from haute.assistant._ops import OpValidationError, PlanReceipt, apply_ops, parse_ops
+
+#: The receipt every plan these tests store carries.
+_RECEIPT = PlanReceipt("Test plan.")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2214,7 +2217,7 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
         )
         store = PlanStore(ttl_seconds=1)
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         store.begin_apply(plan.plan_hash)
 
         now = 2.0
@@ -2249,13 +2252,13 @@ class TestPlanStore:
             for name in ("leased", "older", "newer", "newest")
         )
         store = PlanStore(max_size=2)
-        store.put(leased)
+        store.put(leased, _RECEIPT)
         store.begin_apply(leased.plan_hash)
-        store.put(older)
-        store.put(newer)
+        store.put(older, _RECEIPT)
+        store.put(newer, _RECEIPT)
         assert len(store) == 3, "the lease sits outside the two plans awaiting use"
 
-        store.put(newest)  # the least recently used plan awaiting use goes
+        store.put(newest, _RECEIPT)  # the least recently used plan awaiting use goes
         with pytest.raises(AssistantOperationError) as exc:
             store.get(older.plan_hash)
         assert exc.value.code == "plan_not_found"
@@ -2296,11 +2299,11 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "second"}],
         )
         store = PlanStore(max_size=1)
-        store.put(first)
+        store.put(first, _RECEIPT)
         store.begin_apply(first.plan_hash)
 
         with pytest.raises(AssistantOperationError) as exc:
-            store.put(second)
+            store.put(second, _RECEIPT)
         assert exc.value.code == "plan_store_busy"
 
         store.complete_apply(first.plan_hash, {"result_revision": "a" * 64})
@@ -2324,10 +2327,10 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
         )
         store = PlanStore()
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         assert store.begin_apply(plan.plan_hash) == plan
         store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
-        store.put(plan)
+        store.put(plan, _RECEIPT)
 
         with pytest.raises(AssistantOperationError) as exc:
             store.begin_apply(plan.plan_hash)
@@ -2348,7 +2351,7 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
         )
         store = PlanStore()
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         store.begin_apply(plan.plan_hash)
         store.abort_apply(plan.plan_hash)
 
@@ -2357,7 +2360,7 @@ class TestPlanStore:
         assert exc.value.code == "plan_aborted"
         assert "dry-run" in str(exc.value)
 
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         assert store.begin_apply(plan.plan_hash) == plan
 
     def test_destructive_plan_enters_applying_without_session_consent(self, tmp_path: Path):
@@ -2375,6 +2378,6 @@ class TestPlanStore:
             [{"op": "delete_node", "node": "source"}],
         )
         store = PlanStore()
-        store.put(plan)
+        store.put(plan, _RECEIPT)
 
         assert store.begin_apply(plan.plan_hash) == plan

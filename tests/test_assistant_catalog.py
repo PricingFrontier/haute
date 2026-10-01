@@ -281,6 +281,20 @@ class TestResolvedDescriptors:
         assert banding[0]["rules"][-1]["boundary"] == ""
         assert {"value": "01", "assignment": "London"} in banding[2]["rules"]
 
+    def test_every_operation_has_a_plain_words_activity_title(self):
+        from haute.assistant._catalog import capability_manifest, tool_title
+
+        for descriptor in capability_manifest().operations:
+            title = tool_title(descriptor.id, {})
+            assert title != descriptor.id and title[0].isupper(), descriptor.id
+        ops = {"ops": [{}, {}, {}]}
+        assert tool_title("dry_run_graph_edits", ops) == "Checking 3 changes"
+        assert tool_title("dry_run_graph_edits", ops, {"operations": 1}) == "Checking 1 change"
+        assert tool_title("dry_run_graph_edits", ops, {"error": {}}) == "Checking the plan"
+        assert tool_title("apply_graph_plan", {"plan_hash": "a"}) == "Applying the plan"
+        assert tool_title("apply_graph_plan", {}, {"applied_operations": 3}) == "Applying 3 changes"
+        assert tool_title("no_such_tool", {}) == "no_such_tool"
+
     def test_operation_descriptors_are_closed_and_policy_complete(self):
         required = {
             "id",

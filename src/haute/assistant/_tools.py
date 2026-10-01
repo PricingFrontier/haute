@@ -86,7 +86,7 @@ from haute.assistant._ops import (
     dataset_schema_digest,
 )
 from haute.assistant._project_knowledge import build_project_knowledge, query_project_knowledge
-from haute.assistant._recipes import RecipeError
+from haute.assistant._recipes import RecipeError, recipe_manifest
 from haute.assistant._recipes import plan_recipe as _plan_recipe
 from haute.assistant._render import (
     BriefFrame,
@@ -1850,20 +1850,26 @@ async def dry_run_graph_edits(
     source_file: str,
     ops_payload: object,
     *,
+    summary: str,
+    assumptions: Sequence[str] = (),
     postconditions: object = (),
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
 ) -> dict[str, object]:
-    """Validate and retain an exact graph-edit plan without writing."""
+    """Validate and retain an exact graph-edit plan and its receipt without writing."""
 
     try:
         async with save_lock:
-            plan = await asyncio.to_thread(
-                _application_service(project_sources).dry_run,
-                source_file,
-                ops_payload,  # type: ignore[arg-type]
-                postconditions=postconditions,  # type: ignore[arg-type]
+            result = await asyncio.to_thread(
+                partial(
+                    _application_service(project_sources).dry_run,
+                    source_file,
+                    ops_payload,  # type: ignore[arg-type]
+                    postconditions=postconditions,  # type: ignore[arg-type]
+                    summary=summary,
+                    assumptions=assumptions,
+                )
             )
-        return plan.as_dict()
+        return result.as_dict()
     except LocatedPlanError as exc:
         # Naming a failure's columns can resolve schemas, which runs the engine.
         return await asyncio.to_thread(_operation_error, exc, operation="dry_run_graph_edits")
@@ -1904,6 +1910,9 @@ TOOL_DEFINITIONS: list[dict[str, object]] = [
 ]
 
 _TOOL_NAMES = tuple(str(definition["name"]) for definition in TOOL_DEFINITIONS)
+_RECIPE_SUMMARIES = {
+    str(descriptor["id"]): str(descriptor["summary"]) for descriptor in recipe_manifest()
+}
 _OPERATION_VERSIONS = {
     descriptor.id: descriptor.version for descriptor in capability_manifest().operations
 }
@@ -2552,6 +2561,8 @@ def build_tool_executor(
                 await dry_run_graph_edits(
                     source_file,
                     arguments.get("ops"),
+                    summary=arguments["summary"],
+                    assumptions=arguments.get("assumptions", ()),
                     postconditions=arguments.get("postconditions", ()),
                     project_sources=observed_sources(),
                 ),
@@ -2582,6 +2593,8 @@ def build_tool_executor(
                 await dry_run_graph_edits(
                     source_file,
                     recipe_operations,
+                    # A recipe plan is described by its recipe's index summary.
+                    summary=_RECIPE_SUMMARIES[str(pending["recipe_id"])],
                     postconditions=recipe_postconditions,
                     project_sources=observed_sources(),
                 ),

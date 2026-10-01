@@ -177,9 +177,11 @@ system message mid-conversation the block is sent as one; every other model rece
 as the leading text of the analyst's message.
 
 **Turns.** Posting a user message starts a turn, streamed back as typed server-sent events:
-assistant text deltas, tool-call started/finished activity (name plus a compact argument and
-result summary), a graph-updated notification after each successful mutation (carrying the
-new graph fingerprint), and exactly one terminal event — completed (with token usage and
+assistant text deltas, tool-call started/finished activity (the tool's name, a plain-words
+title written beside the tool such as "Reading the pipeline", "Checking 3 changes" or
+"Applying 3 changes", and a compact argument and result summary), a change-applied event
+after each successful apply carrying its change card (see **Change cards**), and exactly
+one terminal event — completed (with token usage and
 a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome says
 how the turn ended: `applied` (a plan was saved and verified), `answered` (the model
 replied and left no dry-run unfinished), `needs_input` with the model's question,
@@ -227,8 +229,14 @@ must never claim completion falsely; the typed `incomplete` outcome keeps that
 guarantee, while the word matching misrouted ordinary phrasing and turned delegated
 choices into questions, and a failed turn hid a resumable state behind an error. A successful
 `apply_graph_plan` is itself the terminal mutation outcome: after consuming that provider
-round, the controller emits a concise deterministic success confirmation and completes
-without exposing another tool round in which the model could repeat or extend the mutation.
+round, the controller completes with the `applied` outcome without exposing another tool
+round in which the model could repeat or extend the mutation. The turn says what it saved
+through the change card streamed with the apply, and adds no text of its own. This
+replaces a fixed confirmation sentence ("Graph changes applied successfully.") that the
+controller appended to the transcript and the provider history. The sentence existed so
+the turn ended with a deterministic success statement rather than model prose that could
+overclaim; the change card is that statement, built from what was saved, while the
+sentence told the analyst nothing about what changed.
 An apply that commits its save but fails post-save verification (`verification_failed`) is
 terminal in the same way: the controller emits a deterministic statement that the changes
 were saved but not verified and completes with the `committed_unverified` outcome, so the
@@ -251,9 +259,31 @@ reports one at a time, so a mid-tier model that corrected the first fault correc
 was blocked on the second. Guessing is a plan that stops changing, and that is what
 the progress rule measures; the four-attempt ceiling and the tool-call limit still
 bound a model that changes its plan without converging.
-The successful mutation result retains its graph fingerprint in neutral
-history; resume derives the same settled “Canvas updated” activity row from
-that durable fact, in its original position after the mutation tool row.
+The successful apply result retains its change record in neutral history; resume
+rebuilds the same change card from that durable record, in its original position after
+the apply's tool row.
+
+**Change cards.** After every successful apply the service builds a value-free change
+record from what was saved: the actual semantic diff, the graph before the plan and the
+graph reparsed after the save. It holds the plan's summary and assumptions (below); one
+chip per node the plan added, changed, removed or renamed, naming the node, its palette
+type name (for example "Polars" or "Banding"), what happened to it, the earlier name of
+a renamed node, the configuration fields it changed in plain words derived from their keys
+(`outputColumn` reads "output column"), and for a stepped node the kinds of its steps after
+the save and how many steps the plan changed; the edges added and removed; whether the
+preamble changed; the save's warnings; and the Git commit the save made with its parent.
+Chips and edges are bounded at 50 each, with a flag when more were cut. The record never
+holds a configuration value, a step's free-code text or `# intent` comment, a column
+value or an error message: it names what changed, not what it changed to. There is no
+second, hand-maintained list of editor labels; a field reads as its key in words.
+
+`dry_run_graph_edits` takes a required `summary` of at most 160 characters, saying in
+plain words what the plan does, and an optional list of up to five `assumptions` the
+model made (each at most 160 characters). They are stored as the plan's receipt in the
+plan store beside the plan, outside the hashed plan authority, so wording never changes a
+plan hash; a later identical dry-run replaces the receipt of a plan not yet applied. A
+recipe plan's receipt is its recipe's index summary with no assumptions. The change card
+shows both.
 
 **The tool surface** (complete in v1):
 
@@ -341,10 +371,25 @@ pipeline. That pipeline parses and normalizes the operations once, applies them
 to a deep copy, invokes the save service's public no-write validation, evaluates
 the closed structural postconditions, and resolves affected terminal lazy
 schemas without collecting rows or invoking sinks. It stores an immutable plan containing the base
-revision, semantic diff, verification tier, schema evidence, and plan hash. The provider-visible
-diff is bounded per category but carries complete counts, an explicit
-truncation flag, and a digest over the complete diff. Operations later in a
-batch may reference nodes created earlier by a batch-local ref.
+revision, semantic diff, verification tier, schema evidence, and plan hash, with the
+plan's summary and assumptions as its receipt beside it. The stored diff is bounded per
+category but carries complete counts, an explicit truncation flag, and a digest over the
+complete diff. Operations later in a batch may reference nodes created earlier by a
+batch-local ref.
+
+Dry-run and apply results are compact, because the model reads them in every later round
+of the turn. A dry-run returns the plan hash, the number of operations, the verification
+tier, an evidence summary (how many schemas resolved, and which inputs were resolved from
+an inferred or declared schema), the validation warnings, and the plan's change chips and
+edges built by the same builder as the change card. It does not echo the normalized
+operations, which the model wrote, or the revision, digests and postconditions, which only
+the server reads. An apply returns the plan hash, the number of operations applied, the
+verification tier, the evidence summary of the post-save verification and the change
+record; the expected and actual diffs, which a successful apply proves equal, are not
+repeated. In both, a chip field that holds its default (no earlier name, no changed
+fields, no step list, no changed steps), an empty edge or warning list and a false flag
+are left out, and the evidence summary names inferred and declared inputs only when
+there are any. A four-node batch's dry-run and apply results each stay under one kilobyte.
 
 `apply_graph_plan` accepts only that stored plan hash. Under the shared save
 lock it reloads every revision source, rejects stale evidence, and passes the
@@ -697,12 +742,13 @@ after it was inspected blocks planning only until the model looks again. A missi
 changed evidence file fails planning with `project_source_missing` or
 `stale_project_evidence` naming the project-relative file and the call that refreshes it.
 
-`dry_run_graph_edits` accepts the closed primitive operation union and explicit
-postconditions. It returns normalized operations; the base revision; a stable
-plan hash; semantic node, edge, configuration, preamble and sidecar changes;
-validation errors/warnings; resulting graph shape; affected capabilities; the
-deterministic egress class; and the strongest bounded verification tier the
-affected capabilities declare. The plan hash is
+`dry_run_graph_edits` accepts the closed primitive operation union, explicit
+postconditions, and the plan's summary and assumptions. The plan it builds holds the
+normalized operations; the base revision; a stable plan hash; semantic node, edge,
+configuration, preamble and sidecar changes; validation warnings; resulting graph shape;
+affected capabilities; the deterministic egress class; and the strongest bounded
+verification tier the affected capabilities declare; the tool returns the compact view of
+it described under Mutation semantics. The plan hash is
 canonical over all facts that can affect authorization or verification.
 Canonical request validation recognizes closed object unions discriminated by fields such
 as `op` and `kind`. It selects the declared branch before validation so retry feedback
@@ -761,8 +807,8 @@ nothing is collected and no snapshot is written. The evidence then carries one
 `input_schema_declared` record per such table naming the node, the table, the tier
 `declared` and the table's declared column count. A contract with a column that declares
 no type is refused by the contract validator naming the column, as a preview would be. Results name the tier
-that actually ran and include bounded evidence, the resulting revision, graph
-fingerprint, ledger reference and warnings. Structural or plan verification is
+that actually ran and include an evidence summary and the change record with its ledger
+commit, the commit's parent and warnings. Structural or plan verification is
 never described as row-level, model-quality, pricing, or commercial proof.
 
 Stable application errors include `invalid_plan`, `op_not_applied`, `stale_revision`,

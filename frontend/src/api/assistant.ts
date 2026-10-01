@@ -29,11 +29,53 @@ export type AssistantTurnOutcome =
   | { kind: "applied" | "answered"; detail: null }
   | { kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"; detail: string }
 
+/** One edge a saved plan added or removed, by its endpoint node ids. */
+export interface AssistantChangeEdge {
+  source: string
+  target: string
+}
+
+/** One node chip on a change card: which node, its palette type and what happened. */
+export interface AssistantChangeNode {
+  id: string
+  type: string
+  change: "added" | "changed" | "removed" | "renamed"
+  renamed_from: string | null
+  /** The configuration fields the plan changed, in plain words, never their values. */
+  fields: string[]
+  /** The node's step kinds after the change; null for a node without a step list. */
+  steps: string[] | null
+  steps_changed: number
+}
+
+/** The value-free change card of one saved plan, mirrored from `schemas.py`. */
+export interface AssistantChangeRecord {
+  summary: string
+  assumptions: string[]
+  changes: {
+    nodes: AssistantChangeNode[]
+    edges_added: AssistantChangeEdge[]
+    edges_removed: AssistantChangeEdge[]
+    preamble_changed: boolean
+    truncated: boolean
+  }
+  warnings: string[]
+  git_sha: string | null
+  parent_sha: string | null
+}
+
 export type AssistantStreamEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_started"; id: string; name: string; summary: string }
-  | { type: "tool_finished"; id: string; name: string; is_error: boolean; summary: string }
-  | { type: "graph_updated"; fingerprint: string }
+  | { type: "tool_started"; id: string; name: string; title: string; summary: string }
+  | {
+      type: "tool_finished"
+      id: string
+      name: string
+      title: string
+      is_error: boolean
+      summary: string
+    }
+  | { type: "change_applied"; change: AssistantChangeRecord }
   | { type: "completed"; usage: AssistantUsage; outcome: AssistantTurnOutcome }
   | { type: "failed"; message: string }
   | { type: "cancelled" }
@@ -134,11 +176,79 @@ function parseTurnOutcome(value: unknown, path: string): AssistantTurnOutcome {
   }
 }
 
+function requireStringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) invalidAssistantPayload(path, "an array")
+  return value.map((item, index) => requireString(item, `${path}[${index}]`))
+}
+
+function parseChangeEdges(value: unknown, path: string): AssistantChangeEdge[] {
+  if (!Array.isArray(value)) invalidAssistantPayload(path, "an array")
+  return value.map((item, index) => {
+    const edge = requireRecord(item, `${path}[${index}]`)
+    return {
+      source: requireString(edge.source, `${path}[${index}].source`),
+      target: requireString(edge.target, `${path}[${index}].target`),
+    }
+  })
+}
+
+const CHANGE_KINDS = ["added", "changed", "removed", "renamed"] as const
+
+function parseChangeNode(value: unknown, path: string): AssistantChangeNode {
+  const node = requireRecord(value, path)
+  const change = requireString(node.change, `${path}.change`)
+  if (!(CHANGE_KINDS as readonly string[]).includes(change)) {
+    invalidAssistantPayload(`${path}.change`, CHANGE_KINDS.join(" or "))
+  }
+  const stepsChanged = requireNumber(node.steps_changed, `${path}.steps_changed`)
+  if (!Number.isInteger(stepsChanged) || stepsChanged < 0) {
+    invalidAssistantPayload(`${path}.steps_changed`, "a non-negative integer")
+  }
+  return {
+    id: requireString(node.id, `${path}.id`),
+    type: requireString(node.type, `${path}.type`),
+    change: change as AssistantChangeNode["change"],
+    renamed_from: requireNullableString(node.renamed_from, `${path}.renamed_from`),
+    fields: requireStringArray(node.fields, `${path}.fields`),
+    steps: node.steps === null ? null : requireStringArray(node.steps, `${path}.steps`),
+    steps_changed: stepsChanged,
+  }
+}
+
+/** Parse a change record field by field; any missing or mistyped field throws. */
+function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord {
+  const record = requireRecord(value, path)
+  const changes = requireRecord(record.changes, `${path}.changes`)
+  if (!Array.isArray(changes.nodes)) invalidAssistantPayload(`${path}.changes.nodes`, "an array")
+  return {
+    summary: requireString(record.summary, `${path}.summary`),
+    assumptions: requireStringArray(record.assumptions, `${path}.assumptions`),
+    changes: {
+      nodes: changes.nodes.map((node, index) =>
+        parseChangeNode(node, `${path}.changes.nodes[${index}]`),
+      ),
+      edges_added: parseChangeEdges(changes.edges_added, `${path}.changes.edges_added`),
+      edges_removed: parseChangeEdges(changes.edges_removed, `${path}.changes.edges_removed`),
+      preamble_changed: requireBoolean(
+        changes.preamble_changed,
+        `${path}.changes.preamble_changed`,
+      ),
+      truncated: requireBoolean(changes.truncated, `${path}.changes.truncated`),
+    },
+    warnings: requireStringArray(record.warnings, `${path}.warnings`),
+    git_sha: requireNullableString(record.git_sha, `${path}.git_sha`),
+    parent_sha: requireNullableString(record.parent_sha, `${path}.parent_sha`),
+  }
+}
+
 function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHistoryEntry {
   const payload = requireRecord(value, path)
   const kind = requireString(payload.kind, `${path}.kind`)
   if (kind === "outcome") {
     return { kind, outcome: parseTurnOutcome(payload.outcome, `${path}.outcome`) }
+  }
+  if (kind === "change") {
+    return { kind, change: parseChangeRecord(payload.change, `${path}.change`) }
   }
   if (kind !== "user" && kind !== "assistant" && kind !== "tool") {
     throw new Error(`Unknown assistant history entry kind: ${kind}`)
@@ -147,6 +257,7 @@ function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHist
     kind,
     text: requireString(payload.text, `${path}.text`),
     name: requireString(payload.name, `${path}.name`),
+    title: requireString(payload.title, `${path}.title`),
     summary: requireString(payload.summary, `${path}.summary`),
     is_error: requireBoolean(payload.is_error, `${path}.is_error`),
   }
@@ -175,6 +286,7 @@ function parseEvent(payload: string): AssistantStreamEvent {
         type,
         id: requireString(parsed.id, "stream event.id"),
         name: requireString(parsed.name, "stream event.name"),
+        title: requireString(parsed.title, "stream event.title"),
         summary: requireString(parsed.summary, "stream event.summary"),
       }
     case "tool_finished":
@@ -182,11 +294,12 @@ function parseEvent(payload: string): AssistantStreamEvent {
         type,
         id: requireString(parsed.id, "stream event.id"),
         name: requireString(parsed.name, "stream event.name"),
+        title: requireString(parsed.title, "stream event.title"),
         is_error: requireBoolean(parsed.is_error, "stream event.is_error"),
         summary: requireString(parsed.summary, "stream event.summary"),
       }
-    case "graph_updated":
-      return { type, fingerprint: requireString(parsed.fingerprint, "stream event.fingerprint") }
+    case "change_applied":
+      return { type, change: parseChangeRecord(parsed.change, "stream event.change") }
     case "completed": {
       const usage = requireRecord(parsed.usage, "stream event.usage")
       return {
@@ -227,11 +340,15 @@ export type AssistantHistoryEntry =
       kind: "user" | "assistant" | "tool"
       text: string
       name: string
+      /** A tool row's plain-words title; empty on text rows. */
+      title: string
       summary: string
       is_error: boolean
     }
   /** Closes a completed turn with the outcome its live `completed` event carried. */
   | { kind: "outcome"; outcome: AssistantTurnOutcome }
+  /** An apply's change card, after its tool row, as the live `change_applied` event showed. */
+  | { kind: "change"; change: AssistantChangeRecord }
 
 export interface AssistantSessionResult {
   sessionId: string

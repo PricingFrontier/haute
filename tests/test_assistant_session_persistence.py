@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 import structlog.testing
 
-from haute.assistant._session import MAX_PERSISTED_SESSIONS, SessionStore
+from haute.assistant._session import MAX_PERSISTED_SESSIONS, AssistantMessage, SessionStore
+from haute.schemas import AssistantChangeRecord
 
 
 def _store(tmp_path: Path, **kwargs: object) -> SessionStore:
@@ -196,6 +197,72 @@ class TestWriteThrough:
         stored = json.loads(raw)["history"][0]["outcome"]
         assert stored["kind"] == "needs_input"
         assert "<redacted>" in stored["detail"]
+
+    def test_an_apply_change_record_revives_with_its_text_redacted(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        change = {
+            "summary": "Use provider-secret-canary as the band label.",
+            "assumptions": ["provider-secret-canary is safe to show."],
+            "changes": {
+                "nodes": [{"id": "age_band", "type": "Banding", "change": "added"}],
+                "edges_added": [{"source": "quotes", "target": "age_band"}],
+            },
+            "git_sha": "c" * 40,
+            "parent_sha": "d" * 40,
+        }
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {
+                            "plan_hash": "a" * 64,
+                            "applied_operations": 2,
+                            "change": change,
+                        },
+                        "is_error": False,
+                    },
+                ],
+                "outcome": {"kind": "applied", "detail": None},
+            },
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        content = revived.history[0].messages[-1].content
+        assert isinstance(content, dict)
+        record = AssistantChangeRecord.model_validate(content["change"])
+        assert "<redacted>" in record.summary and "<redacted>" in record.assumptions[0]
+        assert record.changes == AssistantChangeRecord.model_validate(change).changes
+        assert (record.git_sha, record.parent_sha, content["applied_operations"]) == (
+            "c" * 40,
+            "d" * 40,
+            2,
+        )
+
+    def test_a_malformed_change_record_fails_when_the_message_is_built(self):
+        with pytest.raises(ValueError):
+            AssistantMessage(
+                role="tool",
+                tool_call_id="c1",
+                name="apply_graph_plan",
+                content={"change": {"summary": "x", "changes": {"nodes": "age_band"}}},
+            )
 
     def test_no_storage_dir_means_no_files(self, tmp_path: Path):
         store = SessionStore()

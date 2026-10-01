@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 
 import { CHOOSE_FOR_ME_REPLY, type TranscriptEntry } from "../../stores/useAssistantStore"
+import ChangeCard from "./ChangeCard"
 
 /** The question card's one-click reply, supplied by the panel for the latest entry only. */
 export interface OutcomeReply {
@@ -113,8 +114,12 @@ function ActivityEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "act
         style={{ color }}
       />
       <div className="min-w-0 flex-1">
-        <div className="font-medium truncate" style={{ color: "var(--text-secondary)" }}>
-          {entry.name}
+        <div
+          className="font-medium truncate"
+          title={entry.name}
+          style={{ color: "var(--text-secondary)" }}
+        >
+          {entry.title}
         </div>
         {entry.summary && (
           <div className="break-words" style={{ color: "var(--text-muted)" }}>
@@ -278,6 +283,8 @@ function TranscriptEntryView({ entry, reply }: TranscriptEntryViewProps) {
       )
     case "activity":
       return <ActivityEntry entry={entry} />
+    case "change":
+      return <ChangeCard change={entry.change} />
     case "marker":
       return <MarkerEntry outcome={entry.outcome} detail={entry.detail} />
     case "outcome":

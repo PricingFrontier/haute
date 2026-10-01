@@ -8,7 +8,8 @@
 | `frontend/src/panels/assistant/ReadinessCard.tsx` | The readiness surface: the status-error state (a 400's detail with "Fix haute.toml, then check again", or a plain retry for any other failure) and, on the list screen, the not-set-up and cannot-edit cards that render `reason` or `mutations_reason` verbatim with a "Check again" button calling `refreshStatus`. Renders nothing while the status is unknown or ready. |
 | `frontend/src/panels/assistant/SessionList.tsx` | The chat-list screen: one row per saved conversation with its title and relative last-used time, plus distinct loading, empty, and retryable-error states so the opening screen never renders as a blank panel. Rows are disabled while the canvas has no source file. |
 | `frontend/src/panels/assistant/relativeTime.ts` | Relative-time rendering for list rows, kept out of the component module so the component file exports only components (React Fast Refresh). |
-| `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), turn marker (failed/stopped/interrupted), or turn outcome: a completed marker for `applied` ("Changes applied") and `answered` ("Turn completed"), the question card for `needs_input` (question as markdown plus the "You choose, and tell me what you picked." reply button when the panel supplies a reply), the blocked card for `blocked` (reason plus "Nothing was saved."), the saved-but-unverified card for `committed_unverified` (error plus "Your changes were saved, but the check after saving failed. Review the pipeline, or return to the previous save in the Git panel, before continuing."), and the stopped-before-finishing card for `incomplete` ("Stopped before finishing", "Ask it to continue. Nothing was saved." and the controller's reason). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
+| `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states, headed by the backend's title with the compact summary below), change card (`ChangeCard`), turn marker (failed/stopped/interrupted), or turn outcome: a completed marker for `applied` ("Changes applied") and `answered` ("Turn completed"), the question card for `needs_input` (question as markdown plus the "You choose, and tell me what you picked." reply button when the panel supplies a reply), the blocked card for `blocked` (reason plus "Nothing was saved."), the saved-but-unverified card for `committed_unverified` (error plus "Your changes were saved, but the check after saving failed. Review the pipeline, or return to the previous save in the Git panel, before continuing."), and the stopped-before-finishing card for `incomplete` ("Stopped before finishing", "Ask it to continue. Nothing was saved." and the controller's reason). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
+| `frontend/src/panels/assistant/ChangeCard.tsx` | The change card for one `change` entry: the plan's summary as its heading, its assumptions as a short list, one chip per node (the node id, its palette type name, and a change word — Added, Changed, Removed, or Renamed from the earlier id), under each chip the changed fields and the step kinds with the changed-step count, the edges added and removed as `source → target` lines, a note when the backend cut the lists, the save's warnings, and the first seven characters of the commit ("Not saved to Git" without one). It renders only what the record holds and has no canvas behaviour. |
 | `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel`, `currentSourceFile`, and `readOnly` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, status and `statusErrorDetail`, notice, the `view`/`sessions`/`sessionsStatus` list state, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus`/`loadSessions`/`openSession`/`showSessionList` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. It exports `settleOutcome` (the one function that closes a turn with its outcome, live and on resume) and `CHOOSE_FOR_ME_REPLY`. |
 | `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession(sourceFile, sessionId, signal)`, `listAssistantSessions(sourceFile, signal)` (with per-row summary parsing), and `streamAssistantMessage(sessionId, message, sourceFile, options)`, whose options carry the message `context` (`selected_node_ids` and `preview_error_node_id`, at most `MAX_CONTEXT_SELECTION` = 20 ids); every call carries the canvas document's `source_file`, and the session and list parsers require the echoed `source_file`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
@@ -33,13 +34,22 @@
   chat-list screen.
 - **`AssistantStreamEvent`** (`api/assistant.ts`, mirrored from the backend SSE contract in
   `schemas.py`) — discriminated union on `type`:
-  `text_delta { text }` · `tool_started { id, name, summary }` ·
-  `tool_finished { id, name, is_error, summary }` · `graph_updated { fingerprint }` ·
+  `text_delta { text }` · `tool_started { id, name, title, summary }` ·
+  `tool_finished { id, name, title, is_error, summary }` · `change_applied { change }` ·
   `completed { usage: { input_tokens, output_tokens }, outcome }` · `failed { message }` ·
   `cancelled {}`. The parser validates the object, discriminator, every required
   primitive, and the nested usage and outcome objects before returning the union member; an
   unknown type or malformed known variant throws. Unrelated additive fields are
   ignored.
+- **`AssistantChangeRecord`** (`api/assistant.ts`, mirrored field-for-field from
+  `schemas.py`): `{ summary; assumptions: string[]; changes: { nodes:
+  AssistantChangeNode[]; edges_added: AssistantChangeEdge[]; edges_removed:
+  AssistantChangeEdge[]; preamble_changed: boolean; truncated: boolean }; warnings:
+  string[]; git_sha: string | null; parent_sha: string | null }`, where a node is `{ id;
+  type; change: "added" | "changed" | "removed" | "renamed"; renamed_from: string | null;
+  fields: string[]; steps: string[] | null; steps_changed: number }` and an edge `{ source;
+  target }`. The parser validates every field and the `change` literal and throws on any
+  violation.
 - **`AssistantTurnOutcome`** (`api/assistant.ts`, mirrored from `schemas.py`):
   `{ kind: "applied" | "answered"; detail: null }` or
   `{ kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"; detail: string }`
@@ -48,13 +58,15 @@
   a detail on the first pair, or a missing or empty detail on the second throws.
 - **`AssistantHistoryEntry` and session envelope** are locally parsed from
   `unknown`: the envelope requires string `session_id` and an array `history`;
-  each row requires `kind` in `user|assistant|tool|outcome`; a text or tool row requires
-  string `text`, `name`, and `summary`, and Boolean `is_error`, and an `outcome` row
-  requires an `outcome` parsed as above. `AssistantStatus` applies the same boundary
+  each row requires `kind` in `user|assistant|tool|outcome|change`; a text or tool row
+  requires string `text`, `name`, `title`, and `summary`, and Boolean `is_error`, an
+  `outcome` row requires an `outcome` parsed as above, and a `change` row a `change`
+  record parsed as above. `AssistantStatus` applies the same boundary
   to its Boolean and nullable-string fields.
 - **`TranscriptEntry`** (`stores/useAssistantStore.ts`) — union on `kind`:
   `{ kind: "user"; text }` · `{ kind: "assistant"; text; streaming: boolean }` ·
-  `{ kind: "activity"; id; name; state: "running" | "ok" | "error"; summary }` ·
+  `{ kind: "activity"; id; name; title; state: "running" | "ok" | "error"; summary }` ·
+  `{ kind: "change"; change: AssistantChangeRecord }` ·
   `{ kind: "marker"; outcome: "failed" | "stopped" | "interrupted"; detail?: string }` ·
   `{ kind: "outcome"; outcome: AssistantTurnOutcome }`.
 - **`AssistantStoreState`**: `sessionId: string | null`, `pipelineSource: string | null` (the
@@ -158,8 +170,9 @@ under another pipeline's canvas.
    assistant segment and otherwise opens a new streaming segment after it, so text that
    follows a tool row renders below that row; `tool_started` settles the streaming segment
    (an empty one is removed) and appends an activity row, and `tool_finished` settles that
-   row; `graph_updated` appends an activity row noting the canvas was updated (the canvas
-   itself refreshes via `/ws/sync`, not here). A terminal event is retained locally and
+   row with its finished title; `change_applied` settles the streaming segment and appends
+   a `change` entry holding the record (the canvas itself refreshes via `/ws/sync`, not
+   here). A terminal event is retained locally and
    committed only after the response ends; any later event throws instead. `failed` and
    `cancelled` commit their marker. `completed` commits its outcome through
    `settleOutcome`, the same function hydration uses: for `needs_input` and `blocked` it
@@ -215,7 +228,7 @@ settled transcript row.
 - **Canvas dirtied mid-turn** (the analyst edits while the agent works): the send-time gate
   can't prevent it. Incoming `pipeline_document_update` frames then hit the canvas's
   existing dirty-guard banner (reload/discard) rather than replacing the graph — the
-  transcript still records `graph_updated` activity, and resolution happens in the canvas,
+  transcript still shows the change card, and resolution happens in the canvas,
   not this panel. Accepted
   v1 behaviour, documented rather than special-cased.
 - **Drilled into a submodel mid-turn**: likewise send-time-gated only. A running turn keeps
@@ -257,14 +270,16 @@ Implemented Vitest coverage is split between
 `frontend/src/api/__tests__/assistant.test.ts`,
 `frontend/src/panels/assistant/__tests__/SessionList.test.tsx`,
 `frontend/src/panels/assistant/__tests__/TranscriptEntryView.test.tsx`,
+`frontend/src/panels/assistant/__tests__/ChangeCard.test.tsx`,
 `frontend/src/panels/assistant/__tests__/AssistantPanel.test.tsx`,
 and `frontend/src/__tests__/App.assistantLazy.test.ts`. Composer DOM interactions are
 covered through the store/API boundaries.
 
-- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; a send carrying the canvas selection (the first 20 selected nodes, in canvas order, with no preview-error node); the no-source and mismatched-source refusals (a send whose canvas shows another pipeline than the open chat's is refused with a notice naming the chat's pipeline, keeps the session and makes no request) versus same-source session reuse; every request carrying the canvas source file; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, a pipeline change clearing the prior chat, a turn that finishes after a pipeline change refreshing the new pipeline's list, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, by a send, or by the back control.
-- **Transcript order and outcomes in the store** (same file): text, tool and text keep stream order with the send-time placeholder dropped when a tool row comes first; `needs_input` and `blocked` replace the model's marker text with the outcome entry, keeping earlier prose; `committed_unverified` keeps the saved statement beside its outcome; an outcome whose detail does not end the reply interrupts the turn; a resumed history (one assistant row per provider round plus its outcome row) hydrates to exactly the live entries; and a status 400 keeps its detail while any other failure does not.
+- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement with titles; a change card appended for `change_applied`, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; a send carrying the canvas selection (the first 20 selected nodes, in canvas order, with no preview-error node); the no-source and mismatched-source refusals (a send whose canvas shows another pipeline than the open chat's is refused with a notice naming the chat's pipeline, keeps the session and makes no request) versus same-source session reuse; every request carrying the canvas source file; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, a pipeline change clearing the prior chat, a turn that finishes after a pipeline change refreshing the new pipeline's list, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, by a send, or by the back control.
+- **Transcript order and outcomes in the store** (same file): text, tool and text keep stream order with the send-time placeholder dropped when a tool row comes first; `needs_input` and `blocked` replace the model's marker text with the outcome entry, keeping earlier prose; `committed_unverified` keeps the saved statement beside its outcome; an outcome whose detail does not end the reply interrupts the turn; a resumed history (one assistant row per provider round, tool rows with their titles, an apply's change row, plus its outcome row) hydrates to exactly the live entries; and a status 400 keeps its detail while any other failure does not.
 - **Outcome cards** (`frontend/src/panels/assistant/__tests__/TranscriptEntryView.test.tsx`): `applied` and `answered` render the completed marker; the question card shows the question without its marker and its one-click reply sends, or is disabled with the gate's reason, or is absent when the panel supplies none; the blocked card says nothing was saved; the saved-but-unverified card says the changes were saved and never that nothing changed; the stopped-before-finishing card asks the analyst to continue, says nothing was saved and shows the reason.
 - **Panel** (`frontend/src/panels/assistant/__tests__/AssistantPanel.test.tsx`): transcript rows render text, tool and text in stream order; only the latest question offers the one-click reply, which sends `CHOOSE_FOR_ME_REPLY` with the panel's gate inputs and is disabled on a dirty canvas; the list screen shows the not-set-up and cannot-edit readiness cards with the backend reason and a "Check again" that re-reads the status, none when ready, a 400 status failure with its detail and the `haute.toml` fix, and a plain retry for any other failure.
+- **Change cards** (`frontend/src/panels/assistant/__tests__/ChangeCard.test.tsx`): a card renders the summary, assumptions, one chip per node with its type and change word (a renamed chip names its earlier id), changed fields and step kinds with the changed-step count, edges, warnings and the short commit; a card without a commit says it was not saved to Git; and a truncated record says more changes were cut.
 - **Chat list rendering** (`frontend/src/panels/assistant/__tests__/SessionList.test.tsx`): loading, empty, and retryable-error states are distinguishable rather than blank; rows render their title (with a fallback label for an untitled conversation) and open the one clicked; rows are inert while the canvas has no source file; and relative-time rendering across its boundaries.
 - **Assistant API boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
   endpoint payloads (the message body carrying its `context`) and abort signal; valid and malformed status/session/history

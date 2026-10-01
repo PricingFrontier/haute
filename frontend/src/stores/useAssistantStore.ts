@@ -9,6 +9,7 @@ import {
   listAssistantSessions,
   MAX_CONTEXT_SELECTION,
   streamAssistantMessage,
+  type AssistantChangeRecord,
   type AssistantHistoryEntry,
   type AssistantMessageContext,
   type AssistantSessionSummary,
@@ -26,9 +27,13 @@ export type TranscriptEntry =
       kind: "activity"
       id: string
       name: string
+      /** The plain-words title the backend writes beside the tool. */
+      title: string
       state: "running" | "ok" | "error"
       summary: string
     }
+  /** What an apply saved, built by the backend from the saved graph. */
+  | { kind: "change"; change: AssistantChangeRecord }
   | {
       kind: "marker"
       outcome: "failed" | "stopped" | "interrupted"
@@ -163,6 +168,10 @@ function hydrateEntries(history: AssistantHistoryEntry[]): TranscriptEntry[] {
       entries = settleOutcome(entries, entry.outcome)
       return
     }
+    if (entry.kind === "change") {
+      entries = [...entries, { kind: "change", change: entry.change }]
+      return
+    }
     if (entry.kind === "user") {
       entries = [...entries, { kind: "user", text: entry.text }]
       return
@@ -180,6 +189,7 @@ function hydrateEntries(history: AssistantHistoryEntry[]): TranscriptEntry[] {
         kind: "activity",
         id: `history-${index}`,
         name: entry.name,
+        title: entry.title,
         state: entry.is_error ? "error" : "ok",
         summary: entry.summary,
       },
@@ -247,6 +257,7 @@ function toolStartedEntry(event: Extract<AssistantStreamEvent, { type: "tool_sta
     kind: "activity",
     id: event.id,
     name: event.name,
+    title: event.title,
     state: "running",
     summary: event.summary,
   }
@@ -265,7 +276,7 @@ function appendAssistantText(entries: TranscriptEntry[], text: string): Transcri
   return [...entries, { kind: "assistant", text, streaming: true }]
 }
 
-/** Append a tool or canvas row after the text streamed before it. */
+/** Append a tool row or change card after the text streamed before it. */
 function appendActivity(entries: TranscriptEntry[], entry: TranscriptEntry): TranscriptEntry[] {
   return [...closeAssistant(entries), entry]
 }
@@ -328,6 +339,7 @@ function settleTool(
       ? {
           ...entry,
           name: event.name,
+          title: event.title,
           state: event.is_error ? "error" : "ok",
           summary: event.summary,
         }
@@ -572,15 +584,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
             case "tool_finished":
               set((state) => ({ entries: settleTool(state.entries, event) }))
               break
-            case "graph_updated":
+            case "change_applied":
               set((state) => ({
-                entries: appendActivity(state.entries, {
-                  kind: "activity",
-                  id: `graph-${event.fingerprint}`,
-                  name: "graph_updated",
-                  state: "ok",
-                  summary: "Canvas updated",
-                }),
+                entries: appendActivity(state.entries, { kind: "change", change: event.change }),
               }))
               break
             case "completed":

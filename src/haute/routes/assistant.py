@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from haute._logging import get_logger
 from haute._sandbox import contained_path
 from haute.assistant import _loop, assistant_readiness
+from haute.assistant._catalog import tool_title
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
 from haute.assistant._providers import AssistantProvider, create_provider
 from haute.assistant._render import render_turn_context
@@ -31,6 +32,7 @@ from haute.routes._helpers import (
 )
 from haute.schemas import (
     AssistantCancelledEvent,
+    AssistantChangeRecord,
     AssistantMessageRequest,
     AssistantSessionListResponse,
     AssistantSessionRequest,
@@ -152,10 +154,12 @@ def get_assistant_status() -> AssistantStatusResponse:
 def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEntry]:
     """Map a session's stored neutral history to rehydratable transcript entries.
 
-    Tool entries reuse the same compact result summary the live stream shows;
-    the persisted message's explicit ``is_error`` flag is authoritative. A turn
-    stored with an outcome ends with one ``outcome`` entry carrying it, the
-    value its live ``completed`` event carried.
+    Tool entries reuse the same compact result summary and finished title the
+    live stream shows; the persisted message's explicit ``is_error`` flag is
+    authoritative. A successful apply's stored change record follows its tool
+    entry as a ``change`` entry, as the live ``change_applied`` event did. A
+    turn stored with an outcome ends with one ``outcome`` entry carrying it,
+    the value its live ``completed`` event carried.
     """
 
     entries: list[AssistantTranscriptEntry] = []
@@ -172,24 +176,21 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
             if message.role == "tool":
                 content = message.content if isinstance(message.content, dict) else {}
                 is_error = message.is_error
+                name = message.name or ""
                 entries.append(
                     AssistantTranscriptEntry(
                         kind="tool",
-                        name=message.name or "",
+                        name=name,
+                        title=tool_title(name, {}, content),
                         summary=_loop._result_summary(content, is_error),
                         is_error=is_error,
                     )
                 )
-                if not is_error and "graph_fingerprint" in content:
-                    graph_fingerprint = content["graph_fingerprint"]
-                    if not isinstance(graph_fingerprint, str):
-                        raise TypeError("tool graph_fingerprint must be a string")
+                if not is_error and "change" in content:
                     entries.append(
                         AssistantTranscriptEntry(
-                            kind="tool",
-                            name="graph_updated",
-                            summary="Canvas updated",
-                            is_error=False,
+                            kind="change",
+                            change=AssistantChangeRecord.model_validate(content["change"]),
                         )
                     )
         if turn.outcome is not None:

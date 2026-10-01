@@ -206,7 +206,9 @@ def test_every_bundle_regenerates_and_accepts_a_no_op_edit(tmp_path: Path, bundl
         mutations_readiness=lambda _root: (True, None),
         publish_document_update=lambda _source: "f" * 64,
     )
-    plan = service.dry_run(source_file, [{"op": "update_preamble", "preamble": graph.preamble}])
+    plan = service.dry_run(
+        source_file, [{"op": "update_preamble", "preamble": graph.preamble}], summary="Test plan."
+    ).plan
     assert (destination / source_file).read_bytes() == before
     assert not any(plan.diff.complete_counts.values())
 

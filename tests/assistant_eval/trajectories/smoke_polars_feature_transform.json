@@ -12,6 +12,7 @@
               "id": "code_attempt",
               "tool": "dry_run_graph_edits",
               "arguments": {
+                "summary": "Add risk_features, flagging experienced drivers.",
                 "ops": [
                   {
                     "op": "add_node",
@@ -43,6 +44,7 @@
               "id": "dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
+                "summary": "Add risk_features, flagging experienced drivers.",
                 "ops": [
                   {
                     "op": "add_node",

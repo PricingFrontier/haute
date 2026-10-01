@@ -39,13 +39,13 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 from uuid import uuid4
 
 from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute.schemas import AssistantTurnOutcome
+from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
 
@@ -248,10 +248,10 @@ class AssistantMessage:
             self.role == "tool"
             and not self.is_error
             and isinstance(content, dict)
-            and "graph_fingerprint" in content
-            and not isinstance(content["graph_fingerprint"], str)
+            and "change" in content
         ):
-            raise TypeError("tool graph_fingerprint must be a string")
+            # A saved plan's change record: a malformed one fails here, not on resume.
+            AssistantChangeRecord.model_validate(content["change"])
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssistantMessage:
@@ -328,8 +328,8 @@ _PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
         "base_revision",
         "capability_hash",
         "git_sha",
-        "graph_fingerprint",
         "operation_version",
+        "operations",
         "plan_hash",
         "policy_hash",
         "project_revision",
@@ -396,6 +396,21 @@ def _persisted_outcome(outcome: AssistantTurnOutcome | None) -> JSONValue:
     return {"kind": outcome.kind, "detail": detail}
 
 
+def _persisted_change(change: JSONValue) -> JSONValue:
+    """Store an apply's change record; its summary and assumptions are model text."""
+
+    record = AssistantChangeRecord.model_validate(change)
+    return cast(
+        JSONValue,
+        record.model_copy(
+            update={
+                "summary": _persisted_text(record.summary),
+                "assumptions": [_persisted_text(item) for item in record.assumptions],
+            }
+        ).model_dump(mode="json"),
+    )
+
+
 def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
     """Redact provider-working tool payloads for durable restart history."""
 
@@ -421,6 +436,8 @@ def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
                     isinstance(evidence_value, (str, int, float, bool)) or evidence_value is None
                 ):
                     redacted[key] = _copy_json_value(evidence_value)
+            if not message.is_error and "change" in content:
+                redacted["change"] = _persisted_change(content["change"])
             error = content.get("error")
             if isinstance(error, dict) and isinstance(error.get("code"), str):
                 safe_error: dict[str, JSONValue] = {"code": error["code"]}

@@ -148,7 +148,7 @@ as `<layer>: <reason>`, and a case passes only when every layer passes.
    outcome is `incomplete` (the model stopped with a dry-run unfinished) is
    observed as `incomplete`, which no case can expect, so it never passes as
    `unchanged`; an applied outcome applied a
-   plan, emitted a graph update and changed the graph, and any other outcome
+   plan, emitted its change card and changed the graph, and any other outcome
    changed nothing; no canary value leaked; and the round-trip, tool-call,
    failed-call and duplicate-static-read limits hold.
 2. **Structure.** The required node types are present and the forbidden ones

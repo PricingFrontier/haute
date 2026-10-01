@@ -25,6 +25,7 @@
               "id": "dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
+                "summary": "Read the new-business batch, add its features and write them out.",
                 "ops": [
                   {
                     "op": "add_node",

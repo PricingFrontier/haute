@@ -42,8 +42,25 @@ from haute.assistant._providers import (
     TurnStop,
 )
 from haute.assistant._session import SessionStore
+from haute.schemas import AssistantChangeRecord
 
 TERMINAL_TYPES = {"completed", "failed", "cancelled"}
+#: A successful apply result as the tool returns it: compact, with its change record.
+_APPLIED: dict[str, Any] = {
+    "plan_hash": "a" * 64,
+    "applied_operations": 2,
+    "verification_tier": "schema",
+    "evidence": {"schemas_resolved": 1},
+    "change": {
+        "summary": "Add an age band after quotes.",
+        "changes": {
+            "nodes": [{"id": "age_band", "type": "Banding", "change": "added"}],
+            "edges_added": [{"source": "quotes", "target": "age_band"}],
+        },
+        "git_sha": "c" * 40,
+        "parent_sha": "d" * 40,
+    },
+}
 
 
 def _egress(*, allow_row_samples: bool = True) -> EgressPolicy:
@@ -488,7 +505,7 @@ class TestMutationCompletionController:
 
         async def execute_tool(name: str, arguments: dict) -> dict:
             if name == "apply_graph_plan":
-                return {"graph_fingerprint": "b" * 64}
+                return dict(_APPLIED)
             return {"plan_hash": "a" * 64}
 
         events = await _run(
@@ -709,7 +726,7 @@ class TestMutationCompletionController:
 
         async def execute_tool(name: str, arguments: dict) -> dict:
             if name == "apply_graph_plan":
-                return {"graph_fingerprint": "f"}
+                return dict(_APPLIED)
             error = next(errors, None)
             return {"plan_hash": "h"} if error is None else {"error": error}
 
@@ -1022,7 +1039,7 @@ class TestMutationCompletionController:
             if name == "dry_run_graph_edits":
                 return {"plan_hash": "a" * 64}
             if name == "apply_graph_plan":
-                return {"graph_fingerprint": "b" * 64}
+                return dict(_APPLIED)
             raise AssertionError(name)
 
         events = await _run(
@@ -1035,9 +1052,26 @@ class TestMutationCompletionController:
 
         assert _assert_single_terminal(events).type == "completed"
         assert len(provider.calls) == 2
-        assert [event.text for event in events if event.type == "text_delta"] == [
-            "Graph changes applied successfully."
+        assert [event.type for event in events if event.type != "tool_started"] == [
+            "tool_finished",
+            "tool_finished",
+            "change_applied",
+            "completed",
         ]
+        (card,) = [event for event in events if event.type == "change_applied"]
+        assert card.change == AssistantChangeRecord.model_validate(_APPLIED["change"])
+        assert [
+            (event.type, event.title)
+            for event in events
+            if event.type in {"tool_started", "tool_finished"}
+        ] == [
+            ("tool_started", "Checking 0 changes"),
+            ("tool_finished", "Checking the plan"),
+            ("tool_started", "Applying the plan"),
+            ("tool_finished", "Applying 2 changes"),
+        ]
+        stored = store.lookup(session_id).history[-1].messages
+        assert stored[-1].role == "tool" and stored[-1].content == _APPLIED
         assert all(
             message["role"] != "controller"
             for call in provider.calls
@@ -1069,7 +1103,7 @@ class TestMutationCompletionController:
             if name == "dry_run_graph_edits":
                 return {"plan_hash": "a" * 64}
             if name == "apply_graph_plan":
-                return {"graph_fingerprint": "b" * 64}
+                return dict(_APPLIED)
             raise AssertionError(name)
 
         events = await _run(
@@ -1186,7 +1220,7 @@ class TestTurnOutcome:
 
         async def execute_tool(name: str, arguments: dict) -> dict:
             if name == "apply_graph_plan":
-                return {"graph_fingerprint": "b" * 64}
+                return dict(_APPLIED)
             return {"plan_hash": "a" * 64}
 
         events = await _run(
@@ -1500,7 +1534,7 @@ class TestCancellation:
 class TestDisconnectHistoryIntegrity:
     @pytest.mark.parametrize(
         "close_at",
-        ["tool_started", "tool_finished", "graph_updated"],
+        ["tool_started", "tool_finished", "change_applied"],
     )
     async def test_closing_at_each_tool_yield_never_persists_an_orphan(
         self,
@@ -1515,14 +1549,19 @@ class TestDisconnectHistoryIntegrity:
         from haute.assistant._loop import run_turn
 
         async def execute_tool(name: str, arguments: dict) -> dict:
-            return {"ok": True, "graph_fingerprint": "fp-1"}
+            return dict(_APPLIED)
 
         turn = run_turn(
             store,
             session_id,
             "edit",
             provider=ScriptedProvider(
-                [[ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())]]
+                [
+                    [
+                        ToolCallRequest("t1", "apply_graph_plan", {"plan_hash": "a" * 64}),
+                        TurnStop("tool_use", _usage()),
+                    ]
+                ]
             ),
             tools=[],
             execute_tool=execute_tool,

@@ -12,6 +12,7 @@
               "id": "dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
+                "summary": "Add high_premium_quotes, keeping the quotes with a premium above 1500.",
                 "ops": [
                   {
                     "op": "add_node",

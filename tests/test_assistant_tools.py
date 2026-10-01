@@ -27,6 +27,7 @@ import asyncio
 import json
 import threading
 import time
+from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -36,6 +37,7 @@ import polars as pl
 import pytest
 
 from haute._types import GraphNode, NodeData, PipelineGraph
+from haute.assistant._ops import GraphEditPlan
 
 # ---------------------------------------------------------------------------
 # Fixtures — a real tmp project with a parquet source
@@ -1468,6 +1470,7 @@ class TestToolExecutorDispatch:
         rewritten = await execute_tool(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "add_node",
@@ -1476,7 +1479,7 @@ class TestToolExecutorDispatch:
                         "config": {"code": "df = df"},
                     },
                     {"op": "add_edge", "source": "quotes", "target": "$missing"},
-                ]
+                ],
             },
         )
         assert rewritten["error"]["code"] == "recipe_plan_requires_handle"
@@ -1486,18 +1489,22 @@ class TestToolExecutorDispatch:
             {"recipe_plan_hash": recipe["recipe_plan_hash"]},
         )
         assert "plan_hash" in exact
-        normalized = exact["normalized_operations"]
-        assert [operation["op"] for operation in normalized] == [
-            "add_node",
-            "add_edge",
-            "add_node",
-            "add_edge",
+        assert exact["operations"] == 4
+        changes = exact["changes"]
+        assert [(node["id"], node["type"], node["change"]) for node in changes["nodes"]] == [
+            ("year_band", "Banding", "added"),
+            ("year_response", "Quote Response", "added"),
         ]
-        assert normalized[0]["node_type"] == "banding"
-        assert normalized[2]["node_type"] == "output"
-        assert normalized[2]["name"] == "year_response"
-        assert normalized[3]["source"] == "$recipe_categorical_banding"
-        assert normalized[3]["target"] == "$recipe_output"
+        assert changes["edges_added"] == [
+            {"source": "quotes", "target": "year_band"},
+            {"source": "year_band", "target": "year_response"},
+        ]
+        # The recipe's receipt is its index summary.
+        from haute.assistant._tools import _PLAN_STORE, _RECIPE_SUMMARIES
+
+        receipt = _PLAN_STORE.receipt(exact["plan_hash"])
+        assert receipt.summary == _RECIPE_SUMMARIES["categorical_banding"]
+        assert receipt.assumptions == ()
 
     async def test_latest_recipe_handle_replaces_prior_and_rejects_provider_authored_extras(
         self, project_root: Path
@@ -1562,10 +1569,8 @@ class TestToolExecutorDispatch:
             {"recipe_plan_hash": latest["recipe_plan_hash"]},
         )
         assert "plan_hash" in planned
-        assert [operation["op"] for operation in planned["normalized_operations"]] == [
-            "add_node",
-            "add_edge",
-        ]
+        assert planned["operations"] == 2
+        assert [node["id"] for node in planned["changes"]["nodes"]] == ["replacement_year_band"]
 
         consumed = await execute_tool(
             "dry_run_recipe_plan",
@@ -1580,13 +1585,14 @@ class TestToolExecutorDispatch:
         primitive = await execute_tool(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "update_node",
                         "node": "quotes",
                         "config": {},
                     }
-                ]
+                ],
             },
         )
         assert "plan_hash" in primitive
@@ -1650,13 +1656,14 @@ class TestToolExecutorDispatch:
         primitive = await primitive_executor(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "update_node",
                         "node": "quotes",
                         "config": {},
                     }
-                ]
+                ],
             },
         )
         assert "plan_hash" in primitive
@@ -1712,7 +1719,7 @@ class TestToolExecutorDispatch:
         execute_tool = tools_module.build_tool_executor("main.py")
 
         read = await execute_tool("get_pipeline", {})
-        mutation = await execute_tool("dry_run_graph_edits", {"ops": []})
+        mutation = await execute_tool("dry_run_graph_edits", {"summary": "Test plan.", "ops": []})
 
         assert read["error"]["code"] == "egress_policy_denied"
         assert mutation["error"]["code"] == "egress_policy_denied"
@@ -1779,7 +1786,7 @@ class TestToolExecutorDispatch:
 
         result = await build_tool_executor("main.py")(
             "dry_run_graph_edits",
-            {"ops": [operation]},
+            {"summary": "Test plan.", "ops": [operation]},
         )
 
         assert result["error"]["code"] == "invalid_request"
@@ -1799,6 +1806,7 @@ class TestToolExecutorDispatch:
         result = await build_tool_executor("main.py")(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {"op": "delete_node", "node": "quotes"},
                     {
@@ -1807,7 +1815,7 @@ class TestToolExecutorDispatch:
                         "target": "enriched",
                         "sourceHandle": "out",
                     },
-                ]
+                ],
             },
         )
 
@@ -1876,7 +1884,9 @@ class TestToolExecutorDispatch:
 
         from haute.assistant._tools import build_tool_executor
 
-        result = await build_tool_executor("main.py")("dry_run_graph_edits", {"ops": ops})
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits", {"summary": "Test plan.", "ops": ops}
+        )
 
         error = result["error"]
         assert error["code"] == "invalid_request"
@@ -2015,19 +2025,22 @@ class TestToolExecutorDispatch:
         dry_run = await execute_tool(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "rename_node",
                         "node": "enriched",
                         "new_name": "renamed",
                     }
-                ]
+                ],
             },
         )
         assert len(dry_run["plan_hash"]) == 64
         assert "risk" not in dry_run
         assert "confirmation_required" not in dry_run
-        assert "resulting_graph_shape" in dry_run
+        assert dry_run["changes"]["nodes"] == [
+            {"id": "renamed", "type": "Polars", "change": "renamed", "renamed_from": "enriched"}
+        ]
 
         refused = await execute_tool(
             "apply_graph_plan",
@@ -2041,7 +2054,10 @@ class TestToolExecutorDispatch:
         execute_tool = build_tool_executor("main.py", session_id="session-1")
         result = await execute_tool(
             "dry_run_graph_edits",
-            {"ops": [{"op": "rename_node", "node": "quotes", "new_name": "policies"}]},
+            {
+                "summary": "Test plan.",
+                "ops": [{"op": "rename_node", "node": "quotes", "new_name": "policies"}],
+            },
         )
 
         error = result["error"]
@@ -2063,12 +2079,26 @@ class TestToolExecutorDispatch:
 
         dry_run = await execute_tool(
             "dry_run_graph_edits",
-            {"ops": [{"op": "delete_node", "node": "enriched"}]},
+            {"summary": "Test plan.", "ops": [{"op": "delete_node", "node": "enriched"}]},
         )
 
         assert "risk" not in dry_run
         assert "confirmation_required" not in dry_run
         assert shared_store.get(dry_run["plan_hash"]).plan_hash == dry_run["plan_hash"]
+
+
+def _stored_plan(plan: Mapping[str, object]) -> GraphEditPlan:
+    """The plan a dry-run result's hash names, as the plan store holds it."""
+
+    from haute.assistant._tools import _PLAN_STORE
+
+    return _PLAN_STORE.get(str(plan["plan_hash"]))
+
+
+def _revision_sources(plan: Mapping[str, object]) -> dict[str, str]:
+    """The revision sources a dry-run's stored plan is bound to."""
+
+    return dict(_stored_plan(plan).source_manifest)
 
 
 class TestExecutorArms:
@@ -2090,16 +2120,17 @@ class TestExecutorArms:
         plan = await execute_tool(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "rename_node",
                         "node": "enriched",
                         "new_name": "renamed",
                     }
-                ]
+                ],
             },
         )
-        assert "schema:data/quotes.parquet" in plan["revision_sources"]
+        assert "schema:data/quotes.parquet" in _revision_sources(plan)
         example = await execute_tool("get_example", {"name": example_index()[0][0]})
         assert "graph" in example
         guide = await execute_tool("get_authoring_guide", {})
@@ -2124,13 +2155,14 @@ class TestExecutorArms:
         result = await execute_tool(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "rename_node",
                         "node": "enriched",
                         "new_name": "renamed",
                     }
-                ]
+                ],
             },
         )
 
@@ -2147,7 +2179,10 @@ class TestExecutorArms:
         first_turn = build_tool_executor("main.py")
         schema = await first_turn("get_dataset_schema", {"path": "data/extra.parquet"})
         (project_root / "data" / "extra.parquet").rename(project_root / "data" / "moved.parquet")
-        rename = {"ops": [{"op": "rename_node", "node": "enriched", "new_name": "renamed"}]}
+        rename = {
+            "summary": "Rename enriched.",
+            "ops": [{"op": "rename_node", "node": "enriched", "new_name": "renamed"}],
+        }
 
         blocked = await first_turn("dry_run_graph_edits", rename)
         assert blocked["error"]["code"] == "project_source_missing"
@@ -2171,7 +2206,7 @@ class TestExecutorArms:
         plan = await execute_tool("dry_run_graph_edits", rename)
 
         assert "error" not in plan, plan
-        assert "schema:data/extra.parquet" not in plan["revision_sources"]
+        assert "schema:data/extra.parquet" not in _revision_sources(plan)
 
     async def test_a_new_excel_input_is_refused_with_the_preview_remedy(self, project_root: Path):
         from haute._sandbox import set_project_root
@@ -2182,6 +2217,7 @@ class TestExecutorArms:
         result = await execute_tool(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "add_node",
@@ -2197,7 +2233,7 @@ class TestExecutorArms:
                     },
                     {"op": "add_node", "node_type": "explore", "name": "look", "ref": "look"},
                     {"op": "add_edge", "source": "$book", "target": "$look"},
-                ]
+                ],
             },
         )
 
@@ -2232,17 +2268,18 @@ class TestExecutorArms:
         plan = await second_turn(
             "dry_run_graph_edits",
             {
+                "summary": "Test plan.",
                 "ops": [
                     {
                         "op": "rename_node",
                         "node": "enriched",
                         "new_name": "renamed",
                     }
-                ]
+                ],
             },
         )
 
-        assert "schema:data/quotes.parquet" in plan["revision_sources"]
+        assert "schema:data/quotes.parquet" in _revision_sources(plan)
 
 
 class TestClosedSchemaKeywords:
@@ -2469,7 +2506,7 @@ class TestStepsFirstAuthoring:
         before = parse_pipeline_to_graph(steps_first_project / "main.py")
         ops = [{"op": "update_node", "node": node, "config": {**config, "steps": steps}}]
 
-        plan = await dry_run_graph_edits("main.py", ops)
+        plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.")
         assert "error" not in plan, plan
         applied = await apply_graph_plan("main.py", plan["plan_hash"])
         assert "error" not in applied, applied
@@ -2495,7 +2532,9 @@ class TestStepsFirstAuthoring:
         from haute.routes._helpers import parse_pipeline_to_graph
 
         filled = await dry_run_graph_edits(
-            "main.py", _august_ops("df = pl.concat([df, additional_drivers_claims])")
+            "main.py",
+            _august_ops("df = pl.concat([df, additional_drivers_claims])"),
+            summary="Test plan.",
         )
         assert "error" not in filled, filled
         assert "error" not in await apply_graph_plan("main.py", filled["plan_hash"])
@@ -2503,6 +2542,7 @@ class TestStepsFirstAuthoring:
         refused = await dry_run_graph_edits(
             "main.py",
             [{"op": "rename_node", "node": "additional_drivers_claims", "new_name": "drivers"}],
+            summary="Test plan.",
         )
         assert refused["error"]["code"] == "rename_has_consumers"
         assert refused["error"]["consumers"] == [
@@ -2512,10 +2552,14 @@ class TestStepsFirstAuthoring:
         plan = await dry_run_graph_edits(
             "main.py",
             [{"op": "rename_node", "node": "proposer_claims", "new_name": "proposer"}],
+            summary="Test plan.",
         )
         assert "error" not in plan, plan
-        assert list(plan["diff"]["nodes_updated"]) == ["august_totals"]
-        assert list(plan["diff"]["config_changes"]) == ["august_totals:steps[start].input"]
+        diff = _stored_plan(plan).diff
+        assert list(diff.nodes_updated) == ["august_totals"]
+        assert list(diff.config_changes) == ["august_totals:steps[start].input"]
+        consumer = next(node for node in plan["changes"]["nodes"] if node["id"] == "august_totals")
+        assert (consumer["change"], consumer["steps_changed"]) == ("changed", 1)
         assert "error" not in await apply_graph_plan("main.py", plan["plan_hash"])
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
@@ -2571,7 +2615,9 @@ class TestActionableErrors:
         _egress_toml(steps_first_project, max_sensitivity="internal")
         execute = build_tool_executor("main.py")
 
-        result = await execute("dry_run_graph_edits", {"ops": _august_ops(AUGUST_INDEXING)})
+        result = await execute(
+            "dry_run_graph_edits", {"summary": "Test plan.", "ops": _august_ops(AUGUST_INDEXING)}
+        )
 
         error = result["error"]
         assert error["code"] == "invalid_ops"
@@ -2605,7 +2651,7 @@ class TestActionableErrors:
         _egress_toml(steps_first_project, max_sensitivity="public")
 
         result = await build_tool_executor("main.py")(
-            "dry_run_graph_edits", {"ops": _august_ops(AUGUST_INDEXING)}
+            "dry_run_graph_edits", {"summary": "Test plan.", "ops": _august_ops(AUGUST_INDEXING)}
         )
 
         assert result["error"]["code"] == "egress_policy_denied"
@@ -2618,7 +2664,9 @@ class TestActionableErrors:
         _egress_toml(steps_first_project, max_sensitivity="internal")
         execute = build_tool_executor("main.py")
 
-        result = await execute("dry_run_graph_edits", {"ops": _august_ops(AUGUST_TYPO)})
+        result = await execute(
+            "dry_run_graph_edits", {"summary": "Test plan.", "ops": _august_ops(AUGUST_TYPO)}
+        )
 
         error = result["error"]
         assert error["code"] == "schema_unresolvable"
@@ -2669,7 +2717,7 @@ class TestActionableErrors:
                     yield ToolCallRequest(
                         f"dry-{self.rounds}",
                         "dry_run_graph_edits",
-                        {"ops": attempts[self.rounds - 1]},
+                        {"summary": "Total August premium.", "ops": attempts[self.rounds - 1]},
                     )
                 else:
                     yield ToolCallRequest(
@@ -2791,7 +2839,9 @@ class TestExecutionErrorEgress:
     async def test_node_code_exception_is_reduced_to_type_and_step(self, egress_project: Path):
         from haute.assistant._tools import dry_run_graph_edits
 
-        result = await dry_run_graph_edits("main.py", _free_code_node("quotes", _RAISE_WITH_ROWS))
+        result = await dry_run_graph_edits(
+            "main.py", _free_code_node("quotes", _RAISE_WITH_ROWS), summary="Test plan."
+        )
 
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
@@ -2803,7 +2853,9 @@ class TestExecutionErrorEgress:
         from haute.assistant._tools import dry_run_graph_edits
 
         result = await dry_run_graph_edits(
-            "main.py", _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()")
+            "main.py",
+            _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()"),
+            summary="Test plan.",
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -2834,7 +2886,9 @@ class TestExecutionErrorEgress:
             "rows = df.collect()\n"
             "raise pl.exceptions.ComputeError(f\"column '{rows['quote_id'][0]}' is bad\")\n"
         )
-        result = await dry_run_graph_edits("main.py", _free_code_node("quotes", code))
+        result = await dry_run_graph_edits(
+            "main.py", _free_code_node("quotes", code), summary="Test plan."
+        )
 
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
@@ -2850,6 +2904,7 @@ class TestExecutionErrorEgress:
             _free_code_node(
                 "quotes", '# Rename one column\ndf = df.rename({"missing_col": "renamed"})'
             ),
+            summary="Test plan.",
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -2922,7 +2977,9 @@ class TestFailureColumnNamesFollowTheEgressPolicy:
         _egress_policy(monkeypatch, executable_source=False, row_samples=False)
 
         result = await dry_run_graph_edits(
-            "main.py", _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()")
+            "main.py",
+            _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()"),
+            summary="Test plan.",
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3015,6 +3072,7 @@ def consumer(typed: pl.LazyFrame) -> pl.LazyFrame:
         result = await dry_run_graph_edits(
             "main.py",
             _free_code_node("quotes", '# Rename one column\ndf = df.rename({"absent_col": "x"})'),
+            summary="Test plan.",
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3058,7 +3116,9 @@ class TestPreambleFailureEgress:
     async def test_dry_run_withholds_the_preamble_failure_text(self, preamble_project: Path):
         from haute.assistant._tools import dry_run_graph_edits
 
-        result = await dry_run_graph_edits("main.py", _free_code_node("quotes", "df = df"))
+        result = await dry_run_graph_edits(
+            "main.py", _free_code_node("quotes", "df = df"), summary="Test plan."
+        )
 
         assert result["error"]["code"] == "preamble_failed", result
         assert _row_values_in(result) == []
@@ -3104,7 +3164,9 @@ class TestPreambleFailureEgress:
 
         _allow_row_samples(monkeypatch)
 
-        planned = await dry_run_graph_edits("main.py", _free_code_node("quotes", "df = df"))
+        planned = await dry_run_graph_edits(
+            "main.py", _free_code_node("quotes", "df = df"), summary="Test plan."
+        )
         schema = get_node_schema("main.py", "quotes")
 
         for result in (planned, schema):
@@ -3130,7 +3192,7 @@ class TestPreambleFailureEgress:
         )
 
         result = await tools_module.dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", _RAISE_WITH_ROWS)
+            "main.py", _free_code_node("quotes", _RAISE_WITH_ROWS), summary="Test plan."
         )
 
         assert "ValueError in step 2 ('logic') of node 'probe'" in result["error"]["message"]
@@ -3149,7 +3211,7 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
     steps = _guide_step_lists()[0]
     assert [step["kind"] for step in steps] == ["source", "free_code"]
     ops = [{"op": "update_node", "node": "august_totals", "config": {"steps": steps}}]
-    plan = await tools_module.dry_run_graph_edits("main.py", ops)
+    plan = await tools_module.dry_run_graph_edits("main.py", ops, summary="Test plan.")
     applied = await tools_module.apply_graph_plan("main.py", plan["plan_hash"])
     assert "error" not in applied, applied
     monkeypatch.setattr(
@@ -3191,7 +3253,7 @@ def _policy(*, max_sensitivity: str, executable: bool):
 async def _apply_ops(ops: list[dict[str, object]]) -> None:
     from haute.assistant._tools import apply_graph_plan, dry_run_graph_edits
 
-    plan = await dry_run_graph_edits("main.py", ops)
+    plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.")
     assert "error" not in plan, plan
     applied = await apply_graph_plan("main.py", plan["plan_hash"])
     assert "error" not in applied, applied
@@ -3260,9 +3322,9 @@ class TestStepAuthoringViews:
         assert isinstance(edits, list)
         (inserted,) = edits
 
-        plan = await execute("dry_run_graph_edits", {"ops": [edit]})
+        plan = await execute("dry_run_graph_edits", {"summary": "Test plan.", "ops": [edit]})
         assert "error" not in plan, plan
-        assert list(plan["diff"]["config_changes"]) == ["august_totals:steps[free_code_1]"]
+        assert list(_stored_plan(plan).diff.config_changes) == ["august_totals:steps[free_code_1]"]
         applied = await execute("apply_graph_plan", {"plan_hash": plan["plan_hash"]})
         assert "error" not in applied, applied
 
@@ -3296,7 +3358,9 @@ class TestStepAuthoringViews:
             ],
         }
 
-        result = await build_tool_executor("main.py")("dry_run_graph_edits", {"ops": [edit]})
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits", {"summary": "Test plan.", "ops": [edit]}
+        )
 
         assert result["error"]["where"] == {
             "op_index": 0,

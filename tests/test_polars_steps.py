@@ -5125,8 +5125,10 @@ async def test_comment_first_free_code_keeps_its_steps_through_the_assistant_app
     steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
     with _scoring_model_stub():
         plan = service.dry_run(
-            "main.py", [{"op": "update_node", "node": node_id, "config": {"steps": steps}}]
-        )
+            "main.py",
+            [{"op": "update_node", "node": node_id, "config": {"steps": steps}}],
+            summary="Test plan.",
+        ).plan
         await service.apply("main.py", plan.plan_hash)
     _assert_comment_first_steps_kept(project_root / "main.py", node_id, surface)
 

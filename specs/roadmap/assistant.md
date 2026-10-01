@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-31 | Planned | P1 | After every apply the analyst sees a change card built from what was saved. |
 | ASSIST-32 | Planned | P1 | A multi-stage build can finish in one turn, with a change card per stage. |
 | ASSIST-33 | Planned | P2 | The analyst can undo or compare the latest assistant change in one click. |
 | ASSIST-34 | Planned | P2 | Long turns never collide with analyst edits, and setup is explained. |
@@ -96,28 +95,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-31 — A change card built from what was saved
-**Why:** A turn that edits the graph ends with a fixed sentence and a row of
-hashes; the analyst cannot see what changed.
-
-**Plan:** After every apply, build a value-free change record from the actual
-diff and the before and after graphs, using palette names: node chips for
-added, changed, removed and renamed nodes, configuration changes in plain
-words, step kinds and counts (never free-code text), edges and warnings, with
-the Git commit. Dry-run takes a required short summary and a list of
-assumptions stored with the plan. The record is persisted, rebuilt on resume,
-streamed as a typed event, and replaces the fixed sentence; dry-run and apply
-results become compact.
-
-**Acceptance:** Component tests render change cards; a payload test finds no
-configuration values or free-code text in the record; dry-run and apply
-payloads for a four-node batch stay under one kilobyte.
-
-**Dependencies:** `ASSIST-06`, `ASSIST-10`, `ASSIST-13`, `ASSIST-15`.
-
-**Evidence:** `src/haute/assistant/_application.py::ApplicationResult`;
-`src/haute/assistant/_loop.py::run_turn`.
 
 ### ASSIST-32 — Several applies per turn
 **Why:** A successful apply ends the turn, so the rest of a multi-part

@@ -15,7 +15,7 @@ right-panel feature with its own store, its own API module, and its own failure 
 In scope:
 
 - The assistant panel: transcript (user messages, streamed assistant text, tool-activity
-  rows), the message composer, the stop control, and the new-chat control.
+  rows, change cards), the message composer, the stop control, and the new-chat control.
 - The assistant Zustand store: session id, transcript, streaming state, and the derived
   can-send gate.
 - Consuming the assistant SSE stream (fetch + ReadableStream) and translating typed events
@@ -71,10 +71,16 @@ rather than offering a bare retry that cannot succeed until the file changes.
 **A turn streams into the transcript live.** Sending a message appends the user entry,
 disables the composer, and swaps the send button for a stop button. Assistant text renders
 incrementally as deltas arrive. Tool activity renders as compact rows in-place in the
-transcript — "reading pipeline", "applied 3 edits", with failures marked distinctly — so the
-analyst can follow what the agent actually did, in order: text streamed after a tool row
-renders below it as a new text segment, never back in an earlier bubble. A graph-updated
-event annotates the transcript; the canvas itself updates via live-sync, not via this panel.
+transcript, each headed by the plain-words title the backend writes ("Reading the
+pipeline", "Checking 3 changes", "Applying 3 changes") rather than the tool's name, with
+failures marked distinctly — so the analyst can follow what the agent actually did, in
+order: text streamed after a tool row renders below it as a new text segment, never back
+in an earlier bubble. After each apply a change card shows what was saved: the plan's
+summary and the assumptions it made, one chip per node added, changed, removed or renamed
+with its palette type, the fields it changed in words and its step kinds, the edges added
+and removed, the save's warnings, and the short commit id. The card never shows a
+configuration value or step code. The canvas itself updates via live-sync, not via this
+panel.
 A resumed chat renders the same entries in the same order as the live turn did.
 
 **Every completed turn ends with its outcome.** The completed event's typed outcome
@@ -95,7 +101,7 @@ controller gave.
 message authorizes graph authoring. A validated plan may therefore apply
 directly whether it adds Polars code, configures an output, deletes graph
 elements, changes a preamble, or contains a large operation batch. The
-frontend renders the ordinary tool activity and graph-updated events; it has
+frontend renders the ordinary tool activity and change cards; it has
 no graph-plan confirmation card or confirmation request. Exact plan hashes,
 revision checks, single-use authority, transactional saves and post-save
 verification remain server-owned. Actually running the pipeline or performing

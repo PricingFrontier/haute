@@ -708,7 +708,9 @@ def _verify_fast_dry_run(bundle: Traversable, destination: Path) -> None:
         mutations_readiness=lambda _root: (True, None),
         publish_document_update=lambda _source: "f" * 64,
     )
-    plan = service.dry_run("pipeline.py", operations)
+    plan = service.dry_run(
+        "pipeline.py", operations, summary=f"Check example {bundle.name}'s dry-run evidence."
+    ).plan
     if (
         source.read_bytes() != before
         or list(plan.diff.nodes_removed) != removed

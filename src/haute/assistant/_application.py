@@ -15,6 +15,7 @@ from typing import Any
 from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
 from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
+from haute._git import commit_parent
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
 from haute._graph_utils import _sanitize_func_name
 from haute._input_providers import (
@@ -28,10 +29,12 @@ from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import new_logic_steps
+from haute.assistant._change_record import change_record, evidence_summary, graph_changes
 from haute.assistant._ops import (
     AssistantOperationError,
     GraphEditPlan,
     LocatedPlanError,
+    PlanReceipt,
     PlanStore,
     ProjectSnapshot,
     ProjectSourceEvidence,
@@ -68,6 +71,7 @@ from haute.modelling._train_config import (
 from haute.routes._helpers import parse_pipeline_to_graph, save_lock
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._training_preparation import build_training_feature_selection
+from haute.schemas import AssistantChangeRecord, AssistantGraphChanges
 
 _MAX_SCHEMA_TARGETS = 100
 
@@ -78,6 +82,26 @@ DocumentUpdatePublisher = Callable[[str], str]
 GraphParser = Callable[[Path], PipelineGraph]
 ProjectSources = Callable[[str], Sequence[Path | ProjectSourceEvidence]]
 GraphValidator = Callable[[PipelineGraph], Sequence[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class DryRunResult:
+    """One validated, stored plan and the compact view the dry-run tool returns."""
+
+    plan: GraphEditPlan
+    changes: AssistantGraphChanges
+
+    def as_dict(self) -> dict[str, object]:
+        """What the model needs to apply the plan: no echoed operations, digests or revisions."""
+
+        return {
+            "plan_hash": self.plan.plan_hash,
+            "operations": len(self.plan.normalized_operations),
+            "verification_tier": self.plan.verification_tier,
+            "evidence": evidence_summary(self.plan.verification_evidence),
+            "warnings": list(self.plan.validation_warnings),
+            "changes": self.changes.model_dump(mode="json", exclude_defaults=True),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,21 +120,17 @@ class ApplicationResult:
     warnings: tuple[str, ...]
     git_sha: str | None
     applied_operations: int
+    change: AssistantChangeRecord
 
     def as_dict(self) -> dict[str, object]:
+        """The compact apply result: the change record is the diff, stated once."""
+
         return {
             "plan_hash": self.plan_hash,
-            "capability_hash": self.capability_hash,
-            "base_revision": self.base_revision,
-            "result_revision": self.result_revision,
-            "expected_diff": self.expected_diff.as_dict(),
-            "actual_diff": self.actual_diff.as_dict(),
-            "verification_tier": self.verification_tier,
-            "verification_evidence": [dict(item) for item in self.verification_evidence],
-            "graph_fingerprint": self.graph_fingerprint,
-            "warnings": list(self.warnings),
-            "git_sha": self.git_sha,
             "applied_operations": self.applied_operations,
+            "verification_tier": self.verification_tier,
+            "evidence": evidence_summary(self.verification_evidence),
+            "change": self.change.model_dump(mode="json", exclude_defaults=True),
         }
 
 
@@ -820,9 +840,16 @@ class PipelineApplicationService:
         operations: Sequence[Mapping[str, Any]],
         *,
         postconditions: Sequence[Mapping[str, Any]] = (),
-    ) -> GraphEditPlan:
-        """Validate and retain an exact no-write plan against saved state."""
+        summary: str,
+        assumptions: Sequence[str] = (),
+    ) -> DryRunResult:
+        """Validate and retain an exact no-write plan against saved state.
 
+        *summary* and *assumptions* are the plan's receipt, stored beside it
+        for the change card the apply builds.
+        """
+
+        receipt = PlanReceipt(summary, tuple(assumptions))
         validate_declared_postconditions(postconditions)
         source = self._source_path(source_file)
         graph = self._parse_graph(source)
@@ -842,8 +869,11 @@ class PipelineApplicationService:
             ),
             source_file=source_file,
         )
-        self.plan_store.put(verified.plan)
-        return verified.plan
+        self.plan_store.put(verified.plan, receipt)
+        return DryRunResult(
+            plan=verified.plan,
+            changes=graph_changes(graph, verified.result_graph, verified.plan.diff),
+        )
 
     def _prepare_apply(
         self,
@@ -960,6 +990,7 @@ class PipelineApplicationService:
                     reason or "Assistant mutations are not enabled for this project",
                 )
             plan = self.plan_store.begin_apply(plan_hash)
+            receipt = self.plan_store.receipt(plan_hash)
             try:
                 before, after, recomputed = await asyncio.to_thread(
                     self._prepare_apply,
@@ -983,6 +1014,20 @@ class PipelineApplicationService:
                     before,
                     recomputed,
                 )
+                parent_sha = (
+                    None
+                    if response.git_sha is None
+                    else await asyncio.to_thread(
+                        commit_parent, response.git_sha, self._project_root
+                    )
+                )
+                change = change_record(
+                    receipt,
+                    graph_changes(before, reparsed, actual_diff),
+                    warnings=response.warnings or (),
+                    git_sha=response.git_sha,
+                    parent_sha=parent_sha,
+                )
                 fingerprint = self._publish_document_update(source_file)
                 result = ApplicationResult(
                     plan_hash=plan.plan_hash,
@@ -997,6 +1042,7 @@ class PipelineApplicationService:
                     warnings=tuple(response.warnings or ()),
                     git_sha=response.git_sha,
                     applied_operations=len(plan.normalized_operations),
+                    change=change,
                 )
                 self.plan_store.complete_apply(plan_hash, result.as_dict())
                 return result
@@ -1014,10 +1060,6 @@ class PipelineApplicationService:
                     publish_error = type(publish_exc).__name__
                 failure = {
                     "plan_hash": plan.plan_hash,
-                    "capability_hash": plan.capability_hash,
-                    "base_revision": plan.base_revision,
-                    "expected_diff": plan.diff.as_dict(),
-                    "actual_diff": None,
                     "verification_tier": plan.verification_tier,
                     "verification_status": "failed",
                     "verification_error_code": getattr(exc, "code", type(exc).__name__),
@@ -1038,6 +1080,7 @@ class PipelineApplicationService:
 __all__ = [
     "ApplicationResult",
     "CommittedVerificationError",
+    "DryRunResult",
     "PipelineApplicationService",
     "PreambleFailedError",
     "VerifiedPlan",

@@ -19,6 +19,7 @@ from haute.assistant._catalog import (
     capability_manifest,
     compact_manifest,
     materialise_json,
+    tool_title,
 )
 from haute.assistant._providers import (
     AssistantProvider,
@@ -30,9 +31,10 @@ from haute.assistant._providers import (
 from haute.assistant._session import AssistantSession, AssistantTurn, SessionStore
 from haute.errors import HauteError
 from haute.schemas import (
+    AssistantChangeAppliedEvent,
+    AssistantChangeRecord,
     AssistantCompletedEvent,
     AssistantFailedEvent,
-    AssistantGraphUpdatedEvent,
     AssistantStreamEvent,
     AssistantTextDeltaEvent,
     AssistantToolFinishedEvent,
@@ -49,7 +51,6 @@ _MUTATION_OUTCOME_PREFIXES: dict[str, AssistantTurnOutcomeKind] = {
     "NEEDS_INPUT:": "needs_input",
     "BLOCKED:": "blocked",
 }
-_MUTATION_APPLIED_DETAIL = "Graph changes applied successfully."
 _MUTATION_COMMITTED_UNVERIFIED_DETAIL = (
     "Graph changes were saved, but post-save verification failed."
 )
@@ -841,6 +842,7 @@ async def run_turn(
                         yield AssistantToolStartedEvent(
                             id=event.id,
                             name=event.name,
+                            title=tool_title(event.name, event.arguments),
                             summary=_compact_summary(event.arguments),
                         )
                         payload: Mapping[str, Any]
@@ -861,7 +863,8 @@ async def run_turn(
                             if is_error:
                                 dry_runs.record_failure(event, payload)
                             open_state = "failed" if is_error else "validated"
-                        if event.name == "apply_graph_plan" and not is_error:
+                        applied = event.name == "apply_graph_plan" and not is_error
+                        if applied:
                             mutation_applied = True
                         if (
                             event.name == "apply_graph_plan"
@@ -873,14 +876,14 @@ async def run_turn(
                             yield AssistantToolFinishedEvent(
                                 id=event.id,
                                 name=event.name,
+                                title=tool_title(event.name, event.arguments, payload),
                                 is_error=is_error,
                                 summary=_result_summary(payload, is_error),
                             )
-                        if "graph_fingerprint" in payload and interrupt is None:
-                            fingerprint = payload["graph_fingerprint"]
-                            if not isinstance(fingerprint, str):
-                                raise RuntimeError("graph_fingerprint must be a string")
-                            yield AssistantGraphUpdatedEvent(fingerprint=fingerprint)
+                        if applied and interrupt is None:
+                            yield AssistantChangeAppliedEvent(
+                                change=AssistantChangeRecord.model_validate(payload["change"])
+                            )
                         if interrupt is not None:
                             # Re-raise the original interrupt (CancelledError
                             # or GeneratorExit) now that the completed tool
@@ -912,15 +915,16 @@ async def run_turn(
                     _append_round(turn_messages, round_text, round_calls, round_results)
                     round_committed = True
                     if mutation_applied:
-                        closing_text = _MUTATION_APPLIED_DETAIL
+                        # The change card streamed with the apply says what was
+                        # saved; the turn adds no text of its own.
                         turn_outcome = AssistantTurnOutcome(kind="applied", detail=None)
                     else:
                         closing_text = _MUTATION_COMMITTED_UNVERIFIED_DETAIL
                         turn_outcome = AssistantTurnOutcome(
                             kind="committed_unverified", detail=committed_unverified_detail
                         )
-                    turn_messages.append({"role": "assistant", "content": closing_text})
-                    yield AssistantTextDeltaEvent(text=closing_text)
+                        turn_messages.append({"role": "assistant", "content": closing_text})
+                        yield AssistantTextDeltaEvent(text=closing_text)
                     yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
                 if stop.reason == "end":

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from haute.assistant._ops import AssistantOperationError, PlanStore
 from haute.assistant._wire_ops import OpValidationError
+from haute.schemas import AssistantChangeRecord
 
 PIPELINE_SOURCE = """\
 import polars as pl
@@ -89,7 +92,7 @@ class TestDryRun:
     def test_plan_egress_says_whether_node_code_ran_over_data(
         self, project_root: Path, operations: list[dict[str, object]], tier: str, egress: str
     ):
-        plan = _service(project_root).dry_run("main.py", operations)
+        plan = _service(project_root).dry_run("main.py", operations, summary="Test plan.").plan
 
         assert (plan.verification_tier, plan.egress) == (tier, egress)
         assert plan.as_dict()["egress"] == egress
@@ -109,7 +112,8 @@ class TestDryRun:
         plan = service.dry_run(
             "main.py",
             [{"op": "delete_node", "node": "quotes"}],
-        )
+            summary="Test plan.",
+        ).plan
 
         assert service.plan_store is shared_store
         assert shared_store.get(plan.plan_hash) == plan
@@ -124,7 +128,8 @@ class TestDryRun:
                 {"op": "add_node", "node_type": "banding", "name": "Age band", "ref": "b"},
                 {"op": "add_edge", "source": "quotes", "target": "$b"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
         assert (project_root / "main.py").read_bytes() == before
         assert plan.base_revision
@@ -142,7 +147,8 @@ class TestDryRun:
                     {"op": "add_node", "node_type": "apiInput", "name": "one"},
                     {"op": "add_node", "node_type": "apiInput", "name": "two"},
                 ],
-            )
+                summary="Test plan.",
+            ).plan
 
         assert len(service.plan_store) == 0
 
@@ -210,7 +216,8 @@ class TestDryRun:
                         "target_handle": "join",
                     },
                 ],
-            )
+                summary="Test plan.",
+            ).plan
 
         assert (project_root / "main.py").read_bytes() == before
         assert len(service.plan_store) == 0
@@ -231,7 +238,9 @@ class TestDryRun:
         service = _service(tmp_path / "b")
 
         with pytest.raises(HTTPException, match="sanitize to the same Python function name"):
-            service.dry_run("pipeline.py", [{"op": "update_preamble", "preamble": None}])
+            service.dry_run(
+                "pipeline.py", [{"op": "update_preamble", "preamble": None}], summary="Test plan."
+            ).plan
 
         assert source.read_bytes() == colliding.encode("utf-8")
         assert len(service.plan_store) == 0
@@ -257,7 +266,8 @@ class TestDryRun:
                     },
                     {"op": "add_edge", "source": "train", "target": "$a"},
                 ],
-            )
+                summary="Test plan.",
+            ).plan
 
         assert raised.value.status_code == 400
         assert len(service.plan_store) == 0
@@ -321,7 +331,8 @@ class TestSchemaValidationScope:
                 },
                 {"op": "add_edge", "source": "quotes", "target": "$t"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
         assert plan.verification_tier == "schema"
         assert [item["node"] for item in plan.verification_evidence] == ["totals"]
@@ -347,7 +358,8 @@ class TestSchemaValidationScope:
                 },
                 {"op": "add_edge", "source": "shared", "target": "$d"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
         assert plan.verification_tier == "schema"
         assert [item["node"] for item in plan.verification_evidence] == ["doubled"]
@@ -372,7 +384,8 @@ class TestSchemaValidationScope:
                     "config": {"code": 'df = pl.LazyFrame({"x": [1, 2, 3]})\n'},
                 }
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
         assert plan.verification_tier == "structural"
         assert plan.verification_evidence == ()
@@ -400,7 +413,8 @@ class TestSchemaValidationScope:
                         "config": {"code": 'df = shared.select("still_absent")\n'},
                     }
                 ],
-            )
+                summary="Test plan.",
+            ).plan
 
         assert excinfo.value.code == "schema_unresolvable"
         # The failure is kept for the tool boundary to render under the
@@ -426,7 +440,8 @@ class TestSchemaValidationScope:
                     "config": {"code": 'df = pl.LazyFrame({"x": [1, 2, 3]})\n'},
                 }
             ],
-        )
+            summary="Test plan.",
+        ).plan
         assert plan.validation_warnings == ("pre_existing_schema_failure:broken",)
 
         result = await service.apply("main.py", plan.plan_hash)
@@ -456,7 +471,8 @@ class TestApply:
         plan = service.dry_run(
             "main.py",
             [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
-        )
+            summary="Test plan.",
+        ).plan
 
         await service.apply("main.py", plan.plan_hash)
 
@@ -476,7 +492,8 @@ class TestApply:
                 {"op": "add_node", "node_type": "banding", "name": "Age band", "ref": "b"},
                 {"op": "add_edge", "source": "quotes", "target": "$b"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
         result = await service.apply("main.py", plan.plan_hash)
 
@@ -513,7 +530,7 @@ class TestApply:
 
         monkeypatch.setattr(service, "_commit", fail_once)
         operations = [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}]
-        first = service.dry_run("main.py", operations)
+        first = service.dry_run("main.py", operations, summary="Test plan.").plan
 
         with pytest.raises(RuntimeError, match="simulated pre-commit failure"):
             await service.apply("main.py", first.plan_hash)
@@ -523,7 +540,7 @@ class TestApply:
         assert direct_retry.value.code == "plan_aborted"
         assert "def quotes(" in (project_root / "main.py").read_text(encoding="utf-8")
 
-        revalidated = service.dry_run("main.py", operations)
+        revalidated = service.dry_run("main.py", operations, summary="Test plan.").plan
         assert revalidated.plan_hash == first.plan_hash
 
         result = await service.apply("main.py", revalidated.plan_hash)
@@ -538,7 +555,8 @@ class TestApply:
         plan = service.dry_run(
             "main.py",
             [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
-        )
+            summary="Test plan.",
+        ).plan
         changed = PIPELINE_SOURCE + "\n# changed outside the assistant\n"
         (project_root / "main.py").write_text(changed, encoding="utf-8")
 
@@ -565,7 +583,8 @@ class TestApply:
         plan = service.dry_run(
             "main.py",
             [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
-        )
+            summary="Test plan.",
+        ).plan
         assert "content:docs.md" in dict(plan.source_manifest)
 
         evidence.write_text("Sensitivity: internal\nchanged definition", encoding="utf-8")
@@ -582,7 +601,8 @@ class TestApply:
         plan = service.dry_run(
             "main.py",
             [{"op": "delete_node", "node": "quotes"}],
-        )
+            summary="Test plan.",
+        ).plan
 
         result = await service.apply("main.py", plan.plan_hash)
 
@@ -600,7 +620,8 @@ class TestApply:
         plan = service.dry_run(
             "main.py",
             [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
-        )
+            summary="Test plan.",
+        ).plan
 
         with pytest.raises(AssistantOperationError) as exc:
             await service.apply("main.py", plan.plan_hash)
@@ -635,7 +656,8 @@ class TestApply:
         plan = service.dry_run(
             "main.py",
             [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
-        )
+            summary="Test plan.",
+        ).plan
 
         with pytest.raises(CommittedVerificationError) as exc:
             await service.apply("main.py", plan.plan_hash)
@@ -647,6 +669,265 @@ class TestApply:
         with pytest.raises(AssistantOperationError) as second:
             await service.apply("main.py", plan.plan_hash)
         assert second.value.code == "plan_already_applied"
+
+
+#: A four-node build: a Transform, a Banding, a Rating Step and a Transform.
+_FOUR_NODE_BATCH: list[dict[str, object]] = [
+    {
+        "op": "add_node",
+        "node_type": "polars",
+        "name": "features",
+        "ref": "f",
+        "config": {
+            "steps": _free_code_steps(
+                "quotes", "# Derive driver age\ndf = df.with_columns(driver_age=pl.col('x') * 20)"
+            )
+        },
+    },
+    {
+        "op": "add_node",
+        "node_type": "banding",
+        "name": "bands",
+        "ref": "b",
+        "config": {
+            "factors": [
+                {
+                    "banding": "breakpoints",
+                    "column": "driver_age",
+                    "outputColumn": "age_band",
+                    "rules": [
+                        {"boundary": "24", "label": "17-24"},
+                        {"boundary": "", "label": "25+"},
+                    ],
+                    "default": None,
+                }
+            ]
+        },
+    },
+    {
+        "op": "add_node",
+        "node_type": "ratingStep",
+        "name": "rated",
+        "ref": "r",
+        "config": {
+            "tables": [
+                {
+                    "factors": ["age_band"],
+                    "outputColumn": "age_relativity",
+                    "entries": [
+                        {"age_band": "17-24", "value": 1.8},
+                        {"age_band": "25+", "value": 1.05},
+                    ],
+                    "defaultValue": 1.0,
+                }
+            ],
+            "combinedOutputs": [],
+            "steps": [],
+        },
+    },
+    {
+        "op": "add_node",
+        "node_type": "polars",
+        "name": "priced",
+        "ref": "p",
+        "config": {
+            "steps": _free_code_steps(
+                "rated", "# Price it\ndf = df.with_columns(premium=pl.col('age_relativity') * 350)"
+            )
+        },
+    },
+    {"op": "add_edge", "source": "quotes", "target": "$f"},
+    {"op": "add_edge", "source": "$f", "target": "$b"},
+    {"op": "add_edge", "source": "$b", "target": "$r"},
+    {"op": "add_edge", "source": "$r", "target": "$p"},
+]
+#: Configuration values and code text the four-node batch writes.
+_BATCH_VALUES = (
+    "driver_age",
+    "age_band",
+    "17-24",
+    "25+",
+    "age_relativity",
+    "1.8",
+    "1.05",
+    "350",
+    "breakpoints",
+    "with_columns",
+    "pl.col",
+    "Derive driver age",
+    "Price it",
+)
+_SUMMARY = "Band driver age, rate it and price the quote."
+
+
+def _provider_payload(name: str, result: Mapping[str, object]) -> str:
+    """The tool result exactly as the provider receives it."""
+
+    from haute.assistant._tools import _bounded_tool_result
+
+    return json.dumps(_bounded_tool_result(name, result), separators=(",", ":"))
+
+
+class TestChangeCard:
+    """After every apply the analyst sees a value-free card of what was saved."""
+
+    async def test_a_four_node_build_is_carded_without_values_in_a_small_payload(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.assistant._application as application_module
+        from haute.routes._save_pipeline import SavePipelineService
+
+        # A ledger-captured save, so the payloads carry a commit and its parent.
+        commit, parent = "a" * 40, "b" * 40
+        monkeypatch.setattr(
+            SavePipelineService, "_capture_save_in_ledger", lambda *_args: (commit, False)
+        )
+        monkeypatch.setattr(
+            application_module, "commit_parent", lambda sha, _cwd: parent if sha == commit else None
+        )
+        service = _service(project_root)
+        dry_run = service.dry_run(
+            "main.py",
+            _FOUR_NODE_BATCH,
+            summary=_SUMMARY,
+            assumptions=["Drivers under 25 are the young band."],
+        )
+        result = await service.apply("main.py", dry_run.plan.plan_hash)
+
+        change = result.change
+        assert change.summary == _SUMMARY
+        assert change.assumptions == ["Drivers under 25 are the young band."]
+        assert [
+            (node.id, node.type, node.change, node.steps, node.fields)
+            for node in change.changes.nodes
+        ] == [
+            ("features", "Polars", "added", ["source", "free_code"], []),
+            ("bands", "Banding", "added", None, []),
+            ("rated", "Rating Step", "added", [], []),
+            ("priced", "Polars", "added", ["source", "free_code"], []),
+        ]
+        assert [(edge.source, edge.target) for edge in change.changes.edges_added] == [
+            ("bands", "rated"),
+            ("features", "bands"),
+            ("quotes", "features"),
+            ("rated", "priced"),
+        ]
+        assert change.changes.edges_removed == []
+        assert (change.git_sha, change.parent_sha) == (commit, parent)
+
+        record = change.model_dump_json()
+        for value in _BATCH_VALUES:
+            assert value not in record, value
+        assert '"code"' not in record and '"intent"' not in record
+
+        dry_run_payload = _provider_payload("dry_run_graph_edits", dry_run.as_dict())
+        apply_payload = _provider_payload("apply_graph_plan", result.as_dict())
+        assert len(dry_run_payload.encode()) < 1024, dry_run_payload
+        assert len(apply_payload.encode()) < 1024, apply_payload
+        for payload in (dry_run_payload, apply_payload):
+            assert "normalized_operations" not in payload
+            assert "expected_diff" not in payload and "actual_diff" not in payload
+            for value in _BATCH_VALUES:
+                assert value not in payload, value
+        assert json.loads(dry_run_payload)["operations"] == len(_FOUR_NODE_BATCH)
+        assert AssistantChangeRecord.model_validate(json.loads(apply_payload)["change"]) == change
+
+    async def test_step_edits_renames_and_field_changes_read_in_words(self, project_root: Path):
+        service = _service(project_root)
+        build = service.dry_run("main.py", _FOUR_NODE_BATCH, summary=_SUMMARY)
+        await service.apply("main.py", build.plan.plan_hash)
+
+        edit = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "edit_steps",
+                    "node": "features",
+                    "edits": [
+                        {
+                            "insert_after": "logic",
+                            "step": {
+                                "kind": "free_code",
+                                "code": "# Flag young\ndf = df.with_columns(young=pl.col('x') < 2)",
+                            },
+                        }
+                    ],
+                },
+                {"op": "rename_node", "node": "priced", "new_name": "premium"},
+                {
+                    "op": "update_node",
+                    "node": "bands",
+                    "config": {
+                        "factors": [
+                            {
+                                "banding": "breakpoints",
+                                "column": "driver_age",
+                                "outputColumn": "age_band",
+                                "rules": [
+                                    {"boundary": "21", "label": "17-21"},
+                                    {"boundary": "", "label": "22+"},
+                                ],
+                                "default": None,
+                            }
+                        ],
+                        "selected_columns": [],
+                    },
+                },
+            ],
+            summary="Flag young drivers, rename the pricing node and rebalance the bands.",
+        )
+        result = await service.apply("main.py", edit.plan.plan_hash)
+
+        chips = {node.id: node for node in result.change.changes.nodes}
+        assert chips["features"].change == "changed"
+        assert chips["features"].steps == ["source", "free_code", "free_code"]
+        assert chips["features"].steps_changed == 1
+        assert chips["premium"].change == "renamed"
+        assert chips["premium"].renamed_from == "priced"
+        assert chips["bands"].change == "changed"
+        assert chips["bands"].fields == ["factors", "selected columns"]
+        assert "17-21" not in result.change.model_dump_json()
+
+    def test_an_identical_dry_run_replaces_the_receipt_of_an_unapplied_plan(
+        self, project_root: Path
+    ):
+        service = _service(project_root)
+        operations = [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}]
+        first = service.dry_run("main.py", operations, summary="Rename quotes.")
+        second = service.dry_run(
+            "main.py",
+            operations,
+            summary="Rename the quotes node.",
+            assumptions=["Nothing reads it."],
+        )
+
+        assert first.plan.plan_hash == second.plan.plan_hash
+        receipt = service.plan_store.receipt(second.plan.plan_hash)
+        assert (receipt.summary, receipt.assumptions) == (
+            "Rename the quotes node.",
+            ("Nothing reads it.",),
+        )
+
+    @pytest.mark.parametrize(
+        ("summary", "assumptions"),
+        [
+            pytest.param("", (), id="empty-summary"),
+            pytest.param("x" * 161, (), id="long-summary"),
+            pytest.param("Rename quotes.", ("",), id="empty-assumption"),
+            pytest.param("Rename quotes.", ("a",) * 6, id="too-many-assumptions"),
+        ],
+    )
+    def test_a_receipt_outside_its_bounds_is_refused(
+        self, project_root: Path, summary: str, assumptions: tuple[str, ...]
+    ):
+        with pytest.raises(AssistantOperationError) as caught:
+            _service(project_root).dry_run(
+                "main.py",
+                [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
+                summary=summary,
+                assumptions=assumptions,
+            )
+        assert caught.value.code == "invalid_request"
 
 
 def test_save_service_exposes_the_same_no_write_validation_used_by_save(project_root: Path):
@@ -687,7 +968,8 @@ def test_dry_run_binds_schema_evidence_into_executable_plan(
             },
             {"op": "add_edge", "source": "quotes", "target": "$derive"},
         ],
-    )
+        summary="Test plan.",
+    ).plan
 
     assert plan.verification_tier == "schema"
     assert plan.verification_evidence
@@ -721,7 +1003,8 @@ def test_dry_run_rejects_trace_regression_polars_plan_before_storing(
                 },
                 {"op": "add_edge", "source": "quotes", "target": "$bad"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
     assert exc_info.value.code == "schema_unresolvable"
     assert "bad_fill" in str(exc_info.value)
@@ -755,7 +1038,8 @@ def test_dry_run_rejects_invalid_banding_semantics_before_storing(
                 },
                 {"op": "add_edge", "source": "quotes", "target": "$band"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
     assert len(service.plan_store) == 0
 
@@ -1004,7 +1288,11 @@ class TestSteppedWrites:
             config["steps"] = None
 
         with pytest.raises(OpValidationError) as excinfo:
-            service.dry_run("main.py", [{"op": "update_node", "node": node, "config": config}])
+            service.dry_run(
+                "main.py",
+                [{"op": "update_node", "node": node, "config": config}],
+                summary="Test plan.",
+            ).plan
 
         assert '{"id": "logic", "kind": "free_code", "code": "..."}' in str(excinfo.value)
         assert ('"kind": "source"' in str(excinfo.value)) == (node == "t")
@@ -1023,8 +1311,10 @@ class TestSteppedWrites:
         )
         service = _service(stepped_project)
         plan = service.dry_run(
-            "main.py", [{"op": "update_node", "node": node, "config": {"steps": steps}}]
-        )
+            "main.py",
+            [{"op": "update_node", "node": node, "config": {"steps": steps}}],
+            summary="Test plan.",
+        ).plan
 
         result = await service.apply("main.py", plan.plan_hash)
 
@@ -1056,8 +1346,10 @@ class TestSteppedWrites:
         service = _service(stepped_project)
 
         plan = service.dry_run(
-            "main.py", [{"op": "update_node", "node": node, "config": {"steps": steps}}]
-        )
+            "main.py",
+            [{"op": "update_node", "node": node, "config": {"steps": steps}}],
+            summary="Test plan.",
+        ).plan
         await service.apply("main.py", plan.plan_hash)
 
         saved = _reparsed_config(stepped_project, node)
@@ -1081,7 +1373,8 @@ class TestSteppedWrites:
                 {"op": "add_node", "node_type": "explore", "name": "look", "ref": "look"},
                 {"op": "add_edge", "source": "$claims", "target": "$look"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
 
         await service.apply("main.py", plan.plan_hash)
 
@@ -1097,8 +1390,10 @@ class TestSteppedWrites:
         service = _service(stepped_project)
         steps = [{"id": "logic", "kind": "free_code", "code": _FREE_CODE}]
         plan = service.dry_run(
-            "main.py", [{"op": "update_node", "node": "rated", "config": {"steps": steps}}]
-        )
+            "main.py",
+            [{"op": "update_node", "node": "rated", "config": {"steps": steps}}],
+            summary="Test plan.",
+        ).plan
         original_commit = service._commit
 
         def commit_other_steps(source_file, after):
@@ -1137,8 +1432,10 @@ class TestSteppedWrites:
 
         with pytest.raises(AssistantOperationError) as excinfo:
             service.dry_run(
-                "main.py", [{"op": "update_node", "node": "rated", "config": {"steps": steps}}]
-            )
+                "main.py",
+                [{"op": "update_node", "node": "rated", "config": {"steps": steps}}],
+                summary="Test plan.",
+            ).plan
 
         assert excinfo.value.code == "op_not_applied"
         assert "'rated'" in str(excinfo.value)
@@ -1233,7 +1530,11 @@ class TestWrittenNodesAreReady:
         service = _service(modelling_project)
 
         with pytest.raises(HTTPException) as raised:
-            service.dry_run("main.py", [{"op": "update_node", "node": "train", "config": config}])
+            service.dry_run(
+                "main.py",
+                [{"op": "update_node", "node": "train", "config": config}],
+                summary="Test plan.",
+            ).plan
 
         assert raised.value.status_code == 400
         assert message in raised.value.detail
@@ -1266,7 +1567,11 @@ class TestWrittenNodesAreReady:
         service = _service(modelling_project)
 
         with pytest.raises(AssistantOperationError) as raised:
-            service.dry_run("main.py", [{"op": "update_node", "node": "train", "config": config}])
+            service.dry_run(
+                "main.py",
+                [{"op": "update_node", "node": "train", "config": config}],
+                summary="Test plan.",
+            ).plan
 
         assert raised.value.code == "node_not_ready"
         assert "'train'" in str(raised.value)
@@ -1298,7 +1603,7 @@ class TestWrittenNodesAreReady:
         ]
 
         with pytest.raises(AssistantOperationError) as raised:
-            service.dry_run("main.py", operations)
+            service.dry_run("main.py", operations, summary="Test plan.").plan
 
         assert raised.value.code == "node_not_ready"
         assert "'train'" in str(raised.value)
@@ -1317,7 +1622,8 @@ class TestWrittenNodesAreReady:
                 "main.py",
                 [{"op": "update_node", "node": "train", "config": _VALID_GLM}],
                 postconditions=declared,
-            )
+                summary="Test plan.",
+            ).plan
 
         assert raised.value.code == "invalid_plan"
         assert f"at most {MAX_DECLARED_POSTCONDITIONS} postconditions" in str(raised.value)
@@ -1339,7 +1645,8 @@ class TestWrittenNodesAreReady:
                     },
                     {"op": "add_edge", "source": "policies", "target": "$l"},
                 ],
-            )
+                summary="Test plan.",
+            ).plan
 
         assert raised.value.code == "node_not_ready"
         assert "'lookup'" in str(raised.value)
@@ -1364,7 +1671,8 @@ class TestWrittenNodesAreReady:
                     },
                     {"op": "add_edge", "source": "policies", "target": "$l"},
                 ],
-            )
+                summary="Test plan.",
+            ).plan
 
         assert raised.value.code == "node_not_ready"
         assert "JSONDecodeError" in str(raised.value)
@@ -1374,8 +1682,10 @@ class TestWrittenNodesAreReady:
         service = _service(modelling_project)
 
         plan = service.dry_run(
-            "main.py", [{"op": "update_node", "node": "train", "config": _VALID_GLM}]
-        )
+            "main.py",
+            [{"op": "update_node", "node": "train", "config": _VALID_GLM}],
+            summary="Test plan.",
+        ).plan
         await service.apply("main.py", plan.plan_hash)
 
         saved = _reparsed_config(modelling_project, "train")
@@ -1400,7 +1710,8 @@ class TestWrittenNodesAreReady:
                 },
                 {"op": "add_edge", "source": "policies", "target": "$d"},
             ],
-        )
+            summary="Test plan.",
+        ).plan
         await service.apply("main.py", plan.plan_hash)
 
         assert _reparsed_config(modelling_project, "train") == {}
@@ -1460,7 +1771,9 @@ class TestInferredInputSchemas:
         from haute._source_cache import SourceCacheStore
 
         service = _service(csv_project)
-        plan = service.dry_run("main.py", _add_input_and_transform(self._CSV))
+        plan = service.dry_run(
+            "main.py", _add_input_and_transform(self._CSV), summary="Test plan."
+        ).plan
 
         # The separator splits two columns and the override keeps `id` a string.
         columns = [
@@ -1555,7 +1868,9 @@ class TestDeclaredQuoteInputSchemas:
         from haute._source_cache import SourceCacheStore
 
         service = _service(project_root)
-        plan = service.dry_run("main.py", _add_quote_input_and_transform(_QUOTE_INPUT))
+        plan = service.dry_run(
+            "main.py", _add_quote_input_and_transform(_QUOTE_INPUT), summary="Test plan."
+        ).plan
 
         assert plan.verification_tier == "schema"
         declared = [
@@ -1593,7 +1908,9 @@ class TestDeclaredQuoteInputSchemas:
         config = {"path": "quote.json", "tables": [untyped]}
 
         with pytest.raises(SchemaUnresolvableError) as refused:
-            _service(project_root).dry_run("main.py", _add_quote_input_and_transform(config))
+            _service(project_root).dry_run(
+                "main.py", _add_quote_input_and_transform(config), summary="Test plan."
+            ).plan
 
         # A preview meets the same refusal, so the remedy is the column's type.
         assert isinstance(refused.value.failure, ApiInputSchemaError)
@@ -1618,7 +1935,7 @@ class TestDeclaredQuoteInputSchemas:
         service = _service(project_root)
 
         with pytest.raises(HTTPException) as raised:
-            service.dry_run("main.py", ops)
+            service.dry_run("main.py", ops, summary="Test plan.").plan
 
         assert raised.value.status_code == 400
         detail = str(raised.value.detail)

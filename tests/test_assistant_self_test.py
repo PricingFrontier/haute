@@ -72,7 +72,7 @@ def _telemetry(**overrides: object) -> SelfTestTelemetry:
         "time_to_validated_plan_ms": 30.0,
         "end_to_end_ms": 40.0,
         "applied_plan": True,
-        "graph_updated": True,
+        "change_applied": True,
     }
     values.update(overrides)
     return SelfTestTelemetry(**values)  # type: ignore[arg-type]
@@ -349,7 +349,7 @@ class TestSelfTestScoring:
             _case(required_node_types=(), required_edges=(), outcome="unchanged"),
             before=graph,
             after=graph,
-            telemetry=_telemetry(outcome=observed, applied_plan=False, graph_updated=False),
+            telemetry=_telemetry(outcome=observed, applied_plan=False, change_applied=False),
             provider="replay",
             model="trajectory",
             evidence="replay",
@@ -700,7 +700,7 @@ def test_a_report_never_mixes_replay_and_live_evidence() -> None:
             _case(required_node_types=(), required_edges=(), outcome="unchanged"),
             before=graph,
             after=graph,
-            telemetry=_telemetry(outcome="unchanged", applied_plan=False, graph_updated=False),
+            telemetry=_telemetry(outcome="unchanged", applied_plan=False, change_applied=False),
             provider="databricks",
             model="served-model",
             evidence=evidence,

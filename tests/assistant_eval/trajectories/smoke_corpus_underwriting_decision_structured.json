@@ -12,6 +12,7 @@
               "id": "dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
+                "summary": "Add underwriting_decision, deciding each quote by age and claims.",
                 "ops": [
                   {
                     "op": "add_node",

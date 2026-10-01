@@ -79,6 +79,7 @@ from haute.assistant._wire_ops import (
     UpdatePreambleOp,
     parse_ops,
 )
+from haute.schemas import ASSISTANT_MAX_ASSUMPTIONS, ASSISTANT_RECEIPT_TEXT_LIMIT
 
 _SUBMODEL_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 _X_STEP = 280.0
@@ -2678,9 +2679,39 @@ def build_graph_edit_plan(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PlanReceipt:
+    """What the model says a plan does: its summary and the assumptions it made.
+
+    The receipt is stored beside the plan, outside the hashed plan authority,
+    so its wording never changes a plan hash. It is the model's own text and
+    the change card shows it as written.
+    """
+
+    summary: str
+    assumptions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        texts = (self.summary, *self.assumptions)
+        if any(not text.strip() or len(text) > ASSISTANT_RECEIPT_TEXT_LIMIT for text in texts):
+            raise AssistantOperationError(
+                "invalid_request",
+                "A plan summary and each assumption must be non-empty and at most "
+                f"{ASSISTANT_RECEIPT_TEXT_LIMIT} characters.",
+                fix="Say in one short sentence what the plan does.",
+            )
+        if len(self.assumptions) > ASSISTANT_MAX_ASSUMPTIONS:
+            raise AssistantOperationError(
+                "invalid_request",
+                f"A plan records at most {ASSISTANT_MAX_ASSUMPTIONS} assumptions.",
+                fix="Keep only the assumptions that change the result.",
+            )
+
+
 @dataclass(slots=True)
 class _StoredPlan:
     plan: GraphEditPlan
+    receipt: PlanReceipt
     expires_at: float
     state: Literal["validated", "applying", "applied", "aborted"] = "validated"
     result: object | None = None
@@ -2717,14 +2748,17 @@ class PlanStore:
         with self._lock:
             return len(self._records)
 
-    def put(self, plan: GraphEditPlan) -> None:
+    def put(self, plan: GraphEditPlan, receipt: PlanReceipt) -> None:
         with self._lock:
-            # A hit is promoted, which is all a still-valid identical plan needs.
+            # A hit is promoted, which is all a still-valid identical plan
+            # needs; a plan not yet applied takes the latest receipt.
             existing = self._records.get(plan.plan_hash)
             if existing is not None:
                 if existing.state == "aborted":
                     self._records.pop(plan.plan_hash)
                 elif existing.state == "applying" or monotonic() < existing.expires_at:
+                    if existing.state == "validated":
+                        existing.receipt = receipt
                     return
                 else:
                     self._records.pop(plan.plan_hash)
@@ -2741,11 +2775,17 @@ class PlanStore:
                     "Every plan-store slot is reserved by an in-flight apply; "
                     "retry the dry-run after those saves settle.",
                 )
-            self._records.put(plan.plan_hash, _StoredPlan(plan, monotonic() + self._ttl_seconds))
+            self._records.put(
+                plan.plan_hash, _StoredPlan(plan, receipt, monotonic() + self._ttl_seconds)
+            )
 
     def get(self, plan_hash: str) -> GraphEditPlan:
         with self._lock:
             return self._record(plan_hash).plan
+
+    def receipt(self, plan_hash: str) -> PlanReceipt:
+        with self._lock:
+            return self._record(plan_hash).receipt
 
     def begin_apply(self, plan_hash: str) -> GraphEditPlan:
         with self._lock:
@@ -2798,6 +2838,7 @@ __all__ = [
     "AppliedOps",
     "LocatedPlanError",
     "OpValidationError",
+    "PlanReceipt",
     "PlanStore",
     "PreparedGraphEdit",
     "ProjectSourceEvidence",

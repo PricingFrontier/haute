@@ -259,7 +259,7 @@ def test_every_card_configuration_applies_and_executes(
     operations = _card_operations(card, config, fixture)
     service = _service(project)
 
-    plan = service.dry_run(_SOURCE_FILE, operations)
+    plan = service.dry_run(_SOURCE_FILE, operations, summary="Test plan.").plan
     # A Quote Input the plan adds has no snapshot yet: its tables resolve from
     # their declared contract.
     adds_api_input = any(
@@ -309,7 +309,8 @@ def test_a_card_that_is_not_authorable_states_the_products_refusal(
         _service(project).dry_run(
             _SOURCE_FILE,
             [{"op": "add_node", "node_type": node_type.value, "name": "card", "config": {}}],
-        )
+            summary="Test plan.",
+        ).plan
 
     reason = str(refused.value).split(": ", 1)[1]
     assert reason in node_card(node_type)["note"]
@@ -431,11 +432,15 @@ def test_walkthrough_guesses_fail_where_the_card_shape_is_valid_first_time(
 
     refused = asyncio.run(
         dry_run_graph_edits(
-            _SOURCE_FILE, _card_operations(card, {**minimal, "config": guess}, fixture)
+            _SOURCE_FILE,
+            _card_operations(card, {**minimal, "config": guess}, fixture),
+            summary="Test plan.",
         )
     )
     accepted = asyncio.run(
-        dry_run_graph_edits(_SOURCE_FILE, _card_operations(card, minimal, fixture))
+        dry_run_graph_edits(
+            _SOURCE_FILE, _card_operations(card, minimal, fixture), summary="Test plan."
+        )
     )
 
     error = refused["error"]

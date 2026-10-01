@@ -783,6 +783,17 @@ def _rev_parse(ref: str, cwd: Path | None = None) -> str | None:
     return sha.strip() if ok and sha.strip() else None
 
 
+def commit_parent(sha: str, cwd: Path | None = None) -> str | None:
+    """The first parent of commit *sha*, or None for a root commit.
+
+    *sha* must be a full or abbreviated hexadecimal commit id, so no ref
+    syntax can reach git through it.
+    """
+    if not sha or any(char not in "0123456789abcdef" for char in sha):
+        raise GitDomainError(f"Not a commit id: {sha!r}.")
+    return _rev_parse(f"{sha}^", cwd=cwd)
+
+
 @lru_cache(maxsize=1024)
 def _tree_of_cached(sha: str, cwd_key: str) -> str:
     """Cached inner — a commit's tree SHA is content-addressed. ``_run_git``

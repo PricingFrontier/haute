@@ -41,6 +41,7 @@ from haute.assistant._node_cards import node_card
 from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
+from haute.schemas import ASSISTANT_MAX_ASSUMPTIONS, ASSISTANT_RECEIPT_TEXT_LIMIT
 
 # The save service is the authority for singleton policy.  Keep this derived
 # rather than repeating the node list here: a new singleton must be visible to
@@ -970,51 +971,27 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "recipe_plan_hash",
         ),
         "dry_run_recipe_plan": (
-            "base_revision",
-            "capability_hash",
-            "revision_sources",
-            "normalized_operations",
-            "diff",
-            "affected_capabilities",
-            "postconditions",
-            "validation_warnings",
-            "resulting_graph_shape",
-            "egress",
-            "verification_tier",
             "plan_hash",
-            "verification_evidence",
+            "operations",
+            "verification_tier",
+            "evidence",
+            "warnings",
+            "changes",
         ),
         "dry_run_graph_edits": (
-            "base_revision",
-            "capability_hash",
-            "revision_sources",
-            "normalized_operations",
-            "diff",
-            "affected_capabilities",
-            "postconditions",
-            "validation_warnings",
-            "resulting_graph_shape",
-            "egress",
-            "verification_tier",
             "plan_hash",
-            "verification_evidence",
+            "operations",
+            "verification_tier",
+            "evidence",
+            "warnings",
+            "changes",
         ),
         "apply_graph_plan": (
             "plan_hash",
-            "capability_hash",
-            "base_revision",
-            "result_revision",
-            "expected_diff",
-            "actual_diff",
-            "verification_tier",
-            "verification_evidence",
-            "verification_status",
-            "verification_error_code",
-            "graph_fingerprint",
-            "graph_publication_error",
-            "warnings",
-            "git_sha",
             "applied_operations",
+            "verification_tier",
+            "evidence",
+            "change",
         ),
         "get_capability_manifest": (
             "schema_version",
@@ -1056,7 +1033,16 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "recipe_id",
         "validation_path",
         "validation_reason",
-        *fields["apply_graph_plan"],
+        # A committed save whose post-save verification failed.
+        "plan_hash",
+        "verification_tier",
+        "verification_status",
+        "verification_error_code",
+        "graph_fingerprint",
+        "graph_publication_error",
+        "warnings",
+        "git_sha",
+        "applied_operations",
     }
     properties["error"] = _closed_object(
         {
@@ -1069,11 +1055,6 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "get_node_schema": {"columns", "ports", "inputs", "unresolved_reason"},
         # `input` is null when the node's own output was profiled.
         "get_column_profiles": {"input"},
-        "apply_graph_plan": {
-            "verification_status",
-            "verification_error_code",
-            "graph_publication_error",
-        },
     }
     success_required = [
         field
@@ -1177,13 +1158,18 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "structured step grammar: each step kind's fields and the closed vocabularies."
         ),
         "dry_run_graph_edits": (
-            "Validate an exact graph-edit plan and report revision, semantic diff, "
-            "postconditions, authority and verification tier without writing."
+            "Validate an exact graph-edit plan without writing. Say in `summary` what the "
+            "plan does and list any `assumptions` you made; the analyst sees both on the "
+            "change card. Returns the plan hash to apply, the verification tier, an "
+            "evidence summary, warnings and the plan's node and edge changes."
         ),
         "dry_run_recipe_plan": (
             "Dry-run exactly one pending canonical recipe by recipe_plan_hash."
         ),
-        "apply_graph_plan": "Apply one exact validated plan hash under revision authority.",
+        "apply_graph_plan": (
+            "Apply one exact validated plan hash under revision authority. Returns the "
+            "change record the analyst sees, built from what was saved."
+        ),
         "get_capability_manifest": "Read manifest identity and its compact capability index.",
         "get_capability_descriptors": (
             "Read ordered complete capability descriptors in one batch. A node "
@@ -1233,10 +1219,28 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "get_authoring_guide": _closed_object(),
         "dry_run_graph_edits": _closed_object(
             {
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": ASSISTANT_RECEIPT_TEXT_LIMIT,
+                    "description": "One plain sentence saying what the plan does.",
+                },
+                "assumptions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": ASSISTANT_RECEIPT_TEXT_LIMIT,
+                    },
+                    "maxItems": ASSISTANT_MAX_ASSUMPTIONS,
+                    "description": (
+                        "Choices you made that the analyst did not state, one sentence each."
+                    ),
+                },
                 "ops": graph_edit_operations_schema(),
                 "postconditions": _postconditions_schema(),
             },
-            ["ops"],
+            ["summary", "ops"],
         ),
         "dry_run_recipe_plan": _closed_object(
             {
@@ -1604,6 +1608,55 @@ def compact_manifest(manifest: CapabilityManifest | None = None) -> dict[str, ob
 validate_manifest_complete()
 
 
+#: Each tool's activity-row title in plain words, while it runs and once it is done.
+_TOOL_TITLES: dict[str, str] = {
+    "get_pipeline": "Reading the pipeline",
+    "get_node_schema": "Reading a node's columns",
+    "get_node_config": "Reading a node's settings",
+    "get_column_profiles": "Profiling column values",
+    "list_datasets": "Listing datasets",
+    "get_dataset_schema": "Reading a dataset's columns",
+    "get_project_knowledge": "Searching project notes",
+    "get_example": "Reading an example pipeline",
+    "get_authoring_guide": "Reading the authoring guide",
+    "get_capability_manifest": "Reading the node catalogue",
+    "get_capability_descriptors": "Reading node and tool details",
+    "plan_recipe": "Planning a recipe",
+    "dry_run_recipe_plan": "Checking the recipe plan",
+    "dry_run_graph_edits": "Checking the plan",
+    "apply_graph_plan": "Applying the plan",
+}
+
+
+def _changes(count: int) -> str:
+    return f"{count} change" if count == 1 else f"{count} changes"
+
+
+def tool_title(
+    name: str, arguments: Mapping[str, object], result: Mapping[str, object] | None = None
+) -> str:
+    """The activity row's title for one tool call, in plain words.
+
+    A started row (no *result*) reads the arguments: a dry-run counts its
+    operations. A finished row reads only the result, so a resumed row, whose
+    arguments are redacted, reads the same as the live one: a dry-run counts
+    the result's ``operations`` and an apply its ``applied_operations``; a
+    failed call, whose result counts nothing, keeps the tool's plain title. A
+    name no tool has is its own title.
+    """
+
+    verb = {"dry_run_graph_edits": "Checking", "apply_graph_plan": "Applying"}.get(name)
+    count: object
+    if result is None:
+        ops = arguments.get("ops") if name == "dry_run_graph_edits" else None
+        count = len(ops) if isinstance(ops, list) else None
+    else:
+        count = result.get("operations" if name == "dry_run_graph_edits" else "applied_operations")
+    if verb is not None and isinstance(count, int) and not isinstance(count, bool):
+        return f"{verb} {_changes(count)}"
+    return _TOOL_TITLES.get(name, name)
+
+
 __all__ = [
     "EDGE_NAME_PLACEHOLDER",
     "MANIFEST_SCHEMA_VERSION",
@@ -1616,5 +1669,6 @@ __all__ = [
     "materialise_json",
     "new_logic_steps",
     "step_grammar",
+    "tool_title",
     "validate_manifest_complete",
 ]
