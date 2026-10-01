@@ -221,8 +221,8 @@ orphaned halves).
     exact name, with no suffix such as `_node` or `_input`.
     An `outputMapping` row's `source_port` that starts with `$` names a batch ref, as a
     node id may: it resolves to the input name the referenced node's edge gives (its
-    sanitised label), on `add_node` and `update_node` alike, and an undeclared ref is the
-    unknown-reference error; this is how the `response_output` recipe after a node the
+    sanitised label), on `add_node` and `update_node` alike, and an undeclared ref, or one
+    whose node an earlier operation deleted, is the unknown-reference error; this is how the `response_output` recipe after a node the
     plan adds reads it.
     Positions are assigned by the deterministic rule below *after* the whole batch
     has applied, so parent-based placement sees the batch's final wiring.

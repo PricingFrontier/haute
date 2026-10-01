@@ -448,6 +448,29 @@ def _withheld(graph: PipelineGraph, raw_ops: list[dict]) -> PipelineGraph:
     return _apply_ops_with_refs(graph, parse_ops(raw_ops), config_withheld=True).graph
 
 
+def test_an_output_row_ref_to_a_node_the_plan_deleted_is_an_unknown_reference():
+    row = {
+        "source_port": "$gone",
+        "source_column": "x",
+        "output_path": "$[:].x",
+        "enabled": True,
+    }
+    with pytest.raises(OpValidationError, match="'\\$gone'"):
+        _apply(
+            _graph([]),
+            [
+                {"op": "add_node", "node_type": "polars", "name": "gone", "ref": "gone"},
+                {"op": "delete_node", "node": "$gone"},
+                {
+                    "op": "add_node",
+                    "node_type": "output",
+                    "name": "response",
+                    "config": {"outputMapping": [row]},
+                },
+            ],
+        )
+
+
 class TestWithheldConfigGuard:
     """An update that would retype a saved list or map the model cannot read is refused."""
 

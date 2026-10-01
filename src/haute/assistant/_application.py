@@ -670,11 +670,14 @@ def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collec
         routing = node.data.config.get("input_scenario_map")
         if not isinstance(routing, Mapping):
             continue
-        connected = {
-            edge_input_name(edge, nodes[edge.source])
-            for edge in graph.edges
-            if edge.target == node_id and edge.source in nodes
-        }
+        connected: set[str] = set()
+        for edge in graph.edges:
+            if edge.target != node_id or edge.source not in nodes:
+                continue
+            try:
+                connected.add(edge_input_name(edge, nodes[edge.source]))
+            except ValueError:
+                continue  # a malformed edge is save validation's verdict, not this one's
         for scenario in sorted({value for value in routing.values() if isinstance(value, str)}):
             routed = sorted(str(name) for name, value in routing.items() if value == scenario)
             if connected & set(routed):

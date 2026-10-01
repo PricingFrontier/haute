@@ -410,7 +410,9 @@ def _resolve_output_rows(
         port = row.get("source_port") if isinstance(row, Mapping) else None
         if isinstance(port, str) and port.startswith("$"):
             ref = port[1:]
-            if ref not in refs:
+            index = None if ref not in refs else _node_index(graph, refs[ref])
+            if index is None:
+                # Undeclared, or declared for a node an earlier operation deleted.
                 raise UnknownNodeReferenceError(
                     port,
                     "output mapping source",
@@ -418,7 +420,7 @@ def _resolve_output_rows(
                     fix=f"Declare ref {ref!r} on an earlier add_node in the same plan, "
                     "or write the incoming edge's name.",
                 )
-            source = graph.nodes[cast(int, _node_index(graph, refs[ref]))]
+            source = graph.nodes[index]
             try:
                 name = executable_input_name(
                     node_type=source.data.nodeType, label=source.data.label, source_handle=None
