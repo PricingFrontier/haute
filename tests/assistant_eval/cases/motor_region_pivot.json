@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_region_pivot",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "explore",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "In premium_explore, add a pivot 'Premium by region' showing total premium in pounds and the number of quotes for each region, regions in ascending order.",
@@ -25,58 +27,31 @@
           "premium_explore": {
             "pivots": [
               {
-                "version": 1,
-                "id": "pivot_1",
                 "name": "Premium by region",
                 "enabled": true,
                 "filters": [],
                 "columns": [],
                 "rows": [
                   {
-                    "id": "row_1",
                     "field": "region",
-                    "sort": "ascending",
-                    "number_format": "general",
-                    "decimal_places": null,
-                    "use_grouping": true
+                    "sort": "ascending"
                   }
                 ],
                 "values": [
                   {
-                    "id": "value_1",
                     "field": "premium",
                     "aggregation": "sum",
-                    "reference": "premium_sum",
-                    "display_name": "Total premium",
                     "sort_rows": "none",
-                    "color_scale": "none",
-                    "color_scale_split_by": null,
-                    "number_format": "currency_gbp",
-                    "decimal_places": 0,
-                    "use_grouping": true
+                    "number_format": "currency_gbp"
                   },
                   {
-                    "id": "value_2",
                     "field": "quote_id",
                     "aggregation": "count",
-                    "reference": "quote_id_count",
-                    "display_name": "Quotes",
-                    "sort_rows": "none",
-                    "color_scale": "none",
-                    "color_scale_split_by": null,
-                    "number_format": "general",
-                    "decimal_places": 0,
-                    "use_grouping": true
+                    "sort_rows": "none"
                   }
                 ],
                 "formulas": [],
-                "value_order": [
-                  "value_1",
-                  "value_2"
-                ],
                 "options": {
-                  "row_grand_totals": true,
-                  "column_grand_totals": false,
                   "sort_by": null
                 }
               }

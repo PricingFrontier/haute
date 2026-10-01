@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "motor_value_band_factor_withheld",
+  "case": "motor_value_band_factor_withheld",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band vehicle value in thousands into value_band in rating_bands.",
+                "ops": [
+                  {
+                    "op": "update_node",
+                    "node": "rating_bands",
+                    "config": {
+                      "factors": [
+                        {
+                          "banding": "breakpoints",
+                          "column": "vehicle_value_k",
+                          "outputColumn": "value_band",
+                          "rules": [
+                            {
+                              "boundary": "5",
+                              "label": "up to 5k"
+                            },
+                            {
+                              "boundary": "15",
+                              "label": "5k-15k"
+                            },
+                            {
+                              "boundary": "",
+                              "label": "over 15k"
+                            }
+                          ],
+                          "default": "unknown"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "error",
+                "error_code": "config_withheld"
+              }
+            }
+          ]
+        },
+        {
+          "text": "NEEDS_INPUT: This project's egress policy withholds rating_bands' saved configuration from me, and adding value_band means restating the whole factors list, so I would drop or change the age_band, inception_year and region bands I cannot read. Could you give me those three factors' rules and defaults, or add the value band in the editor?",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

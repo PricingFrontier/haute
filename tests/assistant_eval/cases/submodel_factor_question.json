@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "submodel_factor_question",
   "fixture_version": "1",
   "project_fixture": "submodel_pricing",
   "area": "submodels",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "What does the vehicle_factors submodel add to the policies before premium uses them?",

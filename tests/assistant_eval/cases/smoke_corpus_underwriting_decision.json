@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_corpus_underwriting_decision",
   "fixture_version": "1",
   "project_fixture": "polars_corpus",
   "area": "steps",
   "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After quotes, add a Transform named underwriting_decision that adds a text column decision: decline when age is below 18; otherwise refer when claims_count is at least 3 or vehicle_value is above 100000; otherwise await_price when premium is null; otherwise accept. Connect quotes to underwriting_decision.",

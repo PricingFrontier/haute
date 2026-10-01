@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_frequency_cap",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "model_score",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After claim_frequency scores, cap expected_frequency at 0.25 so one quote cannot carry an extreme frequency.",

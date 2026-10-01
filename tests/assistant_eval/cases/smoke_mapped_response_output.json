@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_mapped_response_output",
   "fixture_version": "1",
   "project_fixture": "ordinary_pricing",
   "area": "outputs",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After quotes, add a response output named quote_response mapping exactly quote_id, driver_age, and region to same-named JSON fields.",

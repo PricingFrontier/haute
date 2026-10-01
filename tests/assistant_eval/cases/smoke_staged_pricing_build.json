@@ -1,10 +1,14 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_staged_pricing_build",
   "fixture_version": "1",
   "project_fixture": "showcase_parquets",
   "area": "multi_stage",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [
+    "one_apply_per_turn"
+  ],
   "turns": [
     {
       "request": "Author and save this pricing pipeline only; do not run it. Build it in stages and save each stage before starting the next. First, a file data input named nb_batch that scans data/nb_batch.parquet as Parquet, with a Transform named quote_features after it that adds vehicle_value_k, the vehicle_value divided by 1000. Second, a categorical banding node named region_band after quote_features that bands column region into region_group: north is core, south is outer, and anything else is other. Third, a rating step named region_rating after region_band with one table on factor region_group, output region_factor, core -> 1.1 and outer -> 0.9 with default 1.0, and a combined output technical_premium using multiply with base value 500. Fourth, a response output named quote_response after region_rating containing quote_id, region_factor and technical_premium.",

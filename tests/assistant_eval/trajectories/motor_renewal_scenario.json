@@ -9,6 +9,24 @@
           "text": "",
           "calls": [
             {
+              "id": "config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "policies",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
               "id": "dry",
               "tool": "dry_run_graph_edits",
               "arguments": {

@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_join_clarification",
   "fixture_version": "1",
   "project_fixture": "join_parquets",
   "area": "clarification",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "Join nb_batch as the main/base input with competitor_insight as the joining/reference input, but I have not decided the join type or key columns. Do not choose them for me; ask one focused question.",

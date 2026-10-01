@@ -1,13 +1,15 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_online_optimiser",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "optimiser",
   "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
-      "request": "Set up an online price optimisation after base_premium. Expand each quote into 5 price scenarios as price_factor from 0.9 to 1.1, and in each scenario estimate volume as 1.5 minus price_factor and expected_income as premium times price_factor times volume. Then optimise expected_income keeping total volume at least 95% of its baseline, with 50 iterations and a tolerance of 1e-6.",
+      "request": "Set up an online price optimisation after base_premium. Add a scenario expander called price_scenarios that expands each quote into 5 price scenarios as price_factor from 0.9 to 1.1, and in price_scenarios' own steps estimate volume as 1.5 minus price_factor and expected_income as premium times price_factor times volume. Then add an optimiser called price_optimiser after price_scenarios that optimises expected_income keeping total volume at least 95% of its baseline, with 50 iterations and a tolerance of 1e-6.",
       "expectations": {
         "outcome": "applied",
         "saves": true,

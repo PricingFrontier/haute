@@ -358,12 +358,6 @@ _EXPECTED_DEBT_IDS = {
     # Haute's default xgboost-cpu install lack; the device-free GPU contract
     # (config, refusal, fallback detection, VRAM, route, gpu-setup) runs everywhere.
     "3f2e4ca1be0a6123",
-    # The reference trajectories that change an entry of a saved list
-    # (motor_licence_band_refine, motor_region_regroup) are refused by the
-    # dry-run's config_withheld guard under the replay's internal policy; strict,
-    # so they fail loudly once those cases run under a policy that lets the model
-    # read saved configuration.
-    "19fffc06587e8c7d",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

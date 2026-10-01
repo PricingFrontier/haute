@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_new_driver_flag",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "steps",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "In rating_features, also flag new drivers: a boolean column new_driver, true when licence_years is below 3. Keep the existing step as it is.",
@@ -37,8 +39,8 @@
           }
         ],
         "efficiency": {
-          "max_provider_round_trips": 3,
-          "max_tool_calls": 2,
+          "max_provider_round_trips": 4,
+          "max_tool_calls": 3,
           "max_failed_tool_calls": 0,
           "max_duplicate_static_reads": 0
         }

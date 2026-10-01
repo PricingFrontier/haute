@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_frequency_explore",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "explore",
   "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "Add an Explore node called frequency_explore on claim_frequency's output so I can look at the scored frequencies, with every overview card on.",

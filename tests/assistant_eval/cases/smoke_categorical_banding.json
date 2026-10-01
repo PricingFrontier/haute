@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_categorical_banding",
   "fixture_version": "1",
   "project_fixture": "ordinary_pricing",
   "area": "banding",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After quotes, add a categorical banding node named region_band. For column region, output region_group. Map north and south to core, east and west to other, with unknown as the default. Connect quotes to region_band.",

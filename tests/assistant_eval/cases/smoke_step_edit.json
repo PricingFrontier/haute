@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_step_edit",
   "fixture_version": "1",
   "project_fixture": "stepped_pricing",
   "area": "steps",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "In risk_features, also add a boolean column young_driver, true when driver_age is below 21. Keep its existing step as it is.",
@@ -37,8 +39,8 @@
           }
         ],
         "efficiency": {
-          "max_provider_round_trips": 3,
-          "max_tool_calls": 2,
+          "max_provider_round_trips": 4,
+          "max_tool_calls": 3,
           "max_failed_tool_calls": 0,
           "max_duplicate_static_reads": 0
         }

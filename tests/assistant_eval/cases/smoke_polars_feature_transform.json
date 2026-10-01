@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_polars_feature_transform",
   "fixture_version": "2",
   "project_fixture": "ordinary_pricing",
   "area": "steps",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After quotes, add a Transform named risk_features that adds a boolean column experienced_driver, true when driver_age is at least 25. Connect quotes to risk_features.",

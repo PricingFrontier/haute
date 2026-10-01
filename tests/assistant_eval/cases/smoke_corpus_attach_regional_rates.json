@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_corpus_attach_regional_rates",
   "fixture_version": "1",
   "project_fixture": "polars_corpus",
   "area": "steps",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "Add a Transform named attach_regional_rates that starts from quotes, left-joins rates on region (each quote matches at most one rate, and the quotes keep their row order), then adds regional_benchmark as base_rate times factor. Connect quotes and rates to attach_regional_rates.",

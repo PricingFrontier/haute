@@ -1,15 +1,15 @@
 {
   "schema_version": 4,
-  "id": "motor_optimiser_clarify",
+  "id": "motor_value_band_factor_withheld",
   "fixture_version": "2",
   "project_fixture": "motor_pricing",
-  "area": "optimiser",
+  "area": "banding",
   "split": "development",
-  "egress": "project",
+  "egress": "metadata_only",
   "inapplicable_variants": [],
   "turns": [
     {
-      "request": "Set up price optimisation for the batch quotes.",
+      "request": "Add a vehicle value band to rating_bands: band vehicle_value_k into value_band with 'up to 5k' up to 5, '5k-15k' up to 15 and 'over 15k' above that, and 'unknown' when it is missing. Keep the existing bands.",
       "expectations": {
         "outcome": "needs_input",
         "saves": false,

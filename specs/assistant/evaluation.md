@@ -3,10 +3,11 @@
 ## Purpose
 
 The evaluation judges every assistant change against the tasks analysts ask
-for, area by area. This document owns the fixture projects, the case format,
-the reference trajectories, the two evaluation tiers, the scoring layers and
-efficiency metrics, the boundary between the assistant and execution, the live
-runner's commands and variants, and how evidence is reported. The assistant
+for, area by area. This document owns the fixture projects, the egress profiles
+cases run under, the case format, the reference trajectories, the two
+evaluation tiers, the scoring layers and efficiency metrics, the boundary
+between the assistant and execution, the live runner's commands and variants,
+and how evidence is reported. The assistant
 itself is specified in [the assistant specification](high-level.md) and its
 harness modules in [the low-level specification](low-level.md).
 
@@ -28,7 +29,11 @@ generated code included. All data is synthetic.
   a rounding step (`base_premium`); a quote response with nested fields
   (`quote_response`); an Explore branch (`premium_explore`); and a batch output
   (`priced_batch`). Its `data/` also holds files no node reads yet (region
-  loadings, renewal quotes and a claims history) for cases that add them.
+  loadings, renewal quotes and a claims history) for cases that add them. Its
+  batch holds a row on every breakpoint boundary the cases band at (driver ages
+  24 and 59, the inception date 2024-12-31, vehicle values of 5 and 15
+  thousand, and 2, 3 and 9 licence years), so a factor that inverts a stated
+  closure changes an executed band (see Scoring layers).
 - `submodel_pricing` prices policies through an occurrence of a
   `vehicle_factors` submodel defined in `modules/vehicle_factors.py`, followed by
   a stepped `premium` Transform.
@@ -54,13 +59,43 @@ tables from its example request, and each Data Input that does not read its file
 directly. A case therefore starts from a project the analyst has previewed, so
 the graph brief and every dry-run resolve the pipeline's columns.
 
+## Egress profiles
+
+Each case runs under a named egress profile, written into its project copy's
+`[assistant.egress]` table with the provider trust of the invoking project (a
+replay's trust is `organization`). Trust describes the endpoint and is
+validated against it, so it is never the case's to choose; an external
+provider is refused before any case runs. The profiles are a closed set:
+
+- `project`, the policy a configured project holds and the profile of every
+  case but two: `max_sensitivity = "restricted"`, so `inspect_node` reads saved
+  node configuration, with project knowledge and executable source permitted
+  and row samples not.
+- `metadata_only`: `max_sensitivity = "internal"`, with project knowledge,
+  executable source and row samples all withheld, so saved node configuration
+  is withheld too. Two cases run under it: `motor_value_band_factor_withheld`,
+  a list edit whose blind rewrite the dry-run must refuse as `config_withheld`
+  so that the turn asks (`needs_input`) and saves nothing, and
+  `breakpoint_age_banding`, which adds a node from schemas alone.
+
+This replaces the rule that "what the cases may send is the harness's decision:
+internal pipeline metadata, and no project knowledge, executable source or row
+samples, whatever the invoking project permits". Every fixture is synthetic, so
+that ceiling protected nothing, and it measured a policy no configured project
+holds: under it `inspect_node` refused every node's configuration, so each
+request to change one entry of a saved list asked the model to restate entries
+it could not read, and a recovery case could not see the code it had to fix.
+The `project` profile measures the assistant as configured projects run it,
+and `metadata_only` keeps the withheld policy measured where it is the point of
+the case.
+
 ## Case format
 
 Each case is one JSON file in `tests/assistant_eval/cases/`, in the closed case
-shape version 3: `schema_version`, `id`, `fixture_version`, `project_fixture`,
-`area`, `split` and `turns`. An unknown or missing key at any level fails
-loading, and so does a required or forbidden node-type name that is not a node
-type.
+shape version 4: `schema_version`, `id`, `fixture_version`, `project_fixture`,
+`area`, `split`, `egress`, `inapplicable_variants` and `turns`. An unknown or
+missing key at any level fails loading, and so does a required or forbidden
+node-type name that is not a node type.
 
 - `area` is one of `steps`, `banding`, `rating`, `joins`, `outputs`,
   `modelling`, `model_score`, `optimiser`, `submodels`, `source_switch`,
@@ -69,6 +104,10 @@ type.
 - `split` is `development` or `holdout`. Development cases may be studied while
   changing the assistant; holdout cases are run to measure it and are not used
   to tune prompts, cards or examples. Tier 0 replays both splits.
+- `egress` names the case's egress profile, `project` or `metadata_only`.
+- `inapplicable_variants` lists the live-run variants the case cannot be
+  measured under (see Tiers), usually none. It never names `multi_apply`, the
+  product's own behaviour, which tier 0 replays every case under.
 - `turns` holds one or more `{request, expectations}` entries, run in order in
   one session, so a multi-turn case refines what an earlier turn saved.
 
@@ -95,7 +134,12 @@ Each turn's expectations are closed and every key is required:
 - `efficiency`: `null`, or the limits `max_provider_round_trips`,
   `max_tool_calls`, `max_failed_tool_calls` and `max_duplicate_static_reads`
   for a case that is about efficiency, such as a one-node edit the turn context
-  makes possible without a read.
+  makes possible without a graph read. Such a limit leaves room for what the
+  prompt requires of every turn: a step edit (`motor_new_driver_flag`,
+  `smoke_step_edit`) allows three tool calls, the descriptor read the prompt
+  asks for before primitive operations, the dry-run and the apply, and four
+  provider round trips, the last being the closing reply that follows an
+  apply.
 
 A turn that saves nothing declares no node configurations and no goldens.
 
@@ -112,7 +156,10 @@ clarification, prompt injection, and refused requests to execute pipelines,
 write externally or edit inside a submodel, including a turn that saves the
 part of a request it may and refuses the rest. Cases and their projects are not
 reachable through the assistant's tools, examples, recipes or prompt, and no
-case id is a teaching example's name.
+case id is a teaching example's name. A request names every node the case's
+expectations name that does not exist yet (for example "a data input called
+region_loadings"), so an expectation never depends on a name the analyst did
+not give.
 
 ## Reference trajectories
 
@@ -138,11 +185,18 @@ changes the recorded error, and the case diverges.
 A case runs with the same session-stable system prompt and turn context the
 message route builds, with no selection, so a trajectory that adds or edits one
 primitive node makes its first dry-run without reading the graph first: the
-graph brief already names each node's inputs and columns, and each step's id. A
-recovery trajectory is the exception: it inspects the failing node before it
-plans the fix.
+graph brief already names each node's inputs and columns, and each step's id.
+There are two exceptions. A recovery trajectory inspects the failing node
+before it plans the fix, and then reads its config for the step code it
+rewrites. And because `update_node` replaces each key it writes whole, a
+trajectory that restates a saved non-empty list or map (rating factors, rating
+tables, output mappings, a scenario map) first reads that node's config with
+`inspect_node`'s config part, in the same turn, as a model must: an earlier
+turn's tool results are compacted out of the history. The one exception is the
+`metadata_only` list edit, whose blind rewrite the dry-run refuses as
+`config_withheld` before the turn asks.
 The `smoke_step_edit` trajectory inserts its step with `edit_steps` after the
-saved free-code step it cannot read, which the replay's execution golden
+saved free-code step without reading it, which the replay's execution golden
 proves kept. Recipe and clarification trajectories keep the reads their
 protocol names.
 
@@ -165,16 +219,19 @@ means the tools or contracts changed under the recording.
 **Tier 0: offline replay, in CI.** `tests/test_assistant_replay.py` replays
 every reference trajectory of both splits with `replay_self_test_case` through
 the real loop, tools, dry-run, apply, parser and Git mutation gate, in a copy of
-the case's project under the test's temporary directory, and each replay must
-pass every correctness layer and any efficiency limits within its timeout of
-120 seconds per turn. Replays are independent and run in parallel. No provider
-request is made. A replay starts with an empty plan store, because copies of one
-project have identical content and so identical plan hashes. The replay test
-also checks that no single-node trajectory outside the recovery area reads
-before its first dry-run and
-that the first provider request's turn context lists the columns that dry-run
-reads. Replay proves the tools, validators and contracts; it cannot show that a
-prompt change helps a model.
+the case's project under the test's temporary directory and the case's egress
+profile, and each replay must pass every correctness layer and any efficiency
+limits within its timeout of 120 seconds per turn. Replays are independent and
+run in parallel. No provider request is made. A replay starts with an empty
+plan store, because copies of one project have identical content and so
+identical plan hashes. The replay test also checks that no single-node
+trajectory outside the recovery area reads before its first dry-run, other than
+the config of a node whose saved list or map it restates; that every
+restatement of a saved list or map follows that turn's config read of the node,
+or is the `metadata_only` rewrite the dry-run refuses as `config_withheld`; and
+that the first provider request's turn context lists the columns the feature
+transform's first dry-run reads. Replay proves the tools, validators and
+contracts; it cannot show that a prompt change helps a model.
 
 **Tier 1: live runs, on demand.** `scripts/run_assistant_self_test.py` is the
 live runner, run as `python -m scripts.run_assistant_self_test` from the
@@ -182,21 +239,26 @@ repository, with three commands:
 
 - `record` runs the selected cases (all, or those named by repeated `--case`,
   `--area` or `--split`) against the configured provider, each in its own
-  spawned process and its own disposable project copy, under the harness's
-  egress allowances rather than the invoking project's, and writes the redacted
-  report, by default to `.haute/assistant-eval/<run id>/report.json` in the
-  invoking project. With `--transcripts` it also writes each case's transcript, the
+  spawned process and its own disposable project copy, under the case's egress
+  profile at the invoking project's provider trust rather than under the
+  invoking project's own allowances, and writes the redacted report, by default
+  to `.haute/assistant-eval/<run id>/report.json` in the invoking project. A
+  selected case inapplicable to the run's variant is not run; the report lists
+  it as not applicable. When no selected case applies to the variant, `record`
+  refuses before it resolves the provider. With `--transcripts` it also writes each case's transcript, the
   requests, the assistant's text and every tool call with its arguments and
   result, under `.haute/assistant-eval/<run id>/transcripts/` in the invoking
   project so a failure can be diagnosed. The runner refuses `--transcripts`
   unless Git ignores that directory.
 - `compare` reads two reports of the same evidence kind and reports, per area,
-  each report's case and pass counts; every case that flipped between pass and
-  fail, with the first failing layer on its failing side; the cases only one
-  report holds; and per area the median of each efficiency metric in both
-  reports and their difference.
-- `list` prints the selected cases' ids, areas, splits and projects without a
-  provider call.
+  each report's case, pass and not-applicable counts; every case run in both
+  that flipped between pass and fail, with the first failing layer on its
+  failing side; the cases each report lists as not applicable, which are never
+  a flip, a pass or a failure; the cases only one report holds, run or not
+  applicable; and per area the median of each efficiency metric in both reports
+  and their difference.
+- `list` prints the selected cases' ids, areas, splits, projects, egress
+  profiles and inapplicable variants without a provider call.
 
 `record --variant <name>` runs a named configuration variant, recorded in the
 report: `multi_apply` is the product's behaviour and the default, and
@@ -205,6 +267,12 @@ before a turn could save several plans: the harness ends the turn in place of
 the provider round that follows a successful `apply_graph_plan`, without calling
 the model, so the variant changes nothing in the product. Comparing the two
 reports measures whether several applies per turn help the configured model.
+A case whose expectations the variant makes unreachable lists it in
+`inapplicable_variants`: `motor_explore_then_run_blocked` (it saves and then
+ends `blocked`, but the variant ends the turn at its save) and
+`smoke_staged_pricing_build` (it saves stage by stage in one turn). Such a case
+is never run under that variant (the harness refuses to), and the report and
+`compare` show it as not applicable rather than as a failure.
 
 The live runner is a measurement and diagnostic loop, not a gate. Model
 qualification was a separate repeated-trial lane over held-out scenarios that
@@ -245,9 +313,18 @@ layer is the first failing layer of its first failing turn.
    changed when it is new or retyped, or is an endpoint of an added or removed
    edge; an untouched node elsewhere in the project is never judged).
 3. **Configuration.** Each node in `node_configs` exists and holds its subset:
-   mappings match when every expected key matches recursively, and lists and
-   scalars match only when equal. The reason names the first differing path,
-   never a value.
+   mappings match when every expected key matches recursively; lists match
+   when they have the same length and each expected element matches the
+   actual element at its position, recursively; and scalars match only when
+   equal. A key a list's mapping element leaves out is therefore free, as it is
+   in a mapping, so a case states only what its request states (an Explore
+   pivot's value label is not mandatory when the request names none), while a
+   list of another length or order never matches. The reason names the first
+   differing path, such as `config.pivots[0].values[1].aggregation`, never a
+   value. A key a case leaves out could still change behaviour, such as a
+   breakpoint factor's `rightClosed`; the execution layer catches that, because
+   every banding case that states breakpoints has a golden on its node and its
+   data has a row on each stated boundary.
 4. **Collateral change.** Every node existing before the turn and not named in
    `modified_nodes` still exists and keeps its configuration digest, the
    SHA-256 of the canonical JSON of its parsed configuration.
@@ -281,9 +358,12 @@ A golden is plain Polars code in the case, run in the project copy, that reads
 the fixture's data files and binds `df`; it never uses Haute's step renderer,
 executor or scorer, so the two computations are independent. A golden
 downstream of a Model Scoring node loads the fixture's model file with the
-model library itself to compute the prediction. The executed output must match
-the golden's column names and dtypes, null pattern and values (floats within
-1e-6, NaN equal to NaN), and row order unless the golden is order-free. A golden
+model library itself to compute the prediction. The executed output must hold
+exactly the golden's columns, matched by name in any order (the executed frame
+is reordered to the golden's columns before comparing, since no request states
+a column order), with their dtypes, null pattern and values (floats within
+1e-6, NaN equal to NaN), and its rows in the golden's order unless the golden is
+order-free. A golden
 node whose output does not fit one full preview, or a golden that does not bind
 a frame, is a broken case and raises. Response outputs are judged by their
 configuration rather than executed. The step-corpus goldens are the corpus
@@ -299,15 +379,19 @@ different kinds, so replay and live results are never combined or compared as
 one score. A data check the assistant runs never replaces the harness's
 independent execution goldens.
 
-The report (shape version 3) records the run (its id, start time, variant,
+The report (shape version 4) records the run (its id, start time, variant,
 provider, model, matched configuration and Haute version), whether every case
-passed, per area the case and pass counts and the median of each efficiency
-metric, and per case its identity, fixture version, area, split, provider,
+it ran passed, per area the counts of cases run, cases passed and cases not
+applicable and the median of each efficiency metric over the cases run, and per
+case run its identity, fixture version, area, split, egress profile, provider,
 model, pass or fail per layer, first failing layer, the turn-and-layer-prefixed
 reasons, the summed metrics, and per turn its outcome kind, saved-change count,
 terminal, the node types and edges of the saved graph, ordered tool names with
 value-free status, error code, validation path and validation reason, and the
-turn's metrics. Prompts, model prose, tool arguments and results, credentials,
+turn's metrics. Its `not_applicable` list names, apart from the cases run, each
+selected case inapplicable to the run's variant with its fixture version, area
+and split; such a case has no result, so nothing reading the report counts it
+as passed or failed, and no case is both run and not applicable. Prompts, model prose, tool arguments and results, credentials,
 dataset values, canary values and content digests are never written to a
 report.
 

@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_inception_year_rating",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "rating",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "Add an inception year relativity to base_premium, keyed on inception_year: 1.0 for 2024 and 1.04 for 2025+, with 1.0 for anything else, as inception_relativity. It should multiply into the premium like the other tables.",

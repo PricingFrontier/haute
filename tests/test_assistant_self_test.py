@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import replace
+from datetime import date
 from fnmatch import fnmatch
 from pathlib import Path
 from types import MappingProxyType
 
+import polars as pl
 import pytest
 
+from haute._sandbox import bound_project_root
 from haute._types import GraphEdge, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
 from haute.assistant._render import render_pipeline_graph
+from haute.routes._helpers import parse_pipeline_to_graph
 from scripts.assistant_eval_report import (
     RunIdentity,
     compare_report_files,
@@ -36,6 +41,7 @@ from scripts.run_assistant_self_test import (
     SelfTestToolDiagnostic,
     SelfTestTurnResult,
     TrajectoryProvider,
+    _golden_frame,
     load_self_test_cases,
     load_trajectory,
     main,
@@ -44,6 +50,7 @@ from scripts.run_assistant_self_test import (
     run_self_test_cases_in_processes,
     score_turn,
     select_self_test_cases,
+    self_test_config,
 )
 from tests._source_files import source_files
 
@@ -145,6 +152,7 @@ def _result(
         fixture_version="1",
         area=area,  # type: ignore[arg-type]
         split="development",
+        egress="project",
         evidence=evidence,  # type: ignore[arg-type]
         provider="databricks" if evidence == "live" else "replay",
         model="served-model",
@@ -168,12 +176,14 @@ def _case_payload(**overrides: object) -> dict[str, object]:
     }
     expectations.update(overrides.pop("expectations", {}))  # type: ignore[arg-type]
     payload: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "id": "case",
         "fixture_version": "1",
         "project_fixture": "fixture",
         "area": "steps",
         "split": "development",
+        "egress": "project",
+        "inapplicable_variants": [],
         "turns": [{"request": "Do it", "expectations": expectations}],
     }
     payload.update(overrides)
@@ -249,12 +259,128 @@ class TestPortfolio:
             ("region_loadings", "loaded_quotes", "join"),
         )
 
+    def test_every_stated_breakpoint_is_a_value_the_golden_bands(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configuration matching leaves free a key a factor does not state, so a
+        breakpoint factor that adds `rightClosed: false` holds every key its case
+        states. Execution catches that inverted closure only on a row that sits
+        on a boundary, so each boundary a case states is a value of the column
+        its golden bands."""
+
+        covered: set[str] = set()
+        for case in CASES:
+            for turn in case.turns:
+                goldens = {golden.node: golden for golden in turn.expectations.execution}
+                for node, subset in turn.expectations.node_configs.items():
+                    factors = [
+                        factor
+                        for factor in subset.get("factors", ())
+                        if factor["banding"] == "breakpoints"
+                    ]
+                    if not factors:
+                        continue
+                    monkeypatch.chdir(PROJECTS_ROOT / case.project_fixture)
+                    frame = _golden_frame(goldens[node].golden)
+                    for factor in factors:
+                        column = frame[factor["column"]]
+                        for rule in factor["rules"]:
+                            if rule["boundary"] == "":
+                                continue
+                            value = (
+                                date.fromisoformat(rule["boundary"])
+                                if column.dtype == pl.Date
+                                else float(rule["boundary"])
+                            )
+                            assert (column == value).any(), (case.id, factor["outputColumn"], value)
+                    covered.add(case.id)
+
+        assert covered == {
+            "breakpoint_age_banding",
+            "motor_licence_band_refine",
+            "motor_region_regroup",
+            "motor_value_band_factor",
+        }
+
+    def test_two_cases_run_metadata_only_and_two_are_inapplicable_to_one_apply(self) -> None:
+        """Every other case runs under the configured project's policy. The
+        metadata-only pair are a list edit the blind-rewrite guard must stop and
+        an added node that needs only schemas; the inapplicable pair cannot end
+        as expected when the turn stops at its first saving apply."""
+
+        assert {case.id for case in CASES if case.egress == "metadata_only"} == {
+            "motor_value_band_factor_withheld",
+            "breakpoint_age_banding",
+        }
+        assert {case.egress for case in CASES} == {"project", "metadata_only"}
+        inapplicable = {case.id: case.inapplicable_variants for case in CASES}
+        assert {case_id: variants for case_id, variants in inapplicable.items() if variants} == {
+            "motor_explore_then_run_blocked": ("one_apply_per_turn",),
+            "smoke_staged_pricing_build": ("one_apply_per_turn",),
+        }
+
+    def test_every_new_node_an_expectation_names_is_named_in_the_request(self) -> None:
+        """An expectation never depends on a node name the analyst did not give:
+        each node a turn's expectations name that the project does not hold yet
+        is named in that turn's request or an earlier turn's, and a file path
+        (`data/claims_history.parquet`) does not name a node."""
+
+        fixtures: dict[str, set[str]] = {}
+        for case in CASES:
+            if case.project_fixture not in fixtures:
+                root = PROJECTS_ROOT / case.project_fixture
+                with bound_project_root(root):
+                    graph = parse_pipeline_to_graph(root / "pipeline.py")
+                fixtures[case.project_fixture] = {node.id for node in graph.nodes}
+            known = set(fixtures[case.project_fixture])
+            for index, turn in enumerate(case.turns, start=1):
+                expected = turn.expectations
+                named = (
+                    {node for edge in expected.required_edges for node in edge[:2]}
+                    | set(expected.node_configs)
+                    | {golden.node for golden in expected.execution}
+                )
+                unstated = sorted(
+                    node
+                    for node in named - known
+                    if not re.search(rf"(?<![\w/]){re.escape(node)}(?!\w|\.\w)", turn.request)
+                )
+                assert unstated == [], (case.id, index)
+                known |= named
+
 
 class TestCaseLoading:
     def test_unknown_case_key_fails_closed(self, tmp_path: Path) -> None:
         cases, projects = _write_case(tmp_path, _case_payload(unexpected=True))
 
-        with pytest.raises(ValueError, match="closed case v3 shape"):
+        with pytest.raises(ValueError, match="closed case v4 shape"):
+            load_self_test_cases(cases, projects_root=projects)
+
+    @pytest.mark.parametrize("key", ["egress", "inapplicable_variants"])
+    def test_a_case_without_its_egress_or_variants_fails_closed(
+        self, tmp_path: Path, key: str
+    ) -> None:
+        payload = _case_payload()
+        del payload[key]
+        cases, projects = _write_case(tmp_path, payload)
+
+        with pytest.raises(ValueError, match="closed case v4 shape"):
+            load_self_test_cases(cases, projects_root=projects)
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"egress": "internal"}, "names an unknown egress profile"),
+            ({"inapplicable_variants": ["one_apply"]}, "names unknown variant"),
+            ({"inapplicable_variants": ["multi_apply"]}, "cannot name multi_apply"),
+        ],
+    )
+    def test_an_unknown_egress_profile_or_variant_fails_case_loading(
+        self, tmp_path: Path, overrides: dict[str, object], message: str
+    ) -> None:
+        cases, projects = _write_case(tmp_path, _case_payload(**overrides))
+
+        with pytest.raises(ValueError, match=message):
             load_self_test_cases(cases, projects_root=projects)
 
     @pytest.mark.parametrize("key", ["required_node_types", "forbidden_node_types"])
@@ -651,9 +777,15 @@ class TestLayers:
         },
     )
 
-    def _score(self, after_configs: dict[str, dict[str, object]], **overrides: object):
+    def _score(
+        self,
+        after_configs: dict[str, dict[str, object]],
+        *,
+        new_type: str = "polars",
+        **overrides: object,
+    ):
         node_types = {"quotes": "dataInput", "rates": "dataInput", "legacy": "polars"}
-        node_types.update({node: "polars" for node in after_configs if node not in node_types})
+        node_types.update({node: new_type for node in after_configs if node not in node_types})
         configs = {
             "quotes": {"path": "data/quotes.parquet"},
             "rates": {"path": "data/rates.parquet"},
@@ -690,6 +822,68 @@ class TestLayers:
             "configuration: node new does not hold the expected value at config.meta.a",
         )
         assert differing.failed_layers == ("configuration",)
+
+    def test_same_length_lists_match_element_by_element_as_subsets(self) -> None:
+        """A key a list's mapping element leaves out is free, as it is in a
+        mapping, so a label the request never stated is not mandatory; the
+        element at each position still holds every key the case states."""
+
+        subset = {"values": [{"field": "premium"}, {"field": "quote_id", "aggregation": "count"}]}
+        saved = [
+            {"field": "premium", "display_name": "Total premium"},
+            {"field": "quote_id", "aggregation": "count", "display_name": "Number of quotes"},
+        ]
+        wrong = [saved[0], {**saved[1], "aggregation": "sum"}]
+
+        output = {"new_type": "output", "node_configs": {"new": subset}}
+
+        assert self._score({"new": {"values": saved}}, **output).reasons == ()
+        assert self._score({"new": {"values": wrong}}, **output).reasons == (
+            "configuration: node new does not hold the expected value at "
+            "config.values[1].aggregation",
+        )
+
+    @pytest.mark.parametrize(
+        ("actual", "path"),
+        [
+            pytest.param([{"field": "premium"}], "config.values", id="shorter"),
+            pytest.param(
+                [{"field": "premium"}, {"field": "quote_id"}, {"field": "region"}],
+                "config.values",
+                id="longer",
+            ),
+            pytest.param(
+                [{"field": "quote_id"}, {"field": "premium"}],
+                "config.values[0].field",
+                id="reordered",
+            ),
+            pytest.param({"field": "premium"}, "config.values", id="not-a-list"),
+            pytest.param([{"field": "premium"}, "quote_id"], "config.values[1]", id="scalar"),
+            pytest.param([{"field": "premium"}, {}], "config.values[1].field", id="missing-key"),
+        ],
+    )
+    def test_a_list_of_another_length_order_or_shape_does_not_match(
+        self, actual: object, path: str
+    ) -> None:
+        turn = self._score(
+            {"new": {"values": actual}},
+            new_type="output",
+            node_configs={"new": {"values": [{"field": "premium"}, {"field": "quote_id"}]}},
+        )
+
+        assert turn.reasons == (
+            f"configuration: node new does not hold the expected value at {path}",
+        )
+
+    def test_lists_of_scalars_match_only_element_for_element(self) -> None:
+        subset = {"new": {"selected_columns": ["quote_id", "premium"]}}
+        swapped = {"new": {"selected_columns": ["premium", "quote_id"]}}
+
+        assert self._score(subset, new_type="output", node_configs=subset).reasons == ()
+        assert self._score(swapped, new_type="output", node_configs=subset).reasons == (
+            "configuration: node new does not hold the expected value at "
+            "config.selected_columns[0]",
+        )
 
     def test_a_changed_or_removed_pre_existing_node_is_collateral_unless_allowed(
         self,
@@ -747,9 +941,43 @@ def _banding_replay(_config: AssistantConfig) -> TrajectoryProvider:
     return TrajectoryProvider(load_trajectory(TRAJECTORIES_ROOT / "smoke_categorical_banding.json"))
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        (
+            "project",
+            EgressPolicy(
+                trust="local",
+                max_sensitivity="restricted",
+                allow_project_knowledge=True,
+                allow_executable_source=True,
+                allow_row_samples=False,
+            ),
+        ),
+        (
+            "metadata_only",
+            EgressPolicy(
+                trust="local",
+                max_sensitivity="internal",
+                allow_project_knowledge=False,
+                allow_executable_source=False,
+                allow_row_samples=False,
+            ),
+        ),
+    ],
+)
+def test_a_case_runs_under_its_egress_profile_at_the_invoking_trust(
+    profile: str, expected: EgressPolicy
+) -> None:
+    invoking = _scripted_config(replace(_PERMISSIVE_EGRESS, trust="local"))
+
+    assert self_test_config(invoking, profile).egress == expected  # type: ignore[arg-type]
+
+
 async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Path) -> None:
-    """The case runs under the harness's own egress allowances, whatever the
-    invoking project permits, and a transcript keeps what the model saw."""
+    """The case runs under its own egress profile, whatever the invoking project
+    permits (here row samples, which the project profile withholds), and a
+    transcript keeps what the model saw."""
 
     provider = _banding_replay(_scripted_config(_PERMISSIVE_EGRESS))
 
@@ -781,9 +1009,13 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
     context = provider.first_messages[-1]
     assert context["role"] == "context"
     assert "- Provider trust: `organization`" in context["content"]
-    assert "- Highest sensitivity sent: `internal`" in context["content"]
-    assert "- Project knowledge: not permitted" in context["content"]
-    assert "- Executable source: not permitted" in context["content"]
+    assert "- Highest sensitivity sent: `restricted`" in context["content"]
+    assert (
+        "- Saved node configuration: readable through `inspect_node`'s config part"
+        in context["content"]
+    )
+    assert "- Project knowledge: permitted" in context["content"]
+    assert "- Executable source: permitted" in context["content"]
     assert "- Column value profiles: not permitted" in context["content"]
     (entry,) = transcript
     assert entry["request"] == _load_case("smoke_categorical_banding").turns[0].request
@@ -796,22 +1028,60 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
     assert events[-1]["outcome"]["kind"] == "applied"
 
 
-async def test_one_apply_per_turn_ends_the_turn_at_its_first_saving_apply(
+async def test_a_metadata_only_case_withholds_saved_configuration(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    """The variant ends the staged build after its first saved plan without
-    another provider request, so the later stages are never saved."""
-
-    case = _load_case("smoke_staged_pricing_build")
+    case = _load_case("breakpoint_age_banding")
     provider = TrajectoryProvider(
-        load_trajectory(TRAJECTORIES_ROOT / "smoke_staged_pricing_build.json")
+        load_trajectory(TRAJECTORIES_ROOT / "breakpoint_age_banding.json")
     )
 
     result = await run_self_test_case(
         case,
         projects_root=PROJECTS_ROOT,
         config=_scripted_config(_PERMISSIVE_EGRESS),
-        work_dir=tmp_path_factory.mktemp("v"),
+        work_dir=tmp_path_factory.mktemp("e"),
+        provider_factory=lambda _config: provider,
+    )
+
+    assert result.reasons == ()
+    assert result.egress == "metadata_only"
+    assert provider.first_messages is not None
+    context = provider.first_messages[-1]["content"]
+    assert "- Highest sensitivity sent: `internal`" in context
+    assert "- Saved node configuration: withheld" in context
+    assert "- Project knowledge: not permitted" in context
+    assert "- Executable source: not permitted" in context
+
+
+async def test_one_apply_per_turn_ends_the_turn_at_its_first_saving_apply(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The variant ends the staged build after its first saved plan without
+    another provider request, so the later stages are never saved. The case is
+    marked inapplicable to the variant for that reason, so it is never run under
+    it; with the mark cleared, the variant's mechanics show."""
+
+    case = _load_case("smoke_staged_pricing_build")
+    provider = TrajectoryProvider(
+        load_trajectory(TRAJECTORIES_ROOT / "smoke_staged_pricing_build.json")
+    )
+    work_dir = tmp_path_factory.mktemp("v")
+
+    with pytest.raises(ValueError, match="does not apply to the one_apply_per_turn variant"):
+        await run_self_test_case(
+            case,
+            projects_root=PROJECTS_ROOT,
+            config=_scripted_config(_PERMISSIVE_EGRESS),
+            work_dir=work_dir,
+            provider_factory=lambda _config: provider,
+            variant="one_apply_per_turn",
+        )
+    result = await run_self_test_case(
+        replace(case, inapplicable_variants=()),
+        projects_root=PROJECTS_ROOT,
+        config=_scripted_config(_PERMISSIVE_EGRESS),
+        work_dir=work_dir,
         provider_factory=lambda _config: provider,
         variant="one_apply_per_turn",
     )
@@ -907,11 +1177,16 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
     failing = replace(
         _result(_join_turn(tool_calls=6, change_cards=0), case_id="join_again"),
     )
-    path = write_report(tmp_path / "report.json", (passing, failing), _RUN)
+    staged = _load_case("smoke_staged_pricing_build")
+    path = write_report(
+        tmp_path / "report.json", (passing, failing), _RUN, not_applicable=(staged,)
+    )
     raw = path.read_text(encoding="utf-8")
     payload = json.loads(raw)
 
+    assert payload["schema_version"] == 4
     case = payload["cases"][0]
+    assert case["egress"] == "project"
     assert case["turns"][0]["tools"] == [
         {
             "error_code": "invalid_plan",
@@ -934,6 +1209,7 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
         "joins": {
             "cases": 2,
             "passed": 1,
+            "not_applicable": 0,
             "metrics": {
                 "provider_round_trips": 3.0,
                 "tool_calls": 4.0,
@@ -945,11 +1221,41 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
                 "time_to_validated_plan_ms": 30.0,
                 "end_to_end_ms": 40.0,
             },
-        }
+        },
+        # A case that does not apply to the run's variant neither passes nor fails.
+        "multi_stage": {
+            "cases": 0,
+            "passed": 0,
+            "not_applicable": 1,
+            "metrics": dict.fromkeys(
+                (
+                    "provider_round_trips",
+                    "tool_calls",
+                    "failed_tool_calls",
+                    "duplicate_static_reads",
+                    "input_tokens",
+                    "output_tokens",
+                    "time_to_first_token_ms",
+                    "time_to_validated_plan_ms",
+                    "end_to_end_ms",
+                )
+            ),
+        },
     }
+    assert payload["not_applicable"] == [
+        {
+            "id": "smoke_staged_pricing_build",
+            "fixture_version": "1",
+            "area": "multi_stage",
+            "split": "development",
+        }
+    ]
+    assert "smoke_staged_pricing_build" not in {case["id"] for case in payload["cases"]}
     assert "Join the sources" not in raw
     assert "arguments" not in raw
     assert "assistant_text" not in raw
+    with pytest.raises(ValueError, match="either run or not applicable, not both: join_roles"):
+        report_payload((passing,), _RUN, not_applicable=(replace(staged, id="join_roles"),))
 
 
 def test_a_report_never_mixes_replay_and_live_evidence(tmp_path: Path) -> None:
@@ -979,16 +1285,23 @@ def test_a_report_never_mixes_replay_and_live_evidence(tmp_path: Path) -> None:
 
 
 def test_compare_reports_area_counts_flips_and_metric_differences(tmp_path: Path) -> None:
+    staged = _load_case("smoke_staged_pricing_build")
     before = (
         _result(_join_turn(tool_calls=2)),
         _result(_join_turn(change_cards=0), case_id="dropped"),
+        _result(_join_turn(), case_id=staged.id, area=staged.area),
     )
     after = (
         _result(_join_turn(tool_calls=6, change_cards=0)),
         _result(_join_turn(), case_id="added", area="banding"),
     )
     write_report(tmp_path / "before.json", before, _RUN)
-    write_report(tmp_path / "after.json", after, replace(_RUN, variant="one_apply_per_turn"))
+    write_report(
+        tmp_path / "after.json",
+        after,
+        replace(_RUN, variant="one_apply_per_turn"),
+        not_applicable=(staged,),
+    )
 
     comparison = compare_report_files(tmp_path / "before.json", tmp_path / "after.json")
 
@@ -1002,12 +1315,24 @@ def test_compare_reports_area_counts_flips_and_metric_differences(tmp_path: Path
             "first_failing_layer": "protocol",
         }
     ]
+    # The staged build passed before and does not apply to the later run's
+    # variant: it is listed as not applicable, never as a flip or a dropped case.
+    assert comparison["not_applicable"] == {
+        "before": [],
+        "after": ["smoke_staged_pricing_build"],
+    }
     assert (comparison["only_before"], comparison["only_after"]) == (["dropped"], ["added"])
     joins = comparison["areas"]["joins"]
-    assert joins["before"] == {"cases": 2, "passed": 1}
-    assert joins["after"] == {"cases": 1, "passed": 0}
+    assert joins["before"] == {"cases": 2, "passed": 1, "not_applicable": 0}
+    assert joins["after"] == {"cases": 1, "passed": 0, "not_applicable": 0}
     assert joins["metrics"]["tool_calls"] == {"before": 2.0, "after": 6.0, "difference": 4.0}
     assert comparison["areas"]["banding"]["before"] is None
+    assert comparison["areas"]["multi_stage"]["after"] == {
+        "cases": 0,
+        "passed": 0,
+        "not_applicable": 1,
+    }
+    assert comparison["areas"]["multi_stage"]["metrics"]["tool_calls"]["difference"] is None
 
 
 def test_list_prints_the_selected_cases_without_a_provider(
@@ -1018,6 +1343,28 @@ def test_list_prints_the_selected_cases_without_a_provider(
     listed = json.loads(capsys.readouterr().out)["cases"]
     assert listed and all(case["area"] == "multi_turn" for case in listed)
     assert any(case["turns"] > 1 for case in listed)
+    assert all(
+        (case["egress"], case["inapplicable_variants"]) == ("project", []) for case in listed
+    )
+
+
+def test_record_refuses_a_variant_no_selected_case_applies_to(tmp_path: Path) -> None:
+    """Nothing is resolved, run or written when every selected case is inapplicable."""
+
+    with pytest.raises(ValueError, match="applies to the one_apply_per_turn variant"):
+        main(
+            [
+                "record",
+                "--case",
+                "smoke_staged_pricing_build",
+                "--variant",
+                "one_apply_per_turn",
+                "--config-root",
+                str(tmp_path),
+            ]
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_transcripts_are_refused_outside_a_git_ignored_directory(tmp_path: Path) -> None:

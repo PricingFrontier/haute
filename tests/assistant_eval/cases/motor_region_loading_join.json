@@ -1,13 +1,15 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_region_loading_join",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "joins",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
-      "request": "Bring in the region loadings from data/region_loadings.parquet and left-join them onto the rated quotes from base_premium as loaded_quotes, matching region_code to the file's code column; each region code has one loading.",
+      "request": "Bring in the region loadings from data/region_loadings.parquet as a data input called region_loadings and left-join them onto the rated quotes from base_premium as loaded_quotes, matching region_code to the file's code column; each region code has one loading.",
       "expectations": {
         "outcome": "applied",
         "saves": true,

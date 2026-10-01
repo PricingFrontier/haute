@@ -40,7 +40,12 @@ from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import bound_project_root
 from haute._types import NodeType
-from haute.assistant._config import AssistantConfig, EgressPolicy, resolve_assistant_config
+from haute.assistant._config import (
+    AssistantConfig,
+    EgressPolicy,
+    ProviderTrust,
+    resolve_assistant_config,
+)
 from haute.assistant._loop import build_system_prompt, run_turn
 from haute.assistant._providers import (
     AssistantProvider,
@@ -106,13 +111,19 @@ SelfTestSplit = Literal["development", "holdout"]
 SelfTestEvidence = Literal["live", "replay"]
 #: A configuration variant a live run can measure.
 SelfTestVariant = Literal["multi_apply", "one_apply_per_turn"]
+#: The named egress profile a case runs under (see ``egress_policy``).
+SelfTestEgress = Literal["project", "metadata_only"]
 ProviderFactory = Callable[[AssistantConfig], AssistantProvider]
 
 AREAS: tuple[SelfTestArea, ...] = get_args(SelfTestArea)
 SPLITS: tuple[SelfTestSplit, ...] = get_args(SelfTestSplit)
 VARIANTS: tuple[SelfTestVariant, ...] = get_args(SelfTestVariant)
+EGRESS_PROFILES: tuple[SelfTestEgress, ...] = get_args(SelfTestEgress)
+#: The product's own behaviour, which tier 0 replays every case under, so no
+#: case may be inapplicable to it.
+_PRODUCT_VARIANT: SelfTestVariant = "multi_apply"
 _OUTCOMES: tuple[SelfTestOutcome, ...] = get_args(SelfTestOutcome)
-_CASE_SCHEMA_VERSION = 3
+_CASE_SCHEMA_VERSION = 4
 _CASE_KEYS = {
     "schema_version",
     "id",
@@ -120,6 +131,8 @@ _CASE_KEYS = {
     "project_fixture",
     "area",
     "split",
+    "egress",
+    "inapplicable_variants",
     "turns",
 }
 _TURN_KEYS = {"request", "expectations"}
@@ -197,11 +210,16 @@ class SelfTestTurn:
 
 @dataclass(frozen=True, slots=True)
 class SelfTestCase:
+    """One case: its project, area and split, the egress profile it runs under, the
+    variants it cannot be measured under, and its turns."""
+
     id: str
     fixture_version: str
     project_fixture: str
     area: SelfTestArea
     split: SelfTestSplit
+    egress: SelfTestEgress
+    inapplicable_variants: tuple[SelfTestVariant, ...]
     turns: tuple[SelfTestTurn, ...]
 
 
@@ -263,6 +281,7 @@ class SelfTestResult:
     fixture_version: str
     area: SelfTestArea
     split: SelfTestSplit
+    egress: SelfTestEgress
     evidence: SelfTestEvidence
     provider: str
     model: str
@@ -454,6 +473,18 @@ def _expectations(value: object, where: str) -> SelfTestExpectations:
     )
 
 
+def _inapplicable_variants(value: object, path: str) -> tuple[SelfTestVariant, ...]:
+    variants = _string_list(value, path)
+    if unknown := sorted(set(variants) - set(VARIANTS)):
+        raise ValueError(f"{path} names unknown variant(s): {', '.join(unknown)}")
+    if _PRODUCT_VARIANT in variants:
+        raise ValueError(
+            f"{path} cannot name {_PRODUCT_VARIANT}: every case applies to the product's own "
+            "behaviour, which tier 0 replays"
+        )
+    return cast(tuple[SelfTestVariant, ...], variants)
+
+
 def _turns(value: object, path: Path) -> tuple[SelfTestTurn, ...]:
     if not isinstance(value, list) or not value:
         raise ValueError(f"{path.name} turns must be a non-empty array")
@@ -488,6 +519,8 @@ def load_self_test_cases(
             raise ValueError(f"{path.name} has an unknown area")
         if raw["split"] not in SPLITS:
             raise ValueError(f"{path.name} has an unknown split")
+        if raw["egress"] not in EGRESS_PROFILES:
+            raise ValueError(f"{path.name} names an unknown egress profile")
         fixture_name = _safe_fixture(raw["project_fixture"], f"{path.name} project_fixture")
         fixture = (resolved_projects / fixture_name).resolve()
         if (
@@ -505,6 +538,10 @@ def load_self_test_cases(
                 project_fixture=fixture_name,
                 area=cast(SelfTestArea, raw["area"]),
                 split=cast(SelfTestSplit, raw["split"]),
+                egress=cast(SelfTestEgress, raw["egress"]),
+                inapplicable_variants=_inapplicable_variants(
+                    raw["inapplicable_variants"], f"{path.name} inapplicable_variants"
+                ),
                 turns=_turns(raw["turns"], path),
             )
         )
@@ -634,8 +671,12 @@ def config_digest(config: Mapping[str, Any]) -> str:
 def _subset_mismatch(expected: object, actual: object, path: str) -> str | None:
     """The first path at which *actual* does not contain *expected*.
 
-    Mappings match when every expected key matches recursively; lists and
-    scalars match only when equal.
+    Mappings match when every expected key matches recursively. Lists match
+    when they have the same length and each expected element matches the
+    actual element at its position, recursively, so a key the case leaves
+    out of a list's mapping element is free just as it is in a mapping;
+    a list of another length or with its elements in another order does not
+    match. Scalars match only when equal.
     """
 
     if isinstance(expected, Mapping):
@@ -645,6 +686,13 @@ def _subset_mismatch(expected: object, actual: object, path: str) -> str | None:
             if key not in actual:
                 return f"{path}.{key}"
             if (mismatch := _subset_mismatch(value, actual[key], f"{path}.{key}")) is not None:
+                return mismatch
+        return None
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return path
+        for index, (item, actual_item) in enumerate(zip(expected, actual, strict=True)):
+            if (mismatch := _subset_mismatch(item, actual_item, f"{path}[{index}]")) is not None:
                 return mismatch
         return None
     return None if expected == actual else path
@@ -835,7 +883,9 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
     never executes anything. Each node runs through the production preview
     engine up to that node only, under the golden's scenario, so no sink is
     ever built. A golden whose frame does not fit one preview, or whose code
-    does not bind ``df``, is a broken case and raises.
+    does not bind ``df``, is a broken case and raises. Columns are matched by
+    name, whatever their order: the saved node's frame is reordered to the
+    golden's columns before the frames are compared.
     """
 
     if not goldens:
@@ -868,12 +918,16 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
             column.name for column in result.columns
         ]:
             raise RuntimeError(f"node {golden.node}'s output does not fit one full preview")
-        actual_schema = [(column.name, column.dtype) for column in result.columns]
-        expected_schema = [(name, str(dtype)) for name, dtype in expected.schema.items()]
-        if actual_schema != expected_schema:
+        actual_dtypes = {column.name: column.dtype for column in result.columns}
+        expected_dtypes = {name: str(dtype) for name, dtype in expected.schema.items()}
+        if actual_dtypes != expected_dtypes:
             reasons.append(f"node {golden.node} columns or dtypes differ from its golden")
             continue
-        actual = pl.DataFrame(result.preview, schema=expected.schema, orient="row")
+        actual = pl.DataFrame(
+            result.preview,
+            schema={column.name: expected.schema[column.name] for column in result.columns},
+            orient="row",
+        ).select(expected.columns)
         equal, why = frames_equal(expected, actual, order_free=golden.order_free)
         if not equal:
             reasons.append(f"node {golden.node} does not match its golden: {why}")
@@ -1169,15 +1223,37 @@ def prepare_fixture_snapshots(project_root: Path, source_file: str) -> tuple[str
     return tuple(prepared)
 
 
-def self_test_config(config: AssistantConfig) -> AssistantConfig:
-    """Return *config* under the evaluation's own egress allowances.
+def egress_policy(profile: SelfTestEgress, *, trust: ProviderTrust) -> EgressPolicy:
+    """The egress policy a case runs under: its named *profile* at the provider's *trust*.
 
-    Only the provider trust comes from the invoking project, because trust
-    describes the endpoint and is validated against it. What the cases may send
-    is the harness's decision: internal pipeline metadata, and no project
-    knowledge, executable source or row samples, whatever the invoking project
-    permits.
+    ``project`` is the policy a configured project holds: saved node
+    configuration (``restricted``), project knowledge and executable source,
+    and no row samples. ``metadata_only`` sends internal pipeline metadata
+    alone, withholding saved configuration, project knowledge, executable
+    source and row samples.
     """
+
+    if profile == "project":
+        return EgressPolicy(
+            trust=trust,
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=False,
+        )
+    if profile == "metadata_only":
+        return EgressPolicy(
+            trust=trust,
+            max_sensitivity="internal",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=False,
+        )
+    raise ValueError(f"unknown evaluation egress profile: {profile}")
+
+
+def evaluation_trust(config: AssistantConfig) -> ProviderTrust:
+    """The invoking project's provider trust, refused when it is external."""
 
     if config.egress.trust == "external":
         raise ValueError(
@@ -1185,16 +1261,20 @@ def self_test_config(config: AssistantConfig) -> AssistantConfig:
             "is public-only, and a public ceiling denies the project metadata tools every "
             "case uses."
         )
-    return replace(
-        config,
-        egress=EgressPolicy(
-            trust=config.egress.trust,
-            max_sensitivity="internal",
-            allow_project_knowledge=False,
-            allow_executable_source=False,
-            allow_row_samples=False,
-        ),
-    )
+    return config.egress.trust
+
+
+def self_test_config(config: AssistantConfig, egress: SelfTestEgress) -> AssistantConfig:
+    """Return *config* under a case's *egress* profile.
+
+    Only the provider trust comes from the invoking project, because trust
+    describes the endpoint and is validated against it. What a case may send
+    is its profile's decision (``egress_policy``), whatever the invoking
+    project permits: the fixtures are synthetic, so the profile chooses the
+    policy being measured rather than protecting anything.
+    """
+
+    return replace(config, egress=egress_policy(egress, trust=evaluation_trust(config)))
 
 
 def _run_git(project_root: Path, *arguments: str) -> None:
@@ -1355,16 +1435,19 @@ async def run_self_test_case(
 ) -> SelfTestResult:
     """Run every turn of one case through *provider_factory*'s provider and the real tools.
 
-    The turns run in order in one session. Live evidence comes from the
-    configured provider; replay evidence from a ``TrajectoryProvider``
-    (``replay_self_test_case``), labelled provider ``replay`` with the
-    trajectory as its model. The fixture is copied into *work_dir*, which must
-    be empty; the caller owns its removal. A *transcript* list, when given,
-    receives each turn's request, text, tool calls with their payloads and
-    outcome.
+    The turns run in order in one session, under the case's egress profile.
+    Live evidence comes from the configured provider; replay evidence from a
+    ``TrajectoryProvider`` (``replay_self_test_case``), labelled provider
+    ``replay`` with the trajectory as its model. The fixture is copied into
+    *work_dir*, which must be empty; the caller owns its removal. A
+    *transcript* list, when given, receives each turn's request, text, tool
+    calls with their payloads and outcome. A case is never run under a
+    variant it is inapplicable to.
     """
 
-    config = self_test_config(config)
+    if variant in case.inapplicable_variants:
+        raise ValueError(f"case {case.id} does not apply to the {variant} variant")
+    config = self_test_config(config, case.egress)
     source_fixture = (projects_root.resolve() / case.project_fixture).resolve()
     if (
         not source_fixture.is_relative_to(projects_root.resolve())
@@ -1407,6 +1490,7 @@ async def run_self_test_case(
         fixture_version=case.fixture_version,
         area=case.area,
         split=case.split,
+        egress=case.egress,
         evidence=evidence,
         provider=config.provider if evidence == "live" else "replay",
         model=config.model,
@@ -1706,7 +1790,11 @@ class TrajectoryProvider:
 
 
 def replay_config(trajectory: Trajectory) -> AssistantConfig:
-    """The configuration a replay runs under; no provider request is ever made."""
+    """The configuration a replay runs under; no provider request is ever made.
+
+    Its organization trust is what a case keeps: the case's egress profile
+    sets the rest of the policy when the case runs.
+    """
 
     return AssistantConfig(
         provider="openai",
@@ -1714,13 +1802,7 @@ def replay_config(trajectory: Trajectory) -> AssistantConfig:
         base_url="https://api.openai.com/v1",
         api_key="replay-never-sent",
         max_output_tokens=1024,
-        egress=EgressPolicy(
-            trust="organization",
-            max_sensitivity="internal",
-            allow_project_knowledge=False,
-            allow_executable_source=False,
-            allow_row_samples=False,
-        ),
+        egress=egress_policy("project", trust="organization"),
         endpoint_host="api.openai.com",
     )
 
@@ -1859,8 +1941,9 @@ def _parser() -> argparse.ArgumentParser:
         "record",
         help=(
             "Run the selected cases against the configured provider (real provider requests) "
-            "and write the redacted report; after each turn the harness executes only that "
-            "turn's golden nodes, never a sink."
+            "and write the redacted report, listing as not applicable the cases that do not "
+            "apply to the variant; after each turn the harness executes only that turn's "
+            "golden nodes, never a sink."
         ),
     )
     _add_selection(record)
@@ -1869,7 +1952,10 @@ def _parser() -> argparse.ArgumentParser:
         "--config-root",
         type=Path,
         default=Path.cwd(),
-        help="Project containing the .env and [assistant] settings to use.",
+        help=(
+            "Project containing the .env and [assistant] provider to use; each case runs "
+            "under its own egress profile at this provider's trust."
+        ),
     )
     record.add_argument(
         "--output",
@@ -1904,9 +1990,16 @@ def _selected(args: argparse.Namespace) -> tuple[SelfTestCase, ...]:
 
 def _record(args: argparse.Namespace) -> int:
     selected = _selected(args)
+    applicable = tuple(case for case in selected if args.variant not in case.inapplicable_variants)
+    not_applicable = tuple(case for case in selected if args.variant in case.inapplicable_variants)
+    if not applicable:
+        raise ValueError(f"No selected evaluation case applies to the {args.variant} variant")
     config_root = args.config_root.resolve()
     _load_env(config_root)
-    config = self_test_config(resolve_assistant_config(config_root))
+    config = resolve_assistant_config(config_root)
+    # Refuse an external provider before any case runs; each case then runs
+    # under its own egress profile at this trust.
+    evaluation_trust(config)
     run_id = new_run_id()
     run_dir = config_root / ".haute" / "assistant-eval" / run_id
     transcripts = run_dir / "transcripts" if args.transcripts else None
@@ -1924,22 +2017,26 @@ def _record(args: argparse.Namespace) -> int:
         haute_version=haute.__version__,
     )
     results = run_self_test_cases_in_processes(
-        selected,
+        applicable,
         projects_root=args.projects,
         config=config,
         variant=args.variant,
         transcripts=transcripts,
     )
     output = args.output if args.output is not None else run_dir / "report.json"
-    write_report(output, results, run)
-    payload = report_payload(results, run)
+    write_report(output, results, run, not_applicable=not_applicable)
+    payload = report_payload(results, run, not_applicable=not_applicable)
     print(
         json.dumps(
             {
                 "report": str(output.resolve()),
                 "passed": payload["passed"],
                 "areas": {
-                    area: {"cases": summary["cases"], "passed": summary["passed"]}
+                    area: {
+                        "cases": summary["cases"],
+                        "passed": summary["passed"],
+                        "not_applicable": summary["not_applicable"],
+                    }
                     for area, summary in cast(
                         Mapping[str, Mapping[str, object]], payload["areas"]
                     ).items()
@@ -1966,6 +2063,8 @@ def _run(args: argparse.Namespace) -> int:
                         "area": case.area,
                         "split": case.split,
                         "project_fixture": case.project_fixture,
+                        "egress": case.egress,
+                        "inapplicable_variants": list(case.inapplicable_variants),
                         "turns": len(case.turns),
                     }
                     for case in _selected(args)

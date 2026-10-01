@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_batch_output_columns",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "outputs",
   "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "The batch output priced_batch should write only quote_id, premium and expected_frequency, in that order.",

@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_output_mapping_clarification",
   "fixture_version": "1",
   "project_fixture": "ordinary_pricing",
   "area": "clarification",
   "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "Add a response output named quote_response after quotes, but I have not decided which columns or JSON paths it should expose. Do not choose them for me; ask one focused question.",

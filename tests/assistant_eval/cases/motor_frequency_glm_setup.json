@@ -1,13 +1,15 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_frequency_glm_setup",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "modelling",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
-      "request": "Set up a claim frequency model on data/claims_history.parquet: a Poisson GLM with a log link named frequency_glm, predicting claim_count with exposure as the offset, driver_age as a linear term and vehicle_group and region as categorical terms. Hold out a random 20% for validation with seed 42.",
+      "request": "Set up a claim frequency model on data/claims_history.parquet, read in a data input called claims_history: a Poisson GLM with a log link named frequency_glm, predicting claim_count with exposure as the offset, driver_age as a linear term and vehicle_group and region as categorical terms. Hold out a random 20% for validation with seed 42.",
       "expectations": {
         "outcome": "applied",
         "saves": true,

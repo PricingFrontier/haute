@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from haute._git_core import _run_git_process
 
 if TYPE_CHECKING:
-    from scripts.run_assistant_self_test import SelfTestResult
+    from scripts.run_assistant_self_test import SelfTestCase, SelfTestResult
 
 SelfTestLayer = Literal[
     "protocol", "structure", "configuration", "collateral", "editor", "execution"
@@ -47,7 +47,7 @@ METRICS: tuple[str, ...] = (
     "time_to_validated_plan_ms",
     "end_to_end_ms",
 )
-REPORT_SCHEMA_VERSION = 3
+REPORT_SCHEMA_VERSION = 4
 _SUPPORT_MATRIX_VERSION = 2
 
 
@@ -143,22 +143,33 @@ def _turn_payload(turn: Any) -> dict[str, object]:
     }
 
 
-def report_payload(results: Sequence[SelfTestResult], run: RunIdentity) -> dict[str, object]:
-    """Build the closed content-redacted report v3.
+def report_payload(
+    results: Sequence[SelfTestResult],
+    run: RunIdentity,
+    *,
+    not_applicable: Sequence[SelfTestCase] = (),
+) -> dict[str, object]:
+    """Build the closed content-redacted report v4.
 
     One report holds one kind of evidence: replay results prove the tools and
     contracts, live results measure a model, and the two are never combined.
+    The *not_applicable* cases, which do not apply to the run's variant and
+    were not run, are listed apart from the results: they neither pass nor
+    fail, and an area counts its cases and passes over the cases it ran.
     """
 
     evidence = {result.evidence for result in results}
     if len(evidence) != 1:
         raise ValueError("a report holds the results of exactly one evidence kind")
+    if overlap := sorted({result.id for result in results} & {case.id for case in not_applicable}):
+        raise ValueError(f"a case is either run or not applicable, not both: {', '.join(overlap)}")
     cases = [
         {
             "id": result.id,
             "fixture_version": result.fixture_version,
             "area": result.area,
             "split": result.split,
+            "egress": result.egress,
             "provider": result.provider,
             "model": result.model,
             "passed": result.passed,
@@ -171,11 +182,13 @@ def report_payload(results: Sequence[SelfTestResult], run: RunIdentity) -> dict[
         for result in results
     ]
     areas: dict[str, dict[str, object]] = {}
-    for area in sorted({result.area for result in results}):
+    run_areas = {result.area for result in results}
+    for area in sorted(run_areas | {case.area for case in not_applicable}):
         members = [result for result in results if result.area == area]
         areas[area] = {
             "cases": len(members),
             "passed": sum(result.passed for result in members),
+            "not_applicable": sum(case.area == area for case in not_applicable),
             "metrics": {
                 name: _median([result.metrics[name] for result in members]) for name in METRICS
             },
@@ -195,6 +208,15 @@ def report_payload(results: Sequence[SelfTestResult], run: RunIdentity) -> dict[
         "passed": all(result.passed for result in results),
         "areas": areas,
         "cases": cases,
+        "not_applicable": [
+            {
+                "id": case.id,
+                "fixture_version": case.fixture_version,
+                "area": case.area,
+                "split": case.split,
+            }
+            for case in not_applicable
+        ],
     }
 
 
@@ -209,10 +231,16 @@ def _write_json(path: Path, payload: Mapping[str, object]) -> Path:
     return path
 
 
-def write_report(path: Path, results: Sequence[SelfTestResult], run: RunIdentity) -> Path:
+def write_report(
+    path: Path,
+    results: Sequence[SelfTestResult],
+    run: RunIdentity,
+    *,
+    not_applicable: Sequence[SelfTestCase] = (),
+) -> Path:
     """Atomically write a report containing no prompts, prose, tool payloads, or secrets."""
 
-    return _write_json(path, report_payload(results, run))
+    return _write_json(path, report_payload(results, run, not_applicable=not_applicable))
 
 
 def _load_report(path: Path) -> dict[str, Any]:
@@ -225,10 +253,12 @@ def _load_report(path: Path) -> dict[str, Any]:
 def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, object]:
     """Compare two reports of one evidence kind per area.
 
-    Returns each area's case and pass counts in both reports, every case that
-    flipped between pass and fail with the first failing layer on its failing
-    side, the cases only one report holds, and per area the median of each
-    efficiency metric in both reports and their difference.
+    Returns each area's case, pass and not-applicable counts in both reports,
+    every case run in both that flipped between pass and fail with the first
+    failing layer on its failing side, the cases each report lists as not
+    applicable to its variant (never a flip, a pass or a failure), the cases
+    only one report holds, run or not applicable, and per area the median of
+    each efficiency metric in both reports and their difference.
     """
 
     if before["evidence"] != after["evidence"]:
@@ -238,6 +268,8 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
         )
     before_cases = {case["id"]: case for case in before["cases"]}
     after_cases = {case["id"]: case for case in after["cases"]}
+    before_ids = set(before_cases) | {case["id"] for case in before["not_applicable"]}
+    after_ids = set(after_cases) | {case["id"] for case in after["not_applicable"]}
     flips = [
         {
             "id": case_id,
@@ -268,8 +300,8 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
                 ),
             }
         areas[area] = {
-            "before": {"cases": old["cases"], "passed": old["passed"]} if old else None,
-            "after": {"cases": new["cases"], "passed": new["passed"]} if new else None,
+            "before": _area_counts(old),
+            "after": _area_counts(new),
             "metrics": metrics,
         }
     return {
@@ -278,8 +310,22 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
         "after": after["run"],
         "areas": areas,
         "flips": flips,
-        "only_before": sorted(set(before_cases) - set(after_cases)),
-        "only_after": sorted(set(after_cases) - set(before_cases)),
+        "not_applicable": {
+            "before": sorted(case["id"] for case in before["not_applicable"]),
+            "after": sorted(case["id"] for case in after["not_applicable"]),
+        },
+        "only_before": sorted(before_ids - after_ids),
+        "only_after": sorted(after_ids - before_ids),
+    }
+
+
+def _area_counts(area: Mapping[str, Any] | None) -> dict[str, object] | None:
+    if area is None:
+        return None
+    return {
+        "cases": area["cases"],
+        "passed": area["passed"],
+        "not_applicable": area["not_applicable"],
     }
 
 

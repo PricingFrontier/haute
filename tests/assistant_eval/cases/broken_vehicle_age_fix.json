@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "broken_vehicle_age_fix",
   "fixture_version": "1",
   "project_fixture": "broken_pricing",
   "area": "recovery",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "rating_features fails to run, so vehicle_bands has nothing to band. Find out why and fix it without changing what the step is meant to do.",

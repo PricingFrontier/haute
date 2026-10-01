@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_corpus_high_premium_quotes",
   "fixture_version": "1",
   "project_fixture": "polars_corpus",
   "area": "steps",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After quotes, add a Transform named high_premium_quotes that keeps only the quotes whose premium is above 1500. Connect quotes to high_premium_quotes.",

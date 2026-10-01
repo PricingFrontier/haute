@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "smoke_rating_step",
   "fixture_version": "1",
   "project_fixture": "ordinary_pricing",
   "area": "rating",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "After quotes, add a rating step named age_rating. Use one table with factor driver_age, output age_factor, rows 20 -> 1.3 and 40 -> 1.0, and default 1.0. Add combined output technical_premium using multiply with base value 100. Then add a response output named age_price_response containing quote_id, age_factor, and technical_premium.",

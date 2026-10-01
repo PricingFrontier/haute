@@ -1,13 +1,15 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_loaded_premium_build",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "multi_stage",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
-      "request": "Load the premium by region: left-join data/region_loadings.parquet onto base_premium as loaded_quotes (region_code matches the file's code, one loading per code), then work out loaded_premium as premium times region_loading rounded to pence, treating a missing loading as 1, in a Polars node called loaded_premium, and send loaded_premium to the priced_batch output instead of base_premium.",
+      "request": "Load the premium by region: read data/region_loadings.parquet in a data input called region_loadings and left-join it onto base_premium as loaded_quotes (region_code matches the file's code, one loading per code), then work out loaded_premium as premium times region_loading rounded to pence, treating a missing loading as 1 but leaving the region_loading column as the join gives it, in a Polars node called loaded_premium, and send loaded_premium to the priced_batch output instead of base_premium.",
       "expectations": {
         "outcome": "applied",
         "saves": true,

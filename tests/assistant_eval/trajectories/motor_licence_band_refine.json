@@ -9,6 +9,24 @@
           "text": "",
           "calls": [
             {
+              "id": "config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "rating_bands",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
               "id": "dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
@@ -135,6 +153,24 @@
     },
     {
       "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "t2_config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "rating_bands",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
         {
           "text": "",
           "calls": [

@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "motor_value_band_factor",
-  "fixture_version": "1",
+  "fixture_version": "2",
   "project_fixture": "motor_pricing",
   "area": "banding",
   "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "Add a vehicle value band to rating_bands: band vehicle_value_k into value_band with 'up to 5k' up to 5, '5k-15k' up to 15 and 'over 15k' above that, and 'unknown' when it is missing. Keep the existing bands.",

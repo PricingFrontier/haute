@@ -5,22 +5,25 @@ under ``tests/assistant_eval/trajectories/`` with one recorded turn per case
 turn; the step-corpus cases have one in the taught ``[source, free_code]`` form
 and one as the corpus's structured translation. Each replay runs the real loop,
 tools, dry-run, apply, parser and Git mutation gate in a copy of the case's
-project under a short temporary directory, then the harness scores every layer
-of every turn, including execution of each turn's golden nodes against
-plain-Polars goldens. Replay proves the tools and contracts, not that a model
-would choose the same calls.
+project under a short temporary directory and the case's egress profile, then
+the harness scores every layer of every turn, including execution of each
+turn's golden nodes against plain-Polars goldens. Replay proves the tools and
+contracts, not that a model would choose the same calls.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
 
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, bound_project_root
+from haute.routes._helpers import parse_pipeline_to_graph
 from scripts.run_assistant_self_test import (
     FIXTURE_MODEL_RUN_PLACEHOLDER,
     SelfTestGolden,
@@ -47,11 +50,6 @@ TRAJECTORIES = load_trajectories(TRAJECTORIES_ROOT)
 CORPUS_ITEMS = ("attach_regional_rates", "high_premium_quotes", "underwriting_decision")
 #: Seconds one replayed turn may take before the replay counts as hung.
 TURN_TIMEOUT = 120
-#: Trajectories that change an entry of a saved list the model cannot read
-#: under the replay's internal egress: the dry-run refuses the blind rewrite
-#: (`config_withheld`) until these cases run under a policy that lets the model
-#: read saved configuration, so their replays are expected to diverge there.
-WITHHELD_CONFIG_EDITS = frozenset({"motor_licence_band_refine", "motor_region_regroup"})
 
 
 @pytest.fixture
@@ -131,20 +129,7 @@ def test_corpus_trajectories_author_the_corpus_and_its_goldens(
         pytest.param(
             trajectory,
             id=trajectory.id,
-            marks=[
-                pytest.mark.timeout(TURN_TIMEOUT * len(trajectory.turns)),
-                *(
-                    [
-                        pytest.mark.xfail(
-                            strict=True,
-                            raises=TrajectoryDivergedError,
-                            reason="rewrites saved configuration the internal policy withholds",
-                        )
-                    ]
-                    if trajectory.id in WITHHELD_CONFIG_EDITS
-                    else []
-                ),
-            ],
+            marks=pytest.mark.timeout(TURN_TIMEOUT * len(trajectory.turns)),
         )
         for trajectory in TRAJECTORIES
     ],
@@ -199,16 +184,46 @@ async def test_a_tool_result_with_another_status_names_the_turn_and_round(
 _READ_TOOLS = frozenset({"get_pipeline", "inspect_node", "find_data"})
 
 
-def _first_dry_run(trajectory) -> tuple[list[str], dict[str, object] | None]:
-    """The tools called before a trajectory's first dry-run, and that dry-run."""
+def _first_dry_run(trajectory) -> tuple[list, dict[str, object] | None]:
+    """The calls made before a trajectory's first dry-run, and that dry-run's arguments."""
 
-    before: list[str] = []
+    before: list = []
     for trajectory_round in trajectory.turns[0]:
         for call in trajectory_round.calls:
             if call.tool == "dry_run_graph_edits":
                 return before, call.arguments
-            before.append(call.tool)
+            before.append(call)
     return before, None
+
+
+def _saved_configs(fixture: str) -> dict[str, dict[str, Any]]:
+    """Each node's configuration as a case's project starts, read without writing."""
+
+    root = PROJECTS_ROOT / fixture
+    with bound_project_root(root):
+        graph = parse_pipeline_to_graph(root / "pipeline.py")
+    return {node.id: dict(node.data.config) for node in graph.nodes}
+
+
+def _rewritten_nodes(ops: Sequence[Mapping[str, Any]], saved: Mapping[str, Any]) -> set[str]:
+    """The nodes whose saved non-empty list or map an `update_node` of *ops* replaces.
+
+    `update_node` replaces each key it writes whole, so restating such a key
+    needs the saved entries; a node the same plan adds holds nothing saved.
+    """
+
+    added = {op["name"] for op in ops if op["op"] == "add_node"}
+    return {
+        op["node"]
+        for op in ops
+        if op["op"] == "update_node" and op["node"] not in added
+        for key in op["config"]
+        if isinstance(value := saved.get(op["node"], {}).get(key), (list, dict)) and value
+    }
+
+
+def _is_config_read(call, node: str) -> bool:
+    return call.tool == "inspect_node" and call.arguments == {"node": node, "parts": ["config"]}
 
 
 def _single_node_trajectories() -> list:
@@ -234,7 +249,8 @@ def _single_node_trajectories() -> list:
 
 def test_single_node_edits_dry_run_without_an_orientation_read() -> None:
     """The turn context's graph brief carries what a one-node edit needs, the
-    step ids an `edit_steps` names included."""
+    step ids an `edit_steps` names included; the one read such an edit makes is
+    the config of a node whose saved list or map it restates."""
 
     single = {trajectory.id: trajectory for trajectory in _single_node_trajectories()}
     assert {
@@ -242,10 +258,65 @@ def test_single_node_edits_dry_run_without_an_orientation_read() -> None:
         "smoke_step_edit",
         "motor_new_driver_flag",
         "submodel_high_risk_flag",
+        "motor_value_band_factor",
     } <= set(single)
     for trajectory in single.values():
-        before, _arguments = _first_dry_run(trajectory)
-        assert not set(before) & _READ_TOOLS, (trajectory.id, before)
+        before, arguments = _first_dry_run(trajectory)
+        assert arguments is not None
+        rewritten = _rewritten_nodes(
+            arguments["ops"], _saved_configs(CASES[trajectory.case].project_fixture)
+        )
+        orientation = [
+            call.tool
+            for call in before
+            if call.tool in _READ_TOOLS
+            and not any(_is_config_read(call, node) for node in rewritten)
+        ]
+        assert orientation == [], trajectory.id
+
+
+def test_a_rewrite_of_a_saved_list_or_map_reads_the_node_config_first() -> None:
+    """A model restating a saved list or map must first read it: each turn's
+    `update_node` of one follows that turn's config read of the node (earlier
+    turns' tool results are compacted out of the history), unless the case's
+    egress profile withholds saved configuration and the dry-run refuses the
+    blind rewrite as `config_withheld`."""
+
+    rewriting: set[str] = set()
+    for trajectory in TRAJECTORIES:
+        case = CASES[trajectory.case]
+        saved = _saved_configs(case.project_fixture)
+        for rounds in trajectory.turns:
+            read: set[str] = set()
+            for trajectory_round in rounds:
+                for call in trajectory_round.calls:
+                    if call.tool == "inspect_node" and "config" in call.arguments.get("parts", ()):
+                        read.add(call.arguments["node"])
+                    if call.tool != "dry_run_graph_edits":
+                        continue
+                    ops = call.arguments["ops"]
+                    for node in _rewritten_nodes(ops, saved):
+                        rewriting.add(trajectory.id)
+                        if call.error_code == "config_withheld":
+                            assert case.egress == "metadata_only", trajectory.id
+                        else:
+                            assert node in read, (trajectory.id, node)
+                    if call.status == "ok":
+                        for op in ops:
+                            if op["op"] == "update_node":
+                                saved.setdefault(op["node"], {}).update(op["config"])
+
+    assert rewriting == {
+        "motor_inception_year_rating",
+        "motor_licence_band_refine",
+        "motor_region_regroup",
+        "motor_renewal_scenario",
+        "motor_response_relativity",
+        "motor_ticket_injection",
+        "motor_value_band_factor",
+        "motor_value_band_factor_withheld",
+        "motor_value_bands_delegated",
+    }
 
 
 async def test_the_first_request_carries_the_columns_the_first_dry_run_reads(
@@ -361,6 +432,45 @@ async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_la
     assert result.reasons[0].startswith(
         "turn 1 execution: node high_premium_quotes does not match its golden: row counts differ"
     )
+
+
+@pytest.mark.parametrize(
+    ("edit", "reasons"),
+    [
+        pytest.param(
+            "df = df.select(list(reversed(df.collect_schema().names())))\n", (), id="reordered"
+        ),
+        pytest.param(
+            "df = df.drop(df.collect_schema().names()[0])\n",
+            (
+                "turn 1 execution: node high_premium_quotes columns or dtypes differ "
+                "from its golden",
+            ),
+            id="missing",
+        ),
+    ],
+)
+async def test_a_golden_matches_the_saved_node_by_column_name_in_any_order(
+    edit: str, reasons: tuple[str, ...], work_dir: Path
+) -> None:
+    """The executed frame is compared with its golden column by column name, so a
+    golden listing the same columns in another order matches, and one that lacks
+    a column does not."""
+
+    case = CASES["smoke_corpus_high_premium_quotes"]
+    (turn,) = case.turns
+    (golden,) = turn.expectations.execution
+    edited = replace(golden, golden=golden.golden + edit)
+    case = replace(
+        case, turns=(replace(turn, expectations=replace(turn.expectations, execution=(edited,))),)
+    )
+    trajectory = next(item for item in TRAJECTORIES if item.id == case.id)
+
+    result = await replay_self_test_case(
+        case, trajectory, projects_root=PROJECTS_ROOT, work_dir=work_dir
+    )
+
+    assert result.reasons == reasons
 
 
 def test_trajectory_references_must_name_an_earlier_call(tmp_path: Path) -> None:

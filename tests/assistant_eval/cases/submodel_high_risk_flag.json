@@ -1,10 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "submodel_high_risk_flag",
   "fixture_version": "1",
   "project_fixture": "submodel_pricing",
   "area": "submodels",
   "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
   "turns": [
     {
       "request": "In premium, also flag high-risk vehicles: a boolean high_risk_vehicle, true when vehicle_factor is above 1. Keep the premium step as it is.",
