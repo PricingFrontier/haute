@@ -203,8 +203,10 @@ orphaned halves).
   change the plan) and the ids of the changes the analyst undid after it (`undone`).
 - **`AssistantBuildPlan`** (`schemas.py`): `items`, one to twelve
   `AssistantBuildPlanItem`s in order, ids unique: `id` (lower-case letters, digits and
-  underscores, starting with a letter, at most 32 characters), `title` (at most 80
-  characters), `complete`, and `changes`, the `AssistantBuildPlanChange`s recorded against
+  underscores, starting with a letter, at most 32 characters), `title` (non-empty; the
+  tool schema bounds what the model writes at 80 characters, the model does not, because a
+  persisted title is redacted like assistant text, which can lengthen it), `complete`, and
+  `changes`, the `AssistantBuildPlanChange`s recorded against
   it in the order they were saved: `id`, the change card's id, and `undone`, whether the
   analyst undid it. All three models are closed and frozen, and the item validator refuses
   a complete item without a change that is not undone, so no transition can produce one.

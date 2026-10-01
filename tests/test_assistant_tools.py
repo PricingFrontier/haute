@@ -3002,6 +3002,43 @@ class TestBuildPlan:
         }
         assert claimed["items"][1]["complete"] is False
 
+    async def test_a_committed_save_that_fails_verification_still_counts_toward_its_item(
+        self, steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The save committed, so the analyst can undo it: its change is recorded
+        against the item like a verified one's, and the item stays open."""
+
+        import haute.assistant._tools as tools_module
+        from haute.assistant._build_plan import BuildPlan
+
+        committed = {
+            "id": "c" * 64,
+            "summary": "Band regions.",
+            "changes": {"nodes": [{"id": "region_band", "type": "Banding", "change": "added"}]},
+            "git_sha": None,
+            "parent_sha": None,
+            "revision": "r" * 64,
+        }
+
+        async def unverified(_source_file, _plan_hash, *, session_id):
+            return {
+                "error": {"code": "verification_failed", "message": "The check failed."},
+                "change": committed,
+            }
+
+        monkeypatch.setattr(tools_module, "apply_graph_plan", unverified)
+        plan = BuildPlan()
+        plan.update(items=[{"id": "banding", "title": "Region banding"}], complete=None)
+        execute = tools_module.build_tool_executor("main.py", plan=plan)
+
+        result = await execute("apply_graph_plan", {"plan_hash": "a" * 64, "item": "banding"})
+
+        assert result["error"]["code"] == "verification_failed"
+        assert result["item"] == "banding"
+        assert plan.current is not None
+        (banding,) = plan.current.items
+        assert (banding.complete, [change.id for change in banding.changes]) == (False, ["c" * 64])
+
     async def test_the_turn_context_lists_an_unfinished_plan_under_every_policy(self):
         from haute.assistant._render import render_turn_context
         from haute.assistant._tools import build_turn_context
