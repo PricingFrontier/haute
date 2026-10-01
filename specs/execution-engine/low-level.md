@@ -2394,6 +2394,11 @@ present a structural or schema result as execution evidence.
 
 ## Error handling
 
+- Every `HauteError` and `HauteValidationError` survives a process boundary: both bases
+  pickle through `restore_exception` (`_validation_error.py`), which restores `args` and the
+  instance attributes without calling `__init__`, so an error whose `__init__` takes
+  keyword-only fields (`LiveSwitchScenarioError`, `NodeConfigError`, `ConfigSettingError`)
+  reaches the parent of an interactive worker or a spawned evaluation case intact.
 - `PreambleError` (`haute.errors`, extends `ExecutionError`) — preamble compile/exec
   failure with stable public code `preamble_failed` and optional public
   `source_line`. Interactive preview catches it inside `_eager_execute` and

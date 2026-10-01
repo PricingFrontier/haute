@@ -9,6 +9,25 @@ module's docstring describes.
 
 from __future__ import annotations
 
+from typing import Any
+
+
+def restore_exception(
+    cls: type[BaseException], args: tuple[Any, ...], state: dict[str, Any]
+) -> BaseException:
+    """Rebuild a pickled Haute exception without calling its ``__init__``.
+
+    Worker processes pickle a raised error back to their parent. The default
+    pickling calls ``cls(*args)``, which fails for an error whose ``__init__``
+    takes keyword-only fields; restoring ``args`` and the instance attributes
+    directly works for every signature.
+    """
+
+    error = cls.__new__(cls)
+    BaseException.__init__(error, *args)
+    error.__dict__.update(state)
+    return error
+
 
 class HauteValidationError(ValueError):
     """Marker for haute-authored validation messages on the ``ValueError`` channel.
@@ -27,6 +46,9 @@ class HauteValidationError(ValueError):
     ``ValueError`` subclass into its own ``ValidationError``, which drops the
     marker — the message would then take the fallback, not travel verbatim.
     """
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (restore_exception, (type(self), self.args, dict(self.__dict__)))
 
 
 class ConfigSettingError(HauteValidationError):

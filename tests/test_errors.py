@@ -471,6 +471,38 @@ class TestPickleAndPublicAlias:
         assert restored.context == {"missing": ["age"], "extras": ["x"]}
         assert str(restored) == str(err)
 
+    def test_errors_with_keyword_only_fields_survive_a_process_boundary(self):
+        """Worker processes pickle a raised error back to the parent; an error
+        whose ``__init__`` takes keyword-only fields must not break that."""
+
+        import pickle
+
+        from haute.errors import ConfigSettingError, LiveSwitchScenarioError, NodeConfigError
+
+        switch = LiveSwitchScenarioError(
+            "no mapping", switch="policies", scenario="renewal", available_mappings=["live"]
+        )
+        restored = pickle.loads(pickle.dumps(switch))
+        assert type(restored) is LiveSwitchScenarioError
+        assert (restored.switch, restored.scenario) == ("policies", "renewal")
+        assert restored.available_mappings == ("live",)
+        assert restored.to_payload() == switch.to_payload()
+        assert str(restored) == str(switch)
+
+        node = pickle.loads(pickle.dumps(NodeConfigError("bad", setting="factors")))
+        assert (type(node), node.setting, str(node)) == (
+            NodeConfigError,
+            "factors",
+            "bad (setting=factors)",
+        )
+
+        setting = ConfigSettingError("bad rule", setting="factors", fix="use dates", values=("x",))
+        restored_setting = pickle.loads(pickle.dumps(setting))
+        assert type(restored_setting) is ConfigSettingError
+        assert (restored_setting.setting, restored_setting.fix) == ("factors", "use dates")
+        assert restored_setting.values == ("x",)
+        assert str(restored_setting) == "bad rule"
+
     def test_public_haute_hauteerror_catches_all_typed_errors(self):
         """haute.HauteError (re-exported via __init__) must catch every
         error class in haute.errors — the hierarchy is unified, not split.

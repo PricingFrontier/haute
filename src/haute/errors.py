@@ -30,6 +30,7 @@ from typing import Any, ClassVar, TypeGuard
 
 from haute._validation_error import ConfigSettingError as ConfigSettingError
 from haute._validation_error import HauteValidationError as HauteValidationError
+from haute._validation_error import restore_exception
 
 
 class HauteError(Exception):
@@ -56,6 +57,9 @@ class HauteError(Exception):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._render()!r})"
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (restore_exception, (type(self), self.args, dict(self.__dict__)))
 
     def to_payload(self) -> dict[str, Any]:
         """Return the stable public payload for a typed contract error.
