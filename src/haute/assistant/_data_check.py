@@ -1371,7 +1371,8 @@ def identity_components(lineage: PipelineGraph) -> dict[str, Any]:
 
     The resolved path of every file the source generation signs, and each
     run-sourced Model Scoring node's resolved MLflow backend identity (whose
-    digest also selects its disk model cache): configuration reads only.
+    digest also selects its disk model cache): configuration reads plus one
+    existence check per snapshot-backed source file, never file contents.
     """
     paths = {str(path) for path in runtime_input_signed_paths(lineage)}
     for cached in _cached_models(lineage).values():
