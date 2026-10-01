@@ -7,6 +7,10 @@ function reset() {
     utilityOpen: false,
     importsOpen: false,
     gitOpen: false,
+    assistantOpen: false,
+    assistantTurn: null,
+    assistantUnseenOutcome: false,
+    assistantPreviewErrorNodeId: null,
     shortcutsOpen: false,
     submodelDialog: null,
     renameDialog: null,
@@ -167,6 +171,49 @@ describe("useUIStore", () => {
       expect(useUIStore.getState().importsOpen).toBe(true)
       expect(useUIStore.getState().gitOpen).toBe(false)
       expect(useUIStore.getState().utilityOpen).toBe(false)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Assistant chrome: the running-turn mirror, unseen outcome, fix request
+  // -----------------------------------------------------------------------
+
+  describe("assistant turn mirror", () => {
+    it("holds the running turn until it ends", () => {
+      const stop = () => {}
+      useUIStore.getState().startAssistantTurn(stop)
+      expect(useUIStore.getState().assistantTurn).toEqual({ stop })
+      useUIStore.getState().endAssistantTurn()
+      expect(useUIStore.getState().assistantTurn).toBeNull()
+    })
+
+    it("marks an unseen outcome only when the turn ends with the panel closed", () => {
+      useUIStore.getState().setAssistantOpen(true)
+      useUIStore.getState().startAssistantTurn(() => {})
+      useUIStore.getState().endAssistantTurn()
+      expect(useUIStore.getState().assistantUnseenOutcome).toBe(false)
+
+      useUIStore.getState().setAssistantOpen(false)
+      useUIStore.getState().startAssistantTurn(() => {})
+      useUIStore.getState().endAssistantTurn()
+      expect(useUIStore.getState().assistantUnseenOutcome).toBe(true)
+
+      useUIStore.getState().setAssistantOpen(true)
+      expect(useUIStore.getState().assistantUnseenOutcome).toBe(false)
+    })
+
+    it("asking the assistant to fix a node opens the panel with that node", () => {
+      useUIStore.setState({ assistantUnseenOutcome: true })
+      useUIStore.getState().setGitOpen(true)
+      useUIStore.getState().askAssistantToFix("rating")
+      const state = useUIStore.getState()
+      expect(state.assistantPreviewErrorNodeId).toBe("rating")
+      expect(state.assistantOpen).toBe(true)
+      expect(state.gitOpen).toBe(false)
+      expect(state.assistantUnseenOutcome).toBe(false)
+
+      useUIStore.getState().clearAssistantPreviewError()
+      expect(useUIStore.getState().assistantPreviewErrorNodeId).toBeNull()
     })
   })
 

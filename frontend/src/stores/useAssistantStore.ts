@@ -21,6 +21,7 @@ import {
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useToastStore from "./useToastStore"
+import useUIStore from "./useUIStore"
 
 export type TranscriptEntry =
   | { kind: "user"; text: string }
@@ -47,20 +48,30 @@ export type TranscriptEntry =
   | { kind: "outcome"; outcome: AssistantTurnOutcome }
 
 /**
- * What the canvas adds to a message: the ids of its selected nodes, the first
- * `MAX_CONTEXT_SELECTION` in canvas order. No preview error is shared yet.
+ * The selected nodes a message carries: the first `MAX_CONTEXT_SELECTION` in
+ * canvas order. The send and the composer's selection chip both read this.
+ */
+export function contextSelection<T extends { selected?: boolean }>(nodes: readonly T[]): T[] {
+  return nodes.filter((node) => node.selected).slice(0, MAX_CONTEXT_SELECTION)
+}
+
+/**
+ * What the canvas adds to a message: the ids of its selected nodes, and the
+ * node whose preview error the analyst asked the assistant to fix.
  */
 export function canvasMessageContext(): AssistantMessageContext {
-  const selectedNodeIds = useGraphStore
-    .getState()
-    .nodes.filter((node) => node.selected)
-    .map((node) => node.id)
-    .slice(0, MAX_CONTEXT_SELECTION)
-  return { selectedNodeIds, previewErrorNodeId: null }
+  const selectedNodeIds = contextSelection(useGraphStore.getState().nodes).map((node) => node.id)
+  return {
+    selectedNodeIds,
+    previewErrorNodeId: useUIStore.getState().assistantPreviewErrorNodeId,
+  }
 }
 
 /** The question card's one-click reply: hand the choice back to the assistant. */
 export const CHOOSE_FOR_ME_REPLY = "You choose, and tell me what you picked."
+
+/** The draft "Ask the assistant to fix" puts in an empty composer. */
+export const FIX_ERROR_PROMPT = "Fix the error this node raises when it runs."
 
 export interface SendMessageOptions {
   isInsideSubmodel: boolean
@@ -567,6 +578,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     const controller = new AbortController()
     activeController = controller
     set({ turnStatus: "streaming", notice: null })
+    // The eager chrome (canvas pill, toolbar) reads the turn from the UI store;
+    // the canvas is read-only from here until the release below.
+    useUIStore.getState().startAssistantTurn(() => get().stopTurn())
     let sessionId = get().sessionId
     try {
       if (sessionId === null) {
@@ -582,8 +596,17 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       if (activeController === controller) {
         activeController = null
         set({ turnStatus: "idle" })
+        useUIStore.getState().endAssistantTurn()
       }
       return
+    }
+    // The fix request rides on this message only; a later one must not
+    // reproduce the same error again. A newer request stays for the next one.
+    if (
+      context.previewErrorNodeId !== null
+      && useUIStore.getState().assistantPreviewErrorNodeId === context.previewErrorNodeId
+    ) {
+      useUIStore.getState().clearAssistantPreviewError()
     }
 
     set((state) => ({
@@ -654,6 +677,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       if (activeController === controller) {
         activeController = null
         set({ turnStatus: "idle" })
+        useUIStore.getState().endAssistantTurn()
         // The turn gave this conversation its first message, and therefore its
         // title and its place in the list. Refresh so going back shows it —
         // for the pipeline the canvas shows now, which may have changed mid-turn.

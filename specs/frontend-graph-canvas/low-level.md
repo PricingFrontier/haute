@@ -100,7 +100,9 @@ and optional source/config location fields, none of which is confused with trans
 `_status`.
 `documentReadOnly` is derived from server mutation capability and gates every mutation and
 history entry point, including drag/layout, keyboard actions, preamble, assistant edits,
-Save/Git, and submodel transforms. Execution entry points separately require their server
+Save/Git, and submodel transforms. The editing fence `editingReadOnly` adds a read-only
+submodel occurrence and a running assistant turn (`useUIStore.assistantTurn`) to it; the
+assistant panel still receives `documentReadOnly` alone. Execution entry points separately require their server
 capability. Inspection, selection, pan/zoom, and issue/source navigation remain enabled.
 
 ### Reusable submodel instance state (normative)

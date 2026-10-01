@@ -176,7 +176,14 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // loads lazily, fetched when a trace request starts; the always-needed request
 // surface (TraceStatePanel), trace store state and canvas projection stay eager.
 // The merged initial bundle is 279.5 KiB; 281 KiB keeps ~1.5 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 281
+// Later work brought the initial bundle to 281.6 KiB. The assistant's
+// running-turn chrome then adds 0.9 KiB of deliberate eager code, because it
+// acts while the panel chunk is not loaded: the canvas pill that stops a turn,
+// the toolbar's progress and unseen-outcome states, the data preview's "Ask
+// the assistant to fix" action and their UI-store mirror. The panel, its store
+// and its API module stay lazy (App.assistantLazy.test.ts). The merged initial
+// bundle is 282.5 KiB; 284 KiB restores ~1.5 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 284
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

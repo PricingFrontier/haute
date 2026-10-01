@@ -24,6 +24,7 @@ import { ApiError } from "../../api/client"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useToastStore from "../useToastStore"
+import useUIStore from "../useUIStore"
 
 vi.mock("../../api/assistant", () => ({
   getAssistantStatus: vi.fn(),
@@ -78,6 +79,12 @@ function resetStores() {
     sessionsSource: "main.py",
   })
   useGraphStore.setState({ dirty: false, nodes: [] })
+  useUIStore.setState({
+    assistantOpen: true,
+    assistantTurn: null,
+    assistantUnseenOutcome: false,
+    assistantPreviewErrorNodeId: null,
+  })
   vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", sourceFile: "main.py", history: [] })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
   // Every completed turn refreshes the list; without a default the shared
@@ -559,6 +566,22 @@ describe("send gates", () => {
     expect(options.context.selectedNodeIds).not.toContain("n1")
   })
 
+  it("carries the fix request's preview-error node once, then clears it", async () => {
+    scriptStream([completed()])
+    useUIStore.setState({ assistantPreviewErrorNodeId: "rating" })
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    await useAssistantStore.getState().sendMessage("fix it", SEND_OPTS)
+
+    expect(vi.mocked(streamAssistantMessage).mock.calls[0][3].context).toEqual({
+      selectedNodeIds: [],
+      previewErrorNodeId: "rating",
+    })
+    expect(useUIStore.getState().assistantPreviewErrorNodeId).toBeNull()
+
+    await useAssistantStore.getState().sendMessage("again", SEND_OPTS)
+    expect(vi.mocked(streamAssistantMessage).mock.calls[1][3].context.previewErrorNodeId).toBeNull()
+  })
+
   it("binds a new chat to the source file the server echoes", async () => {
     scriptStream([completed()])
     vi.mocked(createAssistantSession).mockResolvedValue({
@@ -951,6 +974,47 @@ describe("stop and new chat", () => {
     expect(turnStatus).toBe("idle")
     expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "stopped" })
     expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("mirrors the running turn into the UI store, whose stop stops it", async () => {
+    vi.mocked(streamAssistantMessage).mockImplementation(
+      (_id, _text, _source, opts) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          )
+        }),
+    )
+    const sending = useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useUIStore.getState().assistantTurn).not.toBeNull()
+    await vi.waitFor(() => {
+      expect(streamAssistantMessage).toHaveBeenCalled()
+    })
+    useUIStore.getState().assistantTurn?.stop()
+    await sending
+
+    const { entries } = useAssistantStore.getState()
+    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "stopped" })
+    expect(useUIStore.getState().assistantTurn).toBeNull()
+  })
+
+  it("releases the mirror when session creation fails", async () => {
+    vi.mocked(createAssistantSession).mockRejectedValue(
+      new ApiError("HTTP 404", 404, "No pipeline was found"),
+    )
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useAssistantStore.getState().turnStatus).toBe("idle")
+    expect(useUIStore.getState().assistantTurn).toBeNull()
+  })
+
+  it("leaves an unseen outcome only when the turn ends with the panel closed", async () => {
+    scriptStream([completed()])
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useUIStore.getState().assistantUnseenOutcome).toBe(false)
+
+    useUIStore.setState({ assistantOpen: false })
+    await useAssistantStore.getState().sendMessage("again", SEND_OPTS)
+    expect(useUIStore.getState().assistantUnseenOutcome).toBe(true)
   })
 
   it("stopTurn while idle is a no-op", () => {

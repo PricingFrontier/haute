@@ -26,6 +26,12 @@ from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._edge_join import _ALLOWED_HOW
 from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
+from haute.assistant._config import (
+    ASSISTANT_EGRESS_TOML_KEYS,
+    ASSISTANT_TOML_KEYS,
+    DEFAULT_TURN_TIMEOUT,
+    TURN_TIMEOUT_ENV,
+)
 from haute.cli import cli
 from haute.cli._init_cmd import InitConfig, handle_init
 from haute.parser import parse_pipeline_file
@@ -45,6 +51,9 @@ EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy
 INSTALLING_HAUTE_DOC = ROOT / "docs" / "getting-started" / "installing-haute.md"
 ENVIRONMENT_SETUP_DOC = ROOT / "docs" / "getting-started" / "environment.md"
 EDGE_JOIN_GUIDE = ROOT / "docs" / "building-models" / "nodes" / "edge-join.md"
+ASSISTANT_GUIDE = ROOT / "docs" / "getting-started" / "assistant.md"
+ASSISTANT_CONFIG_SOURCE = ROOT / "src" / "haute" / "assistant" / "_config.py"
+ASSISTANT_READINESS_CARD = ROOT / "frontend" / "src" / "panels" / "assistant" / "ReadinessCard.tsx"
 EDGE_JOIN_RUNTIME_SPEC = ROOT / "specs" / "json-shredding" / "low-level.md"
 EDGE_JOIN_EDITOR_SPEC = ROOT / "specs" / "frontend-node-editors" / "low-level.md"
 SPECS_README = ROOT / "specs" / "README.md"
@@ -242,6 +251,68 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "unavailable or `null`",
     ):
         assert claim in guide
+
+
+def _string_constants(source: str) -> list[str]:
+    """Every string literal in *source*, with f-strings contributing their literal parts."""
+
+    return [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _first_column_under(header: str, text: str) -> list[str]:
+    """The first cells of every Markdown table whose first header cell is *header*."""
+
+    table_pattern = rf"^\| {re.escape(header)} \|.*\n\|[-| :]+\|\n((?:\|.*\n)+)"
+    cells: list[str] = []
+    for table in re.findall(table_pattern, text, re.M):
+        cells.extend(row.strip().strip("|").split("|")[0].strip() for row in table.splitlines())
+    return cells
+
+
+def test_assistant_setup_guide_matches_configuration_and_readiness() -> None:
+    nav = MKDOCS_CONFIG.read_text(encoding="utf-8")
+    guide = ASSISTANT_GUIDE.read_text(encoding="utf-8")
+    constants = _string_constants(ASSISTANT_CONFIG_SOURCE.read_text(encoding="utf-8"))
+    readiness_card = ASSISTANT_READINESS_CARD.read_text(encoding="utf-8")
+
+    assert "Setting Up the Assistant: getting-started/assistant.md" in nav
+    example_block = re.search(r"```toml\n(.*?)```", guide, re.S)
+    assert example_block is not None
+    example = tomllib.loads(example_block.group(1))
+    assert set(example["assistant"]) <= ASSISTANT_TOML_KEYS
+    assert set(example["assistant"]["egress"]) == ASSISTANT_EGRESS_TOML_KEYS
+    for key in (ASSISTANT_TOML_KEYS - {"egress"}) | ASSISTANT_EGRESS_TOML_KEYS:
+        assert f"| `{key}` |" in guide, key
+
+    for env_key in (
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS",
+        TURN_TIMEOUT_ENV,
+    ):
+        assert f"`{env_key}`" in guide, env_key
+        assert any(env_key in constant for constant in constants), env_key
+    assert f"({DEFAULT_TURN_TIMEOUT} by default)" in guide
+
+    reasons = _first_column_under("Reason in the panel", guide)
+    assert len(reasons) >= 12
+    unquoted = [
+        reason for reason in reasons if not any(reason in constant for constant in constants)
+    ]
+    assert unquoted == []
+    for heading in (
+        "Assistant is not set up",
+        "Assistant cannot edit this project",
+        "Assistant settings could not be read",
+    ):
+        assert f"**{heading}**" in guide
+        assert f'title="{heading}' in readiness_card, heading
 
 
 def test_managed_windows_setup_uses_the_module_entrypoint_and_approved_python() -> None:

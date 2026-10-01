@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-34 | Planned | P2 | Long turns never collide with analyst edits, and setup is explained. |
 | ASSIST-36 | Planned | P1 | Realistic builds, edits and recoveries are measured per area on real models. |
 | ASSIST-37 | Planned | P2 | Context stays short on mid-tier models; strong models get caching and thinking. |
 | ASSIST-38 | Planned | P3 | Each provider gets the tool-schema shape it handles best. |
@@ -92,27 +91,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-34 — Panel experience
-**Why:** A long turn can collide with the analyst's own edits, a closed panel
-gives no sign that edits are still landing, the analyst cannot point the
-assistant at a node or its error, and nothing explains how to configure the
-assistant.
-
-**Plan:** Make the canvas read-only while a turn streams, with a Stop control;
-show progress and unseen outcomes on the toolbar button; add a context chip
-for the selected node and an "Ask the assistant to fix" action beside a node's
-run error; show the model name and an empty state per pipeline; and add a
-documentation page for the `[assistant]` table and its egress policy,
-describing the editor rather than the command line.
-
-**Acceptance:** Component tests for the chip, the progress states and the
-read-only canvas; the documentation tests pass.
-
-**Dependencies:** `ASSIST-13`, `ASSIST-24`.
-
-**Evidence:** `frontend/src/panels/assistant/AssistantPanel.tsx`;
-`frontend/src/components/Toolbar.tsx`.
 
 ### ASSIST-36 — Evaluation on realistic pipelines and live models
 **Why:** Evaluation fixtures are two three-row tables copied under many

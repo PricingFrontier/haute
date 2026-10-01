@@ -4,19 +4,23 @@
  * opening chat-list screen.
  *
  * Spec: specs/frontend-assistant-ui/high-level.md — Readiness, "A turn streams
- * into the transcript live", "Every completed turn ends with its outcome".
+ * into the transcript live", "Every completed turn ends with its outcome", "A new
+ * chat says what the assistant can do", "The composer shows what a message
+ * carries", "Ask the assistant to fix a run error".
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import AssistantPanel from "../AssistantPanel"
 import useAssistantStore, {
   CHOOSE_FOR_ME_REPLY,
+  FIX_ERROR_PROMPT,
   type AssistantStoreState,
 } from "../../../stores/useAssistantStore"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGraphStore from "../../../stores/useGraphStore"
+import useUIStore from "../../../stores/useUIStore"
 
 const READY_STATUS = {
   configured: true,
@@ -59,7 +63,8 @@ beforeEach(() => {
     sendMessage: vi.fn(async () => {}),
   })
   useDocumentStatusStore.setState({ sourceFile: "main.py" })
-  useGraphStore.setState({ dirty: false })
+  useGraphStore.setState({ dirty: false, nodes: [] })
+  useUIStore.setState({ assistantPreviewErrorNodeId: null })
 })
 
 afterEach(cleanup)
@@ -213,5 +218,80 @@ describe("readiness on the chat list", () => {
       "Assistant status could not be loaded.",
     )
     expect(screen.getByTestId("assistant-status-retry")).toHaveTextContent("Retry")
+  })
+})
+
+function canvasNode(id: string, label: string, selected: boolean) {
+  return { id, position: { x: 0, y: 0 }, data: { label }, selected }
+}
+
+describe("header and new chat", () => {
+  it("names the configured model and provider", () => {
+    seed({ view: "list" })
+    renderPanel()
+    expect(screen.getByTestId("assistant-model")).toHaveTextContent("m · openai")
+  })
+
+  it("says what the assistant can and cannot do, and a starter prompt only fills the composer", () => {
+    seed({ sessionId: null, pipelineSource: null })
+    renderPanel()
+
+    expect(screen.getByTestId("assistant-empty")).toHaveTextContent("Ask the assistant to change main.py.")
+    expect(screen.getByTestId("assistant-can")).toHaveTextContent("banding")
+    expect(screen.getByTestId("assistant-cannot")).toHaveTextContent("Run the pipeline")
+    expect(screen.getByTestId("assistant-cannot")).toHaveTextContent("Deploy")
+    const [prompt] = screen.getAllByTestId("assistant-starter-prompt")
+    fireEvent.click(prompt)
+
+    expect(screen.getByTestId("assistant-composer")).toHaveValue(prompt.textContent)
+    expect(useAssistantStore.getState().sendMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe("context chips", () => {
+  it("names the selected nodes the message carries, and nothing with none selected", () => {
+    seed({})
+    useGraphStore.setState({
+      nodes: [
+        canvasNode("a", "Age bands", true),
+        canvasNode("b", "Base rate", false),
+        canvasNode("c", "Claims", true),
+        canvasNode("d", "Driver", true),
+        canvasNode("e", "Excess", true),
+      ],
+    })
+    renderPanel()
+    expect(screen.getByTestId("assistant-context-selection")).toHaveTextContent(
+      "Selected: Age bands, Claims, Driver +1 more",
+    )
+
+    act(() => {
+      useGraphStore.setState({ nodes: [canvasNode("a", "Age bands", false)] })
+    })
+    expect(screen.queryByTestId("assistant-context-selection")).not.toBeInTheDocument()
+  })
+
+  it("names the fix request's node until it is dismissed", () => {
+    seed({})
+    useGraphStore.setState({ nodes: [canvasNode("rating", "Rating", true)] })
+    useUIStore.setState({ assistantPreviewErrorNodeId: "rating" })
+    renderPanel()
+
+    expect(screen.getByTestId("assistant-context-error")).toHaveTextContent("Run error: Rating")
+    fireEvent.click(screen.getByTestId("assistant-context-error-dismiss"))
+    expect(useUIStore.getState().assistantPreviewErrorNodeId).toBeNull()
+    expect(screen.queryByTestId("assistant-context-error")).not.toBeInTheDocument()
+  })
+
+  it("opens a new chat with the fix drafted when asked to fix from the list", () => {
+    seed({ view: "list", sessionId: null, pipelineSource: null })
+    renderPanel()
+    expect(screen.queryByTestId("assistant-composer")).not.toBeInTheDocument()
+
+    act(() => {
+      useUIStore.setState({ assistantPreviewErrorNodeId: "rating" })
+    })
+    expect(useAssistantStore.getState().view).toBe("chat")
+    expect(screen.getByTestId("assistant-composer")).toHaveValue(FIX_ERROR_PROMPT)
   })
 })

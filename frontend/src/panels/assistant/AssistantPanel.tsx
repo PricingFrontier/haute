@@ -1,13 +1,15 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, Bot, Plus } from "lucide-react"
 
 import PanelShell from "../PanelShell"
 import TranscriptEntryView, { type OutcomeReply } from "./TranscriptEntryView"
+import AssistantIntro from "./AssistantIntro"
 import Composer from "./Composer"
 import ReadinessCard from "./ReadinessCard"
 import SessionList from "./SessionList"
 import useAssistantStore, {
   CHOOSE_FOR_ME_REPLY,
+  FIX_ERROR_PROMPT,
   assistantSendDisabledReason,
 } from "../../stores/useAssistantStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
@@ -39,7 +41,24 @@ export default function AssistantPanel({
   const showSessionList = useAssistantStore((state) => state.showSessionList)
   const chatSource = useAssistantStore((state) => state.pipelineSource)
   const dirty = useGraphStore((state) => state.dirty)
+  const previewErrorNodeId = useUIStore((state) => state.assistantPreviewErrorNodeId)
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const [draft, setDraft] = useState("")
+
+  // "Ask the assistant to fix": an empty draft says what to do, once per
+  // request (adjusted while rendering, the way React derives state from a
+  // changed input)...
+  const [draftedFixRequest, setDraftedFixRequest] = useState<string | null>(null)
+  if (previewErrorNodeId !== draftedFixRequest) {
+    setDraftedFixRequest(previewErrorNodeId)
+    if (previewErrorNodeId !== null && !draft.trim()) setDraft(FIX_ERROR_PROMPT)
+  }
+  // ...and the request needs a composer, so the list screen gives way to a new chat.
+  useEffect(() => {
+    if (previewErrorNodeId !== null && useAssistantStore.getState().view === "list") {
+      useAssistantStore.getState().newChat()
+    }
+  }, [previewErrorNodeId])
 
   useEffect(() => {
     void refreshStatus()
@@ -90,6 +109,14 @@ export default function AssistantPanel({
     <PanelShell
       testId="assistant-panel"
       title="Pricing Assistant"
+      subtitle={
+        status !== "unknown" && status !== "error" && status.configured && status.model !== null ? (
+          <span data-testid="assistant-model">
+            {status.model}
+            {status.provider !== null && ` · ${status.provider}`}
+          </span>
+        ) : undefined
+      }
       onClose={() => setAssistantOpen(false)}
       icon={
         view === "chat" ? (
@@ -155,13 +182,7 @@ export default function AssistantPanel({
           style={{ background: "var(--bg-panel)" }}
         >
           {entries.length === 0 && !statusError && (
-            <div
-              data-testid="assistant-empty"
-              className="flex h-full items-center justify-center px-5 text-center text-[11px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Describe a pipeline change and Assistant will help author it here.
-            </div>
+            <AssistantIntro sourceFile={currentSourceFile} onChoosePrompt={setDraft} />
           )}
           {entries.map((entry, index) => (
             <TranscriptEntryView
@@ -193,6 +214,8 @@ export default function AssistantPanel({
           isInsideSubmodel={isInsideSubmodel}
           currentSourceFile={currentSourceFile}
           readOnly={readOnly}
+          text={draft}
+          setText={setDraft}
         />
       )}
     </PanelShell>

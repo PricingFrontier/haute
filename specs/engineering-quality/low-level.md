@@ -267,9 +267,9 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against default ceilings of 283 KiB initial and
-   1,385 KiB total JavaScript gzip. The measured bundle is approximately
-   280.4 KiB initial and 1,374.5 KiB total. The Polars step builder accounts
+   modulepreload chunks against default ceilings of 284 KiB initial and
+   1,569 KiB total JavaScript gzip. The measured bundle is approximately
+   282.5 KiB initial and 1,566.7 KiB total. The Polars step builder accounts
    for approximately 24.3 KiB of the aggregate total since the 1,350.2 KiB
    baseline, with the editor interface in the existing lazy TransformEditor
    chunk and no new dependency. Initial-path raises admit only

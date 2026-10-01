@@ -720,7 +720,9 @@ candidate, with the error toast.
   has and centres them, never zooming in, instead of fitting the whole graph; the
   ring clears on a pane click or the next update without an origin. The assistant
   panel reads the derived dirty state to gate sending while local edits are unsaved,
-  and the document revision to enable Undo.
+  and the document revision to enable Undo. While an assistant turn runs, the canvas
+  takes its read-only editing fence (selection, pan, zoom, previews and traces stay
+  usable) and shows the assistant's working pill over the canvas.
 - `frontend-shared` — the shared node-data types (`frontend/src/types/node.ts`)
   that this component and the node editors both depend on. The node-type metadata table
   (`frontend/src/utils/nodeTypes.ts`), the edge-join role/api-input-port handle-id conventions

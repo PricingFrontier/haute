@@ -15,7 +15,11 @@ right-panel feature with its own store, its own API module, and its own failure 
 In scope:
 
 - The assistant panel: transcript (user messages, streamed assistant text, tool-activity
-  rows, change cards), the message composer, the stop control, and the new-chat control.
+  rows, change cards), the message composer with its context chips, the stop control, the
+  new-chat control, the model name in the header, and the new-chat empty state.
+- The assistant's chrome outside the panel: the "Assistant is working" pill on the canvas,
+  the toolbar button's progress and unseen-outcome states, and the "Ask the assistant to
+  fix" action beside a node's run error.
 - The assistant Zustand store: session id, transcript, streaming state, and the derived
   can-send gate.
 - Consuming the assistant SSE stream (fetch + ReadableStream) and translating typed events
@@ -42,7 +46,16 @@ Out of scope:
 **Opening the panel.** The assistant surface sits in the right-panel area alongside the
 existing inspector surfaces (node config, trace, imports, utility scripts, git), opened from
 the same chrome that opens those. Its body is lazy-loaded on first open, like the node
-editors, so the chat feature costs the initial bundle nothing.
+editors, so the chat feature costs the initial bundle nothing. The panel header names the
+configured model and provider (for example `databricks-qwen35-122b-a10b · databricks`)
+once the status reports them.
+
+**A new chat says what the assistant can do.** A chat with no messages yet shows, for the
+pipeline the canvas shows, what the assistant can do (build and edit nodes as steps,
+banding, rating, joins, outputs, and modelling setup) and what it cannot (run the
+pipeline, train models, deploy, or use Git), with three starter prompts. Choosing a
+starter prompt puts its text in the composer for the analyst to edit and send; it never
+sends by itself.
 
 **Readiness gates the composer, with the reason visible.** On open, the panel queries the
 backend's assistant status. An unconfigured assistant renders the composer disabled with the
@@ -127,7 +140,38 @@ exposes no assistant execution tool.
 edits, showing why ("save or discard your canvas changes first") — because the assistant
 operates on the saved pipeline, and because an incoming live-sync update while dirty would
 hit the canvas's reload-or-discard banner instead of applying. The gate derives from the
-canvas's existing dirty state; this component adds no dirty tracking of its own.
+canvas's existing dirty state; this component adds no dirty tracking of its own. The
+read-only canvas during a turn (below) is its complement: the canvas cannot become dirty
+while a turn runs, so the turn's own live-sync updates always apply.
+
+**The canvas is read-only while a turn runs.** From the moment a send acquires the turn
+until the turn ends, the canvas takes the same editing fence as a read-only document: nodes
+cannot be moved, connected, added, deleted, renamed or configured; the palette, Undo, Redo,
+Layout, Utility, Imports, Save and Commit are disabled; and the node panel opens read-only.
+Selection, pan, zoom, previews and traces stay usable, and the turn's saves still reach the
+canvas through live sync, which the fence never blocks. A pill over the canvas reads
+"Assistant is working" with a Stop button that stops the turn exactly as the composer's
+Stop does. The toolbar's Assistant button stays enabled during a turn, so the panel that
+shows and stops it is always reachable.
+
+**The toolbar shows a turn's progress and an unseen outcome.** While a turn runs, the
+toolbar's Assistant button shows a spinner in place of its icon and its title says the
+assistant is working. A turn that ends while the panel is closed leaves a dot on the
+button, titled to say the assistant finished; opening the panel clears it.
+
+**The composer shows what a message carries.** Above the composer, a chip names the
+selected canvas nodes the next message will carry as context (the first three labels and a
+count of the rest; at most 20 are sent), so the analyst points the assistant at nodes by
+selecting them. With nothing selected there is no selection chip.
+
+**Ask the assistant to fix a run error.** When a top-level node's preview fails, the error
+offers "Ask the assistant to fix". It selects that node alone on the canvas and opens the
+panel: on a new chat when the panel would show the chat list, in the open chat otherwise.
+An empty composer is filled with a fix request, and an error chip names the node: the next
+message carries it as the preview-error node, whose error the backend reproduces for the
+model. The chip has a dismiss control, and the message that carries it clears it. The
+action is not offered inside a submodel, because the assistant authors the top-level graph
+only.
 
 **The document-readiness gate.** The composer also refuses to send while the current editor
 document is degraded, source-only, or has not synchronized its retained canvas with the
@@ -211,6 +255,17 @@ cannot partially append text or activity.
   lists); rendering it as such is table stakes for a chat product surface. The renderer is
   loaded with the lazy panel body so its cost never lands in the initial bundle (the
   bundle-size gate stays authoritative).
+- **The running turn is mirrored into the UI store.** The canvas pill, the toolbar button
+  and the fix action are in the initial bundle; the panel, its store and its API module are
+  not. The assistant store therefore mirrors the running turn (with its Stop) and the
+  unseen outcome into the shared UI store at exactly the points where it acquires and
+  releases the turn, and the fix action writes its preview-error node there. The eager
+  chrome reads only the UI store, the chat stays a lazy chunk, and the assistant store
+  remains the single owner of the turn lock.
+- **A read-only canvas, not a dirty-canvas banner, during a turn.** The analyst's edits and
+  the turn's saves both change the pipeline file. Fencing the canvas for the turn's
+  duration keeps one writer at a time, with Stop always one click away, instead of letting
+  a mid-turn edit park the turn's update behind the reload-or-discard banner.
 - **No browser-side conversation persistence.** The browser persists neither ids nor transcript
   entries. The backend list is authoritative, and opening a selected conversation replaces the
   empty/in-memory transcript with the server-returned history before another turn can use it;
@@ -228,8 +283,12 @@ cannot partially append text or activity.
   panel-visibility chrome, theme tokens, and the error boundary the panel mounts inside.
 - **[frontend-graph-canvas](../frontend-graph-canvas/high-level.md)** — supplies the derived
   dirty state that drives the clean-canvas gate and the document revision that enables Undo,
-  and applies assistant mutations via its existing WebSocket sync; this component reads
-  canvas state, never writes it.
+  applies assistant mutations via its existing WebSocket sync, and folds a running turn into
+  its editing fence; this component reads canvas state and selection, never writes the
+  graph. The fix action changes only the canvas selection, through the canvas's own
+  selection changes.
+- **[frontend-preview-explore](../frontend-preview-explore/high-level.md)** — the data
+  preview's error state hosts the "Ask the assistant to fix" action the app shell supplies.
 - **[frontend-node-editors](../frontend-node-editors/high-level.md)** — the shared
   side-panel shell chrome the panel renders inside, and the lazy-loading convention it
   follows.

@@ -31,7 +31,25 @@ interface UIState {
   importsOpen: boolean
   setImportsOpen: (open: boolean) => void
   assistantOpen: boolean
+  /** Opening the panel clears `assistantUnseenOutcome`. */
   setAssistantOpen: (open: boolean) => void
+  /*
+   * The assistant's eager chrome: the canvas pill, the toolbar button and the fix
+   * action read these, never the lazily loaded assistant store, which mirrors its
+   * turn lock here when it acquires and releases it.
+   */
+  /** The running assistant turn and what stops it; null while no turn runs. */
+  assistantTurn: { stop: () => void } | null
+  startAssistantTurn: (stop: () => void) => void
+  /** Release the mirror; an outcome the closed panel has not shown becomes unseen. */
+  endAssistantTurn: () => void
+  /** A turn ended while the panel was closed. */
+  assistantUnseenOutcome: boolean
+  /** The node whose preview error the next assistant message carries. */
+  assistantPreviewErrorNodeId: string | null
+  /** Open the assistant panel to fix *nodeId*'s preview error. */
+  askAssistantToFix: (nodeId: string) => void
+  clearAssistantPreviewError: () => void
   gitOpen: boolean
   setGitOpen: (open: boolean) => void
   shortcutsOpen: boolean
@@ -112,7 +130,30 @@ const useUIStore = create<UIState>()((set) => ({
   importsOpen: false,
   setImportsOpen: (open) => set({ importsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
   assistantOpen: false,
-  setAssistantOpen: (open) => set({ assistantOpen: open, utilityOpen: false, importsOpen: false, gitOpen: false }),
+  setAssistantOpen: (open) => set({
+    assistantOpen: open,
+    utilityOpen: false,
+    importsOpen: false,
+    gitOpen: false,
+    ...(open ? { assistantUnseenOutcome: false } : {}),
+  }),
+  assistantTurn: null,
+  startAssistantTurn: (stop) => set({ assistantTurn: { stop } }),
+  endAssistantTurn: () => set((s) => ({
+    assistantTurn: null,
+    assistantUnseenOutcome: s.assistantUnseenOutcome || !s.assistantOpen,
+  })),
+  assistantUnseenOutcome: false,
+  assistantPreviewErrorNodeId: null,
+  askAssistantToFix: (nodeId) => set({
+    assistantPreviewErrorNodeId: nodeId,
+    assistantOpen: true,
+    utilityOpen: false,
+    importsOpen: false,
+    gitOpen: false,
+    assistantUnseenOutcome: false,
+  }),
+  clearAssistantPreviewError: () => set({ assistantPreviewErrorNodeId: null }),
   gitOpen: false,
   setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, importsOpen: false, assistantOpen: false }),
   mlflowSettingsOpen: false,
