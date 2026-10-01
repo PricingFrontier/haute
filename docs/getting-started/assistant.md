@@ -108,7 +108,7 @@ The egress policy decides what project material the assistant may send to the mo
 | `allow_executable_source` | Whether the assistant may read the code in your nodes and in the pipeline's imports. Without it, code is withheld when the assistant inspects a node. |
 | `allow_row_samples` | Whether actual values from your data may be sent: profiles of a column's values, and error messages that quote a value. Without it, the assistant sees column names and types, and an error is reported by its type and the step that raised it. |
 
-An `external` endpoint must use `max_sensitivity = "public"` and cannot allow executable source or row samples. In practice that means an external service gets a read-only assistant that cannot see your pipeline, so use `organization` for your own Databricks workspace.
+An `external` endpoint must use `max_sensitivity = "public"` and cannot allow executable source or row samples. In practice that means an external service gets an assistant that can neither read nor edit the pipeline, so use `organization` for your own Databricks workspace.
 
 ---
 
