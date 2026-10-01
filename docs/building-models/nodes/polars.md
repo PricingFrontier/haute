@@ -129,6 +129,7 @@ On the **POLARS** tab of a Data Input, Load File, Rating Step, Expander or Model
 - There is no **Start from** card, and the cards are numbered from 1.
 - **Join another input** and **Append inputs** are offered only on a Load File node, whose other inputs the steps can name. On the other nodes the steps see only `df`.
 - The loaded object of a Load File node, `obj`, is available only in a **Free code** step.
+- The column boxes suggest the node's input columns and the columns the node itself produced in its last preview, such as a Model Scoring node's prediction column or a Data Input's columns.
 
 What `df` holds on each node, and the hint its tab shows:
 
@@ -149,7 +150,8 @@ After **Switch to code**, the **POLARS** tab holds a code box, **POLARS CODE**, 
 
 - Each input is available by the name of the node it came from. For example, if you connect a node called `policies`, you reference it as `policies` in your code.
 - `df` is not an input - it's the variable your code must assign its result to (reading `df` before assigning it is an error). Haute passes whatever `df` holds to the next node, so do not end your code with `return df`: Haute adds that line itself, and shows it dimmed under the code box.
-- The code box suggests column names inside quotes, and after a failed run it highlights the line that failed.
+- The code box suggests column names inside quotes: the inputs' columns, then the columns the node produced in its last preview, including the ones your code creates. On the **POLARS** tab of another node these include what the node adds, such as a Model Scoring node's prediction column. A column your code renames or drops is suggested under the name the preview showed.
+- After a failed run, the code box highlights the line that failed.
 
 ```python
 df = policies.join(claims, on="policy_id", how="left")

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
-import { dispatchAppShortcut } from "./browserInteractions"
+import { dispatchAppShortcut, waitForSettledViewport } from "./browserInteractions"
 import { resetE2eProject } from "./projectIsolation"
 
 type Box = { x: number; y: number; width: number; height: number }
@@ -18,18 +18,6 @@ function contains(outer: Box, inner: Box): boolean {
     && inner.y >= outer.y
     && inner.x + inner.width <= outer.x + outer.width
     && inner.y + inner.height <= outer.y + outer.height
-}
-
-/** React Flow fits the view once nodes are measured; placing nodes before that lands would race it. */
-async function waitForInitialFit(page: Page) {
-  const viewport = page.locator(".react-flow__viewport")
-  let previous: string | null = null
-  await expect.poll(async () => {
-    const current = await viewport.evaluate((element) => (element as HTMLElement).style.transform)
-    const settled = current === previous
-    previous = current
-    return settled
-  }, { intervals: [300] }).toBe(true)
 }
 
 async function viewportZoom(page: Page): Promise<number> {
@@ -67,7 +55,8 @@ test.describe("active node visibility", () => {
     await page.setViewportSize(desktopViewport)
     await page.goto("/")
     await expect(page.getByTestId("rf__node-raw_rows")).toBeVisible()
-    await waitForInitialFit(page)
+    // React Flow fits the view once nodes are measured; placing nodes before that lands would race it.
+    await waitForSettledViewport(page)
   })
 
   test("moves a clicked node out from under its inspector and preview pane without changing zoom", async ({ page }) => {

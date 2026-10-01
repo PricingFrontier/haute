@@ -50,6 +50,28 @@ describe("ExploreCodeEditor", () => {
     expect(editor.dataset.availableColumns).toBe(JSON.stringify(["premium", "region"]))
   })
 
+  it("completes the input columns, then the columns the node's code creates", () => {
+    render(
+      <ExploreCodeEditor
+        config={{ code: "df = df.with_columns(loss_ratio=pl.col('claims') / pl.col('premium'))" }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[
+          { name: "premium", dtype: "Int64" },
+          { name: "claims", dtype: "Float64" },
+        ]}
+        nodeColumns={[
+          { name: "premium", dtype: "Int64" },
+          { name: "claims", dtype: "Float64" },
+          { name: "loss_ratio", dtype: "Float64" },
+        ]}
+      />,
+    )
+
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.dataset.availableColumns).toBe(JSON.stringify(["premium", "claims", "loss_ratio"]))
+  })
+
   it("updates the code config key when the editor changes", () => {
     const onUpdate = vi.fn()
     render(<ExploreCodeEditor config={{}} onUpdate={onUpdate} inputSources={[]} />)

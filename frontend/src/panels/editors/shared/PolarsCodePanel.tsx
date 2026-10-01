@@ -11,7 +11,8 @@ type PolarsCodePanelProps = {
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
-  upstreamColumns?: { name: string; dtype: string }[]
+  /** The columns the code can name, completed inside a string literal. */
+  codeColumns?: { name: string; dtype: string }[]
   hint: ReactNode
   /** Selectable, non-persisted initial text used only when config has no code field. */
   starterCode?: string
@@ -23,14 +24,14 @@ export default function PolarsCodePanel({
   inputSources,
   onDeleteInput,
   errorLine,
-  upstreamColumns,
+  codeColumns,
   hint,
   starterCode,
 }: PolarsCodePanelProps) {
   const defaultCode = Object.hasOwn(config, "code")
     ? configField(config, "code", "")
     : starterCode ?? ""
-  const columnNames = useMemo(() => (upstreamColumns ?? []).map((c) => c.name), [upstreamColumns])
+  const columnNames = useMemo(() => (codeColumns ?? []).map((c) => c.name), [codeColumns])
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-2">

@@ -87,6 +87,7 @@ import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "./types/n
 import type { HauteNodeData } from "./types/node"
 import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
+import BoxSelectionReset from "./components/BoxSelectionReset"
 import InitialViewFit from "./components/InitialViewFit"
 import TraceViewFit from "./components/TraceViewFit"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
@@ -1776,6 +1777,7 @@ function FlowEditor() {
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
                 <InitialViewFit />
                 <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
+                <BoxSelectionReset />
               </ReactFlow>
               {connectionDropMenu && !editingReadOnly && (
                 <Suspense fallback={null}>

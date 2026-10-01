@@ -58,6 +58,8 @@ export type NodeConfigEditorProps = {
   onReplaceConfig: OnReplaceConfig
   inputSources: InputSource[]
   upstreamColumns: Column[]
+  /** The node's own recorded columns, which its code editors offer after its input columns. */
+  nodeColumns?: Column[]
   pivotColumns: Column[]
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
@@ -106,6 +108,7 @@ export function NodeConfigEditor({
   onReplaceConfig,
   inputSources,
   upstreamColumns,
+  nodeColumns,
   pivotColumns,
   activeExplorePane,
   activeModellingPane,
@@ -129,8 +132,8 @@ export function NodeConfigEditor({
 }: NodeConfigEditorProps) {
   if (readOnly && NO_READ_ONLY_EDITOR.has(nodeType)) return <ReadOnlyConfigDump config={config} />
   const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
-  const nodeColumns = (node.data._columns as Column[] | undefined) ?? []
-  const effectiveColumns = upstreamColumns.length > 0 ? upstreamColumns : nodeColumns
+  const outputColumns = (node.data._columns as Column[] | undefined) ?? []
+  const effectiveColumns = upstreamColumns.length > 0 ? upstreamColumns : outputColumns
 
   switch (nodeType) {
     case NODE_TYPES.API_INPUT:
@@ -156,7 +159,7 @@ export function NodeConfigEditor({
       if (activeExplorePane === "code") {
         return (
           <div id="explore-code-pane" role="tabpanel" aria-labelledby="explore-code-tab" data-testid="explore-code-pane" className="h-full min-h-0 flex flex-col">
-            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} />
+            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeColumns={nodeColumns} />
           </div>
         )
       }
@@ -199,7 +202,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} nodeColumns={nodeColumns} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />

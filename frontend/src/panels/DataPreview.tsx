@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react"
+import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, type MouseEvent, type ReactNode } from "react"
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
@@ -93,6 +93,31 @@ type ColumnWindow = {
 type ColumnSearchEntry = {
   column: ColumnInfo
   normalizedName: string
+}
+
+/**
+ * Where the user left one axis of the table: its offset, or its far end when
+ * it was left there, so a column added to a table scrolled fully right comes
+ * into view.
+ */
+type AxisPlace = { offset: number; atEnd: boolean }
+
+/** Where the user scrolled the table to, kept per axis. */
+type ScrollPlace = { top: AxisPlace; left: AxisPlace }
+
+// Offsets can be fractional, so within a pixel of the end is the end.
+function readAxisPlace(offset: number, maxOffset: number): AxisPlace {
+  return { offset, atEnd: maxOffset > 0 && maxOffset - offset < 1 }
+}
+
+function axisOffset(place: AxisPlace, maxOffset: number): number {
+  return place.atEnd ? maxOffset : place.offset
+}
+
+/** Scrolls `el` to `place`; the browser clamps an offset past the table's end. */
+function scrollToPlace(el: HTMLElement, place: ScrollPlace): void {
+  el.scrollTop = axisOffset(place.top, el.scrollHeight - el.clientHeight)
+  el.scrollLeft = axisOffset(place.left, el.scrollWidth - el.clientWidth)
 }
 
 /**
@@ -306,6 +331,11 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
   const [viewHeight, setViewHeight] = useState(0)
   const [viewWidth, setViewWidth] = useState(0)
   const rafRef = useRef(0)
+  const scrollPlaceRef = useRef<ScrollPlace | null>(null)
+  // The offset each axis was last put back at, until the user moves that axis.
+  // Putting the table back raises a scroll event, as does a narrower or shorter
+  // table clamping it there, and neither is the user moving it.
+  const placedOffsetsRef = useRef<{ top: number | null; left: number | null }>({ top: null, left: null })
 
   const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
@@ -316,11 +346,38 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
     }
   }, [])
 
+  // Put the table back where the user left it when loading, an error or
+  // collapsing the panel replaces its scroll container (the replacement starts
+  // unscrolled), and when a new result, a column search or a resized panel
+  // changes how far it scrolls. The row and column windows start there; a
+  // frame still pending from before would move them back.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const place = scrollPlaceRef.current
+    if (!el || !place) return
+    scrollToPlace(el, place)
+    placedOffsetsRef.current = { top: el.scrollTop, left: el.scrollLeft }
+    cancelAnimationFrame(rafRef.current)
+    setScrollTop(el.scrollTop)
+    setScrollLeft(el.scrollLeft)
+  }, [scrollElement, data, filteredColumns, viewWidth, viewHeight])
+
   const handleTableScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const nextScrollTop = el.scrollTop
     const nextScrollLeft = el.scrollLeft
+    // An axis still at the offset it was put back at keeps its place: the user
+    // scrolled the other axis, or did not scroll at all.
+    const place = scrollPlaceRef.current
+    const placed = placedOffsetsRef.current
+    const keepTop = place !== null && placed.top === nextScrollTop
+    const keepLeft = place !== null && placed.left === nextScrollLeft
+    scrollPlaceRef.current = {
+      top: keepTop ? place.top : readAxisPlace(nextScrollTop, el.scrollHeight - el.clientHeight),
+      left: keepLeft ? place.left : readAxisPlace(nextScrollLeft, el.scrollWidth - el.clientWidth),
+    }
+    placedOffsetsRef.current = { top: keepTop ? placed.top : null, left: keepLeft ? placed.left : null }
     cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       setScrollTop(nextScrollTop)
@@ -437,8 +494,12 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
         let startIdx = 0
         let endIdx = totalRows
         if (shouldVirtualize) {
-          startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-          endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
+          // Until the browser clamps it, the offset can lie past a shorter
+          // result's end; the window then holds the result's last rows, not a
+          // spacer taller than the result.
+          const rowScrollTop = Math.min(scrollTop, Math.max(0, totalRows * ROW_HEIGHT - effectiveViewHeight))
+          startIdx = Math.max(0, Math.floor(rowScrollTop / ROW_HEIGHT) - OVERSCAN)
+          endIdx = Math.min(totalRows, Math.ceil((rowScrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN)
         }
         const topPad = startIdx * ROW_HEIGHT
         const bottomPad = (totalRows - endIdx) * ROW_HEIGHT

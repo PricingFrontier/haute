@@ -11,10 +11,25 @@ vi.mock("../../polarsSteps/PolarsStepsEditor", () => ({
 }))
 
 vi.mock("../../CodeEditor", () => ({
-  CodeEditor: ({ defaultValue }: { defaultValue: string }) => (
-    <textarea data-testid="code-editor" defaultValue={defaultValue} />
+  CodeEditor: ({ defaultValue, availableColumns }: { defaultValue: string; availableColumns?: string[] }) => (
+    <textarea
+      data-testid="code-editor"
+      data-available-columns={JSON.stringify(availableColumns ?? [])}
+      defaultValue={defaultValue}
+    />
   ),
 }))
+
+const INPUT_COLUMNS = [
+  { name: "policy_id", dtype: "String" },
+  { name: "exposure", dtype: "Float64" },
+]
+// The node's own columns repeat its input columns (one with a type its code changed).
+const NODE_COLUMNS = [
+  { name: "policy_id", dtype: "String" },
+  { name: "exposure", dtype: "Int64" },
+  { name: "prediction", dtype: "Float64" },
+]
 
 import SteppedCodePane from "../SteppedCodePane"
 
@@ -67,6 +82,82 @@ describe("SteppedCodePane", () => {
     expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).defaultValue).toBe("df = df.head(2)")
     expect(screen.queryByTestId("polars-steps-discarded")).not.toBeInTheDocument()
     expect(stepsEditorProps).toHaveLength(0)
+  })
+
+  it("completes the input columns, then the node's own columns, in the code box", () => {
+    render(
+      <SteppedCodePane
+        config={{ code: "df = df" }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        inputNames={[]}
+        start="frame"
+        codeHint="Post-processing Code (optional)"
+        upstreamColumns={INPUT_COLUMNS}
+        nodeColumns={NODE_COLUMNS}
+      />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(JSON.parse(editor.dataset.availableColumns ?? "")).toEqual(["policy_id", "exposure", "prediction"])
+  })
+
+  it("completes the node's own columns when it has no inputs", () => {
+    render(
+      <SteppedCodePane
+        config={{ code: "" }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        inputNames={[]}
+        start="frame"
+        codeHint="df = the opened input snapshot"
+        upstreamColumns={[]}
+        nodeColumns={NODE_COLUMNS}
+      />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(JSON.parse(editor.dataset.availableColumns ?? "")).toEqual(["policy_id", "exposure", "prediction"])
+  })
+
+  it("starts a frame-mode step list from the same columns, each with its input type", () => {
+    render(
+      <SteppedCodePane
+        config={{ steps: [] }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        inputNames={[]}
+        start="frame"
+        codeHint="Post-processing Code (optional)"
+        upstreamColumns={INPUT_COLUMNS}
+        nodeColumns={NODE_COLUMNS}
+      />,
+    )
+    expect(stepsEditorProps.at(-1)?.frameColumns).toEqual([
+      { name: "policy_id", dtype: "String" },
+      { name: "exposure", dtype: "Float64" },
+      { name: "prediction", dtype: "Float64" },
+    ])
+  })
+
+  it("keeps the code columns' identity while an edit leaves both column lists alone", () => {
+    const pane = (steps: unknown[]) => (
+      <SteppedCodePane
+        config={{ steps }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        inputNames={[]}
+        start="frame"
+        codeHint="Post-processing Code (optional)"
+        upstreamColumns={INPUT_COLUMNS}
+        nodeColumns={NODE_COLUMNS}
+      />
+    )
+    const { rerender } = render(pane([]))
+    const first = stepsEditorProps.at(-1)?.frameColumns
+    expect(first).toHaveLength(3)
+
+    rerender(pane([{ id: "s1", kind: "limit", n: 5 }]))
+
+    expect(stepsEditorProps.at(-1)?.frameColumns).toBe(first)
   })
 
   it("shows the discard notice above the code box after steps were discarded on load", () => {

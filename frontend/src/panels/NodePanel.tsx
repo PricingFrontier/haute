@@ -40,6 +40,7 @@ import {
   type NodePanelTab,
 } from "./useNodePanelSession"
 import { NodeConfigEditor } from "./NodeConfigEditor"
+import { useRecordedNodeColumns } from "./useRecordedNodeColumns"
 
 type NodePanelProps = {
   node: SimpleNode | null
@@ -1237,6 +1238,8 @@ type NodeEditorBodyProps = {
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
+  /** The node's own recorded columns, which the Polars tab offers after its input columns. */
+  nodeColumns: { name: string; dtype: string }[] | undefined
   availableColumns: { name: string; dtype: string }[]
   currentColumns: { name: string; dtype: string }[]
   onUpdateConfig: OnUpdateConfig
@@ -1257,6 +1260,7 @@ function NodeEditorBody({
   errorLine,
   runError,
   upstreamColumns,
+  nodeColumns,
   availableColumns,
   currentColumns,
   onUpdateConfig,
@@ -1283,6 +1287,7 @@ function NodeEditorBody({
         errorLine={errorLine}
         runError={runError}
         upstreamColumns={upstreamColumns}
+        nodeColumns={nodeColumns}
         start={surface.start}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
       />
@@ -1535,6 +1540,7 @@ function NodePanelContent({
     // upstream schema, so they should preserve this array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, upstreamSchemaSignature])
+  const nodeColumns = useRecordedNodeColumns(node.data as HauteNodeData, activeSource)
   const pivotColumns = useMemo(
     () =>
       exploreProfile
@@ -1616,6 +1622,7 @@ function NodePanelContent({
       onReplaceConfig={handleConfigReplace}
       inputSources={inputSources}
       upstreamColumns={upstreamColumns}
+      nodeColumns={nodeColumns}
       pivotColumns={pivotColumns}
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
@@ -1735,6 +1742,7 @@ function NodePanelContent({
         errorLine={errorLine}
         runError={runError}
         upstreamColumns={upstreamColumns}
+        nodeColumns={nodeColumns}
         availableColumns={availableColumns}
         currentColumns={currentColumns}
         onUpdateConfig={handleConfigUpdate}
