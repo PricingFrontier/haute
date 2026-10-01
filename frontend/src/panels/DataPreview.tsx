@@ -307,12 +307,19 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
   const [viewWidth, setViewWidth] = useState(0)
   const rafRef = useRef(0)
 
+  // Loading, an error or collapsing the panel replaces the scroll container,
+  // and its replacement starts unscrolled, so the row and column windows
+  // restart from the new container's offsets. A frame still pending from the
+  // old container would put them back where that one was scrolled.
   const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
     setScrollElement(node)
+    cancelAnimationFrame(rafRef.current)
     if (node) {
       setViewHeight(node.clientHeight)
       setViewWidth(node.clientWidth)
+      setScrollTop(node.scrollTop)
+      setScrollLeft(node.scrollLeft)
     }
   }, [])
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import DataPreview from "../DataPreview"
 import type { PreviewData } from "../DataPreview"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
@@ -668,6 +668,47 @@ describe("DataPreview", () => {
 
     expect(screen.getByText("col_79")).toBeInTheDocument()
     expect(screen.getByText("value-79")).toBeInTheDocument()
+  })
+
+  describe("a result shown after loading", () => {
+    // Refresh shows the loading state, which replaces the scroll container;
+    // the new container starts unscrolled, so the row and column windows have
+    // to start there too, or the cells render beyond blank spacers.
+    const columns = Array.from({ length: 120 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+    const rows = Array.from({ length: 100 }, (_, row) =>
+      Object.fromEntries(columns.map((col, c) => [col.name, `r${row}-c${c}`])),
+    )
+    const scrollablePreview = (status: PreviewData["status"] = "ok") =>
+      makePreview({ status, column_count: columns.length, columns, preview: rows, row_count: rows.length })
+    const scrollFar = () =>
+      fireEvent.scroll(screen.getByTestId("data-preview-scroll"), {
+        target: { scrollTop: 80 * 28, scrollLeft: 80 * 160 },
+      })
+
+    it("starts at the top-left of its new scroll container", async () => {
+      const { rerender } = render(<DataPreview data={scrollablePreview()} />)
+      scrollFar()
+      await waitFor(() => {
+        expect(screen.getByText("r80-c80")).toBeInTheDocument()
+      })
+
+      rerender(<DataPreview data={scrollablePreview("loading")} />)
+      rerender(<DataPreview data={scrollablePreview()} />)
+
+      expect(screen.getByText("col_0")).toBeInTheDocument()
+      expect(screen.getByText("r0-c0")).toBeInTheDocument()
+    })
+
+    it("drops a scroll frame still pending from the replaced container", async () => {
+      const { rerender } = render(<DataPreview data={scrollablePreview()} />)
+      scrollFar()
+      rerender(<DataPreview data={scrollablePreview("loading")} />)
+      rerender(<DataPreview data={scrollablePreview()} />)
+
+      await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+
+      expect(screen.getByText("r0-c0")).toBeInTheDocument()
+    })
   })
 
   it("column search can show a matching column outside the initial virtual window", () => {

@@ -321,7 +321,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 - A multi-frame preview may have no flat columns: selected-frame columns supply the visible schema
   and header count. Preview-only columns remain visible with an unknown/empty dtype.
 - `null`/`undefined` display separately from Haute non-finite-float sentinel objects. Table
-  windows clamp if a changed result becomes narrower while horizontally scrolled.
+  windows clamp if a changed result becomes narrower while horizontally scrolled. Loading, an
+  error or collapsing the panel replaces the table's scroll container, so the next result starts
+  at the top-left of a new container: the row and column windows restart there, and a scroll
+  frame still pending from the replaced container is dropped.
 - The cache action is disabled while the point cannot be built or a build is already running. A
   profile response that is neither a completed result nor a started/joined job publishes nothing
   rather than a false success.
@@ -416,7 +419,8 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
 `frontend/src/panels/explore/__tests__/` and
-`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation, frames, search, trace click
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation (including windows
+restarting in a replaced scroll container), frames, search, trace click
 delegation, boundary/rejected execution diagnostics, the status bar naming no seeded
 nodes, pivot identity/result/job lifecycle,
 overview/chart card ordering and config, the data-cache state and profile lifecycle, chart
