@@ -45,9 +45,9 @@ def _free_code_steps(source: str, code: str) -> list[dict[str, str]]:
 def _service(project_root: Path, *, published: list[dict] | None = None):
     from haute.assistant._application import PipelineApplicationService
 
-    def publish(source_file):
+    def publish(source_file, change):
         if published is not None:
-            published.append({"source_file": source_file})
+            published.append({"source_file": source_file, "change": change})
         return "f" * 64
 
     return PipelineApplicationService(
@@ -105,7 +105,7 @@ class TestDryRun:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_document_update=lambda _source: "f" * 64,
+            publish_document_update=lambda _source, _change: "f" * 64,
             plan_store=shared_store,
         )
 
@@ -506,7 +506,7 @@ class TestApply:
         assert result.verification_tier == "schema"
         assert result.verification_evidence
         assert result.graph_fingerprint == "f" * 64
-        assert published == [{"source_file": "main.py"}]
+        assert published == [{"source_file": "main.py", "change": result.change}]
 
         with pytest.raises(AssistantOperationError) as exc:
             await service.apply("main.py", plan.plan_hash)
@@ -521,12 +521,12 @@ class TestApply:
         original_commit = service._commit
         commit_attempts = 0
 
-        def fail_once(source_file, after):
+        def fail_once(source_file, after, receipt):
             nonlocal commit_attempts
             commit_attempts += 1
             if commit_attempts == 1:
                 raise RuntimeError("simulated pre-commit failure")
-            return original_commit(source_file, after)
+            return original_commit(source_file, after, receipt)
 
         monkeypatch.setattr(service, "_commit", fail_once)
         operations = [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}]
@@ -577,7 +577,7 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_document_update=lambda _source: "f" * 64,
+            publish_document_update=lambda _source, _change: "f" * 64,
             project_sources=lambda _source: (evidence,),
         )
         plan = service.dry_run(
@@ -615,7 +615,7 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (False, "working branch is not ready"),
-            publish_document_update=lambda _source: "f" * 64,
+            publish_document_update=lambda _source, _change: "f" * 64,
         )
         plan = service.dry_run(
             "main.py",
@@ -631,6 +631,7 @@ class TestApply:
     async def test_committed_verification_failure_is_published_and_never_retried(
         self, project_root: Path
     ):
+        from haute._pipeline_recovery import load_pipeline_editor_document
         from haute.assistant._application import CommittedVerificationError
         from haute.routes._helpers import parse_pipeline_to_graph
 
@@ -650,7 +651,9 @@ class TestApply:
             project_root=project_root,
             pipeline_root=project_root,
             mutations_readiness=lambda _root: (True, None),
-            publish_document_update=lambda source: published.append({"source": source}) or "f" * 64,
+            publish_document_update=lambda source, change: (
+                published.append({"source": source, "change": change}) or "f" * 64
+            ),
             parse_graph=parser,
         )
         plan = service.dry_run(
@@ -665,7 +668,20 @@ class TestApply:
         assert exc.value.result["verification_status"] == "failed"
         assert exc.value.result["graph_fingerprint"] == "f" * 64
         assert "def renamed(" in (project_root / "main.py").read_text(encoding="utf-8")
-        assert published == [{"source": "main.py"}]
+        # The committed save keeps a change record, so the analyst can undo it: the
+        # plan's change, the save's commit and the revision the save produced.
+        change = AssistantChangeRecord.model_validate(exc.value.result["change"])
+        assert change.id == plan.plan_hash
+        assert [(node.id, node.change, node.renamed_from) for node in change.changes.nodes] == [
+            ("renamed", "renamed", "quotes")
+        ]
+        assert (
+            change.revision
+            == load_pipeline_editor_document(
+                project_root / "main.py", project_root=project_root
+            ).source_revision
+        )
+        assert published == [{"source": "main.py", "change": change}]
         with pytest.raises(AssistantOperationError) as second:
             await service.apply("main.py", plan.plan_hash)
         assert second.value.code == "plan_already_applied"
@@ -1396,13 +1412,13 @@ class TestSteppedWrites:
         ).plan
         original_commit = service._commit
 
-        def commit_other_steps(source_file, after):
+        def commit_other_steps(source_file, after, receipt):
             node = next(item for item in after.nodes if item.id == "rated")
             other = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
             after.nodes[after.nodes.index(node)] = node.with_config(
                 {**node.data.config, "steps": other}
             )
-            return original_commit(source_file, after)
+            return original_commit(source_file, after, receipt)
 
         monkeypatch.setattr(service, "_commit", commit_other_steps)
 

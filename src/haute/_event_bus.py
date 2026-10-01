@@ -88,12 +88,28 @@ class ParseErrorPayload(TypedDict):
     source_file: str
 
 
-class PipelineDocumentUpdatePayload(TypedDict):
-    """Emitted when a readable pipeline editor document changes."""
+class AssistantDocumentOrigin(TypedDict):
+    """The assistant change an update saved or undid, and the node ids it names."""
 
+    kind: Literal["assistant"]
+    session_id: str
+    change_id: str
+    node_ids: list[str]
+
+
+class _PipelineDocumentUpdateFields(TypedDict):
     document: dict[str, Any]
     document_fingerprint: str
     source_file: str
+
+
+class PipelineDocumentUpdatePayload(_PipelineDocumentUpdateFields, total=False):
+    """Emitted when a readable pipeline editor document changes.
+
+    ``origin`` is present only on an update an assistant apply or undo published.
+    """
+
+    origin: AssistantDocumentOrigin
 
 
 EventType = Literal["parse.error", "pipeline.document.update"]

@@ -903,6 +903,11 @@ async def run_turn(
                             and _stable_error_code(payload) == _COMMITTED_UNVERIFIED_ERROR_CODE
                         ):
                             committed_unverified_detail = _result_summary(payload, is_error)
+                            # The save committed, so its record is a change the
+                            # turn saved, and the analyst can undo it.
+                            if "change" in payload:
+                                change = AssistantChangeRecord.model_validate(payload["change"])
+                                saved_changes.append(change.id)
                         round_results.append(_tool_result_message(event, payload, is_error))
                         if interrupt is None:
                             yield AssistantToolFinishedEvent(

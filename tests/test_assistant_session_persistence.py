@@ -31,6 +31,7 @@ def _turn(text: str = "hi", reply: str = "hello") -> dict:
             {"role": "assistant", "content": reply},
         ],
         "outcome": {"kind": "answered", "detail": None, "changes": []},
+        "undone": [],
     }
 
 
@@ -74,6 +75,7 @@ class TestWriteThrough:
                     },
                 ],
                 "outcome": None,
+                "undone": [],
             },
         )
 
@@ -147,6 +149,7 @@ class TestWriteThrough:
                     },
                 ],
                 "outcome": None,
+                "undone": [],
             },
         )
 
@@ -217,6 +220,7 @@ class TestWriteThrough:
             },
             "git_sha": "c" * 40,
             "parent_sha": "d" * 40,
+            "revision": "e" * 64,
         }
         store = _store(tmp_path)
         session = store.create("rating/main.py")
@@ -243,6 +247,7 @@ class TestWriteThrough:
                     },
                 ],
                 "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
             },
         )
 
@@ -258,6 +263,16 @@ class TestWriteThrough:
         assert (record.id, record.git_sha, record.parent_sha) == ("a" * 64, "c" * 40, "d" * 40)
         assert content["applied_operations"] == 2
         assert revived.history[0].outcome.changes == ["a" * 64]
+
+        # An undo of that change is noted after the latest turn and revives redacted.
+        store.record_undo(session, AssistantChangeRecord.model_validate(change))
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        (undone,) = revived.history[-1].undone
+        assert undone.id == "a" * 64 and "<redacted>" in undone.summary
+        assert undone.revision == "e" * 64
 
     def test_a_change_summary_lengthened_by_redaction_still_revives(
         self, tmp_path: Path, monkeypatch
@@ -288,12 +303,14 @@ class TestWriteThrough:
                                 "changes": {"nodes": []},
                                 "git_sha": None,
                                 "parent_sha": None,
+                                "revision": "e" * 64,
                             }
                         },
                         "is_error": False,
                     },
                 ],
                 "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
             },
         )
 
@@ -367,6 +384,7 @@ class TestRevival:
                     {"role": "assistant", "content": "BLOCKED: invalid request."},
                 ],
                 "outcome": None,
+                "undone": [],
             },
         )
 
@@ -592,6 +610,7 @@ class TestBounds:
                     },
                 ],
                 "outcome": None,
+                "undone": [],
             },
         )
 

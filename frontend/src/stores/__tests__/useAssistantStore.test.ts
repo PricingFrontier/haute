@@ -21,6 +21,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ApiError } from "../../api/client"
+import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useToastStore from "../useToastStore"
 
@@ -29,6 +30,7 @@ vi.mock("../../api/assistant", () => ({
   createAssistantSession: vi.fn(),
   listAssistantSessions: vi.fn(),
   streamAssistantMessage: vi.fn(),
+  undoAssistantChange: vi.fn(),
   MAX_CONTEXT_SELECTION: 20,
 }))
 
@@ -37,13 +39,14 @@ import {
   getAssistantStatus,
   listAssistantSessions,
   streamAssistantMessage,
+  undoAssistantChange,
   type AssistantChangeRecord,
   type AssistantSessionList,
   type AssistantSessionResult,
   type AssistantStreamEvent,
   type AssistantTurnOutcome,
 } from "../../api/assistant"
-import useAssistantStore, { type TranscriptEntry } from "../useAssistantStore"
+import useAssistantStore, { type TranscriptEntry, undoDisabledReason } from "../useAssistantStore"
 
 const READY_STATUS = {
   configured: true,
@@ -292,6 +295,7 @@ const CHANGE: AssistantChangeRecord = {
   warnings: [],
   git_sha: "c".repeat(40),
   parent_sha: "d".repeat(40),
+  revision: "e".repeat(64),
 }
 
 async function liveEntries(events: AssistantStreamEvent[]): Promise<TranscriptEntry[]> {
@@ -997,5 +1001,87 @@ describe("send-time 400 handling", () => {
     expect(notice).toContain("ANTHROPIC_API_KEY")
     expect(getAssistantStatus).toHaveBeenCalled()
     expect(useToastStore.getState().toasts).toEqual([])
+  })
+})
+
+describe("undo", () => {
+  function openChat() {
+    useAssistantStore.setState({
+      sessionId: "session-1",
+      pipelineSource: "main.py",
+      view: "chat",
+      entries: [{ kind: "change", change: CHANGE }],
+    })
+    useDocumentStatusStore.setState({ sourceRevision: CHANGE.revision })
+  }
+
+  it("is enabled only while the canvas shows the revision the change produced", () => {
+    const gate = { change: CHANGE, documentRevision: CHANGE.revision, turnStatus: "idle" as const, undoingChangeId: null }
+    expect(undoDisabledReason(gate)).toBeNull()
+    expect(undoDisabledReason({ ...gate, documentRevision: "f".repeat(64) })).toBe(
+      "The pipeline was saved again after this change.",
+    )
+    expect(undoDisabledReason({ ...gate, turnStatus: "streaming" })).toMatch(/finish/)
+    expect(undoDisabledReason({ ...gate, undoingChangeId: CHANGE.id })).toMatch(/already running/)
+    expect(undoDisabledReason({ ...gate, change: { ...CHANGE, parent_sha: null } })).toMatch(/not saved to Git/)
+  })
+
+  it("posts the undo and notes it in the transcript", async () => {
+    openChat()
+    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, gitSha: "f".repeat(40) })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(undoAssistantChange).toHaveBeenCalledWith("session-1", CHANGE.id, "main.py")
+    const { entries, undoingChangeId, notice } = useAssistantStore.getState()
+    expect(entries[entries.length - 1]).toEqual({ kind: "undo", change: CHANGE })
+    expect(undoingChangeId).toBeNull()
+    expect(notice).toBeNull()
+  })
+
+  it("shows a refusal in the backend's words and leaves the transcript", async () => {
+    openChat()
+    vi.mocked(undoAssistantChange).mockRejectedValue(
+      new ApiError(
+        "HTTP 409",
+        409,
+        "The pipeline was saved again after this change, so it can no longer be undone here.",
+      ),
+    )
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    const { entries, notice, undoingChangeId } = useAssistantStore.getState()
+    expect(entries).toEqual([{ kind: "change", change: CHANGE }])
+    expect(notice).toMatch(/can no longer be undone here/)
+    expect(undoingChangeId).toBeNull()
+  })
+
+  it("posts nothing while disabled", async () => {
+    openChat()
+    useDocumentStatusStore.setState({ sourceRevision: "f".repeat(64) })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(undoAssistantChange).not.toHaveBeenCalled()
+    expect(useAssistantStore.getState().notice).toBe("The pipeline was saved again after this change.")
+  })
+
+  it("hydrates a stored undo after the turn it followed", async () => {
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [
+        { kind: "user", text: "add a band", ...HISTORY_TEXT },
+        { kind: "change", change: CHANGE },
+        { kind: "outcome", outcome: { kind: "applied", detail: null, changes: [CHANGE.id] } },
+        { kind: "undo", change: CHANGE },
+      ],
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+
+    const kinds = useAssistantStore.getState().entries.map((entry) => entry.kind)
+    expect(kinds).toEqual(["user", "change", "outcome", "undo"])
   })
 })

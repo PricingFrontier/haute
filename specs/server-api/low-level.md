@@ -268,8 +268,11 @@ current literal `1` receives a `parse_error` frame naming the unsupported versio
 plain text, malformed JSON, non-object JSON, and unknown message types are keep-alive
 no-ops. The server sends exactly two frame types: a complete
 `{"type":"pipeline_document_update","schema_version":1,"document":object,
-"document_fingerprint":sha256,"source_file":str}` or
-`{"type":"parse_error","error":str,"source_file":str}`.
+"document_fingerprint":sha256,"source_file":str,"origin"?:object}` or
+`{"type":"parse_error","error":str,"source_file":str}`. `origin` is present only on an
+update an assistant apply or undo published: `{"kind":"assistant","session_id":str,
+"change_id":str,"node_ids":[str]}` (see [assistant](../assistant/high-level.md)); the
+watcher and resyncs never send it.
 A matching document fingerprint produces no frame. Every fingerprint — in these frames, in a
 resync comparison, and in the load routes' `x-haute-document-fingerprint` header — is
 `pipeline_document_fingerprint`: SHA-256 over `canonical_json` of the document's JSON-mode,
@@ -288,6 +291,11 @@ executes; recompute revision/plan/authority under the lock; call the
 transactional save once; reparse/verify; publish once; release in `finally`. A
 failed precondition never enters the save service, and a completed save is
 never automatically replayed after transport failure.
+
+`POST /api/assistant/changes/undo` accepts exactly `session_id`, `change_id` and
+`source_file`, reserves the session like a message, and saves the change's parent
+commit forward under `save_lock` through `SavePipelineService`; it is refused with 409
+unless the document revision is still the change's.
 
 `POST /api/assistant/message` accepts exactly `session_id` and `message`; the
 request is closed to unknown fields. There is no graph-plan confirmation

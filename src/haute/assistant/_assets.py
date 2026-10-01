@@ -706,7 +706,7 @@ def _verify_fast_dry_run(bundle: Traversable, destination: Path) -> None:
         project_root=destination,
         pipeline_root=destination,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
     plan = service.dry_run(
         "pipeline.py", operations, summary=f"Check example {bundle.name}'s dry-run evidence."

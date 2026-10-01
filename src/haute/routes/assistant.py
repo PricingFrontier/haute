@@ -11,17 +11,20 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from haute._git import GitHistoryReadError
 from haute._logging import get_logger
 from haute._sandbox import contained_path
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._catalog import tool_title
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
+from haute.assistant._ops import AssistantOperationError
 from haute.assistant._providers import AssistantProvider, create_provider
 from haute.assistant._render import render_turn_context
 from haute.assistant._session import AssistantSession, SessionStore
 from haute.assistant._tools import (
     TOOL_DEFINITIONS,
     TurnContextError,
+    application_service,
     build_tool_executor,
     build_turn_context,
     context_update,
@@ -32,6 +35,7 @@ from haute.routes._helpers import (
     discover_pipelines,
     save_lock,
 )
+from haute.routes._save_pipeline import StaleDocumentRevisionError
 from haute.schemas import (
     AssistantCancelledEvent,
     AssistantChangeRecord,
@@ -42,6 +46,8 @@ from haute.schemas import (
     AssistantSessionSummary,
     AssistantStatusResponse,
     AssistantTranscriptEntry,
+    AssistantUndoRequest,
+    AssistantUndoResponse,
 )
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -188,7 +194,7 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                         is_error=is_error,
                     )
                 )
-                if not is_error and "change" in content:
+                if "change" in content:
                     entries.append(
                         AssistantTranscriptEntry(
                             kind="change",
@@ -197,6 +203,9 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                     )
         if turn.outcome is not None:
             entries.append(AssistantTranscriptEntry(kind="outcome", outcome=turn.outcome))
+        entries.extend(
+            AssistantTranscriptEntry(kind="undo", change=change) for change in turn.undone
+        )
     return entries
 
 
@@ -373,6 +382,8 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             raise HTTPException(status_code=502, detail=detail) from None
 
         request_context = body.context
+        # The changes the analyst undid since the model's last turn.
+        undone = session.history[-1].undone if session.history else ()
         try:
             system_prompt = _loop.build_system_prompt(source_file=session.source_file)
             async with save_lock:
@@ -386,6 +397,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
                     preview_error_node_id=(
                         None if request_context is None else request_context.preview_error_node_id
                     ),
+                    undone=undone,
                 )
             turn_context = render_turn_context(gathered)
         except TurnContextError as exc:
@@ -421,6 +433,59 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         media_type="text/event-stream",
         reservation=reservation,
     )
+
+
+def _latest_change(session: AssistantSession, change_id: str) -> AssistantChangeRecord:
+    """The latest stored record of *change_id*: one plan can be saved again after an undo."""
+
+    for turn in reversed(session.history):
+        for message in reversed(turn.messages):
+            content = message.content
+            if message.role != "tool" or not isinstance(content, dict):
+                continue
+            change = content.get("change")
+            if isinstance(change, dict) and change.get("id") == change_id:
+                return AssistantChangeRecord.model_validate(change)
+    raise HTTPException(status_code=404, detail="This chat has no change with that id")
+
+
+@router.post("/changes/undo", response_model=AssistantUndoResponse)
+async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResponse:
+    """Undo one change card: save the version before it, then note it in the chat.
+
+    The session is reserved like a turn, so an undo never interleaves with one.
+    """
+
+    source_file = await _bound_source_file(body.source_file)
+    try:
+        reservation = await _loop.reserve_turn(session_store, body.session_id)
+    except _loop.UnknownSessionError:
+        raise HTTPException(status_code=404, detail="Unknown assistant session") from None
+    except _loop.ConcurrentTurnError:
+        raise HTTPException(
+            status_code=409, detail="An assistant turn is running; undo after it ends"
+        ) from None
+    session = reservation.session
+    try:
+        if source_file != session.source_file:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This chat belongs to pipeline '{session.source_file}'. "
+                    "Open that pipeline to undo its changes."
+                ),
+            )
+        change = _latest_change(session, body.change_id)
+        try:
+            result = await application_service(session_id=session.id).undo(
+                session.source_file, change
+            )
+        except (AssistantOperationError, GitHistoryReadError, StaleDocumentRevisionError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        session_store.record_undo(session, change)
+    finally:
+        reservation.release()
+    return AssistantUndoResponse(change_id=change.id, git_sha=result.git_sha)
 
 
 __all__ = ["router", "session_store"]

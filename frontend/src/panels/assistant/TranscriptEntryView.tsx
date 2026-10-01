@@ -10,10 +10,14 @@ import {
   HelpCircle,
   Loader2,
   OctagonX,
+  Undo2,
 } from "lucide-react"
 
-import { CHOOSE_FOR_ME_REPLY, type TranscriptEntry } from "../../stores/useAssistantStore"
-import ChangeCard from "./ChangeCard"
+import useAssistantStore, {
+  CHOOSE_FOR_ME_REPLY,
+  type TranscriptEntry,
+} from "../../stores/useAssistantStore"
+import ChangeCard, { UndoChangeButton } from "./ChangeCard"
 
 /** The question card's one-click reply, supplied by the panel for the latest entry only. */
 export interface OutcomeReply {
@@ -185,6 +189,37 @@ function OutcomeCard({ testId, icon: Icon, tone, title, children }: OutcomeCardP
   )
 }
 
+/**
+ * The primary Undo of a saved-but-unverified turn: it undoes the change whose
+ * check failed, the last the outcome lists, found by id among the transcript's cards.
+ */
+function UnverifiedUndo({ changeId }: { changeId: string }) {
+  const change = useAssistantStore((state) => {
+    for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+      const entry = state.entries[index]
+      if (entry.kind === "change" && entry.change.id === changeId) return entry.change
+    }
+    return null
+  })
+  if (change === null || change.parent_sha === null) return null
+  return <UndoChangeButton change={change} primary />
+}
+
+function UndoEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "undo" }> }) {
+  return (
+    <div
+      data-testid="assistant-entry-undo"
+      className="flex items-center gap-1.5 px-1 py-1 text-[10px]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <Undo2 size={11} aria-hidden="true" />
+      <span className="truncate" title={entry.change.summary}>
+        You undid: {entry.change.summary}
+      </span>
+    </div>
+  )
+}
+
 /** What a turn saved before it ended, whose change cards are above the outcome. */
 function savedLine(changes: readonly string[]): string {
   if (changes.length === 0) return "Nothing was saved."
@@ -254,9 +289,12 @@ function OutcomeEntry({
         >
           <p style={{ color: "var(--text-primary)" }}>
             Your changes were saved, but the check after saving failed. Review the pipeline, or
-            return to the previous save in the Git panel, before continuing.
+            undo this change, before continuing.
           </p>
           <p className="break-words" style={{ color: "var(--text-muted)" }}>{outcome.detail}</p>
+          {outcome.changes.length > 0 && (
+            <UnverifiedUndo changeId={outcome.changes[outcome.changes.length - 1]} />
+          )}
         </OutcomeCard>
       )
     case "incomplete":
@@ -298,6 +336,8 @@ function TranscriptEntryView({ entry, reply }: TranscriptEntryViewProps) {
       return <ActivityEntry entry={entry} />
     case "change":
       return <ChangeCard change={entry.change} />
+    case "undo":
+      return <UndoEntry entry={entry} />
     case "marker":
       return <MarkerEntry outcome={entry.outcome} detail={entry.detail} />
     case "outcome":

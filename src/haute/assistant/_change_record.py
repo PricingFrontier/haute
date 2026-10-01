@@ -154,6 +154,7 @@ def change_record(
     warnings: Sequence[str],
     git_sha: str | None,
     parent_sha: str | None,
+    revision: str,
 ) -> AssistantChangeRecord:
     """The change card of one saved plan, identified by the plan's hash."""
 
@@ -165,7 +166,14 @@ def change_record(
         warnings=list(warnings),
         git_sha=git_sha,
         parent_sha=parent_sha,
+        revision=revision,
     )
+
+
+def change_headline(summary: str) -> str:
+    """A change's summary on one line: the Git commit message of its save."""
+
+    return " ".join(summary.split())
 
 
 def touched_node_ids(records: Sequence[AssistantChangeRecord]) -> tuple[str, ...]:
@@ -212,6 +220,7 @@ def evidence_summary(evidence: Sequence[Mapping[str, object]]) -> dict[str, obje
 
 __all__ = [
     "CHANGE_LIST_LIMIT",
+    "change_headline",
     "change_record",
     "evidence_summary",
     "field_words",

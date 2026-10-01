@@ -88,6 +88,7 @@ import { useScopedNodeSave } from "./hooks/useScopedNodeSave"
 import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
 import InitialViewFit from "./components/InitialViewFit"
 import TraceViewFit from "./components/TraceViewFit"
+import ChangeFocusFit from "./components/ChangeFocusFit"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -734,6 +735,8 @@ function FlowEditor() {
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const traceFocusNodeId = useUIStore((s) => s.traceFocusNodeId)
+  const changeFocus = useUIStore((s) => s.changeFocus)
+  const setChangeFocus = useUIStore((s) => s.setChangeFocus)
   const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -945,6 +948,7 @@ function FlowEditor() {
     nodeStatuses,
     hoveredNodeId,
     traceFocusNodeId,
+    changeFocusNodeIds: changeFocus?.nodeIds ?? null,
     refreshPreview,
     previewSeedPlan:
       previewData !== null && previewData.nodeId === selectedNode?.id
@@ -1748,7 +1752,7 @@ function FlowEditor() {
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
-                onPaneClick={() => { setContextMenu(null); clearTrace(); closePanel() }}
+                onPaneClick={() => { setContextMenu(null); clearTrace(); setChangeFocus(null); closePanel() }}
                 onDrop={editingReadOnly ? undefined : onDrop}
                 onDragOver={editingReadOnly ? undefined : onDragOver}
                 nodeTypes={nodeTypes}
@@ -1767,6 +1771,7 @@ function FlowEditor() {
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
                 <InitialViewFit />
                 <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
+                <ChangeFocusFit />
               </ReactFlow>
             </div>
           </ErrorBoundary>

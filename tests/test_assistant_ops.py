@@ -2330,11 +2330,50 @@ class TestPlanStore:
         store.put(plan, _RECEIPT)
         assert store.begin_apply(plan.plan_hash) == plan
         store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
-        store.put(plan, _RECEIPT)
 
         with pytest.raises(AssistantOperationError) as exc:
             store.begin_apply(plan.plan_hash)
         assert exc.value.code == "plan_already_applied"
+
+    def test_a_fresh_dry_run_of_an_applied_plan_issues_it_again(self, tmp_path: Path):
+        """The hash covers the base revision, so a fresh dry-run producing an applied
+        plan's hash means an undo restored that revision: the plan applies once more."""
+
+        from haute.assistant._ops import (
+            PlanReceipt,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+        store = PlanStore()
+        store.put(plan, _RECEIPT)
+        store.begin_apply(plan.plan_hash)
+        store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
+
+        store.put(plan, PlanReceipt("Rename it again."))
+
+        assert store.begin_apply(plan.plan_hash) == plan
+        assert store.receipt(plan.plan_hash).summary == "Rename it again."
+
+    @pytest.mark.parametrize("text", ["Rename\x1ethe node.", "Rename\x00it."])
+    def test_a_receipt_refuses_control_characters(self, text: str):
+        from haute.assistant._ops import AssistantOperationError, PlanReceipt
+
+        with pytest.raises(AssistantOperationError) as exc:
+            PlanReceipt(text)
+        assert exc.value.code == "invalid_request"
+        with pytest.raises(AssistantOperationError):
+            PlanReceipt("Rename the node.", (text,))
+        # Whitespace, including a line break, is ordinary text.
+        assert PlanReceipt("Rename\nthe node.\t").summary == "Rename\nthe node.\t"
 
     def test_aborted_plan_requires_a_fresh_identical_put_before_retry(self, tmp_path: Path):
         from haute.assistant._ops import (

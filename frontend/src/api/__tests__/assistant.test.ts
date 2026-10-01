@@ -28,6 +28,7 @@ import {
   getAssistantStatus,
   listAssistantSessions,
   streamAssistantMessage,
+  undoAssistantChange,
   type AssistantChangeRecord,
   type AssistantStreamEvent,
 } from "../assistant"
@@ -60,6 +61,7 @@ const CHANGE: AssistantChangeRecord = {
   warnings: [],
   git_sha: null,
   parent_sha: null,
+  revision: "e".repeat(64),
 }
 
 beforeEach(() => {
@@ -144,6 +146,36 @@ describe("getAssistantStatus", () => {
   })
 })
 
+describe("undoAssistantChange", () => {
+  it("posts the chat, the change and the canvas source file", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({ change_id: CHANGE.id, git_sha: "f".repeat(40) }))
+
+    await expect(undoAssistantChange("abc123", CHANGE.id, "main.py")).resolves.toEqual({
+      changeId: CHANGE.id,
+      gitSha: "f".repeat(40),
+    })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain("/api/assistant/changes/undo")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body as string)).toEqual({
+      session_id: "abc123",
+      change_id: CHANGE.id,
+      source_file: "main.py",
+    })
+  })
+
+  it("rejects a change record without its revision", async () => {
+    const { revision: _revision, ...withoutRevision } = CHANGE
+    mockFetch.mockReturnValueOnce(jsonResponse({
+      session_id: "abc123",
+      source_file: "main.py",
+      history: [{ kind: "change", change: withoutRevision }],
+    }))
+
+    await expect(createAssistantSession("main.py", "abc123")).rejects.toThrow(/revision/)
+  })
+})
+
 describe("createAssistantSession", () => {
   it("posts the canvas source file and returns the bound session", async () => {
     mockFetch.mockReturnValueOnce(
@@ -176,6 +208,7 @@ describe("createAssistantSession", () => {
         is_error: false,
       },
       { kind: "change", change: CHANGE },
+      { kind: "undo", change: CHANGE },
     ]
     mockFetch.mockReturnValueOnce(
       jsonResponse({ session_id: "abc123", source_file: "main.py", history }),

@@ -29,7 +29,12 @@ from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import new_logic_steps
-from haute.assistant._change_record import change_record, evidence_summary, graph_changes
+from haute.assistant._change_record import (
+    change_headline,
+    change_record,
+    evidence_summary,
+    graph_changes,
+)
 from haute.assistant._ops import (
     AssistantOperationError,
     GraphEditPlan,
@@ -68,7 +73,7 @@ from haute.modelling._train_config import (
     parse_evaluation_config,
     training_objective_issue,
 )
-from haute.routes._helpers import parse_pipeline_to_graph, save_lock
+from haute.routes._helpers import commit_pipeline_graph, parse_pipeline_to_graph, save_lock
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._training_preparation import build_training_feature_selection
 from haute.schemas import AssistantChangeRecord, AssistantGraphChanges
@@ -77,8 +82,9 @@ _MAX_SCHEMA_TARGETS = 100
 
 MutationReadiness = Callable[[Path], tuple[bool, str | None]]
 # Publishes the current on-disk editor document for *source_file* to live
-# sync clients and returns the published document fingerprint.
-DocumentUpdatePublisher = Callable[[str], str]
+# sync clients, tagged with the change that saved it (None when a committed save
+# has no change record), and returns the published document fingerprint.
+DocumentUpdatePublisher = Callable[[str, AssistantChangeRecord | None], str]
 GraphParser = Callable[[Path], PipelineGraph]
 ProjectSources = Callable[[str], Sequence[Path | ProjectSourceEvidence]]
 GraphValidator = Callable[[PipelineGraph], Sequence[str]]
@@ -132,6 +138,14 @@ class ApplicationResult:
             "evidence": evidence_summary(self.verification_evidence),
             "change": self.change.model_dump(mode="json", exclude_defaults=True),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class UndoResult:
+    """The forward save that undid one change: its commit and document revision."""
+
+    git_sha: str | None
+    revision: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -911,27 +925,46 @@ class PipelineApplicationService:
             )
         return before, verified.result_graph, recomputed
 
-    def _commit(
-        self,
-        source_file: str,
-        after: PipelineGraph,
-    ) -> Any:
-        # Plan freshness was proven against the assistant snapshot under
-        # ``save_lock``; the save precondition wants the editor protocol's
-        # document revision, so read it now, still under that lock.
+    def _document_revision(self, source_file: str) -> str | None:
         source = self._source_path(source_file)
-        base_revision = (
+        return (
             load_pipeline_editor_document(source, project_root=self._project_root).source_revision
             if source.is_file()
             else None
         )
+
+    def _save(
+        self,
+        source_file: str,
+        graph: PipelineGraph,
+        *,
+        base_revision: str | None,
+        commit_message: str,
+    ) -> Any:
         return self._save_service().save_graph_transactionally(
-            graph=after,
-            name=after.pipeline_name or "",
-            description=after.pipeline_description or "",
-            preamble=after.preamble,
+            graph=graph,
+            name=graph.pipeline_name or "",
+            description=graph.pipeline_description or "",
+            preamble=graph.preamble,
             source_file=source_file,
             base_revision=base_revision,
+            commit_message=commit_message,
+        )
+
+    def _commit(
+        self,
+        source_file: str,
+        after: PipelineGraph,
+        receipt: PlanReceipt,
+    ) -> Any:
+        # Plan freshness was proven against the assistant snapshot under
+        # ``save_lock``; the save precondition wants the editor protocol's
+        # document revision, so read it now, still under that lock.
+        return self._save(
+            source_file,
+            after,
+            base_revision=self._document_revision(source_file),
+            commit_message=change_headline(receipt.summary),
         )
 
     def _verify_commit(
@@ -1002,18 +1035,15 @@ class PipelineApplicationService:
                 raise
 
             try:
-                response = await asyncio.to_thread(self._commit, source_file, after)
+                response = await asyncio.to_thread(self._commit, source_file, after, receipt)
             except BaseException:
                 self.plan_store.abort_apply(plan_hash)
                 raise
 
+            # The committed save's record as the plan describes it: what a save
+            # whose verification fails reports, so the analyst can undo it.
+            planned: AssistantChangeRecord | None = None
             try:
-                reparsed, result_revision, actual_diff, evidence = await asyncio.to_thread(
-                    self._verify_commit,
-                    source_file,
-                    before,
-                    recomputed,
-                )
                 parent_sha = (
                     None
                     if response.git_sha is None
@@ -1021,15 +1051,27 @@ class PipelineApplicationService:
                         commit_parent, response.git_sha, self._project_root
                     )
                 )
-                change = change_record(
-                    plan.plan_hash,
-                    receipt,
-                    graph_changes(before, reparsed, actual_diff),
-                    warnings=response.warnings or (),
-                    git_sha=response.git_sha,
-                    parent_sha=parent_sha,
+
+                def saved_record(changes: AssistantGraphChanges) -> AssistantChangeRecord:
+                    return change_record(
+                        plan.plan_hash,
+                        receipt,
+                        changes,
+                        warnings=response.warnings or (),
+                        git_sha=response.git_sha,
+                        parent_sha=parent_sha,
+                        revision=response.source_revision,
+                    )
+
+                planned = saved_record(graph_changes(before, after, recomputed.diff))
+                reparsed, result_revision, actual_diff, evidence = await asyncio.to_thread(
+                    self._verify_commit,
+                    source_file,
+                    before,
+                    recomputed,
                 )
-                fingerprint = self._publish_document_update(source_file)
+                change = saved_record(graph_changes(before, reparsed, actual_diff))
+                fingerprint = self._publish_document_update(source_file, change)
                 result = ApplicationResult(
                     plan_hash=plan.plan_hash,
                     capability_hash=plan.capability_hash,
@@ -1056,10 +1098,10 @@ class PipelineApplicationService:
                 fallback_fingerprint: str | None = None
                 publish_error: str | None = None
                 try:
-                    fallback_fingerprint = self._publish_document_update(source_file)
+                    fallback_fingerprint = self._publish_document_update(source_file, planned)
                 except Exception as publish_exc:  # noqa: BLE001 - preserve committed state
                     publish_error = type(publish_exc).__name__
-                failure = {
+                failure: dict[str, object] = {
                     "plan_hash": plan.plan_hash,
                     "verification_tier": plan.verification_tier,
                     "verification_status": "failed",
@@ -1070,12 +1112,48 @@ class PipelineApplicationService:
                     "git_sha": response.git_sha,
                     "applied_operations": len(plan.normalized_operations),
                 }
+                if planned is not None:
+                    failure["change"] = planned.model_dump(mode="json", exclude_defaults=True)
                 self.plan_store.complete_apply(plan_hash, failure)
                 raise CommittedVerificationError(
                     "The plan was committed, but structural verification failed; "
                     "review or undo the captured save before continuing.",
                     failure,
                 ) from exc
+
+    def _undo(self, source_file: str, change: AssistantChangeRecord, parent_sha: str) -> Any:
+        # The explicit comparison names why an undo is refused; the save's own
+        # base-revision precondition repeats it inside the transaction.
+        if self._document_revision(source_file) != change.revision:
+            raise AssistantOperationError(
+                "undo_superseded",
+                "The pipeline was saved again after this change, so it can no longer be "
+                "undone here. Use the Git panel to return to an earlier version.",
+            )
+        return self._save(
+            source_file,
+            commit_pipeline_graph(parent_sha, source_file),
+            base_revision=change.revision,
+            commit_message=f"Undo: {change_headline(change.summary)}",
+        )
+
+    async def undo(self, source_file: str, change: AssistantChangeRecord) -> UndoResult:
+        """Save the graph at *change*'s parent commit as a forward save.
+
+        Allowed only while the pipeline is at the revision *change* produced, so
+        only the latest change to the file is undone, never a later save.
+        """
+
+        parent_sha = change.parent_sha
+        if parent_sha is None:
+            raise AssistantOperationError(
+                "undo_unavailable",
+                "This change was not saved to Git, so there is no earlier version to return to.",
+            )
+        async with save_lock:
+            response = await asyncio.to_thread(self._undo, source_file, change, parent_sha)
+            self._publish_document_update(source_file, change)
+        return UndoResult(git_sha=response.git_sha, revision=response.source_revision)
 
 
 __all__ = [
@@ -1084,6 +1162,7 @@ __all__ = [
     "DryRunResult",
     "PipelineApplicationService",
     "PreambleFailedError",
+    "UndoResult",
     "VerifiedPlan",
     "build_verified_plan",
 ]

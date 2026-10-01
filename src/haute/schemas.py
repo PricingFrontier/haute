@@ -281,17 +281,20 @@ class AssistantChangeRecord(BaseModel):
     warnings: list[str] = []
     git_sha: str | None
     parent_sha: str | None
+    # The editor document revision the save produced: Undo is allowed only while
+    # the pipeline is still at it.
+    revision: str = Field(min_length=1)
 
 
 class AssistantTranscriptEntry(BaseModel):
     """One rehydratable transcript item from a resumed session's history.
 
-    An ``outcome`` entry closes a completed turn with its stored outcome and a
-    ``change`` entry carries an apply's change record; each is the only kind
-    that carries its field.
+    An ``outcome`` entry closes a completed turn with its stored outcome, a
+    ``change`` entry carries an apply's change record and an ``undo`` entry the
+    record of a change the analyst undid; only those kinds carry those fields.
     """
 
-    kind: Literal["user", "assistant", "tool", "outcome", "change"]
+    kind: Literal["user", "assistant", "tool", "outcome", "change", "undo"]
     text: str = ""
     name: str = ""
     # A tool entry's plain-words activity title.
@@ -305,8 +308,8 @@ class AssistantTranscriptEntry(BaseModel):
     def _payload_only_on_its_entries(self) -> AssistantTranscriptEntry:
         if (self.kind == "outcome") != (self.outcome is not None):
             raise ValueError("exactly the outcome entry carries an outcome")
-        if (self.kind == "change") != (self.change is not None):
-            raise ValueError("exactly the change entry carries a change record")
+        if (self.kind in {"change", "undo"}) != (self.change is not None):
+            raise ValueError("exactly the change and undo entries carry a change record")
         return self
 
 
@@ -352,6 +355,24 @@ class AssistantMessageContext(BaseModel):
         if len(set(self.selected_node_ids)) != len(self.selected_node_ids):
             raise ValueError("selected_node_ids must not repeat a node")
         return self
+
+
+class AssistantUndoRequest(BaseModel):
+    """Undo one change card: save the version before that change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    # The change card's id, the hash of the plan that saved it.
+    change_id: str = Field(min_length=1)
+    # The canvas document's source file; one other than the session's is refused.
+    source_file: str = Field(min_length=1)
+
+
+class AssistantUndoResponse(BaseModel):
+    change_id: str
+    # The commit the undo's save made, or None when it was not captured in Git.
+    git_sha: str | None
 
 
 class AssistantMessageRequest(BaseModel):

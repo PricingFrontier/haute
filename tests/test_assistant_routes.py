@@ -184,7 +184,11 @@ class TestSessionList:
         session = store.create("main.py")
         store.append(
             session,
-            {"messages": [{"role": "user", "content": "aggregate claims"}], "outcome": None},
+            {
+                "messages": [{"role": "user", "content": "aggregate claims"}],
+                "outcome": None,
+                "undone": [],
+            },
         )
 
         response = client.get("/api/assistant/sessions", params=_CANVAS)
@@ -202,11 +206,17 @@ class TestSessionList:
         (project_root / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
         main = store.create("main.py")
         store.append(
-            main, {"messages": [{"role": "user", "content": "main chat"}], "outcome": None}
+            main,
+            {"messages": [{"role": "user", "content": "main chat"}], "outcome": None, "undone": []},
         )
         other = store.create("other.py")
         store.append(
-            other, {"messages": [{"role": "user", "content": "other chat"}], "outcome": None}
+            other,
+            {
+                "messages": [{"role": "user", "content": "other chat"}],
+                "outcome": None,
+                "undone": [],
+            },
         )
 
         listed = {
@@ -274,6 +284,7 @@ _CHANGE = {
     },
     "git_sha": "c" * 40,
     "parent_sha": "d" * 40,
+    "revision": "e" * 64,
 }
 
 
@@ -318,6 +329,7 @@ class TestSessionResume:
                     },
                 ],
                 "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
             },
         )
 
@@ -370,6 +382,7 @@ class TestSessionResume:
                     },
                 ],
                 "outcome": None,
+                "undone": [],
             },
         )
         body = client.post(
@@ -1066,6 +1079,183 @@ class TestTurnContext:
             AssistantMessageContext(selected_node_ids=["a", "a"])
         with pytest.raises(ValidationError):
             AssistantMessageContext(selected_node_ids=[], unknown=True)
+
+
+def _applied_turn(change: dict) -> dict:
+    """A stored turn whose apply saved *change*."""
+
+    return {
+        "messages": [
+            {"role": "user", "content": "add a band"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "name": "apply_graph_plan", "arguments": {"plan_hash": "x"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": "apply_graph_plan",
+                "content": {"applied_operations": 1, "change": change},
+                "is_error": False,
+            },
+        ],
+        "outcome": {"kind": "applied", "detail": None, "changes": [change["id"]]},
+        "undone": [],
+    }
+
+
+class TestUndo:
+    """POST /changes/undo: the analyst undoes one change card from the chat."""
+
+    @pytest.fixture()
+    def undo_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> list[tuple[str, AssistantChangeRecord]]:
+        from haute.assistant._application import PipelineApplicationService, UndoResult
+
+        calls: list[tuple[str, AssistantChangeRecord]] = []
+
+        async def undo(self, source_file, change):
+            calls.append((source_file, change))
+            return UndoResult(git_sha="f" * 40, revision="g" * 64)
+
+        monkeypatch.setattr(PipelineApplicationService, "undo", undo)
+        return calls
+
+    @staticmethod
+    def _undo(client: TestClient, session_id: str, change_id: str = "a" * 64, **extra):
+        return client.post(
+            "/api/assistant/changes/undo",
+            json={"session_id": session_id, "change_id": change_id, **_CANVAS, **extra},
+        )
+
+    def test_undo_saves_the_latest_record_and_notes_it_in_the_chat(
+        self,
+        client: TestClient,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        undo_calls,
+    ):
+        store = _persistent_store(monkeypatch, project_root)
+        session_id = client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
+        first = {**_CHANGE, "revision": "1" * 64}
+        store.append(session_id, _applied_turn(first))
+        # The same plan saved again after an earlier undo: the latest record is undone.
+        store.append(session_id, _applied_turn(_CHANGE))
+
+        response = self._undo(client, session_id)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"change_id": "a" * 64, "git_sha": "f" * 40}
+        assert undo_calls == [("main.py", AssistantChangeRecord.model_validate(_CHANGE))]
+        _persistent_store(monkeypatch, project_root)  # the note survives a restart
+        history = client.post(
+            "/api/assistant/session", json={**_CANVAS, "session_id": session_id}
+        ).json()["history"]
+        assert [entry["kind"] for entry in history][-3:] == ["change", "outcome", "undo"]
+        assert AssistantChangeRecord.model_validate(history[-1]["change"]) == (
+            AssistantChangeRecord.model_validate(_CHANGE)
+        )
+
+    def test_an_unknown_change_is_404_and_nothing_is_saved(
+        self, client: TestClient, store: SessionStore, undo_calls
+    ):
+        session_id = store.create("main.py").id
+        store.append(session_id, _applied_turn(_CHANGE))
+
+        response = self._undo(client, session_id, change_id="b" * 64)
+
+        assert response.status_code == 404
+        assert undo_calls == []
+
+    def test_an_unknown_session_is_404(self, client: TestClient, store: SessionStore):
+        assert self._undo(client, "0" * 32).status_code == 404
+
+    async def test_a_running_turn_or_another_pipeline_is_409_and_frees_the_session(
+        self, client: TestClient, project_root: Path, store: SessionStore, undo_calls
+    ):
+        from haute.assistant._loop import reserve_turn
+
+        (project_root / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
+        session_id = store.create("main.py").id
+        store.append(session_id, _applied_turn(_CHANGE))
+
+        reservation = await reserve_turn(store, session_id)
+        try:
+            running = self._undo(client, session_id)
+        finally:
+            reservation.release()
+        other = self._undo(client, session_id, source_file="other.py")
+
+        assert running.status_code == 409
+        assert other.status_code == 409
+        assert "main.py" in other.json()["detail"]
+        assert undo_calls == []
+        session = store.lookup(session_id)
+        assert session is not None and not session.lock.locked()
+
+    def test_a_refused_undo_is_409_naming_why(
+        self, client: TestClient, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._application import PipelineApplicationService
+        from haute.assistant._ops import AssistantOperationError
+
+        async def refuse(self, source_file, change):
+            raise AssistantOperationError("undo_superseded", "The pipeline was saved again.")
+
+        monkeypatch.setattr(PipelineApplicationService, "undo", refuse)
+        session_id = store.create("main.py").id
+        store.append(session_id, _applied_turn(_CHANGE))
+
+        response = self._undo(client, session_id)
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "The pipeline was saved again."
+        session = store.lookup(session_id)
+        assert session is not None and session.history[-1].undone == ()
+
+    def test_the_request_is_closed(self, client: TestClient, store: SessionStore):
+        session_id = store.create("main.py").id
+        assert self._undo(client, session_id, pipeline="main.py").status_code == 422
+
+
+class TestUndoNote:
+    async def test_the_next_turn_context_names_the_undone_change_once(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._providers import ProviderUsage
+        from haute.schemas import AssistantMessageRequest
+
+        (project_root / "main.py").write_text(_QUOTES_PIPELINE, encoding="utf-8")
+        (project_root / "haute.toml").write_text(
+            _egress_toml(max_sensitivity="internal", allow_row_samples=False), encoding="utf-8"
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session_id = store.create("main.py").id
+        store.append(session_id, _applied_turn(_CHANGE))
+        store.record_undo(session_id, AssistantChangeRecord.model_validate(_CHANGE))
+
+        async def turn() -> str:
+            provider = _ScriptedProvider([TextDelta("ok"), TurnStop("end", ProviderUsage(1, 1))])
+            monkeypatch.setattr(assistant_routes, "_provider_factory", lambda _config: provider)
+            response = await assistant_routes.post_assistant_message(
+                AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
+            )
+            [chunk async for chunk in response.body_iterator]
+            (call,) = provider.calls
+            return call["messages"][-1]["content"]
+
+        first = await turn()
+        second = await turn()
+
+        assert "### Undone since your last turn" in first
+        assert f'- `{"a" * 64}`: "Add an age band after quotes."' in first
+        assert "Undone since your last turn" not in second
 
 
 class TestReservationNeverLeaks:

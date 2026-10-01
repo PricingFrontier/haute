@@ -195,8 +195,9 @@ after each successful apply carrying its change card (see **Change cards**), and
 one terminal event — completed (with token usage and
 a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome
 records what the turn saved separately from whether it finished the request: its
-`changes` list the id of every change the turn saved and verified, in order (each is its
-change card's id, the hash of the plan that saved it), and its kind says how the turn
+`changes` list the id of every change the turn saved, in order (each is its change card's
+id, the hash of the plan that saved it; a `committed_unverified` turn's list ends with
+the change whose verification failed), and its kind says how the turn
 ended: `applied` (at least one change was saved and the model then ended without a
 question, a blocker or an unfinished dry-run), `answered` (nothing was saved and the model
 replied with no dry-run unfinished), `needs_input` with the model's question,
@@ -257,7 +258,8 @@ a successful apply the terminal mutation outcome: after consuming that provider 
 controller completed with `applied` "without exposing another tool round in which the
 model could repeat or extend the mutation". Repeating is already impossible, because a
 plan is single-use: applying its hash again returns `plan_already_applied` with no write,
-and any further change needs a new dry-run against the new revision. Extending is what an
+and any further change needs a new dry-run against the new revision (see **Undo and
+Compare** for the one case where that dry-run issues the same hash). Extending is what an
 analyst asks for when a request has several parts; the rule silently dropped every part
 after the first and made a pipeline take one message per stage. The guarantee that
 mattered, that a turn never claims more than it saved, now rests on the outcome's
@@ -294,9 +296,9 @@ reports one at a time, so a mid-tier model that corrected the first fault correc
 was blocked on the second. Guessing is a plan that stops changing, and that is what
 the progress rule measures; the four-attempt ceiling and the tool-call limit still
 bound a model that changes its plan without converging.
-The successful apply result retains its change record in neutral history; resume
-rebuilds the same change card from that durable record, in its original position after
-the apply's tool row.
+An apply result that saved, verified or not, retains its change record in neutral
+history; resume rebuilds the same change card from that durable record, in its original
+position after the apply's tool row.
 
 **Change cards.** After every successful apply the service builds a value-free change
 record from what was saved: the actual semantic diff, the graph before the plan and the
@@ -307,7 +309,13 @@ type name (for example "Polars" or "Banding"), what happened to it, the earlier 
 a renamed node, the configuration fields it changed in plain words derived from their keys
 (`outputColumn` reads "output column"), and for a stepped node the kinds of its steps after
 the save and how many steps the plan changed; the edges added and removed; whether the
-preamble changed; the save's warnings; and the Git commit the save made with its parent.
+preamble changed; the save's warnings; the Git commit the save made with its parent; and
+`revision`, the editor document revision the save produced (the revision the canvas and
+every save precondition compare). When a save commits but its post-save verification
+fails, the apply's error result still carries a change record, built from the graph
+before the plan, the graph the plan computed and the plan's validated diff (the save
+could not be reparsed and compared), so the analyst can undo exactly that save; its
+change-applied event streams like a verified one and the turn's `changes` name it.
 Chips and edges are bounded at 50 each, with a flag when more were cut. The record never
 holds a configuration value, a step's free-code text or `# intent` comment, a column
 value or an error message: it names what changed, not what it changed to. There is no
@@ -315,11 +323,47 @@ second, hand-maintained list of editor labels; a field reads as its key in words
 
 `dry_run_graph_edits` takes a required `summary` of at most 160 characters, saying in
 plain words what the plan does, and an optional list of up to five `assumptions` the
-model made (each at most 160 characters). They are stored as the plan's receipt in the
+model made (each at most 160 characters, with no control character other than
+whitespace). They are stored as the plan's receipt in the
 plan store beside the plan, outside the hashed plan authority, so wording never changes a
 plan hash; a later identical dry-run replaces the receipt of a plan not yet applied. A
 recipe plan's receipt is its recipe's index summary with no assumptions. The change card
-shows both.
+shows both. The summary, its whitespace collapsed to one line, is the change's headline:
+the Git commit message of the save the apply makes, in place of the default message that
+names the changed files.
+
+**Undo and Compare.** The analyst can undo an assistant change from its card with one
+click, and compare the pipeline before it with the current one. Undo
+(`POST /api/assistant/changes/undo` with `session_id` and `change_id`) reads the graph at
+the change's parent commit (the read-only historical parse the comparison view uses) and
+saves it through the same transactional save service as a forward save, whose Git commit
+message is `Undo: ` and the change's headline. The save restores the parent's files byte
+for byte, removing a configuration file the change added. Undo is allowed only while the
+pipeline's current document revision is the change's `revision`, so only the latest
+change to the file can be undone, and never over a later save by the analyst or another
+change: otherwise it is refused with 409 naming why, as it is while a turn of that chat
+is running and when the change has no parent commit (it was not saved to Git). The change
+is found by id in the chat's stored history, the latest record when the same plan was
+saved more than once. The undo is recorded in the chat as a note after the latest turn;
+the transcript shows it, and the next turn's context tells the model that the analyst
+undid that change, so the model does not assume its earlier change is still in place.
+A plan's single-use record never outlives the revision it applied to: after an undo
+restores that revision, dry-running the same change again issues a fresh plan with the
+same hash, which applies once more. This amends the rule that a stored plan "is
+single-use; a repeated apply returns `plan_already_applied`" even after a fresh
+dry-run. That rule exists so a plan cannot be applied twice to the revision it was
+validated against; the hash covers the base revision, so a fresh dry-run that produces
+an applied plan's hash proves that revision is current again, and refusing it left the
+analyst unable to redo a change they had undone. A repeated apply without a fresh
+dry-run is still refused. Compare opens the existing read-only comparison view with the
+parent commit on the historical side; it needs only that parent.
+
+**Assistant updates carry their origin.** The `pipeline.document.update` an apply or an
+undo publishes carries `origin`: `kind` `assistant`, the `session_id`, the `change_id`
+and `node_ids`, every node id the change names (its chips, a renamed node's earlier id
+and both ends of each added or removed edge). The node ids travel in the origin because
+the canvas receives the update before the change card streams. Updates from the file
+watcher and resyncs carry no origin.
 
 **The tool surface** (complete in v1):
 
@@ -590,7 +634,8 @@ tool.
   through the transactional save service, the assistant cannot produce any on-disk state the
   GUI could not; validation, codegen, sidecar layout, rollback, and git-ledger capture are
   inherited rather than re-implemented — and the git ledger is the undo story for
-  direct-apply.
+  direct-apply: a change card's Undo saves the change's parent commit forward through
+  that same save service.
 - **Deterministic broadcast, not watcher reliance.** Assistant saves mark self-writes (so the
   debounced watcher stays quiet) and then explicitly recover and publish
   `pipeline.document.update` on the event bus. Relying on the watcher to notice the write would couple canvas liveness to
@@ -813,9 +858,11 @@ explicit runtime authorization instead of reusing graph-plan authority.
 Under the shared save lock it reloads the snapshot, rejects a stale revision,
 recomputes the normalized plan, warnings, schema evidence, and hash through the
 same `build_verified_plan` path used by dry-run, checks exact-plan authority, and
-commits once through `SavePipelineService`. A plan is single-use; a repeated
-apply returns `plan_already_applied` with no write. Any changed authority fact
-invalidates the plan.
+commits once through `SavePipelineService`, with the change headline as the Git
+commit message. A plan is single-use; a repeated
+apply returns `plan_already_applied` with no write, until a fresh dry-run of the
+same plan succeeds against its base revision again (after an undo; see **Undo and
+Compare**). Any changed authority fact invalidates the plan.
 
 After save, the service reparses and computes the actual semantic diff, checks
 the declared postconditions, runs the strongest permitted local verification,
@@ -852,8 +899,8 @@ Stable application errors include `invalid_plan`, `op_not_applied`, `stale_revis
 `plan_store_busy`, `plan_aborted`, `plan_already_applied`,
 `authority_denied`, `postcondition_failed`, and `verification_failed`.
 All are returned before a write except verification
-failure, which reports that the transactional save committed and preserves the
-ordinary ledger/undo path.
+failure, which reports that the transactional save committed, carries that save's
+change record, and preserves the ordinary ledger/undo path.
 
 ## Recipes and executable bundles
 
@@ -1051,7 +1098,11 @@ specified in [the assistant evaluation](evaluation.md#tiers).
   assistant HTTP surface; owns the clean-canvas send gate.
 - **[frontend-graph-canvas](../frontend-graph-canvas/high-level.md)** — receives assistant
   mutations as ordinary `pipeline_document_update` frames over `/ws/sync`; its dirty-state
-  banner and apply/rollback behaviour are unchanged.
+  banner and apply/rollback behaviour are unchanged. A frame's assistant `origin` makes
+  the canvas ring and centre the changed nodes instead of fitting the whole graph.
+- **[git-integration](../git-integration/high-level.md)** — Undo reads the change's parent
+  commit through the read-only historical parse, and assistant saves pass their headline
+  to `commit_save` as the commit message.
 
 ## Failure model
 

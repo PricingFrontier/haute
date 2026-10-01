@@ -89,6 +89,11 @@ interface UIState {
   traceCentreRequest: { nodeId: string } | null
   requestTraceCentre: (nodeId: string) => void
 
+  // Change focus — the nodes the latest assistant change or undo touched: ringed
+  // on the canvas while set, and centred once per focus (a new object each time).
+  changeFocus: { nodeIds: string[] } | null
+  setChangeFocus: (nodeIds: string[] | null) => void
+
   // Preview calculation mode. Session-only: every session starts automatic.
   calculationMode: CalculationMode
   setCalculationMode: (mode: CalculationMode) => void
@@ -184,6 +189,10 @@ const useUIStore = create<UIState>()((set) => ({
   setTraceFocusNodeId: (id) => set({ traceFocusNodeId: id }),
   traceCentreRequest: null,
   requestTraceCentre: (nodeId) => set({ traceCentreRequest: { nodeId } }),
+
+  // Change focus
+  changeFocus: null,
+  setChangeFocus: (nodeIds) => set({ changeFocus: nodeIds === null ? null : { nodeIds } }),
 
   calculationMode: "automatic",
   setCalculationMode: (mode) => set({ calculationMode: mode }),

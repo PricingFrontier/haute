@@ -42,7 +42,8 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal repair confirmation surface. It submits only document/target identities and the document revision, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins the server's choice of build in one call, waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe, asks the input-snapshot build to `refresh`, and removes a structured Quote Input's working cache first, because the JSON build endpoint answers a still-valid working cache with no work. |
-| `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. |
+| `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. After an applied frame it fits the whole graph, except that a frame with an assistant `origin` instead calls `setChangeFocus` with the origin's node ids present in the new graph (nothing when none is), and a frame without one clears that focus. |
+| `frontend/src/components/ChangeFocusFit.tsx` | Renderless child of the editor's `<ReactFlow>` that centres the nodes `useUIStore.changeFocus` names once per focus, fitting them with padding and never above the current zoom. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
@@ -235,7 +236,8 @@ reconciliation rather than dropping them or committing a second mutation.
   by `usePipelineAPI`, compared against the live active source to decide
   staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`, `_traceFocused`
   (the node a trace card or derivation row points at, drawn with an accent ring),
-  `_traceValue`, `_traceMotionDisabled`, `_diffStatus`, plus server-owned
+  `_traceValue`, `_traceMotionDisabled`, `_changeFocused` (a node the latest assistant
+  change or undo touched, drawn with the same accent ring), `_diffStatus`, plus server-owned
   `_functionName`, `_defaultInputName`, `_sourceHandleInputNames`, and
   `_configReference`. Edges carry transient `_inputName`. These identities are omitted from
   persistence/fingerprints but retained in live undo/redo snapshots.
@@ -1566,6 +1568,10 @@ again through the editor and save paths.
     installs one complete saved snapshot, never a history-aware editor action,
     so external sync never pollutes undo/redo or publishes an occurrence
     before its definition registry.
+  - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` also pins the assistant
+    origin: such a frame focuses the named nodes the new graph has instead of fitting
+    the view, a later frame without an origin clears the focus, and a malformed origin
+    fails the frame like any invalid field.
 - **Submodel navigation — `frontend/src/hooks/__tests__/`:**
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts` covers
     transform-only create/dissolve as dirty single-undo edits with unchanged

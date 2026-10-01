@@ -5120,7 +5120,7 @@ async def test_comment_first_free_code_keeps_its_steps_through_the_assistant_app
         project_root=project_root,
         pipeline_root=project_root,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
     steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
     with _scoring_model_stub():

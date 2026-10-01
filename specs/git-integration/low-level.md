@@ -151,7 +151,10 @@ lazily-spawn the ledger at the working branch's current tip, checkout if not alr
 current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA.
+what else the user may have pre-staged) → returns the new SHA. A canvas save passes no
+message, so the default names the changed files; an assistant apply passes its change
+headline and an assistant undo `Undo: ` and that headline, through
+`SavePipelineService.save_graph_transactionally(commit_message=...)`.
 
 Every public mutation entry point acquires the reentrant repository lock before its first
 precondition read and holds it through Git changes, clone-state writes, and any compensation.

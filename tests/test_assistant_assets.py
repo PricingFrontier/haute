@@ -204,7 +204,7 @@ def test_every_bundle_regenerates_and_accepts_a_no_op_edit(tmp_path: Path, bundl
         project_root=destination,
         pipeline_root=destination,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
     plan = service.dry_run(
         source_file, [{"op": "update_preamble", "preamble": graph.preamble}], summary="Test plan."

@@ -59,6 +59,7 @@ _APPLIED: dict[str, Any] = {
         },
         "git_sha": "c" * 40,
         "parent_sha": "d" * 40,
+        "revision": "e" * 64,
     },
 }
 
@@ -1481,7 +1482,8 @@ class TestTurnOutcome:
         self, store, session_id
     ):
         """A committed save whose verification failed ends the turn at once: the
-        model gets no round to apply over it, and nothing says nothing changed."""
+        model gets no round to apply over it, and nothing says nothing changed. Its
+        change card streams and the outcome lists it, so the analyst can undo it."""
 
         verification_message = (
             "The plan was committed, but structural verification failed; "
@@ -1505,7 +1507,8 @@ class TestTurnOutcome:
                         "message": verification_message,
                         "verification_status": "failed",
                         "graph_fingerprint": "c" * 64,
-                    }
+                    },
+                    "change": _APPLIED["change"],
                 }
             return {"plan_hash": "a" * 64}
 
@@ -1518,8 +1521,11 @@ class TestTurnOutcome:
         assert terminal.outcome.model_dump() == {
             "kind": "committed_unverified",
             "detail": verification_message,
-            "changes": [],
+            "changes": ["a" * 64],
         }
+        assert [event.change for event in events if event.type == "change_applied"] == [
+            AssistantChangeRecord.model_validate(_APPLIED["change"])
+        ]
         assert executed == ["dry_run_graph_edits", "apply_graph_plan"]
         assert len(provider.calls) == 2
         assert [event.text for event in events if event.type == "text_delta"] == [
@@ -2536,8 +2542,17 @@ class TestNeutralRecordValidationSweep:
             store.append(session, {"not_messages": [], "outcome": None})
         with pytest.raises(ValueError, match="outcome"):
             store.append(session, {"messages": [{"role": "user", "content": "hi"}]})
+        with pytest.raises(ValueError, match="undone"):
+            store.append(
+                session, {"messages": [{"role": "user", "content": "hi"}], "outcome": None}
+            )
         with pytest.raises(TypeError):
-            store.append(session, {"messages": "broken", "outcome": None})
+            store.append(session, {"messages": "broken", "outcome": None, "undone": []})
+        with pytest.raises(TypeError, match="undone"):
+            store.append(
+                session,
+                {"messages": [{"role": "user", "content": "hi"}], "outcome": None, "undone": "x"},
+            )
 
     def test_session_rejects_blank_id_and_bytes_source(self):
         from haute.assistant._session import AssistantSession

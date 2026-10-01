@@ -32,7 +32,7 @@ from haute._column_summary import (
     json_safe_scalar,
 )
 from haute._credential_security import is_credential_name
-from haute._event_bus import default_bus
+from haute._event_bus import PipelineDocumentUpdatePayload, default_bus
 from haute._execution_admission import (
     IsolatedExecutionBudget,
     create_admitted_execution_context,
@@ -962,17 +962,19 @@ def build_turn_context(
     *,
     selected_node_ids: Sequence[str] = (),
     preview_error_node_id: str | None = None,
+    undone: Sequence[AssistantChangeRecord] = (),
 ) -> TurnContext:
     """Gather the turn context's facts for the saved pipeline.
 
     The graph brief, revision, selection and preview error are `internal`
     project metadata, withheld under a `public` policy. A selected or
     preview-error id the saved top level lacks raises `TurnContextError`: the
-    canvas it came from is stale.
+    canvas it came from is stale. *undone* are the changes the analyst undid
+    since the last turn, named whatever the policy: the model wrote them.
     """
 
     if egress.max_sensitivity == "public":
-        return TurnContext(egress, None)
+        return TurnContext(egress, None, tuple(undone))
     graph = _parse_graph(source_file)
     top_level = {node.id: node for node in graph.nodes}
     for node_id in selected_node_ids:
@@ -1009,6 +1011,7 @@ def build_turn_context(
                 else _preview_error(graph, preview_error_node_id)
             ),
         ),
+        tuple(undone),
     )
 
 
@@ -1751,8 +1754,14 @@ def get_project_knowledge(
         )
 
 
-def _publish_document_update(source_file: str) -> str:
-    """Publish the exact pipeline-document payload used by the file watcher."""
+def _publish_document_update(
+    source_file: str, change: AssistantChangeRecord | None, *, session_id: str
+) -> str:
+    """Publish the file watcher's pipeline-document payload, tagged with *change*.
+
+    The origin names the chat and the change, and every node id the change
+    names, because the canvas receives this update before the change card.
+    """
 
     from haute._pipeline_recovery import pipeline_document_fingerprint
     from haute.server import _wire_source_file
@@ -1761,27 +1770,48 @@ def _publish_document_update(source_file: str) -> str:
         Path(source_file), project_root=Path.cwd()
     ).model_dump(mode="json", by_alias=True)
     fingerprint = pipeline_document_fingerprint(document_payload)
-    default_bus.publish(
-        "pipeline.document.update",
-        {
-            "document": document_payload,
-            "document_fingerprint": fingerprint,
-            "source_file": _wire_source_file(Path(source_file)),
-        },
-    )
+    payload: PipelineDocumentUpdatePayload = {
+        "document": document_payload,
+        "document_fingerprint": fingerprint,
+        "source_file": _wire_source_file(Path(source_file)),
+    }
+    if change is not None:
+        payload["origin"] = {
+            "kind": "assistant",
+            "session_id": session_id,
+            "change_id": change.id,
+            "node_ids": list(touched_node_ids([change])),
+        }
+    default_bus.publish("pipeline.document.update", payload)
     return fingerprint
 
 
-def _application_service(
+def _no_publication(source_file: str, change: AssistantChangeRecord | None) -> str:
+    raise RuntimeError("A dry-run never publishes a document update.")
+
+
+def application_service(
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
+    *,
+    session_id: str | None,
 ) -> PipelineApplicationService:
+    """The application service for the server's project.
+
+    Its saves publish as chat *session_id*; a service built for a dry-run, which
+    never saves, has none and refuses to publish.
+    """
+
     project_root = Path.cwd().resolve()
 
     return PipelineApplicationService(
         project_root=project_root,
         pipeline_root=pipeline_dir(),
         mutations_readiness=mutations_readiness,
-        publish_document_update=_publish_document_update,
+        publish_document_update=(
+            _no_publication
+            if session_id is None
+            else partial(_publish_document_update, session_id=session_id)
+        ),
         plan_store=_PLAN_STORE,
         parse_graph=parse_pipeline_to_graph,
         project_sources=lambda _source_file: project_sources,
@@ -1908,7 +1938,7 @@ async def dry_run_graph_edits(
         async with save_lock:
             result = await asyncio.to_thread(
                 partial(
-                    _application_service(project_sources).dry_run,
+                    application_service(project_sources, session_id=None).dry_run,
                     source_file,
                     ops_payload,  # type: ignore[arg-type]
                     postconditions=postconditions,  # type: ignore[arg-type]
@@ -1930,17 +1960,26 @@ async def dry_run_graph_edits(
 async def apply_graph_plan(
     source_file: str,
     plan_hash: str,
+    *,
+    session_id: str,
 ) -> dict[str, object]:
     """Apply and verify one exact, single-use plan."""
 
     try:
-        result = await _application_service().apply(
+        result = await application_service(session_id=session_id).apply(
             source_file,
             plan_hash,
         )
         return result.as_dict()
     except CommittedVerificationError as exc:
-        return _error(exc.code, str(exc), **exc.result)
+        # The committed save's change record sits beside the error, where a
+        # successful apply's sits, so the chat shows its card and can undo it.
+        fields = dict(exc.result)
+        change = fields.pop("change", None)
+        failure = _error(exc.code, str(exc), **fields)
+        if change is not None:
+            failure["change"] = change
+        return failure
     except LocatedPlanError as exc:
         return await asyncio.to_thread(_operation_error, exc, operation="apply_graph_plan")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
@@ -2661,6 +2700,7 @@ def build_tool_executor(
                 await apply_graph_plan(
                     source_file,
                     arguments.get("plan_hash", ""),
+                    session_id=session_id,
                 ),
             )
 

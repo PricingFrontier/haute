@@ -2508,7 +2508,7 @@ class TestStepsFirstAuthoring:
 
         plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.")
         assert "error" not in plan, plan
-        applied = await apply_graph_plan("main.py", plan["plan_hash"])
+        applied = await apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
         assert "error" not in applied, applied
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
@@ -2537,7 +2537,9 @@ class TestStepsFirstAuthoring:
             summary="Test plan.",
         )
         assert "error" not in filled, filled
-        assert "error" not in await apply_graph_plan("main.py", filled["plan_hash"])
+        assert "error" not in await apply_graph_plan(
+            "main.py", filled["plan_hash"], session_id="test"
+        )
 
         refused = await dry_run_graph_edits(
             "main.py",
@@ -2560,7 +2562,9 @@ class TestStepsFirstAuthoring:
         assert list(diff.config_changes) == ["august_totals:steps[start].input"]
         consumer = next(node for node in plan["changes"]["nodes"] if node["id"] == "august_totals")
         assert (consumer["change"], consumer["steps_changed"]) == ("changed", 1)
-        assert "error" not in await apply_graph_plan("main.py", plan["plan_hash"])
+        assert "error" not in await apply_graph_plan(
+            "main.py", plan["plan_hash"], session_id="test"
+        )
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         saved = next(item for item in graph.nodes if item.id == "august_totals").data.config
@@ -3155,9 +3159,11 @@ class TestPreambleFailureEgress:
                     source_line=5,
                 )
 
-        monkeypatch.setattr(tools_module, "_application_service", lambda: _FailingService())
+        monkeypatch.setattr(
+            tools_module, "application_service", lambda **_kwargs: _FailingService()
+        )
 
-        result = await tools_module.apply_graph_plan("main.py", "0" * 64)
+        result = await tools_module.apply_graph_plan("main.py", "0" * 64, session_id="test")
 
         assert _row_values_in(result) == []
         assert "PreambleError at line 5 of the preamble" in result["error"]["message"]
@@ -3217,7 +3223,7 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
     assert [step["kind"] for step in steps] == ["source", "free_code"]
     ops = [{"op": "update_node", "node": "august_totals", "config": {"steps": steps}}]
     plan = await tools_module.dry_run_graph_edits("main.py", ops, summary="Test plan.")
-    applied = await tools_module.apply_graph_plan("main.py", plan["plan_hash"])
+    applied = await tools_module.apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
     assert "error" not in applied, applied
     monkeypatch.setattr(
         tools_module,
@@ -3260,7 +3266,7 @@ async def _apply_ops(ops: list[dict[str, object]]) -> None:
 
     plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.")
     assert "error" not in plan, plan
-    applied = await apply_graph_plan("main.py", plan["plan_hash"])
+    applied = await apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
     assert "error" not in applied, applied
 
 
@@ -3611,6 +3617,7 @@ class TestTurnContext:
             ),
             git_sha=None,
             parent_sha=None,
+            revision="r" * 64,
         )
 
         update = build_context_update("main.py", _turn_policy(), [saved])
@@ -3650,6 +3657,7 @@ class TestTurnContext:
             ),
             git_sha=None,
             parent_sha=None,
+            revision="r" * 64,
         )
 
         update = _tools.build_context_update(

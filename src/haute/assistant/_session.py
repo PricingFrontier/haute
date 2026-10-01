@@ -37,7 +37,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 from uuid import uuid4
@@ -439,7 +439,8 @@ def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
                     isinstance(evidence_value, (str, int, float, bool)) or evidence_value is None
                 ):
                     redacted[key] = _copy_json_value(evidence_value)
-            if not message.is_error and "change" in content:
+            if "change" in content:
+                # A committed save's record, verified or not.
                 redacted["change"] = _persisted_change(content["change"])
             error = content.get("error")
             if isinstance(error, dict) and isinstance(error.get("code"), str):
@@ -458,11 +459,15 @@ class AssistantTurn:
     """One complete user turn and all messages produced for it.
 
     ``outcome`` is how a completed turn ended, the value its ``completed``
-    event carried; a turn that failed or was cancelled has none.
+    event carried; a turn that failed or was cancelled has none. ``undone``
+    holds the records of the changes the analyst undid after this turn, in
+    order; each is kept whole, so it outlives the pruning of the turn that
+    saved it.
     """
 
     messages: tuple[AssistantMessage, ...]
     outcome: AssistantTurnOutcome | None = None
+    undone: tuple[AssistantChangeRecord, ...] = ()
 
     def __post_init__(self) -> None:
         if self.outcome is not None and not isinstance(self.outcome, AssistantTurnOutcome):
@@ -489,6 +494,7 @@ class AssistantTurn:
         messages: Iterable[AssistantMessage | Mapping[str, Any]],
         *,
         outcome: AssistantTurnOutcome | None = None,
+        undone: Iterable[AssistantChangeRecord] = (),
     ) -> AssistantTurn:
         """Create a complete turn from an iterable of neutral messages."""
 
@@ -500,15 +506,20 @@ class AssistantTurn:
                 for message in messages
             ),
             outcome=outcome,
+            undone=tuple(undone),
         )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssistantTurn:
-        """Build a turn from its JSON record; both ``messages`` and ``outcome`` are required."""
+        """Build a turn from its JSON record; ``messages``, ``outcome`` and ``undone``
+        are required."""
 
-        for key in ("messages", "outcome"):
+        for key in ("messages", "outcome", "undone"):
             if key not in value:
                 raise ValueError(f"turn record is missing required field: {key}")
+        undone = value["undone"]
+        if not isinstance(undone, list):
+            raise TypeError("turn undone records must be a list")
         messages = value["messages"]
         if isinstance(messages, (str, bytes)) or not isinstance(messages, Iterable):
             raise TypeError("turn messages must be a sequence of JSON objects")
@@ -520,6 +531,7 @@ class AssistantTurn:
             outcome=None
             if raw_outcome is None
             else AssistantTurnOutcome.model_validate(raw_outcome),
+            undone=[AssistantChangeRecord.model_validate(record) for record in undone],
         )
 
     @property
@@ -534,6 +546,7 @@ class AssistantTurn:
         return {
             "messages": [message.as_dict() for message in self.messages],
             "outcome": None if self.outcome is None else self.outcome.model_dump(),
+            "undone": [record.model_dump(mode="json") for record in self.undone],
         }
 
 
@@ -644,6 +657,9 @@ class AssistantSession:
                 {
                     "messages": [_persisted_message(message) for message in turn.messages],
                     "outcome": _persisted_outcome(turn.outcome),
+                    "undone": [
+                        _persisted_change(record.model_dump(mode="json")) for record in turn.undone
+                    ],
                 }
                 for turn in self.history
             ],
@@ -1012,6 +1028,17 @@ class SessionStore:
         self.prune(session)
         self._persist(session)
         return record
+
+    def record_undo(self, session_ref: SessionRef, change: AssistantChangeRecord) -> None:
+        """Record that the analyst undid *change*, after the latest turn, and persist."""
+
+        session = self._require(session_ref)
+        if not session.history:
+            raise ValueError("an undo follows a turn that saved the change")
+        latest = session.history[-1]
+        session.history[-1] = replace(latest, undone=(*latest.undone, change))
+        self._touch(session)
+        self._persist(session)
 
     def prune(self, session_ref: SessionRef) -> None:
         """Prune a session's history at complete-turn boundaries."""

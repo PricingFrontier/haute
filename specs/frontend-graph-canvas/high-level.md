@@ -715,9 +715,12 @@ candidate, with the error toast.
 - [frontend-assistant-ui](../frontend-assistant-ui/high-level.md) — depends on
   this component in two read-only ways: assistant backend mutations arrive as
   ordinary `pipeline_document_update` frames through `useWebSocketSync` (same
-  apply, rollback, and dirty-gating behaviour as any external edit — nothing
-  here special-cases them), and the assistant panel reads the derived dirty state
-  to gate sending while local edits are unsaved.
+  apply, rollback, and dirty-gating behaviour as any external edit), except that a
+  frame carrying an assistant `origin` rings the nodes it names that the new graph
+  has and centres them, never zooming in, instead of fitting the whole graph; the
+  ring clears on a pane click or the next update without an origin. The assistant
+  panel reads the derived dirty state to gate sending while local edits are unsaved,
+  and the document revision to enable Undo.
 - `frontend-shared` — the shared node-data types (`frontend/src/types/node.ts`)
   that this component and the node editors both depend on. The node-type metadata table
   (`frontend/src/utils/nodeTypes.ts`), the edge-join role/api-input-port handle-id conventions

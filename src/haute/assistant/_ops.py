@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import builtins
 import json
+import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -2679,6 +2680,10 @@ def build_graph_edit_plan(
     )
 
 
+# The control characters a receipt may hold: ordinary whitespace.
+_RECEIPT_WHITESPACE = frozenset("\t\n\r")
+
+
 @dataclass(frozen=True, slots=True)
 class PlanReceipt:
     """What the model says a plan does: its summary and the assumptions it made.
@@ -2699,6 +2704,18 @@ class PlanReceipt:
                 "A plan summary and each assumption must be non-empty and at most "
                 f"{ASSISTANT_RECEIPT_TEXT_LIMIT} characters.",
                 fix="Say in one short sentence what the plan does.",
+            )
+        if any(
+            unicodedata.category(char) == "Cc" and char not in _RECEIPT_WHITESPACE
+            for text in texts
+            for char in text
+        ):
+            # The summary is the save's Git commit message, and the ledger
+            # history parser delimits commits with control characters.
+            raise AssistantOperationError(
+                "invalid_request",
+                "A plan summary and its assumptions must not contain control characters.",
+                fix="Write the summary and assumptions as plain sentences.",
             )
         if len(self.assumptions) > ASSISTANT_MAX_ASSUMPTIONS:
             raise AssistantOperationError(
@@ -2754,7 +2771,10 @@ class PlanStore:
             # needs; a plan not yet applied takes the latest receipt.
             existing = self._records.get(plan.plan_hash)
             if existing is not None:
-                if existing.state == "aborted":
+                if existing.state in {"aborted", "applied"}:
+                    # A fresh dry-run that produces an applied plan's hash proves
+                    # its base revision is current again (an undo restored it):
+                    # the earlier apply's record must not outlive that revision.
                     self._records.pop(plan.plan_hash)
                 elif existing.state == "applying" or monotonic() < existing.expires_at:
                     if existing.state == "validated":

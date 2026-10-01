@@ -26,7 +26,7 @@
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence (`_PERSISTED_TOOL_EVIDENCE_KEYS`, which include a dry-run's operation count and an apply's applied-operation count), value-free validation diagnostics, and a successful apply's `change` record, validated against `AssistantChangeRecord` with its summary and assumptions redacted like assistant text; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. A neutral `context` message becomes a mid-conversation `system` message for the Anthropic models in `MID_CONVERSATION_SYSTEM_MODELS` and otherwise the leading text of the preceding user message; one that follows a round's tool results (the turn context update) is otherwise a text block after the tool-result blocks on the Anthropic wire and a user message after the tool messages on the OpenAI wire. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the context message is the route's rendered turn context and is never stored), forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, continues the turn after a saving apply with the turn context update the route's refresher renders placed after that round's results (never stored), records every saved change id on the outcome, sends one end-of-turn reminder when the model stops with a validated plan unapplied or a failed dry-run uncorrected and completes the turn `incomplete` on a second such stop, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
-| `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Every one of the last three carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
+| `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator), `POST /api/assistant/changes/undo` (Undo of one change card, see Control flow). Every one of the last four carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. It imports only Polars and the stdlib-only JSON-safe encoder, so the assistant reaches it without importing the routes layer. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request (with its optional closed `context`: `selected_node_ids`, unique, at most 20, and an optional `preview_error_node_id`), usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked, committed_unverified or incomplete, a non-empty detail exactly for the last four, and the required `changes`, the ids of the changes the turn saved in order: non-empty for applied, empty for answered, either for the rest), and the text-delta, tool-started, tool-finished, graph-updated, completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies document-update fingerprint/wire-path helpers used by mutation publishing. |
@@ -310,14 +310,20 @@ orphaned halves).
   lock. An applied record cannot return to validated. A failed pre-commit
   application becomes aborted and cannot be applied directly again; an
   identical fresh dry-run may replace that aborted record and reissue the same
-  deterministic hash after complete revalidation. Each record also holds the plan's
+  deterministic hash after complete revalidation. An identical fresh dry-run replaces
+  an applied record the same way: the hash covers the base revision, so it recurs only
+  when an undo has restored that revision, and the record of the earlier apply must not
+  outlive the revision it applied to. `begin_apply` on an applied record, with no fresh
+  dry-run between, still fails `plan_already_applied`. Each record also holds the plan's
   `PlanReceipt` (summary and assumptions), outside the hashed authority: `put` requires
   one, an identical dry-run of a still-valid validated plan replaces it, and
   `receipt(plan_hash)` returns it to the apply that builds the change record.
 - **`AssistantChangeRecord`** (`schemas.py`): `id` (the hash of the plan the change
   saved, which `change_record` takes from the apply), `summary`, `assumptions`, `changes` (an
   `AssistantGraphChanges`: `nodes`, `edges_added`, `edges_removed`, `preamble_changed`,
-  `truncated`), `warnings`, `git_sha`, `parent_sha`. A node chip is an
+  `truncated`), `warnings`, `git_sha`, `parent_sha`, `revision` (the editor document
+  revision the save returned, `SavePipelineResponse.source_revision`, which an undo
+  compares and passes as its save's base revision). A node chip is an
   `AssistantChangeNode`: `id`, `type` (palette display name), `change`, `renamed_from`,
   `fields`, `steps` (step kinds in order, `null` for a node without a step list) and
   `steps_changed`; an edge is `{source, target}`. All models are closed (`extra="forbid"`).
@@ -332,7 +338,10 @@ orphaned halves).
   Pydantic models or stable `AssistantOperationError` codes.
 - **`AssistantSession`** (`_session.py`): `id` (uuid4 hex), `source_file`, `history` — a list
   of **turn records**, each grouping one user message with every assistant message, tool
-  call, and tool result it produced (the atomic unit all pruning operates on) — one
+  call, and tool result it produced (the atomic unit all pruning operates on), its outcome, and
+  `undone`, the records of the changes the analyst undid after it, kept whole so they outlive
+  the pruning of the turn that saved them (required when persisted, with each record's
+  summary and assumptions redacted like a stored change record) — one
   `asyncio.Lock` (the one-turn-at-a-time guard), `created_at`/`last_used`.
 - **SSE wire events** (`schemas.py`): the `AssistantStreamEvent` union listed in the module
   map — field-for-field the contract documented in
@@ -686,6 +695,28 @@ cancelled turn has none. Stored assistant text is returned as stored, so the pan
 derives the same display from a resumed turn as from the live one. Any other
 case — no `session_id`, unknown/pruned/corrupt, or a different pipeline — creates and
 returns a fresh session with empty `history`; resume is an offer, never an error.
+Each change a turn records as undone (`AssistantTurn.undone`) yields one `undo` entry,
+carrying that change record, after that turn's outcome entry.
+
+**Undo** (`POST /api/assistant/changes/undo` with `{session_id, change_id, source_file}`;
+any other field is refused with 422): resolve the source file, then reserve the session
+the way a message does (unknown → 404, a running turn → 409) and release it in `finally`;
+a source file other than the session's binding is a 409 naming the chat's pipeline. The
+change is the latest stored `change` record with that id in the session's history (404
+when none). `PipelineApplicationService.undo` then refuses a record with no
+`parent_sha` (`undo_unavailable`, 409: the change was not saved to Git) and, under
+`save_lock`, a current document revision other than the record's `revision`
+(`undo_superseded`, 409: a later save exists, so only the Git panel can go back further).
+It reads the parent graph with `commit_pipeline_graph(parent_sha, source_file)`, saves it
+with `save_graph_transactionally` (base revision the record's `revision`, commit message
+`Undo: ` and the headline), and publishes the document update with the undone change as
+its origin. A historical read failure or a stale save precondition is a 409 too. No
+mutation-readiness check runs: an undo is the analyst's own save, like a canvas save.
+Finally `SessionStore.record_undo` adds the change record to the latest turn's `undone`
+and persists the session; the response is `{change_id, git_sha}`, the commit the undo
+save made. The next turn's context lists every change the latest stored turn records as
+undone, with its summary (see `render_turn_context`), so the model learns of it once, on
+the turn that follows.
 
 **Message turn** (`POST /api/assistant/message` → SSE stream from `_loop.run_turn`):
 
@@ -887,7 +918,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    loop adds no assistant text for an apply: its change card says what was saved. Every
    `completed` event's outcome carries the saved ids as `changes`. An `apply_graph_plan`
    result whose error code is `verification_failed` means the save committed but its
-   post-save verification failed; it is terminal after the current stream reaches its stop
+   post-save verification failed; its `change` record is streamed as a change-applied
+   event and appended to the saved ids like a verified one; it is terminal after the
+   current stream reaches its stop
    event (later tool calls in the round are ignored and the provider is not invoked
    again): the loop records the deterministic
    assistant text `Graph changes were saved, but post-save verification failed.` and emits
@@ -1443,10 +1476,28 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   tools carry no precondition.
 - **The change record describes the reparsed save** — its chips come from the actual diff
   between the graph the plan started from and the graph reparsed after the commit, never
-  from the requested operations alone, and its commit is the one the save made. The
-  canvas updates through the `/ws/sync` document update, not through the chat event.
-- **One `PipelineDocumentUpdatePayload` contract**: the assistant publishes the identical
-  payload shape the watcher publishes; no assistant-specific frame type exists on `/ws/sync`.
+  from the requested operations alone, and its commit is the one the save made. The one
+  exception is a committed save whose verification failed: its record is built, right
+  after the commit, from the graph the plan computed and the plan's validated diff, and
+  the error result carries it. The canvas updates through the `/ws/sync` document
+  update, not through the chat event.
+- **One `PipelineDocumentUpdatePayload` contract**: the assistant publishes the payload
+  shape the watcher publishes, plus `origin` (`{kind: "assistant", session_id, change_id,
+  node_ids}`, `node_ids` from `touched_node_ids` of the saved or undone change); the
+  watcher and resyncs omit the key. No assistant-specific frame type exists on `/ws/sync`.
+  The service's `DocumentUpdatePublisher` takes the source file and the change record
+  (or `None` when a committed save has none, which publishes without an origin); the
+  tool layer's publisher adds the chat's session id.
+- **Assistant saves name their change** — `save_graph_transactionally` takes a
+  `commit_message`, which the save passes to `commit_save`; an apply passes
+  `change_headline(summary)` (whitespace collapsed to one line) and an undo `Undo: ` and
+  the undone change's headline. `PlanReceipt` refuses a control character other than
+  whitespace, because the ledger history parser delimits commits with control
+  characters.
+- **Undo restores only the latest change** — the comparison of the current document
+  revision with the record's `revision` runs under `save_lock`, and the save's own
+  `base_revision` precondition repeats it inside the transaction, so a save that lands
+  between the two still refuses the undo.
 - **Bounded retention, turn-atomic**: the provider request carries the most recent
   complete turns within a 40-message budget plus the always-complete system prompt; stored
   history caps at 200 messages by evicting whole oldest turns. The window always holds the
@@ -1589,7 +1640,9 @@ fixture for route tests). The implemented coverage is:
   consumer and `instanceOf`, edge-only and API Input renames applying, and parity with
   the fields the editor's `nodeUpdatePlan.ts` reconciles, read from source.
   Also covers canonical revision/plan hashing, semantic diff boundaries,
-  closed postconditions, single-use plan transitions,
+  closed postconditions, single-use plan transitions (a fresh identical dry-run of an
+  applied plan issues it again; a repeated apply without one is refused),
+  a plan summary with a control character refused,
   stale/altered-plan rejection before save,
   unrelated-diff detection, and truthful verification evidence.
 - **`tests/test_assistant_catalog.py`** — completeness against `NodeType` (mirror of the
@@ -1724,7 +1777,9 @@ fixture for route tests). The implemented coverage is:
   holds no configuration value, step code or intent comment, and carries the commit and
   its parent; an `edit_steps` and a rename show as a changed-step count and a renamed
   chip; and the dry-run and apply results the provider receives for that batch each stay
-  under one kilobyte with no echoed operations or repeated diffs. A repeated identical
+  under one kilobyte with no echoed operations or repeated diffs. A committed save whose
+  verification fails returns a change record of the planned change with the save's
+  commit and revision. A repeated identical
   dry-run replaces the receipt of a plan not yet applied. Schema-validation scope is pinned against a
   fixture whose saved pipeline already contains one unresolvable node: an authored
   group-by validates at schema tier, a new branch off a shared input does not drag that
@@ -1891,7 +1946,8 @@ fixture for route tests). The implemented coverage is:
   `needs_input` for a question with or without one, `blocked` from the model or from an
   stopped dry-run budget (its detail being the streamed text after the marker),
   `applied`, `committed_unverified` for an apply whose save committed but failed
-  verification, which ends the turn at once with no later tool or provider round, and
+  verification, which streams that save's change card, lists it in `changes` and ends the
+  turn at once with no later tool or provider round, and
   `incomplete` after the one reminder; a failed turn stores none. The system prompt states the
   steps-first rule with both `new_logic` forms, names every stepped surface by its
   palette name, and no longer teaches `df` as a code-only output variable.
@@ -1912,12 +1968,14 @@ fixture for route tests). The implemented coverage is:
   change, each turn's context carries its own graph, policy and selection after the user
   message, and the first turn's context is not replayed; a selection the saved pipeline
   lacks is a 409 that frees the session; the message context is closed, unique and at most
-  20 ids.
+  20 ids. Undo pins the 404 for an unknown change, the 409 while a turn runs and for
+  another pipeline, the 422 for an unknown field, the `undo` transcript entry after the
+  turn that records it, and the next turn's context naming the undone change.
 - **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,
   tool-error round-trip, turn-outcome revival, an outcome detail redacted like assistant
-  text, an apply's change record revived as the same record with its summary and
+  text, a turn's `undone` records revived, an apply's change record revived as the same record with its summary and
   assumptions redacted like assistant text (a summary that redaction lengthens past the
   dry-run's 160-character bound still revives, since the bound is the receipt's, not the
   record's), a turn record without its `outcome` key treated as invalid, internal-controller
@@ -1939,7 +1997,12 @@ fixture for route tests). The implemented coverage is:
   `save_lock` exclusivity — a concurrent GUI-style save cannot interleave inside an assistant
   mutation's critical section; cancellation during a slow save leaves the lock held until
   the shielded save has landed and then releases it;
-  a degraded ledger capture surfaces its warning in the tool result.
+  a degraded ledger capture surfaces its warning in the tool result. In a real Git
+  working branch, an apply's commit message is its headline and its document update
+  carries the assistant origin; Undo of a change that added a configuration file restores
+  the pipeline byte for byte, removes that file and commits `Undo: ` and the headline;
+  the same change then dry-runs to the same hash and applies again; and once a later save
+  exists the undo is refused as `undo_superseded` with nothing written.
 - **`tests/test_save_pipeline_integrity.py`** includes a regression pinning the
   preserve-marker round-trip through
   `save_graph_transactionally` (parse a marker-bearing pipeline → transactional save →

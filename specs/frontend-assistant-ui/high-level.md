@@ -30,7 +30,8 @@ Out of scope:
   [assistant](../assistant/high-level.md).
 - Canvas updates. Assistant mutations arrive as ordinary `pipeline_document_update` frames
   handled by [frontend-graph-canvas](../frontend-graph-canvas/high-level.md)'s WebSocket
-  sync; this component never writes to the graph store.
+  sync, which rings and centres the nodes a frame's assistant origin names; this component
+  never writes to the graph store.
 - The shared side-panel shell chrome, owned by
   [frontend-node-editors](../frontend-node-editors/high-level.md), and the shared API-client
   machinery, stores, toasts, and theme tokens owned by
@@ -80,7 +81,18 @@ summary and the assumptions it made, one chip per node added, changed, removed o
 with its palette type, the fields it changed in words and its step kinds, the edges added
 and removed, the save's warnings, and the short commit id. The card never shows a
 configuration value or step code. The canvas itself updates via live-sync, not via this
-panel.
+panel: when an assistant save or undo lands, the canvas rings the nodes it changed and
+centres them, instead of fitting the whole graph.
+
+**Undo and Compare on each change card.** A card saved to Git offers "Undo this change"
+and "Compare". Undo is enabled only while the canvas shows the document revision that
+change produced, so it is offered on the latest change to the pipeline and on no card
+after a later save; while a turn runs or an undo is in flight it is disabled too, and its
+title says why. Clicking it asks the backend to save the version before the change; the
+transcript then shows a note that the change was undone, the canvas updates through
+live-sync, and a refusal (a later save, a running turn) is shown as the panel notice in the
+backend's words. Compare opens the read-only comparison view with the version before the
+change on the historical side. A card not saved to Git offers neither.
 A resumed chat renders the same entries in the same order as the live turn did.
 
 **Every completed turn ends with its outcome.** The completed event's typed outcome
@@ -92,9 +104,10 @@ reply "You choose, and tell me what you picked." that sends that message as the 
 renders a blocked card with the reason, in place of the raw `BLOCKED:` text, stating that
 nothing was saved, or how many changes the turn saved before it was blocked, whose cards
 are above it; a question card counts the changes saved before the question the same way. `committed_unverified` renders a card stating that the changes were
-saved but the post-save check failed, with the check's error and a prompt to review the
-pipeline or return to the previous save in the Git panel; it never says that nothing
-changed. `incomplete` renders a card titled "Stopped before finishing" that tells the
+saved but the post-save check failed, with the check's error, a prompt to review the
+pipeline or undo the change, and "Undo this change" as its primary action for the change
+whose check failed (the last change the outcome lists), enabled under the change card's
+rule; it never says that nothing changed. `incomplete` renders a card titled "Stopped before finishing" that tells the
 analyst to ask it to continue, states that nothing was saved (or how many changes were),
 and shows the reason the controller gave. A turn may save several changes, each with its
 own change card, before it ends.
@@ -206,14 +219,17 @@ cannot partially append text or activity.
 ## Interactions
 
 - **[assistant](../assistant/high-level.md)** — the backend surface this component consumes:
-  status, session list/create, and the streamed message endpoint; the typed SSE event contract is
-  owned there (in the shared schemas module) and consumed here.
+  status, session list/create, the streamed message endpoint and the undo endpoint; the typed SSE
+  event contract is owned there (in the shared schemas module) and consumed here.
+- **[git-integration](../git-integration/high-level.md)** — Compare opens the git store's
+  read-only comparison on the change's parent commit.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the split API-module pattern and
   `request`/`post` machinery, the toast store for failure surfacing, the UI store for
   panel-visibility chrome, theme tokens, and the error boundary the panel mounts inside.
 - **[frontend-graph-canvas](../frontend-graph-canvas/high-level.md)** — supplies the derived
-  dirty state that drives the clean-canvas gate, and applies assistant mutations via its
-  existing WebSocket sync; this component reads canvas state, never writes it.
+  dirty state that drives the clean-canvas gate and the document revision that enables Undo,
+  and applies assistant mutations via its existing WebSocket sync; this component reads
+  canvas state, never writes it.
 - **[frontend-node-editors](../frontend-node-editors/high-level.md)** — the shared
   side-panel shell chrome the panel renders inside, and the lazy-loading convention it
   follows.

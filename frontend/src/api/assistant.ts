@@ -70,6 +70,8 @@ export interface AssistantChangeRecord {
   warnings: string[]
   git_sha: string | null
   parent_sha: string | null
+  /** The editor document revision the save produced; Undo needs the canvas still at it. */
+  revision: string
 }
 
 export type AssistantStreamEvent =
@@ -254,6 +256,7 @@ function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord 
     warnings: requireStringArray(record.warnings, `${path}.warnings`),
     git_sha: requireNullableString(record.git_sha, `${path}.git_sha`),
     parent_sha: requireNullableString(record.parent_sha, `${path}.parent_sha`),
+    revision: requireString(record.revision, `${path}.revision`),
   }
 }
 
@@ -263,7 +266,7 @@ function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHist
   if (kind === "outcome") {
     return { kind, outcome: parseTurnOutcome(payload.outcome, `${path}.outcome`) }
   }
-  if (kind === "change") {
+  if (kind === "change" || kind === "undo") {
     return { kind, change: parseChangeRecord(payload.change, `${path}.change`) }
   }
   if (kind !== "user" && kind !== "assistant" && kind !== "tool") {
@@ -365,6 +368,8 @@ export type AssistantHistoryEntry =
   | { kind: "outcome"; outcome: AssistantTurnOutcome }
   /** An apply's change card, after its tool row, as the live `change_applied` event showed. */
   | { kind: "change"; change: AssistantChangeRecord }
+  /** The analyst undid this change, after the turn it followed. */
+  | { kind: "undo"; change: AssistantChangeRecord }
 
 export interface AssistantSessionResult {
   sessionId: string
@@ -425,6 +430,31 @@ export function listAssistantSessions(
       sessions: payload.sessions.map((entry, index) =>
         parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
       ),
+    }
+  })
+}
+
+export interface AssistantUndoResult {
+  changeId: string
+  /** The commit the undo's save made, or null when it was not captured in Git. */
+  gitSha: string | null
+}
+
+/** Undo one change card: the backend saves the version before that change. */
+export function undoAssistantChange(
+  sessionId: string,
+  changeId: string,
+  sourceFile: string,
+): Promise<AssistantUndoResult> {
+  return post<unknown>("/api/assistant/changes/undo", {
+    session_id: sessionId,
+    change_id: changeId,
+    source_file: sourceFile,
+  }).then((value) => {
+    const payload = requireRecord(value, "undo")
+    return {
+      changeId: requireString(payload.change_id, "undo.change_id"),
+      gitSha: requireNullableString(payload.git_sha, "undo.git_sha"),
     }
   })
 }

@@ -152,7 +152,7 @@ def test_trace_and_schema_dry_run_match_declared_evidence(tmp_path: Path):
         project_root=destination,
         pipeline_root=destination,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
     plan = service.dry_run("pipeline.py", request["operations"], summary="Test plan.").plan
     assert (destination / "pipeline.py").read_bytes() == before

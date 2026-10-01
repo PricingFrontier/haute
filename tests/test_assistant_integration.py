@@ -130,7 +130,7 @@ async def _run_turn(provider: ExactPlanProvider, store: SessionStore, session_id
         "add a derived step after quotes",
         provider=provider,
         tools=[],
-        execute_tool=build_tool_executor("main.py"),
+        execute_tool=build_tool_executor("main.py", session_id=session_id),
         system_prompt="s",
         turn_timeout=30.0,
         max_tool_calls=8,
@@ -186,6 +186,13 @@ class TestMutationEndToEnd:
         assert [(node.id, node.change) for node in card.change.changes.nodes] == [
             ("Age_band", "added")
         ]
+        # The update names its chat and change, so the canvas focuses the node.
+        assert published[0]["origin"] == {
+            "kind": "assistant",
+            "session_id": session_id,
+            "change_id": card.change.id,
+            "node_ids": ["Age_band", "quotes"],
+        }
         document = published[0]["document"]
         assert document["load_status"] == "ready"
         node_ids = {node["authored_id"] for node in document["nodes"]}
@@ -229,11 +236,11 @@ class TestMutationEndToEnd:
         original_blocking = PipelineApplicationService._commit
         loop = asyncio.get_running_loop()
 
-        def slow_blocking(self, source_file, after):
+        def slow_blocking(self, source_file, after, receipt):
             loop.call_soon_threadsafe(in_save.set)
             while not release_save.is_set():
                 pass
-            return original_blocking(self, source_file, after)
+            return original_blocking(self, source_file, after, receipt)
 
         monkeypatch.setattr(PipelineApplicationService, "_commit", slow_blocking)
 
@@ -273,7 +280,7 @@ class TestMutationEndToEnd:
 
         from haute.routes._save_pipeline import SavePipelineService
 
-        def degraded_capture(self, touched, removed, warnings):
+        def degraded_capture(self, touched, removed, warnings, message):
             warnings.append("Changes saved; version capture failed: simulated")
             # (sha, identity_required): capture degraded for a reason that is
             # not a missing identity, so the prompt must not fire.
@@ -315,7 +322,7 @@ class TestMutationEndToEnd:
         from haute import _git
         from haute._git_archive import move_to_commit
         from haute.assistant._ops import AssistantOperationError
-        from haute.assistant._tools import _application_service
+        from haute.assistant._tools import application_service
         from haute.routes._helpers import parse_pipeline_to_graph
 
         def _run_git(repo: Path, *args: str) -> str:
@@ -332,7 +339,7 @@ class TestMutationEndToEnd:
         _run_git(project_root, "commit", "-m", "initial pipeline")
         _git.set_working_branch(working, project_root, cwd=project_root, create=True)
 
-        service = _application_service()
+        service = application_service(session_id="test")
         pre_mutation_graph, pre_mutation_revision = service.inspect("main.py")
         pre_mutation_bytes = (project_root / "main.py").read_bytes()
         tip_before = _run_git(project_root, "rev-parse", f"{working}-save")
@@ -385,3 +392,131 @@ class TestMutationEndToEnd:
             await service.apply("main.py", stale_plan.plan_hash)
         assert exc.value.code == "stale_revision"
         assert (project_root / "main.py").read_bytes() == pre_mutation_bytes
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
+def _owned_files(root: Path) -> dict[str, bytes]:
+    """The pipeline's files a save writes: the source, its sidecar and its configs."""
+
+    files = [root / "main.py", root / "main.haute.json"]
+    if (root / "config").is_dir():
+        files.extend(path for path in (root / "config").rglob("*") if path.is_file())
+    return {path.relative_to(root).as_posix(): path.read_bytes() for path in files}
+
+
+class TestUndo:
+    """Undo saves the change's parent commit forward, and only over that change."""
+
+    async def test_undo_restores_the_parent_and_the_change_applies_again(
+        self, project_root: Path, mutations_ready
+    ):
+        from haute import _git as git
+        from haute._pipeline_recovery import load_pipeline_editor_document
+        from haute.assistant._ops import AssistantOperationError
+        from haute.assistant._tools import application_service
+        from haute.routes._helpers import parse_pipeline_to_graph
+        from haute.routes._save_pipeline import SavePipelineService
+
+        working = "pricing-dev"
+        _git(project_root, "init", "-b", "main")
+        _git(project_root, "config", "user.name", "Test Actuary")
+        _git(project_root, "config", "user.email", "test@example.com")
+        _git(project_root, "add", "main.py", "haute.toml")
+        _git(project_root, "commit", "-m", "initial pipeline")
+        git.set_working_branch(working, project_root, cwd=project_root, create=True)
+        ledger = f"{working}-save"
+
+        def save_as_analyst(graph) -> None:
+            source = project_root / "main.py"
+            SavePipelineService(project_root).save_graph_transactionally(
+                graph=graph,
+                name=graph.pipeline_name or "",
+                description=graph.pipeline_description or "",
+                preamble=graph.preamble,
+                source_file="main.py",
+                base_revision=load_pipeline_editor_document(
+                    source, project_root=project_root
+                ).source_revision,
+            )
+
+        # The parent is a save's own output, as every assistant change's parent is.
+        save_as_analyst(parse_pipeline_to_graph(project_root / "main.py"))
+        before = _owned_files(project_root)
+
+        published: list[dict] = []
+        unsubscribe = default_bus.subscribe(
+            "pipeline.document.update", lambda payload: published.append(dict(payload))
+        )
+        try:
+            service = application_service(session_id="chat")
+            summary = "Add an age band\nafter quotes."
+            plan = service.dry_run("main.py", ADD_NODE_OPS, summary=summary).plan
+            change = (await service.apply("main.py", plan.plan_hash)).change
+            added = set(_owned_files(project_root)) - set(before)
+            # The change added a configuration file beside the pipeline.
+            assert added and all(path.startswith("config/") for path in added)
+            assert _git(project_root, "log", "-1", "--format=%s", ledger) == (
+                "Add an age band after quotes."
+            )
+
+            result = await service.undo("main.py", change)
+        finally:
+            unsubscribe()
+
+        assert _owned_files(project_root) == before
+        assert result.git_sha == _git(project_root, "rev-parse", ledger)
+        assert _git(project_root, "log", "-1", "--format=%s", ledger) == (
+            "Undo: Add an age band after quotes."
+        )
+        assert (
+            result.revision
+            == load_pipeline_editor_document(
+                project_root / "main.py", project_root=project_root
+            ).source_revision
+        )
+        assert [payload["origin"]["change_id"] for payload in published] == [change.id] * 2
+
+        # The same change dry-runs to the same plan again and applies once more.
+        again = service.dry_run("main.py", ADD_NODE_OPS, summary=summary).plan
+        assert again.plan_hash == plan.plan_hash
+        reapplied = (await service.apply("main.py", again.plan_hash)).change
+        assert set(_owned_files(project_root)) - set(before) == added
+
+        # Once a later save exists, the change can no longer be undone here.
+        later = parse_pipeline_to_graph(project_root / "main.py")
+        later.pipeline_description = "edited by the analyst"
+        save_as_analyst(later)
+        after_later = _owned_files(project_root)
+        tip = _git(project_root, "rev-parse", ledger)
+        with pytest.raises(AssistantOperationError) as exc:
+            await service.undo("main.py", reapplied)
+        assert exc.value.code == "undo_superseded"
+        assert _owned_files(project_root) == after_later
+        assert _git(project_root, "rev-parse", ledger) == tip
+
+    async def test_a_change_not_saved_to_git_cannot_be_undone(self, project_root: Path):
+        from haute.assistant._ops import AssistantOperationError
+        from haute.assistant._tools import application_service
+        from haute.schemas import AssistantChangeRecord, AssistantGraphChanges
+
+        change = AssistantChangeRecord(
+            id="a" * 64,
+            summary="Add an age band.",
+            changes=AssistantGraphChanges(nodes=[]),
+            git_sha=None,
+            parent_sha=None,
+            revision="r" * 64,
+        )
+        before = (project_root / "main.py").read_bytes()
+
+        with pytest.raises(AssistantOperationError) as exc:
+            await application_service(session_id="chat").undo("main.py", change)
+
+        assert exc.value.code == "undo_unavailable"
+        assert (project_root / "main.py").read_bytes() == before

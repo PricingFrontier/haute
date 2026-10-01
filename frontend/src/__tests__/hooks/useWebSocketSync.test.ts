@@ -60,6 +60,10 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setSubmodelDialog: vi.fn((dialog: { nodeIds: string[] } | null) => {
       store.submodelDialog = dialog
     }),
+    changeFocus: null,
+    setChangeFocus: vi.fn((nodeIds: string[] | null) => {
+      store.changeFocus = nodeIds === null ? null : { nodeIds }
+    }),
     // Other fields the hook destructures
     setPaletteOpen: vi.fn(),
     setShortcutsOpen: vi.fn(),
@@ -210,6 +214,8 @@ describe("useWebSocketSync", () => {
     vi.mocked(useUIStore.getState().setSubmodelDialog).mockClear()
     useUIStore.getState().renameDialog = null
     useUIStore.getState().submodelDialog = null
+    useUIStore.getState().changeFocus = null
+    vi.mocked(useUIStore.getState().setChangeFocus).mockClear()
     vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
     useGraphStore.getState().dirty = false
     useGraphStore.getState().nodes = []
@@ -836,6 +842,83 @@ describe("useWebSocketSync", () => {
         "error",
         expect.stringContaining("unexpected frame fields"),
       )
+    })
+
+    it("focuses the nodes an assistant change names instead of fitting the view", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+      }))
+      renderHook(() => useWebSocketSync(params))
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode],
+      })
+      const origin = {
+        kind: "assistant",
+        session_id: "chat",
+        change_id: "a".repeat(64),
+        // A removed node is named too; only nodes the new graph has are focused.
+        node_ids: [readyNode.id, "removed_node"],
+      }
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({ ...pipelineDocumentFrame(document), origin }),
+        }))
+        vi.advanceTimersByTime(100)
+      })
+
+      expect(params.fitView).not.toHaveBeenCalled()
+      expect(useUIStore.getState().changeFocus).toEqual({ nodeIds: [readyNode.id] })
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "info",
+        "Pipeline updated by the assistant",
+      )
+
+      // A later update without an origin clears the focus and fits the graph.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame({ ...document, source_revision: "r3" })),
+        }))
+        vi.advanceTimersByTime(100)
+      })
+
+      expect(useUIStore.getState().changeFocus).toBeNull()
+      expect(params.fitView).toHaveBeenCalledOnce()
+    })
+
+    it("rejects a document frame whose origin is malformed", async () => {
+      const params = makeHookParams("rating/main.py")
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r1",
+      }))
+      renderHook(() => useWebSocketSync(params))
+      const frame = pipelineDocumentFrame(makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+      }))
+
+      for (const origin of [
+        { kind: "watcher", session_id: "chat", change_id: "a", node_ids: [] },
+        { kind: "assistant", session_id: "chat", change_id: "a", node_ids: [1] },
+        { kind: "assistant", session_id: "chat", change_id: "a" },
+      ]) {
+        await act(async () => {
+          latestWS().onmessage?.(new MessageEvent("message", {
+            data: JSON.stringify({ ...frame, origin }),
+          }))
+        })
+      }
+
+      expect(useDocumentStatusStore.getState().sourceRevision).toBe("r1")
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(vi.mocked(useToastStore.getState().addToast).mock.calls.filter(
+        ([type, text]) => type === "error" && text.includes("invalid origin"),
+      )).toHaveLength(3)
     })
 
     it("rejects each invalid document-envelope identity field", async () => {

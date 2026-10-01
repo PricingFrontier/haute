@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-33 | Planned | P2 | The analyst can undo or compare the latest assistant change in one click. |
 | ASSIST-34 | Planned | P2 | Long turns never collide with analyst edits, and setup is explained. |
 | ASSIST-35 | Planned | P2 | About nine task-shaped tools replace fifteen, and recipes compose with primitive operations. |
 | ASSIST-36 | Planned | P1 | Realistic builds, edits and recoveries are measured per area on real models. |
@@ -94,28 +93,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-33 — Undo, Compare and canvas focus
-**Why:** Every assistant apply clears the canvas undo stack and re-fits the
-whole graph, and the only way back is the Git panel.
-
-**Plan:** "Undo this change" saves the graph at the change's parent commit
-through the save service, only while the current revision is the change's
-result, and notes it in the chat; "Compare" opens the existing comparison
-view. Assistant updates carry their origin, ring and centre the changed nodes
-instead of re-fitting, and assistant saves use the change headline as the Git
-message. A plan's single-use record must not outlive the revision it applied
-to: after an undo restores that revision, dry-running the same change again
-issues a fresh plan instead of `plan_already_applied`.
-
-**Acceptance:** Undo restores the file byte for byte, removes an added
-sidecar, and refuses once a later save exists; after an undo the same change
-dry-runs and applies again; a browser pass shows the changed nodes ringed.
-
-**Dependencies:** `ASSIST-15`, `ASSIST-31`.
-
-**Evidence:** `src/haute/routes/_helpers.py::commit_pipeline_graph`;
-`frontend/src/stores/useGraphStore.ts`.
 
 ### ASSIST-34 — Panel experience
 **Why:** A long turn can collide with the analyst's own edits, a closed panel

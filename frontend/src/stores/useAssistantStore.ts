@@ -9,6 +9,7 @@ import {
   listAssistantSessions,
   MAX_CONTEXT_SELECTION,
   streamAssistantMessage,
+  undoAssistantChange,
   type AssistantChangeRecord,
   type AssistantHistoryEntry,
   type AssistantMessageContext,
@@ -17,6 +18,7 @@ import {
   type AssistantStreamEvent,
   type AssistantTurnOutcome,
 } from "../api/assistant"
+import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useToastStore from "./useToastStore"
 
@@ -34,6 +36,8 @@ export type TranscriptEntry =
     }
   /** What an apply saved, built by the backend from the saved graph. */
   | { kind: "change"; change: AssistantChangeRecord }
+  /** The analyst undid this change. */
+  | { kind: "undo"; change: AssistantChangeRecord }
   | {
       kind: "marker"
       outcome: "failed" | "stopped" | "interrupted"
@@ -91,6 +95,10 @@ export interface AssistantStoreState {
   sendMessage: (text: string, options: SendMessageOptions) => Promise<void>
   stopTurn: () => void
   newChat: () => void
+  /** The change whose undo is in flight, or null. */
+  undoingChangeId: string | null
+  /** Save the version before *change*, then note the undo in the transcript. */
+  undoChange: (change: AssistantChangeRecord) => Promise<void>
 }
 
 type SetAssistantState = (
@@ -146,6 +154,32 @@ export function assistantSendDisabledReason({
   return null
 }
 
+export interface UndoGate {
+  change: AssistantChangeRecord
+  /** The revision of the document the canvas shows. */
+  documentRevision: string | null
+  turnStatus: "idle" | "streaming"
+  undoingChangeId: string | null
+}
+
+/**
+ * Why a change cannot be undone now, or `null` when it can. Mirrors the
+ * backend's rule, which stays the authority: only while the pipeline is still
+ * at the revision the change produced, so only the latest change to it.
+ */
+export function undoDisabledReason({
+  change,
+  documentRevision,
+  turnStatus,
+  undoingChangeId,
+}: UndoGate): string | null {
+  if (change.parent_sha === null) return "This change was not saved to Git."
+  if (turnStatus !== "idle") return "Wait for the assistant to finish before undoing."
+  if (undoingChangeId !== null) return "An undo is already running."
+  if (documentRevision !== change.revision) return "The pipeline was saved again after this change."
+  return null
+}
+
 /*
  * There is deliberately no client-remembered "last session" here. The backend
  * list is the single record of which conversations exist, and a localStorage id
@@ -168,8 +202,8 @@ function hydrateEntries(history: AssistantHistoryEntry[]): TranscriptEntry[] {
       entries = settleOutcome(entries, entry.outcome)
       return
     }
-    if (entry.kind === "change") {
-      entries = [...entries, { kind: "change", change: entry.change }]
+    if (entry.kind === "change" || entry.kind === "undo") {
+      entries = [...entries, { kind: entry.kind, change: entry.change }]
       return
     }
     if (entry.kind === "user") {
@@ -416,6 +450,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   sessions: [],
   sessionsStatus: "unknown",
   sessionsSource: null,
+  undoingChangeId: null,
 
   refreshStatus: async () => {
     try {
@@ -643,6 +678,37 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // otherwise arrive and fill the new chat with an old transcript.
     openGeneration += 1
     set({ sessionId: null, pipelineSource: null, entries: [], notice: null, view: "chat" })
+  },
+
+  undoChange: async (change) => {
+    const current = get()
+    const reason = undoDisabledReason({
+      change,
+      documentRevision: useDocumentStatusStore.getState().sourceRevision,
+      turnStatus: current.turnStatus,
+      undoingChangeId: current.undoingChangeId,
+    })
+    if (reason !== null) {
+      set({ notice: reason })
+      return
+    }
+    const { sessionId, pipelineSource } = current
+    if (sessionId === null || pipelineSource === null) {
+      throw new Error("Assistant contract violation: a change card outside an open chat.")
+    }
+    set({ undoingChangeId: change.id, notice: null })
+    try {
+      await undoAssistantChange(sessionId, change.id, pipelineSource)
+      // The canvas updates through /ws/sync; the transcript notes the undo.
+      if (get().sessionId === sessionId) {
+        set((state) => ({ entries: [...state.entries, { kind: "undo", change }] }))
+      }
+    } catch (error) {
+      const detail = error instanceof ApiError ? error.detail : null
+      set({ notice: detail ?? "The change could not be undone." })
+    } finally {
+      set({ undoingChangeId: null })
+    }
   },
 }))
 

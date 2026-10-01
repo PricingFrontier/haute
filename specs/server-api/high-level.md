@@ -470,7 +470,8 @@ describes. Stale, changed or already-applied plans fail before
   app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
   tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish
   `pipeline.document.update` on the shared event bus so assistant edits broadcast over
-  `/ws/sync` exactly like external edits.
+  `/ws/sync` exactly like external edits, tagged with an assistant `origin`; its undo
+  route saves an earlier commit forward through the same service.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
   `graph_to_code` / `graph_to_code_multi` and therefore depends on the shared registry
   between codegen and the executor.

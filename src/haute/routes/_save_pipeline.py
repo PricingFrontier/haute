@@ -334,6 +334,8 @@ class SavePipelineService:
     def save(
         self,
         body: SavePipelineRequest,
+        *,
+        commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
@@ -343,6 +345,9 @@ class SavePipelineService:
         Save is transactional: if any write step fails, all files we
         already touched are restored (or deleted for new files) before
         the exception propagates.  No partial save is ever left on disk.
+
+        *commit_message* is the ledger commit's message; without one the
+        commit names the changed files.
         """
         graph = body.graph
 
@@ -453,7 +458,9 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
-        git_sha, identity_required = self._capture_save_in_ledger(touched, removed, warnings)
+        git_sha, identity_required = self._capture_save_in_ledger(
+            touched, removed, warnings, commit_message
+        )
 
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
@@ -469,6 +476,7 @@ class SavePipelineService:
         touched: list[_TouchedFile],
         removed: list[Path],
         warnings: list[str],
+        message: str | None,
     ) -> tuple[str | None, bool]:
         """Commit this save to the clone's ledger branch, when configured.
 
@@ -515,7 +523,7 @@ class SavePipelineService:
             return None, True
 
         try:
-            sha = _git.commit_save(rel_paths, working, cwd=self._root)
+            sha = _git.commit_save(rel_paths, working, cwd=self._root, message=message)
             if sha is not None:
                 # Publish to durable storage when bound; no-op otherwise.
                 from haute import _project_storage
@@ -540,6 +548,7 @@ class SavePipelineService:
         preamble: str | None,
         source_file: str,
         base_revision: str | None,
+        commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
@@ -563,6 +572,7 @@ class SavePipelineService:
                 preserved_blocks=graph.preserved_blocks,
                 base_revision=base_revision,
             ),
+            commit_message=commit_message,
         )
 
     # ------------------------------------------------------------------

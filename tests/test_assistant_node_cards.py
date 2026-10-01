@@ -67,7 +67,7 @@ def _service(project: Path) -> Any:
         project_root=project,
         pipeline_root=project,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
 
 
