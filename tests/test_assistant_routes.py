@@ -371,12 +371,12 @@ class TestSessionResume:
                     {"role": "user", "content": "break"},
                     {
                         "role": "assistant",
-                        "tool_calls": [{"id": "c1", "name": "get_node_schema", "arguments": {}}],
+                        "tool_calls": [{"id": "c1", "name": "inspect_node", "arguments": {}}],
                     },
                     {
                         "role": "tool",
                         "tool_call_id": "c1",
-                        "name": "get_node_schema",
+                        "name": "inspect_node",
                         "content": {"error": {"code": "unknown_node", "message": "No node x"}},
                         "is_error": True,
                     },
@@ -872,14 +872,16 @@ class TestTurnReservation:
                 assert "Suggested recipe" not in text
                 assert "Current-request" not in text
         dataset_tool = next(
-            tool for tool in provider.calls[0]["tools"] if tool["name"] == "list_datasets"
+            tool for tool in provider.calls[0]["tools"] if tool["name"] == "find_data"
         )
-        assert dataset_tool["input_schema"]["properties"]["project_root"] == {"type": "string"}
         assert dataset_tool["input_schema"]["properties"]["recursive"] == {"type": "boolean"}
-        recipe_tool = next(
-            tool for tool in provider.calls[0]["tools"] if tool["name"] == "plan_recipe"
+        dry_run_tool = next(
+            tool for tool in provider.calls[0]["tools"] if tool["name"] == "dry_run_graph_edits"
         )
-        assert len(recipe_tool["input_schema"]["oneOf"]) == 4
+        operations = dry_run_tool["input_schema"]["properties"]["ops"]["items"]["oneOf"]
+        assert (
+            sum(branch["properties"]["op"].get("const") == "recipe" for branch in operations) == 4
+        )
 
     async def test_pre_stream_failure_after_reservation_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch

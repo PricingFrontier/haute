@@ -10,7 +10,7 @@ decorators, sidecar folders, or singleton rules.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType, UnionType
@@ -916,32 +916,20 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "singletons",
             "project_revision",
         ),
-        "get_node_schema": (
+        "inspect_node": (
             "node",
-            "columns",
-            "ports",
-            "inputs",
-            "unresolved_reason",
+            "schema",
+            "config",
+            "profile",
+            "withheld",
             "project_revision",
         ),
-        "get_node_config": ("node", "sensitivity", "config", "project_revision"),
-        "get_column_profiles": (
-            "node",
-            "input",
-            "columns",
-            "rows_scanned",
-            "scan_bounded",
-            "max_levels",
-            "project_revision",
-        ),
-        "list_datasets": ("datasets", "directories", "recursive", "truncated"),
-        "get_dataset_schema": (
-            "path",
-            "columns",
-            "row_count",
-            "row_count_estimated",
-            "column_count",
-            "source_digest",
+        "find_data": (
+            "datasets",
+            "directories",
+            "recursive",
+            "truncated",
+            "schema",
             "project_revision",
         ),
         "get_project_knowledge": (
@@ -953,31 +941,7 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "max_sensitivity",
             "project_revision",
         ),
-        "get_example": ("name", "attribution", "narrative", "graph"),
-        "get_authoring_guide": (
-            "id",
-            "version",
-            "sha256",
-            "source",
-            "sensitivity",
-            "evidence_class",
-            "approval_status",
-            "content",
-            "step_grammar",
-        ),
-        "plan_recipe": (
-            "recipe_id",
-            "version",
-            "recipe_plan_hash",
-        ),
-        "dry_run_recipe_plan": (
-            "plan_hash",
-            "operations",
-            "verification_tier",
-            "evidence",
-            "warnings",
-            "changes",
-        ),
+        "read_reference": ("count", "references"),
         "dry_run_graph_edits": (
             "plan_hash",
             "operations",
@@ -993,17 +957,6 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "evidence",
             "change",
         ),
-        "get_capability_manifest": (
-            "schema_version",
-            "haute_version",
-            "capability_hash",
-            "installed_capabilities",
-            "feature_flags",
-            "node_index",
-            "operation_index",
-            "recipe_index",
-        ),
-        "get_capability_descriptors": ("kind", "count", "descriptors"),
     }
     common_fields = ("capability_hash", "operation_version")
     fields = {
@@ -1027,6 +980,8 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "valid_names",
         "required_sensitivity",
         "max_sensitivity",
+        "part",
+        "withheld",
         "missing",
         "unknown",
         "argument",
@@ -1052,9 +1007,10 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         ["code", "message"],
     )
     optional_success_fields = {
-        "get_node_schema": {"columns", "ports", "inputs", "unresolved_reason"},
-        # `input` is null when the node's own output was profiled.
-        "get_column_profiles": {"input"},
+        # Each part answers only when the call asked for it and the policy permits it.
+        "inspect_node": {"schema", "config", "profile", "withheld"},
+        # A file's schema, and the revision its evidence enters, only for a `path`.
+        "find_data": {"schema", "project_revision"},
     }
     success_required = [
         field
@@ -1066,16 +1022,6 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "required": success_required,
         "not": {"required": ["error"]},
     }
-    if name == "get_node_schema":
-        # A node whose own output cannot resolve — an authored-but-empty
-        # transform — is still a successful inspection: the tool reports the
-        # stable reason plus the input schemas the analyst needs to write that
-        # code. It is a third success shape, not an error.
-        success_variant["oneOf"] = [
-            {"required": ["columns"]},
-            {"required": ["ports"]},
-            {"required": ["unresolved_reason", "inputs"]},
-        ]
     result = _closed_object(
         properties,
         ["capability_hash", "operation_version"],
@@ -1087,127 +1033,205 @@ def _operation_output_schema(name: str) -> dict[str, object]:
     return result
 
 
-def _recipe_invocation_schema() -> dict[str, object]:
-    """Expose recipe arguments as a provider-friendly discriminated union."""
+def _argument_names(schema: Mapping[str, object], names: Sequence[str]) -> str:
+    """Name each argument, with the keys of an array's object items in braces, recursively."""
 
-    variants: list[dict[str, object]] = []
+    properties = cast(Mapping[str, Mapping[str, object]], schema["properties"])
+    rendered: list[str] = []
+    for name in names:
+        items = properties[name].get("items")
+        item_properties = items.get("properties") if isinstance(items, Mapping) else None
+        if isinstance(items, Mapping) and isinstance(item_properties, Mapping):
+            keys = _argument_names(items, [str(key) for key in item_properties])
+            rendered.append(f"{name} [{{{keys}}}]")
+        else:
+            rendered.append(name)
+    return ", ".join(rendered)
+
+
+def _recipe_arguments_description(recipe_id: str, schema: Mapping[str, object]) -> str:
+    """One line naming a recipe's arguments, required first.
+
+    The portable projection keeps only the description of a property whose
+    schema differs between branches, so this line is how a provider learns
+    each recipe's argument names; the `recipe:<id>` reference has the schema.
+    """
+
+    required = [str(name) for name in cast(tuple[str, ...], schema["required"])]
+    optional = [
+        str(name)
+        for name in cast(Mapping[str, object], schema["properties"])
+        if name not in required
+    ]
+    text = f"{recipe_id} arguments: {_argument_names(schema, required)}"
+    if optional:
+        text += f"; optional {_argument_names(schema, optional)}"
+    return text + "."
+
+
+def _recipe_operation_branches(ref_schema: Mapping[str, object]) -> list[dict[str, object]]:
+    """One closed `recipe` operation branch per installed recipe.
+
+    `ref` is exactly `add_node`'s, so the provider projection keeps its one
+    description for both.
+    """
+
+    branches: list[dict[str, object]] = []
     for descriptor in recipe_manifest():
         recipe_id = descriptor.get("id")
         raw_schema = descriptor.get("argument_schema")
         if not isinstance(recipe_id, str) or not isinstance(raw_schema, Mapping):
-            raise TypeError("Recipe descriptor has an invalid invocation schema")
-        raw_properties = raw_schema.get("properties")
-        raw_required = raw_schema.get("required")
-        if not isinstance(raw_properties, Mapping) or not isinstance(raw_required, (list, tuple)):
+            raise TypeError("Recipe descriptor has an invalid argument schema")
+        if not isinstance(raw_schema.get("properties"), Mapping) or not isinstance(
+            raw_schema.get("required"), (list, tuple)
+        ):
             raise TypeError("Recipe argument schema must have properties and required fields")
-        properties = {
-            "recipe_id": {"const": recipe_id},
-            **{
-                str(key): cast(dict[str, object], _thaw(value))
-                for key, value in raw_properties.items()
-            },
-        }
-        variants.append(
+        arguments = cast(dict[str, object], _thaw(raw_schema))
+        arguments["description"] = _recipe_arguments_description(recipe_id, raw_schema)
+        branches.append(
             _closed_object(
-                properties,
-                ["recipe_id", *(str(item) for item in raw_required)],
+                {
+                    "op": {"const": "recipe"},
+                    "recipe": {"const": recipe_id},
+                    "arguments": arguments,
+                    "ref": dict(ref_schema),
+                },
+                ["op", "recipe", "arguments"],
             )
         )
-    return {
-        "oneOf": variants,
-        "additionalProperties": False,
-    }
+    return branches
+
+
+def _graph_edit_operations_schema() -> dict[str, object]:
+    """The `dry_run_graph_edits` operation union: the primitive branches, then the recipes."""
+
+    schema = graph_edit_operations_schema()
+    items = cast(dict[str, object], schema["items"])
+    branches = cast(list[dict[str, object]], items["oneOf"])
+    add_node = cast(Mapping[str, Mapping[str, object]], branches[0]["properties"])
+    items["oneOf"] = [*branches, *_recipe_operation_branches(add_node["ref"])]
+    return schema
+
+
+#: The provider-visible operations, in the order the provider receives them.
+OPERATION_IDS = (
+    "get_pipeline",
+    "inspect_node",
+    "find_data",
+    "read_reference",
+    "get_project_knowledge",
+    "dry_run_graph_edits",
+    "apply_graph_plan",
+)
+#: The parts `inspect_node` can return, in the order it answers them.
+INSPECT_NODE_PARTS = ("schema", "config", "profile")
+#: Ids one `read_reference` call may name.
+MAX_REFERENCE_IDS = 12
+#: Each operation's egress class: the most sensitive project material it can send.
+_OPERATION_EGRESS = {
+    "get_pipeline": "internal-project-metadata",
+    # Per part: schema, config, profile. The profile is the one data-reading
+    # capability, so its class is distinct and a policy review can see it plainly.
+    "inspect_node": "internal-schema-only, restricted-redacted, restricted-value-profile",
+    "find_data": "internal-schema-only",
+    "read_reference": "none",
+    "get_project_knowledge": "policy-filtered-project-content",
+    "dry_run_graph_edits": "internal-project-metadata",
+    "apply_graph_plan": "internal-project-metadata",
+}
 
 
 def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
     descriptions = {
         "get_pipeline": "Inspect the saved pipeline graph and its project revision.",
-        "get_node_schema": (
-            "Resolve a saved pipeline node's output columns and dtypes plus the columns "
+        "inspect_node": (
+            "Inspect one saved top-level node in the parts you name (default "
+            '["schema"]). "schema": the node\'s output columns and dtypes and the columns '
             "arriving on each of its inputs, keyed by the name the node's own code uses. "
             "A node reporting unresolved_reason 'node_has_no_code' is an empty transform "
             "already wired into the graph and awaiting its code: write that code onto it "
-            "with update_node rather than adding a parallel node beside it."
+            'with update_node rather than adding a parallel node beside it. "config": the '
+            "node's complete saved configuration. \"profile\": the values in the node's "
+            "output, or in the input named by `input`: per column, the distinct levels of a "
+            "small-cardinality categorical with their counts, or the min/max of a numeric "
+            "or date column, alongside a null count and, where the dtype can be counted, a "
+            "distinct count. Temporal and decimal bounds are reported in their written form "
+            "('2024-01-01', '12.50'). Profile instead of assuming how a column encodes its "
+            "categories - a 'fault' or 'status' column may hold Y/N, true/false, or a "
+            "description, and the schema alone cannot tell you which. A profile returns no "
+            "rows: a value appears only as a distinct level, and a high-cardinality column "
+            "is withheld. A part the egress policy does not permit is listed under "
+            "`withheld` with the setting it needs."
         ),
-        "get_node_config": "Inspect one saved node's complete configuration.",
-        "get_column_profiles": (
-            "Summarise the values in one node frame before writing code against it: per "
-            "column, the distinct levels of a small-cardinality categorical with their "
-            "counts, or the min/max of a numeric or date column, alongside a null count "
-            "and, where the dtype can be counted, a distinct count. Temporal and decimal "
-            "bounds are reported in their written form ('2024-01-01', '12.50'). "
-            "Call this instead of assuming how a column encodes its categories - "
-            "a 'fault' or 'status' column may hold Y/N, true/false, or a description, and "
-            "the schema alone cannot tell you which. Pass 'input' to profile one of the "
-            "node's inputs by the name its code binds. Returns no rows: a value appears "
-            "only as a distinct level, and a high-cardinality column is withheld."
+        "find_data": (
+            "List the safe installed-format data files in one project directory, "
+            "optionally recursively, and, when `path` names a data file, also return its "
+            "column names and dtypes without reading rows."
         ),
-        "list_datasets": (
-            "List safe installed-format datasets in one project directory, optionally recursively."
-        ),
-        "get_dataset_schema": "Inspect a dataset schema without implicitly reading rows.",
         "get_project_knowledge": (
             "Retrieve bounded policy-filtered project facts and untrusted documentation."
         ),
-        "get_example": (
-            "Load one packaged, versioned teaching example: its narrative and every "
-            "node's configuration with its values."
-        ),
-        "get_authoring_guide": (
-            "Retrieve the packaged canonical authoring guide with attribution, and the "
-            "structured step grammar: each step kind's fields and the closed vocabularies."
+        "read_reference": (
+            "Read packaged library reference by id, one to twelve ids per call: "
+            '"guide" (the authoring guide and the structured step grammar: each step '
+            'kind\'s fields and the closed vocabularies), "node:<node type id>" (a node '
+            "type's complete descriptor; its card holds a minimal and a realistic "
+            "configuration with real values and the meaning of each field), "
+            '"recipe:<recipe id>" (a recipe\'s full argument schema) and '
+            '"example:<example name>" (a teaching example: its narrative and every '
+            "node's configuration with its values)."
         ),
         "dry_run_graph_edits": (
             "Validate an exact graph-edit plan without writing. Say in `summary` what the "
             "plan does and list any `assumptions` you made; the analyst sees both on the "
-            "change card. Returns the plan hash to apply, the verification tier, an "
+            'change card. An operation {"op": "recipe", "recipe": <recipe id>, '
+            '"arguments": {...}} expands into that recipe\'s nodes and edges inside the '
+            "same plan; give it a `ref` to address the node it creates from later "
+            "operations. Returns the plan hash to apply, the verification tier, an "
             "evidence summary, warnings and the plan's node and edge changes."
-        ),
-        "dry_run_recipe_plan": (
-            "Dry-run exactly one pending canonical recipe by recipe_plan_hash."
         ),
         "apply_graph_plan": (
             "Apply one exact validated plan hash under revision authority. Returns the "
             "change record the analyst sees, built from what was saved."
         ),
-        "get_capability_manifest": "Read manifest identity and its compact capability index.",
-        "get_capability_descriptors": (
-            "Read ordered complete capability descriptors in one batch. A node "
-            "descriptor's card holds a minimal and a realistic configuration with "
-            "real values and the meaning of each field."
-        ),
-        "plan_recipe": (
-            "Select and plan one installed canonical recipe with its explicit structured "
-            "arguments. Supply output_name and explicit output_columns together for a "
-            "response output. Pass only the returned recipe_plan_hash to "
-            "dry_run_recipe_plan; canonical operations remain server-side."
-        ),
     }
     input_schemas = {
         "get_pipeline": _closed_object(),
-        "get_node_schema": _closed_object({"node": {"type": "string"}}, ["node"]),
-        "get_node_config": _closed_object({"node": {"type": "string"}}, ["node"]),
-        "get_column_profiles": _closed_object(
+        "inspect_node": _closed_object(
             {
                 "node": {"type": "string"},
+                "parts": {
+                    "type": "array",
+                    "items": {"enum": list(INSPECT_NODE_PARTS)},
+                    "minItems": 1,
+                    "maxItems": len(INSPECT_NODE_PARTS),
+                    "uniqueItems": True,
+                    "description": 'The parts to return; omit for ["schema"].',
+                },
                 "input": {
                     "type": "string",
                     "description": (
                         "Profile this input of the node instead of the node's own "
-                        "output, named exactly as get_node_schema reports it under "
-                        "'inputs'. Omit to profile the node's own output."
+                        "output, named exactly as the schema part reports it under "
+                        "'inputs'. Only with the \"profile\" part."
                     ),
                 },
             },
             ["node"],
         ),
-        "list_datasets": _closed_object(
+        "find_data": _closed_object(
             {
-                "project_root": {"type": "string"},
+                "directory": {
+                    "type": "string",
+                    "description": "Project-relative directory to list; omit for the project root.",
+                },
                 "recursive": {"type": "boolean"},
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative data file whose columns and dtypes to return.",
+                },
             }
         ),
-        "get_dataset_schema": _closed_object({"path": {"type": "string"}}, ["path"]),
         "get_project_knowledge": _closed_object(
             {
                 "query": {"type": "string", "minLength": 1},
@@ -1215,8 +1239,18 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             },
             ["query"],
         ),
-        "get_example": _closed_object({"name": {"type": "string"}}, ["name"]),
-        "get_authoring_guide": _closed_object(),
+        "read_reference": _closed_object(
+            {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": MAX_REFERENCE_IDS,
+                    "uniqueItems": True,
+                },
+            },
+            ["ids"],
+        ),
         "dry_run_graph_edits": _closed_object(
             {
                 "summary": {
@@ -1237,38 +1271,15 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                         "Choices you made that the analyst did not state, one sentence each."
                     ),
                 },
-                "ops": graph_edit_operations_schema(),
+                "ops": _graph_edit_operations_schema(),
                 "postconditions": _postconditions_schema(),
             },
             ["summary", "ops"],
-        ),
-        "dry_run_recipe_plan": _closed_object(
-            {
-                "recipe_plan_hash": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{64}$",
-                },
-            },
-            ["recipe_plan_hash"],
         ),
         "apply_graph_plan": _closed_object(
             {"plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
             ["plan_hash"],
         ),
-        "get_capability_manifest": _closed_object(),
-        "get_capability_descriptors": _closed_object(
-            {
-                "kind": {"enum": ["node", "operation", "recipe"]},
-                "ids": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1},
-                    "minItems": 1,
-                    "maxItems": 12,
-                },
-            },
-            ["kind", "ids"],
-        ),
-        "plan_recipe": _recipe_invocation_schema(),
     }
     mutation = name == "apply_graph_plan"
     plan_bound = name == "apply_graph_plan"
@@ -1282,7 +1293,7 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "recovery": "Inspect the returned details and retry after correction.",
         },
     ]
-    if name in {"dry_run_graph_edits", "dry_run_recipe_plan"}:
+    if name == "dry_run_graph_edits":
         errors.extend(
             [
                 {
@@ -1304,22 +1315,35 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                         "then dry-run again."
                     ),
                 },
+                *(
+                    {
+                        "code": code,
+                        "recovery": (
+                            "Correct the recipe operation's arguments as `fix` says; the "
+                            "recipe:<id> reference holds its argument schema."
+                        ),
+                    }
+                    for code in ("unknown_recipe", "recipe_argument_invalid", "recipe_plan_invalid")
+                ),
             ]
         )
-        if name == "dry_run_graph_edits":
-            errors.append(
-                {
-                    "code": "recipe_plan_requires_handle",
-                    "recovery": "Pass the pending hash to dry_run_recipe_plan.",
-                }
-            )
-        else:
-            errors.append(
-                {
-                    "code": "recipe_plan_not_found",
-                    "recovery": "Call plan_recipe again and use its latest returned hash.",
-                }
-            )
+    elif name == "inspect_node":
+        errors.append(
+            {
+                "code": "egress_policy_denied",
+                "recovery": (
+                    "Ask only for parts the policy permits; `withheld` names the setting "
+                    "each denied part needs."
+                ),
+            }
+        )
+    elif name == "read_reference":
+        errors.append(
+            {
+                "code": "unknown_reference",
+                "recovery": "Use an id from the prompt's indexes; did_you_mean lists close ids.",
+            }
+        )
     elif name == "apply_graph_plan":
         errors.extend(
             [
@@ -1375,47 +1399,13 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             else ("transactional graph revision" if mutation else "snapshot read")
         ),
         "none",
-        (
-            "policy-filtered-project-content"
-            if name == "get_project_knowledge"
-            else (
-                "restricted-redacted"
-                if name == "get_node_config"
-                # The only operation that reads project data. Its egress
-                # class is distinct so a policy review can see it plainly.
-                else (
-                    "restricted-value-profile"
-                    if name == "get_column_profiles"
-                    else "internal-schema-only"
-                    if name in {"get_dataset_schema", "get_node_schema"}
-                    else (
-                        "internal-project-metadata"
-                        if name
-                        in {
-                            "get_pipeline",
-                            "list_datasets",
-                            "dry_run_recipe_plan",
-                            "dry_run_graph_edits",
-                            "apply_graph_plan",
-                        }
-                        else "none"
-                    )
-                )
-            )
-        ),
+        _OPERATION_EGRESS[name],
         "graph mutation" if mutation else "none",
         "bounded",
         "idempotent" if not mutation else "conditional",
         "never automatic",
         False,
-        name
-        in {
-            "get_capability_manifest",
-            "get_capability_descriptors",
-            "get_example",
-            "get_authoring_guide",
-            "plan_recipe",
-        },
+        name == "read_reference",
         not mutation,
         "pipeline-save" if mutation else "assistant-read",
         "ordered" if mutation else "independent",
@@ -1435,28 +1425,7 @@ def capability_manifest() -> CapabilityManifest:
     installed = _installed_capabilities()
     nodes = tuple(_node_descriptor(node_type) for node_type in NodeType)
     recipes = recipe_manifest()
-    operations = tuple(
-        _operation_descriptor(name)
-        for name in (
-            *(
-                "get_pipeline",
-                "get_node_schema",
-                "get_node_config",
-                "get_column_profiles",
-                "list_datasets",
-                "get_dataset_schema",
-                "get_project_knowledge",
-                "get_example",
-                "get_authoring_guide",
-                "plan_recipe",
-                "dry_run_recipe_plan",
-                "dry_run_graph_edits",
-                "apply_graph_plan",
-            ),
-            "get_capability_manifest",
-            "get_capability_descriptors",
-        )
-    )
+    operations = tuple(_operation_descriptor(name) for name in OPERATION_IDS)
     feature_flags = {
         "capability_registry": True,
         "graph_edits": True,
@@ -1611,18 +1580,10 @@ validate_manifest_complete()
 #: Each tool's activity-row title in plain words, while it runs and once it is done.
 _TOOL_TITLES: dict[str, str] = {
     "get_pipeline": "Reading the pipeline",
-    "get_node_schema": "Reading a node's columns",
-    "get_node_config": "Reading a node's settings",
-    "get_column_profiles": "Profiling column values",
-    "list_datasets": "Listing datasets",
-    "get_dataset_schema": "Reading a dataset's columns",
+    "inspect_node": "Inspecting a node",
+    "find_data": "Finding data",
+    "read_reference": "Reading references",
     "get_project_knowledge": "Searching project notes",
-    "get_example": "Reading an example pipeline",
-    "get_authoring_guide": "Reading the authoring guide",
-    "get_capability_manifest": "Reading the node catalogue",
-    "get_capability_descriptors": "Reading node and tool details",
-    "plan_recipe": "Planning a recipe",
-    "dry_run_recipe_plan": "Checking the recipe plan",
     "dry_run_graph_edits": "Checking the plan",
     "apply_graph_plan": "Applying the plan",
 }
@@ -1659,10 +1620,13 @@ def tool_title(
 
 __all__ = [
     "EDGE_NAME_PLACEHOLDER",
+    "INSPECT_NODE_PARTS",
     "MANIFEST_SCHEMA_VERSION",
+    "MAX_REFERENCE_IDS",
     "NEW_LOGIC_EXAMPLE_CODE",
     "CapabilityManifest",
     "NodeCapabilityDescriptor",
+    "OPERATION_IDS",
     "OperationCapabilityDescriptor",
     "capability_manifest",
     "compact_manifest",

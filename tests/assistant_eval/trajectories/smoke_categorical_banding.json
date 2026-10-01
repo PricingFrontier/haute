@@ -22,50 +22,41 @@
           "text": "",
           "calls": [
             {
-              "id": "recipe",
-              "tool": "plan_recipe",
-              "arguments": {
-                "recipe_id": "categorical_banding",
-                "source": "quotes",
-                "name": "region_band",
-                "column": "region",
-                "output_column": "region_group",
-                "rules": [
-                  {
-                    "value": "north",
-                    "assignment": "core"
-                  },
-                  {
-                    "value": "south",
-                    "assignment": "core"
-                  },
-                  {
-                    "value": "east",
-                    "assignment": "other"
-                  },
-                  {
-                    "value": "west",
-                    "assignment": "other"
-                  }
-                ],
-                "default": "unknown"
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
               "id": "dry",
-              "tool": "dry_run_recipe_plan",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "recipe.recipe_plan_hash"
-                }
+                "summary": "Band region into region_group after quotes: north and south are core, east and west are other, and anything else is unknown.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "categorical_banding",
+                    "arguments": {
+                      "source": "quotes",
+                      "name": "region_band",
+                      "column": "region",
+                      "output_column": "region_group",
+                      "rules": [
+                        {
+                          "value": "north",
+                          "assignment": "core"
+                        },
+                        {
+                          "value": "south",
+                          "assignment": "core"
+                        },
+                        {
+                          "value": "east",
+                          "assignment": "other"
+                        },
+                        {
+                          "value": "west",
+                          "assignment": "other"
+                        }
+                      ],
+                      "default": "unknown"
+                    }
+                  }
+                ]
               },
               "result": {
                 "status": "ok"

@@ -81,42 +81,33 @@
           "text": "",
           "calls": [
             {
-              "id": "banding_recipe",
-              "tool": "plan_recipe",
-              "arguments": {
-                "recipe_id": "categorical_banding",
-                "source": "quote_features",
-                "name": "region_band",
-                "column": "region",
-                "output_column": "region_group",
-                "rules": [
-                  {
-                    "value": "north",
-                    "assignment": "core"
-                  },
-                  {
-                    "value": "south",
-                    "assignment": "outer"
-                  }
-                ],
-                "default": "other"
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
               "id": "banding_dry",
-              "tool": "dry_run_recipe_plan",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "banding_recipe.recipe_plan_hash"
-                }
+                "summary": "Band region into region_group after the quote features.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "categorical_banding",
+                    "arguments": {
+                      "source": "quote_features",
+                      "name": "region_band",
+                      "column": "region",
+                      "output_column": "region_group",
+                      "rules": [
+                        {
+                          "value": "north",
+                          "assignment": "core"
+                        },
+                        {
+                          "value": "south",
+                          "assignment": "outer"
+                        }
+                      ],
+                      "default": "other"
+                    }
+                  }
+                ]
               },
               "result": {
                 "status": "ok"
@@ -145,59 +136,50 @@
           "text": "",
           "calls": [
             {
-              "id": "rating_recipe",
-              "tool": "plan_recipe",
+              "id": "rating_dry",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_id": "rating_step",
-                "source": "region_band",
-                "name": "region_rating",
-                "tables": [
+                "summary": "Rate each quote by its region group and combine the factor into a technical premium.",
+                "ops": [
                   {
-                    "factors": [
-                      "region_group"
-                    ],
-                    "output_column": "region_factor",
-                    "entries": [
-                      {
-                        "factor_values": [
-                          "core"
-                        ],
-                        "value": 1.1
-                      },
-                      {
-                        "factor_values": [
-                          "outer"
-                        ],
-                        "value": 0.9
-                      }
-                    ],
-                    "default_value": 1.0
-                  }
-                ],
-                "combined_outputs": [
-                  {
-                    "output_column": "technical_premium",
-                    "operation": "multiply",
-                    "base_value": 500
+                    "op": "recipe",
+                    "recipe": "rating_step",
+                    "arguments": {
+                      "source": "region_band",
+                      "name": "region_rating",
+                      "tables": [
+                        {
+                          "factors": [
+                            "region_group"
+                          ],
+                          "output_column": "region_factor",
+                          "entries": [
+                            {
+                              "factor_values": [
+                                "core"
+                              ],
+                              "value": 1.1
+                            },
+                            {
+                              "factor_values": [
+                                "outer"
+                              ],
+                              "value": 0.9
+                            }
+                          ],
+                          "default_value": 1.0
+                        }
+                      ],
+                      "combined_outputs": [
+                        {
+                          "output_column": "technical_premium",
+                          "operation": "multiply",
+                          "base_value": 500
+                        }
+                      ]
+                    }
                   }
                 ]
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
-              "id": "rating_dry",
-              "tool": "dry_run_recipe_plan",
-              "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "rating_recipe.recipe_plan_hash"
-                }
               },
               "result": {
                 "status": "ok"
@@ -226,34 +208,25 @@
           "text": "",
           "calls": [
             {
-              "id": "response_recipe",
-              "tool": "plan_recipe",
-              "arguments": {
-                "recipe_id": "response_output",
-                "source": "region_rating",
-                "output_name": "quote_response",
-                "output_columns": [
-                  "quote_id",
-                  "region_factor",
-                  "technical_premium"
-                ]
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
               "id": "response_dry",
-              "tool": "dry_run_recipe_plan",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "response_recipe.recipe_plan_hash"
-                }
+                "summary": "Map the quote id, region factor and technical premium into the quote response.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "response_output",
+                    "arguments": {
+                      "source": "region_rating",
+                      "output_name": "quote_response",
+                      "output_columns": [
+                        "quote_id",
+                        "region_factor",
+                        "technical_premium"
+                      ]
+                    }
+                  }
+                ]
               },
               "result": {
                 "status": "ok"

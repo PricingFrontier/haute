@@ -455,7 +455,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   failures into a diagnosed opaque contract. Every non-preview profile, and an
   unprofiled low-level eager or lazy call, raises `ContractResolutionError` before
   node work. This policy is independent of projection/materialisation strictness.
-- **Assistant schema inspection is plan-only.** `get_node_schema` performs the
+- **Assistant schema inspection is plan-only.** `inspect_node`'s schema part performs the
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested
   top-level node, then calls `collect_schema()` on the preserved lazy result.

@@ -160,13 +160,11 @@ async def test_a_tool_result_with_another_status_names_the_turn_and_round(
         )
 
 
-_READ_TOOLS = frozenset(
-    {"get_pipeline", "get_node_schema", "get_node_config", "get_dataset_schema", "list_datasets"}
-)
+_READ_TOOLS = frozenset({"get_pipeline", "inspect_node", "find_data"})
 
 
 def _first_dry_run(trajectory) -> tuple[list[str], dict[str, object] | None]:
-    """The tools called before a trajectory's first primitive dry-run, and that dry-run."""
+    """The tools called before a trajectory's first dry-run, and that dry-run."""
 
     before: list[str] = []
     for trajectory_round in trajectory.turns[0]:
@@ -178,7 +176,7 @@ def _first_dry_run(trajectory) -> tuple[list[str], dict[str, object] | None]:
 
 
 def _single_node_trajectories() -> list:
-    """Trajectories whose first primitive dry-run adds, updates or edits the steps of one node."""
+    """Trajectories whose first dry-run adds, updates or edits the steps of one node."""
 
     single = []
     for trajectory in TRAJECTORIES:
@@ -322,7 +320,7 @@ def test_trajectory_references_must_name_an_earlier_call(tmp_path: Path) -> None
     path = tmp_path / "smoke_categorical_banding.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="references 'recipe.recipe_plan_hash'"):
+    with pytest.raises(ValueError, match="references 'dry.plan_hash'"):
         load_trajectory(path)
 
 

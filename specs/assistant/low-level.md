@@ -10,7 +10,7 @@
 | `src/haute/assistant/_node_cards.py` | Loads and validates the packaged node cards (read via `importlib.resources`, cached). Exactly one card per `NodeType` must exist, each a closed JSON object: an authorable card has `fields` (config path to meaning), `inputs` (edge, optional source and target handles, column-to-dtype map), `configs` (exactly `minimal` then `realistic`, each with `intent`, `config`, `produces` and optionally its own `inputs`) and a `fixture`; a card for a type the assistant cannot author has only `authorable: false` and a `note`. A missing, unexpected or malformed card raises `NodeCardError`. `node_card(node_type)` returns the model-facing card without its fixture; `node_card_fixture(node_type)` returns the fixture for the CI harness, or nothing for a non-authorable card. |
 | `src/haute/assistant/assets/node_cards/<nodeType>.json` | One node card per node type, library content with no project data. Its closed `fixture` holds `frames` (tiny rows, with `dates` naming string columns to parse as Date, each written to `data/<name>.parquet` and added as a Data Input only when the plan reads it), `files` (project paths to JSON values or text), `upstream` and `downstream` operations placed around the card node, `model_run` (the frame and features of a tiny CatBoost model logged to the project's local MLflow folder, whose run id replaces the card's `run_id` placeholder), and `expect` (per-configuration expected rows of produced columns). |
 | `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `example_index()` lists only bundles whose manifest sets `teaching: true`, and `load_example(name)` refuses any other name as an unknown example; for a teaching bundle it materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view, its node configurations rendered with their values, with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
-| `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and deterministic `plan_recipe` dispatcher. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Planner output is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code. |
+| `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and the deterministic `expand_recipe_operations`, which expands each recipe operation of a dry-run batch in place through `expand_recipe`. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Each expansion is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code with the index of the `recipe` operation. |
 | `src/haute/assistant/_project_knowledge.py` | Source-linked project-knowledge extraction, bounded query selection, and disposable content-addressed index. Derives a saved-graph fact, a value-free `haute.toml` digest fact, and allowlisted UTF-8 documentation evidence; labels unmarked document sensitivity as restricted; records source digest/extraction version/evidence class; filters by `EgressPolicy`; and atomically refreshes metadata-only cache state under `.haute/assistant/knowledge/`. An allowlisted document that is not valid UTF-8 fails the read with a typed, project-relative error instead of silently disappearing. Dataset schemas remain a separate schema-only tool result. |
 | `scripts/run_assistant_evaluation.py` | The development-only qualification harness and its command (it is not part of the installed package): closed evaluation scenario/support-matrix loaders, semantic/safety scorer, repeated-trial attribution, percentile aggregation, and release-gate evaluator. The runner is injected so deterministic tests use fakes and the live-provider lane uses real provider adapters in isolated projects. It never imports or exposes held-out fixtures through production tools. |
 | `scripts/run_assistant_self_test.py` | Developer-facing evaluation harness, outside the installed package, for tiers 0 and 1 of [the assistant evaluation](evaluation.md), and its explicit credentialed command. It loads the closed case format (`load_self_test_cases`) and reference trajectories (`load_trajectories`), copies each case's project fixture into a caller-supplied empty work directory, binds the sandbox project root to that copy for the case and restores it afterwards, writes the harness's pinned egress allowances (not the invoking project's) into the copy, initializes the real Git mutation gate, and runs the provider-neutral loop with the real tool executor (`run_self_test_case`). `TrajectoryProvider` and `replay_self_test_case` replay a trajectory with `$result` substitution and raise `TrajectoryDivergedError` when a tool result's status or error code differs from the recording. After the turn the harness executes the case's golden nodes (`execute_goldens`) and `score_self_test` scores the protocol, structure, configuration, collateral, editor and execution layers; `frames_equal` is the one frame comparison and `config_digest` the per-node configuration digest. The command runs each selected case live in its own spawned process. Reports hold one evidence kind and may retain ordered tool names plus value-free status/error code/validation path/validation reason diagnostics so failed model strategies are actionable. They otherwise record only redacted identities, outcomes, per-layer results, reasons, graph structure, and aggregate metrics; prompts, model prose, tool arguments/results, credentials, dataset values, canary values, and content digests are not written to reports. |
@@ -22,7 +22,7 @@
 | `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries (a live pipeline's node configs as their key names and count; with `config_values=True`, which only the example loader passes, each config whole as JSON values), edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. It also owns the turn context: the frozen `TurnContext`/`BriefNode`/`BriefInput` data, the egress policy words with the column-value rule, and the pure bounded `render_turn_context`, which the route, the self-test harness and the golden script share, and the `ContextUpdate` data with `render_context_update`, the turn context update placed after an apply's round. |
 | `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and document-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. It returns a `DryRunResult` (the plan and the compact view the dry-run tool returns) and an `ApplicationResult` whose `as_dict` is the compact apply result carrying the change record; the record's parent commit comes from `_git.commit_parent`. |
 | `src/haute/assistant/_change_record.py` | The value-free change builder: `graph_changes(before, after, diff)` turns a semantic diff and the graphs on either side of it into node chips (id, palette type name from the capability manifest, `added`/`changed`/`removed`/`renamed`, the earlier id of a renamed node, changed fields in words, step kinds and changed-step count) and added and removed edges, each bounded at 50; `change_record` adds the record's id (the saved plan's hash), the plan receipt, the save warnings and the commit and its parent; `touched_node_ids` lists the node ids a batch of records names, for the turn context update; `evidence_summary` reduces verification evidence to its counts and input names. The dry-run result, the apply result and the stream event all use these. |
-| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. `build_turn_context` gathers the turn context's facts (revision, brief nodes resolved schema-only and cached per revision, validated selection, policy-reduced preview error) on the same schema helpers as `get_node_schema`, and `build_context_update` the facts of the update after an apply (new revision and the brief entries of the nodes the saved change records name) from the same cache; `context_update` gathers them under the save lock and renders them for the loop. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery; `inspect_node` composes the schema, config and profile parts (`node_schema`, `node_config`, `column_profiles`), each behind its own egress check. `build_turn_context` gathers the turn context's facts (revision, brief nodes resolved schema-only and cached per revision, validated selection, policy-reduced preview error) on the same schema helpers as `inspect_node`'s schema part, and `build_context_update` the facts of the update after an apply (new revision and the brief entries of the nodes the saved change records name) from the same cache; `context_update` gathers them under the save lock and renders them for the loop. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `find_data` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `dry_run_graph_edits` (its `recipe` operations expanded first) followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence (`_PERSISTED_TOOL_EVIDENCE_KEYS`, which include a dry-run's operation count and an apply's applied-operation count), value-free validation diagnostics, and a successful apply's `change` record, validated against `AssistantChangeRecord` with its summary and assumptions redacted like assistant text; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. A neutral `context` message becomes a mid-conversation `system` message for the Anthropic models in `MID_CONVERSATION_SYSTEM_MODELS` and otherwise the leading text of the preceding user message; one that follows a round's tool results (the turn context update) is otherwise a text block after the tool-result blocks on the Anthropic wire and a user message after the tool messages on the OpenAI wire. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the context message is the route's rendered turn context and is never stored), forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, continues the turn after a saving apply with the turn context update the route's refresher renders placed after that round's results (never stored), records every saved change id on the outcome, sends one end-of-turn reminder when the model stops with a validated plan unapplied or a failed dry-run uncorrected and completes the turn `incomplete` on a second such stop, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
@@ -115,8 +115,9 @@ orphaned halves).
   concurrency, timeout, payload, context-budget, stable-error and recovery
   metadata. Its output schema requires attribution plus exactly one non-empty
   success or error result variant; an empty object is never a valid declared
-  operation result. The `dry_run_graph_edits.ops` branches are generated from
-  `_wire_ops`' canonical Pydantic operation models. The projection inlines local
+  operation result. The `dry_run_graph_edits.ops` primitive branches are generated from
+  `_wire_ops`' canonical Pydantic operation models, and its `recipe` branches from the
+  recipe descriptors. The projection inlines local
   definitions and retains closed fields, requiredness, discriminator constants,
   descriptions, nullability, and the canonical `NodeType` enum; `_catalog` does
   not hand-copy the primitive operation vocabulary.
@@ -125,9 +126,9 @@ orphaned halves).
   resolved postconditions, semantic diff, and affected capabilities. The verified
   value adds save validation, schema evidence, warnings, tier, and the one sealed
   `GraphEditPlan`. `build_verified_plan` is the sole application-service path from
-  snapshot plus raw operations to that pair and is reused for dry-run, recipe
-  dry-run, and apply replay.
-- **Manifest identity/cache**: `get_capability_manifest()` refreshes installed
+  snapshot plus raw operations to that pair and is reused for dry-run and apply
+  replay.
+- **Manifest identity/cache**: `capability_manifest()` refreshes installed
   format/engine facts, canonicalises all immutable material as UTF-8 JSON with
   sorted object keys and compact separators, hashes it with SHA-256, and looks
   up the frozen result by `(haute_version, capability_hash)`. Cache inspection
@@ -349,28 +350,66 @@ orphaned halves).
 
 ## Control flow
 
-**Capability query**: the prompt obtains
-`get_capability_manifest(compact=True)`, which returns identity, dynamic
-installed capabilities, and stable indexes. `get_capability_descriptors(kind,
-ids)` accepts only the closed kinds `node`, `operation`, and `recipe` plus
-one to twelve unique ids. It validates the complete batch before returning descriptors
-in request order, so an unknown or duplicate id is one stable
-`unsupported_capability` or `invalid_capability_query` result rather than a partial
-response. Every descriptor is materialised into ordinary JSON containers.
-The manifest is the only node catalogue: there is no separate node-type list. A call to
-the removed `list_node_types` tool, which a resumed session's history can still name, is
-refused with `tool_removed` and a message naming `get_capability_manifest` and
-`get_capability_descriptors` as its replacements.
+**Reference reads**: the prompt carries `compact_manifest(capability_manifest())`:
+identity, dynamic installed capabilities, and stable node, operation and recipe indexes.
+`read_reference(ids)` accepts one to twelve unique ids from four namespaces: `guide`,
+`node:<NodeType value>`, `recipe:<recipe id>` and `example:<teaching example name>`
+(an example and a recipe can share a name, so ids are always namespaced). It validates
+the complete batch before reading anything, so an unknown id is one stable
+`unknown_reference` result naming that id with up to three `did_you_mean` close valid
+ids (an unprefixed node type such as `banding` therefore suggests `node:banding`), and a
+duplicate or malformed batch is `invalid_request` from the closed input schema. Results
+are `{"count", "references": [{"id", "content"}]}` in request order: a node's `content`
+is its complete descriptor with its card, a recipe's its descriptor with the closed
+argument schema, an example's the `load_example` view, and the guide's the attributable
+guide with `step_grammar`. Every item is materialised into ordinary JSON containers. The
+manifest is the only node catalogue: there is no separate node-type list. A removed
+tool, which a resumed session's history can still name, is refused with `tool_removed`
+and a message naming its replacement: `list_node_types`, `get_capability_manifest`,
+`get_capability_descriptors`, `get_example` and `get_authoring_guide` (`read_reference`),
+`get_node_schema`, `get_node_config` and `get_column_profiles` (`inspect_node` with the
+matching part), `list_datasets` and `get_dataset_schema` (`find_data`), and
+`plan_recipe` and `dry_run_recipe_plan` (a `recipe` operation in `dry_run_graph_edits`).
 
-**Recipe planning**: `plan_recipe` has a canonical flat discriminated union derived from the
-closed recipe argument schemas. Every request receives the same complete provider-facing
-union together with `dry_run_recipe_plan`; nothing in the request's wording changes tool
-availability or schema shape. Argument descriptions distinguish a requested graph-node name
+**Recipe operations**: the `dry_run_graph_edits` operation union holds, beside the
+primitive branches projected from `_wire_ops`, one closed branch per installed recipe,
+built by `_catalog` from the recipe descriptors: `op` const `recipe`, `recipe` const
+the recipe id, `arguments` that recipe's closed argument schema, and an optional `ref`
+with exactly `AddNodeOp`'s `ref` schema. Canonical validation selects the branch by `op`
+and then by `recipe`, so an argument error names its path, such as
+`dry_run_graph_edits.ops[0].arguments.rules[1].value`. Each branch's `arguments`
+description names the recipe and its argument fields, required first, with the keys of
+any object items, because the portable projection reduces the differing `arguments`
+schemas to one object with their descriptions joined; the full schema is the
+`recipe:<id>` reference. Every request receives the same operation union; nothing in the
+request's wording changes tool availability or schema shape.
+
+`_tools.dry_run_graph_edits` passes the batch to `_recipes.expand_recipe_operations`
+before the application service sees it. Each `recipe` operation at index `i` expands in
+place, in batch order, through the recipe's deterministic planner, with the node it
+creates declaring the operation's `ref` (or `recipe_<i>` without one) and a response
+output it adds declaring that ref plus `_output`. The recipe adds no postconditions of
+its own: its nodes and edges are covered by the plan's postconditions like any other
+operation's (the automatic structural summary unless the model declares its own). The
+result (`ExpandedBatch`) carries the expanded primitive operations, the `positions` list
+holding for every expanded operation the index of the operation it came from, and the
+recipe id of each `recipe` operation's index. A planner failure (`RecipeError`) becomes a
+structured error with the recipe failure's code, `where` `{"op_index": i, "recipe": <id>}`
+plus `field` `arguments.<argument>` when the failure names one, and a `fix` naming the
+correction and the `recipe:<id>` reference. `PipelineApplicationService.dry_run` takes
+`positions` through `build_verified_plan` and `prepare_graph_edit` to `parse_ops` and the
+batch application, so every `where.op_index`, and every operation index a message or
+`fix` names, is the index in the batch the model sent; the tool then adds `recipe` to
+`where` when that operation is a recipe. The loop's progress rule and `_attempted`
+therefore read the operation the model wrote. Apply replays the stored primitive plan,
+whose indices are its own. Expansion reads no project state and never writes.
+
+Argument descriptions distinguish a requested graph-node name
 from its output-column name. Transform, join, and rating recipes also accept optional non-empty
 `output_name` and `output_columns` fields, which must be present together. The latter is a
 non-empty unique array of simple JSON-field column names. When present, the deterministic
 planner adds one response `output` node, a canonical JSON `outputMapping` for exactly those
-columns, and an edge from the recipe node in the same canonical batch. The standalone
+columns, and an edge from the recipe node in the same expansion. The standalone
 `response_output` recipe requires `source`, `output_name`, and `output_columns` and
 creates the same canonical mapping directly after the saved source. A bare output name or
 column list is a material ambiguity and fails recipe planning. A categorical-banding rule
@@ -379,9 +418,10 @@ contains exactly a non-empty string `value` and non-empty `assignment`. Executio
 text exactly, so the rule's `value` description states that text form: booleans are
 `"true"`/`"false"` and integers are their digits. Through the tool, the closed input
 schema refuses a boolean or numeric `value` as `invalid_request` with reason `wrong_type`
-at `plan_recipe.rules[N].value`, and the message repeats that description. A direct
-planner call refuses it with `recipe_argument_invalid` naming the argument and the text form
-it must take (`"true"` or `"false"` for a boolean, the digits for an integer). Planning
+at `dry_run_graph_edits.ops[N].arguments.rules[M].value`, and the message repeats that
+description. A direct planner call refuses it with `recipe_argument_invalid` naming the
+argument and the text form it must take (`"true"` or `"false"` for a boolean, the digits
+for an integer). Planning
 refuses a `value` equal to an earlier rule's, because the saved banding sidecar keys rules by their text and
 refuses a repeated key when the plan is applied. The reference-join `how` enum is `inner`,
 `left`, `right`, `full`, `semi`, or `anti`; the recipe always emits `leftOn`/`rightOn`, so
@@ -393,24 +433,11 @@ finite numeric `value`; the factor-values length must equal the table's factor c
 each factor value must be a non-null finite JSON scalar. Optional `combined_outputs` entries
 have exactly `output_column`, `operation` from `multiply`, `add`, `min`, or `max`,
 and finite numeric `base_value`. Planning converts these snake-case positional arguments
-to canonical dynamic-key rating tables and camel-case combined outputs, runs the canonical
-rating validators, then includes the result in the `recipe_plan_hash` over recipe id,
-version, canonical operations, and postconditions.
-
-The source-bound executor retains planned recipe material by hash and replaces the previous pending
-handle for the same recipe on correction. Its provider result is the closed opaque receipt
-`recipe_id`, `version`, and `recipe_plan_hash`; canonical operations and postconditions stay
-server-side. `dry_run_recipe_plan(recipe_plan_hash)` resolves only that executor's live
-handle and invokes the ordinary graph dry-run with exactly the stored canonical recipe
-material. It rejects every additional property. A pending recipe makes primitive
-`dry_run_graph_edits` return `recipe_plan_requires_handle`; an unknown or replaced handle returns
-`recipe_plan_not_found`. The live handle clears only after a successful dedicated
-dry-run. Neither tool writes. Every request receives the same full `plan_recipe`
-discriminated union, `dry_run_recipe_plan`, `dry_run_graph_edits`, and `apply_graph_plan`
-descriptors, and no code reads the request's words to suggest, populate, rewrite, or reject
-a recipe or primitive plan. The source-bound executor API has no natural-language request
-parameter, so this separation is structural rather than a convention inside its
-dispatcher.
+to canonical dynamic-key rating tables and camel-case combined outputs and runs the
+canonical rating validators. No code reads the request's words to suggest, populate,
+rewrite, or reject a recipe or primitive plan. The source-bound executor API has no
+natural-language request parameter, so this separation is structural rather than a
+convention inside its dispatcher.
 
 Material choices a recipe or node needs, such as rating factor values and the value for a
 missing factor, are node-card guidance: the `ratingStep` card's field meanings say they
@@ -418,16 +445,29 @@ come from the analyst, are never invented, and are asked for with `NEEDS_INPUT:`
 the analyst delegated them. If the provider submits a complete structured call, that call
 is judged only by the canonical recipe/operation schema and graph validators. The lexical-only error codes
 `recipe_route_required`, `recipe_route_mismatch`, `recipe_name_mismatch`, and
-`material_input_required` are not part of the operation descriptors. A pending canonical
-recipe receipt remains different: `recipe_plan_requires_handle` prevents a provider from
-replacing already-generated server-side recipe material with primitive operations.
+`material_input_required` are not part of the operation descriptors.
 
-**Column value profiles**: `get_column_profiles(node, input?)` is the only operation that
-reads project data, and it never returns a row. It requires
-`[assistant.egress].allow_row_samples`; without it the result is `egress_policy_denied`
-naming that flag. With `input` omitted it profiles the node's own output; with `input` set
-it profiles that named input, resolved through the same code-visible input names
-`get_node_schema` reports. It prepares frames through the ordinary lazy path — **not**
+**Node inspection**: `inspect_node(node, parts?, input?)` answers the parts it names,
+in the order `schema`, `config`, `profile`, with `["schema"]` when `parts` is omitted
+(`parts` holds one to three unique part names). Each part has its own egress requirement,
+checked before that part reads anything: `schema` needs `max_sensitivity` `internal` or
+`restricted`, `config` needs `restricted`, and `profile` needs a non-public ceiling and
+`allow_row_samples`. A denied part is listed under `withheld` as `{"part",
+"required_policy"}`, where `required_policy` is the `[assistant.egress]` setting it needs
+(`max_sensitivity = "internal"`, `max_sensitivity = "restricted"` or
+`allow_row_samples = true`); the permitted parts answer under their own keys beside
+`node`, `withheld` and `project_revision`. When every requested part is denied the call is
+`egress_policy_denied` with that `withheld` list, and an unreadable policy is
+`egress_policy_unavailable`. `input` names the frame the profile part reads and is
+`invalid_request` without the `profile` part. A part that fails (an unknown or
+submodel-internal node, an unresolvable schema, an unavailable profile) fails the call
+with that part's error and `part` naming it. The whole call holds the save lock, and its
+parts must report one project revision.
+
+**Profile part**: `column_profiles(node, input?)` is the only reader of
+project data, and it never returns a row. With `input` omitted it profiles the node's
+own output; with `input` set it profiles that named input, resolved through the same
+code-visible input names the schema part reports. It prepares frames through the ordinary lazy path — **not**
 `schema_only`, because collecting is materialisation and the engine's admission policy
 must apply exactly as it would to any other read of those rows — collects one bounded
 prefix (`_MAX_PROFILE_ROWS`, reported as `rows_scanned`/`scan_bounded`), and summarises
@@ -439,9 +479,9 @@ strings, while low-cardinality strings — including repeated names, addresses, 
 birth, or registrations — can be emitted. The explicit `allow_row_samples` grant is the
 authorization boundary; the level cap is not a personal-data guarantee. A `Y`/`N`-style
 encoding is exactly what the tool is intended to emit. Individual level strings are
-truncated to `_MAX_PROFILE_VALUE_CHARS`. The operation's egress class is its own value,
-`restricted-value-profile`, so a policy review
-can see the one data-reading capability plainly.
+truncated to `_MAX_PROFILE_VALUE_CHARS`. The operation descriptor names each part's
+egress class, the profile's being its own value, `restricted-value-profile`, so a policy
+review can see the one data-reading capability plainly.
 
 The operation runs where the editor's previews run. The server checks the egress gate,
 parses the saved graph, validates the target and input name, and admits one
@@ -548,7 +588,7 @@ excluded count; its path and content never cross the tool boundary.
    are part of the hashed plan authority, and an engine failure message embeds estimated
    row counts and scan byte sizes, so including it would make the plan hash depend on
    data-file metadata the revision manifest does not pin and turn an ordinary apply into
-   a spurious `invalid_plan`. `get_node_schema` on the named node reports the actual
+   a spurious `invalid_plan`. `inspect_node` on the named node reports the actual
    failure, and the tool log records it server-side. Seeded nodes are never excused: a node the plan
    added or updated is the plan's responsibility, and an authored-but-empty node fails
    on the saved graph by construction, so excusing seeds would silently accept exactly
@@ -751,7 +791,7 @@ the turn that follows.
      executable source and column value profiles are permitted, and, when row samples are
      not permitted, that execution errors are reported without their text), followed by
      the column-value rule it implies: with `allow_row_samples`, call
-     `get_column_profiles` before comparing a column to a literal and answer
+     `inspect_node` with the `profile` part before comparing a column to a literal and answer
      `NEEDS_INPUT:` when its values are withheld; without it, ask which values to match,
      beginning `NEEDS_INPUT:`. The always-on rules defer to that section for project
      material, so they never deny access the policy grants;
@@ -812,11 +852,11 @@ the turn that follows.
    after the round's tool messages. A context message that follows neither a user text
    message nor tool results is refused. The authoring
    guide and full exemplar bodies are prompt-excluded: the model pulls
-   them through `get_authoring_guide` and `get_example` only when relevant, and the
+   them through `read_reference` (`guide`, `example:<name>`) only when relevant, and the
    node cards travel in the node descriptors: the mutation paragraph tells the model
    to read each descriptor's card with its ports, wiring rules, schema, enums and
    anti-patterns, and to write each config in the shape of the card's configurations.
-   `get_authoring_guide` also returns `step_grammar`, derived from
+   The `guide` reference also carries `step_grammar`, derived from
    `haute._polars_steps`: every step kind with its required and optional fields
    (`step_fields`) and the closed vocabularies structured steps use (operators,
    aggregations, join kinds, cast dtypes, fill strategies, functions, literal
@@ -834,21 +874,22 @@ the turn that follows.
    and the assistant never switches a node between steps and code. The
    permanent installed-I/O summary includes only group identity, input/output
    availability, cache modes, and format names; field schemas stay out of the prompt
-   and remain available through capability tools. This keeps the routing facts useful
+   and remain available through `read_reference`. This keeps the routing facts useful
    without paying for a redundant descriptor copy or burying the mutation protocol.
    The prompt treats explicit authoring verbs such as build, add, change, update,
    connect, remove, delete, and make as mutation intent rather than an invitation to
    inspect and stop. When an installed deterministic recipe matches the requested
-   operation, the model should call `plan_recipe`, then pass its `recipe_plan_hash` to
-   `dry_run_recipe_plan`; it never copies the returned operations. When the analyst
+   operation, the model writes it as a `recipe` operation in its `dry_run_graph_edits`
+   batch, beside any primitive operations the request also needs, and reads
+   `recipe:<id>` when it needs the argument schema. When the analyst
    delegates a choice ("pick any", "you choose"), the prompt tells the model to make a
    reasonable choice, state it, and proceed, and to ask only for choices that change the
    result materially and that the analyst has not delegated. Every request receives the
    same complete mutation tool schemas. A failed dry run may be corrected while
    the corrections make progress. The loop keeps **one bounded budget of four failed
-   calls** across both dry-run tools and both failure classes, a domain rejection (the
+   calls** across the turn's dry-runs and both failure classes, a domain rejection (the
    plan was built and judged) and a closed-input-schema rejection
-   (`invalid_request`/`invalid_capability_query`, which never reached planning). The
+   (`invalid_request`, which never reached planning). The
    budget replaces two independent budgets of two attempts each, which existed because
    a single plan retry was spent by a spelling error before the plan had ever been
    judged; with four attempts and the progress rule below that can no longer happen,
@@ -906,7 +947,7 @@ the turn that follows.
    `TurnStop("tool_use")`
    re-invoke the provider with the accumulated results. The loop tracks one **open state**,
    read only from tool results and never from the request's wording: the latest
-   `dry_run_graph_edits` or `dry_run_recipe_plan` result decides it, a *validated plan* when
+   `dry_run_graph_edits` result decides it, a *validated plan* when
    that dry-run succeeded and a *failed dry-run* when it failed, and only a saving apply
    clears it. A dry-run refused by the spent budget never runs and does not change it.
    The loop also keeps the ids of the changes the turn saved, in order: a successful
@@ -952,22 +993,24 @@ the turn that follows.
 
    **Tool titles.** `_catalog.tool_title(name, arguments, result)` writes each activity
    row's title beside the operation descriptors, in plain words: a read names what it
-   reads ("Reading the pipeline", "Reading a node's columns"), `dry_run_recipe_plan` reads
-   "Checking the recipe plan", `dry_run_graph_edits` "Checking the plan" and
+   reads ("Reading the pipeline", "Inspecting a node", "Finding data", "Reading
+   references"), `dry_run_graph_edits` reads "Checking the plan" and
    `apply_graph_plan` "Applying the plan". A started row reads the arguments, so a dry-run
-   counts its operations ("Checking 3 changes"). A finished row reads only the result: a
+   counts the operations the model sent, a recipe operation counting as one ("Checking
+   3 changes"). A finished row reads only the result: a
    dry-run counts the result's `operations` and an apply its `applied_operations`
    ("Applying 3 changes"), and a failed call, whose result counts nothing, keeps the plain
    title. A resumed row, whose arguments are redacted, therefore reads the same as the
    live finished row; `operations` and `applied_operations` are persisted result evidence
    for that reason. A name no tool has is titled by its name.
-5. Tool execution: read tools run via `asyncio.to_thread`, except `get_column_profiles`,
-   which prepares on a thread and collects in the interactive preview worker (see
-   **Column value profiles**). Reads whose answer depends on
-   the saved graph (`get_pipeline`, `get_node_schema`, `get_node_config`,
-   `get_column_profiles`, `get_dataset_schema`, and `get_project_knowledge`) hold the
+5. Tool execution: read tools run via `asyncio.to_thread`, except `inspect_node`'s
+   profile part, which prepares on a thread and collects in the interactive preview worker
+   (see **Profile part**). Reads whose answer depends on
+   the saved graph (`get_pipeline`, `inspect_node`, `find_data`, and
+   `get_project_knowledge`) hold the
    process-wide `save_lock` across their worker-thread operation, so a concurrent save cannot
-   interleave graph parsing with schema or value resolution. `get_node_schema` parses the
+   interleave graph parsing with schema or value resolution. The schema part
+   (`node_schema`) parses the
    saved pipeline, then proceeds in this order:
    1. **Validate the target id against the original hierarchical graph** — a submodel
       placeholder, or an id found only inside a submodel's nested graph → structured error
@@ -1031,8 +1074,8 @@ the turn that follows.
       from node code (it carries the user-code line `_exec_user_code` records), or a
       `PreambleError` (the preamble is authored code that can read project data at
       import) — is rendered by the one execution-failure renderer in `_tools`, which the
-      dry-run and apply schema-validation path, `get_node_schema` and
-      `get_column_profiles` share: its exception type, the line of the node code or of
+      dry-run and apply schema-validation path and `inspect_node`'s schema and
+      profile parts share: its exception type, the line of the node code or of
       the preamble that raised it, and the column names it names. In dry-run and apply,
       when exactly one node the plan adds, updates or rewires runs authored code and that
       node is stepped, the line is also named as that node's step number and id, since
@@ -1045,15 +1088,16 @@ the turn that follows.
       not read can hold a literal equal to a cell. The disclosable names are: (a) the
       column names of the failing node's input frames — the failing step's node, or
       else the node the tool resolved — each resolved schema-only through the same
-      engine path as `get_node_schema`, plus that node's own output schema on the
+      engine path as the schema part, plus that node's own output schema on the
       column-profile path, where the schema resolved and only the collection failed; a
       profile of one named input uses that input's frame alone, so rendering its
       failure never resolves the consumer the profile did not ask for; a
       frame that does not resolve contributes nothing and is never an error of its own;
       (b) in dry-run and apply, every string in the operations the model submitted for
-      this plan (apply's are the plan's `normalized_operations`: for a primitive plan
-      the parsed form of operations the model wrote itself, and for a recipe plan the
-      packaged recipe's template text filled with the model's own arguments, so neither
+      this plan (apply's are the plan's `normalized_operations`: for a primitive
+      operation the parsed form of what the model wrote itself, and for a `recipe`
+      operation the packaged recipe's template text filled with the model's own
+      arguments, so neither
       is project data), with the identifiers, keyword names and string
       literals of each string that parses as Python; and (c) only when
       `[assistant.egress].allow_executable_source` is true, the identifiers, keyword
@@ -1121,7 +1165,7 @@ the turn that follows.
    and its column names, resolved schema-only per source by `_input_columns`, the same
    resolution that decides which Polars-named columns an execution failure may name.
    An input whose source does not resolve is left out. The executor admits the dry-run
-   and apply tools only under `get_node_schema`'s permission (a readable policy whose
+   and apply tools only under the schema part's permission (a readable policy whose
    `max_sensitivity` is not `public`), so a public policy refuses the call as
    `egress_policy_denied` before any column is resolved. `did_you_mean` is the
    `difflib` close matches (at most three, cutoff 0.6) of each column an execution
@@ -1139,7 +1183,10 @@ the turn that follows.
    including required/unknown fields, discriminated operation variants,
    bounds, enums, hash patterns, JSON-serialisability, and finite numbers.
    For a closed object union whose branches expose a common `const`/`enum`
-   discriminator such as `op` or `kind`, validation first selects that branch.
+   discriminator such as `op` or `kind`, validation first selects that branch. When the
+   value selects several branches (every `recipe` operation has `op` `recipe`), it
+   narrows them by the next discriminator whose values differ among them (`recipe`); a
+   candidate whose values are the same on every remaining branch never selects.
    A selected-branch failure therefore retains its exact safe schema path and stable
    value-free reason instead of becoming a generic union mismatch. These two fields are
    included in the structured error and durable redacted result, while the rejected value
@@ -1158,9 +1205,8 @@ the turn that follows.
    `validation_reason`. A rejected key is content the model itself submitted and is
    already in provider history, so naming it back is not new egress — and it is what
    makes the rejection correctable on the next attempt, where
-   "contains a field that is not allowed" was not. Malformed capability-descriptor
-   queries return `invalid_capability_query`; other malformed known-tool calls return
-   `invalid_request`. Neither path raises a `KeyError`, echoes any other rejected
+   "contains a field that is not allowed" was not. Every malformed known-tool call
+   returns `invalid_request`. That path never raises a `KeyError`, echoes any other rejected
    value, or invokes the operation.
 6. Limits: a wall-clock deadline (`HAUTE_ASSISTANT_TURN_TIMEOUT`) checked around provider
    streaming and before each tool dispatch, and a per-turn tool-call cap
@@ -1221,28 +1267,36 @@ the turn that follows.
   identically declared across branches within the remaining budget, merges different arrays
   of closed object items by the same union/intersection rule, reduces other conflicting
   property schemas to a common portable type, intersects required fields, and remains closed.
-  The bound preserves the complete merged recipe selection contract without any
-  request-dependent narrowing. A composition that does not fit remains a generic typed
+  A property whose schema differs between branches without a shared enum keeps their
+  common JSON type and joined descriptions, which is how a `recipe` operation's
+  `arguments` reach the provider: an object whose description names each recipe's
+  arguments. A composition that does not fit remains a generic typed
   container. Patterns, ranges, and other unsupported validation vocabulary are omitted.
   `_tools` independently validates
   the decoded call against the unchanged canonical operation schema, so the projection is a
   generation contract rather than an authorization or validation fallback. After the outer
   function-arguments object is parsed,
-  Databricks alone performs one schema-directed compatibility pass over its top-level
-  fields: when the advertised input schema declares a field as `array` or `object` but
-  the provider returned a string, valid finite JSON with the declared container type is
-  decoded and then proceeds through the unchanged closed tool validator. A tool whose
-  canonical input is a closed object union without top-level properties (`plan_recipe`)
-  has its fields' declared types read from the one branch selected by the discriminator
-  every branch constrains to `const`/`enum` values (`recipe_id`), compared by exact JSON
-  type and value; when no branch or more than one branch matches, no field is eligible.
+  Databricks alone performs one schema-directed compatibility pass over it
+  (`_normalise_databricks_tool_arguments`): when the canonical input schema declares a
+  value as an array, object, boolean, integer or number but the provider returned a
+  string, valid finite JSON of the declared type is decoded and then proceeds through the
+  unchanged closed tool validator. The pass walks the declared schema, not the value: an
+  object's declared properties, an array's declared items, and within a closed object
+  union the one branch the value selects. A branch is selected by discriminators, the
+  properties every remaining branch constrains to `const`/`enum` values, compared by
+  exact JSON type and value, one at a time while more than one branch remains and the
+  discriminator separates them: an operation selects its branch by `op`, and a `recipe`
+  operation then by `recipe`, so `ops[i].arguments` and its `rules`, `tables`,
+  `combined_outputs` and `output_columns` decode by that recipe's argument schema. When no
+  branch or more than one branch remains, nothing below that value is decoded.
   Invalid JSON or a
   decoded scalar/wrong container remains the original string; the canonical validator
   returns `invalid_request`, nothing executes, and the model can retry in the same turn.
-  Declared string fields, nested values already carried inside a decoded container, unknown
-  tools, OpenAI, and Anthropic are never coerced. This deliberately avoids blanket recursive
-  JSON coercion or speculative repair while handling the live
-  Databricks/Qwen function-calling dialect captured on 2026-07-30. An eligible field that
+  Declared string fields, an object without declared properties (such as a node's
+  `config` or a step), unknown tools, OpenAI, and Anthropic are never coerced. The pass
+  follows only declared types, so it never guesses or repairs, while handling the live
+  Databricks/Qwen function-calling dialect captured on 2026-07-30 and the same dialect
+  inside a recipe operation's arguments, captured on 2026-10-01. An eligible field that
   is *not* decoded is logged as a warning by shape only —
   `assistant_databricks_argument_decode_failed` (declared types, encoded length, and
   whether the string opens like a JSON container) when the string is not valid JSON, and
@@ -1555,12 +1609,16 @@ the turn that follows.
   case-folded filename suffix (including compound extensions). The resolved project-relative
   path must contain no hidden component; exact state/credential names in the assistant
   denylist are rejected before listing or reading. Direct calls cannot bypass the filter
-  that navigation applies. `list_datasets(project_root, recursive)` defaults to a one-level
-  listing; recursive mode walks only non-symlink descendants, returns deterministic
+  that navigation applies. `find_data(directory, recursive, path)` lists one directory
+  (the project root by default) one level deep; recursive mode walks only non-symlink
+  descendants, returns deterministic
   project-relative POSIX paths, caps datasets and directories independently, and sets
-  `truncated=true` when either cap or the traversal bound is reached. The `list_datasets`
-  schema is the same for every request wording, and the source-bound executor runs the
-  listing root and recursion value the model supplied. The assistant schema helper is separate from the UI
+  `truncated=true` when either cap or the traversal bound is reached. With `path` it also
+  returns that file's schema under `schema` (`path`, `columns`, `row_count`,
+  `row_count_estimated`, `column_count`, `source_digest`) and the `project_revision`
+  that includes its schema evidence; a failure to read that schema fails the call. The
+  `find_data` schema is the same for every request wording, and the source-bound
+  executor runs the directory, recursion value and path the model supplied. The assistant schema helper is separate from the UI
   schema/preview reader and never invokes the preview collector.
 - **The read shape names handles the way the write shape does.** The compact graph
   renderer emits each edge's ports as `source_handle`/`target_handle`, matching the
@@ -1575,21 +1633,21 @@ the turn that follows.
   raising, silently scoring every handle-qualified required edge as missing.
 - **Egress flags are honoured, not merely recorded.** `allow_executable_source` and
   `allow_row_samples` each gate a real capability: node `code`/`preamble`/`query`/`script`
-  values in `get_node_config`, and `get_column_profiles` plus the text of authored-code
-  failures (see `get_node_schema` step 5) respectively. A `free_code` step's `code` is
+  values in `inspect_node`'s config part, and its profile part plus the text of
+  authored-code failures (see Control flow step 5) respectively. A `free_code` step's `code` is
   masked by the same recursive key redaction, while the step's `id`, `kind` and the
   structured steps around it stay visible: structured steps are configuration, not
   executable source. A parsed,
   validated, reported flag that no code path consults is worse than no flag, because a
   project reads its own configuration as a grant that silently never applies.
   Credential keys and inline row-value keys stay redacted under every policy.
-- **`get_node_schema` collects nothing** — the invariant is testable: the tool's plan
+- **The schema part collects nothing** — the invariant is testable: the part's plan
   construction plus `collect_schema()` must never invoke `LazyFrame.collect` (asserted by
   poisoning `collect` in tests). The two honest cost exceptions are inherited, not assistant
   behaviour: plain-`.json` sources parse eagerly inside `read_source` (the GUI's
   `/api/schema` pays the same), and a never-fetched Databricks table raises
   `CacheNotFoundError` instead of ever reaching for credentials or the network.
-- **`get_node_schema` sees the graph the engine runs, not the graph the editor draws** —
+- **The schema part sees the graph the engine runs, not the graph the editor draws** —
   flattened, preamble-compiled, active-source-selected (the step-5 sequence). A node
   downstream of a submodel therefore resolves through the submodel's real internals, a
   live-switch resolves to the saved active source, and preamble-defined helpers are in
@@ -1629,7 +1687,7 @@ the turn that follows.
 | Provider adapter construction/dependency failure | route provider factory | HTTP 502 before the stream opens |
 | Provider request/stream failures (authentication, rate limit, connection, malformed/truncated/filtered output) | `_providers` | `AssistantProviderError` → terminal `failed` SSE event after the response has started |
 | Op validation, save validation, missing dataset, unknown node, unknown example name, unresolvable node schema (unfetched Databricks cache, missing artifact, invalid node code) | `_tools`/`_ops`/`_assets`/engine/save service | Structured tool error returned to the model (visible as a failed activity row); never terminates the turn |
-| Authored-code failure (a Polars error, an exception raised from node code, or a preamble failure) while `get_node_schema`, a column profile, dry-run or apply resolves a schema or frame | engine, rendered by `_tools` | Structured `schema_unresolvable` (`preamble_failed` when the preamble fails during plan validation) error with the exception type, line or step, and only the named columns the egress policy already discloses (the failing node's input schemas, the model's own plan text, saved code only under `allow_executable_source`); the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
+| Authored-code failure (a Polars error, an exception raised from node code, or a preamble failure) while `inspect_node`'s schema or profile part, dry-run or apply resolves a schema or frame | engine, rendered by `_tools` | Structured `schema_unresolvable` (`preamble_failed` when the preamble fails during plan validation) error with the exception type, line or step, and only the named columns the egress policy already discloses (the failing node's input schemas, the model's own plan text, saved code only under `allow_executable_source`); the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
 | A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |
@@ -1703,7 +1761,7 @@ fixture for route tests). The implemented coverage is:
   `step_authoring` is pinned against `STEPPED_NODE_TYPES`: present exactly on the
   stepped types, with the surface's `start` and `inputs`, a source step first exactly
   on an `input` start, and every step carrying a non-empty id and a kind in
-  `STEP_KINDS`; `get_authoring_guide`'s `step_grammar` equals the renderer's step
+  `STEP_KINDS`; the `guide` reference's `step_grammar` equals the renderer's step
   fields.
 - **`tests/test_assistant_tools.py`** — the turn context: the brief names each node's
   inputs with their columns and its authoring state (a palette-default Transform is
@@ -1754,9 +1812,19 @@ fixture for route tests). The implemented coverage is:
   Contract tests assert that the saved `active_source`
   is passed to the engine; crafted/mocked execution results cover submodel-boundary
   rejection, multi-frame per-port shaping, unknown-node errors, and propagation of an
-  unfetched-Databricks `CacheNotFoundError` message as a structured tool error. Capability
-  tests pin ordered one-to-twelve descriptor batches, duplicate/unknown rejection, and JSON
-  materialisation. Discriminated-union failures pin precise validation paths and stable
+  unfetched-Databricks `CacheNotFoundError` message as a structured tool error. Reference
+  tests pin ordered one-to-twelve id batches across the four namespaces, unknown-id
+  rejection with close valid ids, duplicate rejection, and JSON materialisation.
+  `inspect_node` coverage pins each part's egress gate on its own: under an `internal`
+  ceiling the schema answers while config and profile are withheld with their required
+  settings, under `restricted` without row samples only the profile is withheld, a call
+  whose every part is denied is `egress_policy_denied` with the withheld list, and
+  `input` without the profile part is refused. Recipe-operation coverage runs through the
+  source-bound executor: a recipe operation and a primitive operation (an edge from the
+  recipe's node by its `ref`, and an update beside it) apply in one plan with one change
+  record; two recipes in one batch keep distinct refs; a recipe argument failure carries
+  the recipe operation's index, `recipe` and `fix`; and a failure in a primitive operation
+  after a recipe carries that operation's index in the batch the model sent. Discriminated-union failures pin precise validation paths and stable
   value-free reasons without invoking an operation; an `unknown_field` rejection pins the
   named rejected keys and closed allowlist, and a `wrong_type` rejection pins the expected
   and received JSON types for both a stringified container and a lone object sent where a
@@ -1773,7 +1841,7 @@ fixture for route tests). The implemented coverage is:
   `_steps_error` or `_steps_discarded`, and execute on fixture data. Project evidence
   coverage pins a dataset changed after retrieval failing the dry-run with
   `stale_project_evidence` naming the file, and a dataset renamed after inspection
-  blocking the dry-run with `project_source_missing` naming it until `list_datasets` runs
+  blocking the dry-run with `project_source_missing` naming it until `find_data` runs
   again, in the live turn and when replayed from history. A dry-run adding an Excel Data
   Input is refused as `schema_unresolvable` whose tool message carries the reason and
   the "Preview this input first" remedy.
@@ -1811,8 +1879,10 @@ fixture for route tests). The implemented coverage is:
   of order, no field meanings, a not-authorable card with configurations) raises
   `NodeCardError`.
 - **`tests/test_assistant_recipes.py`** — closed descriptor completeness,
-  deterministic planning, unresolved-decision handling, primitive-operation
-  validation, linked examples, preconditions, and stable recipe failures.
+  deterministic expansion of `recipe` operations in place with per-operation refs and
+  their postconditions, the index map back to the model's operations, unresolved-decision
+  handling, primitive-operation validation, linked examples, preconditions, and stable
+  recipe failures.
 - **`tests/test_assistant_application.py`** — saved-state inspection, exact
   no-write planning, single-use authority, stale-state rejection,
   transactional apply, semantic-diff verification, postconditions, and
@@ -1938,9 +2008,11 @@ fixture for route tests). The implemented coverage is:
   OpenAI-compatible request while preserving `databricks` failure attribution; all three
   adapters advertise the same budgeted portable wire schemas, including merged
   discriminated graph-operation fields and discriminator enums; the Databricks adapter decodes valid
-  schema-declared top-level array, object, boolean, integer, and finite-number strings from
-  the live dialect, leaves declared strings, nulls, nested values, and the other adapters
-  untouched, carries invalid/wrong-type encodings to the canonical validator for a
+  schema-declared array, object, boolean, integer, and finite-number strings from
+  the live dialect at the top level and inside a `recipe` operation's arguments (its
+  `arguments` object itself, and its `rules` and `output_columns` arrays), leaves declared
+  strings (a rule's `"3"` value), nulls, undeclared objects, an operation whose branch no
+  discriminator selects, and the other adapters untouched, carries invalid/wrong-type encodings to the canonical validator for a
   recoverable `invalid_request` result, and logs each undecoded eligible field by shape
   alone — asserting both warning events and that the rejected value never reaches the log.
   A turn context is a mid-conversation `system` message for the Anthropic models that accept

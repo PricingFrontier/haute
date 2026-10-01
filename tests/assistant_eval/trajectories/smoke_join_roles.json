@@ -22,43 +22,34 @@
           "text": "",
           "calls": [
             {
-              "id": "recipe",
-              "tool": "plan_recipe",
-              "arguments": {
-                "recipe_id": "reference_join",
-                "base_source": "nb_batch",
-                "reference_source": "competitor_insight",
-                "name": "quote_with_competitor",
-                "how": "left",
-                "left_on": [
-                  "quote_id"
-                ],
-                "right_on": [
-                  "quote_id"
-                ],
-                "output_name": "enriched_quotes",
-                "output_columns": [
-                  "quote_id",
-                  "premium",
-                  "competitor_price"
-                ]
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
               "id": "dry",
-              "tool": "dry_run_recipe_plan",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "recipe.recipe_plan_hash"
-                }
+                "summary": "Left-join the competitor insight onto the new-business batch as quote_with_competitor.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "reference_join",
+                    "arguments": {
+                      "base_source": "nb_batch",
+                      "reference_source": "competitor_insight",
+                      "name": "quote_with_competitor",
+                      "how": "left",
+                      "left_on": [
+                        "quote_id"
+                      ],
+                      "right_on": [
+                        "quote_id"
+                      ],
+                      "output_name": "enriched_quotes",
+                      "output_columns": [
+                        "quote_id",
+                        "premium",
+                        "competitor_price"
+                      ]
+                    }
+                  }
+                ]
               },
               "result": {
                 "status": "ok"

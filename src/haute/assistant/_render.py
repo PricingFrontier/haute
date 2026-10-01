@@ -1,7 +1,7 @@
 """The compact graph renderings the assistant's model reads.
 
 A live pipeline's node configurations are project data, read in full only
-through the policy-gated ``get_node_config``, so its rendering names their keys
+through ``inspect_node``'s policy-gated config part, so its rendering names their keys
 and, for a stepped-type node, its value-free authoring facts under the egress
 policy: its state and each step's id and kind. A packaged example is library
 content, so its rendering carries each node's configuration with its values:
@@ -365,7 +365,8 @@ class ContextUpdate:
 
 _COLUMN_VALUES_PROFILED = (
     "When your code compares a column to a literal value, first call "
-    "`get_column_profiles` for that frame and use the levels it reports. If the "
+    '`inspect_node` with parts ["profile"] for that frame and use the levels it reports. '
+    "If the "
     "column's values are withheld, do not guess a comparison: begin the response "
     "with `NEEDS_INPUT:` and ask which values you should match."
 )
@@ -391,12 +392,16 @@ def render_egress_policy(egress: EgressPolicy) -> str:
             "metadata needs `internal`; saved node configuration needs `restricted`)",
             f"- Project knowledge: {permitted(egress.allow_project_knowledge)}",
             f"- Executable source: {permitted(egress.allow_executable_source)}"
-            + ("" if egress.allow_executable_source else "; `get_node_config` redacts node code"),
+            + (
+                ""
+                if egress.allow_executable_source
+                else "; `inspect_node`'s config part redacts node code"
+            ),
             f"- Column value profiles: {permitted(egress.allow_row_samples)}"
             + (
                 ""
                 if egress.allow_row_samples
-                else "; `get_column_profiles` is refused, and an error raised while node "
+                else "; `inspect_node` withholds its profile part, and an error raised while node "
                 "code runs reports its type, step or line and column names without its text"
             ),
             _COLUMN_VALUES_PROFILED if egress.allow_row_samples else _COLUMN_VALUES_ASKED,

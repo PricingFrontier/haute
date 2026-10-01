@@ -58,7 +58,7 @@ class TestWriteThrough:
                         "tool_calls": [
                             {
                                 "id": "t1",
-                                "name": "get_node_config",
+                                "name": "inspect_node",
                                 "arguments": {"node": "rating"},
                             }
                         ],
@@ -66,7 +66,7 @@ class TestWriteThrough:
                     {
                         "role": "tool",
                         "tool_call_id": "t1",
-                        "name": "get_node_config",
+                        "name": "inspect_node",
                         "content": {
                             "config": {"customer_name": "Ada", "api_token": "secret-value"},
                             "base_revision": "a" * 64,

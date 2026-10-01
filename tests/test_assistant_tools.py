@@ -1,8 +1,8 @@
 """Tests for the assistant read tools (``haute.assistant._tools``), chiefly
-``get_node_schema``.
+``node_schema``, the schema part of ``inspect_node``.
 
 Spec: specs/assistant/low-level.md — Control flow step 5 and Edge cases.
-``get_node_schema(source_file, node)`` parses the saved pipeline, validates
+``node_schema(source_file, node)`` parses the saved pipeline, validates
 the target id against the ORIGINAL hierarchical graph (submodel placeholder
 or submodel-internal id → boundary error; nowhere → unknown-node error),
 then reproduces the production graph preparation (flatten → compile preamble
@@ -108,9 +108,9 @@ def _columns(result: dict) -> dict[str, str]:
 
 class TestGetNodeSchemaEndToEnd:
     def test_source_node_schema_matches_file(self, project_root: Path):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "quotes")
+        result = node_schema("main.py", "quotes")
         cols = _columns(result)
         assert cols == {
             "quote_id": "String",
@@ -122,9 +122,9 @@ class TestGetNodeSchemaEndToEnd:
         """Rename, drop, derived column, and the preamble-defined helper all
         resolve — proving flatten/preamble/engine preparation is wired."""
 
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "enriched")
+        result = node_schema("main.py", "enriched")
         cols = _columns(result)
         assert "year" in cols and "vehicle_year" not in cols
         assert "notes" not in cols
@@ -132,9 +132,9 @@ class TestGetNodeSchemaEndToEnd:
         assert "flag" in cols  # created by the preamble helper add_flag
 
     def test_unknown_node_is_structured_error(self, project_root: Path):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "ghost")
+        result = node_schema("main.py", "ghost")
         assert result["error"]["code"] == "unknown_node"
         assert "ghost" in result["error"]["message"]
 
@@ -142,9 +142,9 @@ class TestGetNodeSchemaEndToEnd:
         """Authoring code against a node needs the columns arriving on it, not
         only the columns leaving it."""
 
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "enriched")
+        result = node_schema("main.py", "enriched")
         inputs = result["inputs"]
         assert set(inputs) == {"quotes"}
         assert {column["name"] for column in inputs["quotes"]} == {
@@ -154,9 +154,9 @@ class TestGetNodeSchemaEndToEnd:
         }
 
     def test_source_node_without_inputs_omits_the_inputs_key(self, project_root: Path):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        assert "inputs" not in get_node_schema("main.py", "quotes")
+        assert "inputs" not in node_schema("main.py", "quotes")
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +344,9 @@ def join_profile_project(profile_project: Path) -> Path:
 
 
 def _profile(source_file: str, node: str, input_name: str | None = None) -> dict[str, object]:
-    from haute.assistant._tools import get_column_profiles
+    from haute.assistant._tools import column_profiles
 
-    return asyncio.run(get_column_profiles(source_file, node, input_name, session_id="test"))
+    return asyncio.run(column_profiles(source_file, node, input_name, session_id="test"))
 
 
 def _profiles_by_name(result: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -468,7 +468,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         from haute.assistant._tools import build_tool_executor
 
         result = await build_tool_executor("main.py")(
-            "get_column_profiles", {"node": "totals", "input": "claims"}
+            "inspect_node", {"node": "totals", "parts": ["profile"], "input": "claims"}
         )
 
         assert "error" not in result, result
@@ -484,10 +484,10 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         async def observe_lock(*_args: object, **_kwargs: object) -> dict[str, object]:
             return {"save_lock_held": tools_module.save_lock.locked()}
 
-        monkeypatch.setattr(tools_module, "get_column_profiles", observe_lock)
+        monkeypatch.setattr(tools_module, "inspect_node", observe_lock)
 
         result = await tools_module.build_tool_executor("main.py")(
-            "get_column_profiles", {"node": "totals", "input": "claims"}
+            "inspect_node", {"node": "totals", "parts": ["profile"], "input": "claims"}
         )
 
         assert result["save_lock_held"] is True
@@ -552,7 +552,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         monkeypatch.setattr(tools_module, "_profile_frame", slow_profile)
         call = asyncio.ensure_future(
             tools_module.build_tool_executor("main.py", session_id="stop")(
-                "get_column_profiles", {"node": "totals", "input": "claims"}
+                "inspect_node", {"node": "totals", "parts": ["profile"], "input": "claims"}
             )
         )
         assert await asyncio.to_thread(running.wait, 30)
@@ -592,7 +592,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         monkeypatch.setattr(workers_module, "interactive_worker_pool", _Pool)
         call = asyncio.ensure_future(
             tools_module.build_tool_executor("main.py", session_id="stop")(
-                "get_column_profiles", {"node": "totals", "input": "claims"}
+                "inspect_node", {"node": "totals", "parts": ["profile"], "input": "claims"}
             )
         )
         assert await asyncio.to_thread(running.wait, 30)
@@ -681,7 +681,138 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         result = _profile("main.py", "enriched")
 
         assert result["error"]["code"] == "egress_policy_denied"
-        assert result["error"]["required_policy"] == "allow_row_samples"
+        assert result["error"]["required_policy"] == "allow_row_samples = true"
+
+
+class TestInspectNode:
+    """Each part of `inspect_node` is checked against the egress policy on its own."""
+
+    @pytest.mark.parametrize(
+        ("max_sensitivity", "row_samples", "answered", "withheld"),
+        [
+            (
+                "internal",
+                True,
+                ["schema", "profile"],
+                [{"part": "config", "required_policy": 'max_sensitivity = "restricted"'}],
+            ),
+            (
+                "internal",
+                False,
+                ["schema"],
+                [
+                    {"part": "config", "required_policy": 'max_sensitivity = "restricted"'},
+                    {"part": "profile", "required_policy": "allow_row_samples = true"},
+                ],
+            ),
+            (
+                "restricted",
+                False,
+                ["schema", "config"],
+                [{"part": "profile", "required_policy": "allow_row_samples = true"}],
+            ),
+            ("restricted", True, ["schema", "config", "profile"], []),
+        ],
+    )
+    async def test_a_denied_part_is_withheld_before_it_reads_while_the_others_answer(
+        self,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        max_sensitivity: str,
+        row_samples: bool,
+        answered: list[str],
+        withheld: list[dict[str, str]],
+    ):
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="organization",
+                max_sensitivity=max_sensitivity,  # type: ignore[arg-type]
+                allow_project_knowledge=False,
+                allow_executable_source=False,
+                allow_row_samples=row_samples,
+            ),
+        )
+        read: list[str] = []
+        for part, name in (("config", "node_config"), ("profile", "column_profiles")):
+            original = getattr(tools_module, name)
+
+            def spy(*args: object, _part: str = part, _original=original, **kwargs: object):
+                read.append(_part)
+                return _original(*args, **kwargs)
+
+            monkeypatch.setattr(tools_module, name, spy)
+
+        result = await tools_module.build_tool_executor("main.py")(
+            "inspect_node", {"node": "enriched", "parts": ["profile", "config", "schema"]}
+        )
+
+        assert "error" not in result, result
+        assert [part for part in ("schema", "config", "profile") if part in result] == answered
+        assert result.get("withheld", []) == withheld
+        assert read == [part for part in answered if part != "schema"]
+        assert {column["name"] for column in result["schema"]["columns"]} >= {"year", "age"}
+        assert len(result["project_revision"]) == 64
+
+    async def test_a_call_whose_every_part_is_denied_is_refused(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="external",
+                max_sensitivity="public",
+                allow_project_knowledge=False,
+                allow_executable_source=False,
+                allow_row_samples=False,
+            ),
+        )
+        monkeypatch.setattr(
+            tools_module,
+            "node_schema",
+            lambda *_args: (_ for _ in ()).throw(AssertionError("a denied part never reads")),
+        )
+
+        result = await tools_module.build_tool_executor("main.py")(
+            "inspect_node", {"node": "enriched", "parts": ["schema", "config"]}
+        )
+
+        error = result["error"]
+        assert error["code"] == "egress_policy_denied"
+        assert error["retryable"] is False
+        assert error["withheld"] == [
+            {"part": "schema", "required_policy": 'max_sensitivity = "internal"'},
+            {"part": "config", "required_policy": 'max_sensitivity = "internal"'},
+        ]
+
+    async def test_input_without_the_profile_part_is_an_invalid_request(self, project_root: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "inspect_node", {"node": "enriched", "input": "quotes"}
+        )
+
+        assert result["error"]["code"] == "invalid_request"
+        assert result["error"]["validation_reason"] == "input_without_profile"
+        assert result["error"]["retryable"] is True
+
+    async def test_a_failing_part_fails_the_call_and_names_the_part(self, project_root: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "inspect_node", {"node": "ghost", "parts": ["schema", "config"]}
+        )
+
+        assert result["error"]["code"] == "unknown_node"
+        assert result["error"]["part"] == "schema"
 
 
 class TestExecutableSourcePolicy:
@@ -707,7 +838,7 @@ class TestExecutableSourcePolicy:
             ),
         )
 
-        config = tools_module.get_node_config("main.py", "enriched")["config"]
+        config = tools_module.node_config("main.py", "enriched")["config"]
 
         if allowed:
             assert "rename" in config["code"]
@@ -723,9 +854,9 @@ class TestUnresolvableButInspectableNodes:
         the columns needed to write it."""
 
         (project_root / "main.py").write_text(EMPTY_TRANSFORM_SOURCE, encoding="utf-8")
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "combined")
+        result = node_schema("main.py", "combined")
 
         assert "error" not in result, result
         assert result["unresolved_reason"] == "node_has_no_code"
@@ -745,7 +876,7 @@ class TestUnresolvableButInspectableNodes:
         from haute._config_io import palette_default_config
         from haute._pipeline_recovery import load_pipeline_editor_document
         from haute._types import GraphEdge, GraphNode, NodeData, NodeType
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
         from haute.routes._helpers import parse_pipeline_to_graph
         from haute.routes._save_pipeline import SavePipelineService
 
@@ -779,8 +910,8 @@ class TestUnresolvableButInspectableNodes:
             ).source_revision,
         )
 
-        blank = get_node_schema("main.py", "blank")
-        rated = get_node_schema("main.py", "rated")
+        blank = node_schema("main.py", "blank")
+        rated = node_schema("main.py", "rated")
 
         assert blank["unresolved_reason"] == "node_has_no_code", blank
         assert set(blank["inputs"]) == {"quotes"}
@@ -792,9 +923,9 @@ class TestUnresolvableButInspectableNodes:
         aggregation the assistant was asked to author was unresolvable."""
 
         (project_root / "main.py").write_text(GROUP_BY_SOURCE, encoding="utf-8")
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "by_year")
+        result = node_schema("main.py", "by_year")
 
         assert "error" not in result, result
         assert _columns(result) == {"vehicle_year": "Int64", "quote_count": "UInt32"}
@@ -813,9 +944,9 @@ class TestUnresolvableButInspectableNodes:
             encoding="utf-8",
         )
         _egress_policy(monkeypatch, executable_source=True, row_samples=False)
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "enriched")
+        result = node_schema("main.py", "enriched")
 
         assert result["error"]["code"] == "schema_unresolvable"
         assert "no_such_column" in result["error"]["message"]
@@ -826,13 +957,13 @@ class TestUnresolvableButInspectableNodes:
         """The collect-poisoning invariant: plan construction plus
         ``collect_schema()`` must never invoke ``LazyFrame.collect``."""
 
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
         def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
-            raise AssertionError("get_node_schema must never collect data")
+            raise AssertionError("the schema part must never collect data")
 
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
-        result = get_node_schema("main.py", "enriched")
+        result = node_schema("main.py", "enriched")
         assert "columns" in result, result
 
     def test_output_node_schema_resolves_without_collecting(
@@ -845,7 +976,7 @@ class TestUnresolvableButInspectableNodes:
 
         import haute._sandbox as sandbox_module
         import haute.assistant._tools as tools_module
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
         from tests.conftest import make_edge, make_graph, make_output_config
 
         monkeypatch.setattr(sandbox_module, "_PROJECT_ROOT", project_root.resolve())
@@ -882,10 +1013,10 @@ class TestUnresolvableButInspectableNodes:
         monkeypatch.setattr(tools_module, "parse_pipeline_to_graph", lambda _path: graph)
 
         def poisoned_collect(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
-            raise AssertionError("get_node_schema must never collect data")
+            raise AssertionError("the schema part must never collect data")
 
         monkeypatch.setattr(pl.LazyFrame, "collect", poisoned_collect)
-        result = get_node_schema("main.py", "out")
+        result = node_schema("main.py", "out")
         assert _columns(result) == {"quote_id": "String", "vehicle_year": "Int64"}
 
 
@@ -928,9 +1059,9 @@ class TestSubmodelBoundaryValidation:
         return graph
 
     def test_submodel_placeholder_is_boundary_error(self, patched_parse, tmp_path):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "submodel__sm1")
+        result = node_schema("main.py", "submodel__sm1")
         assert result["error"]["code"] == "submodel_boundary"
 
     def test_submodel_internal_child_is_boundary_error_never_resolved(
@@ -945,15 +1076,15 @@ class TestSubmodelBoundaryValidation:
             raise AssertionError("engine must not run for a boundary-rejected target")
 
         monkeypatch.setattr(tools_module, "execute_lazy_graph", must_not_execute)
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "inner_child")
+        result = node_schema("main.py", "inner_child")
         assert result["error"]["code"] == "submodel_boundary"
 
     def test_id_found_nowhere_is_unknown_node(self, patched_parse):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "nowhere")
+        result = node_schema("main.py", "nowhere")
         assert result["error"]["code"] == "unknown_node"
 
 
@@ -981,9 +1112,9 @@ class TestEngineInvocation:
             return real_facade(graph, build_node_fn, **kwargs)
 
         monkeypatch.setattr(tools_module, "execute_lazy_graph", capturing_facade)
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "enriched")
+        result = node_schema("main.py", "enriched")
         assert "columns" in result, result
         assert captured["target_node_id"] == "enriched"
         # The target's parents are preserved alongside it so one engine call
@@ -1015,9 +1146,9 @@ class TestEngineInvocation:
             return (lazy_outputs,)
 
         monkeypatch.setattr(tools_module, "execute_lazy_graph", fake_facade)
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "quotes")
+        result = node_schema("main.py", "quotes")
         assert "ports" in result, result
         ports = {
             port: {column["name"]: column["dtype"] for column in columns}
@@ -1042,9 +1173,9 @@ class TestEngineInvocation:
             )
 
         monkeypatch.setattr(tools_module, "execute_lazy_graph", raising_facade)
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "quotes")
+        result = node_schema("main.py", "quotes")
         assert result["error"]["code"] == "schema_unresolvable"
         assert "Rebuild" in result["error"]["message"]
 
@@ -1077,9 +1208,9 @@ class TestReadTools:
         assert result["error"]["code"] == "pipeline_unavailable"
 
     def test_get_node_config_returns_redacted_policy_eligible_config(self, project_root: Path):
-        from haute.assistant._tools import get_node_config
+        from haute.assistant._tools import node_config
 
-        result = get_node_config("main.py", "quotes")
+        result = node_config("main.py", "quotes")
         assert result["node"] == "quotes"
         assert isinstance(result["config"], dict)
         assert result["config"]["code"] == "<redacted: executable_source>"
@@ -1110,7 +1241,7 @@ class TestReadTools:
             ),
         )
 
-        result = tools_module.get_node_config("main.py", "quotes")
+        result = tools_module.node_config("main.py", "quotes")
         assert result["error"]["code"] == "egress_policy_denied"
 
     def test_get_node_config_is_denied_before_read_for_internal_policy(
@@ -1138,98 +1269,98 @@ class TestReadTools:
             ),
         )
 
-        result = tools_module.get_node_config("main.py", "quotes")
+        result = tools_module.node_config("main.py", "quotes")
         assert result["error"]["code"] == "egress_policy_denied"
         assert result["error"]["required_sensitivity"] == "restricted"
 
     def test_get_node_config_unknown_node(self, project_root: Path):
-        from haute.assistant._tools import get_node_config
+        from haute.assistant._tools import node_config
 
-        assert get_node_config("main.py", "ghost")["error"]["code"] == "unknown_node"
+        assert node_config("main.py", "ghost")["error"]["code"] == "unknown_node"
 
-    def test_the_manifest_node_index_covers_all_19(self, project_root: Path):
-        from haute.assistant._tools import get_capability_descriptors, get_capability_manifest
-
-        node_ids = [entry["id"] for entry in get_capability_manifest()["node_index"]]
-        assert len(node_ids) == 19
-        descriptors = get_capability_descriptors("node", node_ids[:12])["descriptors"]
-        assert all(descriptor["usage"] for descriptor in descriptors)
-
-    def test_capability_manifest_and_descriptor_batch_are_registry_views(self, project_root: Path):
+    def test_read_reference_serves_each_namespace_in_request_order(self, project_root: Path):
+        from haute.assistant._assets import example_index
         from haute.assistant._catalog import capability_manifest
-        from haute.assistant._tools import (
-            get_capability_descriptors,
-            get_capability_manifest,
+        from haute.assistant._tools import read_reference
+
+        example = example_index()[0][0]
+        ids = ["node:banding", "recipe:reference_join", f"example:{example}", "guide"]
+
+        result = read_reference(ids)
+
+        assert result["count"] == 4
+        assert [item["id"] for item in result["references"]] == ids
+        node, recipe, example_view, guide = (item["content"] for item in result["references"])
+        assert node == next(
+            descriptor.as_dict()
+            for descriptor in capability_manifest().nodes
+            if descriptor.id == "banding"
         )
-
-        manifest = get_capability_manifest()
-        assert manifest["capability_hash"] == capability_manifest().capability_hash
-        assert "node_index" in manifest
-        assert "nodes" not in manifest
-
-        node_batch = get_capability_descriptors("node", ["banding", "edgeJoin"])
-        assert node_batch["kind"] == "node"
-        assert node_batch["count"] == 2
-        assert [descriptor["id"] for descriptor in node_batch["descriptors"]] == [
-            "banding",
-            "edgeJoin",
-        ]
-        node = node_batch["descriptors"][0]
-        assert node["id"] == "banding"
         assert node["config_schema"]["additionalProperties"] is False
+        assert node["card"]["configs"]
+        assert recipe["id"] == "reference_join"
+        assert recipe["argument_schema"]["additionalProperties"] is False
+        assert "graph" in example_view
+        assert guide["approval_status"] == "reviewed"
+        assert len(guide["sha256"]) == 64
+        assert guide["step_grammar"]["kinds"]
 
-        operation = get_capability_descriptors("operation", ["get_pipeline"])["descriptors"][0]
-        assert operation["id"] == "get_pipeline"
-        assert operation["risk"] == "none"
+    @pytest.mark.parametrize(
+        ("reference", "close"),
+        [
+            # An unprefixed node type names its namespaced id first.
+            ("banding", "node:banding"),
+            ("node:bandng", "node:banding"),
+            # `rating_step` is both a recipe and an example, so ids are namespaced.
+            ("rating_step", "recipe:rating_step"),
+        ],
+    )
+    def test_an_unknown_reference_is_refused_with_close_valid_ids(
+        self, project_root: Path, reference: str, close: str
+    ):
+        from haute.assistant._tools import read_reference
 
-        unknown = get_capability_descriptors("node", ["banding", "not-real"])
-        assert unknown["error"]["code"] == "unsupported_capability"
-        assert "descriptors" not in unknown
-        duplicate = get_capability_descriptors("node", ["banding", "banding"])
+        result = read_reference(["node:edgeJoin", reference])
 
-        assert duplicate["error"]["code"] == "invalid_capability_query"
+        assert result["error"]["code"] == "unknown_reference"
+        assert result["error"]["id"] == reference
+        assert result["error"]["did_you_mean"][0] == close
+        assert result["error"]["fix"] == f"Use {close!r}."
+        assert "references" not in result
 
-    async def test_every_capability_descriptor_batch_is_json_safe_through_executor(
+    async def test_every_reference_is_json_safe_and_bounded_through_executor(
         self, project_root: Path
     ):
-        from haute.assistant._catalog import capability_manifest
-        from haute.assistant._tools import build_tool_executor
+        """Every id is served, twelve to a call, within the model-context bound;
+        the guide shares its batch with eleven node descriptors."""
+
+        from haute.assistant._tools import _reference_ids, build_tool_executor
 
         execute_tool = build_tool_executor("main.py")
+        ids = list(_reference_ids())
+        assert ids[0] == "guide"
 
-        manifest = capability_manifest()
-        descriptor_ids = {
-            "node": [descriptor.id for descriptor in manifest.nodes],
-            "recipe": [str(descriptor["id"]) for descriptor in manifest.recipes],
-            "operation": [descriptor.id for descriptor in manifest.operations],
-        }
+        returned_ids: list[str] = []
+        for offset in range(0, len(ids), 12):
+            expected_ids = ids[offset : offset + 12]
+            result = await execute_tool("read_reference", {"ids": expected_ids})
+            assert "error" not in result, result
+            assert result["count"] == len(expected_ids)
+            returned_ids.extend(item["id"] for item in result["references"])
+            json.dumps(result, allow_nan=False)
 
-        for kind, ids in descriptor_ids.items():
-            returned_ids: list[str] = []
-            for offset in range(0, len(ids), 12):
-                expected_ids = ids[offset : offset + 12]
-                result = await execute_tool(
-                    "get_capability_descriptors",
-                    {"kind": kind, "ids": expected_ids},
-                )
-                is_error = "error" in result
-                assert is_error is False
-                assert result["count"] == len(expected_ids)
-                returned_ids.extend(descriptor["id"] for descriptor in result["descriptors"])
-                json.dumps(result, allow_nan=False)
-
-            assert returned_ids == ids
+        assert returned_ids == ids
 
     @pytest.mark.parametrize("tool", ["list_datasets", "get_dataset_schema"])
     def test_a_path_outside_the_project_reports_the_bare_containment_message(
         self, project_root: Path, tool: str
     ):
-        from haute.assistant._tools import get_dataset_schema, list_datasets
+        from haute.assistant._tools import dataset_listing, dataset_schema
 
         if tool == "list_datasets":
-            result = list_datasets("../outside")
+            result = dataset_listing("../outside")
         else:
-            result = get_dataset_schema("../outside/quotes.parquet")
+            result = dataset_schema("../outside/quotes.parquet")
 
         assert result["error"]["message"] == "Cannot access paths outside the project root"
 
@@ -1237,7 +1368,7 @@ class TestReadTools:
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.routes.files as files_routes
-        from haute.assistant._tools import list_datasets
+        from haute.assistant._tools import dataset_listing
 
         (project_root / "data" / "notes.txt").write_text("x", encoding="utf-8")
         (project_root / "data" / "supported.feather").write_text("x", encoding="utf-8")
@@ -1249,7 +1380,7 @@ class TestReadTools:
             lambda: (".parquet", ".feather"),
         )
 
-        result = list_datasets("data")
+        result = dataset_listing("data")
         names = {item["name"] for item in result["datasets"]}
         assert names == {"quotes.parquet", "supported.feather"}
 
@@ -1260,25 +1391,25 @@ class TestReadTools:
         Regression: with datasets only under ``data/``, the root listing
         returned bare ``{"datasets": []}`` — no clue any subdirectory existed.
         """
-        from haute.assistant._tools import list_datasets
+        from haute.assistant._tools import dataset_listing
 
         (project_root / ".git").mkdir(exist_ok=True)
-        result = list_datasets(None)
+        result = dataset_listing(None)
         assert result["datasets"] == []
         assert "data" in result["directories"]
         assert all(not d.startswith(".") for d in result["directories"])
 
     def test_list_datasets_subdirectory_listing_still_navigable(self, project_root: Path):
-        from haute.assistant._tools import list_datasets
+        from haute.assistant._tools import dataset_listing
 
         (project_root / "data" / "nested").mkdir()
-        result = list_datasets("data")
+        result = dataset_listing("data")
         assert {item["name"] for item in result["datasets"]} == {"quotes.parquet"}
         assert result["directories"] == ["data/nested"]
         assert result["datasets"][0]["path"] == "data/quotes.parquet"
 
     def test_list_datasets_recursively_finds_nested_project_data(self, project_root: Path):
-        from haute.assistant._tools import list_datasets
+        from haute.assistant._tools import dataset_listing
 
         nested = project_root / "data" / "competitor_premiums"
         nested.mkdir()
@@ -1286,7 +1417,7 @@ class TestReadTools:
             nested / "competitor_insight.parquet"
         )
 
-        result = list_datasets("data", recursive=True)
+        result = dataset_listing("data", recursive=True)
 
         assert [item["path"] for item in result["datasets"]] == [
             "data/competitor_premiums/competitor_insight.parquet",
@@ -1306,40 +1437,58 @@ class TestReadTools:
         )
         execute_tool = build_tool_executor("main.py")
 
-        result = await execute_tool(
-            "list_datasets",
-            {"project_root": "data", "recursive": False},
-        )
+        result = await execute_tool("find_data", {"directory": "data", "recursive": False})
 
         assert [item["path"] for item in result["datasets"]] == ["data/quotes.parquet"]
         assert result["recursive"] is False
+        assert "schema" not in result
+
+    async def test_find_data_with_a_path_also_returns_that_file_s_schema(self, project_root: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "find_data", {"directory": "data", "path": "data/quotes.parquet"}
+        )
+
+        assert [item["path"] for item in result["datasets"]] == ["data/quotes.parquet"]
+        schema = result["schema"]
+        assert schema["path"] == "data/quotes.parquet"
+        assert {column["name"] for column in schema["columns"]} == {
+            "quote_id",
+            "vehicle_year",
+            "notes",
+        }
+        assert len(schema["source_digest"]) == 64
+        assert len(result["project_revision"]) == 64
+        missing = await build_tool_executor("main.py")("find_data", {"path": "data/nope.parquet"})
+        assert missing["error"]["code"] == "dataset_not_found"
 
     def test_list_datasets_missing_directory(self, project_root: Path):
-        from haute.assistant._tools import list_datasets
+        from haute.assistant._tools import dataset_listing
 
-        assert list_datasets("nope")["error"]["code"] == "directory_not_found"
+        assert dataset_listing("nope")["error"]["code"] == "directory_not_found"
 
     def test_list_datasets_rejects_path_escape(self, project_root: Path):
-        from haute.assistant._tools import list_datasets
+        from haute.assistant._tools import dataset_listing
 
-        result = list_datasets("../..")
+        result = dataset_listing("../..")
         assert "error" in result
 
     def test_dataset_tools_reject_hidden_state_paths(self, project_root: Path):
-        from haute.assistant._tools import get_dataset_schema, list_datasets
+        from haute.assistant._tools import dataset_listing, dataset_schema
 
         state_dir = project_root / ".haute"
         state_dir.mkdir()
         (state_dir / "session.json").write_text('[{"secret": "value"}]', encoding="utf-8")
 
-        listed = list_datasets(".haute")
-        previewed = get_dataset_schema(".haute/session.json")
+        listed = dataset_listing(".haute")
+        previewed = dataset_schema(".haute/session.json")
 
         assert listed["error"]["code"] == "dataset_path_forbidden"
         assert previewed["error"]["code"] == "dataset_path_forbidden"
 
     def test_dataset_tools_hide_denylisted_credential_files(self, project_root: Path):
-        from haute.assistant._tools import get_dataset_schema, list_datasets
+        from haute.assistant._tools import dataset_listing, dataset_schema
 
         credentials = project_root / "credentials.json"
         credentials.write_text('[{"token": "do-not-preview"}]', encoding="utf-8")
@@ -1349,9 +1498,9 @@ class TestReadTools:
             '[{"token": "also-do-not-preview"}]', encoding="utf-8"
         )
 
-        listed = list_datasets(None)
-        previewed = get_dataset_schema("credentials.json")
-        nested = get_dataset_schema("credentials/token.json")
+        listed = dataset_listing(None)
+        previewed = dataset_schema("credentials.json")
+        nested = dataset_schema("credentials/token.json")
 
         assert "credentials.json" not in {item["name"] for item in listed["datasets"]}
         assert "credentials" not in listed["directories"]
@@ -1359,9 +1508,9 @@ class TestReadTools:
         assert nested["error"]["code"] == "dataset_path_forbidden"
 
     def test_get_dataset_schema_reads_real_file(self, project_root: Path):
-        from haute.assistant._tools import get_dataset_schema
+        from haute.assistant._tools import dataset_schema
 
-        result = get_dataset_schema("data/quotes.parquet")
+        result = dataset_schema("data/quotes.parquet")
         names = {column["name"] for column in result["columns"]}
         assert {"quote_id", "vehicle_year", "notes"} <= names
         assert "preview" not in result
@@ -1371,28 +1520,20 @@ class TestReadTools:
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.routes.files as files_route
-        from haute.assistant._tools import get_dataset_schema
+        from haute.assistant._tools import dataset_schema
 
         def forbidden_preview(_frame):
             raise AssertionError("schema-only assistant reads must not collect preview rows")
 
         monkeypatch.setattr(files_route, "_collect_file_preview", forbidden_preview)
-        result = get_dataset_schema("data/quotes.parquet")
+        result = dataset_schema("data/quotes.parquet")
         assert "columns" in result
         assert "preview" not in result
 
     def test_get_dataset_schema_missing_file(self, project_root: Path):
-        from haute.assistant._tools import get_dataset_schema
+        from haute.assistant._tools import dataset_schema
 
-        assert get_dataset_schema("data/nope.parquet")["error"]["code"] == "dataset_not_found"
-
-    def test_get_example_passthrough(self, project_root: Path):
-        from haute.assistant._assets import example_index
-        from haute.assistant._tools import get_example
-
-        name = example_index()[0][0]
-        assert "graph" in get_example(name)
-        assert get_example("nope")["error"]["code"] == "unknown_example"
+        assert dataset_schema("data/nope.parquet")["error"]["code"] == "dataset_not_found"
 
 
 class TestToolExecutorDispatch:
@@ -1405,268 +1546,16 @@ class TestToolExecutorDispatch:
         assert len(rendered["capability_hash"]) == 64
         assert rendered["operation_version"] == "1.0"
 
-        schema = await execute_tool("get_node_schema", {"node": "quotes"})
-        assert "columns" in schema
+        schema = await execute_tool("inspect_node", {"node": "quotes"})
+        assert "columns" in schema["schema"]
+        assert "withheld" not in schema
 
         unknown = await execute_tool("explode", {})
         assert unknown["error"]["code"] == "unknown_tool"
         assert "get_pipeline" in unknown["error"]["valid_names"]
 
-        manifest = await execute_tool("get_capability_manifest", {})
-        assert "capability_hash" in manifest
-
-        descriptors = await execute_tool(
-            "get_capability_descriptors",
-            {"kind": "operation", "ids": ["get_pipeline"]},
-        )
-        assert descriptors["descriptors"][0]["id"] == "get_pipeline"
-
-        recipe = await execute_tool(
-            "plan_recipe",
-            {
-                "recipe_id": "reference_join",
-                "base_source": "quotes",
-                "reference_source": "regions",
-                "name": "Attach region",
-                "how": "left",
-                "left_on": ["region"],
-                "right_on": ["region"],
-            },
-        )
-        assert recipe["recipe_id"] == "reference_join"
-        assert set(recipe) == {
-            "recipe_id",
-            "version",
-            "recipe_plan_hash",
-            "capability_hash",
-            "operation_version",
-        }
-        assert len(recipe["recipe_plan_hash"]) == 64
-
-    async def test_pending_recipe_dry_runs_by_handle_without_relaying_operations(
-        self, project_root: Path
-    ):
-        from haute.assistant._tools import build_tool_executor
-
-        execute_tool = build_tool_executor("main.py")
-        recipe = await execute_tool(
-            "plan_recipe",
-            {
-                "recipe_id": "categorical_banding",
-                "source": "quotes",
-                "name": "year_band",
-                "column": "vehicle_year",
-                "output_column": "vehicle_year_band",
-                "rules": [
-                    {"value": "2019", "assignment": "older"},
-                    {"value": "2021", "assignment": "newer"},
-                ],
-                "output_name": "year_response",
-                "output_columns": ["vehicle_year_band"],
-                "default": "unknown",
-            },
-        )
-
-        rewritten = await execute_tool(
-            "dry_run_graph_edits",
-            {
-                "summary": "Test plan.",
-                "ops": [
-                    {
-                        "op": "add_node",
-                        "node_type": "polars",
-                        "name": "year_band",
-                        "config": {"code": "df = df"},
-                    },
-                    {"op": "add_edge", "source": "quotes", "target": "$missing"},
-                ],
-            },
-        )
-        assert rewritten["error"]["code"] == "recipe_plan_requires_handle"
-
-        exact = await execute_tool(
-            "dry_run_recipe_plan",
-            {"recipe_plan_hash": recipe["recipe_plan_hash"]},
-        )
-        assert "plan_hash" in exact
-        assert exact["operations"] == 4
-        changes = exact["changes"]
-        assert [(node["id"], node["type"], node["change"]) for node in changes["nodes"]] == [
-            ("year_band", "Banding", "added"),
-            ("year_response", "Quote Response", "added"),
-        ]
-        assert changes["edges_added"] == [
-            {"source": "quotes", "target": "year_band"},
-            {"source": "year_band", "target": "year_response"},
-        ]
-        # The recipe's receipt is its index summary.
-        from haute.assistant._tools import _PLAN_STORE, _RECIPE_SUMMARIES
-
-        receipt = _PLAN_STORE.receipt(exact["plan_hash"])
-        assert receipt.summary == _RECIPE_SUMMARIES["categorical_banding"]
-        assert receipt.assumptions == ()
-
-    async def test_latest_recipe_handle_replaces_prior_and_rejects_provider_authored_extras(
-        self, project_root: Path
-    ):
-        from haute.assistant._tools import build_tool_executor
-
-        execute_tool = build_tool_executor("main.py")
-        arguments = {
-            "recipe_id": "categorical_banding",
-            "source": "quotes",
-            "name": "year_band",
-            "column": "vehicle_year",
-            "output_column": "vehicle_year_band",
-            "rules": [{"value": "2019", "assignment": "older"}],
-            "default": "unknown",
-        }
-        prior = await execute_tool("plan_recipe", arguments)
-        latest = await execute_tool(
-            "plan_recipe",
-            {**arguments, "name": "replacement_year_band"},
-        )
-        assert prior["recipe_plan_hash"] != latest["recipe_plan_hash"]
-
-        replaced = await execute_tool(
-            "dry_run_recipe_plan",
-            {"recipe_plan_hash": prior["recipe_plan_hash"]},
-        )
-        assert replaced["error"]["code"] == "recipe_plan_not_found"
-
-        rejected = await execute_tool(
-            "dry_run_recipe_plan",
-            {
-                "recipe_plan_hash": latest["recipe_plan_hash"],
-                "extra_ops": [
-                    {
-                        "op": "add_node",
-                        "node_type": "polars",
-                        "name": "after_banding",
-                        "ref": "after_banding",
-                        "config": {"code": "df = df.with_columns(pl.lit(1).alias('test_flag'))"},
-                    },
-                    {
-                        "op": "add_edge",
-                        "source": "$recipe_categorical_banding",
-                        "target": "$after_banding",
-                    },
-                ],
-                "extra_postconditions": [
-                    {
-                        "kind": "edge_exists",
-                        "source": "$recipe_categorical_banding",
-                        "target": "$after_banding",
-                    }
-                ],
-            },
-        )
-        assert rejected["error"]["code"] == "invalid_request"
-        assert rejected["error"]["validation_reason"] == "unknown_field"
-
-        planned = await execute_tool(
-            "dry_run_recipe_plan",
-            {"recipe_plan_hash": latest["recipe_plan_hash"]},
-        )
-        assert "plan_hash" in planned
-        assert planned["operations"] == 2
-        assert [node["id"] for node in planned["changes"]["nodes"]] == ["replacement_year_band"]
-
-        consumed = await execute_tool(
-            "dry_run_recipe_plan",
-            {"recipe_plan_hash": latest["recipe_plan_hash"]},
-        )
-        assert consumed["error"]["code"] == "recipe_plan_not_found"
-
-    async def test_executor_structured_plans_have_no_lexical_authority(self, project_root: Path):
-        from haute.assistant._tools import build_tool_executor
-
-        execute_tool = build_tool_executor("main.py")
-        primitive = await execute_tool(
-            "dry_run_graph_edits",
-            {
-                "summary": "Test plan.",
-                "ops": [
-                    {
-                        "op": "update_node",
-                        "node": "quotes",
-                        "config": {},
-                    }
-                ],
-            },
-        )
-        assert "plan_hash" in primitive
-
-        differently_selected = await execute_tool(
-            "plan_recipe",
-            {
-                "recipe_id": "reference_join",
-                "base_source": "quotes",
-                "reference_source": "regions",
-                "name": "wrong_route",
-                "how": "left",
-                "left_on": ["region"],
-                "right_on": ["region"],
-            },
-        )
-        assert differently_selected["recipe_id"] == "reference_join"
-        assert "recipe_plan_hash" in differently_selected
-
-        structured_name = await execute_tool(
-            "plan_recipe",
-            {
-                "recipe_id": "categorical_banding",
-                "source": "quotes",
-                "name": "year_banding",
-                "column": "vehicle_year",
-                "output_column": "vehicle_year_band",
-                "rules": [{"value": "2019", "assignment": "older"}],
-                "default": "unknown",
-            },
-        )
-        assert structured_name["recipe_id"] == "categorical_banding"
-        assert "recipe_plan_hash" in structured_name
-
-    async def test_complete_structured_plans_do_not_require_material_wording(
-        self, project_root: Path
-    ):
-        from haute.assistant._tools import build_tool_executor
-
-        execute_tool = build_tool_executor("main.py")
-        recipe = await execute_tool(
-            "plan_recipe",
-            {
-                "recipe_id": "rating_step",
-                "source": "quotes",
-                "name": "rating_factors",
-                "tables": [
-                    {
-                        "factors": ["region"],
-                        "output_column": "region_factor",
-                        "entries": [{"factor_values": ["north"], "value": 1.1}],
-                        "default_value": 1.0,
-                    }
-                ],
-            },
-        )
-        assert recipe["recipe_id"] == "rating_step"
-        assert "recipe_plan_hash" in recipe
-
-        primitive_executor = build_tool_executor("main.py")
-        primitive = await primitive_executor(
-            "dry_run_graph_edits",
-            {
-                "summary": "Test plan.",
-                "ops": [
-                    {
-                        "op": "update_node",
-                        "node": "quotes",
-                        "config": {},
-                    }
-                ],
-            },
-        )
-        assert "plan_hash" in primitive
+        references = await execute_tool("read_reference", {"ids": ["node:banding"]})
+        assert references["references"][0]["content"]["id"] == "banding"
 
     async def test_tool_input_and_result_context_are_bounded(
         self,
@@ -1676,18 +1565,15 @@ class TestToolExecutorDispatch:
         import haute.assistant._tools as tools_module
 
         execute_tool = tools_module.build_tool_executor("main.py")
-        oversized_input = await execute_tool(
-            "get_capability_descriptors",
-            {"kind": "node", "ids": ["x" * 1_000_001]},
-        )
+        oversized_input = await execute_tool("read_reference", {"ids": ["x" * 1_000_001]})
         assert oversized_input["error"]["code"] == "tool_payload_too_large"
 
         monkeypatch.setattr(
             tools_module,
-            "get_authoring_guide",
+            "_authoring_guide_reference",
             lambda: {"content": "x" * 256_001},
         )
-        oversized_result = await execute_tool("get_authoring_guide", {})
+        oversized_result = await execute_tool("read_reference", {"ids": ["guide"]})
         assert oversized_result["error"]["code"] == "tool_result_too_large"
 
     async def test_public_only_policy_denies_internal_project_tools_before_read(
@@ -1729,34 +1615,39 @@ class TestToolExecutorDispatch:
         from haute.assistant._tools import build_tool_executor
 
         execute_tool = build_tool_executor("main.py")
-        result = await execute_tool("get_node_schema", {})
+        result = await execute_tool("inspect_node", {})
         assert result["error"]["code"] == "invalid_request"
         assert "KeyError" not in result["error"]["message"]
         assert result["capability_hash"] == capability_manifest().capability_hash
         assert result["operation_version"] == "1.0"
 
-    async def test_malformed_capability_query_has_its_stable_error(self, project_root: Path):
+    async def test_a_malformed_reference_query_is_a_closed_invalid_request(
+        self, project_root: Path
+    ):
         from haute.assistant._tools import build_tool_executor
 
         execute_tool = build_tool_executor("main.py")
-        missing = await execute_tool("get_capability_descriptors", {"kind": "node"})
-        extra = await execute_tool(
-            "get_capability_descriptors",
-            {"kind": "node", "ids": ["banding"], "unexpected": True},
-        )
-        empty = await execute_tool(
-            "get_capability_descriptors",
-            {"kind": "node", "ids": []},
-        )
+        missing = await execute_tool("read_reference", {})
+        extra = await execute_tool("read_reference", {"ids": ["guide"], "unexpected": True})
+        empty = await execute_tool("read_reference", {"ids": []})
         too_many = await execute_tool(
-            "get_capability_descriptors",
-            {"kind": "node", "ids": ["banding"] * 13},
+            "read_reference", {"ids": [f"node:{index}" for index in range(13)]}
         )
+        duplicate = await execute_tool("read_reference", {"ids": ["guide", "guide"]})
 
-        assert missing["error"]["code"] == "invalid_capability_query"
-        assert extra["error"]["code"] == "invalid_capability_query"
-        assert empty["error"]["code"] == "invalid_capability_query"
-        assert too_many["error"]["code"] == "invalid_capability_query"
+        assert [
+            result["error"]["validation_reason"]
+            for result in (missing, extra, empty, too_many, duplicate)
+        ] == [
+            "missing_required",
+            "unknown_field",
+            "too_few_items",
+            "too_many_items",
+            "duplicate_items",
+        ]
+        assert {
+            result["error"]["code"] for result in (missing, extra, empty, too_many, duplicate)
+        } == {"invalid_request"}
 
     @pytest.mark.parametrize(
         ("operation", "path", "reason"),
@@ -1776,6 +1667,22 @@ class TestToolExecutorDispatch:
                 },
                 "dry_run_graph_edits.ops[0].config",
                 "wrong_type",
+            ),
+            # Every recipe operation has op "recipe": `recipe` then selects its branch.
+            (
+                {"op": "recipe", "arguments": {}},
+                "dry_run_graph_edits.ops[0].recipe",
+                "missing_discriminator",
+            ),
+            (
+                {"op": "recipe", "recipe": "numeric_banding", "arguments": {}},
+                "dry_run_graph_edits.ops[0].recipe",
+                "unsupported_discriminator",
+            ),
+            (
+                {"op": "recipe", "recipe": "response_output", "arguments": {"source": "quotes"}},
+                "dry_run_graph_edits.ops[0].arguments.output_columns",
+                "missing_required",
             ),
         ],
     )
@@ -1850,22 +1757,33 @@ class TestToolExecutorDispatch:
         from haute.assistant._tools import build_tool_executor
 
         result = await build_tool_executor("main.py")(
-            "plan_recipe",
+            "dry_run_graph_edits",
             {
-                "recipe_id": "categorical_banding",
-                "source": "quotes",
-                "name": "year_band",
-                "column": "vehicle_year",
-                "output_column": "vehicle_year_band",
-                "rules": [{"value": "2019", "assignment": "older"}],
-                "output_name": "year_response",
-                "output_columns": ["vehicle_year_band", "vehicle_year_band"],
-                "default": "unknown",
+                "summary": "Band vehicle years.",
+                "ops": [
+                    {
+                        "op": "recipe",
+                        "recipe": "categorical_banding",
+                        "arguments": {
+                            "source": "quotes",
+                            "name": "year_band",
+                            "column": "vehicle_year",
+                            "output_column": "vehicle_year_band",
+                            "rules": [{"value": "2019", "assignment": "older"}],
+                            "output_name": "year_response",
+                            "output_columns": ["vehicle_year_band", "vehicle_year_band"],
+                            "default": "unknown",
+                        },
+                    }
+                ],
             },
         )
 
         assert result["error"]["code"] == "invalid_request"
-        assert result["error"]["validation_path"] == "plan_recipe.output_columns"
+        assert (
+            result["error"]["validation_path"]
+            == "dry_run_graph_edits.ops[0].arguments.output_columns"
+        )
         assert result["error"]["validation_reason"] == "duplicate_items"
 
     @pytest.mark.parametrize(
@@ -1907,7 +1825,7 @@ class TestToolExecutorDispatch:
 
         from haute.assistant._tools import build_tool_executor
 
-        result = await build_tool_executor("main.py")("list_datasets", {"recursive": "True"})
+        result = await build_tool_executor("main.py")("find_data", {"recursive": "True"})
 
         error = result["error"]
         assert error["validation_reason"] == "wrong_type"
@@ -1925,22 +1843,30 @@ class TestToolExecutorDispatch:
         from haute.assistant._tools import build_tool_executor
 
         result = await build_tool_executor("main.py")(
-            "plan_recipe",
+            "dry_run_graph_edits",
             {
-                "recipe_id": "categorical_banding",
-                "source": "quotes",
-                "name": "Claims band",
-                "column": "has_claims",
-                "output_column": "claims_group",
-                "rules": [{"value": value, "assignment": "claimed"}],
-                "default": "other",
+                "summary": "Band claims.",
+                "ops": [
+                    {
+                        "op": "recipe",
+                        "recipe": "categorical_banding",
+                        "arguments": {
+                            "source": "quotes",
+                            "name": "Claims band",
+                            "column": "has_claims",
+                            "output_column": "claims_group",
+                            "rules": [{"value": value, "assignment": "claimed"}],
+                            "default": "other",
+                        },
+                    }
+                ],
             },
         )
 
         error = result["error"]
         assert error["code"] == "invalid_request"
         assert error["validation_reason"] == "wrong_type"
-        assert error["validation_path"] == "plan_recipe.rules[0].value"
+        assert error["validation_path"] == "dry_run_graph_edits.ops[0].arguments.rules[0].value"
         assert text_form in error["message"]
 
     @pytest.mark.parametrize(
@@ -1988,7 +1914,7 @@ class TestToolExecutorDispatch:
         from haute.assistant._tools import build_tool_executor
 
         result = await build_tool_executor("main.py")(
-            "get_node_schema",
+            "inspect_node",
             {"node": invalid_value},
         )
 
@@ -2003,10 +1929,36 @@ class TestToolExecutorDispatch:
         result = await execute_tool("list_node_types", {})
         assert result["error"]["code"] == "tool_removed"
         assert result["error"]["name"] == "list_node_types"
-        assert result["error"]["message"].startswith(
-            "list_node_types was removed; use get_capability_manifest"
-        )
-        assert "get_capability_descriptors" in result["error"]["message"]
+        assert result["error"]["message"].startswith("list_node_types was removed;")
+        assert "read_reference" in result["error"]["message"]
+
+    @pytest.mark.parametrize(
+        ("name", "replacement"),
+        [
+            ("get_node_schema", "inspect_node"),
+            ("get_node_config", "inspect_node"),
+            ("get_column_profiles", "inspect_node"),
+            ("list_datasets", "find_data"),
+            ("get_dataset_schema", "find_data"),
+            ("get_capability_descriptors", "read_reference"),
+            ("get_example", "read_reference"),
+            ("get_authoring_guide", "read_reference"),
+            ("plan_recipe", "dry_run_graph_edits"),
+            ("dry_run_recipe_plan", "dry_run_graph_edits"),
+        ],
+    )
+    async def test_a_consolidated_tool_names_what_replaces_it(
+        self, project_root: Path, name: str, replacement: str
+    ):
+        """A resumed session's history can still name a tool the task-shaped
+        surface consolidated."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(name, {})
+
+        assert result["error"]["code"] == "tool_removed"
+        assert replacement in result["error"]["message"]
 
     async def test_combined_apply_graph_edits_tool_is_not_provider_visible(
         self, project_root: Path
@@ -2107,11 +2059,13 @@ class TestExecutorArms:
         from haute.assistant._tools import build_tool_executor
 
         execute_tool = build_tool_executor("main.py")
-        assert "config" in await execute_tool("get_node_config", {"node": "quotes"})
-        listed = await execute_tool("list_datasets", {"project_root": "data"})
-        assert listed["datasets"][0]["name"] == "quotes.parquet"
-        schema = await execute_tool("get_dataset_schema", {"path": "data/quotes.parquet"})
-        assert "columns" in schema
+        inspected = await execute_tool("inspect_node", {"node": "quotes", "parts": ["config"]})
+        assert "config" in inspected["config"]
+        found = await execute_tool(
+            "find_data", {"directory": "data", "path": "data/quotes.parquet"}
+        )
+        assert found["datasets"][0]["name"] == "quotes.parquet"
+        assert "columns" in found["schema"]
         knowledge = await execute_tool(
             "get_project_knowledge",
             {"query": "pipeline", "limit": 1},
@@ -2131,11 +2085,11 @@ class TestExecutorArms:
             },
         )
         assert "schema:data/quotes.parquet" in _revision_sources(plan)
-        example = await execute_tool("get_example", {"name": example_index()[0][0]})
+        references = await execute_tool(
+            "read_reference", {"ids": [f"example:{example_index()[0][0]}", "guide"]}
+        )
+        example, guide = (item["content"] for item in references["references"])
         assert "graph" in example
-        guide = await execute_tool("get_authoring_guide", {})
-        assert guide["approval_status"] == "reviewed"
-        assert len(guide["sha256"]) == 64
         assert "node" in guide["content"].casefold()
 
     async def test_dry_run_rejects_dataset_schema_changed_after_retrieval(
@@ -2145,11 +2099,8 @@ class TestExecutorArms:
         from haute.assistant._tools import build_tool_executor
 
         execute_tool = build_tool_executor("main.py")
-        schema = await execute_tool(
-            "get_dataset_schema",
-            {"path": "data/quotes.parquet"},
-        )
-        assert "source_digest" in schema
+        schema = await execute_tool("find_data", {"path": "data/quotes.parquet"})
+        assert "source_digest" in schema["schema"]
         pl.DataFrame({"replacement": [1]}).write_parquet(project_root / "data" / "quotes.parquet")
 
         result = await execute_tool(
@@ -2177,7 +2128,7 @@ class TestExecutorArms:
 
         pl.DataFrame({"id": [1]}).write_parquet(project_root / "data" / "extra.parquet")
         first_turn = build_tool_executor("main.py")
-        schema = await first_turn("get_dataset_schema", {"path": "data/extra.parquet"})
+        schema = await first_turn("find_data", {"path": "data/extra.parquet"})
         (project_root / "data" / "extra.parquet").rename(project_root / "data" / "moved.parquet")
         rename = {
             "summary": "Rename enriched.",
@@ -2188,15 +2139,15 @@ class TestExecutorArms:
         assert blocked["error"]["code"] == "project_source_missing"
         assert "data/extra.parquet" in blocked["error"]["message"]
 
-        listed = await first_turn("list_datasets", {"project_root": "data"})
+        listed = await first_turn("find_data", {"directory": "data"})
         execute_tool = (
             build_tool_executor(
                 "main.py",
                 prior_messages=[
                     {"role": "tool", "name": name, "content": content, "is_error": False}
                     for name, content in (
-                        ("get_dataset_schema", schema),
-                        ("list_datasets", listed),
+                        ("find_data", schema),
+                        ("find_data", listed),
                     )
                 ],
             )
@@ -2248,17 +2199,14 @@ class TestExecutorArms:
         from haute.assistant._tools import build_tool_executor
 
         first_turn = build_tool_executor("main.py")
-        schema = await first_turn(
-            "get_dataset_schema",
-            {"path": "data/quotes.parquet"},
-        )
+        schema = await first_turn("find_data", {"path": "data/quotes.parquet"})
         second_turn = build_tool_executor(
             "main.py",
             prior_messages=[
                 {
                     "role": "tool",
                     "tool_call_id": "schema-1",
-                    "name": "get_dataset_schema",
+                    "name": "find_data",
                     "content": schema,
                     "is_error": False,
                 }
@@ -2607,6 +2555,180 @@ AUGUST_DISCARDED = "df.filter(pl.col('claim_month') == '2026-08')"
 CLAIM_COLUMNS = ["policy_id", "claim_month", "amount"]
 
 
+_REGION_BANDING = {
+    "op": "recipe",
+    "recipe": "categorical_banding",
+    "arguments": {
+        "source": "quotes",
+        "name": "region_band",
+        "column": "region",
+        "output_column": "region_group",
+        "rules": [
+            {"value": "north", "assignment": "core"},
+            {"value": "south", "assignment": "other"},
+        ],
+        "default": "unknown",
+    },
+}
+
+
+class TestRecipeOperations:
+    """A recipe is one operation of a dry-run batch, expanded inside the same plan."""
+
+    @pytest.fixture(autouse=True)
+    def _internal_policy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import haute.assistant._tools as tools_module
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: _policy(max_sensitivity="internal", executable=False),
+        )
+
+    async def test_a_recipe_and_a_primitive_operation_apply_in_one_plan(
+        self, steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.assistant._tools as tools_module
+        from haute._native_memory_limit import native_memory_backend_scope
+        from haute.executor import execute_graph
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        execute = tools_module.build_tool_executor("main.py")
+        steps = [
+            {"id": "start", "kind": "source", "input": "region_band"},
+            {
+                "id": "logic",
+                "kind": "free_code",
+                "code": "# Double the premium\ndf = df.with_columns(double=pl.col('premium') * 2)",
+            },
+        ]
+
+        plan = await execute(
+            "dry_run_graph_edits",
+            {
+                "summary": "Band regions and double the premium after the banding.",
+                "ops": [
+                    {**_REGION_BANDING, "ref": "band"},
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "doubled",
+                        "ref": "doubled",
+                        "config": {"steps": steps},
+                    },
+                    {"op": "add_edge", "source": "$band", "target": "$doubled"},
+                ],
+            },
+        )
+        assert "error" not in plan, plan
+        # The recipe expands into its node and its input edge inside the plan.
+        assert plan["operations"] == 4
+        applied = await execute("apply_graph_plan", {"plan_hash": plan["plan_hash"]})
+        assert "error" not in applied, applied
+
+        # One plan, so one change card naming both the recipe's node and the primitive one.
+        change = applied["change"]
+        assert {chip["id"] for chip in change["changes"]["nodes"]} == {"region_band", "doubled"}
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        assert {(edge.source, edge.target) for edge in graph.edges} >= {
+            ("quotes", "region_band"),
+            ("region_band", "doubled"),
+        }
+        with native_memory_backend_scope("rlimit"):
+            result = execute_graph(graph, target_node_id="doubled")["doubled"]
+        assert result.status == "ok", result.error
+        assert [(row["region_group"], row["double"]) for row in result.preview] == [
+            ("core", 200.0),
+            ("other", 400.0),
+        ]
+
+    async def test_two_recipes_in_one_plan_keep_their_own_refs(self, steps_first_project: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        plan = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Band regions and map the response.",
+                "ops": [
+                    _REGION_BANDING,
+                    {
+                        "op": "recipe",
+                        "recipe": "response_output",
+                        "arguments": {
+                            "source": "quotes",
+                            "output_name": "quote_response",
+                            "output_columns": ["quote_id", "premium"],
+                        },
+                    },
+                ],
+            },
+        )
+
+        assert "error" not in plan, plan
+        assert {node["id"] for node in plan["changes"]["nodes"]} == {
+            "region_band",
+            "quote_response",
+        }
+
+    async def test_a_recipe_argument_failure_is_located_at_the_recipe_operation(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        banding = {
+            **_REGION_BANDING,
+            "arguments": {
+                **_REGION_BANDING["arguments"],
+                "rules": [
+                    {"value": "north", "assignment": "core"},
+                    {"value": "north", "assignment": "other"},
+                ],
+            },
+        }
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Band regions.",
+                "ops": [{"op": "delete_node", "node": "loaded"}, banding],
+            },
+        )
+
+        error = result["error"]
+        assert error["code"] == "recipe_argument_invalid"
+        assert error["where"] == {
+            "op_index": 1,
+            "recipe": "categorical_banding",
+            "field": "arguments.rules[1].value",
+        }
+        assert "recipe:categorical_banding" in error["fix"]
+        assert error["retryable"] is True
+
+    async def test_a_failure_after_a_recipe_names_the_operation_the_model_sent(
+        self, steps_first_project: Path
+    ):
+        """The recipe expands into two operations; the edge after it is still
+        operation 1 in the batch the model sent, in `where` and in the text."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Band regions.",
+                "ops": [
+                    _REGION_BANDING,
+                    {"op": "add_edge", "source": "region_band", "target": "$later"},
+                    {"op": "add_node", "node_type": "explore", "name": "later", "ref": "later"},
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert error["where"]["op_index"] == 1
+        assert "recipe" not in error["where"]
+        assert "(operation 2) before operation 1" in error["fix"]
+
+
 class TestActionableErrors:
     """A tool error says where it happened, what the node's inputs hold and how
     to fix it, through the executor the model calls."""
@@ -2932,9 +3054,9 @@ class TestExecutionErrorEgress:
         assert "column(s) 'age'." in result["error"]["message"]
 
     def test_node_schema_withholds_a_strict_cast_value(self, egress_project: Path):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "strict")
+        result = node_schema("main.py", "strict")
 
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
@@ -3114,14 +3236,14 @@ def consumer(typed: pl.LazyFrame) -> pl.LazyFrame:
     def test_saved_code_names_a_column_only_with_executable_source(
         self, egress_project: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
         (egress_project / "main.py").write_text(_GHOST_SOURCE, encoding="utf-8")
 
         _egress_policy(monkeypatch, executable_source=False, row_samples=False)
-        masked = get_node_schema("main.py", "ghost")
+        masked = node_schema("main.py", "ghost")
         _egress_policy(monkeypatch, executable_source=True, row_samples=False)
-        readable = get_node_schema("main.py", "ghost")
+        readable = node_schema("main.py", "ghost")
 
         for result in (masked, readable):
             assert result["error"]["code"] == "schema_unresolvable", result
@@ -3194,9 +3316,9 @@ class TestPreambleFailureEgress:
         assert "allow_row_samples" in result["error"]["message"]
 
     def test_node_schema_withholds_the_preamble_failure_text(self, preamble_project: Path):
-        from haute.assistant._tools import get_node_schema
+        from haute.assistant._tools import node_schema
 
-        result = get_node_schema("main.py", "quotes")
+        result = node_schema("main.py", "quotes")
 
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
@@ -3230,14 +3352,14 @@ class TestPreambleFailureEgress:
     async def test_permitted_row_samples_keep_the_preamble_text(
         self, preamble_project: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from haute.assistant._tools import dry_run_graph_edits, get_node_schema
+        from haute.assistant._tools import dry_run_graph_edits, node_schema
 
         _allow_row_samples(monkeypatch)
 
         planned = await dry_run_graph_edits(
             "main.py", _free_code_node("quotes", "df = df"), summary="Test plan."
         )
-        schema = get_node_schema("main.py", "quotes")
+        schema = node_schema("main.py", "quotes")
 
         for result in (planned, schema):
             assert "PreambleError at line" in result["error"]["message"], result
@@ -3296,7 +3418,7 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
         ),
     )
 
-    config = tools_module.get_node_config("main.py", "august_totals")["config"]
+    config = tools_module.node_config("main.py", "august_totals")["config"]
 
     assert config["steps"] == [
         steps[0],

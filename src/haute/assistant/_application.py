@@ -520,7 +520,7 @@ def _schema_evidence(
                 # exactly. An engine message carries estimated row counts and
                 # scan byte sizes, which would make the plan hash depend on
                 # data-file metadata the revision manifest does not pin.
-                # `get_node_schema` on the named node reports the actual
+                # `inspect_node` on the named node reports the actual
                 # failure, and the tool log records it server-side.
                 warnings.append(f"pre_existing_schema_failure:{target}")
                 continue
@@ -725,10 +725,14 @@ def build_verified_plan(
     *,
     validate_graph: GraphValidator,
     source_file: str,
+    positions: Sequence[int] | None = None,
 ) -> VerifiedPlan:
-    """Build one plan through the shared edit and save-verification pipeline."""
+    """Build one plan through the shared edit and save-verification pipeline.
 
-    prepared = prepare_graph_edit(snapshot, operations, postconditions)
+    *positions* holds each operation's index in the batch the model sent.
+    """
+
+    prepared = prepare_graph_edit(snapshot, operations, postconditions, positions=positions)
     try:
         warnings = validate_graph(prepared.result_graph)
         _prove_steps_survive_save(
@@ -856,11 +860,14 @@ class PipelineApplicationService:
         postconditions: Sequence[Mapping[str, Any]] = (),
         summary: str,
         assumptions: Sequence[str] = (),
+        positions: Sequence[int] | None = None,
     ) -> DryRunResult:
         """Validate and retain an exact no-write plan against saved state.
 
         *summary* and *assumptions* are the plan's receipt, stored beside it
-        for the change card the apply builds.
+        for the change card the apply builds. *positions* holds each
+        operation's index in the batch the model sent, before its recipe
+        operations expanded, which every located failure reports.
         """
 
         receipt = PlanReceipt(summary, tuple(assumptions))
@@ -882,6 +889,7 @@ class PipelineApplicationService:
                 source_file=source_file,
             ),
             source_file=source_file,
+            positions=positions,
         )
         self.plan_store.put(verified.plan, receipt)
         return DryRunResult(

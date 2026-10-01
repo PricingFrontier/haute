@@ -96,11 +96,16 @@ class TestCapabilityManifest:
             node_type.value for node_type in NodeType
         }
         assert dumped["installed_capabilities"]["io"]["schema_version"] == 1
-        operation_ids = {operation["id"] for operation in dumped["operations"]}
-        assert "dry_run_graph_edits" in operation_ids
-        assert "dry_run_recipe_plan" in operation_ids
-        assert "apply_graph_plan" in operation_ids
-        assert "apply_graph_edits" not in operation_ids
+        operation_ids = [operation["id"] for operation in dumped["operations"]]
+        assert operation_ids == [
+            "get_pipeline",
+            "inspect_node",
+            "find_data",
+            "read_reference",
+            "get_project_knowledge",
+            "dry_run_graph_edits",
+            "apply_graph_plan",
+        ]
 
     def test_hash_is_sha256_of_canonical_material(self):
         manifest = capability_manifest()
@@ -340,45 +345,31 @@ class TestResolvedDescriptors:
 
         by_id = {operation.id: operation for operation in capability_manifest().operations}
         dry_run_errors = {error["code"] for error in by_id["dry_run_graph_edits"].errors}
-        recipe_dry_run_errors = {error["code"] for error in by_id["dry_run_recipe_plan"].errors}
-        recipe_dry_run = by_id["dry_run_recipe_plan"]
-        plan_recipe = by_id["plan_recipe"]
-        plan_recipe_errors = {error["code"] for error in by_id["plan_recipe"].errors}
         apply_errors = {error["code"] for error in by_id["apply_graph_plan"].errors}
 
         assert {
             "invalid_ops",
             "invalid_plan",
-            "recipe_plan_requires_handle",
+            "unknown_recipe",
+            "recipe_argument_invalid",
         } <= dry_run_errors
-        assert "recipe_plan_not_found" in recipe_dry_run_errors
+        assert "egress_policy_denied" in {error["code"] for error in by_id["inspect_node"].errors}
+        assert "unknown_reference" in {error["code"] for error in by_id["read_reference"].errors}
         lexical_error_codes = {
             "material_input_required",
             "recipe_name_mismatch",
             "recipe_route_mismatch",
             "recipe_route_required",
         }
-        for error_codes in (
-            dry_run_errors,
-            recipe_dry_run_errors,
-            plan_recipe_errors,
-            apply_errors,
-        ):
+        for error_codes in (dry_run_errors, apply_errors):
             assert lexical_error_codes.isdisjoint(error_codes)
-        assert "structured" in plan_recipe.description.lower()
-        assert "dry_run_recipe_plan" in plan_recipe.description
-        assert set(recipe_dry_run.input_schema["properties"]) == {"recipe_plan_hash"}
-        assert set(plan_recipe.output_schema["properties"]) == {
-            "recipe_id",
-            "version",
-            "recipe_plan_hash",
-            "capability_hash",
-            "operation_version",
-            "error",
-        }
-        recipe_schema = by_id["plan_recipe"].input_schema
-        recipe_branches = recipe_schema["oneOf"]
-        assert {branch["properties"]["recipe_id"]["const"] for branch in recipe_branches} == {
+        # Each recipe is one closed operation branch, selected by `op` then `recipe`,
+        # whose arguments are the recipe's own closed argument schema.
+        branches = by_id["dry_run_graph_edits"].input_schema["properties"]["ops"]["items"]["oneOf"]
+        recipe_branches = [
+            branch for branch in branches if branch["properties"]["op"].get("const") == "recipe"
+        ]
+        assert {branch["properties"]["recipe"]["const"] for branch in recipe_branches} == {
             "categorical_banding",
             "reference_join",
             "response_output",
@@ -387,11 +378,23 @@ class TestResolvedDescriptors:
         categorical = next(
             branch
             for branch in recipe_branches
-            if branch["properties"]["recipe_id"]["const"] == "categorical_banding"
+            if branch["properties"]["recipe"]["const"] == "categorical_banding"
         )
-        assert "rules" in categorical["required"]
-        assert "output_name" in categorical["properties"]
-        assert "arguments" not in categorical["properties"]
+        assert categorical["required"] == ("op", "recipe", "arguments")
+        assert categorical["additionalProperties"] is False
+        arguments = categorical["properties"]["arguments"]
+        assert "rules" in arguments["required"]
+        assert "output_name" in arguments["properties"]
+        assert arguments["additionalProperties"] is False
+        assert arguments["description"].startswith(
+            "categorical_banding arguments: source, name, column, output_column, "
+            "rules [{value, assignment}], default; optional output_name, output_columns"
+        )
+        # The recipe's ref is add_node's, so the provider projection keeps one description.
+        add_node = next(
+            branch for branch in branches if branch["properties"]["op"].get("const") == "add_node"
+        )
+        assert categorical["properties"]["ref"] == add_node["properties"]["ref"]
         assert {
             "plan_aborted",
             "plan_already_applied",
@@ -501,9 +504,10 @@ class TestStepAuthoring:
 
     def test_the_guide_carries_the_renderer_s_step_grammar(self) -> None:
         from haute._polars_steps import STEP_KINDS, PolarsStepError, validate_polars_steps
-        from haute.assistant._tools import get_authoring_guide
+        from haute.assistant._tools import read_reference
 
-        grammar = get_authoring_guide()["step_grammar"]
+        (guide,) = read_reference(["guide"])["references"]
+        grammar = guide["content"]["step_grammar"]
 
         assert list(grammar["kinds"]) == list(STEP_KINDS)
         for kind, fields in grammar["kinds"].items():

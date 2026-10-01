@@ -1256,10 +1256,11 @@ class TestDatabricksProvider:
         assert exc_info.value.failure_class == "authentication"
         assert client.calls == 1
 
-    async def test_decodes_plan_recipe_arrays_from_the_selected_recipe_branch(self):
-        """Live: `plan_recipe.output_columns must be JSON array, but a string
-        was sent` about ten times, because the recipe union has no top-level
-        properties and so none of its array fields was eligible."""
+    async def test_decodes_recipe_arguments_by_the_selected_recipe_branch(self):
+        """Live: `output_columns must be JSON array, but a string was sent` about
+        ten times on the recipe tool. A recipe operation selects its branch by `op`
+        and then `recipe`, so its arguments decode by that recipe's schema, the
+        `arguments` object itself included."""
 
         from haute.assistant._tools import (
             _OPERATION_INPUT_SCHEMAS,
@@ -1267,10 +1268,12 @@ class TestDatabricksProvider:
             _validate_tool_value,
         )
 
-        definition = next(tool for tool in TOOL_DEFINITIONS if tool["name"] == "plan_recipe")
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
         rules = [
             {"value": "A", "assignment": "low"},
-            {"value": "B", "assignment": "high"},
+            {"value": "3", "assignment": "high"},
         ]
         tables = [
             {
@@ -1280,62 +1283,74 @@ class TestDatabricksProvider:
                 "default_value": 1.0,
             }
         ]
-        cases = [
-            (
-                {
-                    "recipe_id": "categorical_banding",
-                    "source": "policies",
-                    "name": "vehicle_band",
-                    "column": "vehicle_group",
-                    "output_column": "vehicle_band",
+        banding = {
+            "source": "policies",
+            "name": "vehicle_band",
+            "column": "vehicle_group",
+            "output_column": "vehicle_band",
+            "rules": rules,
+            "default": "other",
+            "output_name": "quote",
+            "output_columns": ["vehicle_band"],
+        }
+        rating = {"source": "policies", "name": "region_rating", "tables": tables}
+        sent_ops = [
+            {
+                "op": "recipe",
+                "recipe": "categorical_banding",
+                "arguments": {
+                    **banding,
                     "rules": json.dumps(rules),
-                    "default": "other",
-                    "output_name": "quote",
                     "output_columns": '["vehicle_band"]',
                 },
-                {"rules": rules, "output_columns": ["vehicle_band"]},
-            ),
-            (
-                {
-                    "recipe_id": "rating_step",
-                    "source": "policies",
-                    "name": "region_rating",
-                    "tables": json.dumps(tables),
-                },
-                {"tables": tables},
-            ),
+            },
+            # The whole arguments object arrives as a JSON string.
+            {"op": "recipe", "recipe": "rating_step", "arguments": json.dumps(rating)},
+            {"op": "add_edge", "source": "$recipe_0", "target": "premium"},
         ]
-        for arguments, decoded in cases:
-            client = _FakeOpenAIClient(_openai_tool_chunks("plan_recipe", arguments))
-            events = await _collect(
-                DatabricksProvider(
-                    _config("databricks", base_url="https://workspace.example/serving"),
-                    client=client,
-                ),
-                tools=[definition],
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks(
+                "dry_run_graph_edits",
+                {"summary": "Band and rate.", "ops": json.dumps(sent_ops)},
             )
+        )
+        events = await _collect(
+            DatabricksProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            ),
+            tools=[definition],
+        )
 
-            (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
-            assert tool.arguments == {**arguments, **decoded}
-            _validate_tool_value(
-                tool.arguments, _OPERATION_INPUT_SCHEMAS["plan_recipe"], path="plan_recipe"
-            )
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments["ops"] == [
+            {"op": "recipe", "recipe": "categorical_banding", "arguments": banding},
+            {"op": "recipe", "recipe": "rating_step", "arguments": rating},
+            sent_ops[2],
+        ]
+        # A rule value is declared a string, so "3" is never decoded to a number.
+        assert tool.arguments["ops"][0]["arguments"]["rules"][1]["value"] == "3"
+        _validate_tool_value(
+            tool.arguments,
+            _OPERATION_INPUT_SCHEMAS["dry_run_graph_edits"],
+            path="dry_run_graph_edits",
+        )
 
     @pytest.mark.parametrize(
-        ("recipe_id", "field", "encoded"),
+        ("recipe", "field", "encoded"),
         [
             # A Python literal, not JSON: never repaired.
             ("categorical_banding", "rules", "[{'value': 'A', 'assignment': 'low'}]"),
             # Valid JSON of the wrong type for the selected branch.
             ("categorical_banding", "output_columns", '"vehicle_band"'),
-            # No branch is selected, so no field is eligible.
+            # No branch is selected, so nothing below the operation is eligible.
             ("not_a_recipe", "output_columns", '["vehicle_band"]'),
             # A non-string discriminator never matches a declared string constant.
             (1, "output_columns", '["vehicle_band"]'),
         ],
     )
-    async def test_plan_recipe_invalid_encodings_are_left_for_the_validator(
-        self, recipe_id: object, field: str, encoded: str
+    async def test_recipe_argument_invalid_encodings_are_left_for_the_validator(
+        self, recipe: object, field: str, encoded: str
     ):
         from haute.assistant._tools import (
             _OPERATION_INPUT_SCHEMAS,
@@ -1344,9 +1359,10 @@ class TestDatabricksProvider:
             _validate_tool_value,
         )
 
-        definition = next(tool for tool in TOOL_DEFINITIONS if tool["name"] == "plan_recipe")
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
         arguments = {
-            "recipe_id": recipe_id,
             "source": "policies",
             "name": "vehicle_band",
             "column": "vehicle_group",
@@ -1357,7 +1373,15 @@ class TestDatabricksProvider:
             "output_columns": ["vehicle_band"],
             field: encoded,
         }
-        client = _FakeOpenAIClient(_openai_tool_chunks("plan_recipe", arguments))
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks(
+                "dry_run_graph_edits",
+                {
+                    "summary": "Band vehicles.",
+                    "ops": [{"op": "recipe", "recipe": recipe, "arguments": arguments}],
+                },
+            )
+        )
         events = await _collect(
             DatabricksProvider(
                 _config("databricks", base_url="https://workspace.example/serving"),
@@ -1367,10 +1391,12 @@ class TestDatabricksProvider:
         )
 
         (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
-        assert tool.arguments[field] == encoded
+        assert tool.arguments["ops"][0]["arguments"][field] == encoded
         with pytest.raises(_ToolArgumentValidationError):
             _validate_tool_value(
-                tool.arguments, _OPERATION_INPUT_SCHEMAS["plan_recipe"], path="plan_recipe"
+                tool.arguments,
+                _OPERATION_INPUT_SCHEMAS["dry_run_graph_edits"],
+                path="dry_run_graph_edits",
             )
 
     async def test_decodes_only_schema_declared_top_level_compatible_types(self):
@@ -1515,6 +1541,8 @@ class TestDatabricksProvider:
             "source_handle",
             "target_handle",
             "preamble",
+            "recipe",
+            "arguments",
         }
         assert operation_item["properties"]["op"] == {
             "enum": [
@@ -1526,6 +1554,7 @@ class TestDatabricksProvider:
                 "add_edge",
                 "delete_edge",
                 "update_preamble",
+                "recipe",
             ]
         }
         postcondition_item = anthropic_wire["properties"]["postconditions"]["items"]
@@ -1533,15 +1562,10 @@ class TestDatabricksProvider:
         assert postcondition_item["additionalProperties"] is False
         assert "kind" in postcondition_item["properties"]
 
-        recipe_wire = anthropic_schemas["plan_recipe"]
-        assert "graph node name" in recipe_wire["properties"]["name"]["description"]
-        rules_wire = recipe_wire["properties"]["rules"]
-        assert rules_wire["type"] == "array"
-        assert "categorical" in rules_wire["description"]
-        assert "assignment" in rules_wire["description"]
-        assert rules_wire["items"]["additionalProperties"] is False
-        assert set(rules_wire["items"]["properties"]) == {"assignment", "value"}
-        assert rules_wire["items"]["required"] == ["value", "assignment"]
+        arguments_wire = operation_item["properties"]["arguments"]
+        assert arguments_wire["type"] == "object"
+        assert "categorical_banding arguments:" in arguments_wire["description"]
+        assert "rules [{value, assignment}]" in arguments_wire["description"]
 
         def objects(value):
             if isinstance(value, dict):

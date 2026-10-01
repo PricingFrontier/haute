@@ -37,7 +37,7 @@ In scope:
 - The assistant's authoring knowledge, shipped as repo-versioned package assets: a
   concise authoring guide, one validated node card per node type served in its node
   descriptor, and discoverable executable project bundles served on
-  demand through `get_example`. Bundle inventories are content-addressed; every
+  demand through `read_reference`. Bundle inventories are content-addressed; every
   bundle parses and validates, and the declared fast subset executes in installed
   distribution smoke checks.
 - Chat sessions: process-local per-pipeline conversation state, bounded durable
@@ -126,11 +126,13 @@ creation also removes abandoned atomic-write `<id>.json.tmp` files, so a process
 during persistence cannot grow the session directory outside that bound.
 
 **Authoring knowledge.** Every turn's system prompt carries the compact capability
-identity plus node, operation, recipe, and example indexes. The versioned authoring
-guide (Haute idioms, standard shapes, naming, and do/don't guidance) is retrieved
-through `get_authoring_guide` only when relevant. Each node descriptor carries its
+identity plus node, operation, recipe, and example indexes. Everything behind those
+indexes is one `read_reference` call away, by namespaced id: the versioned authoring
+guide (Haute idioms, standard shapes, naming, and do/don't guidance) as `guide`, a node
+descriptor as `node:<node type id>`, a recipe descriptor as `recipe:<recipe id>`, and a
+packaged example as `example:<example name>`. Each node descriptor carries its
 node card, so the configuration shapes arrive with the descriptors the model reads
-before its first dry run. `get_example` returns a
+before its first dry run. An example is a
 self-contained teaching view: bounded attribution, narrative, and the already-rendered
 graph with every node's configuration and its values. It never advertises
 resource-inventory paths that the model cannot retrieve.
@@ -152,7 +154,7 @@ places after the analyst's message and never stores in the session history:
   line per step (its id and kind, with a free-code step's `# intent` line only when
   executable source is permitted), each input's
   code-visible name, source and column names, and its output column names. Columns are
-  resolved schema-only on the same engine path as `get_node_schema`, and a node that does
+  resolved schema-only on the same engine path as `inspect_node`'s schema part, and a node that does
   not resolve says so without its error. The brief is bounded at about 8,000 characters;
   the analyst's selected nodes come first, and any node left out is counted with a pointer
   to `get_pipeline`. Node labels are collapsed to one bounded line, and the block says the
@@ -329,7 +331,7 @@ never authority, and a tighter bound refused ordinary summaries in live runs.
 They are stored as the plan's receipt in the
 plan store beside the plan, outside the hashed plan authority, so wording never changes a
 plan hash; a later identical dry-run replaces the receipt of a plan not yet applied. A
-recipe plan's receipt is its recipe's index summary with no assumptions. The change card
+plan with `recipe` operations is described by the model's own summary like any other. The change card
 shows both as written. The change's headline is derived from the summary: its whitespace
 collapsed to one line and, when that is longer than 100 characters, cut at the last word
 boundary within them with an ellipsis ending the 100 (a single word longer than that is
@@ -370,88 +372,98 @@ and both ends of each added or removed edge). The node ids travel in the origin 
 the canvas receives the update before the change card streams. Updates from the file
 watcher and resyncs carry no origin.
 
-**The tool surface** (complete in v1):
+**The tool surface** is seven task-shaped tools. Each answers one question the model
+asks while authoring, whatever storage layer holds the answer:
 
-- `get_capability_manifest` / `get_capability_descriptors` — the compact installed
-  manifest and a bounded ordered batch of complete closed node, operation, or recipe
-  descriptors. A batch has one kind and one to twelve unique ids, eliminating per-node
-  tool-call pressure for complex authoring. Every returned descriptor is materialised as
-  ordinary finite JSON containers before it crosses the tool boundary; immutable registry
-  wrappers never leak into provider results.
-- `get_authoring_guide` — the complete attributable packaged guide, retrieved on
-  demand rather than embedded in every request, with the structured step grammar
-  (each step kind's fields and the closed step vocabularies) derived from the step
-  renderer.
 - `get_pipeline` — the saved graph: nodes (id, type, name, config summary, and on a
   stepped type its authoring state and value-free per-step summary, as in the graph
   brief), edges,
   a preamble-presence/digest summary (never executable source), and which
   singletons exist.
-- `get_node_config` — one node's restricted structured config. Credential-shaped
-  fields are always redacted; executable code (`code`, `preamble`, `query`,
-  `script`, at any depth, so a free-code step's `code` too) is redacted unless
-  the policy's `allow_executable_source` permits it. The whole result is still
-  treated as `restricted` and is refused unless the configured policy permits
-  that class.
-- `list_datasets` / `get_dataset_schema` — the data files visible to the project
-  and a file's column names and dtypes, with no preview collection or row values.
-  Listing names visible subdirectories and accepts a bounded recursive traversal. Recursive
+- `inspect_node` — one top-level node, in the parts the call names: `schema`, `config`
+  and `profile`, with `schema` alone when the call names none. Each part is checked
+  against the egress policy on its own, so a part the policy denies is listed under
+  `withheld` with the `[assistant.egress]` setting it needs while the permitted parts
+  still answer; a call whose every part is denied is refused with
+  `egress_policy_denied`, carrying the same `withheld` list. A part that fails to resolve
+  fails the call, naming the part.
+  - `schema` (`internal`) — the column names and dtypes at the node's *output* **and on
+    each of its inputs**, resolved by the
+    same execution engine that runs the pipeline: the lazy plan is built up to that node —
+    with exactly the graph preparation a real run performs (submodels flattened, preamble in
+    scope, the saved active source selected) — and its schema is read without collecting any
+    data. Inputs are keyed by the name the node's own code binds, because writing a
+    transform needs the columns arriving at it, not only the ones leaving it — and a node
+    the analyst has asked the assistant to *write* has no output schema to report. Such a
+    node answers with those inputs and a stable reason rather than refusing.
+    This is what lets the agent wire a mid-graph transform against the columns that
+    actually exist *at that point* — post-join, post-derivation — not just the source file's
+    columns. A node emitting several frames reports one schema per output port; the submodel
+    placeholder itself is not addressable (the v1 submodel boundary, as for edits).
+  - `config` (`restricted`) — the node's structured config. Credential-shaped
+    fields are always redacted; executable code (`code`, `preamble`, `query`,
+    `script`, at any depth, so a free-code step's `code` too) is redacted unless
+    the policy's `allow_executable_source` permits it. The whole part is still
+    treated as `restricted` and is withheld unless the configured policy permits
+    that class.
+  - `profile` (`allow_row_samples`) — what the values in a frame actually look like, for
+    the one question a schema cannot answer: how a categorical column encodes itself. A
+    `fault` column typed `String` may hold `Y`/`N`, `true`/`false`, or
+    `at_fault`/`not_at_fault`, and code written against the wrong guess runs, validates,
+    and silently matches nothing. It returns distinct levels with counts for
+    small-cardinality columns, bounds for numerics and dates, and never a row. A column
+    with many distinct values has its values withheld, reducing unnecessary disclosure;
+    low-cardinality strings can still be returned, including repeated personal data. This
+    is the only part that reads project data, and the project's explicit
+    `allow_row_samples` policy is therefore the authorization boundary. The call's
+    optional `input` profiles one of the node's inputs, named as the schema part reports
+    it, instead of the node's own output; `input` without the `profile` part is an
+    invalid request. Its bounded collection runs in the editor's interactive preview
+    worker under the ordinary preview admission and the worker's memory cap, so frames
+    downstream of joins and aggregations profile like any other, and a stopped turn stops
+    its profile. The turn context states the project's effective egress policy in words
+    and requires a profile before a literal comparison only when `allow_row_samples`
+    permits one; otherwise it tells the model to ask the analyst which values to match,
+    beginning `NEEDS_INPUT:`.
+- `find_data` — the data files visible to the project, and, when the call names a file
+  `path`, that file's column names and dtypes too, with no preview collection or row
+  values. Listing names visible subdirectories of one project directory and accepts a
+  bounded recursive traversal. Recursive
   results are deterministically ordered and report truncation rather than silently omitting overflow.
-  Both operations use the installed input-format registry; unavailable
+  It uses the installed input-format registry; unavailable
   optional engines and unsupported extensions are not advertised. Hidden path components
   and explicitly denylisted credential/state names are rejected for both listing and
   schema inspection, even when the caller supplies the path directly.
+- `read_reference` — library content by namespaced id, one to twelve unique ids per call,
+  returned in the order asked: `guide` (the complete attributable packaged authoring
+  guide with the structured step grammar — each step kind's fields and the closed step
+  vocabularies — derived from the step renderer), `node:<node type id>` (the complete
+  closed node descriptor with its node card), `recipe:<recipe id>` (the recipe
+  descriptor with its closed argument schema) and `example:<example name>` (one
+  self-contained packaged teaching view: bounded attribution, narrative, and a graph
+  rendered through the same machinery as a live pipeline with each node's configuration
+  shown whole, values included, rather than as its key names, without inaccessible
+  resource paths). Ids are namespaced because an example and a recipe can share a name.
+  A batch is all-or-nothing: an unknown id is refused with `unknown_reference`, naming
+  the close valid ids. Every returned item is materialised as ordinary finite JSON
+  containers before it crosses the tool boundary; immutable registry wrappers never leak
+  into provider results.
 - `get_project_knowledge` — a bounded, query-selected view of policy-eligible
   source-linked project facts and untrusted documentation evidence. Each item
   carries source digest, extraction version, sensitivity and evidence class;
   excluded content is counted but its path or value is not disclosed.
-- `get_column_profiles` — what the values in a frame actually look like, for the one
-  question a schema cannot answer: how a categorical column encodes itself. A `fault`
-  column typed `String` may hold `Y`/`N`, `true`/`false`, or `at_fault`/`not_at_fault`,
-  and code written against the wrong guess runs, validates, and silently matches nothing.
-  It returns distinct levels with counts for small-cardinality columns, bounds for
-  numerics and dates, and never a row. A column with many distinct values has its values
-  withheld, reducing unnecessary disclosure; low-cardinality strings can still be returned,
-  including repeated personal data. This is the only tool that reads project data, and the
-  project's explicit `allow_row_samples` policy is therefore the authorization boundary.
-  Its bounded collection runs in the editor's interactive preview worker under the
-  ordinary preview admission and the worker's memory cap, so frames downstream of joins
-  and aggregations profile like any other, and a stopped turn stops its profile.
-  The turn context states the project's effective egress policy in words and requires a
-  profile before a literal comparison only when `allow_row_samples` permits one; otherwise
-  it tells the model to ask the analyst which values to match, beginning `NEEDS_INPUT:`.
-- `get_node_schema` — the column names and dtypes at any node's *output* **and on each of
-  its inputs**, resolved by the
-  same execution engine that runs the pipeline: the lazy plan is built up to that node —
-  with exactly the graph preparation a real run performs (submodels flattened, preamble in
-  scope, the saved active source selected) — and its schema is read without collecting any
-  data. Inputs are keyed by the name the node's own code binds, because writing a
-  transform needs the columns arriving at it, not only the ones leaving it — and a node
-  the analyst has asked the assistant to *write* has no output schema to report. Such a
-  node answers with those inputs and a stable reason rather than refusing.
-  This is what lets the agent wire a mid-graph transform against the columns that
-  actually exist *at that point* — post-join, post-derivation — not just the source file's
-  columns. A node emitting several frames reports one schema per output port; the submodel
-  placeholder itself is not addressable (the v1 submodel boundary, as for edits).
-- `get_example` — one self-contained packaged teaching view by name: bounded
-  attribution, narrative, and a graph rendered through the same machinery as a live
-  pipeline with each node's configuration shown whole, values included, rather than as
-  its key names, without inaccessible resource paths.
-- `plan_recipe` — accept one flat, recipe-discriminated invocation, including an optional
-  downstream response-output name plus explicit selected columns, expand it deterministically, and return
-  only an opaque content-addressed recipe-plan receipt; it never writes. Every turn receives
-  the same complete closed discriminated union. The explicit structured `recipe_id`, not a
-  natural-language classifier, selects the branch that the executor validates and plans.
-- `dry_run_recipe_plan` — consume only that hash server-side and produce the same exact
-  revision-bound plan as the primitive dry-run without asking the model to copy, extend, or
-  reconstruct nested recipe JSON.
-- `dry_run_graph_edits` / `apply_graph_plan` — validate an ordered primitive operation
-  batch into an exact revision-bound semantic plan, then apply either kind of stored plan
-  once using the exact returned plan hash. These are the only provider-visible mutation
+- `dry_run_graph_edits` / `apply_graph_plan` — validate an ordered operation batch into an
+  exact revision-bound semantic plan, then apply that stored plan once using the exact
+  returned plan hash. A batch mixes primitive operations with `recipe` operations, each
+  `{"op": "recipe", "recipe": "<recipe id>", "arguments": {...}}` with an optional `ref`
+  naming the node it creates; the recipe expands deterministically into primitive
+  operations inside the same plan, so a recipe and the primitive edits around it are one
+  dry-run, one apply and one change card. These are the only provider-visible mutation
   operations.
 
-**Mutation semantics.** `dry_run_graph_edits` loads a canonical saved-state
-snapshot and passes the closed operation batch through one `build_verified_plan`
+**Mutation semantics.** `dry_run_graph_edits` first expands each `recipe` operation in
+place into its recipe's primitive operations, then loads a canonical saved-state
+snapshot and passes the closed primitive batch through one `build_verified_plan`
 pipeline. That pipeline parses and normalizes the operations once, applies them
 to a deep copy, invokes the save service's public no-write validation, evaluates
 the closed structural postconditions, and resolves affected terminal lazy
@@ -576,14 +588,18 @@ terminate the stream.
 the turn (an internal failure, a policy refusal, an interrupted call, a spent dry-run
 budget, a save that committed unverified, or a result too large for the model's
 context). A failure located in the submitted plan carries `where`: the operation's
-index, the node, and the config field or step id involved. Every operation validation
+index, the node, and the config field or step id involved. At dry-run every operation
+index, in `where` and in a message or `fix`, counts the batch the model sent, never the
+expanded one: a failure inside a recipe's expansion names the `recipe` operation's index,
+and `where` adds its `recipe` id. Every operation validation
 failure (`invalid_ops`) and every `schema_unresolvable`, `op_not_applied`,
-`node_not_ready`, `rename_has_consumers` and `unknown_tool` error carries `fix`, one
-concrete correction. When `where`
+`node_not_ready`, `rename_has_consumers`, recipe argument (`unknown_recipe`,
+`recipe_argument_invalid`, `recipe_plan_invalid`) and `unknown_tool` error carries `fix`,
+one concrete correction. When `where`
 names a node, the error carries `context.inputs`, each incoming input's name and its
 column names; column names are schema metadata and never row values, and the dry-run
 and apply tools run only under a policy that permits saved project metadata (the same
-permission `get_node_schema` needs), so they disclose nothing that tool would not.
+permission `inspect_node`'s schema part needs), so they disclose nothing that part would not.
 `did_you_mean` lists close matches to a misspelt name, drawn only from names the error
 may already disclose: those input and column names, the node ids of the pipeline and of
 the plan for an unknown node reference, and the tool names for an unknown tool. An
@@ -624,21 +640,25 @@ model; the error names the nodes the plan adds, by id and ref.
   affordable nested shape survive. When the same property is an array of different closed
   object variants, their item fields are merged by the same rule instead of discarding the
   item contract; shared requirements remain required and the variant descriptions are retained.
-  Projection has a forty-property budget per tool; this is
-  large enough for the complete structured recipe union without request-dependent schema
-  narrowing, while remaining an explicit bound. A composition that
-  would exceed it remains a generic typed container. Unsupported validation vocabulary is
-  omitted. The complete operation schema remains available through batched capability
-  descriptors and remains the sole execution-time authority, so portability never weakens
+  Projection has a forty-property budget per tool, an explicit bound. A composition that
+  would exceed it remains a generic typed container. A property declared differently on
+  each branch keeps only their common type and joined descriptions: a recipe operation's
+  `arguments` reach the provider as an object whose description gives each recipe's
+  argument names, and the complete argument schema is the `recipe:<id>` reference.
+  Unsupported validation vocabulary is
+  omitted. The complete operation schema remains available through `read_reference` and
+  remains the sole execution-time authority, so portability never weakens
   validation. Some Databricks-hosted OpenAI-compatible models encode function
   arguments whose declared type is an array, object, boolean, integer, or number as a JSON
   string. The Databricks adapter decodes only valid, correctly typed, schema-declared
-  top-level values. A field's declared type comes from the tool's canonical top-level
-  properties or, for a tool whose input is a closed object union such as `plan_recipe`
-  (shown to the provider as one merged object whose `rules`, `tables` and
-  `output_columns` are arrays), from the single canonical branch its discriminator value
-  (`recipe_id`) selects. An unknown or ambiguous discriminator selects no branch, and
-  nothing is decoded. Numeric results must be finite, booleans never satisfy integer or
+  values. A value's declared type comes from the tool's canonical schema at that value's
+  position: the top-level properties, an object's declared properties and an array's
+  declared items, at any depth. Within a closed object union the declared types come from
+  the single canonical branch the discriminator values select, narrowed one discriminator
+  at a time: an operation in `dry_run_graph_edits` selects its branch by `op`, and a
+  `recipe` operation then by `recipe`, so its `arguments` and their `rules`, `tables` and
+  `output_columns` arrays decode by that recipe's argument schema. An unknown or
+  ambiguous discriminator selects no branch, and nothing below it is decoded. Numeric results must be finite, booleans never satisfy integer or
   number declarations, and string or null declarations are never decoded. The adapter
   does not infer a type from an undeclared or ambiguous schema. An
   invalid or wrong-type encoding is left unchanged for the canonical tool validator to
@@ -685,7 +705,7 @@ model; the error names the nodes the plan adds, by id and ref.
   external skills framework was likewise rejected: the tool registry already provides the
   progressive-disclosure mechanism (small index always in the prompt, full content on
   demand), and it works identically across every provider adapter.
-- **Schema comes from the engine, not a parallel inferencer.** `get_node_schema` reuses the
+- **Schema comes from the engine, not a parallel inferencer.** `inspect_node`'s schema part reuses the
   single execution engine's lazy path — build the plan to the target node, read
   `collect_schema()`, collect nothing — the same no-data schema resolution the product
   already performs internally (explore, optimiser pre-flights, deploy schema inference).
@@ -713,7 +733,7 @@ model; the error names the nodes the plan adds, by id and ref.
   Serving them rendered as graphs (not raw source) keeps the few-shot graph shape identical
   to the `get_pipeline` format the model works in. An example's node configurations carry
   their values because they are library content; a live pipeline's are project data, read
-  whole only through `get_node_config` under the egress policy.
+  whole only through `inspect_node`'s config part under the egress policy.
 - **Node cards teach values, and CI executes them.** Key names and a closed schema do not
   say how a breakpoint boundary, an output path or a GLM offset is written, and those are
   where models guess. One hand-authored card per node type holds a minimal and a realistic
@@ -799,15 +819,22 @@ the produced values. At import, every card configuration's keys must lie in its 
 type's closed config schema.
 
 The permanent prompt contains only manifest identity and a compact node,
-operation, recipe, and example index. Full descriptors are retrieved through a
-bounded capability-query operation. An unknown descriptor kind or identifier
-returns `unsupported_capability`; malformed closed input returns
-`invalid_capability_query`. These are tool-level failures and never trigger a
-prompt-owned fallback vocabulary.
+operation, recipe, and example index. Full node and recipe descriptors, the guide and
+the examples are retrieved through the bounded `read_reference` operation. An unknown
+id returns `unknown_reference` with its close valid ids; malformed closed input returns
+`invalid_request`. These are tool-level failures and never trigger a
+prompt-owned fallback vocabulary. Operation descriptors stay in the manifest for the
+registry's own checks; the provider learns an operation from its tool definition.
 
-The manifest is the assistant's only node catalogue. The former `list_node_types`
-tool is removed; a call to it is refused with `tool_removed`, naming the manifest
-operations that replace it.
+The manifest is the assistant's only node catalogue. A removed tool is refused with
+`tool_removed` and a message naming what replaces it, because a resumed session's
+history can still name one: `list_node_types` (replaced by the manifest index and
+`read_reference`), and the tools the task-shaped surface consolidated —
+`get_node_schema`, `get_node_config` and `get_column_profiles` (`inspect_node`),
+`list_datasets` and `get_dataset_schema` (`find_data`), `get_capability_manifest`,
+`get_capability_descriptors`, `get_example` and `get_authoring_guide`
+(`read_reference`), and `plan_recipe` and `dry_run_recipe_plan` (a `recipe` operation in
+`dry_run_graph_edits`).
 
 ## Application services and mutation authority
 
@@ -832,13 +859,14 @@ replacement plan from a previously returned dataset schema or project fact
 while silently dropping that evidence from the plan revision.
 Restart-redacted tool payloads contain no reusable source detail and seed no
 evidence, matching what the provider can actually observe after restart.
-When the model inspects datasets again (`list_datasets` or `get_dataset_schema`),
+When the model inspects datasets again (any `find_data` call),
 dataset-schema evidence whose file no longer exists is dropped, so a dataset renamed
 after it was inspected blocks planning only until the model looks again. A missing or
 changed evidence file fails planning with `project_source_missing` or
 `stale_project_evidence` naming the project-relative file and the call that refreshes it.
 
-`dry_run_graph_edits` accepts the closed primitive operation union, explicit
+`dry_run_graph_edits` accepts the closed operation union (the primitive operations and
+one `recipe` branch per installed recipe), explicit
 postconditions, and the plan's summary and assumptions. The plan it builds holds the
 normalized operations; the base revision; a stable plan hash; semantic node, edge,
 configuration, preamble and sidecar changes; validation warnings; resulting graph shape;
@@ -847,7 +875,8 @@ verification tier the affected capabilities declare; the tool returns the compac
 it described under Mutation semantics. The plan hash is
 canonical over all facts that can affect authorization or verification.
 Canonical request validation recognizes closed object unions discriminated by fields such
-as `op` and `kind`. It selects the declared branch before validation so retry feedback
+as `op` and `kind`, and narrows by a further discriminator when one value selects several
+branches (`recipe` among the `recipe` operations). It selects the declared branch before validation so retry feedback
 names the exact safe schema path and a stable value-free reason, rather than collapsing all
 branch failures to a generic `oneOf` error. Those fields are retained in redacted history;
 submitted values are not. The provider's primitive-operation branches are projected from
@@ -944,22 +973,25 @@ numeric `value`. Optional combined outputs use closed `output_column`, `operatio
 and finite `base_value` fields. The planner validates alignment, scalar values,
 uniqueness, supported operations, and canonical rating normalisation before emitting
 Haute's dynamic-key sidecar form.
-Within one tool executor, a successful recipe call retains its canonical operations and
-postconditions behind the returned recipe-plan hash while returning only recipe identity,
-version, and hash to the provider. Calling the same recipe again replaces the prior pending
-handle so corrected arguments do not leave an ambiguous stale plan. A transform, join, or
+A recipe is invoked as one operation of a `dry_run_graph_edits` batch,
+`{"op": "recipe", "recipe": "<recipe id>", "arguments": {...}}`, and the dry-run expands
+it in place, deterministically, into its primitive operations and postconditions. The
+model never receives, relays, extends or rewrites the expanded operations. Expansion
+reads no project state, so the same arguments expand identically on every dry-run.
+Each expansion's batch-local refs are its own: the node the recipe creates takes the
+operation's optional `ref` (otherwise `recipe_<operation index>`), and a response
+output it adds takes that ref with `_output` appended, so two recipes in one batch never
+collide and a later primitive operation can address the recipe's node by `$ref` — wire an
+edge from it, or update a node beside it, in the same plan. The nodes and edges a recipe
+adds are proved after save by the plan's postconditions like any other operation's. A transform, join, or
 rating recipe's optional `output_name` and non-empty `output_columns` must be supplied
 together; they deterministically add and connect one response `output` node with a
-canonical JSON mapping for exactly those columns inside the same stored plan. The standalone
+canonical JSON mapping for exactly those columns inside the same plan. The standalone
 `response_output` recipe requires `source`, `output_name`, and `output_columns` and
 creates that same mapping directly after the saved source. A bare output name is a material
-mapping ambiguity and requires clarification. `dry_run_recipe_plan` resolves only a live
-handle from that executor and
-accepts no model-authored operations or postconditions; the model never receives, relays,
-extends, or rewrites canonical recipe JSON. Primitive `dry_run_graph_edits` is rejected while
-a recipe handle is pending, and the handle clears only after its successful dedicated
-dry-run. A model therefore cannot discover the specialist contract and then silently
-substitute a generic node.
+mapping ambiguity and requires clarification. A recipe argument failure is a structured
+error located at the `recipe` operation, with `fix` naming the correction and the
+`recipe:<id>` reference that holds the argument schema.
 
 No recognizer reads the analyst's words: the model selects a recipe or primitive
 operations from the recipe index, the node cards and the descriptors. Every request
@@ -994,11 +1026,11 @@ rejection checks run in the ordinary suite, so validation never requires
 importing malformed or executable hostile source.
 Every manifest also declares a required boolean `teaching`. A teaching bundle
 is one the model learns from: it is listed in the system prompt's example
-index and served by `get_example`. A bundle with `teaching: false` is a test
+index and served by `read_reference` as `example:<name>`. A bundle with `teaching: false` is a test
 fixture (the deployment-safety and invalid/adversarial bundles): it is
 validated and materialisable for its specialist checks exactly like a
-teaching bundle, but it is absent from the example index, and `get_example`
-refuses its name as `unknown_example`.
+teaching bundle, but it is absent from the example index, and `read_reference`
+refuses its `example:<name>` id as `unknown_reference`.
 Every bundle is a project the editor accepts: it parses, regenerates through
 the save path's codegen, and accepts a no-op edit through the application
 service's dry-run. Bundles wire nothing out of a node type that has no output
@@ -1010,7 +1042,7 @@ guarantee row order must impose an explicit stable order in its production
 pipeline before asserting those arrays; packaging checks never sort observed
 results to make a nondeterministic fixture pass.
 Teaching bundles are indexed by the system prompt and
-`get_example`; held-out evaluation fixtures live outside assistant package
+`read_reference`; held-out evaluation fixtures live outside assistant package
 resources and cannot be enumerated through those surfaces. Installed
 distribution smoke checks enumerate and validate every bundle and execute the
 declared fast subset.
@@ -1035,7 +1067,7 @@ configuration may narrow but never widen these class ceilings.
 
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
-executable source is available only through `get_node_config` when
+executable source is available only through `inspect_node`'s config part when
 `allow_executable_source` permits it. Resolving a schema still runs the
 preamble and node code over the project's inputs, and that code, or Polars
 itself when a cast or computation meets a bad value, can put row values in an
@@ -1055,7 +1087,8 @@ read: saved graph topology, dataset listings, dataset schemas, node schemas,
 and mutation plans are `internal`; complete node configuration is
 `restricted` even after executable and credential-shaped fields are redacted.
 A `public` policy is therefore denied before any of those resources is read,
-and an `internal` policy is denied before node configuration is parsed. The
+and an `internal` policy withholds `inspect_node`'s config part before node
+configuration is parsed, while the call's schema part still answers. The
 turn context's graph brief, base revision, selection and preview error are
 `internal` too: under a `public` policy the block carries only the policy.
 
@@ -1098,8 +1131,8 @@ specified in [the assistant evaluation](evaluation.md#tiers).
 - **[codegen](../codegen/high-level.md)** — reached only through the save service; the
   assistant never generates `.py` source itself.
 - **[io-layer](../io-layer/high-level.md)** — dataset listing and schema reads back
-  `list_datasets` / `get_dataset_schema`.
-- **[execution-engine](../execution-engine/high-level.md)** — `get_node_schema` and
+  `find_data`.
+- **[execution-engine](../execution-engine/high-level.md)** — `inspect_node`'s schema part and
   dry-run schema validation build the lazy plan through the engine's public facade
   (target-node execution, nothing collected); the assistant adds no schema logic of its
   own. Both declare `schema_only`, the engine flag stating that a caller resolves schemas

@@ -14,7 +14,7 @@ import builtins
 import difflib
 import json
 import unicodedata
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -1026,13 +1026,15 @@ def _explain_unknown_reference(
     refs: Mapping[str, str],
     new_node_ids: Sequence[str],
     graph: PipelineGraph,
+    position: Callable[[int], int],
 ) -> UnknownNodeReferenceError:
     """Say why operation *index* named no node, and the exact fix, from the batch.
 
     The first matching case decides: a bare word an earlier ``add_node``
     declared as its ref; a node a later ``add_node`` adds; an undeclared
     ``$ref``; otherwise a node no operation adds, with close node ids. The
-    reference is never resolved on the model's behalf.
+    reference is never resolved on the model's behalf. *position* gives the
+    index the model sent for an operation of the batch, which the text names.
     """
 
     reference, role = exc.reference, exc.role
@@ -1048,10 +1050,12 @@ def _explain_unknown_reference(
         )
 
     if not is_ref and reference in refs:
-        declared_at = next(
-            position
-            for position, op in enumerate(ops[:index])
-            if isinstance(op, AddNodeOp) and op.ref == reference
+        declared_at = position(
+            next(
+                offset
+                for offset, op in enumerate(ops[:index])
+                if isinstance(op, AddNodeOp) and op.ref == reference
+            )
         )
         node_id = refs[reference]
         return unknown(
@@ -1068,9 +1072,10 @@ def _explain_unknown_reference(
         names = {op.ref} if is_ref else {op.ref, op.name, added_id}
         if bare in names:
             return unknown(
-                f"add_node {added_id!r} at operation {later} comes after this operation, "
-                "and operations apply in order.",
-                f"Move add_node {added_id!r} (operation {later}) before operation {index}.",
+                f"add_node {added_id!r} at operation {position(later)} comes after this "
+                "operation, and operations apply in order.",
+                f"Move add_node {added_id!r} (operation {position(later)}) before operation "
+                f"{position(index)}.",
             )
 
     if is_ref:
@@ -1094,7 +1099,8 @@ def _explain_unknown_reference(
     candidates = [node.id for node in graph.nodes if node.data.nodeType not in _SUBMODEL_TYPES]
     close = difflib.get_close_matches(reference, candidates, n=3, cutoff=0.6)
     add = (
-        f"add {reference!r} with add_node before operation {index}: each dry run is a "
+        f"add {reference!r} with add_node before operation {position(index)}: each dry run "
+        "is a "
         "whole plan, and a node a failed dry run proposed was never kept."
     )
     return unknown(
@@ -1111,19 +1117,28 @@ def _explain_unknown_reference(
     )
 
 
-def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> AppliedOps:
+def _apply_ops_with_refs(
+    graph: PipelineGraph,
+    ops: Sequence[GraphEditOp],
+    positions: Sequence[int] | None = None,
+) -> AppliedOps:
     """Apply a batch to a copy of *graph*.
 
     Operations are evaluated in order.  A validation error can therefore
     refer to an earlier add, rename, or delete, while the caller's original
     graph remains untouched because no operation runs against it directly.
     A failure is stamped with the index of the operation that raised it and
-    the working graph it was judged against.
+    the working graph it was judged against. *positions*, when given, holds
+    each operation's index in the batch the model sent, before its recipe
+    operations expanded; every index a failure or ``writers`` reports is one.
     """
+
+    def position(index: int) -> int:
+        return index if positions is None else positions[index]
 
     raw_ops = list(ops)
     if any(isinstance(op, Mapping) for op in raw_ops):
-        parsed_ops = parse_ops(raw_ops)  # type: ignore[arg-type]
+        parsed_ops = parse_ops(raw_ops, positions)  # type: ignore[arg-type]
     else:
         parsed_ops = raw_ops
 
@@ -1139,12 +1154,12 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
         try:
             if isinstance(op, AddNodeOp):
                 _apply_add_node(working, op, refs, new_node_ids)
-                writers[new_node_ids[-1]] = index
+                writers[new_node_ids[-1]] = position(index)
             elif isinstance(op, UpdateNodeOp):
-                writers[_apply_update_node(working, op, refs, nested_ids)] = index
+                writers[_apply_update_node(working, op, refs, nested_ids)] = position(index)
             elif isinstance(op, EditStepsOp):
                 edited_id, step_ids = _apply_edit_steps(working, op, refs, nested_ids)
-                writers[edited_id] = index
+                writers[edited_id] = position(index)
                 step_changes.update(
                     f"{_semantic_node_id(op.node, refs)}:steps[{step_id}]" for step_id in step_ids
                 )
@@ -1153,12 +1168,12 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
                     working, op, refs, nested_ids, new_node_ids
                 )
                 writers.pop(old_id, None)
-                writers[new_id] = index
+                writers[new_id] = position(index)
                 if old_id in rename_changes:
                     rename_changes[new_id] = rename_changes.pop(old_id)
                 for change in changes:
                     consumer, _, field_name = change.partition(":")
-                    writers[consumer] = index
+                    writers[consumer] = position(index)
                     rename_changes.setdefault(consumer, set()).add(field_name)
             elif isinstance(op, DeleteNodeOp):
                 deleted = _apply_delete_node(working, op, refs, nested_ids, new_node_ids)
@@ -1171,16 +1186,16 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
                 working.preamble = op.preamble
             else:
                 _invalid(
-                    f"Unsupported graph edit operation at index {index}",
+                    f"Unsupported graph edit operation at index {position(index)}",
                     fix="Use an op the dry_run_graph_edits schema lists.",
                 )
         except LocatedPlanError as exc:
             failure = exc
             if isinstance(exc, UnknownNodeReferenceError):
                 failure = _explain_unknown_reference(
-                    exc, parsed_ops, index, refs, new_node_ids, working
+                    exc, parsed_ops, index, refs, new_node_ids, working, position
                 )
-            failure.where = {"op_index": index, **failure.where}
+            failure.where = {"op_index": position(index), **failure.where}
             if failure.graph is None:
                 failure.graph = working
             if failure is exc:
@@ -1188,9 +1203,9 @@ def _apply_ops_with_refs(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> Ap
             raise failure from None
         except ValidationError as exc:
             raise OpValidationError(
-                f"Invalid graph edit operation at index {index}: {exc}",
-                where={"op_index": index},
-                fix=f"Correct operation {index} against the dry_run_graph_edits schema.",
+                f"Invalid graph edit operation at index {position(index)}: {exc}",
+                where={"op_index": position(index)},
+                fix=f"Correct operation {position(index)} against the dry_run_graph_edits schema.",
             ) from exc
 
     _assign_new_positions(working, new_node_ids)
@@ -1346,7 +1361,7 @@ def _evidence_manifest_entry(
     if not resolved.is_file():
         raise AssistantOperationError(
             "project_source_missing",
-            f"Dataset {relative} inspected earlier no longer exists. Call list_datasets "
+            f"Dataset {relative} inspected earlier no longer exists. Call find_data "
             "to see the current datasets, then plan again."
             if evidence.kind == "schema"
             else f"Project source is missing: {relative}. Call get_project_knowledge "
@@ -1361,8 +1376,8 @@ def _evidence_manifest_entry(
     if actual != evidence.digest:
         raise AssistantOperationError(
             "stale_project_evidence",
-            f"Dataset {relative} changed after it was inspected. Call get_dataset_schema "
-            "on it again, then plan again."
+            f"Dataset {relative} changed after it was inspected. Call find_data with "
+            "its path again, then plan again."
             if evidence.kind == "schema"
             else f"Project source {relative} changed after it was retrieved. Call "
             "get_project_knowledge again, then plan again.",
@@ -2672,11 +2687,17 @@ def prepare_graph_edit(
     snapshot: ProjectSnapshot,
     raw_ops: Sequence[Mapping[str, Any]],
     postconditions: Sequence[Mapping[str, Any]] = (),
+    *,
+    positions: Sequence[int] | None = None,
 ) -> PreparedGraphEdit:
-    """Parse, apply, and validate an edit once against one exact snapshot."""
+    """Parse, apply, and validate an edit once against one exact snapshot.
 
-    ops = parse_ops(raw_ops)
-    applied = _apply_ops_with_refs(snapshot.graph, ops)
+    *positions* holds each operation's index in the batch the model sent,
+    which every located failure reports.
+    """
+
+    ops = parse_ops(raw_ops, positions)
+    applied = _apply_ops_with_refs(snapshot.graph, ops, positions)
     result, refs = applied.graph, applied.refs
     diff = _semantic_diff(snapshot.graph, result, ops, applied)
     try:

@@ -1263,7 +1263,8 @@ the server process's already-initialised Polars pool.
 
 ### Assistant interaction
 
-`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
+`src/haute/assistant/_tools.py::node_schema`, the schema part of the assistant's
+`inspect_node` tool, is a cross-component caller of
 the public lazy-execution facade. It validates the target against the original
 hierarchical graph, flattens submodels for execution, compiles the saved
 preamble with the pipeline directory, selects the graph's saved active source,

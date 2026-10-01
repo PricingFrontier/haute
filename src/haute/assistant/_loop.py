@@ -57,11 +57,11 @@ _MUTATION_COMMITTED_UNVERIFIED_DETAIL = (
 # The error code an apply returns when its save committed but post-save
 # verification did not complete (`CommittedVerificationError`).
 _COMMITTED_UNVERIFIED_ERROR_CODE = "verification_failed"
-_DRY_RUN_TOOLS = frozenset({"dry_run_graph_edits", "dry_run_recipe_plan"})
+_DRY_RUN_TOOLS = frozenset({"dry_run_graph_edits"})
 # A malformed call is rejected by the closed input schema before any plan is
 # built, so it says the request was spelled wrong, not that the plan is wrong.
 # It counts against the same budget, but the blocker names it for what it is.
-_MALFORMED_CALL_ERROR_CODES = frozenset({"invalid_request", "invalid_capability_query"})
+_MALFORMED_CALL_ERROR_CODES = frozenset({"invalid_request"})
 # Failed dry-runs a turn allows while each makes progress; see `_DryRunProgress`.
 _MAX_FAILED_DRY_RUNS = 4
 _DRY_RUN_STOP_REASONS = {
@@ -198,15 +198,14 @@ _PROMPT_INTENT_AND_RECIPE_ROUTING = (
     "Treat explicit authoring language as mutation "
     "intent: Build, add, change, update, connect, remove, and delete each require "
     "authoring unless the user clearly asks only for an explanation. When the "
-    "requested operation matches an installed deterministic recipe, prefer "
-    "`plan_recipe`. The explicit structured recipe_id selects "
-    "the recipe. If the request "
-    "also asks for a response output, pass `output_name` and `output_columns` together; "
-    "a name without explicit selected columns is material ambiguity. Pass only the "
-    "returned `recipe_plan_hash` to `dry_run_recipe_plan`; never copy, extend, or "
-    "reconstruct recipe operations, never first dry-run a specialist contract "
-    "or substitute a generic node. The compact manifest is already present, so do "
-    "not call `get_capability_manifest` merely to rediscover it. "
+    "requested operation matches an installed deterministic recipe, prefer a recipe "
+    'operation in `dry_run_graph_edits`: `{"op": "recipe", "recipe": "<recipe id>", '
+    '"arguments": {...}}`. It expands into the recipe\'s nodes and edges inside the '
+    "same plan, beside any primitive operations the request also needs; give it a "
+    "`ref` to address the node it creates from later operations. If the request "
+    "also asks for a response output, pass `output_name` and `output_columns` together "
+    "in its arguments; a name without explicit selected columns is material ambiguity. "
+    "Never substitute a generic node for a recipe's node. "
 )
 
 
@@ -267,9 +266,9 @@ _PROMPT_MUTATION_WORKFLOW = (
     "start from the graph brief, select a recipe or primitive operations, dry-run, "
     "apply only through the mutation tool, and report "
     "only the verification tier and result the tool actually returned. "
-    "For primitive plans, retrieve complete descriptors for every node type you will "
-    "add or configure before the first dry run, batching them in one call where "
-    "possible. Read their ports, "
+    "For primitive operations, read the descriptor (`node:<node type id>`) of every "
+    "node type you will add or configure before the first dry run, in one "
+    "`read_reference` call where possible. Read their ports, "
     "wiring rules, closed config schemas, enums, anti-patterns, and card, and write "
     "each config in the shape of the card's configurations; do not use dry-run "
     "failures to discover the contract. Every newly "
@@ -331,7 +330,7 @@ def build_system_prompt(*, source_file: str) -> str:
 
     # Bundle IDs are intentionally descriptive and are the only exemplar
     # material kept permanently in context. Summaries and complete narratives
-    # remain available on demand through get_example.
+    # remain available on demand through read_reference.
     exemplar_lines = [f"- `{name}`" for name, _summary in example_index()]
     manifest = compact_manifest(capability_manifest())
 
@@ -421,11 +420,11 @@ def build_system_prompt(*, source_file: str) -> str:
             "### Structured recipe selection (Recipe index)",
             recipe_index,
             (
-                "When a request matches one of these summaries, prefer `plan_recipe` "
-                "before dry-run and select its recipe_id explicitly. If a response output is "
-                "requested, pass `output_name` and `output_columns` together. Then pass "
-                "only the returned `recipe_plan_hash` to `dry_run_recipe_plan`; never "
-                "copy or reconstruct recipe operations."
+                "When a request matches one of these summaries, write it as a recipe "
+                "operation in `dry_run_graph_edits`, naming the recipe explicitly; "
+                "`recipe:<recipe id>` in `read_reference` gives its full argument schema. "
+                "If a response output is requested, pass `output_name` and "
+                "`output_columns` together."
             ),
             "### Installed I/O availability",
             installed_io_summary(),
@@ -434,9 +433,9 @@ def build_system_prompt(*, source_file: str) -> str:
             "### Operation index",
             operation_ids,
             (
-                "Retrieve complete descriptors with `get_capability_descriptors`, batching "
-                "one to twelve ids per call; do not infer omitted configuration or policy "
-                "facts."
+                "Read complete references with `read_reference`, one to twelve ids per "
+                "call: `node:<node type id>`, `recipe:<recipe id>`, `example:<example name>` "
+                "and `guide`; do not infer omitted configuration or policy facts."
             ),
         )
     )
@@ -451,9 +450,8 @@ def build_system_prompt(*, source_file: str) -> str:
             + _PROMPT_UNAVAILABLE_OPERATIONS,
             manifest_section,
             (
-                "Detailed library guidance is progressive: call "
-                "`get_authoring_guide`, `get_capability_descriptors`, or `get_example` "
-                "only when the task needs it."
+                "Detailed library guidance is progressive: call `read_reference` only "
+                "when the task needs it."
             ),
             "## Packaged exemplar pipelines\n" + "\n".join(exemplar_lines),
             f"## Project facts\n- Source file: `{source_file}`",

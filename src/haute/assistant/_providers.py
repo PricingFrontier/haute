@@ -588,14 +588,19 @@ def _same_json_value(left: object, right: object) -> bool:
 
 def _discriminated_branch_properties(
     schema: Mapping[str, object],
-    arguments: Mapping[str, Any],
+    value: Mapping[str, Any],
 ) -> Mapping[str, object] | None:
-    """Return the properties of the one closed-object branch the arguments select.
+    """Return the properties of the one closed-object branch *value* selects.
 
-    A discriminator is a property every branch declares with ``const``/``enum``
-    values. The branch is selected only when exactly one branch admits every
-    discriminator value the arguments carry; otherwise there is no declared
-    type to decode against, and the canonical validator names the problem.
+    A discriminator is a property every remaining branch declares with
+    ``const``/``enum`` values. While several branches remain, the first
+    discriminator whose values differ between them narrows them by the value's
+    own; once one remains, every discriminator it still declares must admit
+    the value too. An operation therefore selects its branch by ``op``, and a
+    ``recipe`` operation then by ``recipe``. A missing or unmatched
+    discriminator, or branches no discriminator separates, select nothing:
+    there is no declared type to decode against, and the canonical validator
+    names the problem.
     """
 
     raw_branches: object = None
@@ -605,13 +610,13 @@ def _discriminated_branch_properties(
             break
     if not isinstance(raw_branches, Sequence) or isinstance(raw_branches, (str, bytes)):
         return None
-    branch_properties: list[Mapping[str, object]] = []
+    remaining: list[Mapping[str, object]] = []
     for branch in raw_branches:
         properties = branch.get("properties") if isinstance(branch, Mapping) else None
         if not isinstance(properties, Mapping):
             return None
-        branch_properties.append(properties)
-    if not branch_properties:
+        remaining.append(properties)
+    if not remaining:
         return None
 
     def allowed_values(properties: Mapping[str, object], name: str) -> tuple[object, ...] | None:
@@ -620,60 +625,52 @@ def _discriminated_branch_properties(
             return None
         return _portable_allowed_values(property_schema)
 
-    discriminators = [
-        name
-        for name in branch_properties[0]
-        if all(allowed_values(properties, name) is not None for properties in branch_properties)
-    ]
-    if not discriminators or not all(name in arguments for name in discriminators):
-        return None
-    selected = [
-        properties
-        for properties in branch_properties
-        if all(
-            any(
-                _same_json_value(arguments[name], allowed)
+    used: set[str] = set()
+    while True:
+        candidates = [
+            name
+            for name in remaining[0]
+            if name not in used
+            and all(allowed_values(properties, name) is not None for properties in remaining)
+            and (
+                len(remaining) == 1
+                or len({repr(allowed_values(properties, name)) for properties in remaining}) > 1
+            )
+        ]
+        if not candidates:
+            return remaining[0] if len(remaining) == 1 else None
+        name = candidates[0]
+        if name not in value:
+            return None
+        remaining = [
+            properties
+            for properties in remaining
+            if any(
+                _same_json_value(value[name], allowed)
                 for allowed in allowed_values(properties, name) or ()
             )
-            for name in discriminators
-        )
-    ]
-    return selected[0] if len(selected) == 1 else None
+        ]
+        if not remaining:
+            return None
+        used.add(name)
 
 
-def _normalise_databricks_tool_arguments(
-    arguments: Mapping[str, Any],
-    schema: Mapping[str, object],
-) -> dict[str, Any]:
-    """Decode Databricks' stringified top-level JSON values by schema.
+def _decode_databricks_value(value: Any, schema: Mapping[str, object], path: str) -> Any:
+    """Decode one value, and what it contains, by the canonical schema at its position.
 
-    Databricks-hosted Qwen models have been observed to return a valid outer
-    function-arguments object while encoding container and scalar properties as
-    JSON strings. Only fields whose canonical schema exclusively declares a
-    compatible JSON type are eligible. Strings, nulls, nested values, ambiguous
-    schemas, and non-finite numbers are left untouched. Invalid or wrong-type
-    encodings remain strings so canonical tool validation can reject them as
-    recoverable invalid input. A closed object union without top-level
-    properties (``plan_recipe``) declares its fields on the one branch its
-    discriminator value selects; no selected branch means no eligible field.
+    A string is decoded only when the schema exclusively declares a compatible
+    JSON type and the decoded value has that type; otherwise it stays a
+    string for the canonical validator. An object's declared properties, an
+    object union's selected branch and an array's declared items are walked
+    the same way, so a recipe operation's ``arguments`` decode by that
+    recipe's argument schema. A schema that declares nothing below a value
+    leaves it as sent.
     """
 
-    top_level = schema.get("properties")
-    properties = (
-        top_level
-        if isinstance(top_level, Mapping)
-        else _discriminated_branch_properties(schema, arguments)
-    )
-    if properties is None:
-        return dict(arguments)
-    normalised = dict(arguments)
-    for field, value in arguments.items():
-        field_schema = properties.get(field)
-        if not isinstance(value, str) or not isinstance(field_schema, Mapping):
-            continue
-        expected = _declared_compatible_types(field_schema)
+    if isinstance(value, str):
+        expected = _declared_compatible_types(schema)
         if not expected:
-            continue
+            return value
         try:
             decoded = json.loads(value, parse_constant=_reject_json_constant)
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -684,22 +681,66 @@ def _normalise_databricks_tool_arguments(
             # redacted session record cannot tell apart after the fact.
             logger.warning(
                 "assistant_databricks_argument_decode_failed",
-                field=field,
+                field=path,
                 declared_types=sorted(expected),
                 encoded_length=len(value),
                 looks_like_json_container=value.lstrip()[:1] in {"[", "{"},
             )
-            continue
-        if _matches_declared_json_type(decoded, expected):
-            normalised[field] = decoded
-        else:
+            return value
+        if not _matches_declared_json_type(decoded, expected):
             logger.warning(
                 "assistant_databricks_argument_decoded_wrong_type",
-                field=field,
+                field=path,
                 declared_types=sorted(expected),
                 decoded_type=type(decoded).__name__,
             )
-    return normalised
+            return value
+        value = decoded
+    if isinstance(value, Mapping):
+        declared = schema.get("properties")
+        properties = (
+            declared
+            if isinstance(declared, Mapping)
+            else _discriminated_branch_properties(schema, value)
+        )
+        if properties is None:
+            return value
+        decoded_object: dict[str, Any] = {}
+        for key, item in value.items():
+            declared_schema = properties.get(key)
+            decoded_object[key] = (
+                _decode_databricks_value(item, declared_schema, f"{path}.{key}" if path else key)
+                if isinstance(declared_schema, Mapping)
+                else item
+            )
+        return decoded_object
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            return [
+                _decode_databricks_value(item, items, f"{path}[{index}]")
+                for index, item in enumerate(value)
+            ]
+    return value
+
+
+def _normalise_databricks_tool_arguments(
+    arguments: Mapping[str, Any],
+    schema: Mapping[str, object],
+) -> dict[str, Any]:
+    """Decode Databricks' stringified JSON values by the tool's canonical schema.
+
+    Databricks-hosted Qwen models have been observed to return a valid outer
+    function-arguments object while encoding container and scalar properties as
+    JSON strings, at the top level and inside a recipe operation's arguments.
+    Only values whose canonical schema exclusively declares a compatible JSON
+    type are eligible, wherever the schema declares them. Strings, nulls,
+    undeclared values, ambiguous schemas, and non-finite numbers are left
+    untouched. Invalid or wrong-type encodings remain strings so canonical tool
+    validation can reject them as recoverable invalid input.
+    """
+
+    return dict(_decode_databricks_value(arguments, schema, ""))
 
 
 def _load_anthropic_client(config: AssistantConfig) -> Any:

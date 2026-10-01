@@ -10,7 +10,7 @@
           "calls": [
             {
               "id": "schema",
-              "tool": "get_node_schema",
+              "tool": "inspect_node",
               "arguments": {
                 "node": "quotes"
               },

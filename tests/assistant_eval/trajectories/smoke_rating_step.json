@@ -22,65 +22,56 @@
           "text": "",
           "calls": [
             {
-              "id": "recipe",
-              "tool": "plan_recipe",
-              "arguments": {
-                "recipe_id": "rating_step",
-                "source": "quotes",
-                "name": "age_rating",
-                "tables": [
-                  {
-                    "factors": [
-                      "driver_age"
-                    ],
-                    "output_column": "age_factor",
-                    "entries": [
-                      {
-                        "factor_values": [
-                          20
-                        ],
-                        "value": 1.3
-                      },
-                      {
-                        "factor_values": [
-                          40
-                        ],
-                        "value": 1.0
-                      }
-                    ],
-                    "default_value": 1.0
-                  }
-                ],
-                "combined_outputs": [
-                  {
-                    "output_column": "technical_premium",
-                    "operation": "multiply",
-                    "base_value": 100
-                  }
-                ],
-                "output_name": "age_price_response",
-                "output_columns": [
-                  "quote_id",
-                  "age_factor",
-                  "technical_premium"
-                ]
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
               "id": "dry",
-              "tool": "dry_run_recipe_plan",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "recipe.recipe_plan_hash"
-                }
+                "summary": "Rate quotes by driver age in a new age_rating step.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "rating_step",
+                    "arguments": {
+                      "source": "quotes",
+                      "name": "age_rating",
+                      "tables": [
+                        {
+                          "factors": [
+                            "driver_age"
+                          ],
+                          "output_column": "age_factor",
+                          "entries": [
+                            {
+                              "factor_values": [
+                                20
+                              ],
+                              "value": 1.3
+                            },
+                            {
+                              "factor_values": [
+                                40
+                              ],
+                              "value": 1.0
+                            }
+                          ],
+                          "default_value": 1.0
+                        }
+                      ],
+                      "combined_outputs": [
+                        {
+                          "output_column": "technical_premium",
+                          "operation": "multiply",
+                          "base_value": 100
+                        }
+                      ],
+                      "output_name": "age_price_response",
+                      "output_columns": [
+                        "quote_id",
+                        "age_factor",
+                        "technical_premium"
+                      ]
+                    }
+                  }
+                ]
               },
               "result": {
                 "status": "ok"

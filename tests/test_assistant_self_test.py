@@ -591,7 +591,8 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
     assert result.evidence == "live"
     assert (result.telemetry.applied_plans, result.telemetry.change_cards) == (1, 1)
     assert "banding" in result.node_types
-    assert result.telemetry.provider_round_trips == 5
+    # Read the graph, dry-run the recipe operation, apply, then answer.
+    assert result.telemetry.provider_round_trips == 4
     assert provider.system is not None
     assert "Project egress policy" not in provider.system
     assert provider.first_messages is not None

@@ -1926,18 +1926,18 @@ class TestSystemPrompt:
         assert '"config_schema"' not in prompt
         guide_first_line = authoring_guide().strip().splitlines()[0].lstrip("# ").strip()
         assert guide_first_line not in prompt
-        assert "`get_authoring_guide`" in prompt
+        assert "call `read_reference` only when the task needs it" in prompt
         assert "`categorical_banding`: Create a categorical banding factor." in prompt
         assert "continuous_banding" not in prompt
         assert "file: input=yes, output=yes" in prompt
         assert '"input_fields"' not in prompt
         assert len(prompt) < 15_000
         assert prompt.index("### Structured recipe selection") < prompt.index("### Node index")
-        assert "prefer `plan_recipe`" in prompt
-        assert "`dry_run_recipe_plan`" in prompt
-        assert "never copy, extend, or reconstruct recipe operations" in prompt
+        assert "prefer a recipe operation in `dry_run_graph_edits`" in prompt
+        assert '`{"op": "recipe", "recipe": "<recipe id>", "arguments": {...}}`' in prompt
+        assert "plan_recipe" not in prompt
         assert "output_name` and `output_columns` together" in prompt
-        assert "only the returned `recipe_plan_hash`" in prompt
+        assert "`node:<node type id>`, `recipe:<recipe id>`, `example:<example name>`" in prompt
         for name, _summary in example_index():
             assert name in prompt
         assert "main.py" in prompt
@@ -1961,13 +1961,21 @@ class TestSystemPrompt:
         from haute.assistant._tools import TOOL_DEFINITIONS
 
         routed = _provider_tools(TOOL_DEFINITIONS)
-        recipe_tool = next(tool for tool in routed if tool["name"] == "plan_recipe")
-        schema = recipe_tool["input_schema"]
+        dry_run = next(tool for tool in routed if tool["name"] == "dry_run_graph_edits")
+        branches = dry_run["input_schema"]["properties"]["ops"]["items"]["oneOf"]
 
         assert tuple(inspect.signature(_provider_tools).parameters) == ("tools",)
         assert routed == tuple(TOOL_DEFINITIONS)
-        assert len(schema["oneOf"]) == 4
-        assert schema["additionalProperties"] is False
+        assert [tool["name"] for tool in routed] == [
+            "get_pipeline",
+            "inspect_node",
+            "find_data",
+            "read_reference",
+            "get_project_knowledge",
+            "dry_run_graph_edits",
+            "apply_graph_plan",
+        ]
+        assert sum(branch["properties"]["op"].get("const") == "recipe" for branch in branches) == 4
 
     def test_build_system_prompt_pins_authority_and_untrusted_content_boundaries(self):
         from haute.assistant._loop import build_system_prompt
@@ -1982,7 +1990,7 @@ class TestSystemPrompt:
         assert "must not end after merely announcing a future tool call" in prompt
         assert "Never claim an apply succeeded" in prompt
         assert "Build, add, change, update, connect, remove, and delete" in prompt
-        assert "prefer `plan_recipe`" in prompt
+        assert "prefer a recipe operation" in prompt
         assert "up to four failed dry-runs" in prompt
         assert "a failed plan is resent unchanged" in prompt
         assert "every retry must change what the error names" in prompt
@@ -1994,7 +2002,7 @@ class TestSystemPrompt:
         assert "Never resend or reconstruct operations" in prompt
         assert "Every newly added node must be connected" in prompt
         assert "assign the transformed result to `df`" in prompt
-        assert "for every node type you will add or configure" in prompt
+        assert "of every node type you will add or configure" in prompt
         assert "before the first dry run" in prompt
 
         assert "Pipeline execution and external writes are unavailable" in prompt
@@ -2035,7 +2043,7 @@ class TestSystemPrompt:
         assert "## Project facts\n- Source file: `main.py`" in prompt
         assert "Project egress policy" not in prompt
         assert "Pipeline:" not in prompt
-        assert "first call `get_column_profiles`" not in prompt
+        assert "first call `inspect_node`" not in prompt
         assert "The egress policy in the turn context says whether you profile" in prompt
         assert "dry-run from it without reading the graph first" in prompt
 
@@ -2052,7 +2060,7 @@ class TestSystemPrompt:
             assert "- Project knowledge: permitted" in prompt
             assert "- Executable source: not permitted" in prompt
 
-        requirement = "first call `get_column_profiles` for that frame"
+        requirement = 'first call `inspect_node` with parts ["profile"] for that frame'
         assert requirement in permitted
         assert "- Column value profiles: permitted" in permitted
 
@@ -2061,69 +2069,37 @@ class TestSystemPrompt:
         assert "ask the analyst which values to match" in denied
         assert "begin the response with `NEEDS_INPUT:`" in denied
 
-    def test_routed_rating_recipe_is_fully_typed_on_provider_wire(self):
+    def test_recipe_operations_reach_the_provider_wire_within_the_property_budget(self):
+        """The recipe branches merge into the operation object: `recipe` is one enum,
+        `arguments` an object whose description names each recipe's arguments, and
+        the primitive edit and postcondition items keep their contracts."""
+
         from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _portable_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
         routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
-        schema = next(tool["input_schema"] for tool in routed if tool["name"] == "plan_recipe")
-        table = schema["properties"]["tables"]["items"]
-        entry = table["properties"]["entries"]["items"]
-        combined = schema["properties"]["combined_outputs"]["items"]
+        schema = next(
+            tool["input_schema"] for tool in routed if tool["name"] == "dry_run_graph_edits"
+        )
+        operation = schema["properties"]["ops"]["items"]["properties"]
 
-        assert set(table["properties"]) == {
-            "factors",
-            "output_column",
-            "entries",
-            "default_value",
+        assert "recipe" in operation["op"]["enum"]
+        assert operation["recipe"] == {
+            "enum": ["categorical_banding", "rating_step", "reference_join", "response_output"]
         }
-        assert set(entry["properties"]) == {"factor_values", "value"}
-        assert set(combined["properties"]) == {
-            "output_column",
-            "operation",
-            "base_value",
+        assert operation["arguments"]["type"] == "object"
+        description = operation["arguments"]["description"]
+        assert "rules [{value, assignment}]" in description
+        assert "tables [{factors, output_column, entries [{factor_values, value}], " in description
+        assert "response_output arguments: source, output_name, output_columns." in description
+        assert set(operation["edits"]["items"]["properties"]) == {
+            "insert_after",
+            "step",
+            "replace",
+            "remove",
         }
-        assert combined["properties"]["operation"]["enum"] == ["multiply", "add", "min", "max"]
-
-    def test_full_recipe_contract_carries_categorical_rules_on_provider_wire(self):
-        from haute.assistant._loop import _provider_tools
-        from haute.assistant._providers import _portable_tools
-        from haute.assistant._tools import TOOL_DEFINITIONS
-
-        routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
-        schema = next(tool["input_schema"] for tool in routed if tool["name"] == "plan_recipe")
-        rule = schema["properties"]["rules"]["items"]
-
-        assert "oneOf" not in schema
-        assert schema["properties"]["recipe_id"]["enum"] == [
-            "categorical_banding",
-            "rating_step",
-            "reference_join",
-            "response_output",
-        ]
-        assert set(rule["properties"]) == {"value", "assignment"}
-        assert set(rule["required"]) == {"value", "assignment"}
-        assert schema["additionalProperties"] is False
-
-    def test_full_recipe_contract_retains_response_output_fields_on_provider_wire(self):
-        from haute.assistant._loop import _provider_tools
-        from haute.assistant._providers import _portable_tools
-        from haute.assistant._tools import TOOL_DEFINITIONS
-
-        routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
-        schema = next(tool["input_schema"] for tool in routed if tool["name"] == "plan_recipe")
-
-        assert "oneOf" not in schema
-        assert "response_output" in schema["properties"]["recipe_id"]["enum"]
-        assert {
-            "recipe_id",
-            "source",
-            "output_name",
-            "output_columns",
-        } <= set(schema["properties"])
-        assert schema["required"] == ["recipe_id"]
-        assert schema["additionalProperties"] is False
+        assert "kind" in schema["properties"]["postconditions"]["items"]["properties"]
 
     def test_dataset_tool_schema_is_the_same_for_every_request(self):
         from haute.assistant._loop import _provider_tools
@@ -2131,10 +2107,11 @@ class TestSystemPrompt:
         from haute.assistant._tools import TOOL_DEFINITIONS
 
         routed = _portable_tools(_provider_tools(TOOL_DEFINITIONS))
-        schema = next(tool["input_schema"] for tool in routed if tool["name"] == "list_datasets")
+        schema = next(tool["input_schema"] for tool in routed if tool["name"] == "find_data")
 
-        assert schema["properties"]["project_root"] == {"type": "string"}
+        assert schema["properties"]["directory"]["type"] == "string"
         assert schema["properties"]["recursive"] == {"type": "boolean"}
+        assert schema["properties"]["path"]["type"] == "string"
         assert "required" not in schema
         assert schema["additionalProperties"] is False
 

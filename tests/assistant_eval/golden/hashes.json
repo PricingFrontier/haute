@@ -1,9 +1,9 @@
 {
-  "system_prompt.md": "8ce2de425daae92a99f15872761eec8c0c1724661910fe50edda8b2488a8af32",
-  "turn_context_1.md": "8b8783d413ddc251a61410369334bf3962d335a68f1785d858583df203d49d7c",
-  "turn_context_2.md": "fbb94330ae56d7cbef519c7afafbd4d1f8c540b13f7db48ffaf68b6f26c49fdc",
+  "system_prompt.md": "64ff5cac4ca32fd51ec7fc64ce4e1159342f9af86b9d826ab403665806bb967c",
+  "turn_context_1.md": "a2f40366fd2f19b74a246361feed70e0fa9087f425c7817b44605b2fd3ed6e0b",
+  "turn_context_2.md": "c5f8ad24288ca2149f3b34e27a53186c2b37a828d844a29d2e8ed463ea37a2ae",
   "context_update.md": "cd554f07042df087772623b58686c3861610237c5d60e18760ceef0da4dea25a",
-  "tools_canonical.json": "97bd5cfeb67dd93efdce263af7aea35d181937899f8d9f94e4c99a121882098e",
-  "tools_anthropic.json": "d775874629f3f3a59fe1248da0bb2069dd6a4d77686e0ba15191135b22594c6d",
-  "tools_openai.json": "da864be8aef2f194f9b2c70450f1a8b1f9d1a30aa9097cdd738dc75984a27490"
+  "tools_canonical.json": "0ab5c4a9c51e4ec8a287be4b7cb5b3f124f97961bd34c9725170014ab3fac1ee",
+  "tools_anthropic.json": "6af61b13255e806797a4473570439f341dd04d218d2202a1819ad0b469caaa30",
+  "tools_openai.json": "ed31052e1862e548229a834d21ab531a92831c76808f3e1d41edc5cacded569b"
 }

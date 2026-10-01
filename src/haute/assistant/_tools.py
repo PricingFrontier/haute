@@ -67,10 +67,10 @@ from haute.assistant._application import (
     PreambleFailedError,
     SchemaUnresolvableError,
 )
-from haute.assistant._assets import authoring_guide, load_example
+from haute.assistant._assets import authoring_guide, example_index, load_example
 from haute.assistant._catalog import (
+    INSPECT_NODE_PARTS,
     capability_manifest,
-    compact_manifest,
     materialise_json,
     step_grammar,
 )
@@ -87,8 +87,7 @@ from haute.assistant._ops import (
     dataset_schema_digest,
 )
 from haute.assistant._project_knowledge import build_project_knowledge, query_project_knowledge
-from haute.assistant._recipes import RecipeError, recipe_manifest
-from haute.assistant._recipes import plan_recipe as _plan_recipe
+from haute.assistant._recipes import RecipeOperationError, expand_recipe_operations
 from haute.assistant._render import (
     BriefFrame,
     BriefInput,
@@ -140,15 +139,12 @@ _MAX_TOOL_CONTEXT_BYTES = 256_000
 _MAX_LISTED_DATASETS = 200
 _MAX_LISTED_DATASET_DIRECTORIES = 200
 _MAX_VISITED_DATASET_DIRECTORIES = 500
+# Tools refused outright under a `public` policy: everything they answer is
+# internal project metadata. `inspect_node` checks each part it answers instead.
 _INTERNAL_PROJECT_TOOLS = frozenset(
     {
         "get_pipeline",
-        "get_node_schema",
-        "get_node_config",
-        "get_column_profiles",
-        "list_datasets",
-        "get_dataset_schema",
-        "dry_run_recipe_plan",
+        "find_data",
         "dry_run_graph_edits",
         "apply_graph_plan",
     }
@@ -156,10 +152,8 @@ _INTERNAL_PROJECT_TOOLS = frozenset(
 _SAVE_LOCK_READ_TOOLS = frozenset(
     {
         "get_pipeline",
-        "get_node_schema",
-        "get_node_config",
-        "get_column_profiles",
-        "get_dataset_schema",
+        "inspect_node",
+        "find_data",
         "get_project_knowledge",
     }
 )
@@ -312,7 +306,7 @@ def _input_columns(
     """Each incoming input's code-visible name and column names at *node*.
 
     Resolved schema-only, once per source, on the same engine path as
-    `get_node_schema`, so each name is one that tool would disclose.
+    `inspect_node`'s schema part, so each name is one that part would disclose.
     `input_name` narrows the result to that one input. An input whose source
     does not resolve is left out and is never an error of its own.
     """
@@ -671,15 +665,18 @@ def _input_schemas_independently(
         except Exception as exc:  # noqa: BLE001 - one unresolvable input is reportable
             resolved[item.name] = {
                 "unresolved_reason": _execution_error_message(
-                    exc, operation="get_node_schema", site=_FailureSite(graph, item.source)
+                    exc, operation="inspect_node", site=_FailureSite(graph, item.source)
                 ),
                 "source": item.source,
             }
     return resolved
 
 
-def get_node_schema(source_file: str, node: str) -> dict[str, object]:
-    """Resolve one top-level executable node's output and input schemas."""
+def node_schema(source_file: str, node: str) -> dict[str, object]:
+    """`inspect_node`'s schema part: one top-level node's output and input schemas.
+
+    The caller has checked the egress policy permits the part.
+    """
 
     try:
         graph = _parse_graph(source_file)
@@ -692,7 +689,7 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "schema_unresolvable",
-            _error_message(exc, operation="get_node_schema"),
+            _error_message(exc, operation="inspect_node"),
         )
 
     try:
@@ -717,7 +714,7 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
             return _error(
                 "schema_unresolvable",
                 _execution_error_message(
-                    exc, operation="get_node_schema", site=_FailureSite(graph, node)
+                    exc, operation="inspect_node", site=_FailureSite(graph, node)
                 ),
             )
         # An authored-but-empty transform (no code, or a step list still
@@ -736,9 +733,7 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "schema_unresolvable",
-            _execution_error_message(
-                exc, operation="get_node_schema", site=_FailureSite(graph, node)
-            ),
+            _execution_error_message(exc, operation="inspect_node", site=_FailureSite(graph, node)),
         )
 
 
@@ -1057,15 +1052,17 @@ async def context_update(
     return render_context_update(update)
 
 
-def get_node_config(source_file: str, node: str) -> dict[str, object]:
-    """Return policy-eligible config with executable and secret values redacted."""
+def node_config(source_file: str, node: str) -> dict[str, object]:
+    """`inspect_node`'s config part, with executable and secret values redacted by policy."""
 
     try:
         policy = resolve_egress_policy(Path.cwd().resolve())
-        if policy.max_sensitivity != "restricted":
+        required = _part_requirement(policy, "config")
+        if required is not None:
             return _error(
                 "egress_policy_denied",
                 "Saved node configuration is restricted and exceeds the provider policy.",
+                required_policy=required,
                 required_sensitivity="restricted",
                 max_sensitivity=policy.max_sensitivity,
             )
@@ -1088,7 +1085,7 @@ def get_node_config(source_file: str, node: str) -> dict[str, object]:
             "project_revision": project_revision,
         }
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
-        return _error("node_config_unavailable", _error_message(exc, operation="get_node_config"))
+        return _error("node_config_unavailable", _error_message(exc, operation="inspect_node"))
 
 
 def _profile_value(value: object) -> object:
@@ -1200,12 +1197,13 @@ def _prepare_column_profile(
 
     try:
         policy = resolve_egress_policy(Path.cwd().resolve())
-        if not policy.allow_row_samples:
+        required = _part_requirement(policy, "profile")
+        if required is not None:
             return _error(
                 "egress_policy_denied",
-                "Column value profiles read project data. Set "
-                "[assistant.egress].allow_row_samples to enable them.",
-                required_policy="allow_row_samples",
+                f"Column value profiles read project data. Set [assistant.egress] {required} "
+                "to enable them.",
+                required_policy=required,
             )
         graph = _parse_graph(source_file)
         validation_error = _validate_top_level_target(graph, node)
@@ -1214,7 +1212,7 @@ def _prepare_column_profile(
         project_revision = _project_revision(source_file, graph)
         inputs = _node_inputs(flatten_graph(graph), node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
-        return _error("profile_unavailable", _error_message(exc, operation="get_column_profiles"))
+        return _error("profile_unavailable", _error_message(exc, operation="inspect_node"))
     if input_name is not None and all(item.name != input_name for item in inputs):
         return _error(
             "unknown_input",
@@ -1295,7 +1293,7 @@ def _collect_column_profile(
         return _error(
             "profile_unavailable",
             _execution_error_message(
-                exc, operation="get_column_profiles", site=_profile_failure_site(request)
+                exc, operation="inspect_node", site=_profile_failure_site(request)
             ),
         )
 
@@ -1378,23 +1376,23 @@ def _profile_worker_failure(
         return _error("profile_unavailable", str(exc))
     logger.error(
         "assistant_tool_failed",
-        operation="get_column_profiles",
+        operation="inspect_node",
         error_class=type(exc).__name__,
         error_message=str(exc),
     )
     return _error("profile_unavailable", _INTERNAL_ERROR_DETAIL)
 
 
-async def get_column_profiles(
+async def column_profiles(
     source_file: str,
     node: str,
     input_name: str | None = None,
     *,
     session_id: str,
 ) -> dict[str, object]:
-    """Summarise the values in one node frame, without returning rows.
+    """`inspect_node`'s profile part: the values in one node frame, without returning rows.
 
-    This is the only tool that reads data, and it never emits a row: a value
+    This is the only part that reads data, and it never emits a row: a value
     only appears as a distinct level of a small-cardinality column, alongside
     its count. Authoring correct code needs the encoding of a categorical
     column, and inferring one from its name is guesswork the model has no way
@@ -1425,7 +1423,7 @@ async def get_column_profiles(
         failure = await asyncio.to_thread(
             _execution_error_message,
             exc,
-            operation="get_column_profiles",
+            operation="inspect_node",
             site=_profile_failure_site(request),
         )
         return _error("profile_unavailable", failure)
@@ -1440,75 +1438,79 @@ async def get_column_profiles(
     }
 
 
-def get_capability_manifest() -> dict[str, object]:
-    """Return manifest identity and the bounded descriptor index."""
+def _part_requirement(policy: EgressPolicy, part: str) -> str | None:
+    """The `[assistant.egress]` setting an `inspect_node` part needs, or None when permitted."""
 
-    return compact_manifest(capability_manifest())
+    if policy.max_sensitivity == "public":
+        return 'max_sensitivity = "internal"'
+    if part == "config" and policy.max_sensitivity != "restricted":
+        return 'max_sensitivity = "restricted"'
+    if part == "profile" and not policy.allow_row_samples:
+        return "allow_row_samples = true"
+    return None
 
 
-def get_capability_descriptors(
-    kind: str,
-    descriptor_ids: Sequence[str],
+async def inspect_node(
+    source_file: str,
+    node: str,
+    parts: Sequence[str] = ("schema",),
+    input_name: str | None = None,
+    *,
+    session_id: str,
 ) -> dict[str, object]:
-    """Return one ordered, all-or-nothing batch of capability descriptors."""
+    """Answer the requested parts of one node, each under its own egress check.
 
-    valid_kinds = ("node", "operation", "recipe")
-    if kind not in valid_kinds:
+    A denied part is listed under ``withheld`` with the setting it needs while
+    the permitted parts answer; when every part is denied the call is refused.
+    A part that fails fails the call, naming the part.
+    """
+
+    if input_name is not None and "profile" not in parts:
         return _error(
-            "unsupported_capability",
-            "The requested capability kind is not installed.",
-            kind=kind,
-            valid_kinds=list(valid_kinds),
+            "invalid_request",
+            'input names the frame the "profile" part reads; add "profile" to parts or omit input.',
+            validation_path="inspect_node.input",
+            validation_reason="input_without_profile",
         )
-    if (
-        isinstance(descriptor_ids, str)
-        or not isinstance(descriptor_ids, Sequence)
-        or not 1 <= len(descriptor_ids) <= 12
-        or any(
-            not isinstance(descriptor_id, str) or not descriptor_id
-            for descriptor_id in descriptor_ids
-        )
-        or len(set(descriptor_ids)) != len(descriptor_ids)
-    ):
-        return _error(
-            "invalid_capability_query",
-            "Capability ids must contain one to twelve unique non-empty strings.",
-            kind=kind,
-        )
-
-    manifest = capability_manifest()
-    if kind == "node":
-        descriptors = {descriptor.id: descriptor.as_dict() for descriptor in manifest.nodes}
-    elif kind == "operation":
-        descriptors = {descriptor.id: descriptor.as_dict() for descriptor in manifest.operations}
-    else:
-        descriptors = {
-            str(descriptor["id"]): cast(dict[str, object], materialise_json(descriptor))
-            for descriptor in manifest.recipes
-        }
-
-    unknown_ids = [
-        descriptor_id for descriptor_id in descriptor_ids if descriptor_id not in descriptors
-    ]
-    if unknown_ids:
-        return _error(
-            "unsupported_capability",
-            f"One or more requested {kind} capabilities are not installed.",
-            kind=kind,
-            id=unknown_ids[0],
-            valid_ids=sorted(descriptors),
-        )
-    ordered = [descriptors[descriptor_id] for descriptor_id in descriptor_ids]
-    return {"kind": kind, "count": len(ordered), "descriptors": ordered}
-
-
-def plan_recipe(recipe_id: str, arguments: object) -> dict[str, object]:
-    """Expand one deterministic recipe without reading or writing project state."""
-
     try:
-        return _plan_recipe(recipe_id, arguments)
-    except RecipeError as exc:
-        return _error(exc.code, str(exc), **dict(exc.context))
+        policy = resolve_egress_policy(Path.cwd().resolve())
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        return _error("egress_policy_unavailable", _error_message(exc, operation="inspect_node"))
+    requested = [part for part in INSPECT_NODE_PARTS if part in parts]
+    withheld = [
+        {"part": part, "required_policy": required}
+        for part in requested
+        if (required := _part_requirement(policy, part)) is not None
+    ]
+    permitted = [part for part in requested if _part_requirement(policy, part) is None]
+    if not permitted:
+        return _error(
+            "egress_policy_denied",
+            "The egress policy permits none of the requested parts; withheld names the "
+            "setting each one needs.",
+            withheld=withheld,
+        )
+    result: dict[str, object] = {"node": node}
+    revisions: set[object] = set()
+    for part in permitted:
+        if part == "schema":
+            answer = await asyncio.to_thread(node_schema, source_file, node)
+        elif part == "config":
+            answer = await asyncio.to_thread(node_config, source_file, node)
+        else:
+            answer = await column_profiles(source_file, node, input_name, session_id=session_id)
+        error = answer.get("error")
+        if isinstance(error, Mapping):
+            return {"error": {**error, "part": part}}
+        revisions.add(answer.pop("project_revision"))
+        answer.pop("node")
+        result[part] = answer
+    if len(revisions) != 1:
+        raise RuntimeError("inspect_node parts described different project revisions")
+    if withheld:
+        result["withheld"] = withheld
+    result["project_revision"] = revisions.pop()
+    return result
 
 
 def _dataset_item(path: Path, base: Path) -> dict[str, object]:
@@ -1590,8 +1592,8 @@ def _dataset_listing(
     return datasets, directories, truncated
 
 
-def list_datasets(
-    project_root: str | None = None,
+def dataset_listing(
+    directory: str | None = None,
     *,
     recursive: bool = False,
 ) -> dict[str, object]:
@@ -1601,14 +1603,14 @@ def list_datasets(
         if not isinstance(recursive, bool):
             return _error("invalid_request", "recursive must be a boolean.")
         base = Path.cwd().resolve()
-        target = contained_path(base, project_root or ".")
+        target = contained_path(base, directory or ".")
         if _dataset_path_forbidden(target, base):
             return _error(
                 "dataset_path_forbidden",
                 "Hidden, state, and credential paths are unavailable to assistant dataset tools.",
             )
         if not target.is_dir():
-            return _error("directory_not_found", f"Directory not found: {project_root or '.'}.")
+            return _error("directory_not_found", f"Directory not found: {directory or '.'}.")
         datasets, directories, truncated = _dataset_listing(
             target,
             base,
@@ -1621,10 +1623,10 @@ def list_datasets(
             "truncated": truncated,
         }
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
-        return _error("dataset_list_unavailable", _error_message(exc, operation="list_datasets"))
+        return _error("dataset_list_unavailable", _error_message(exc, operation="find_data"))
 
 
-def get_dataset_schema(
+def dataset_schema(
     path: str,
     *,
     source_file: str | None = None,
@@ -1667,40 +1669,108 @@ def get_dataset_schema(
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
         return _error(
             "dataset_schema_unavailable",
-            _error_message(exc, operation="get_dataset_schema"),
+            _error_message(exc, operation="find_data"),
         )
 
 
-def get_example(name: str) -> dict[str, object]:
-    """Return one packaged exemplar, rendered like a live pipeline."""
+def find_data(
+    source_file: str,
+    directory: str | None = None,
+    *,
+    recursive: bool = False,
+    path: str | None = None,
+) -> dict[str, object]:
+    """List one project directory's data files, with one file's schema when *path* names it."""
+
+    listing = dataset_listing(directory, recursive=recursive)
+    if path is None or "error" in listing:
+        return listing
+    schema = dataset_schema(path, source_file=source_file)
+    if "error" in schema:
+        return schema
+    project_revision = schema.pop("project_revision")
+    return {**listing, "schema": schema, "project_revision": project_revision}
+
+
+#: The `read_reference` id of the authoring guide; every other id is `<kind>:<name>`.
+_GUIDE_REFERENCE = "guide"
+
+
+def _authoring_guide_reference() -> dict[str, object]:
+    content = authoring_guide()
+    return {
+        "id": "haute-authoring-guide",
+        "version": "1",
+        "sha256": sha256(content.encode("utf-8")).hexdigest(),
+        "source": "package:haute.assistant/assets/authoring_guide.md",
+        "sensitivity": "public",
+        "evidence_class": "canonical_library_guidance",
+        "approval_status": "reviewed",
+        "content": content,
+        "step_grammar": step_grammar(),
+    }
+
+
+def _reference_ids() -> tuple[str, ...]:
+    """Every id `read_reference` serves: the guide, then nodes, recipes and examples."""
+
+    manifest = capability_manifest()
+    return (
+        _GUIDE_REFERENCE,
+        *(f"node:{node.id}" for node in manifest.nodes),
+        *(f"recipe:{recipe['id']}" for recipe in manifest.recipes),
+        *(f"example:{name}" for name, _summary in example_index()),
+    )
+
+
+def _close_reference_ids(reference: str, valid: Sequence[str]) -> list[str]:
+    """Valid ids naming *reference* under a namespace, then close spellings; at most three."""
+
+    namespaced = [item for item in valid if item.partition(":")[2] == reference]
+    close = difflib.get_close_matches(reference, valid, n=3, cutoff=0.6)
+    return list(dict.fromkeys((*namespaced, *close)))[:3]
+
+
+def _reference_content(reference: str) -> dict[str, object]:
+    if reference == _GUIDE_REFERENCE:
+        return _authoring_guide_reference()
+    kind, _separator, name = reference.partition(":")
+    manifest = capability_manifest()
+    if kind == "node":
+        return next(node for node in manifest.nodes if node.id == name).as_dict()
+    if kind == "recipe":
+        recipe = next(recipe for recipe in manifest.recipes if recipe["id"] == name)
+        return cast(dict[str, object], materialise_json(recipe))
+    example = load_example(name)
+    if "error" in example:
+        raise RuntimeError(f"Indexed example {name!r} could not be loaded")
+    return example
+
+
+def read_reference(references: Sequence[str]) -> dict[str, object]:
+    """Return one ordered, all-or-nothing batch of library references."""
 
     try:
-        return load_example(name)
-    except Exception as exc:  # noqa: BLE001 - structured tool boundary
-        return _error("example_unavailable", _error_message(exc, operation="get_example"))
-
-
-def get_authoring_guide() -> dict[str, object]:
-    """Return attributable canonical guidance only when the model requests it."""
-
-    try:
-        content = authoring_guide()
-        digest = sha256(content.encode("utf-8")).hexdigest()
-        return {
-            "id": "haute-authoring-guide",
-            "version": "1",
-            "sha256": digest,
-            "source": "package:haute.assistant/assets/authoring_guide.md",
-            "sensitivity": "public",
-            "evidence_class": "canonical_library_guidance",
-            "approval_status": "reviewed",
-            "content": content,
-            "step_grammar": step_grammar(),
-        }
+        valid = _reference_ids()
+        unknown = [reference for reference in references if reference not in valid]
+        if unknown:
+            close = _close_reference_ids(unknown[0], valid)
+            return _error(
+                "unknown_reference",
+                f'No reference has the id {unknown[0]!r}. Ids are "guide", '
+                '"node:<node type id>", "recipe:<recipe id>" and "example:<example name>".',
+                id=unknown[0],
+                fix=(f"Use {close[0]!r}." if close else "Use an id from the prompt's indexes."),
+                **({"did_you_mean": close} if close else {}),
+            )
+        items = [
+            {"id": reference, "content": _reference_content(reference)} for reference in references
+        ]
+        return {"count": len(items), "references": items}
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
         return _error(
-            "authoring_guide_unavailable",
-            _error_message(exc, operation="get_authoring_guide"),
+            "reference_unavailable",
+            _error_message(exc, operation="read_reference"),
         )
 
 
@@ -1848,7 +1918,7 @@ def _located_error(
     `context.inputs` and `did_you_mean` are schema metadata. The dry-run and
     apply tools that reach here are internal-project tools, so the executor
     has already required the policy that permits that metadata, the one
-    `get_node_schema` needs. `fix`, when given, composes the correction from
+    `inspect_node`'s schema part needs. `fix`, when given, composes the correction from
     the close matches of `named_columns`; otherwise the failure's own `fix`
     is used. Without close column matches, `did_you_mean` is the failure's
     own close names, such as the node ids near an unknown node reference.
@@ -1925,6 +1995,26 @@ def _operation_error(exc: LocatedPlanError, *, operation: str) -> dict[str, obje
     raise TypeError(f"unexpected plan failure {type(exc).__name__}")
 
 
+def _recipe_operation_error(exc: RecipeOperationError) -> dict[str, object]:
+    """A recipe failure, located at the `recipe` operation the model sent."""
+
+    where: dict[str, object] = {"op_index": exc.op_index, "recipe": exc.recipe_id}
+    argument = exc.context.get("argument")
+    if isinstance(argument, str):
+        where["field"] = f"arguments.{argument}"
+    reference = f"recipe:{exc.recipe_id}" if exc.recipe_id else "recipe:<id>"
+    return _error(
+        exc.code,
+        str(exc),
+        where=where,
+        fix=(
+            f"Correct operation {exc.op_index}'s arguments as the message says; "
+            f"read_reference {reference!r} gives the recipe's argument schema."
+        ),
+        **{key: value for key, value in exc.context.items() if key != "argument"},
+    )
+
+
 async def dry_run_graph_edits(
     source_file: str,
     ops_payload: object,
@@ -1934,22 +2024,35 @@ async def dry_run_graph_edits(
     postconditions: object = (),
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
 ) -> dict[str, object]:
-    """Validate and retain an exact graph-edit plan and its receipt without writing."""
+    """Validate and retain an exact graph-edit plan and its receipt without writing.
 
+    Each `recipe` operation is expanded in place first; every failure names an
+    operation by its index in *ops_payload*, and a recipe operation's by its
+    `recipe` too.
+    """
+
+    try:
+        batch = expand_recipe_operations(ops_payload)
+    except RecipeOperationError as exc:
+        return _recipe_operation_error(exc)
     try:
         async with save_lock:
             result = await asyncio.to_thread(
                 partial(
                     application_service(project_sources, session_id=None).dry_run,
                     source_file,
-                    ops_payload,  # type: ignore[arg-type]
+                    batch.operations,  # type: ignore[arg-type]
                     postconditions=postconditions,  # type: ignore[arg-type]
                     summary=summary,
                     assumptions=assumptions,
+                    positions=batch.positions or None,
                 )
             )
         return result.as_dict()
     except LocatedPlanError as exc:
+        op_index = exc.where.get("op_index")
+        if isinstance(op_index, int) and op_index in batch.recipes:
+            exc.where = {**exc.where, "recipe": batch.recipes[op_index]}
         # Naming a failure's columns can resolve schemas, which runs the engine.
         return await asyncio.to_thread(_operation_error, exc, operation="dry_run_graph_edits")
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
@@ -1998,9 +2101,6 @@ TOOL_DEFINITIONS: list[dict[str, object]] = [
 ]
 
 _TOOL_NAMES = tuple(str(definition["name"]) for definition in TOOL_DEFINITIONS)
-_RECIPE_SUMMARIES = {
-    str(descriptor["id"]): str(descriptor["summary"]) for descriptor in recipe_manifest()
-}
 _OPERATION_VERSIONS = {
     descriptor.id: descriptor.version for descriptor in capability_manifest().operations
 }
@@ -2042,8 +2142,32 @@ def _log_tool_outcome(name: str, result: Mapping[str, object], *, elapsed_ms: fl
 # unknown name: a resumed session's history can still name one.
 _REMOVED_TOOLS: dict[str, str] = {
     "list_node_types": (
-        "list_node_types was removed; use get_capability_manifest for the node index "
-        'and get_capability_descriptors with kind "node" for a node\'s full descriptor.'
+        "list_node_types was removed; the prompt's node index lists every node type, and "
+        'read_reference with "node:<node type id>" gives its full descriptor.'
+    ),
+    "get_capability_manifest": (
+        "get_capability_manifest was removed; the prompt carries the manifest's indexes."
+    ),
+    "get_capability_descriptors": (
+        "get_capability_descriptors was removed; use read_reference with "
+        '"node:<node type id>" or "recipe:<recipe id>".'
+    ),
+    "get_example": 'get_example was removed; use read_reference with "example:<example name>".',
+    "get_authoring_guide": 'get_authoring_guide was removed; use read_reference with "guide".',
+    "get_node_schema": 'get_node_schema was removed; use inspect_node with parts ["schema"].',
+    "get_node_config": 'get_node_config was removed; use inspect_node with parts ["config"].',
+    "get_column_profiles": (
+        'get_column_profiles was removed; use inspect_node with parts ["profile"].'
+    ),
+    "list_datasets": "list_datasets was removed; use find_data.",
+    "get_dataset_schema": "get_dataset_schema was removed; use find_data with the file's path.",
+    "plan_recipe": (
+        'plan_recipe was removed; add {"op": "recipe", "recipe": <recipe id>, "arguments": '
+        "{...}} to the ops of dry_run_graph_edits."
+    ),
+    "dry_run_recipe_plan": (
+        'dry_run_recipe_plan was removed; add {"op": "recipe", "recipe": <recipe id>, '
+        '"arguments": {...}} to the ops of dry_run_graph_edits.'
     ),
 }
 
@@ -2220,13 +2344,19 @@ def _validate_tool_value(
                     ),
                 )
             ]
-            if len(selected) != 1:
+            if not selected:
                 raise _ToolArgumentValidationError(
                     discriminator_path,
                     "unsupported_discriminator",
                     f"{discriminator_path} does not identify a supported operation variant",
                 )
-            _validate_tool_value(value, selected[0], path=path)
+            # Several variants share this value (every recipe operation has op
+            # "recipe"): the next discriminator that separates them selects one.
+            _validate_tool_value(
+                value,
+                selected[0] if len(selected) == 1 else {union_keyword: selected},
+                path=path,
+            )
             return
 
         matches = 0
@@ -2428,7 +2558,9 @@ def _variant_discriminator(
         if candidate in common
     ]
     for candidate in candidates:
-        if all(_schema_allowed_values(properties[candidate]) for properties in property_maps):
+        allowed = [_schema_allowed_values(properties[candidate]) for properties in property_maps]
+        # A candidate whose values are the same on every variant separates none of them.
+        if all(allowed) and len({tuple(map(repr, values or ())) for values in allowed}) > 1:
             return candidate
     return None
 
@@ -2476,7 +2608,7 @@ def _observe_project_source_evidence(
     stops binding its plans.
     """
 
-    if name in {"list_datasets", "get_dataset_schema"}:
+    if name == "find_data":
         vanished = [
             key
             for key, evidence in observed.items()
@@ -2484,9 +2616,9 @@ def _observe_project_source_evidence(
         ]
         for key in vanished:
             del observed[key]
-    if name == "get_dataset_schema":
-        raw_path = result.get("path")
-        raw_digest = result.get("source_digest")
+        schema = result.get("schema")
+        raw_path = schema.get("path") if isinstance(schema, Mapping) else None
+        raw_digest = schema.get("source_digest") if isinstance(schema, Mapping) else None
         if isinstance(raw_path, str) and isinstance(raw_digest, str):
             observed[("schema", raw_path)] = ProjectSourceEvidence(
                 path=contained_path(project_root, raw_path),
@@ -2551,8 +2683,6 @@ def build_tool_executor(
         prior_messages,
         project_root=project_root,
     )
-    pending_recipe_plans: dict[str, dict[str, object]] = {}
-    pending_recipe_hash_by_id: dict[str, str] = {}
 
     def observed_sources() -> tuple[ProjectSourceEvidence, ...]:
         return tuple(observed_project_sources[key] for key in sorted(observed_project_sources))
@@ -2595,14 +2725,9 @@ def build_tool_executor(
         try:
             request_size = _json_size(arguments)
         except (TypeError, ValueError):
-            code = (
-                "invalid_capability_query"
-                if name == "get_capability_descriptors"
-                else "invalid_request"
-            )
             return _attributed_tool_result(
                 name,
-                _error(code, "The tool request must be a finite JSON object."),
+                _error("invalid_request", "The tool request must be a finite JSON object."),
             )
         if request_size > _MAX_TOOL_PAYLOAD_BYTES:
             return _attributed_tool_result(
@@ -2619,15 +2744,10 @@ def build_tool_executor(
                 path=name,
             )
         except _ToolArgumentValidationError as exc:
-            code = (
-                "invalid_capability_query"
-                if name == "get_capability_descriptors"
-                else "invalid_request"
-            )
             return _attributed_tool_result(
                 name,
                 _error(
-                    code,
+                    "invalid_request",
                     str(exc),
                     validation_path=exc.path,
                     validation_reason=exc.reason,
@@ -2635,15 +2755,6 @@ def build_tool_executor(
                 ),
             )
         if name == "dry_run_graph_edits":
-            if pending_recipe_plans:
-                return _bounded_tool_result(
-                    name,
-                    _error(
-                        "recipe_plan_requires_handle",
-                        "A canonical recipe plan is pending. Pass its recipe_plan_hash to "
-                        "dry_run_recipe_plan instead of copying its operations.",
-                    ),
-                )
             return _bounded_tool_result(
                 name,
                 await dry_run_graph_edits(
@@ -2655,47 +2766,6 @@ def build_tool_executor(
                     project_sources=observed_sources(),
                 ),
             )
-        if name == "dry_run_recipe_plan":
-            recipe_plan_hash = arguments["recipe_plan_hash"]
-            pending = pending_recipe_plans.get(recipe_plan_hash)
-            if pending is None:
-                return _bounded_tool_result(
-                    name,
-                    _error(
-                        "recipe_plan_not_found",
-                        "The recipe plan handle is unknown or has been replaced. Call "
-                        "plan_recipe again and use its latest returned hash.",
-                    ),
-                )
-            recipe_operations = pending.get("operations")
-            recipe_postconditions = pending.get("postconditions")
-            if not isinstance(recipe_operations, list) or not isinstance(
-                recipe_postconditions, list
-            ):
-                return _bounded_tool_result(
-                    name,
-                    _error("tool_failed", _INTERNAL_ERROR_DETAIL),
-                )
-            result = _bounded_tool_result(
-                name,
-                await dry_run_graph_edits(
-                    source_file,
-                    recipe_operations,
-                    # A recipe plan is described by its recipe's index summary.
-                    summary=_RECIPE_SUMMARIES[str(pending["recipe_id"])],
-                    postconditions=recipe_postconditions,
-                    project_sources=observed_sources(),
-                ),
-            )
-            if "error" not in result:
-                pending_recipe_plans.pop(recipe_plan_hash, None)
-                recipe_id = pending.get("recipe_id")
-                if (
-                    isinstance(recipe_id, str)
-                    and pending_recipe_hash_by_id.get(recipe_id) == recipe_plan_hash
-                ):
-                    pending_recipe_hash_by_id.pop(recipe_id, None)
-            return result
         if name == "apply_graph_plan":
             return _bounded_tool_result(
                 name,
@@ -2711,55 +2781,33 @@ def build_tool_executor(
             worker_call: Callable[[], Awaitable[dict[str, object]]] | None = None
             if name == "get_pipeline":
                 operation = partial(get_pipeline, source_file)
-            elif name == "get_node_schema":
-                operation = partial(get_node_schema, source_file, arguments["node"])
-            elif name == "get_node_config":
-                operation = partial(get_node_config, source_file, arguments["node"])
-            elif name == "get_column_profiles":
-                # Prepares on a thread, then collects in the interactive preview worker.
+            elif name == "inspect_node":
+                # Each part prepares on a thread; a profile collects in the
+                # interactive preview worker.
                 worker_call = partial(
-                    get_column_profiles,
+                    inspect_node,
                     source_file,
                     arguments["node"],
+                    arguments.get("parts", ("schema",)),
                     arguments.get("input"),
                     session_id=session_id,
                 )
-            elif name == "get_capability_manifest":
-                operation = get_capability_manifest
-            elif name == "get_capability_descriptors":
+            elif name == "find_data":
                 operation = partial(
-                    get_capability_descriptors,
-                    arguments["kind"],
-                    arguments["ids"],
-                )
-            elif name == "list_datasets":
-                operation = partial(
-                    list_datasets,
-                    arguments.get("project_root"),
+                    find_data,
+                    source_file,
+                    arguments.get("directory"),
                     recursive=arguments.get("recursive", False),
+                    path=arguments.get("path"),
                 )
-            elif name == "get_dataset_schema":
-                operation = partial(
-                    get_dataset_schema,
-                    arguments["path"],
-                    source_file=source_file,
-                )
+            elif name == "read_reference":
+                operation = partial(read_reference, arguments["ids"])
             elif name == "get_project_knowledge":
                 operation = partial(
                     get_project_knowledge,
                     source_file,
                     arguments["query"],
                     limit=arguments.get("limit", 5),
-                )
-            elif name == "get_example":
-                operation = partial(get_example, arguments["name"])
-            elif name == "get_authoring_guide":
-                operation = get_authoring_guide
-            elif name == "plan_recipe":
-                operation = partial(
-                    plan_recipe,
-                    arguments["recipe_id"],
-                    {key: value for key, value in arguments.items() if key != "recipe_id"},
                 )
             else:  # pragma: no cover - guarded by _TOOL_NAMES
                 return _dispatch_error(name, f"Unknown assistant tool {name!r}.")
@@ -2773,30 +2821,6 @@ def build_tool_executor(
                     result = await call()
             else:
                 result = await call()
-            if name == "plan_recipe" and "error" not in result:
-                recipe_id = result.get("recipe_id")
-                recipe_plan_hash = result.get("recipe_plan_hash")
-                recipe_operations = result.get("operations")
-                recipe_postconditions = result.get("postconditions")
-                if (
-                    not isinstance(recipe_id, str)
-                    or not isinstance(recipe_plan_hash, str)
-                    or not isinstance(recipe_operations, list)
-                    or not isinstance(recipe_postconditions, list)
-                ):
-                    raise TypeError("plan_recipe returned a malformed canonical plan")
-                previous_hash = pending_recipe_hash_by_id.get(recipe_id)
-                if previous_hash is not None:
-                    pending_recipe_plans.pop(previous_hash, None)
-                pending_recipe_hash_by_id[recipe_id] = recipe_plan_hash
-                pending_recipe_plans[recipe_plan_hash] = cast(
-                    dict[str, object], materialise_json(result)
-                )
-                result = {
-                    "recipe_id": recipe_id,
-                    "version": result["version"],
-                    "recipe_plan_hash": recipe_plan_hash,
-                }
             bounded = _bounded_tool_result(name, result)
             if "error" in bounded and bounded.get("error") != result.get("error"):
                 return bounded
@@ -2825,19 +2849,17 @@ __all__ = [
     "build_context_update",
     "build_tool_executor",
     "build_turn_context",
+    "column_profiles",
     "context_update",
+    "dataset_listing",
+    "dataset_schema",
     "dry_run_graph_edits",
-    "get_capability_descriptors",
-    "get_capability_manifest",
-    "get_dataset_schema",
-    "get_authoring_guide",
-    "get_example",
-    "get_node_config",
-    "get_node_schema",
-    "get_column_profiles",
+    "find_data",
     "get_pipeline",
     "get_project_knowledge",
-    "plan_recipe",
-    "list_datasets",
+    "inspect_node",
+    "node_config",
+    "node_schema",
+    "read_reference",
     "render_pipeline_graph",
 ]

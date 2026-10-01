@@ -22,34 +22,25 @@
           "text": "",
           "calls": [
             {
-              "id": "recipe",
-              "tool": "plan_recipe",
-              "arguments": {
-                "recipe_id": "response_output",
-                "source": "quotes",
-                "output_name": "quote_response",
-                "output_columns": [
-                  "quote_id",
-                  "driver_age",
-                  "region"
-                ]
-              },
-              "result": {
-                "status": "ok"
-              }
-            }
-          ]
-        },
-        {
-          "text": "",
-          "calls": [
-            {
               "id": "dry",
-              "tool": "dry_run_recipe_plan",
+              "tool": "dry_run_graph_edits",
               "arguments": {
-                "recipe_plan_hash": {
-                  "$result": "recipe.recipe_plan_hash"
-                }
+                "summary": "Map quote_id, driver_age and region from quotes into the quote_response output.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "response_output",
+                    "arguments": {
+                      "source": "quotes",
+                      "output_name": "quote_response",
+                      "output_columns": [
+                        "quote_id",
+                        "driver_age",
+                        "region"
+                      ]
+                    }
+                  }
+                ]
               },
               "result": {
                 "status": "ok"

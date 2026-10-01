@@ -148,9 +148,9 @@ class UpdateNodeOp(_OpModel):
 
 
 _EDIT_STEP_DESCRIPTION = (
-    "edit_steps: the whole step, in the shape get_authoring_guide's step_grammar "
-    "gives its kind. Omit id to have one assigned: a replacement keeps the id it "
-    "replaces, an insertion gets <kind>_<n>."
+    'edit_steps: the whole step, in the shape the step_grammar of the "guide" '
+    "reference gives its kind. Omit id to have one assigned: a replacement keeps the id "
+    "it replaces, an insertion gets <kind>_<n>."
 )
 
 
@@ -373,12 +373,15 @@ def _invalid(message: str, *, fix: str) -> NoReturn:
     raise OpValidationError(message, fix=fix)
 
 
-def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
+def parse_ops(
+    raw_ops: Sequence[Mapping[str, Any]], positions: Sequence[int] | None = None
+) -> list[GraphEditOp]:
     """Validate wire-shaped operation dictionaries.
 
     Parsing is intentionally separate from graph-dependent validation.  For
     example, whether a node id exists can only be checked while applying the
-    ordered batch to its evolving graph.
+    ordered batch to its evolving graph. *positions*, when given, holds each
+    operation's index in the batch the model sent, which a failure names.
     """
 
     if isinstance(raw_ops, (str, bytes)) or not isinstance(raw_ops, Sequence):
@@ -393,7 +396,8 @@ def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
         )
 
     parsed: list[GraphEditOp] = []
-    for index, raw_op in enumerate(raw_ops):
+    for offset, raw_op in enumerate(raw_ops):
+        index = offset if positions is None else positions[offset]
         if not isinstance(raw_op, Mapping):
             raise OpValidationError(
                 f"Operation {index} must be an object",

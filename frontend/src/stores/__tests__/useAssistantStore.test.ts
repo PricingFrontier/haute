@@ -608,8 +608,8 @@ describe("chat list navigation", () => {
         {
           kind: "tool",
           text: "",
-          name: "get_node_schema",
-          title: "Reading a node's columns",
+          name: "inspect_node",
+          title: "Inspecting a node",
           summary: "No node x",
           is_error: true,
         },
@@ -626,8 +626,8 @@ describe("chat list navigation", () => {
     expect(entries[1]).toEqual({ kind: "assistant", text: "Adding it now.", streaming: false })
     expect(entries[2]).toMatchObject({
       kind: "activity",
-      name: "get_node_schema",
-      title: "Reading a node's columns",
+      name: "inspect_node",
+      title: "Inspecting a node",
       state: "error",
       summary: "No node x",
     })

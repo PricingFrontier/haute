@@ -77,7 +77,6 @@ to the build journeys the evaluation targets first.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ASSIST-34 | Planned | P2 | Long turns never collide with analyst edits, and setup is explained. |
-| ASSIST-35 | Planned | P2 | About nine task-shaped tools replace fifteen, and recipes compose with primitive operations. |
 | ASSIST-36 | Planned | P1 | Realistic builds, edits and recoveries are measured per area on real models. |
 | ASSIST-37 | Planned | P2 | Context stays short on mid-tier models; strong models get caching and thinking. |
 | ASSIST-38 | Planned | P3 | Each provider gets the tool-schema shape it handles best. |
@@ -114,26 +113,6 @@ read-only canvas; the documentation tests pass.
 
 **Evidence:** `frontend/src/panels/assistant/AssistantPanel.tsx`;
 `frontend/src/components/Toolbar.tsx`.
-
-### ASSIST-35 — Task-shaped tools, with recipes as an operation
-**Why:** Fifteen tools split reads by storage layer, the recipe path needs
-three calls and blocks primitive edits while a recipe is pending, and its
-schema uses most of the portable projection's budget.
-
-**Plan:** Consolidate to about nine tools: `get_pipeline`, one
-`inspect_node` for schema, configuration and profile with a separate egress
-check per part, `find_data`, `read_reference` for descriptors, cards and the
-guide, project knowledge, `dry_run_graph_edits` with recipes as an operation
-kind, and `apply_graph_plan`. Migrate cases, trajectories and panel labels in
-the same change, and rewrite the tool-surface section of the specification.
-
-**Acceptance:** The golden shows the smaller surface; the replay suite passes
-after migration; a recipe and a primitive operation apply in one plan.
-
-**Dependencies:** `ASSIST-20`, `ASSIST-30`.
-
-**Evidence:** `src/haute/assistant/_tools.py::TOOL_DEFINITIONS`;
-`src/haute/assistant/_recipes.py::plan_recipe`.
 
 ### ASSIST-36 — Evaluation on realistic pipelines and live models
 **Why:** Evaluation fixtures are two three-row tables copied under many
@@ -349,7 +328,7 @@ evaluation fall.
 
 **Dependencies:** `ASSIST-22`, `ASSIST-36`.
 
-**Evidence:** `src/haute/assistant/_recipes.py::plan_recipe`;
+**Evidence:** `src/haute/assistant/_recipes.py::expand_recipe`;
 `src/haute/_banding_config.py`.
 
 ### ASSIST-52 — Item-level edits for specialist nodes

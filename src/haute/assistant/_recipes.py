@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast
 
-from haute._cache import canonical_json
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -368,6 +367,7 @@ def _output_operations(
     *,
     source: str,
     source_port: str,
+    ref: str,
 ) -> list[dict[str, object]]:
     output_name = values.get("output_name")
     raw_columns = values.get("output_columns")
@@ -415,10 +415,10 @@ def _output_operations(
             "op": "add_node",
             "node_type": "output",
             "name": output_name,
-            "ref": "recipe_output",
+            "ref": ref,
             "config": {"outputMapping": mappings, "outputFormat": "json"},
         },
-        {"op": "add_edge", "source": source, "target": "$recipe_output"},
+        {"op": "add_edge", "source": source, "target": f"${ref}"},
     ]
 
 
@@ -595,19 +595,27 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
     return cast(dict[str, object], config)
 
 
-def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
-    """Produce canonical primitive operations without reading or mutating a graph."""
+def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, object]]:
+    """Expand one recipe into canonical primitive operations, without reading a graph.
+
+    The node the recipe creates declares the batch-local *ref*; a response output
+    the recipe adds declares *ref* followed by ``_output``. The standalone
+    ``response_output`` recipe's output node is the node it creates, so it
+    declares *ref* itself.
+    """
+
     values = _arguments(recipe_id, args)
+    created: str | None = ref
     if recipe_id == "response_output":
-        ref = None
+        created = None
         operations = _output_operations(
             values,
             source=values["source"],
             source_port=values["source"],
+            ref=ref,
         )
     elif recipe_id == "categorical_banding":
         _validate_categorical_rules(values["rules"])
-        ref = "recipe_categorical_banding"
         operations = [
             {
                 "op": "add_node",
@@ -648,7 +656,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
             )
         if values["how"] not in _REFERENCE_JOIN_MODES:
             raise RecipeError("recipe_argument_invalid", "Unsupported reference join mode.")
-        ref = "recipe_reference_join"
         operations = [
             {
                 "op": "add_node",
@@ -675,7 +682,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
             },
         ]
     elif recipe_id == "rating_step":
-        ref = "recipe_rating_step"
         operations = [
             {
                 "op": "add_node",
@@ -688,12 +694,13 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
         ]
     else:
         raise AssertionError(f"Unhandled recipe: {recipe_id}")
-    if ref is not None:
+    if created is not None:
         operations.extend(
             _output_operations(
                 values,
-                source=f"${ref}",
+                source=f"${created}",
                 source_port=values["name"],
+                ref=f"{created}_output",
             )
         )
     try:
@@ -702,39 +709,79 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
         raise RecipeError(
             "recipe_plan_invalid", "Recipe generated invalid primitive operations."
         ) from exc
-    result: dict[str, object] = {
-        "recipe_id": recipe_id,
-        "version": "1",
-        "operations": operations,
-        "postconditions": [
-            *[
-                {"kind": "node_exists", "node": f"${operation['ref']}"}
-                for operation in operations
-                if operation["op"] == "add_node" and isinstance(operation.get("ref"), str)
-            ],
-            *[
-                {
-                    "kind": "edge_exists",
-                    "source": operation["source"],
-                    "target": operation["target"],
-                    **{
-                        key: operation[key]
-                        for key in ("source_handle", "target_handle")
-                        if key in operation
-                    },
-                }
-                for operation in operations
-                if operation["op"] == "add_edge"
-            ],
-        ],
-    }
-    result["recipe_plan_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
-    return result
+    return operations
+
+
+class RecipeOperationError(RecipeError):
+    """A recipe failure, located at the ``recipe`` operation of the batch that raised it."""
+
+    def __init__(self, error: RecipeError, *, op_index: int, recipe_id: str) -> None:
+        super().__init__(error.code, str(error), **dict(error.context))
+        self.op_index = op_index
+        self.recipe_id = recipe_id
+
+
+@dataclass(frozen=True, slots=True)
+class ExpandedBatch:
+    """A graph-edit batch with each ``recipe`` operation expanded in place.
+
+    ``positions[i]`` is the index, in the batch the model sent, of the
+    operation expanded operation ``i`` came from; ``recipes`` maps the index
+    of each ``recipe`` operation to its recipe id.
+    """
+
+    operations: list[object]
+    positions: tuple[int, ...]
+    recipes: Mapping[int, str]
+
+
+def expand_recipe_operations(ops: object) -> ExpandedBatch:
+    """Expand every ``recipe`` operation of a batch, in place and in batch order.
+
+    The operation at index ``i`` declares the node it creates with its own
+    ``ref``, or ``recipe_<i>`` without one, so no two expansions share a ref.
+    Anything that is not a list passes through unchanged, for the operation
+    parser to refuse.
+    """
+
+    if not isinstance(ops, list):
+        return ExpandedBatch(operations=ops, positions=(), recipes={})  # type: ignore[arg-type]
+    operations: list[object] = []
+    positions: list[int] = []
+    recipes: dict[int, str] = {}
+    for index, operation in enumerate(ops):
+        if not isinstance(operation, Mapping) or operation.get("op") != "recipe":
+            operations.append(operation)
+            positions.append(index)
+            continue
+        recipe_id = operation.get("recipe")
+        if not isinstance(recipe_id, str):
+            raise RecipeOperationError(
+                RecipeError("unknown_recipe", "A recipe operation must name its recipe."),
+                op_index=index,
+                recipe_id="",
+            )
+        recipes[index] = recipe_id
+        ref = operation.get("ref")
+        try:
+            expansion = expand_recipe(
+                recipe_id,
+                operation.get("arguments"),
+                ref=ref if isinstance(ref, str) and ref else f"recipe_{index}",
+            )
+        except RecipeError as exc:
+            raise RecipeOperationError(exc, op_index=index, recipe_id=recipe_id) from exc
+        operations.extend(expansion)
+        positions.extend(index for _operation in expansion)
+    return ExpandedBatch(operations=operations, positions=tuple(positions), recipes=recipes)
 
 
 __all__ = [
+    "ExpandedBatch",
     "RecipeError",
-    "plan_recipe",
+    "RecipeOperationError",
+    "expand_recipe",
+    "expand_recipe_operations",
     "recipe_descriptor",
     "recipe_manifest",
 ]

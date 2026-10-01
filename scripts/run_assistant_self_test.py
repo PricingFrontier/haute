@@ -113,16 +113,7 @@ _GOLDEN_KEYS = {"node", "golden", "order_free"}
 _MAX_GOLDEN_ROWS = 10_000
 _NODE_TYPES = frozenset(node_type.value for node_type in NodeType)
 _TOOL_NAMES = frozenset(str(definition["name"]) for definition in TOOL_DEFINITIONS)
-_STATIC_READ_TOOLS = frozenset(
-    {
-        "get_authoring_guide",
-        "get_capability_descriptors",
-        "get_capability_manifest",
-        "get_dataset_schema",
-        "get_example",
-        "list_datasets",
-    }
-)
+_STATIC_READ_TOOLS = frozenset({"find_data", "read_reference"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -835,11 +826,7 @@ class _ObservedToolExecutor:
         )
         if failed:
             self.failed_calls += 1
-        if (
-            name in {"dry_run_graph_edits", "dry_run_recipe_plan"}
-            and not failed
-            and self.validated_plan_ms is None
-        ):
+        if name == "dry_run_graph_edits" and not failed and self.validated_plan_ms is None:
             self.validated_plan_ms = (time.monotonic() - self.started_at) * 1000
         if name == "apply_graph_plan" and not failed:
             self.applied_plans += 1
