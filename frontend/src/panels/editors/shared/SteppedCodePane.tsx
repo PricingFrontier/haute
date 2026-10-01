@@ -1,11 +1,13 @@
 import { AlertTriangle } from "lucide-react"
-import type { ReactNode } from "react"
+import { useMemo, type ReactNode } from "react"
 
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import PolarsStepsEditor from "../polarsSteps/PolarsStepsEditor"
 import { readSteps } from "../polarsSteps/types"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
 import PolarsCodePanel from "./PolarsCodePanel"
+
+type ColumnInfo = { name: string; dtype: string }
 
 export type SteppedCodePaneProps = {
   config: Record<string, unknown>
@@ -19,7 +21,10 @@ export type SteppedCodePaneProps = {
   errorLine?: number | null
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
-  upstreamColumns?: { name: string; dtype: string }[]
+  /** The node's input columns, as the previews of its inputs recorded them. */
+  upstreamColumns?: ColumnInfo[]
+  /** The node's own columns as its last preview recorded them, before its own selection and renames. */
+  nodeColumns?: ColumnInfo[]
   /** `input` for a Transform (the first step chooses an input), `frame` when `df` is already bound. */
   start: StepStart
   /** The code box's hint (code mode). */
@@ -43,10 +48,13 @@ export default function SteppedCodePane({
   errorLine,
   runError,
   upstreamColumns,
+  nodeColumns,
   start,
   codeHint,
   starterCode,
 }: SteppedCodePaneProps) {
+  const codeColumns = useMemo(() => mergeColumns(upstreamColumns, nodeColumns), [upstreamColumns, nodeColumns])
+
   if (readSteps(config) !== null) {
     return (
       <PolarsStepsEditor
@@ -58,7 +66,7 @@ export default function SteppedCodePane({
         onDeleteInput={onDeleteInput}
         errorLine={errorLine}
         runError={runError}
-        upstreamColumns={upstreamColumns}
+        frameColumns={codeColumns}
         start={start}
       />
     )
@@ -85,10 +93,20 @@ export default function SteppedCodePane({
         inputSources={inputSources}
         onDeleteInput={onDeleteInput}
         errorLine={errorLine}
-        upstreamColumns={upstreamColumns}
+        codeColumns={codeColumns}
         hint={codeHint}
         starterCode={starterCode}
       />
     </>
   )
+}
+
+/**
+ * The columns the pane's code can name: the node's input columns, then its own
+ * (what it scores, rates, expands or reads, and what its code creates), each
+ * name once with its input type.
+ */
+function mergeColumns(upstreamColumns: ColumnInfo[] = [], nodeColumns: ColumnInfo[] = []): ColumnInfo[] {
+  const named = new Set(upstreamColumns.map((column) => column.name))
+  return [...upstreamColumns, ...nodeColumns.filter((column) => !named.has(column.name))]
 }
