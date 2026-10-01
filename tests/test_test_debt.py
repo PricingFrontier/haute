@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import json
 import sys
 import textwrap
@@ -381,13 +382,17 @@ _EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
 }
 
 
-def _scan_debt_sites() -> list[_DebtSite]:
+# The two tree scans below take seconds each (every test module is parsed), and
+# several tests plus the summary read the same result. The test trees do not
+# change during a session, so each process scans once.
+@functools.cache
+def _scan_debt_sites() -> tuple[_DebtSite, ...]:
     sites: list[_DebtSite] = []
     for path in source_files(TESTS_DIR):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         visitor = _DebtVisitor(path.relative_to(TESTS_DIR.parent))
         sites.extend(visitor.scan(tree))
-    return sites
+    return tuple(sites)
 
 
 def _scan_source(source: str) -> list[_DebtSite]:
@@ -403,7 +408,8 @@ def _format_site(site: _DebtSite) -> str:
     )
 
 
-def _scan_frontend_debt_sites() -> list[_FrontendDebtSite]:
+@functools.cache
+def _scan_frontend_debt_sites() -> tuple[_FrontendDebtSite, ...]:
     sites: list[_FrontendDebtSite] = []
     for root in _FRONTEND_TEST_ROOTS:
         if not root.exists():
@@ -413,7 +419,7 @@ def _scan_frontend_debt_sites() -> list[_FrontendDebtSite]:
                 continue
             relative = path.relative_to(REPO_ROOT)
             sites.extend(_scan_frontend_source(path.read_text(encoding="utf-8"), relative))
-    return sorted(sites, key=lambda site: (site.path.as_posix(), site.line, site.callee))
+    return tuple(sorted(sites, key=lambda site: (site.path.as_posix(), site.line, site.callee)))
 
 
 def _format_frontend_site(site: _FrontendDebtSite) -> str:

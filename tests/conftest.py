@@ -24,6 +24,7 @@ from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
+from tests import _ci_shards
 from tests import _write_sandbox as _ws
 from tests._source_files import REPO_ROOT, SourceTreeGuard
 
@@ -1011,7 +1012,14 @@ def haute_scratch(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    _ci_shards.add_options(parser)
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    # Every process registers the shard selection, xdist workers included:
+    # workers are the processes that collect.
+    _ci_shards.register(config)
     # A test that leaves a file under src/ fails the session (the guard
     # compares the controller's snapshots; see tests/_source_files.py).
     config.pluginmanager.register(
