@@ -1136,6 +1136,11 @@
           "plan_hash": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
+          },
+          "item": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "description": "The id of the build-plan item this plan implements, when a build plan is set; Haute records the saved change against that item."
           }
         },
         "additionalProperties": false,
@@ -1143,6 +1148,56 @@
           "plan_hash"
         ]
       }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_build_plan",
+      "description": "Set the build plan of a request with several stages, or mark one of its items complete; the analyst sees the plan as a checklist. `items` sets the stages in order, each a short `id` and a `title`; while the plan has an open item, an item keeps its saved changes and completion under the same id. Name an item in `apply_graph_plan`'s `item` to record that apply's saved change against it. `complete` marks an item complete once its whole stage is saved; an item with no saved change cannot be complete. Returns each item with whether it is complete and how many saved changes it has.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "The plan's stages in order, one item per stage; replaces the item list. At most 12 items.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "A short stable id, such as `source` or `rating`: lower-case letters, digits and underscores, starting with a letter, at most 32 characters."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "What the stage builds, in a few words (at most 80 characters)."
+                }
+              },
+              "required": [
+                "id",
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "complete": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The id of an item whose whole stage is now saved; it needs at least one saved change recorded against it."
+          }
+        },
+        "required": [
+          "items",
+          "complete"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
     }
   }
 ]

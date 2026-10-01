@@ -4,6 +4,7 @@ import { ArrowLeft, Bot, Loader2, Plus } from "lucide-react"
 import PanelShell from "../PanelShell"
 import TranscriptEntryView, { type OutcomeReply } from "./TranscriptEntryView"
 import AssistantIntro from "./AssistantIntro"
+import BuildChecklist from "./BuildChecklist"
 import Composer from "./Composer"
 import ReadinessCard from "./ReadinessCard"
 import SessionList from "./SessionList"
@@ -31,6 +32,7 @@ export default function AssistantPanel({
   const currentSourceFile = documentSourceFile === "" ? null : documentSourceFile
   const setAssistantOpen = useUIStore((state) => state.setAssistantOpen)
   const entries = useAssistantStore((state) => state.entries)
+  const buildPlan = useAssistantStore((state) => state.buildPlan)
   const turnStatus = useAssistantStore((state) => state.turnStatus)
   const thinking = useAssistantStore((state) => state.thinking)
   const status = useAssistantStore((state) => state.status)
@@ -204,6 +206,10 @@ export default function AssistantPanel({
             </div>
           )}
         </div>
+      )}
+
+      {view === "chat" && buildPlan !== null && (
+        <BuildChecklist plan={buildPlan} entries={entries} transcriptRef={transcriptRef} />
       )}
 
       {notice && (

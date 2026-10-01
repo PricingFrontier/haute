@@ -35,6 +35,7 @@ from haute.assistant._providers import (
 from haute.assistant._session import AssistantSession, AssistantTurn, SessionStore
 from haute.errors import HauteError
 from haute.schemas import (
+    AssistantBuildPlanUpdatedEvent,
     AssistantChangeAppliedEvent,
     AssistantChangeRecord,
     AssistantCompletedEvent,
@@ -312,6 +313,11 @@ _PROMPT_MUTATION_WORKFLOW = (
     "time. A saved apply does not end the turn: when the request has further parts, "
     "dry-run and apply each next part the same way, building on what the update shows "
     "was saved, until the whole request is saved; then reply in one or two sentences. "
+    "When a request names several stages, first set them with `update_build_plan`, one "
+    "item each with a short id and title; pass each stage's item id as `item` to its "
+    "`apply_graph_plan`, and mark an item `complete` only once its whole stage is saved. "
+    "A request of one change needs no plan; the turn context lists a plan's open items "
+    "to continue. "
 )
 
 _PROMPT_DRY_RUN_RETRY = (
@@ -840,11 +846,17 @@ async def run_turn(
     (:meth:`SessionStore.provider_history`); this turn's rounds follow it
     verbatim. A round's ``ReplayContent`` rides on its assistant message into
     this turn's later rounds only, never into the stored turn.
+
+    A tool call that replaces the session's build plan snapshot streams a
+    ``build_plan_updated`` event after its tool row, and the stored turn keeps
+    the plan it left when the turn changed it.
     """
 
     if reservation is None:
         reservation = await reserve_turn(store, session_id)
     session = reservation.session
+    # Each change replaces the plan's snapshot, so identity tells whether it changed.
+    plan_at_start = session.build_plan.current
 
     timeout_seconds = _resolved_limit(turn_timeout, TURN_TIMEOUT_ENV, DEFAULT_TURN_TIMEOUT)
     tool_limit = int(
@@ -935,6 +947,7 @@ async def run_turn(
                             summary=_compact_summary(event.arguments),
                         )
                         payload: Mapping[str, Any]
+                        plan_before = session.build_plan.current
                         # A further dry-run call inside the provider round
                         # that stopped the dry-runs is refused without running.
                         # Its synthetic result must not re-enter accounting, or
@@ -989,6 +1002,13 @@ async def run_turn(
                             )
                         if change is not None and interrupt is None:
                             yield AssistantChangeAppliedEvent(change=change)
+                        plan_after = session.build_plan.current
+                        if (
+                            plan_after is not plan_before
+                            and plan_after is not None
+                            and interrupt is None
+                        ):
+                            yield AssistantBuildPlanUpdatedEvent(build_plan=plan_after)
                         if interrupt is not None:
                             # Re-raise the original interrupt (CancelledError
                             # or GeneratorExit) now that the completed tool
@@ -1123,8 +1143,14 @@ async def run_turn(
             try:
                 if not round_committed:
                     _append_round(turn_messages, round_text, round_calls, round_results)
+                plan_at_end = session.build_plan.current
                 store.append(
-                    session, AssistantTurn.from_messages(turn_messages, outcome=turn_outcome)
+                    session,
+                    AssistantTurn.from_messages(
+                        turn_messages,
+                        outcome=turn_outcome,
+                        build_plan=None if plan_at_end is plan_at_start else plan_at_end,
+                    ),
                 )
             finally:
                 reservation.release()

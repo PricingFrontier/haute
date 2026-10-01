@@ -40,7 +40,7 @@ from haute.assistant._render import (
     render_turn_record,
 )
 from haute.assistant._session import AssistantTurn, SessionStore
-from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
+from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_ROOT = PROJECT_ROOT / "tests" / "assistant_eval" / "golden"
@@ -98,6 +98,30 @@ _REGION_BANDS = BriefNode(
     (BriefInput("add_features", "add_features", _FEATURE_COLUMNS),),
     None,
 )
+# An unfinished build plan: one item complete, one with no change yet, and one
+# whose first change the analyst undid before a second was saved.
+_GOLDEN_PLAN = AssistantBuildPlan.model_validate(
+    {
+        "items": [
+            {
+                "id": "young_driver",
+                "title": "Young-driver flag",
+                "complete": True,
+                "changes": [{"id": "<change-a>", "undone": False}],
+            },
+            {"id": "region_band", "title": "Region banding", "complete": False, "changes": []},
+            {
+                "id": "premium",
+                "title": "Premium output",
+                "complete": False,
+                "changes": [
+                    {"id": "<change-b>", "undone": True},
+                    {"id": "<change-c>", "undone": False},
+                ],
+            },
+        ]
+    }
+)
 GOLDEN_TURNS = (
     TurnContext(
         GOLDEN_EGRESS_POLICY,
@@ -130,6 +154,7 @@ GOLDEN_TURNS = (
             selected_node_ids=(),
             preview_error=None,
         ),
+        build_plan=_GOLDEN_PLAN,
     ),
 )
 # The second turn saves a categorical banding in place of the incomplete
@@ -211,6 +236,30 @@ def _golden_history_turns() -> list[AssistantTurn]:
                 kind="applied", detail=None, changes=["<change-1>", "<change-2>"]
             ),
             undone=[AssistantChangeRecord.model_validate(vehicle)],
+            build_plan=AssistantBuildPlan.model_validate(
+                {
+                    "items": [
+                        {
+                            "id": "age_band",
+                            "title": "Age bands",
+                            "complete": True,
+                            "changes": [{"id": "<change-1>", "undone": False}],
+                        },
+                        {
+                            "id": "vehicle_band",
+                            "title": "Vehicle group bands",
+                            "complete": True,
+                            "changes": [{"id": "<change-2>", "undone": False}],
+                        },
+                        {
+                            "id": "rating",
+                            "title": "Rate the age band",
+                            "complete": False,
+                            "changes": [],
+                        },
+                    ]
+                }
+            ),
         ),
         AssistantTurn.from_messages(
             [

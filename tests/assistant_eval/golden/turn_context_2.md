@@ -10,6 +10,12 @@ Haute wrote this block for the current turn from the saved project; it describes
 - Column value profiles: permitted
 When your code compares a column to a literal value, first call `inspect_node` with parts ["profile"] for that frame and use the levels it reports. If the column's values are withheld, do not guess a comparison: begin the response with `NEEDS_INPUT:` and ask which values you should match.
 
+### Build plan
+The plan you set for a multi-stage request. Continue its open items: pass an item's id as `item` when you apply its stage, and mark it `complete` with `update_build_plan` once the whole stage is saved.
+- `young_driver` "Young-driver flag": complete, 1 saved change
+- `region_band` "Region banding": open, no saved change
+- `premium` "Premium output": open, 1 saved change, 1 undone
+
 ### Pipeline
 - Pipeline: "motor_pricing"
 - Base revision: `<revision-2>`

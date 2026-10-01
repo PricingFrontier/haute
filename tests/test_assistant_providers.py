@@ -948,13 +948,15 @@ def _schema_nodes(value):
             yield from _schema_nodes(child)
 
 
-#: The closed read tools, the only ones the Anthropic and OpenAI lanes send strict.
+#: The closed tools that leave the project as it is (the read tools and the build
+#: plan's update), the only ones the Anthropic and OpenAI lanes send strict.
 _STRICT_READ_TOOLS = {
     "get_pipeline",
     "inspect_node",
     "find_data",
     "read_reference",
     "get_project_knowledge",
+    "update_build_plan",
 }
 
 
@@ -1820,9 +1822,10 @@ class TestDatabricksProvider:
 
     async def test_each_lane_sends_its_projection_of_the_production_tools(self):
         """Anthropic and OpenAI receive the canonical schemas, strict exactly for the
-        closed read tools; Databricks receives the compatible projection by default and
-        the canonical one, never strict, when built for the canonical_tools variant.
-        Every lane's wire tools are its projection of the canonical definitions."""
+        closed tools that leave the project as it is; Databricks receives the
+        compatible projection by default and the canonical one, never strict, when
+        built for the canonical_tools variant. Every lane's wire tools are its
+        projection of the canonical definitions."""
 
         from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import (

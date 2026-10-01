@@ -31,7 +31,7 @@ from haute._polars_steps import (
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._config import EgressPolicy
-from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
+from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
 
 
 def _node_type(node: GraphNode) -> str:
@@ -333,12 +333,14 @@ class GraphBrief:
 class TurnContext:
     """Everything the turn context says; `graph` is None when policy withholds it.
 
-    `undone` are the changes the analyst undid since the model's last turn.
+    `undone` are the changes the analyst undid since the model's last turn;
+    `build_plan` is the session's build plan, listed while it has an open item.
     """
 
     egress: EgressPolicy
     graph: GraphBrief | None
     undone: tuple[AssistantChangeRecord, ...] = ()
+    build_plan: AssistantBuildPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,6 +516,30 @@ def _render_brief(nodes: tuple[BriefNode, ...], egress: EgressPolicy) -> str:
     return "\n".join(lines) if lines else "The pipeline has no nodes."
 
 
+def _plan_item_changes(saved: int, undone: int) -> str:
+    """How many saved changes an item has, the undone ones counted apart."""
+
+    text = "no saved change" if not saved else f"{saved} saved change" + ("s" if saved > 1 else "")
+    return text + (f", {undone} undone" if undone else "")
+
+
+def _render_build_plan(plan: AssistantBuildPlan) -> str:
+    """The turn context's build-plan section: every item with its state and changes."""
+
+    lines = [
+        "### Build plan",
+        "The plan you set for a multi-stage request. Continue its open items: pass an "
+        "item's id as `item` when you apply its stage, and mark it `complete` with "
+        "`update_build_plan` once the whole stage is saved.",
+    ]
+    for item in plan.items:
+        saved = sum(not change.undone for change in item.changes)
+        changes = _plan_item_changes(saved, len(item.changes) - saved)
+        state = "complete" if item.complete else "open"
+        lines.append(f"- `{item.id}` {_one_line(item.title)}: {state}, {changes}")
+    return "\n".join(lines)
+
+
 def render_turn_context(context: TurnContext) -> str:
     """Render the turn context block that follows the analyst's message."""
 
@@ -534,6 +560,9 @@ def render_turn_context(context: TurnContext) -> str:
                 f"- `{change.id}`: {_one_line(change.summary)}" for change in context.undone
             )
         )
+    plan = context.build_plan
+    if plan is not None and not all(item.complete for item in plan.items):
+        sections.append(_render_build_plan(plan))
     graph = context.graph
     if graph is None:
         sections.append(
@@ -618,13 +647,15 @@ class TurnRecord:
     `reply` is the turn's final assistant text, empty when its last assistant
     message carried tool calls or no text; `outcome` is none for a failed or
     cancelled turn; `changes` are the records of the changes its applies saved, in
-    order; `undone` the ids of the changes the analyst undid after it.
+    order; `build_plan` is the build plan as the turn left it, none when the turn
+    did not change it; `undone` the ids of the changes the analyst undid after it.
     """
 
     request: str
     reply: str
     outcome: AssistantTurnOutcome | None
     changes: tuple[AssistantChangeRecord, ...]
+    build_plan: AssistantBuildPlan | None
     undone: tuple[str, ...]
 
 
@@ -671,6 +702,18 @@ def render_turn_record(record: TurnRecord) -> str:
     ]
     if record.changes:
         lines.append(f"- Ended at revision `{record.changes[-1].revision}`")
+    if record.build_plan is not None:
+        items = record.build_plan.items
+        open_items = [item for item in items if not item.complete]
+        lines.append(
+            "- Build plan as this turn left it: "
+            + (
+                f"all {len(items)} items complete"
+                if not open_items
+                else f"{len(items) - len(open_items)} of {len(items)} items complete; open: "
+                + ", ".join(f"`{item.id}` {_one_line_quoted(item.title)}" for item in open_items)
+            )
+        )
     lines.extend(
         f"- Undone by the analyst after this turn: `{change_id}`" for change_id in record.undone
     )

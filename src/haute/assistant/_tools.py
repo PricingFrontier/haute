@@ -77,6 +77,7 @@ from haute.assistant._application import (
     _failed_step,
 )
 from haute.assistant._assets import authoring_guide, example_index, load_example
+from haute.assistant._build_plan import BuildPlan, BuildPlanError, build_plan_view
 from haute.assistant._catalog import (
     INSPECT_NODE_PARTS,
     capability_manifest,
@@ -137,7 +138,7 @@ from haute.routes._helpers import (
 )
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes.pipeline import preview_timeout
-from haute.schemas import AssistantChangeRecord
+from haute.schemas import AssistantBuildPlan, AssistantChangeRecord
 
 logger = get_logger(component="assistant.tools")
 
@@ -1233,6 +1234,7 @@ def build_turn_context(
     selected_node_ids: Sequence[str] = (),
     preview_error_node_id: str | None = None,
     undone: Sequence[AssistantChangeRecord] = (),
+    build_plan: AssistantBuildPlan | None = None,
 ) -> TurnContext:
     """Gather the turn context's facts for the saved pipeline.
 
@@ -1240,11 +1242,12 @@ def build_turn_context(
     project metadata, withheld under a `public` policy. A selected or
     preview-error id the saved top level lacks raises `TurnContextError`: the
     canvas it came from is stale. *undone* are the changes the analyst undid
-    since the last turn, named whatever the policy: the model wrote them.
+    since the last turn and *build_plan* the session's build plan, each given
+    whatever the policy: the model wrote them.
     """
 
     if egress.max_sensitivity == "public":
-        return TurnContext(egress, None, tuple(undone))
+        return TurnContext(egress, None, tuple(undone), build_plan)
     graph = _parse_graph(source_file)
     top_level = {node.id: node for node in graph.nodes}
     for node_id in selected_node_ids:
@@ -1282,6 +1285,7 @@ def build_turn_context(
             ),
         ),
         tuple(undone),
+        build_plan,
     )
 
 
@@ -3019,6 +3023,13 @@ def _observe_project_source_evidence(
             )
 
 
+def _build_plan_error(exc: BuildPlanError) -> dict[str, object]:
+    """A refused build-plan update or apply item, located and with its fix."""
+
+    located: dict[str, object] = {} if exc.where is None else {"where": exc.where}
+    return _error(exc.code, exc.message, **located, fix=exc.fix, **exc.fields)
+
+
 def _added_node_ids(result: Mapping[str, object]) -> tuple[str, ...]:
     """The nodes a successful apply's change record lists as added."""
 
@@ -3041,16 +3052,20 @@ def build_tool_executor(
     *,
     session_id: str = "legacy",
     evidence: SourceEvidenceLedger | None = None,
+    plan: BuildPlan | None = None,
 ) -> Callable[[str, dict[str, Any]], Awaitable[Mapping[str, object]]]:
     """Build the loop's non-raising, source-bound async tool dispatcher for one turn.
 
     *evidence* is the session's evidence ledger; building the executor starts a
-    turn on it, so what earlier turns observed is carried. An executor built
-    without one keeps a ledger of its own.
+    turn on it, so what earlier turns observed is carried. *plan* is the
+    session's build plan, which `update_build_plan` updates and an apply naming
+    an `item` records its committed change against. An executor built without
+    either keeps one of its own.
     """
 
     project_root = Path.cwd().resolve()
     ledger = SourceEvidenceLedger() if evidence is None else evidence
+    build_plan = BuildPlan() if plan is None else plan
     ledger.begin_turn()
     # The nodes whose saved configuration this turn has seen: an inspect_node
     # config part returned to the model, or a node an apply of the turn added.
@@ -3150,15 +3165,32 @@ def build_tool_executor(
                     project_sources=ledger.sources(),
                 ),
             )
+        if name == "update_build_plan":
+            try:
+                updated = build_plan.update(
+                    items=arguments.get("items"), complete=arguments.get("complete")
+                )
+            except BuildPlanError as exc:
+                return _attributed_tool_result(name, _build_plan_error(exc))
+            return _bounded_tool_result(name, {"items": build_plan_view(updated)})
         if name == "apply_graph_plan":
-            applied = _bounded_tool_result(
-                name,
-                await apply_graph_plan(
-                    source_file,
-                    arguments.get("plan_hash", ""),
-                    session_id=session_id,
-                ),
+            item = arguments.get("item")
+            if item is not None:
+                try:
+                    build_plan.require_item(item)
+                except BuildPlanError as exc:
+                    return _attributed_tool_result(name, _build_plan_error(exc))
+            result = await apply_graph_plan(
+                source_file,
+                arguments.get("plan_hash", ""),
+                session_id=session_id,
             )
+            change = result.get("change")
+            if item is not None and isinstance(change, Mapping):
+                # The save committed, verified or not: its change counts toward the item.
+                build_plan.record_change(item, str(change["id"]))
+                result = {**result, "item": item}
+            applied = _bounded_tool_result(name, result)
             seen_config.update(_added_node_ids(applied))
             return applied
 

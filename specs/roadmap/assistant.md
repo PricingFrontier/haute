@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-39 | Planned | P3 | A multi-stage build shows a checklist of its stages. |
 | ASSIST-40 | Planned | P1 | Data checks have a specified execution contract and their own egress permission. |
 | ASSIST-41 | Planned | P1 | A dry-run reports advisory findings when changed nodes produce implausible data. |
 | ASSIST-42 | Planned | P2 | One call answers why a saved node fails or why a column is null. |
@@ -88,26 +87,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-39 — A checklist for multi-stage builds
-**Why:** A long build gives the analyst no view of what remains, and a model
-that forgets its plan cannot be nudged on it.
-
-**Plan:** Once several applies per turn are measured, add a build-plan tool
-whose items show two separate facts in the panel's checklist: the changes
-committed against an item, which the controller records from applies the
-model attributes to it, and whether the item is complete, which only the
-model can claim and the controller accepts only for an item with at least one
-committed change. Open items are resumable by "continue".
-
-**Acceptance:** A replayed multi-stage build shows committed changes against
-each item and marks items complete only when the model claims them; a replay
-where an apply implements part of a stage leaves that stage open with its
-change listed; an interrupted build resumes its open items.
-
-**Dependencies:** `ASSIST-32`, `ASSIST-36`.
-
-**Evidence:** `src/haute/assistant/_loop.py::run_turn`.
 
 ### ASSIST-40 — The data-check execution contract and permission
 **Why:** Dry-run proves schemas only, so pipelines that run but are wrong pass

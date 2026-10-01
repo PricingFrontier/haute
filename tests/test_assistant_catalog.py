@@ -105,6 +105,7 @@ class TestCapabilityManifest:
             "get_project_knowledge",
             "dry_run_graph_edits",
             "apply_graph_plan",
+            "update_build_plan",
         ]
 
     def test_hash_is_sha256_of_canonical_material(self):
@@ -302,6 +303,7 @@ class TestResolvedDescriptors:
         assert tool_title("dry_run_graph_edits", ops, {"error": {}}) == "Checking the plan"
         assert tool_title("apply_graph_plan", {"plan_hash": "a"}) == "Applying the plan"
         assert tool_title("apply_graph_plan", {}, {"applied_operations": 3}) == "Applying 3 changes"
+        assert tool_title("update_build_plan", {"complete": "rating"}) == "Updating the checklist"
         assert tool_title("no_such_tool", {}) == "no_such_tool"
 
     def test_operation_descriptors_are_closed_and_policy_complete(self):
@@ -402,7 +404,25 @@ class TestResolvedDescriptors:
         assert {
             "plan_aborted",
             "plan_already_applied",
+            "unknown_plan_item",
         } <= apply_errors
+        # The build plan's update changes session state only: never the project.
+        plan = by_id["update_build_plan"].as_dict()
+        assert {error["code"] for error in plan["errors"]} >= {
+            "empty_plan_update",
+            "duplicate_plan_item",
+            "unknown_plan_item",
+            "plan_item_unsaved",
+        }
+        assert (
+            plan["state_access"],
+            plan["side_effects"],
+            plan["egress"],
+            plan["parallel_safe"],
+            plan["ordering"],
+        ) == ("session", "session build plan", "none", False, "ordered")
+        assert by_id["apply_graph_plan"].input_schema["required"] == ("plan_hash",)
+        assert "item" in by_id["apply_graph_plan"].input_schema["properties"]
 
     def test_graph_edit_provider_schema_is_derived_from_wire_models(self):
         from haute.assistant._wire_ops import (

@@ -15,8 +15,9 @@ right-panel feature with its own store, its own API module, and its own failure 
 In scope:
 
 - The assistant panel: transcript (user messages, streamed assistant text, tool-activity
-  rows, change cards), the message composer with its context chips, the stop control, the
-  new-chat control, the model name in the header, and the new-chat empty state.
+  rows, change cards), the build checklist, the message composer with its context chips,
+  the stop control, the new-chat control, the model name in the header, and the new-chat
+  empty state.
 - The assistant's chrome outside the panel: the "Assistant is working" pill on the canvas,
   the toolbar button's progress and unseen-outcome states, and the "Ask the assistant to
   fix" action beside a node's run error.
@@ -109,6 +110,21 @@ live-sync, and a refusal (a later save, a running turn) is shown as the panel no
 backend's words. Compare opens the read-only comparison view with the version before the
 change on the historical side. A card not saved to Git offers neither.
 A resumed chat renders the same entries in the same order as the live turn did.
+
+**A multi-stage build shows a checklist.** When the assistant splits a request into
+stages, a checklist titled "Checklist" sits between the transcript and the composer, with
+how many of its stages are done ("2 of 4 done"), and stays visible while the transcript
+scrolls. Each stage shows its title and two separate facts: whether the assistant has
+marked it done (a tick, or an open circle), and the changes saved for it, each named by its
+change card's summary and linked to that card, so clicking it scrolls the transcript to the
+card. A stage with a saved change that is not yet marked done is in progress, and one with
+no saved change yet says so. A change the analyst undid stays listed, struck through and
+marked undone, and a stage whose every change was undone is open again; the backend
+decides both, and the checklist renders the plan the undo returned. A change whose card is
+no longer in the transcript is named without a link. The checklist updates live as the
+turn streams, comes back with a resumed chat, can be collapsed to its header, and is absent
+from a chat with no plan. It is the backend's plan rendered as it arrives; the panel
+derives no stage state of its own.
 
 **Every completed turn ends with its outcome.** The completed event's typed outcome
 decides how the turn closes. `applied` and `answered` close with the ordinary completed
@@ -224,8 +240,9 @@ terminal frame is a contract violation: it cancels the response and renders the 
 interrupted rather than silently preserving a false completed state.
 
 **Assistant responses are validated at the feature boundary.** Status and
-session JSON, every history row, and every field of all seven SSE variants are
-checked at runtime before they become typed values or reach a store callback.
+session JSON (its build plan included), the undo response, every history row, and every
+field of every SSE variant are checked at runtime before they become typed values or reach
+a store callback.
 Required object/array/primitive shapes are closed while unrelated additional
 fields are tolerated for additive compatibility. Contract drift raises a
 descriptive ordinary `Error`, not `ApiError`, and a rejected stream frame

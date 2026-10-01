@@ -209,7 +209,12 @@ round it compares the results the loop returned with the recorded statuses and
 error codes, and on the first difference stops sending and ends the turn. A
 successful apply does not end the turn, so a trajectory that applies ends with
 a round of closing text and no calls, and a multi-stage trajectory applies one
-plan per stage in one turn. The loop ends a turn without another round after a
+plan per stage in one turn. The `smoke_staged_pricing_build` trajectory works as
+the system prompt asks of a request with several stages: it sets a build plan of
+four items first, names each stage's item on that stage's apply and claims the
+item complete once the apply has saved. The case's expectations hold no plan
+assertion, because a live model chooses its own item ids; the replay test asserts
+the plan the trajectory leaves. The loop ends a turn without another round after a
 save that fails verification, and a recorded call can be ignored there, so after
 the case the harness also compares every executed call, in order, with the
 recording. Any difference, a round the loop never asked for, or a round it
@@ -250,8 +255,8 @@ repository, with three commands:
   selected case inapplicable to the run's variant is not run; the report lists
   it as not applicable. When no selected case applies to the variant, `record`
   refuses before it resolves the provider. With `--transcripts` it also writes each case's transcript, the
-  requests, the assistant's text and every tool call with its arguments and
-  result, under `.haute/assistant-eval/<run id>/transcripts/` in the invoking
+  requests, the assistant's text, every tool call with its arguments and
+  result and every build-plan update, under `.haute/assistant-eval/<run id>/transcripts/` in the invoking
   project so a failure can be diagnosed. The runner refuses `--transcripts`
   unless Git ignores that directory.
 - `compare` reads two reports of the same evidence kind and reports, per area,

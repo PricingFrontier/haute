@@ -41,6 +41,7 @@ import {
   listAssistantSessions,
   streamAssistantMessage,
   undoAssistantChange,
+  type AssistantBuildPlan,
   type AssistantChangeRecord,
   type AssistantSessionList,
   type AssistantSessionResult,
@@ -68,6 +69,7 @@ function resetStores() {
     sessionId: null,
     pipelineSource: null,
     entries: [],
+    buildPlan: null,
     turnStatus: "idle",
     thinking: false,
     status: READY_STATUS,
@@ -86,7 +88,7 @@ function resetStores() {
     assistantUnseenOutcome: false,
     assistantPreviewErrorNodeId: null,
   })
-  vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", sourceFile: "main.py", history: [] })
+  vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", sourceFile: "main.py", history: [], buildPlan: null })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
   // Every completed turn refreshes the list; without a default the shared
   // mock resolves undefined and every unrelated test records a list error.
@@ -489,6 +491,7 @@ describe("transcript order and turn outcomes", () => {
         { kind: "assistant", text: `NEEDS_INPUT: ${detail}`, ...HISTORY_TEXT },
         { kind: "outcome", outcome: { kind: "needs_input", detail, changes: [] } },
       ],
+      buildPlan: null,
     })
 
     await useAssistantStore.getState().openSession("session-1", "main.py")
@@ -521,6 +524,7 @@ describe("transcript order and turn outcomes", () => {
         { kind: "change", change: CHANGE },
         { kind: "outcome", outcome: { kind: "applied", detail: null, changes: ["plan-1"] } },
       ],
+      buildPlan: null,
     })
 
     await useAssistantStore.getState().openSession("session-1", "main.py")
@@ -639,6 +643,7 @@ describe("send gates", () => {
       sessionId: "nested",
       sourceFile: "pipelines/motor.py",
       history: [],
+      buildPlan: null,
     })
     useAssistantStore.setState({ sessionsSource: "pipelines/motor.py" })
     await useAssistantStore.getState().sendMessage("hi", {
@@ -657,7 +662,7 @@ describe("chat list navigation", () => {
   it("opens on the list and never resumes a conversation on send", async () => {
     // The panel used to look empty until a message was sent, then produced an
     // earlier transcript above it, because resume happened inside sendMessage.
-    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", sourceFile: "main.py", history: [] })
+    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", sourceFile: "main.py", history: [], buildPlan: null })
     scriptStream([completed()])
 
     expect(useAssistantStore.getState().view).toBe("list")
@@ -688,6 +693,7 @@ describe("chat list navigation", () => {
           is_error: true,
         },
       ],
+      buildPlan: null,
     })
 
     await useAssistantStore.getState().openSession("old-session", "main.py")
@@ -800,7 +806,7 @@ describe("chat list navigation", () => {
     // user just navigated away from, while the panel shows the new one.
     let resolveSecond: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
-      .mockResolvedValueOnce({ sessionId: "first", sourceFile: "main.py", history: [] })
+      .mockResolvedValueOnce({ sessionId: "first", sourceFile: "main.py", history: [], buildPlan: null })
       .mockImplementationOnce(
         () => new Promise((resolve) => { resolveSecond = resolve }),
       )
@@ -811,7 +817,7 @@ describe("chat list navigation", () => {
     const opening = useAssistantStore.getState().openSession("second", "main.py")
     expect(useAssistantStore.getState().sessionId).toBeNull()
 
-    resolveSecond({ sessionId: "second", sourceFile: "main.py", history: [] })
+    resolveSecond({ sessionId: "second", sourceFile: "main.py", history: [], buildPlan: null })
     await opening
     expect(useAssistantStore.getState().sessionId).toBe("second")
   })
@@ -824,12 +830,13 @@ describe("chat list navigation", () => {
         sessionId: "quick",
         sourceFile: "main.py",
         history: [{ kind: "user", text: "quick chat", name: "", title: "", summary: "", is_error: false }],
+        buildPlan: null,
       })
 
     const slow = useAssistantStore.getState().openSession("slow", "main.py")
     await useAssistantStore.getState().openSession("quick", "main.py")
 
-    resolveSlow({ sessionId: "slow", sourceFile: "main.py", history: [] })
+    resolveSlow({ sessionId: "slow", sourceFile: "main.py", history: [], buildPlan: null })
     await slow
 
     const { sessionId, entries } = useAssistantStore.getState()
@@ -841,12 +848,12 @@ describe("chat list navigation", () => {
     let resolveOpen: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve }))
-      .mockResolvedValueOnce({ sessionId: "fresh", sourceFile: "main.py", history: [] })
+      .mockResolvedValueOnce({ sessionId: "fresh", sourceFile: "main.py", history: [], buildPlan: null })
     scriptStream([completed()])
 
     const opening = useAssistantStore.getState().openSession("old", "main.py")
     await useAssistantStore.getState().sendMessage("new question", SEND_OPTS)
-    resolveOpen({ sessionId: "old", sourceFile: "main.py", history: [] })
+    resolveOpen({ sessionId: "old", sourceFile: "main.py", history: [], buildPlan: null })
     await opening
 
     const { sessionId, entries } = useAssistantStore.getState()
@@ -865,7 +872,7 @@ describe("chat list navigation", () => {
 
     const opening = useAssistantStore.getState().openSession("chosen", "main.py")
     navigate()
-    resolveOpen({ sessionId: "chosen", sourceFile: "main.py", history: [] })
+    resolveOpen({ sessionId: "chosen", sourceFile: "main.py", history: [], buildPlan: null })
     await opening
 
     // Landing here would silently re-attach a conversation the user left.
@@ -982,7 +989,7 @@ describe("stop and new chat", () => {
     expect(createAssistantSession).toHaveBeenCalledTimes(1)
     expect(useAssistantStore.getState().turnStatus).toBe("streaming")
 
-    resolveSession?.({ sessionId: "session-1", sourceFile: "main.py", history: [] })
+    resolveSession?.({ sessionId: "session-1", sourceFile: "main.py", history: [], buildPlan: null })
     await Promise.all([first, second])
     expect(useAssistantStore.getState().entries).toContainEqual({ kind: "user", text: "first" })
     expect(useAssistantStore.getState().entries).not.toContainEqual({ kind: "user", text: "second" })
@@ -1143,7 +1150,7 @@ describe("undo", () => {
 
   it("posts the undo and notes it in the transcript", async () => {
     openChat()
-    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, gitSha: "f".repeat(40) })
+    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, gitSha: "f".repeat(40), buildPlan: null })
 
     await useAssistantStore.getState().undoChange(CHANGE)
 
@@ -1192,11 +1199,74 @@ describe("undo", () => {
         { kind: "outcome", outcome: { kind: "applied", detail: null, changes: [CHANGE.id] } },
         { kind: "undo", change: CHANGE },
       ],
+      buildPlan: null,
     })
 
     await useAssistantStore.getState().openSession("session-1", "main.py")
 
     const kinds = useAssistantStore.getState().entries.map((entry) => entry.kind)
     expect(kinds).toEqual(["user", "change", "outcome", "undo"])
+  })
+})
+
+describe("build plan", () => {
+  const PLAN: AssistantBuildPlan = {
+    items: [{ id: "bands", title: "Age bands", complete: false, changes: [] }],
+  }
+  const CLAIMED: AssistantBuildPlan = {
+    items: [
+      { id: "bands", title: "Age bands", complete: true, changes: [{ id: CHANGE.id, undone: false }] },
+    ],
+  }
+
+  it("replaces the plan from each update without adding a transcript entry", async () => {
+    const entries = await liveEntries([
+      { type: "build_plan_updated", build_plan: PLAN },
+      { type: "build_plan_updated", build_plan: CLAIMED },
+      completed(),
+    ])
+
+    expect(useAssistantStore.getState().buildPlan).toEqual(CLAIMED)
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "outcome"])
+  })
+
+  it("takes the plan from an opened chat and clears it on New chat", async () => {
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [],
+      buildPlan: CLAIMED,
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+    expect(useAssistantStore.getState().buildPlan).toEqual(CLAIMED)
+
+    useAssistantStore.getState().newChat()
+    expect(useAssistantStore.getState().buildPlan).toBeNull()
+  })
+
+  it("takes the plan an undo returns, with its change undone and its item reopened", async () => {
+    const reopened: AssistantBuildPlan = {
+      items: [
+        { id: "bands", title: "Age bands", complete: false, changes: [{ id: CHANGE.id, undone: true }] },
+      ],
+    }
+    useAssistantStore.setState({
+      sessionId: "session-1",
+      pipelineSource: "main.py",
+      view: "chat",
+      entries: [{ kind: "change", change: CHANGE }],
+      buildPlan: CLAIMED,
+    })
+    useDocumentStatusStore.setState({ sourceRevision: CHANGE.revision })
+    vi.mocked(undoAssistantChange).mockResolvedValue({
+      changeId: CHANGE.id,
+      gitSha: "f".repeat(40),
+      buildPlan: reopened,
+    })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(useAssistantStore.getState().buildPlan).toEqual(reopened)
   })
 })

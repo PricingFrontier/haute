@@ -108,8 +108,8 @@ conversations bound to that source file, and a message whose source file differs
 session's is refused with 409 naming the chat's pipeline, so an edit can never land in a
 file the analyst is not looking at. Session create accepts an optional prior session id: when its
 persisted record exists (in memory or on disk) and is bound to the same pipeline, the
-session resumes with its transcript, including each completed turn's outcome, returned
-for the panel to rehydrate; otherwise a
+session resumes with its transcript, including each completed turn's outcome, and its
+build plan, returned for the panel to rehydrate; otherwise a
 fresh session is created — resume is an offer, never an error. A mismatched
 offer is rejected before the candidate is promoted or touched in the live LRU,
 so asking to resume the wrong pipeline cannot evict a useful session. A *message* against an
@@ -166,7 +166,10 @@ places after the analyst's message and never stores in the session history:
 - on request, the error one node raises when its schema resolves, reduced by policy: its
   text only when `allow_row_samples` permits, otherwise its type, the step or line that
   raised it and the column names the policy already discloses. A failure that appears
-  only while rows are collected is not reproduced: the block says the schema resolved.
+  only while rows are collected is not reproduced: the block says the schema resolved;
+- the session's build plan while it has an open item (see **Build plans for multi-stage
+  requests**): each item's id, title, whether it is complete and how many saved changes
+  are recorded against it, so a turn that follows an unfinished build continues it.
 
 The turn context holds no guidance derived from the analyst's words: no recipe
 suggestion and no clarification hint.
@@ -198,7 +201,9 @@ messages: the analyst's request, then the assistant's final text followed by a s
 record Haute wrote of how the turn ended (its outcome, with the controller's reason for an
 unfinished dry-run or the verification error of a committed save), the change cards it
 saved (id, summary and the document revision each save produced), the revision it ended
-on, and the changes the analyst undid after it. A question the turn ended on is its final
+on, the build plan as the turn left it when the turn changed the plan (how many items are
+complete and which are open), and the changes the analyst undid after it. A question the
+turn ended on is its final
 text. Earlier turns' tool calls and results are not resent: the turn context describes the
 saved graph as the turn starts, and the model reads anything else again. The records are
 bounded by a character budget, not a message count. When they exceed it the oldest records
@@ -206,8 +211,9 @@ are dropped whole, newest kept, and a leading Haute note says how many earlier t
 left out (on the OpenAI-compatible wire it leads the next user message, so two user
 messages never follow each other); a turn is never cut in the middle, and the current
 turn is never cut at all.
-Records are built from what a persisted turn keeps (its text, its outcome and its saved
-change records), so a chat revived after a restart compacts the same way. Mid-tier models
+Records are built from what a persisted turn keeps (its text, its outcome, its saved
+change records and the build plan it left), so a chat revived after a restart compacts the
+same way. Mid-tier models
 get a short context that still names every change the conversation saved; thinking from
 earlier turns is never replayed, which is the compaction shape the providers' preserved
 thinking accepts.
@@ -230,7 +236,9 @@ assistant text deltas, a content-free thinking status while a Claude model think
 tool-call started/finished activity (the tool's name, a plain-words
 title written beside the tool such as "Reading the pipeline", "Checking 3 changes" or
 "Applying 3 changes", and a compact argument and result summary), a change-applied event
-after each successful apply carrying its change card (see **Change cards**), and exactly
+after each successful apply carrying its change card (see **Change cards**), a
+build-plan event carrying the whole plan after each tool call that changed the session's
+build plan (see **Build plans for multi-stage requests**), and exactly
 one terminal event — completed (with token usage and
 a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome
 records what the turn saved separately from whether it finished the request: its
@@ -362,6 +370,37 @@ An apply result that saved, verified or not, retains its change record in neutra
 history; resume rebuilds the same change card from that durable record, in its original
 position after the apply's tool row.
 
+**Build plans for multi-stage requests.** A request with several stages (a source, its
+features, a banding, a rating and a response) is built under a build plan the model sets
+with `update_build_plan`: its items in order, each a short stable id and a title. The
+panel shows the plan as a checklist, and each item carries two separate facts. The first is
+the changes saved against it, which Haute records: an `apply_graph_plan` call may name the
+item it implements in `item`, and when that save commits, verified or not, Haute records the
+change's id against the item; an `item` the plan does not hold is refused before anything
+is saved. The second is whether the item is complete, which only the model can claim, by
+naming it in `complete`. Haute accepts the claim only for an item with at least one
+recorded change the analyst has not undone, and otherwise refuses it with a located,
+retryable error, so the checklist never shows a stage complete with nothing saved for it.
+An apply that saves part of a stage therefore leaves the item open with its change listed
+until the model claims it. Setting `items` again revises an unfinished plan: an item keeps
+its recorded changes and its completion under the same id, a new id starts open with no
+change, and an id left out is dropped. Once every item is complete the plan is finished,
+and the next `items` start a new plan, so a later build that reuses an id never inherits a
+finished item. A failed call changes nothing. The model sees the resulting items, each
+with whether it is complete and how many saved changes it has. An undo marks its change
+undone on every item that lists it, and a complete item left with no change that is not
+undone reopens; the change stays listed, marked undone, as its change card stays in the
+transcript with the undo note after it. The plan is session state: it is persisted with
+the session, so a resumed chat shows the checklist, and the turn record of every turn that
+changed it says how that turn left it. While an item is open the turn context lists the
+plan, so a turn that ended with items open (stopped, out of budget, or ended by the model)
+is continued when the analyst says "continue". A session saved before build plans existed
+has no plan and revives with none. The system prompt asks the model to set a plan only for
+a request with several stages, to name each apply's item and to claim an item only once
+its whole stage is saved; a request of one change needs no plan. The plan changes nothing
+in the project and is no authority for a save: the outcome's `changes` still list exactly
+what the turn saved.
+
 **Change cards.** After every successful apply the service builds a value-free change
 record from what was saved: the actual semantic diff, the graph before the plan and the
 graph reparsed after the save. It holds its id, the hash of the plan it saved (a plan
@@ -413,7 +452,9 @@ is running and when the change has no parent commit (it was not saved to Git). T
 is found by id in the chat's stored history, the latest record when the same plan was
 saved more than once. The undo is recorded in the chat as a note after the latest turn;
 the transcript shows it, and the next turn's context tells the model that the analyst
-undid that change, so the model does not assume its earlier change is still in place.
+undid that change, so the model does not assume its earlier change is still in place. The
+undo also updates the session's build plan as **Build plans for multi-stage requests**
+describes, and its response carries the resulting plan for the checklist.
 A plan's single-use record never outlives the revision it applied to: after an undo
 restores that revision, dry-running the same change again issues a fresh plan with the
 same hash, which applies once more. This amends the rule that a stored plan "is
@@ -432,8 +473,9 @@ and both ends of each added or removed edge). The node ids travel in the origin 
 the canvas receives the update before the change card streams. Updates from the file
 watcher and resyncs carry no origin.
 
-**The tool surface** is seven task-shaped tools. Each answers one question the model
-asks while authoring, whatever storage layer holds the answer:
+**The tool surface** is eight task-shaped tools. Each answers one question the model
+asks while authoring, or records one fact about its work, whatever storage layer holds
+it:
 
 - `get_pipeline` — the saved graph: nodes (id, type, name, config summary, and on a
   stepped type its authoring state and value-free per-step summary, as in the graph
@@ -531,7 +573,11 @@ asks while authoring, whatever storage layer holds the answer:
   naming the node it creates; the recipe expands deterministically into primitive
   operations inside the same plan, so a recipe and the primitive edits around it are one
   dry-run, one apply and one change card. These are the only provider-visible mutation
-  operations.
+  operations. An apply may name the build-plan item it implements in `item`.
+- `update_build_plan` — sets the session's build plan (`items`, each an id and a title, in
+  order) and claims an item complete (`complete`), as **Build plans for multi-stage
+  requests** describes. It changes only the session's plan, never the project, and reads
+  no project material.
 
 **Mutation semantics.** `dry_run_graph_edits` first expands each `recipe` operation in
 place into its recipe's primitive operations, then loads a canonical saved-state
@@ -707,8 +753,9 @@ model; the error names the nodes the plan adds, by id and ref.
   per tool, which `_wire_ops`' operation models and the operation descriptors generate;
   neither is written by hand. The **canonical projection** is that schema itself:
   `dry_run_graph_edits.ops` is a discriminated union whose branches keep their own
-  required fields. Anthropic and OpenAI receive it, and on those two lanes a closed read
-  tool, one whose canonical schema reduces to closed objects without composition, is sent
+  required fields. Anthropic and OpenAI receive it, and on those two lanes a closed tool
+  that does not change the project (the read tools and `update_build_plan`), one whose
+  canonical schema reduces to closed objects without composition, is sent
   in strict mode, so the provider decodes its arguments against the schema: in the subset
   of JSON Schema strict decoding accepts, with a removed numeric bound stated in the
   description, and on OpenAI with every property required and each optional one nullable,
@@ -767,6 +814,15 @@ model; the error names the nodes the plan adds, by id and ref.
   and how the turn ended) and drops what the turn context and a fresh read restate (earlier
   tool calls and results). Replaying nothing of an earlier turn but its record is also the
   one client-side compaction shape under which Claude's signed thinking stays valid.
+- **A checklist of two facts, one tool.** A long build gave the analyst no view of what
+  remained, and a model that lost track of its stages could not be nudged on them. Whether
+  a stage is done is a judgment only the model can make, so completion is its claim; what
+  was saved for a stage is a fact, so Haute records it from the commits the model
+  attributes, and a claim with nothing saved behind it is refused. Keeping both on one
+  `update_build_plan` tool plus an `item` on the apply adds one closed tool that every
+  provider projection carries unchanged. It builds on several applies per turn, which the
+  live portfolio of 2026-10-01 measured at 27 of 44 cases passing against 24 of 44 with one
+  apply per turn on `databricks-qwen35-122b-a10b`.
 - **One explicit effort for Claude models.** `medium` is valid on every Claude model with
   adaptive thinking, is Anthropic's recommended starting point for multistep tool use on
   the current Opus and Sonnet models (and the current Opus's own default), and keeps

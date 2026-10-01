@@ -1331,20 +1331,27 @@ async def _run_turn(
     transcript: list[dict[str, object]] | None,
 ) -> SelfTestTurnResult:
     before = _read_graph(source_file)
+    session = store.lookup(session_id)
+    if session is None:
+        raise RuntimeError("the evaluation session must stay live between its turns")
     # The turn context the message route builds, with no selection.
-    turn_context = render_turn_context(build_turn_context(source_file, config.egress))
+    turn_context = render_turn_context(
+        build_turn_context(source_file, config.egress, build_plan=session.build_plan.current)
+    )
     events: list[dict[str, object]] | None = None
     if transcript is not None:
         events = []
         transcript.append({"request": turn.request, "events": events})
     started_at = time.monotonic()
     observed_provider = _ObservedProvider(provider, started_at, variant)
-    session = store.lookup(session_id)
-    if session is None:
-        raise RuntimeError("the evaluation session must stay live between its turns")
-    # The executor the message route builds: on the session's evidence ledger.
+    # The executor the message route builds: on the session's evidence ledger and plan.
     observed_tools = _ObservedToolExecutor(
-        build_tool_executor(source_file, session_id=session_id, evidence=session.evidence),
+        build_tool_executor(
+            source_file,
+            session_id=session_id,
+            evidence=session.evidence,
+            plan=session.build_plan,
+        ),
         started_at,
         events,
     )
@@ -1377,6 +1384,9 @@ async def _run_turn(
                     events.append({"text": event.text})
         elif event.type == "change_applied":
             change_cards += 1
+        elif event.type == "build_plan_updated":
+            if events is not None:
+                events.append({"build_plan": event.build_plan.model_dump(mode="json")})
         elif event.type == "completed":
             terminal = "completed"
             outcome = event.outcome.kind

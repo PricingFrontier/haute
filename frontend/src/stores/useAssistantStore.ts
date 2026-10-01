@@ -10,6 +10,7 @@ import {
   MAX_CONTEXT_SELECTION,
   streamAssistantMessage,
   undoAssistantChange,
+  type AssistantBuildPlan,
   type AssistantChangeRecord,
   type AssistantHistoryEntry,
   type AssistantMessageContext,
@@ -85,6 +86,11 @@ export interface AssistantStoreState {
   /** The source file the server bound the open chat to. */
   pipelineSource: string | null
   entries: TranscriptEntry[]
+  /**
+   * The open chat's build plan, rendered as the checklist: from the session on
+   * open, replaced by each `build_plan_updated` event and by an undo's response.
+   */
+  buildPlan: AssistantBuildPlan | null
   turnStatus: "idle" | "streaming"
   /**
    * The model is thinking: set by a `thinking` event, cleared by any other
@@ -467,6 +473,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   sessionId: null,
   pipelineSource: null,
   entries: [],
+  buildPlan: null,
   turnStatus: "idle",
   thinking: false,
   status: "unknown",
@@ -507,6 +514,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         sessionId: null,
         pipelineSource: null,
         entries: [],
+        buildPlan: null,
         notice: null,
       })
     }
@@ -538,7 +546,14 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // replacement arrives — otherwise a message sent during the fetch lands in
     // the chat the user just navigated away from.
     const generation = (openGeneration += 1)
-    set({ view: "chat", entries: [], notice: null, sessionId: null, pipelineSource: null })
+    set({
+      view: "chat",
+      entries: [],
+      buildPlan: null,
+      notice: null,
+      sessionId: null,
+      pipelineSource: null,
+    })
     try {
       const result = await createAssistantSession(sourceFile, sessionId)
       // A second choice while this one was in flight owns the screen; letting
@@ -548,6 +563,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         sessionId: result.sessionId,
         pipelineSource: result.sourceFile,
         entries: hydrateEntries(result.history),
+        buildPlan: result.buildPlan,
       })
     } catch (error) {
       if (generation !== openGeneration) return
@@ -604,7 +620,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
         // someone else's transcript into a chat the user opened as new.
         const result = await createAssistantSession(sourceFile, null, controller.signal)
         sessionId = result.sessionId
-        set({ sessionId, pipelineSource: result.sourceFile })
+        set({ sessionId, pipelineSource: result.sourceFile, buildPlan: result.buildPlan })
       }
     } catch (error) {
       rejectSessionCreation(set, error)
@@ -668,6 +684,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
                 entries: appendActivity(state.entries, { kind: "change", change: event.change }),
               }))
               break
+            case "build_plan_updated":
+              set({ buildPlan: event.build_plan })
+              break
             case "completed":
               terminal.current = event
               break
@@ -722,7 +741,14 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // open still in flight is what keeps this chat empty: its response would
     // otherwise arrive and fill the new chat with an old transcript.
     openGeneration += 1
-    set({ sessionId: null, pipelineSource: null, entries: [], notice: null, view: "chat" })
+    set({
+      sessionId: null,
+      pipelineSource: null,
+      entries: [],
+      buildPlan: null,
+      notice: null,
+      view: "chat",
+    })
   },
 
   undoChange: async (change) => {
@@ -743,10 +769,14 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     }
     set({ undoingChangeId: change.id, notice: null })
     try {
-      await undoAssistantChange(sessionId, change.id, pipelineSource)
-      // The canvas updates through /ws/sync; the transcript notes the undo.
+      const result = await undoAssistantChange(sessionId, change.id, pipelineSource)
+      // The canvas updates through /ws/sync; the transcript notes the undo, and
+      // the checklist shows the plan in which the backend marked it undone.
       if (get().sessionId === sessionId) {
-        set((state) => ({ entries: [...state.entries, { kind: "undo", change }] }))
+        set((state) => ({
+          entries: [...state.entries, { kind: "undo", change }],
+          buildPlan: result.buildPlan,
+        }))
       }
     } catch (error) {
       const detail = error instanceof ApiError ? error.detail : null

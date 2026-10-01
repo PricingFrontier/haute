@@ -1090,9 +1090,10 @@ async def test_one_apply_per_turn_ends_the_turn_at_its_first_saving_apply(
 
     (turn,) = result.turns
     assert (turn.telemetry.outcome, turn.telemetry.saved_changes) == ("applied", 1)
-    # The dry-run round and the apply round; the round after the apply never reaches the model.
-    assert turn.telemetry.provider_round_trips == 2
+    # The plan, dry-run and apply rounds; the round after the apply never reaches the model.
+    assert turn.telemetry.provider_round_trips == 3
     assert [diagnostic.name for diagnostic in turn.tool_diagnostics] == [
+        "update_build_plan",
         "dry_run_graph_edits",
         "apply_graph_plan",
     ]

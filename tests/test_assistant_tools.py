@@ -2922,6 +2922,131 @@ class TestRecipeOperations:
         assert "(operation 2) before operation 1" in error["fix"]
 
 
+class TestBuildPlan:
+    """The executor updates the session's build plan and records an apply's
+    committed change against the item it names; only the model claims completion."""
+
+    @pytest.fixture(autouse=True)
+    def _internal_policy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import haute.assistant._tools as tools_module
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: _policy(max_sensitivity="internal", executable=False),
+        )
+
+    async def test_a_claim_needs_a_saved_change_that_an_apply_naming_the_item_records(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._build_plan import BuildPlan
+        from haute.assistant._catalog import capability_manifest
+        from haute.assistant._tools import build_tool_executor
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        plan = BuildPlan()
+        execute = build_tool_executor("main.py", plan=plan)
+        stages = [
+            {"id": "banding", "title": "Region banding"},
+            {"id": "response", "title": "Quote response"},
+        ]
+
+        assert await execute("update_build_plan", {"items": stages}) == {
+            "items": [
+                {"id": "banding", "title": "Region banding", "complete": False, "changes": 0},
+                {"id": "response", "title": "Quote response", "complete": False, "changes": 0},
+            ],
+            "capability_hash": capability_manifest().capability_hash,
+            "operation_version": "1.0",
+        }
+        before = plan.current
+        refused = await execute("update_build_plan", {"complete": "banding"})
+        assert refused["error"]["code"] == "plan_item_unsaved"
+        assert refused["error"]["retryable"] is True
+        assert refused["error"]["where"] == {"field": "complete", "item": "banding"}
+        assert "apply_graph_plan" in refused["error"]["fix"]
+        assert plan.current is before
+
+        dry_run = await execute(
+            "dry_run_graph_edits", {"summary": "Band regions.", "ops": [_REGION_BANDING]}
+        )
+        assert "error" not in dry_run, dry_run
+        unknown = await execute(
+            "apply_graph_plan", {"plan_hash": dry_run["plan_hash"], "item": "bandng"}
+        )
+        assert unknown["error"]["code"] == "unknown_plan_item"
+        assert unknown["error"]["retryable"] is True
+        assert unknown["error"]["where"] == {"field": "item"}
+        assert unknown["error"]["did_you_mean"] == ["banding"]
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        assert "region_band" not in {node.id for node in graph.nodes}
+
+        applied = await execute(
+            "apply_graph_plan", {"plan_hash": dry_run["plan_hash"], "item": "banding"}
+        )
+        assert "error" not in applied, applied
+        assert applied["item"] == "banding"
+        assert plan.current is not None
+        banding = plan.current.items[0]
+        assert (banding.complete, [change.id for change in banding.changes]) == (
+            False,
+            [applied["change"]["id"]],
+        )
+
+        claimed = await execute("update_build_plan", {"complete": "banding"})
+        assert claimed["items"][0] == {
+            "id": "banding",
+            "title": "Region banding",
+            "complete": True,
+            "changes": 1,
+        }
+        assert claimed["items"][1]["complete"] is False
+
+    async def test_the_turn_context_lists_an_unfinished_plan_under_every_policy(self):
+        from haute.assistant._render import render_turn_context
+        from haute.assistant._tools import build_turn_context
+        from haute.schemas import AssistantBuildPlan
+
+        def plan(*, finished: bool) -> AssistantBuildPlan:
+            return AssistantBuildPlan.model_validate(
+                {
+                    "items": [
+                        {
+                            "id": "banding",
+                            "title": "Region banding",
+                            "complete": True,
+                            "changes": [{"id": "c1", "undone": False}],
+                        },
+                        {
+                            "id": "response",
+                            "title": "Quote response",
+                            "complete": finished,
+                            "changes": [{"id": "c2", "undone": False}] if finished else [],
+                        },
+                    ]
+                }
+            )
+
+        public = _turn_policy(max_sensitivity="public")
+        unfinished = render_turn_context(
+            build_turn_context("main.py", public, build_plan=plan(finished=False))
+        )
+        finished = render_turn_context(
+            build_turn_context("main.py", public, build_plan=plan(finished=True))
+        )
+
+        assert (
+            "### Build plan\nThe plan you set for a multi-stage request. Continue its open items"
+        ) in unfinished
+        assert '- `banding` "Region banding": complete, 1 saved change\n' in unfinished
+        assert unfinished.endswith(
+            '- `response` "Quote response": open, no saved change\n\n### Pipeline\n'
+            "The highest sensitivity sent is `public`, so the saved graph, its revision and "
+            "the canvas selection are withheld."
+        )
+        assert "Build plan" not in finished
+
+
 RATING_SOURCE = """\
 import polars as pl
 

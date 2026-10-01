@@ -50,9 +50,10 @@ from uuid import uuid4
 from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute.assistant._build_plan import BuildPlan
 from haute.assistant._ops import SourceEvidenceLedger
 from haute.assistant._render import TurnRecord, render_omitted_turns, render_turn_record
-from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
+from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
 
@@ -421,6 +422,34 @@ def _persisted_change(change: JSONValue) -> JSONValue:
     )
 
 
+def _persisted_build_plan(plan: AssistantBuildPlan | None) -> JSONValue:
+    """Store a build plan; its item titles are model-written text, redacted like it."""
+
+    if plan is None:
+        return None
+    return cast(
+        JSONValue,
+        AssistantBuildPlan.model_validate(
+            {
+                "items": [
+                    {**item.model_dump(mode="json"), "title": _persisted_text(item.title)}
+                    for item in plan.items
+                ]
+            }
+        ).model_dump(mode="json"),
+    )
+
+
+def _revived_build_plan(value: object) -> AssistantBuildPlan | None:
+    """A stored build plan, or none.
+
+    A session or turn written before build plans existed has no `build_plan`
+    key and revives with no plan, as a fresh session starts.
+    """
+
+    return None if value is None else AssistantBuildPlan.model_validate(value)
+
+
 def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
     """Redact provider-working tool payloads for durable restart history."""
 
@@ -469,16 +498,20 @@ class AssistantTurn:
     event carried; a turn that failed or was cancelled has none. ``undone``
     holds the records of the changes the analyst undid after this turn, in
     order; each is kept whole, so it outlives the pruning of the turn that
-    saved it.
+    saved it. ``build_plan`` is the session's build plan as this turn left it,
+    none when the turn did not change the plan.
     """
 
     messages: tuple[AssistantMessage, ...]
     outcome: AssistantTurnOutcome | None = None
     undone: tuple[AssistantChangeRecord, ...] = ()
+    build_plan: AssistantBuildPlan | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is not None and not isinstance(self.outcome, AssistantTurnOutcome):
             raise TypeError("turn outcome must be an AssistantTurnOutcome")
+        if self.build_plan is not None and not isinstance(self.build_plan, AssistantBuildPlan):
+            raise TypeError("turn build plan must be an AssistantBuildPlan")
         normalized: list[AssistantMessage] = []
         for message in self.messages:
             if isinstance(message, AssistantMessage):
@@ -502,6 +535,7 @@ class AssistantTurn:
         *,
         outcome: AssistantTurnOutcome | None = None,
         undone: Iterable[AssistantChangeRecord] = (),
+        build_plan: AssistantBuildPlan | None = None,
     ) -> AssistantTurn:
         """Create a complete turn from an iterable of neutral messages."""
 
@@ -514,12 +548,13 @@ class AssistantTurn:
             ),
             outcome=outcome,
             undone=tuple(undone),
+            build_plan=build_plan,
         )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssistantTurn:
         """Build a turn from its JSON record; ``messages``, ``outcome`` and ``undone``
-        are required."""
+        are required, and ``build_plan`` is read when present."""
 
         for key in ("messages", "outcome", "undone"):
             if key not in value:
@@ -539,6 +574,7 @@ class AssistantTurn:
             if raw_outcome is None
             else AssistantTurnOutcome.model_validate(raw_outcome),
             undone=[AssistantChangeRecord.model_validate(record) for record in undone],
+            build_plan=_revived_build_plan(value.get("build_plan")),
         )
 
     @property
@@ -554,15 +590,18 @@ class AssistantTurn:
             "messages": [message.as_dict() for message in self.messages],
             "outcome": None if self.outcome is None else self.outcome.model_dump(),
             "undone": [record.model_dump(mode="json") for record in self.undone],
+            "build_plan": (
+                None if self.build_plan is None else self.build_plan.model_dump(mode="json")
+            ),
         }
 
     def record(self) -> TurnRecord:
         """This turn as a compact record for a later turn's provider history.
 
         Everything it reads survives persistence: the request and final text,
-        the outcome, the undone records, and each saved change's record, which
-        a committed apply's tool result carries whether or not its
-        verification passed.
+        the outcome, the build plan it left, the undone records, and each saved
+        change's record, which a committed apply's tool result carries whether
+        or not its verification passed.
         """
 
         request = self.messages[0].content
@@ -591,6 +630,7 @@ class AssistantTurn:
             reply=reply,
             outcome=self.outcome,
             changes=changes,
+            build_plan=self.build_plan,
             undone=tuple(change.id for change in self.undone),
         )
 
@@ -601,6 +641,8 @@ class AssistantSession:
 
     ``evidence`` is the session's evidence ledger, live state like ``lock``:
     it is never serialized, so a revived session starts with an empty one.
+    ``build_plan`` is the session's build plan, persisted as its current
+    snapshot so a revived session keeps it.
     """
 
     id: str
@@ -610,6 +652,7 @@ class AssistantSession:
     evidence: SourceEvidenceLedger = field(
         default_factory=SourceEvidenceLedger, repr=False, compare=False
     )
+    build_plan: BuildPlan = field(default_factory=BuildPlan, repr=False, compare=False)
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
@@ -652,6 +695,11 @@ class AssistantSession:
             "id": self.id,
             "source_file": self.source_file,
             "history": [turn.as_dict() for turn in self.history],
+            "build_plan": (
+                None
+                if self.build_plan.current is None
+                else self.build_plan.current.model_dump(mode="json")
+            ),
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
@@ -669,9 +717,11 @@ class AssistantSession:
                     "undone": [
                         _persisted_change(record.model_dump(mode="json")) for record in turn.undone
                     ],
+                    "build_plan": _persisted_build_plan(turn.build_plan),
                 }
                 for turn in self.history
             ],
+            "build_plan": _persisted_build_plan(self.build_plan.current),
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
@@ -700,6 +750,7 @@ def _session_from_payload(payload: object, session_id: str) -> AssistantSession:
         id=session_id,
         source_file=source_file,
         history=list(history),
+        build_plan=BuildPlan(_revived_build_plan(payload.get("build_plan"))),
         created_at=float(payload["created_at"]),
         last_used=float(payload["last_used"]),
     )
@@ -1038,13 +1089,15 @@ class SessionStore:
         return record
 
     def record_undo(self, session_ref: SessionRef, change: AssistantChangeRecord) -> None:
-        """Record that the analyst undid *change*, after the latest turn, and persist."""
+        """Record that the analyst undid *change*, after the latest turn and in the
+        build plan, and persist."""
 
         session = self._require(session_ref)
         if not session.history:
             raise ValueError("an undo follows a turn that saved the change")
         latest = session.history[-1]
         session.history[-1] = replace(latest, undone=(*latest.undone, change))
+        session.build_plan.undo(change.id)
         self._touch(session)
         self._persist(session)
 

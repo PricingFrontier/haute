@@ -29,6 +29,7 @@ import {
   listAssistantSessions,
   streamAssistantMessage,
   undoAssistantChange,
+  type AssistantBuildPlan,
   type AssistantChangeRecord,
   type AssistantStreamEvent,
 } from "../assistant"
@@ -62,6 +63,13 @@ const CHANGE: AssistantChangeRecord = {
   git_sha: null,
   parent_sha: null,
   revision: "e".repeat(64),
+}
+
+const PLAN: AssistantBuildPlan = {
+  items: [
+    { id: "bands", title: "Age bands", complete: true, changes: [{ id: CHANGE.id, undone: false }] },
+    { id: "rating", title: "Rating", complete: false, changes: [{ id: "b".repeat(64), undone: true }] },
+  ],
 }
 
 beforeEach(() => {
@@ -148,11 +156,14 @@ describe("getAssistantStatus", () => {
 
 describe("undoAssistantChange", () => {
   it("posts the chat, the change and the canvas source file", async () => {
-    mockFetch.mockReturnValueOnce(jsonResponse({ change_id: CHANGE.id, git_sha: "f".repeat(40) }))
+    mockFetch.mockReturnValueOnce(
+      jsonResponse({ change_id: CHANGE.id, git_sha: "f".repeat(40), build_plan: PLAN }),
+    )
 
     await expect(undoAssistantChange("abc123", CHANGE.id, "main.py")).resolves.toEqual({
       changeId: CHANGE.id,
       gitSha: "f".repeat(40),
+      buildPlan: PLAN,
     })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/assistant/changes/undo")
@@ -162,6 +173,13 @@ describe("undoAssistantChange", () => {
       change_id: CHANGE.id,
       source_file: "main.py",
     })
+  })
+
+  it("requires the build plan the undo left, null without one", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({ change_id: CHANGE.id, git_sha: null }))
+    await expect(undoAssistantChange("abc123", CHANGE.id, "main.py")).rejects.toThrow(
+      /undo\.build_plan/,
+    )
   })
 
   it("rejects a change record without its revision", async () => {
@@ -179,13 +197,19 @@ describe("undoAssistantChange", () => {
 describe("createAssistantSession", () => {
   it("posts the canvas source file and returns the bound session", async () => {
     mockFetch.mockReturnValueOnce(
-      jsonResponse({ session_id: "abc123", source_file: "pipelines/main.py", history: [] }),
+      jsonResponse({
+        session_id: "abc123",
+        source_file: "pipelines/main.py",
+        history: [],
+        build_plan: null,
+      }),
     )
 
     await expect(createAssistantSession("pipelines/main.py")).resolves.toEqual({
       sessionId: "abc123",
       sourceFile: "pipelines/main.py",
       history: [],
+      buildPlan: null,
     })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/assistant/session")
@@ -211,13 +235,14 @@ describe("createAssistantSession", () => {
       { kind: "undo", change: CHANGE },
     ]
     mockFetch.mockReturnValueOnce(
-      jsonResponse({ session_id: "abc123", source_file: "main.py", history }),
+      jsonResponse({ session_id: "abc123", source_file: "main.py", history, build_plan: PLAN }),
     )
 
     await expect(createAssistantSession("main.py", "abc123")).resolves.toEqual({
       sessionId: "abc123",
       sourceFile: "main.py",
       history,
+      buildPlan: PLAN,
     })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body as string)).toEqual({
@@ -249,6 +274,7 @@ describe("createAssistantSession", () => {
           outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied.", changes: [] },
         },
       ],
+      build_plan: null,
     }))
 
     const { history } = await createAssistantSession("main.py", "abc123")
@@ -297,6 +323,10 @@ describe("createAssistantSession", () => {
     ["a change row with an unknown change kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], change: "moved" }] } } }] }],
     ["an outcome row without its outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", text: "", name: "", summary: "", is_error: false, outcome: null }] }],
     ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", outcome: { kind: "blocked", detail: null, changes: [] } }] }],
+    ["a missing build plan", { session_id: "abc", source_file: "main.py", history: [] }],
+    ["a build plan without items", { session_id: "abc", source_file: "main.py", history: [], build_plan: { items: [] } }],
+    ["a build plan repeating an item id", { session_id: "abc", source_file: "main.py", history: [], build_plan: { items: [PLAN.items[0], PLAN.items[0]] } }],
+    ["a complete item without a live change", { session_id: "abc", source_file: "main.py", history: [], build_plan: { items: [{ ...PLAN.items[0], changes: [{ id: CHANGE.id, undone: true }] }] } }],
   ])("rejects %s", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
     await expect(createAssistantSession("main.py")).rejects.toThrow(/assistant|session|history/i)
@@ -382,6 +412,13 @@ describe("streamAssistantMessage", () => {
     expect(events[3]).toEqual({ type: "change_applied", change: CHANGE })
   })
 
+  it("parses a build-plan update with the whole plan", async () => {
+    const events = await collectEvents([
+      `data: ${JSON.stringify({ type: "build_plan_updated", build_plan: PLAN })}\n\n`,
+    ])
+    expect(events).toEqual([{ type: "build_plan_updated", build_plan: PLAN }])
+  })
+
   it("parses the field-less thinking status", async () => {
     const events = await collectEvents([
       'data: {"type":"thinking"}\n\n',
@@ -434,6 +471,8 @@ describe("streamAssistantMessage", () => {
     ["completed applied with no saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "applied", detail: null, changes: [] } }],
     ["completed answered with a saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: null, changes: ["plan-1"] } }],
     ["change_applied without its id", { type: "change_applied", change: { ...CHANGE, id: undefined } }],
+    ["build_plan_updated without its plan", { type: "build_plan_updated" }],
+    ["build_plan_updated with a non-boolean undone", { type: "build_plan_updated", build_plan: { items: [{ ...PLAN.items[1], changes: [{ id: "c", undone: "no" }] }] } }],
     ["failed", { type: "failed", message: null }],
     ["cancelled discriminator", { type: 1 }],
   ])("rejects malformed %s before invoking the callback", async (_label, event) => {

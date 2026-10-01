@@ -359,6 +359,64 @@ class TestRevival:
         }
         assert not revived.lock.locked()
 
+    def test_the_build_plan_and_each_turn_s_plan_revive_with_titles_redacted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant._session import AssistantTurn
+
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        session.build_plan.update(
+            items=[
+                {"id": "bands", "title": "Bands for provider-secret-canary"},
+                {"id": "rating", "title": "Rating"},
+            ],
+            complete=None,
+        )
+        session.build_plan.record_change("bands", "a" * 64)
+        turn = AssistantTurn.from_mapping(_turn())
+        first.append(
+            session,
+            AssistantTurn.from_messages(
+                turn.messages, outcome=turn.outcome, build_plan=session.build_plan.current
+            ),
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "provider-secret-canary" not in raw
+        second = _store(tmp_path)  # simulated server restart
+        revived = second.lookup(session.id)
+        assert revived is not None
+        plan = revived.build_plan.current
+        assert plan is not None
+        assert "<redacted>" in plan.items[0].title
+        assert [(item.id, item.complete, len(item.changes)) for item in plan.items] == [
+            ("bands", False, 1),
+            ("rating", False, 0),
+        ]
+        assert revived.history[0].build_plan == plan
+        record = second.provider_history(revived)[1]["content"]
+        assert "- Build plan as this turn left it: 0 of 2 items complete; open: `bands`" in str(
+            record
+        )
+
+    def test_a_session_saved_before_build_plans_revives_with_none(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("rating/main.py")
+        first.append(session, _turn())
+        path = tmp_path / "sessions" / f"{session.id}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["build_plan"]
+        del payload["history"][0]["build_plan"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        revived = _store(tmp_path).lookup(session.id)
+
+        assert revived is not None
+        assert revived.build_plan.current is None
+        assert revived.history[0].build_plan is None
+
     def test_a_turn_record_without_an_outcome_key_is_invalid(self, tmp_path: Path):
         first = _store(tmp_path)
         session = first.create("rating/main.py")

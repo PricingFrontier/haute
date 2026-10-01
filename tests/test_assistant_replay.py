@@ -407,6 +407,267 @@ async def test_a_staged_build_saves_each_stage_in_one_turn_with_a_card_each(
     assert len(updates) == 4
 
 
+STAGED = "smoke_staged_pricing_build"
+_STAGES = ("source", "banding", "rating", "response")
+
+
+def _staged_payload() -> dict[str, Any]:
+    return json.loads((TRAJECTORIES_ROOT / f"{STAGED}.json").read_text(encoding="utf-8"))
+
+
+def _round_index(rounds: list[dict[str, Any]], call_id: str) -> int:
+    return next(
+        index
+        for index, trajectory_round in enumerate(rounds)
+        if any(call["id"] == call_id for call in trajectory_round["calls"])
+    )
+
+
+def _written(tmp_path: Path, payload: dict[str, Any]):
+    """Load *payload* as a trajectory file, named after its id as loading requires."""
+
+    folder = tmp_path / "t"
+    folder.mkdir()
+    path = folder / f"{payload['id']}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return load_trajectory(path)
+
+
+def _plan_states(events: Sequence[Mapping[str, Any]]) -> list[dict[str, tuple[bool, int]]]:
+    """Each build-plan update of a transcript turn: per item, complete and its change count."""
+
+    return [
+        {
+            item["id"]: (item["complete"], len(item["changes"]))
+            for item in event["build_plan"]["items"]
+        }
+        for event in events
+        if "build_plan" in event
+    ]
+
+
+def _applied_change_ids(events: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [
+        event["result"]["change"]["id"]
+        for event in events
+        if event.get("tool") == "apply_graph_plan" and "change" in event["result"]
+    ]
+
+
+async def _replayed(case, trajectory, work_dir: Path, transcript: list[dict[str, object]]):
+    provider = _RecordingProvider(trajectory)
+    result = await run_self_test_case(
+        case,
+        projects_root=PROJECTS_ROOT,
+        config=replay_config(trajectory),
+        work_dir=work_dir,
+        provider_factory=lambda _config: provider,
+        evidence="replay",
+        transcript=transcript,
+    )
+    provider.verify(result.tool_diagnostics)
+    return result, provider
+
+
+async def test_a_staged_build_records_each_stage_and_completes_it_only_when_claimed(
+    tmp_path: Path,
+) -> None:
+    """The plan's four items are set first; each apply records its change against
+    its item, which stays open until the model claims it, and the plan ends with
+    every item complete holding the change its apply saved."""
+
+    trajectory = next(item for item in TRAJECTORIES if item.id == STAGED)
+    transcript: list[dict[str, object]] = []
+
+    result, _provider = await _replayed(CASES[STAGED], trajectory, tmp_path, transcript)
+
+    assert result.reasons == ()
+    (turn,) = transcript
+    events = turn["events"]
+    states = _plan_states(events)
+    assert states[0] == dict.fromkeys(_STAGES, (False, 0))
+    expected = dict.fromkeys(_STAGES, (False, 0))
+    for index, stage in enumerate(_STAGES):
+        expected = {**expected, stage: (False, 1)}
+        assert states[1 + 2 * index] == expected, stage
+        expected = {**expected, stage: (True, 1)}
+        assert states[2 + 2 * index] == expected, stage
+    assert len(states) == 1 + 2 * len(_STAGES)
+    final = [event["build_plan"] for event in events if "build_plan" in event][-1]
+    assert [
+        change["id"] for item in final["items"] for change in item["changes"]
+    ] == _applied_change_ids(events)
+
+
+async def test_an_apply_that_saves_part_of_a_stage_leaves_it_open_with_its_change(
+    tmp_path: Path, work_dir: Path
+) -> None:
+    """The rating stage saved in two applies, the table and then its combined output:
+    after the first the item is open with that change listed, after the second open
+    with both, and complete only once the model claims it."""
+
+    payload = _staged_payload()
+    rounds = payload["turns"][0]["rounds"]
+    rating_dry = rounds[_round_index(rounds, "rating_dry")]["calls"][-1]
+    recipe = rating_dry["arguments"]["ops"][0]["arguments"]
+    combined = recipe.pop("combined_outputs")
+    rating_dry["arguments"]["summary"] = "Rate each quote by its region group."
+    (output,) = combined
+    part = [
+        {
+            "text": "",
+            "calls": [
+                {
+                    "id": "combined_dry",
+                    "tool": "dry_run_graph_edits",
+                    "arguments": {
+                        "summary": "Combine the region factor into a technical premium.",
+                        "ops": [
+                            {
+                                "op": "update_node",
+                                "node": "region_rating",
+                                "config": {
+                                    "combinedOutputs": [
+                                        {
+                                            "outputColumn": output["output_column"],
+                                            "operation": output["operation"],
+                                            "baseValue": float(output["base_value"]),
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    },
+                    "result": {"status": "ok"},
+                }
+            ],
+        },
+        {
+            "text": "",
+            "calls": [
+                {
+                    "id": "combined_apply",
+                    "tool": "apply_graph_plan",
+                    "arguments": {
+                        "plan_hash": {"$result": "combined_dry.plan_hash"},
+                        "item": "rating",
+                    },
+                    "result": {"status": "ok"},
+                }
+            ],
+        },
+    ]
+    after_apply = _round_index(rounds, "rating_apply") + 1
+    rounds[after_apply:after_apply] = part
+    transcript: list[dict[str, object]] = []
+
+    result, _provider = await _replayed(
+        CASES[STAGED], _written(tmp_path, payload), work_dir, transcript
+    )
+
+    assert result.reasons == ()
+    rating = [state["rating"] for state in _plan_states(transcript[0]["events"])]
+    assert rating == [
+        (False, 0),
+        (False, 0),
+        (False, 0),
+        (False, 0),
+        (False, 0),
+        (False, 1),
+        (False, 2),
+        (True, 2),
+        (True, 2),
+        (True, 2),
+    ]
+
+
+async def test_an_interrupted_build_resumes_its_open_items_on_continue(
+    tmp_path: Path, work_dir: Path
+) -> None:
+    """A first turn that ends after two stages leaves the rating and response
+    items open; on "Continue" the next turn's context lists them open and its
+    history's record of the first turn names them, and the turn finishes them
+    against the first turn's item ids without setting the plan again."""
+
+    case = CASES[STAGED]
+    (turn,) = case.turns
+    expected = turn.expectations
+    goldens = {golden.node: golden for golden in expected.execution}
+    first = replace(
+        turn,
+        expectations=replace(
+            expected,
+            required_node_types=("dataInput", "polars", "banding"),
+            required_edges=expected.required_edges[:2],
+            node_configs={key: expected.node_configs[key] for key in ("nb_batch", "region_band")},
+            execution=(goldens["quote_features"],),
+        ),
+    )
+    second = replace(
+        turn,
+        request="Continue",
+        expectations=replace(
+            expected,
+            node_configs={
+                key: expected.node_configs[key] for key in ("region_rating", "quote_response")
+            },
+            execution=(goldens["region_rating"],),
+        ),
+    )
+    payload = _staged_payload()
+    rounds = payload["turns"][0]["rounds"]
+    split = _round_index(rounds, "rating_dry")
+    banding_done, rating_dry = rounds[split]["calls"]
+    payload["turns"] = [
+        {
+            "rounds": [
+                *rounds[:split],
+                {"text": "", "calls": [banding_done]},
+                {"text": "Saved the source and the banding; I stopped there.", "calls": []},
+            ]
+        },
+        {"rounds": [{"text": "", "calls": [rating_dry]}, *rounds[split + 1 :]]},
+    ]
+    transcript: list[dict[str, object]] = []
+
+    result, provider = await _replayed(
+        replace(case, turns=(first, second)),
+        _written(tmp_path, payload),
+        work_dir,
+        transcript,
+    )
+
+    assert result.reasons == ()
+    first_turn, second_turn = transcript
+    assert _plan_states(first_turn["events"])[-1] == {
+        "source": (True, 1),
+        "banding": (True, 1),
+        "rating": (False, 0),
+        "response": (False, 0),
+    }
+    resumed = next(
+        messages
+        for messages in provider.requests
+        if sum(message["role"] == "user" for message in messages) == 2
+    )
+    record = str(resumed[1]["content"])
+    assert resumed[1]["role"] == "assistant"
+    assert (
+        "- Build plan as this turn left it: 2 of 4 items complete; open: `rating` "
+        '"Region rating", `response` "Quote response"'
+    ) in record
+    context = str(resumed[-1]["content"])
+    assert resumed[-1]["role"] == "context"
+    assert '- `source` "Data input and features": complete, 1 saved change' in context
+    assert '- `rating` "Region rating": open, no saved change' in context
+    assert '- `response` "Quote response": open, no saved change' in context
+    assert not any(
+        event.get("tool") == "update_build_plan" and "items" in event["arguments"]
+        for event in second_turn["events"]
+    )
+    assert _plan_states(second_turn["events"])[-1] == dict.fromkeys(_STAGES, (True, 1))
+
+
 async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_layer(
     tmp_path: Path,
 ) -> None:

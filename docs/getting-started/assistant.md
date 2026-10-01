@@ -23,6 +23,8 @@ While the assistant is working, the canvas is read-only. A pill at the top of th
 
 You can close the panel while it works. The toolbar's Assistant button shows a spinner until it finishes, and a dot if it finished while the panel was closed.
 
+When you ask for something in several stages, such as a source, a banding, a rating and a response, the assistant lists the stages in a **Checklist** above the message box. Each stage shows whether the assistant has marked it done and the changes saved for it; click a change to scroll to its change card. A stage with saved changes that is not marked done is still in progress, and undoing a stage's only change opens it again. If the assistant stops before the end, the open stages stay on the list, and asking it to continue picks them up.
+
 ### Pointing it at nodes and errors
 
 Nodes you select on the canvas are sent with your message, so "join this onto the quotes" means the selected node. The chip above the message box names them.

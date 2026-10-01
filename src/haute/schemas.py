@@ -287,6 +287,67 @@ class AssistantChangeRecord(BaseModel):
     revision: str = Field(min_length=1)
 
 
+#: The most items one build plan holds.
+ASSISTANT_MAX_BUILD_PLAN_ITEMS = 12
+#: The longest build-plan item title, in characters.
+ASSISTANT_BUILD_PLAN_TITLE_LIMIT = 80
+#: A build-plan item id: lower-case letters, digits and underscores, starting with a letter.
+ASSISTANT_BUILD_PLAN_ID_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+
+
+class AssistantBuildPlanChange(BaseModel):
+    """One saved change recorded against a build-plan item, by its change card's id."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    # The analyst undid the change; it stays listed, as its card stays in the chat.
+    undone: bool
+
+
+class AssistantBuildPlanItem(BaseModel):
+    """One stage of a build plan: the changes saved against it and whether it is complete.
+
+    The changes are Haute's record of the applies the model attributed to the
+    item; completion is the model's claim, which Haute accepts only while the
+    item has a change that is not undone.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=ASSISTANT_BUILD_PLAN_ID_PATTERN)
+    # Bounded where the model writes it (the tool schema), not here: a persisted
+    # plan redacts it, which can lengthen it.
+    title: str = Field(min_length=1)
+    complete: bool
+    changes: list[AssistantBuildPlanChange]
+
+    @model_validator(mode="after")
+    def _complete_has_a_live_change(self) -> AssistantBuildPlanItem:
+        if self.complete and all(change.undone for change in self.changes):
+            raise ValueError(
+                f"build plan item {self.id!r} is complete without a saved change that is not undone"
+            )
+        return self
+
+
+class AssistantBuildPlan(BaseModel):
+    """The stages a multi-stage request is built in, in order, as the chat's checklist."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: list[AssistantBuildPlanItem] = Field(
+        min_length=1, max_length=ASSISTANT_MAX_BUILD_PLAN_ITEMS
+    )
+
+    @model_validator(mode="after")
+    def _unique_item_ids(self) -> AssistantBuildPlan:
+        ids = [item.id for item in self.items]
+        if len(set(ids)) != len(ids):
+            raise ValueError("build plan item ids must be unique")
+        return self
+
+
 class AssistantTranscriptEntry(BaseModel):
     """One rehydratable transcript item from a resumed session's history.
 
@@ -321,6 +382,8 @@ class AssistantSessionResponse(BaseModel):
     # Non-empty only when the requested session was resumed: the stored turns
     # mapped to transcript entries for the panel to rehydrate.
     history: list[AssistantTranscriptEntry] = []
+    # The session's build plan for the checklist; None until the model sets one.
+    build_plan: AssistantBuildPlan | None
 
 
 class AssistantSessionSummary(BaseModel):
@@ -374,6 +437,8 @@ class AssistantUndoResponse(BaseModel):
     change_id: str
     # The commit the undo's save made, or None when it was not captured in Git.
     git_sha: str | None
+    # The session's build plan after the undo marked the change undone; None without one.
+    build_plan: AssistantBuildPlan | None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -434,6 +499,13 @@ class AssistantChangeAppliedEvent(BaseModel):
     change: AssistantChangeRecord
 
 
+class AssistantBuildPlanUpdatedEvent(BaseModel):
+    """A tool call changed the session's build plan: the whole plan as it now stands."""
+
+    type: Literal["build_plan_updated"] = "build_plan_updated"
+    build_plan: AssistantBuildPlan
+
+
 class AssistantCompletedEvent(BaseModel):
     type: Literal["completed"] = "completed"
     usage: AssistantUsage
@@ -455,6 +527,7 @@ AssistantStreamEvent = Annotated[
     | AssistantToolStartedEvent
     | AssistantToolFinishedEvent
     | AssistantChangeAppliedEvent
+    | AssistantBuildPlanUpdatedEvent
     | AssistantCompletedEvent
     | AssistantFailedEvent
     | AssistantCancelledEvent,

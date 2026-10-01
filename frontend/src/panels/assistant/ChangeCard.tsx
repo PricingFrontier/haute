@@ -134,6 +134,7 @@ export default function ChangeCard({ change }: { change: AssistantChangeRecord }
   return (
     <section
       data-testid="assistant-change-card"
+      data-change-id={change.id}
       aria-label="Saved changes"
       className="rounded-md px-2.5 py-2 text-[11px] space-y-1.5"
       style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}

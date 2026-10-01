@@ -506,7 +506,7 @@ class TestMessageTurn:
         (configured / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
         executor_sources: list[str] = []
 
-        def build_executor(source_file, *, session_id, evidence):
+        def build_executor(source_file, *, session_id, evidence, plan):
             executor_sources.append(source_file)
 
             async def execute_tool(_name, _arguments):
@@ -790,12 +790,13 @@ class TestTurnReservation:
         )
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, evidence):
+        def build_executor(source_file, *, session_id, evidence, plan):
             captured.update(
                 {
                     "source_file": source_file,
                     "session_id": session_id,
                     "evidence": evidence,
+                    "plan": plan,
                 }
             )
 
@@ -825,8 +826,10 @@ class TestTurnReservation:
             "source_file": "main.py",
             "session_id": session.id,
             "evidence": session.evidence,
+            "plan": session.build_plan,
         }
         assert captured["evidence"] is session.evidence
+        assert captured["plan"] is session.build_plan
 
     async def test_a_reply_to_a_question_sends_only_the_rendered_turn_context(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
@@ -851,12 +854,13 @@ class TestTurnReservation:
         )
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, evidence):
+        def build_executor(source_file, *, session_id, evidence, plan):
             captured.update(
                 {
                     "source_file": source_file,
                     "session_id": session_id,
                     "evidence": evidence,
+                    "plan": plan,
                 }
             )
 
@@ -884,7 +888,7 @@ class TestTurnReservation:
         chunks = [chunk async for chunk in response.body_iterator]
 
         assert any("completed" in chunk for chunk in chunks)
-        assert set(captured) == {"source_file", "session_id", "evidence"}
+        assert set(captured) == {"source_file", "session_id", "evidence", "plan"}
         assert len(provider.calls) == 1
         context = provider.calls[0]["messages"][-1]
         assert context["role"] == "context"
@@ -1173,7 +1177,7 @@ class TestUndo:
         response = self._undo(client, session_id)
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"change_id": "a" * 64, "git_sha": "f" * 40}
+        assert response.json() == {"change_id": "a" * 64, "git_sha": "f" * 40, "build_plan": None}
         assert undo_calls == [("main.py", AssistantChangeRecord.model_validate(_CHANGE))]
         _persistent_store(monkeypatch, project_root)  # the note survives a restart
         history = client.post(
@@ -1183,6 +1187,42 @@ class TestUndo:
         assert AssistantChangeRecord.model_validate(history[-1]["change"]) == (
             AssistantChangeRecord.model_validate(_CHANGE)
         )
+
+    def test_undoing_the_only_change_of_a_complete_item_reopens_it_and_persists(
+        self,
+        client: TestClient,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        undo_calls,
+    ):
+        store = _persistent_store(monkeypatch, project_root)
+        created = client.post("/api/assistant/session", json=_CANVAS).json()
+        assert created["build_plan"] is None
+        session_id = created["session_id"]
+        session = store.lookup(session_id)
+        assert session is not None
+        session.build_plan.update(items=[{"id": "bands", "title": "Age bands"}], complete=None)
+        session.build_plan.record_change("bands", _CHANGE["id"])
+        session.build_plan.update(items=None, complete="bands")
+        store.append(session_id, _applied_turn(_CHANGE))
+
+        response = self._undo(client, session_id)
+
+        reopened = {
+            "items": [
+                {
+                    "id": "bands",
+                    "title": "Age bands",
+                    "complete": False,
+                    "changes": [{"id": _CHANGE["id"], "undone": True}],
+                }
+            ]
+        }
+        assert response.status_code == 200, response.text
+        assert response.json()["build_plan"] == reopened
+        _persistent_store(monkeypatch, project_root)  # the reopened item survives a restart
+        resumed = client.post("/api/assistant/session", json={**_CANVAS, "session_id": session_id})
+        assert resumed.json()["build_plan"] == reopened
 
     def test_an_unknown_change_is_404_and_nothing_is_saved(
         self, client: TestClient, store: SessionStore, undo_calls
@@ -1281,6 +1321,41 @@ class TestUndoNote:
         assert "### Undone since your last turn" in first
         assert f'- `{"a" * 64}`: "Add an age band after quotes."' in first
         assert "Undone since your last turn" not in second
+
+    async def test_a_turn_context_lists_the_open_items_of_the_session_plan(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._providers import ProviderUsage
+        from haute.schemas import AssistantMessageRequest
+
+        (project_root / "main.py").write_text(_QUOTES_PIPELINE, encoding="utf-8")
+        (project_root / "haute.toml").write_text(
+            _egress_toml(max_sensitivity="internal", allow_row_samples=False), encoding="utf-8"
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session = store.create("main.py")
+        session.build_plan.update(
+            items=[{"id": "bands", "title": "Age bands"}, {"id": "rating", "title": "Rating"}],
+            complete=None,
+        )
+        provider = _ScriptedProvider([TextDelta("ok"), TurnStop("end", ProviderUsage(1, 1))])
+        monkeypatch.setattr(assistant_routes, "_provider_factory", lambda _config: provider)
+
+        response = await assistant_routes.post_assistant_message(
+            AssistantMessageRequest(
+                session_id=session.id, message="continue", source_file="main.py"
+            )
+        )
+        [chunk async for chunk in response.body_iterator]
+
+        (call,) = provider.calls
+        context = call["messages"][-1]["content"]
+        assert "### Build plan\n" in context
+        assert '- `bands` "Age bands": open, no saved change\n' in context
+        assert '- `rating` "Rating": open, no saved change' in context
 
 
 class TestReservationNeverLeaks:

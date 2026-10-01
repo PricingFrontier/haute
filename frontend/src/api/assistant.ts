@@ -74,6 +74,29 @@ export interface AssistantChangeRecord {
   revision: string
 }
 
+/** One saved change recorded against a build-plan item, by its change card's id. */
+export interface AssistantBuildPlanChange {
+  id: string
+  /** The analyst undid it; it stays listed, as its card stays in the chat. */
+  undone: boolean
+}
+
+/**
+ * One stage of a build plan: whether the assistant marked it complete, and the
+ * changes the backend recorded against it from the applies that named it.
+ */
+export interface AssistantBuildPlanItem {
+  id: string
+  title: string
+  complete: boolean
+  changes: AssistantBuildPlanChange[]
+}
+
+/** The stages a multi-stage request is built in, mirrored from `schemas.py`. */
+export interface AssistantBuildPlan {
+  items: AssistantBuildPlanItem[]
+}
+
 export type AssistantStreamEvent =
   | { type: "text_delta"; text: string }
   /** The model is thinking; the event carries none of the thinking. */
@@ -88,6 +111,8 @@ export type AssistantStreamEvent =
       summary: string
     }
   | { type: "change_applied"; change: AssistantChangeRecord }
+  /** A tool call changed the session's build plan: the whole plan as it now stands. */
+  | { type: "build_plan_updated"; build_plan: AssistantBuildPlan }
   | { type: "completed"; usage: AssistantUsage; outcome: AssistantTurnOutcome }
   | { type: "failed"; message: string }
   | { type: "cancelled" }
@@ -262,6 +287,45 @@ function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord 
   }
 }
 
+/**
+ * Parse a build plan field by field. An empty item list, a repeated item id and
+ * a complete item without a change that is not undone are contract violations.
+ */
+function parseBuildPlan(value: unknown, path: string): AssistantBuildPlan {
+  const plan = requireRecord(value, path)
+  if (!Array.isArray(plan.items) || plan.items.length === 0) {
+    invalidAssistantPayload(`${path}.items`, "a non-empty array")
+  }
+  const seen = new Set<string>()
+  const items = plan.items.map((raw, index): AssistantBuildPlanItem => {
+    const itemPath = `${path}.items[${index}]`
+    const item = requireRecord(raw, itemPath)
+    const id = requireString(item.id, `${itemPath}.id`)
+    if (seen.has(id)) invalidAssistantPayload(`${itemPath}.id`, "an id no other item has")
+    seen.add(id)
+    if (!Array.isArray(item.changes)) invalidAssistantPayload(`${itemPath}.changes`, "an array")
+    const changes = item.changes.map((rawChange, changeIndex) => {
+      const changePath = `${itemPath}.changes[${changeIndex}]`
+      const change = requireRecord(rawChange, changePath)
+      return {
+        id: requireString(change.id, `${changePath}.id`),
+        undone: requireBoolean(change.undone, `${changePath}.undone`),
+      }
+    })
+    const complete = requireBoolean(item.complete, `${itemPath}.complete`)
+    if (complete && changes.every((change) => change.undone)) {
+      invalidAssistantPayload(`${itemPath}.complete`, "false without a change that is not undone")
+    }
+    return { id, title: requireString(item.title, `${itemPath}.title`), complete, changes }
+  })
+  return { items }
+}
+
+/** A response's required `build_plan`: `null` before the model sets one. */
+function parseNullableBuildPlan(value: unknown, path: string): AssistantBuildPlan | null {
+  return value === null ? null : parseBuildPlan(value, path)
+}
+
 function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHistoryEntry {
   const payload = requireRecord(value, path)
   const kind = requireString(payload.kind, `${path}.kind`)
@@ -293,6 +357,7 @@ function parseAssistantSession(value: unknown): AssistantSessionResult {
     history: payload.history.map((entry, index) =>
       parseAssistantHistoryEntry(entry, `session.history[${index}]`),
     ),
+    buildPlan: parseNullableBuildPlan(payload.build_plan, "session.build_plan"),
   }
 }
 
@@ -323,6 +388,8 @@ function parseEvent(payload: string): AssistantStreamEvent {
       }
     case "change_applied":
       return { type, change: parseChangeRecord(parsed.change, "stream event.change") }
+    case "build_plan_updated":
+      return { type, build_plan: parseBuildPlan(parsed.build_plan, "stream event.build_plan") }
     case "completed": {
       const usage = requireRecord(parsed.usage, "stream event.usage")
       return {
@@ -380,6 +447,8 @@ export interface AssistantSessionResult {
   /** The canonical source file the server bound the session to. */
   sourceFile: string
   history: AssistantHistoryEntry[]
+  /** The session's build plan for the checklist; null until the model sets one. */
+  buildPlan: AssistantBuildPlan | null
 }
 
 /** Create (or resume) a chat bound to the canvas document's source file. */
@@ -442,6 +511,8 @@ export interface AssistantUndoResult {
   changeId: string
   /** The commit the undo's save made, or null when it was not captured in Git. */
   gitSha: string | null
+  /** The session's build plan after the undo marked the change undone; null without one. */
+  buildPlan: AssistantBuildPlan | null
 }
 
 /** Undo one change card: the backend saves the version before that change. */
@@ -459,6 +530,7 @@ export function undoAssistantChange(
     return {
       changeId: requireString(payload.change_id, "undo.change_id"),
       gitSha: requireNullableString(payload.git_sha, "undo.git_sha"),
+      buildPlan: parseNullableBuildPlan(payload.build_plan, "undo.build_plan"),
     }
   })
 }

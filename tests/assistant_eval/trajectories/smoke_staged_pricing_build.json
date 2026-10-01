@@ -9,6 +9,38 @@
           "text": "",
           "calls": [
             {
+              "id": "plan",
+              "tool": "update_build_plan",
+              "arguments": {
+                "items": [
+                  {
+                    "id": "source",
+                    "title": "Data input and features"
+                  },
+                  {
+                    "id": "banding",
+                    "title": "Region banding"
+                  },
+                  {
+                    "id": "rating",
+                    "title": "Region rating"
+                  },
+                  {
+                    "id": "response",
+                    "title": "Quote response"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
               "id": "source_dry",
               "tool": "dry_run_graph_edits",
               "arguments": {
@@ -69,7 +101,8 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "source_dry.plan_hash"
-                }
+                },
+                "item": "source"
               },
               "result": {
                 "status": "ok"
@@ -80,6 +113,16 @@
         {
           "text": "",
           "calls": [
+            {
+              "id": "source_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "source"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
             {
               "id": "banding_dry",
               "tool": "dry_run_graph_edits",
@@ -124,7 +167,8 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "banding_dry.plan_hash"
-                }
+                },
+                "item": "banding"
               },
               "result": {
                 "status": "ok"
@@ -135,6 +179,16 @@
         {
           "text": "",
           "calls": [
+            {
+              "id": "banding_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "banding"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
             {
               "id": "rating_dry",
               "tool": "dry_run_graph_edits",
@@ -196,7 +250,8 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "rating_dry.plan_hash"
-                }
+                },
+                "item": "rating"
               },
               "result": {
                 "status": "ok"
@@ -207,6 +262,16 @@
         {
           "text": "",
           "calls": [
+            {
+              "id": "rating_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "rating"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
             {
               "id": "response_dry",
               "tool": "dry_run_graph_edits",
@@ -243,7 +308,23 @@
               "arguments": {
                 "plan_hash": {
                   "$result": "response_dry.plan_hash"
-                }
+                },
+                "item": "response"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "response_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "response"
               },
               "result": {
                 "status": "ok"

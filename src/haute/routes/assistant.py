@@ -253,10 +253,15 @@ async def create_assistant_session(body: AssistantSessionRequest) -> AssistantSe
                 session_id=existing.id,
                 source_file=existing.source_file,
                 history=_transcript_entries(existing),
+                build_plan=existing.build_plan.current,
             )
 
     session = session_store.create(source_file)
-    return AssistantSessionResponse(session_id=session.id, source_file=session.source_file)
+    return AssistantSessionResponse(
+        session_id=session.id,
+        source_file=session.source_file,
+        build_plan=session.build_plan.current,
+    )
 
 
 async def _event_stream(
@@ -398,6 +403,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
                         None if request_context is None else request_context.preview_error_node_id
                     ),
                     undone=undone,
+                    build_plan=session.build_plan.current,
                 )
             turn_context = render_turn_context(gathered)
         except TurnContextError as exc:
@@ -413,6 +419,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             session.source_file,
             session_id=session.id,
             evidence=session.evidence,
+            plan=session.build_plan,
         )
     except BaseException:
         # Pre-stream failure after the reservation: the turn will never run,
@@ -451,7 +458,8 @@ def _latest_change(session: AssistantSession, change_id: str) -> AssistantChange
 
 @router.post("/changes/undo", response_model=AssistantUndoResponse)
 async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResponse:
-    """Undo one change card: save the version before it, then note it in the chat.
+    """Undo one change card: save the version before it, then note it in the chat
+    and the build plan.
 
     The session is reserved like a turn, so an undo never interleaves with one.
     """
@@ -485,7 +493,9 @@ async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResp
         session_store.record_undo(session, change)
     finally:
         reservation.release()
-    return AssistantUndoResponse(change_id=change.id, git_sha=result.git_sha)
+    return AssistantUndoResponse(
+        change_id=change.id, git_sha=result.git_sha, build_plan=session.build_plan.current
+    )
 
 
 __all__ = ["router", "session_store"]

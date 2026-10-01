@@ -41,7 +41,13 @@ from haute.assistant._node_cards import node_card
 from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
-from haute.schemas import ASSISTANT_MAX_ASSUMPTIONS, ASSISTANT_RECEIPT_TEXT_LIMIT
+from haute.schemas import (
+    ASSISTANT_BUILD_PLAN_ID_PATTERN,
+    ASSISTANT_BUILD_PLAN_TITLE_LIMIT,
+    ASSISTANT_MAX_ASSUMPTIONS,
+    ASSISTANT_MAX_BUILD_PLAN_ITEMS,
+    ASSISTANT_RECEIPT_TEXT_LIMIT,
+)
 
 # The save service is the authority for singleton policy.  Keep this derived
 # rather than repeating the node list here: a new singleton must be visible to
@@ -961,7 +967,9 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "verification_tier",
             "evidence",
             "change",
+            "item",
         ),
+        "update_build_plan": ("items",),
     }
     common_fields = ("capability_hash", "operation_version")
     fields = {
@@ -1016,6 +1024,8 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "inspect_node": {"schema", "config", "profile", "withheld"},
         # A file's schema, and the revision its evidence enters, only for a `path`.
         "find_data": {"schema", "project_revision"},
+        # The build-plan item the change was recorded against, only for an apply naming one.
+        "apply_graph_plan": {"item"},
     }
     success_required = [
         field
@@ -1127,13 +1137,21 @@ OPERATION_IDS = (
     "get_project_knowledge",
     "dry_run_graph_edits",
     "apply_graph_plan",
+    "update_build_plan",
 )
-#: The operations that change the project; every other operation only reads.
+#: The operations that change the project; every other operation leaves it as it is.
 MUTATING_OPERATION_IDS = frozenset({"apply_graph_plan"})
+#: The one operation that changes session state, the build plan, and nothing in the project.
+SESSION_OPERATION_IDS = frozenset({"update_build_plan"})
 #: The parts `inspect_node` can return, in the order it answers them.
 INSPECT_NODE_PARTS = ("schema", "config", "profile")
 #: Ids one `read_reference` call may name.
 MAX_REFERENCE_IDS = 12
+#: A build-plan item id as `update_build_plan` and `apply_graph_plan` take it.
+_BUILD_PLAN_ITEM_ID: dict[str, object] = {
+    "type": "string",
+    "pattern": ASSISTANT_BUILD_PLAN_ID_PATTERN,
+}
 #: Each operation's egress class: the most sensitive project material it can send.
 _OPERATION_EGRESS = {
     "get_pipeline": "internal-project-metadata",
@@ -1145,6 +1163,7 @@ _OPERATION_EGRESS = {
     "get_project_knowledge": "policy-filtered-project-content",
     "dry_run_graph_edits": "internal-project-metadata",
     "apply_graph_plan": "internal-project-metadata",
+    "update_build_plan": "none",
 }
 
 
@@ -1200,6 +1219,16 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "apply_graph_plan": (
             "Apply one exact validated plan hash under revision authority. Returns the "
             "change record the analyst sees, built from what was saved."
+        ),
+        "update_build_plan": (
+            "Set the build plan of a request with several stages, or mark one of its items "
+            "complete; the analyst sees the plan as a checklist. `items` sets the stages in "
+            "order, each a short `id` and a `title`; while the plan has an open item, an item "
+            "keeps its saved changes and completion under the same id. Name an item in "
+            "`apply_graph_plan`'s `item` to record that apply's saved change against it. "
+            "`complete` marks an item complete once its whole stage is saved; an item with "
+            "no saved change cannot be complete. Returns each item with whether it is "
+            "complete and how many saved changes it has."
         ),
     }
     input_schemas = {
@@ -1284,11 +1313,63 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             ["summary", "ops"],
         ),
         "apply_graph_plan": _closed_object(
-            {"plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+            {
+                "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "item": {
+                    **_BUILD_PLAN_ITEM_ID,
+                    "description": (
+                        "The id of the build-plan item this plan implements, when a build "
+                        "plan is set; Haute records the saved change against that item."
+                    ),
+                },
+            },
             ["plan_hash"],
+        ),
+        "update_build_plan": _closed_object(
+            {
+                "items": {
+                    "type": "array",
+                    "items": _closed_object(
+                        {
+                            "id": {
+                                **_BUILD_PLAN_ITEM_ID,
+                                "description": (
+                                    "A short stable id, such as `source` or `rating`: "
+                                    "lower-case letters, digits and underscores, starting "
+                                    "with a letter, at most 32 characters."
+                                ),
+                            },
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": ASSISTANT_BUILD_PLAN_TITLE_LIMIT,
+                                "description": (
+                                    "What the stage builds, in a few words (at most "
+                                    f"{ASSISTANT_BUILD_PLAN_TITLE_LIMIT} characters)."
+                                ),
+                            },
+                        },
+                        ["id", "title"],
+                    ),
+                    "minItems": 1,
+                    "maxItems": ASSISTANT_MAX_BUILD_PLAN_ITEMS,
+                    "description": (
+                        "The plan's stages in order, one item per stage; replaces the item "
+                        f"list. At most {ASSISTANT_MAX_BUILD_PLAN_ITEMS} items."
+                    ),
+                },
+                "complete": {
+                    **_BUILD_PLAN_ITEM_ID,
+                    "description": (
+                        "The id of an item whose whole stage is now saved; it needs at "
+                        "least one saved change recorded against it."
+                    ),
+                },
+            }
         ),
     }
     mutation = name in MUTATING_OPERATION_IDS
+    session = name in SESSION_OPERATION_IDS
     plan_bound = name == "apply_graph_plan"
     errors = [
         {
@@ -1390,6 +1471,37 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                     "code": "verification_failed",
                     "recovery": "Inspect or undo the committed save before continuing.",
                 },
+                {
+                    "code": "unknown_plan_item",
+                    "recovery": (
+                        "Name an item of the build plan (valid_ids), or set the plan's items "
+                        "with update_build_plan first; nothing was saved."
+                    ),
+                },
+            ]
+        )
+    elif name == "update_build_plan":
+        errors.extend(
+            [
+                {
+                    "code": "empty_plan_update",
+                    "recovery": "Send items, complete or both.",
+                },
+                {
+                    "code": "duplicate_plan_item",
+                    "recovery": "Give each item its own id.",
+                },
+                {
+                    "code": "unknown_plan_item",
+                    "recovery": "Name an item of the plan (valid_ids), or set the items first.",
+                },
+                {
+                    "code": "plan_item_unsaved",
+                    "recovery": (
+                        "Apply the plan that builds the stage with the item's id in "
+                        "apply_graph_plan's item, then mark it complete."
+                    ),
+                },
             ]
         )
     return OperationCapabilityDescriptor(
@@ -1398,24 +1510,32 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         descriptions[name],
         _freeze(input_schemas[name]),  # type: ignore[arg-type]
         _freeze(_operation_output_schema(name)),  # type: ignore[arg-type]
-        "write" if mutation else "read",
-        "ready branch required" if mutation else "saved project state",
+        "write" if mutation else ("session" if session else "read"),
+        (
+            "ready branch required"
+            if mutation
+            else ("session build plan" if session else "saved project state")
+        ),
         (
             "exact base revision and single-use plan hash"
             if plan_bound
-            else ("transactional graph revision" if mutation else "snapshot read")
+            else (
+                "transactional graph revision"
+                if mutation
+                else ("replaces the session's build plan" if session else "snapshot read")
+            )
         ),
         "none",
         _OPERATION_EGRESS[name],
-        "graph mutation" if mutation else "none",
+        "graph mutation" if mutation else ("session build plan" if session else "none"),
         "bounded",
         "idempotent" if not mutation else "conditional",
         "never automatic",
         False,
         name == "read_reference",
-        not mutation,
-        "pipeline-save" if mutation else "assistant-read",
-        "ordered" if mutation else "independent",
+        not (mutation or session),
+        "pipeline-save" if mutation else ("assistant-session" if session else "assistant-read"),
+        "ordered" if mutation or session else "independent",
         _freeze(
             {
                 "timeout_seconds": 30,
@@ -1593,6 +1713,7 @@ _TOOL_TITLES: dict[str, str] = {
     "get_project_knowledge": "Searching project notes",
     "dry_run_graph_edits": "Checking the plan",
     "apply_graph_plan": "Applying the plan",
+    "update_build_plan": "Updating the checklist",
 }
 
 
@@ -1635,6 +1756,7 @@ __all__ = [
     "CapabilityManifest",
     "NodeCapabilityDescriptor",
     "OPERATION_IDS",
+    "SESSION_OPERATION_IDS",
     "OperationCapabilityDescriptor",
     "capability_manifest",
     "compact_manifest",

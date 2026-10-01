@@ -39,6 +39,7 @@ function seed(partial: Partial<AssistantStoreState>) {
     sessionId: "s1",
     pipelineSource: "main.py",
     entries: [],
+    buildPlan: null,
     turnStatus: "idle",
     thinking: false,
     status: READY_STATUS,
@@ -158,6 +159,21 @@ describe("transcript", () => {
     renderPanel()
 
     expect(screen.getByTestId("assistant-choose-for-me")).toBeDisabled()
+  })
+
+  it("shows the checklist only in a chat with a build plan", () => {
+    const buildPlan = {
+      items: [{ id: "bands", title: "Age bands", complete: false, changes: [] }],
+    }
+    seed({ entries: [{ kind: "user", text: "Build it in stages." }] })
+    renderPanel()
+    expect(screen.queryByTestId("assistant-build-checklist")).toBeNull()
+
+    act(() => useAssistantStore.setState({ buildPlan }))
+    expect(screen.getByTestId("assistant-build-checklist")).toHaveTextContent("Age bands")
+
+    act(() => useAssistantStore.setState({ view: "list" }))
+    expect(screen.queryByTestId("assistant-build-checklist")).toBeNull()
   })
 })
 

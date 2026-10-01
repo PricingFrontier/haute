@@ -1418,6 +1418,73 @@ class TestSeveralAppliesPerTurn:
         }
 
 
+class TestBuildPlanEvents:
+    """A tool call that replaces the session's build plan streams the plan, and the
+    stored turn keeps the plan it left only when it changed it."""
+
+    async def test_a_changed_plan_streams_once_and_a_refused_claim_streams_nothing(
+        self, store, session_id
+    ):
+        from haute.assistant._build_plan import BuildPlanError, build_plan_view
+
+        session = store.lookup(session_id)
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(
+                        "plan-1",
+                        "update_build_plan",
+                        {"items": [{"id": "bands", "title": "Age bands"}]},
+                    ),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [
+                    ToolCallRequest("claim-1", "update_build_plan", {"complete": "bands"}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [TextDelta("Set the plan."), TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            assert name == "update_build_plan"
+            try:
+                plan = session.build_plan.update(
+                    items=arguments.get("items"), complete=arguments.get("complete")
+                )
+            except BuildPlanError as exc:
+                return {"error": {"code": exc.code, "message": exc.message}}
+            return {"items": build_plan_view(plan)}
+
+        events = await _run(
+            store, session_id, "Plan the bands", provider=provider, execute_tool=execute_tool
+        )
+
+        assert [event.type for event in events] == [
+            "tool_started",
+            "tool_finished",
+            "build_plan_updated",
+            "tool_started",
+            "tool_finished",
+            "text_delta",
+            "completed",
+        ]
+        (update,) = [event for event in events if event.type == "build_plan_updated"]
+        assert update.build_plan is session.build_plan.current
+        assert [(item.id, item.complete) for item in update.build_plan.items] == [("bands", False)]
+        assert store.lookup(session_id).history[-1].build_plan is session.build_plan.current
+
+        await _run(
+            store,
+            session_id,
+            "Thanks",
+            provider=ScriptedProvider([[TextDelta("You're welcome."), TurnStop("end", _usage())]]),
+        )
+
+        assert store.lookup(session_id).history[-1].build_plan is None
+        assert store.lookup(session_id).history[0].build_plan is session.build_plan.current
+
+
 class TestTurnOutcome:
     """The completed event carries how the turn ended, and the turn stores it."""
 
@@ -2108,6 +2175,7 @@ class TestSystemPrompt:
             "get_project_knowledge",
             "dry_run_graph_edits",
             "apply_graph_plan",
+            "update_build_plan",
         ]
         assert sum(branch["properties"]["op"].get("const") == "recipe" for branch in branches) == 4
 

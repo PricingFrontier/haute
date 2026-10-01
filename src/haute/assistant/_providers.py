@@ -615,8 +615,9 @@ ToolProjection: TypeAlias = Literal["compatible", "canonical"]
 #: Whose strict-mode rules a strict tool's schema follows.
 StrictDialect: TypeAlias = Literal["anthropic", "openai"]
 
-#: The operations a strict tool can be: those that only read the project.
-_READ_OPERATION_IDS = frozenset(OPERATION_IDS) - MUTATING_OPERATION_IDS
+#: The operations a strict tool can be: those that leave the project as it is (the
+#: read tools and the build plan's update).
+_NON_MUTATING_OPERATION_IDS = frozenset(OPERATION_IDS) - MUTATING_OPERATION_IDS
 
 
 def _tool_parts(
@@ -747,16 +748,16 @@ def _canonical_tools(
 ) -> list[dict[str, object]]:
     """The canonical projection: each tool's canonical input schema itself.
 
-    Under a *strict* dialect, a read operation whose schema reduces to the
-    strict subset is sent that reduction with ``"strict": true``; no other tool
-    carries a ``strict`` key.
+    Under a *strict* dialect, an operation that leaves the project as it is, whose
+    schema reduces to the strict subset, is sent that reduction with
+    ``"strict": true``; no other tool carries a ``strict`` key.
     """
 
     projected: list[dict[str, object]] = []
     for name, description, schema in _tool_parts(tools):
         strict_schema = (
             _strict_tool_schema(schema, strict)
-            if strict is not None and name in _READ_OPERATION_IDS
+            if strict is not None and name in _NON_MUTATING_OPERATION_IDS
             else None
         )
         if strict_schema is None:
