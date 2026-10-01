@@ -1055,10 +1055,10 @@ that states the text form it must take, and two rules with the same value are re
 there too, so a recipe never saves rules that match no row or that collide once saved.
 There is no numeric-banding recipe, and the recipe index says so: number and date ranges
 are banded with a `banding` node using `banding: breakpoints`. A dry-run refuses a
-categorical factor a plan writes (by the recipe or directly) on a number, date or time
+categorical factor a plan writes (by the recipe or directly) on a decimal, date or time
 column, whatever the rules say, with a located fix pointing at breakpoints, because
-categorical rules match only the listed values; an analyst may still band such a column
-categorically in the editor. The reference-join recipe offers the join modes
+categorical rules match only the listed values; integer codes such as vehicle groups are
+accepted, and an analyst may still band any column categorically in the editor. The reference-join recipe offers the join modes
 `inner`, `left`, `right`, `full`, `semi`, and `anti`; it always joins on explicit key
 lists, so it never offers `cross`. Recipe argument
 descriptions distinguish graph node names from output column names. The rating-step recipe

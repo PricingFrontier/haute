@@ -736,11 +736,12 @@ def _prove_categorical_factors_band_text(
     *,
     submitted: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Refuse a categorical factor this plan writes on a number, date or time column.
+    """Refuse a categorical factor this plan writes on a decimal, date or time column.
 
-    Categorical rules match a column's text, so a range of ages or dates
-    written as categories matches only the listed values. Only a factor the
-    saved node does not already hold is judged.
+    Categorical rules match a column's text, so a range of values or dates
+    written as categories matches only the listed values. Integer columns are
+    accepted: integer codes (vehicle groups, NCD years) are mapped value by
+    value. Only a factor the saved node does not already hold is judged.
     """
 
     saved = {node.id: node.data.config.get("factors") or [] for node in baseline.nodes}
@@ -774,13 +775,13 @@ def _prove_categorical_factors_band_text(
         for factor in written:
             column = factor.get("column")
             dtype = schema.get(column) if isinstance(column, str) else None
-            if dtype is None or not (dtype.is_numeric() or dtype.is_temporal()):
+            if dtype is None or not (dtype.is_float() or dtype.is_temporal()):
                 continue
             raise AssistantOperationError(
                 "invalid_config",
                 f"Banding output {factor.get('outputColumn')!r} bands {column!r}, a {dtype} "
                 "column, with categorical rules, which match only the listed values; a "
-                "number or date range is banded with breakpoints.",
+                "decimal or date range is banded with breakpoints.",
                 where={"node": node.id, "field": "factors"},
                 fix=(
                     'Use banding: "breakpoints", with rules {"boundary": "<upper bound>", '

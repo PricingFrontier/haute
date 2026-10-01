@@ -3,7 +3,7 @@
   "authorable": true,
   "fields": {
     "factors": "One entry per banded column; each reads one input column and writes one new output column. Several factors in one node band several columns.",
-    "factors[].banding": "\"breakpoints\" for a number or date column, \"categorical\" for a string column. There is no default type.",
+    "factors[].banding": "\"breakpoints\" for a number or date column, \"categorical\" for a string column or an integer code column (vehicle group, NCD years). There is no default type.",
     "factors[].column": "The input column to band.",
     "factors[].outputColumn": "The new column the band labels go to; it must not already exist.",
     "factors[].rules (breakpoints)": "Ordered {boundary, label} rows. Each boundary is a string holding the band's inclusive upper end: a number (\"25\") or a date (\"2024-06-30\"), all of one kind per factor. Bands are (previous boundary, boundary]. One last row with boundary \"\" is the open-ended band above the highest boundary; without it values above the highest boundary get the default.",

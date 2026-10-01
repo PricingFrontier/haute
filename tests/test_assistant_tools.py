@@ -2994,7 +2994,30 @@ class TestConfigErrors:
         assert "needs the column 'age_band'" in error["message"]
 
 
-async def test_categorical_rules_on_a_number_column_point_at_breakpoints(rating_project: Path):
+async def test_categorical_rules_on_a_date_column_point_at_breakpoints(rating_project: Path):
+    from haute.assistant._tools import build_tool_executor
+
+    inception = {
+        "banding": "categorical",
+        "column": "inception_date",
+        "outputColumn": "inception_band",
+        "rules": [{"value": "2024-03-01", "assignment": "early"}],
+        "default": "later",
+    }
+    result = await build_tool_executor("main.py")(
+        "dry_run_graph_edits", {"summary": "Band inception.", "ops": _bands(inception)}
+    )
+
+    error = result["error"]
+    assert (error["code"], error["retryable"]) == ("invalid_config", True)
+    assert error["where"] == {"op_index": 0, "node": "bands", "field": "factors"}
+    assert "'inception_date', a Date column, with categorical rules" in error["message"]
+    assert 'banding: "breakpoints"' in error["fix"]
+
+
+async def test_categorical_rules_on_an_integer_code_column_are_accepted(rating_project: Path):
+    """Integer-coded factors (vehicle groups, NCD years) are mapped value by value."""
+
     from haute.assistant._tools import build_tool_executor
 
     ages = {
@@ -3008,11 +3031,7 @@ async def test_categorical_rules_on_a_number_column_point_at_breakpoints(rating_
         "dry_run_graph_edits", {"summary": "Band ages.", "ops": _bands(ages)}
     )
 
-    error = result["error"]
-    assert (error["code"], error["retryable"]) == ("invalid_config", True)
-    assert error["where"] == {"op_index": 0, "node": "bands", "field": "factors"}
-    assert "'driver_age', a Int64 column, with categorical rules" in error["message"]
-    assert 'banding: "breakpoints"' in error["fix"]
+    assert "error" not in result, result
 
 
 async def test_a_dry_run_validates_every_scenario_a_switch_maps(steps_first_project: Path):

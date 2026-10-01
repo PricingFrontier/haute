@@ -1511,11 +1511,11 @@ the turn that follows.
   engine lets a one-input response read any name, so without this check a wrong name
   saved silently. Saved rows the plan does not write are not judged.
 - **A categorical factor bands text** — a categorical banding factor the plan writes
-  that the saved node does not already hold, on a column whose input dtype is a number,
+  that the saved node does not already hold, on a column whose input dtype is a decimal,
   date or time, fails as `invalid_config` located at the node and `factors`, with a fix
   pointing at `banding: breakpoints` (`_prove_categorical_factors_band_text`, after the
-  schemas resolve). Booleans and strings are not refused; the editor's banding is
-  unchanged.
+  schemas resolve). Integers, booleans and strings are not refused, since integer codes
+  such as vehicle groups are mapped value by value; the editor's banding is unchanged.
 - **Every scenario a Source Switch routes is validated** — a switch the plan touches (a
   written node or an edge target) whose `input_scenario_map` routes a scenario only to
   inputs no incoming edge provides fails as `scenario_unrouted`, located at the switch and
