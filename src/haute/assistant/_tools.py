@@ -2634,15 +2634,22 @@ async def _checked_dry_run(
 
     The plan is stored and the save lock released before the check starts, so
     the check never reaches the plan, its hash or its evidence. The whole
-    check is kept beside the plan; the result carries what `fit_data_check`
-    leaves in the room the fully attributed result has under the tool-result
-    limit, so a check never turns a dry-run into an error. A stopped turn
-    (this call cancelled) stops the check, which then reports `cancelled`,
-    and the dry-run still returns its result for the turn's history.
+    check is kept beside the plan. A check with an advisory finding first
+    adds `next`, the model-facing reminder of what to do about it, when it
+    fits; the result then carries what `fit_data_check` leaves in the room
+    the fully attributed result has under the tool-result limit, so a check
+    never turns a dry-run into an error and a reduced check keeps `next`. A
+    stopped turn (this call cancelled) stops the check, which then reports
+    `cancelled`, and the dry-run still returns its result for the turn's history.
     """
 
     # The data check imports this module, so it is imported where it is used.
-    from haute.assistant._data_check import DataCheckRequest, fit_data_check, run_data_check
+    from haute.assistant._data_check import (
+        DataCheckRequest,
+        advisory_reminder,
+        fit_data_check,
+        run_data_check,
+    )
 
     plan = dry_run.plan
     request = DataCheckRequest(
@@ -2658,6 +2665,12 @@ async def _checked_dry_run(
     )
     if not _PLAN_STORE.record_data_check(plan.plan_hash, check):
         logger.info("assistant_data_check_not_stored", plan_hash=plan.plan_hash)
+    reminder = advisory_reminder(check)
+    if reminder is not None:
+        reminded = {**result, "next": reminder}
+        attributed_reminded = _attributed_tool_result("dry_run_graph_edits", reminded)
+        if _json_size(attributed_reminded) <= _MAX_TOOL_CONTEXT_BYTES:
+            result = reminded
     attributed = _attributed_tool_result("dry_run_graph_edits", result)
     return {**result, **fit_data_check(check, _MAX_TOOL_CONTEXT_BYTES - _json_size(attributed))}
 

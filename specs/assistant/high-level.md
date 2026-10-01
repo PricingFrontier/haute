@@ -1852,7 +1852,17 @@ that informational findings need no action; that neither a clean check nor one
 that did not run proves the plan correct; and that `inspect_node`'s data part,
 with `column`, answers why a saved node fails or why a column is null in one
 call, before reading code. The dry-run tool's description names `data_check`, and
-`inspect_node`'s description states the data part's rules.
+`inspect_node`'s description states the data part's rules. Mid-tier models follow
+a tool result more closely than the system prompt (a live model applied a plan
+whose check reported an advisory `join_unmatched`, twice), so a dry-run whose
+check holds an advisory finding also carries `next`, one short value-free
+instruction beside the check: "This plan has 2 advisory data findings
+(join_unmatched, rows_emptied). Correct the plan and dry-run again before
+applying, unless the analyst stated the values involved; then apply and tell the
+analyst what the check found." It counts the whole check's advisory findings and
+names their kinds, is placed before the check is sized, so it survives the
+check's reduction and omission, and never reaches the stored check or the change
+card.
 
 **What it is not.** The check is not an assistant execution tool: a dry-run's
 check runs automatically and the model cannot invoke, widen or target it, and

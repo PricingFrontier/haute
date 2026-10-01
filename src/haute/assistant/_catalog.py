@@ -967,6 +967,7 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "changes",
             "data_check",
             "data_check_omitted",
+            "next",
         ),
         "apply_graph_plan": (
             "plan_hash",
@@ -1043,8 +1044,9 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "find_data": {"schema", "project_revision"},
         # The build-plan item the change was recorded against, only for an apply naming one.
         "apply_graph_plan": {"item"},
-        # The data check, or the note that it did not fit, only when the policy runs one.
-        "dry_run_graph_edits": {"data_check", "data_check_omitted"},
+        # The data check, or the note that it did not fit, only when the policy runs one,
+        # and the reminder of what to do, only when it holds an advisory finding.
+        "dry_run_graph_edits": {"data_check", "data_check_omitted", "next"},
     }
     success_required = [
         field

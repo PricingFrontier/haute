@@ -2386,6 +2386,30 @@ def _key_bytes(key: str) -> int:
     return _json_size(key) + 2
 
 
+def advisory_reminder(result: DataCheckResult) -> str | None:
+    """The dry-run result's ``next``: what to do about the check's advisory findings.
+
+    ``None`` unless the check ran and holds an advisory finding. It is counted
+    on the stored check, never on the view that fits, so a reduced or omitted
+    check still carries it, and it names finding kinds only, never a value.
+    """
+    if result.check["outcome"] != "checked":
+        return None
+    kinds = [
+        str(finding["kind"])
+        for finding in result.check["findings"]
+        if finding["severity"] == "advisory"
+    ]
+    if not kinds:
+        return None
+    findings = "finding" if len(kinds) == 1 else "findings"
+    return (
+        f"This plan has {len(kinds)} advisory data {findings} ({', '.join(dict.fromkeys(kinds))})."
+        " Correct the plan and dry-run again before applying, unless the analyst stated the"
+        " values involved; then apply and tell the analyst what the check found."
+    )
+
+
 def fit_data_check(result: DataCheckResult, room_bytes: int) -> dict[str, Any]:
     """The check as it may reach the model in a tool result with *room_bytes* to spare.
 

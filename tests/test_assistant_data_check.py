@@ -980,6 +980,43 @@ def test_a_reduced_no_checkable_nodes_result_still_validates(project: Path) -> N
     DATA_CHECK_VIEW.validate_python(fitted)
 
 
+def test_the_reminder_counts_the_stored_checks_advisory_findings_by_kind() -> None:
+    """Live: a mid-tier model applied a plan whose check reported an advisory
+    join_unmatched; it follows tool results more than the system prompt."""
+    binding = DataCheckBinding("plan", "digest", "live")
+
+    def checked(*findings: tuple[str, str]) -> DataCheckResult:
+        return DataCheckResult(
+            {
+                "outcome": "checked",
+                "findings": [{"kind": kind, "severity": severity} for kind, severity in findings],
+            },
+            binding,
+        )
+
+    assert data_check.advisory_reminder(checked(("join_unmatched", "advisory"))) == (
+        "This plan has 1 advisory data finding (join_unmatched). Correct the plan and "
+        "dry-run again before applying, unless the analyst stated the values involved; "
+        "then apply and tell the analyst what the check found."
+    )
+    several = data_check.advisory_reminder(
+        checked(
+            ("column_all_null", "advisory"),
+            ("rows_emptied", "advisory"),
+            ("column_all_null", "advisory"),
+            ("join_partial", "informational"),
+        )
+    )
+    assert several is not None
+    assert several.startswith(
+        "This plan has 3 advisory data findings (column_all_null, rows_emptied). "
+    )
+    assert data_check.advisory_reminder(checked(("join_partial", "informational"))) is None
+    assert data_check.advisory_reminder(checked()) is None
+    not_run = data_check._not_run(binding, "worker_busy", time.monotonic())
+    assert data_check.advisory_reminder(not_run) is None
+
+
 # ---------------------------------------------------------------------------
 # In the interactive worker (process mode)
 # ---------------------------------------------------------------------------
@@ -1586,6 +1623,10 @@ async def test_a_dry_runs_check_leaves_its_plan_hash_and_evidence_unchanged(
     stored = _tools._PLAN_STORE.data_check(checked["plan_hash"])
     assert stored is not None and stored.check == check
     assert stored.binding.plan_hash == checked["plan_hash"]
+    # The advisory finding's reminder rides beside the check, never inside it.
+    assert checked.pop("next").startswith(
+        "This plan has 1 advisory data finding (banding_all_default)."
+    )
 
     _policy_without_checks(monkeypatch)
     unchecked = await _dry_run(_band_ops())
@@ -1636,10 +1677,15 @@ async def test_the_check_is_sized_on_the_fully_attributed_dry_run_result(
     pipeline: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A check fits the room the attributed result leaves, so a successful
-    dry-run never becomes ``tool_result_too_large``."""
+    dry-run never becomes ``tool_result_too_large``. The reminder its advisory
+    findings add, `next`, is placed first, so it survives the check's reduction
+    and omission, and is left out only when the dry-run itself leaves no room."""
     from haute.assistant import _tools
 
     oversized = _oversized(pipeline, monkeypatch)
+    reminder = data_check.advisory_reminder(oversized)
+    assert reminder is not None
+    assert reminder.startswith("This plan has 320 advisory data findings (column_all_null).")
 
     async def fake_check(_request: DataCheckRequest, **_kwargs: object) -> DataCheckResult:
         return oversized
@@ -1647,7 +1693,8 @@ async def test_the_check_is_sized_on_the_fully_attributed_dry_run_result(
     with monkeypatch.context() as withheld:
         _policy_without_checks(withheld)
         bare = await _dry_run(_band_ops())
-    bare_size = _tools._json_size(bare)
+    reminded = {**bare, "next": reminder}
+    reminded_size = _tools._json_size(reminded)
     monkeypatch.setattr(data_check, "run_data_check", fake_check)
 
     # Room for the note exactly: measured without the result's attribution, the
@@ -1657,21 +1704,23 @@ async def test_the_check_is_sized_on_the_fully_attributed_dry_run_result(
         + _tools._json_size("data_check_omitted")
         + 2
     )
-    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", bare_size + note_cost)
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", reminded_size + note_cost)
     noted = await _dry_run(_band_ops())
     assert "error" not in noted, noted
     assert noted.pop("data_check_omitted") == data_check.DATA_CHECK_OMITTED_NOTE
-    assert noted == bare
+    assert noted == reminded
 
-    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", bare_size + 2_000)
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", reminded_size + 2_000)
     reduced = await _dry_run(_band_ops())
-    assert _tools._json_size(reduced) <= bare_size + 2_000
+    assert _tools._json_size(reduced) <= reminded_size + 2_000
     view = reduced.pop("data_check")
     assert view["detail_truncated"] is True and view["nodes_omitted"] > 0
     DATA_CHECK_VIEW.validate_python(view)
-    assert reduced == bare
+    assert reduced == reminded
 
-    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", bare_size + 10)
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", reminded_size + 10)
+    assert await _dry_run(_band_ops()) == reminded
+    monkeypatch.setattr(_tools, "_MAX_TOOL_CONTEXT_BYTES", _tools._json_size(bare) + 10)
     assert await _dry_run(_band_ops()) == bare
     # Whatever reached the model, the stored check is whole.
     assert _tools._PLAN_STORE.data_check(bare["plan_hash"]) is oversized
