@@ -20,8 +20,10 @@ import shutil
 import tempfile
 import time
 import tomllib
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -283,6 +285,14 @@ class SelfTestTurnResult:
 
 @dataclass(frozen=True, slots=True)
 class SelfTestResult:
+    """One case's scored turns, or its crash.
+
+    ``crash`` is the traceback of an exception the case raised, or of the
+    abrupt end of its process, as a string so that it crosses the process
+    boundary whatever the exception was; a crashed case has no turns and
+    fails every layer.
+    """
+
     id: str
     fixture_version: str
     area: SelfTestArea
@@ -292,15 +302,18 @@ class SelfTestResult:
     provider: str
     model: str
     turns: tuple[SelfTestTurnResult, ...]
+    crash: str | None
 
     @property
     def passed(self) -> bool:
-        return all(turn.passed for turn in self.turns)
+        return self.crash is None and all(turn.passed for turn in self.turns)
 
     @property
     def reasons(self) -> tuple[str, ...]:
-        """Every turn's reasons, each as ``"turn <n> <layer>: <reason>"``."""
+        """Every turn's reasons, each as ``"turn <n> <layer>: <reason>"``, or the crash."""
 
+        if self.crash is not None:
+            return (f"crash: {self.crash.strip().splitlines()[-1]}",)
         return tuple(
             f"turn {index} {reason}"
             for index, turn in enumerate(self.turns, start=1)
@@ -309,13 +322,17 @@ class SelfTestResult:
 
     @property
     def failed_layers(self) -> tuple[SelfTestLayer, ...]:
+        if self.crash is not None:
+            return SELF_TEST_LAYERS
         failed = {layer for turn in self.turns for layer in turn.failed_layers}
         return tuple(layer for layer in SELF_TEST_LAYERS if layer in failed)
 
     @property
     def first_failing_layer(self) -> SelfTestLayer | None:
-        """The first failing layer of the first failing turn."""
+        """The first failing layer of the first failing turn; a crash fails them all."""
 
+        if self.crash is not None:
+            return SELF_TEST_LAYERS[0]
         return next((turn.failed_layers[0] for turn in self.turns if turn.failed_layers), None)
 
     @property
@@ -869,6 +886,12 @@ def score_turn(
     )
 
 
+def _raised(exc: BaseException) -> str:
+    """An exception as its class and message, on one line."""
+
+    return f"{type(exc).__name__}: {' '.join(str(exc).split())}"
+
+
 def _golden_frame(code: str) -> pl.DataFrame:
     """Run plain-Polars golden *code* in the project directory and return its ``df``."""
 
@@ -888,16 +911,21 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
     The harness runs this after the turn, in the project copy: the assistant
     never executes anything. Each node runs through the production preview
     engine up to that node only, under the golden's scenario, so no sink is
-    ever built. A golden whose frame does not fit one preview, or whose code
-    does not bind ``df``, is a broken case and raises. Columns are matched by
-    name, whatever their order: the saved node's frame is reordered to the
-    golden's columns before the frames are compared.
+    ever built. An exception raised while reading or running the saved
+    pipeline is what the turn saved, so it is an execution reason naming its
+    class and message, never a crash. A golden whose frame does not fit one
+    preview, or whose code does not bind ``df``, is a broken case and raises.
+    Columns are matched by name, whatever their order: the saved node's frame
+    is reordered to the golden's columns before the frames are compared.
     """
 
     if not goldens:
         return ()
-    # A preview runs the flattened graph: each submodel occurrence inlined.
-    graph = flatten_graph(parse_pipeline_to_graph(source_file))
+    try:
+        # A preview runs the flattened graph: each submodel occurrence inlined.
+        graph = flatten_graph(parse_pipeline_to_graph(source_file))
+    except Exception as exc:
+        return (f"the saved pipeline could not be read: {_raised(exc)}",)
     node_ids = {node.id for node in graph.nodes}
     reasons: list[str] = []
     for golden in goldens:
@@ -909,14 +937,18 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
         # the engine refuses a boundary it cannot estimate (a join with
         # `validate` or `maintain_order`), which the preview worker runs under
         # its cap; the harness declares one, as the engine's own tests do.
-        with native_memory_backend_scope("rlimit"):
-            result = execute_graph(
-                graph,
-                target_node_id=golden.node,
-                max_preview_rows=_MAX_GOLDEN_ROWS,
-                source=golden.scenario,
-                target_preview_only=True,
-            )[golden.node]
+        try:
+            with native_memory_backend_scope("rlimit"):
+                result = execute_graph(
+                    graph,
+                    target_node_id=golden.node,
+                    max_preview_rows=_MAX_GOLDEN_ROWS,
+                    source=golden.scenario,
+                    target_preview_only=True,
+                )[golden.node]
+        except Exception as exc:
+            reasons.append(f"node {golden.node} raised {_raised(exc)}")
+            continue
         if result.status != "ok":
             reasons.append(f"node {golden.node} failed to execute")
             continue
@@ -1555,6 +1587,7 @@ async def run_self_test_case(
         provider=config.provider if evidence == "live" else "replay",
         model=config.model,
         turns=tuple(turns),
+        crash=None,
     )
 
 
@@ -1900,6 +1933,23 @@ async def replay_self_test_case(
     return result
 
 
+def crashed_result(case: SelfTestCase, config: AssistantConfig, crash: str) -> SelfTestResult:
+    """The live result of a case that crashed: no turns, every layer failed, its traceback."""
+
+    return SelfTestResult(
+        id=case.id,
+        fixture_version=case.fixture_version,
+        area=case.area,
+        split=case.split,
+        egress=case.egress,
+        evidence="live",
+        provider=config.provider,
+        model=config.model,
+        turns=(),
+        crash=crash,
+    )
+
+
 def _run_case_in_this_process(
     case: SelfTestCase,
     projects_root: Path,
@@ -1909,6 +1959,12 @@ def _run_case_in_this_process(
     work_dir: Path,
     transcript_path: Path | None,
 ) -> SelfTestResult:
+    """Run one case; any exception it raises comes back as its crash result.
+
+    The traceback crosses the process boundary as a string, because an
+    exception the parent cannot unpickle would break the pool and end the run.
+    """
+
     transcript: list[dict[str, object]] | None = [] if transcript_path is not None else None
     try:
         return asyncio.run(
@@ -1922,6 +1978,8 @@ def _run_case_in_this_process(
                 transcript=transcript,
             )
         )
+    except Exception:
+        return crashed_result(case, config, traceback.format_exc())
     finally:
         if transcript_path is not None and transcript is not None:
             write_transcript(transcript_path, transcript)
@@ -1943,7 +2001,9 @@ def run_self_test_cases_in_processes(
     on a fresh process. *provider_factory* must be picklable by reference. With
     *transcripts*, each case writes ``<case id>.json`` there. The parent owns
     each case's disposable directory and removes it once the case's process
-    has exited and released the locks it held there.
+    has exited and released the locks it held there. A case that raises, or
+    whose process ends abruptly (a broken pool), is recorded as that case's
+    crash, and the next case runs in a fresh process of its own.
     """
 
     context = multiprocessing.get_context("spawn")
@@ -1953,18 +2013,20 @@ def run_self_test_cases_in_processes(
             tempfile.TemporaryDirectory(prefix="haute-eval-") as work_dir,
             ProcessPoolExecutor(max_workers=1, mp_context=context) as pool,
         ):
-            results.append(
-                pool.submit(
-                    _run_case_in_this_process,
-                    case,
-                    projects_root,
-                    config,
-                    provider_factory,
-                    variant,
-                    Path(work_dir),
-                    None if transcripts is None else transcripts / f"{case.id}.json",
-                ).result()
+            future = pool.submit(
+                _run_case_in_this_process,
+                case,
+                projects_root,
+                config,
+                provider_factory,
+                variant,
+                Path(work_dir),
+                None if transcripts is None else transcripts / f"{case.id}.json",
             )
+            try:
+                results.append(future.result())
+            except BrokenProcessPool:
+                results.append(crashed_result(case, config, traceback.format_exc()))
     return tuple(results)
 
 
@@ -2095,6 +2157,7 @@ def _record(args: argparse.Namespace) -> int:
                     area: {
                         "cases": summary["cases"],
                         "passed": summary["passed"],
+                        "crashed": summary["crashed"],
                         "not_applicable": summary["not_applicable"],
                     }
                     for area, summary in cast(

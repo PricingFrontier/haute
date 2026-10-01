@@ -274,9 +274,14 @@ repository, with three commands:
   requests, the assistant's text, every tool call with its arguments and
   result and every build-plan update, under `.haute/assistant-eval/<run id>/transcripts/` in the invoking
   project so a failure can be diagnosed. The runner refuses `--transcripts`
-  unless Git ignores that directory.
+  unless Git ignores that directory. One case's crash never ends the run: an
+  exception the case raises comes back from its process as that case's crash
+  result, its traceback carried as text so that it crosses the process boundary
+  whatever the exception was, and a process that ends abruptly (a broken pool)
+  is recorded as that case's crash too. A crashed case has no turns, fails every
+  layer and keeps its transcript, and the next case runs in a fresh process.
 - `compare` reads two reports of the same evidence kind and reports, per area,
-  each report's case, pass and not-applicable counts; every case run in both
+  each report's case, pass, crash and not-applicable counts; every case run in both
   that flipped between pass and fail, with the first failing layer on its
   failing side; the cases each report lists as not applicable, which are never
   a flip, a pass or a failure; the cases only one report holds, run or not
@@ -408,7 +413,12 @@ exactly the golden's columns, matched by name in any order (the executed frame
 is reordered to the golden's columns before comparing, since no request states
 a column order), with their dtypes, null pattern and values (floats within
 1e-6, NaN equal to NaN), and its rows in the golden's order unless the golden is
-order-free. A golden
+order-free. An exception raised while the harness reads or runs the saved
+pipeline is what the turn saved, so it is that golden's execution failure, its
+reason naming the exception's class and message, and never a crash: a turn that
+ends `blocked` having saved no new scenario leaves a Source Switch that maps no
+input to its golden's scenario, and running the golden raises
+`LiveSwitchScenarioError`. A golden
 node whose output does not fit one full preview, or a golden that does not bind
 a frame, is a broken case and raises. Response outputs are judged by their
 configuration rather than executed. The step-corpus goldens are the corpus
@@ -424,13 +434,14 @@ different kinds, so replay and live results are never combined or compared as
 one score. A data check the assistant runs never replaces the harness's
 independent execution goldens.
 
-The report (shape version 4) records the run (its id, start time, variant,
+The report (shape version 5) records the run (its id, start time, variant,
 provider, model, matched configuration and Haute version), whether every case
-it ran passed, per area the counts of cases run, cases passed and cases not
-applicable and the median of each efficiency metric over the cases run, and per
+it ran passed, per area the counts of cases run, cases passed, cases crashed and
+cases not applicable and the median of each efficiency metric over the cases
+run that did not crash, and per
 case run its identity, fixture version, area, split, egress profile, provider,
 model, pass or fail per layer, first failing layer, the turn-and-layer-prefixed
-reasons, the summed metrics, and per turn its outcome kind, saved-change count,
+reasons, its crash (the traceback, or null), the summed metrics, and per turn its outcome kind, saved-change count,
 terminal, the node types and edges of the saved graph, ordered tool names with
 value-free status, error code, validation path and validation reason, and the
 turn's metrics. Its `not_applicable` list names, apart from the cases run, each
@@ -438,7 +449,9 @@ selected case inapplicable to the run's variant with its fixture version, area
 and split; such a case has no result, so nothing reading the report counts it
 as passed or failed, and no case is both run and not applicable. Prompts, model prose, tool arguments and results, credentials,
 dataset values, canary values and content digests are never written to a
-report.
+report. A crash's traceback names the harness and Haute code the exception
+passed through and the exception's own message, as an execution reason names
+an exception's class and message.
 
 A transcript is not a report. Transcripts exist only for live runs of these
 synthetic fixtures, whose requests, schemas and values carry nothing of an

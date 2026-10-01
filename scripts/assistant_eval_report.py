@@ -47,7 +47,7 @@ METRICS: tuple[str, ...] = (
     "time_to_validated_plan_ms",
     "end_to_end_ms",
 )
-REPORT_SCHEMA_VERSION = 4
+REPORT_SCHEMA_VERSION = 5
 _SUPPORT_MATRIX_VERSION = 2
 
 
@@ -149,13 +149,15 @@ def report_payload(
     *,
     not_applicable: Sequence[SelfTestCase] = (),
 ) -> dict[str, object]:
-    """Build the closed content-redacted report v4.
+    """Build the closed content-redacted report v5.
 
     One report holds one kind of evidence: replay results prove the tools and
     contracts, live results measure a model, and the two are never combined.
     The *not_applicable* cases, which do not apply to the run's variant and
     were not run, are listed apart from the results: they neither pass nor
-    fail, and an area counts its cases and passes over the cases it ran.
+    fail, and an area counts its cases and passes over the cases it ran. A
+    crashed case fails, keeps its traceback and is counted apart, and its
+    area's metric medians are taken over the cases that did not crash.
     """
 
     evidence = {result.evidence for result in results}
@@ -176,6 +178,7 @@ def report_payload(
             "layers": {layer: layer not in result.failed_layers for layer in SELF_TEST_LAYERS},
             "first_failing_layer": result.first_failing_layer,
             "reasons": list(result.reasons),
+            "crash": result.crash,
             "metrics": dict(result.metrics),
             "turns": [_turn_payload(turn) for turn in result.turns],
         }
@@ -185,12 +188,14 @@ def report_payload(
     run_areas = {result.area for result in results}
     for area in sorted(run_areas | {case.area for case in not_applicable}):
         members = [result for result in results if result.area == area]
+        completed = [result for result in members if result.crash is None]
         areas[area] = {
             "cases": len(members),
             "passed": sum(result.passed for result in members),
+            "crashed": len(members) - len(completed),
             "not_applicable": sum(case.area == area for case in not_applicable),
             "metrics": {
-                name: _median([result.metrics[name] for result in members]) for name in METRICS
+                name: _median([result.metrics[name] for result in completed]) for name in METRICS
             },
         }
     return {
@@ -253,7 +258,7 @@ def _load_report(path: Path) -> dict[str, Any]:
 def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, object]:
     """Compare two reports of one evidence kind per area.
 
-    Returns each area's case, pass and not-applicable counts in both reports,
+    Returns each area's case, pass, crash and not-applicable counts in both reports,
     every case run in both that flipped between pass and fail with the first
     failing layer on its failing side, the cases each report lists as not
     applicable to its variant (never a flip, a pass or a failure), the cases
@@ -325,6 +330,7 @@ def _area_counts(area: Mapping[str, Any] | None) -> dict[str, object] | None:
     return {
         "cases": area["cases"],
         "passed": area["passed"],
+        "crashed": area["crashed"],
         "not_applicable": area["not_applicable"],
     }
 

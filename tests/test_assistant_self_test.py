@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from dataclasses import replace
@@ -43,7 +44,9 @@ from scripts.run_assistant_self_test import (
     SelfTestTurnResult,
     TrajectoryProvider,
     _golden_frame,
+    _run_case_in_this_process,
     canonical_tools_provider,
+    crashed_result,
     load_self_test_cases,
     load_trajectory,
     main,
@@ -159,6 +162,7 @@ def _result(
         provider="databricks" if evidence == "live" else "replay",
         model="served-model",
         turns=turns,
+        crash=None,
     )
 
 
@@ -1131,6 +1135,91 @@ def test_record_runs_each_case_in_its_own_process_and_writes_transcripts(
     assert saved["turns"][0]["request"] == case.turns[0].request
 
 
+class _KeywordOnlyError(Exception):
+    """Shaped like `LiveSwitchScenarioError` before it could be pickled: required
+    keyword-only fields, so unpickling it from its arguments raises."""
+
+    def __init__(self, *, switch: str, scenario: str) -> None:
+        super().__init__(f"Source Switch {switch!r} maps no input to scenario {scenario!r}")
+        self.switch = switch
+        self.scenario = scenario
+
+
+def _crashing_replay(config: AssistantConfig) -> TrajectoryProvider:
+    """Raise an unpicklable error in the metadata-only case, end the process of the
+    stepped project's case abruptly, and replay the banding case otherwise."""
+
+    if config.egress.max_sensitivity == "internal":
+        raise _KeywordOnlyError(switch="policies", scenario="renewal_batch")
+    if Path("config/polars/risk_features.json").is_file():
+        os._exit(3)
+    return _banding_replay(config)
+
+
+def test_a_case_that_raises_comes_back_as_its_crash_with_its_transcript(tmp_path: Path) -> None:
+    """In the case's own process the exception becomes a crash result carrying its
+    traceback as text, failing every layer, and the transcript is still written."""
+
+    work_dir = tmp_path / "w"
+    work_dir.mkdir()
+    transcript = tmp_path / "breakpoint_age_banding.json"
+
+    result = _run_case_in_this_process(
+        _load_case("breakpoint_age_banding"),
+        PROJECTS_ROOT,
+        _scripted_config(_PERMISSIVE_EGRESS),
+        _crashing_replay,
+        "multi_apply",
+        work_dir,
+        transcript,
+    )
+
+    assert result.crash is not None
+    assert "_KeywordOnlyError: Source Switch 'policies' maps no input" in result.crash
+    assert "Traceback (most recent call last)" in result.crash
+    assert (result.passed, result.turns, result.evidence) == (False, (), "live")
+    assert result.failed_layers == (
+        "protocol",
+        "structure",
+        "configuration",
+        "collateral",
+        "editor",
+        "execution",
+    )
+    assert result.first_failing_layer == "protocol"
+    assert result.reasons == (
+        "crash: tests.test_assistant_self_test._KeywordOnlyError: Source Switch 'policies' "
+        "maps no input to scenario 'renewal_batch'",
+    )
+    assert json.loads(transcript.read_text("utf-8"))["turns"] == []
+
+
+@pytest.mark.slow
+def test_a_crashed_case_is_recorded_and_the_next_case_runs(tmp_path: Path) -> None:
+    """An exception that cannot cross the process boundary, and a process that ends
+    abruptly (a broken pool), are each recorded as that case's crash; the run goes
+    on, each later case in a fresh process."""
+
+    cases = tuple(
+        _load_case(case_id)
+        for case_id in ("breakpoint_age_banding", "smoke_step_edit", "smoke_categorical_banding")
+    )
+
+    results = run_self_test_cases_in_processes(
+        cases,
+        projects_root=PROJECTS_ROOT,
+        config=_scripted_config(_PERMISSIVE_EGRESS),
+        provider_factory=_crashing_replay,
+    )
+
+    raised, ended, passed = results
+    assert [result.id for result in results] == [case.id for case in cases]
+    assert raised.crash is not None and "_KeywordOnlyError" in raised.crash
+    assert ended.crash is not None and "BrokenProcessPool" in ended.crash
+    assert (raised.passed, ended.passed) == (False, False)
+    assert (passed.crash, passed.reasons) == (None, ())
+
+
 async def test_an_external_provider_is_refused_before_the_case_runs(tmp_path: Path) -> None:
     external = EgressPolicy(
         trust="external",
@@ -1228,15 +1317,32 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
     failing = replace(
         _result(_join_turn(tool_calls=6, change_cards=0), case_id="join_again"),
     )
+    crashed = crashed_result(
+        replace(_load_case("smoke_join_roles"), id="join_crash"),
+        _scripted_config(_PERMISSIVE_EGRESS),
+        "Traceback (most recent call last):\nValueError: the case broke\n",
+    )
     staged = _load_case("smoke_staged_pricing_build")
     path = write_report(
-        tmp_path / "report.json", (passing, failing), _RUN, not_applicable=(staged,)
+        tmp_path / "report.json", (passing, failing, crashed), _RUN, not_applicable=(staged,)
     )
     raw = path.read_text(encoding="utf-8")
     payload = json.loads(raw)
 
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
+    # A crashed case fails every layer, keeps its traceback, and is left out of
+    # its area's metric medians.
+    crash = payload["cases"][2]
+    assert crash["crash"] == "Traceback (most recent call last):\nValueError: the case broke\n"
+    assert (crash["passed"], crash["first_failing_layer"], crash["turns"]) == (
+        False,
+        "protocol",
+        [],
+    )
+    assert not any(crash["layers"].values())
+    assert crash["reasons"] == ["crash: ValueError: the case broke"]
     case = payload["cases"][0]
+    assert case["crash"] is None
     assert case["egress"] == "project"
     assert case["turns"][0]["tools"] == [
         {
@@ -1258,8 +1364,9 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
     assert payload["run"]["configuration"] == "databricks-qwen35-122b-a10b"
     assert payload["areas"] == {
         "joins": {
-            "cases": 2,
+            "cases": 3,
             "passed": 1,
+            "crashed": 1,
             "not_applicable": 0,
             "metrics": {
                 "provider_round_trips": 3.0,
@@ -1277,6 +1384,7 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
         "multi_stage": {
             "cases": 0,
             "passed": 0,
+            "crashed": 0,
             "not_applicable": 1,
             "metrics": dict.fromkeys(
                 (
@@ -1374,13 +1482,14 @@ def test_compare_reports_area_counts_flips_and_metric_differences(tmp_path: Path
     }
     assert (comparison["only_before"], comparison["only_after"]) == (["dropped"], ["added"])
     joins = comparison["areas"]["joins"]
-    assert joins["before"] == {"cases": 2, "passed": 1, "not_applicable": 0}
-    assert joins["after"] == {"cases": 1, "passed": 0, "not_applicable": 0}
+    assert joins["before"] == {"cases": 2, "passed": 1, "crashed": 0, "not_applicable": 0}
+    assert joins["after"] == {"cases": 1, "passed": 0, "crashed": 0, "not_applicable": 0}
     assert joins["metrics"]["tool_calls"] == {"before": 2.0, "after": 6.0, "difference": 4.0}
     assert comparison["areas"]["banding"]["before"] is None
     assert comparison["areas"]["multi_stage"]["after"] == {
         "cases": 0,
         "passed": 0,
+        "crashed": 0,
         "not_applicable": 1,
     }
     assert comparison["areas"]["multi_stage"]["metrics"]["tool_calls"]["difference"] is None

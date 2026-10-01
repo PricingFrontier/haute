@@ -782,6 +782,38 @@ async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_la
     )
 
 
+async def test_a_saved_pipeline_that_raises_under_a_golden_fails_the_execution_layer(
+    tmp_path: Path, work_dir: Path
+) -> None:
+    """The last live run's crash: the turn ends BLOCKED with nothing saved, so the
+    switch maps no input to the golden's renewal_batch scenario and running the
+    saved pipeline raises. That is the turn's execution failure, with the error's
+    class and message, never an exception out of the case."""
+
+    payload = {
+        "schema_version": 1,
+        "id": "motor_renewal_scenario",
+        "case": "motor_renewal_scenario",
+        "turns": [
+            {"rounds": [{"text": "BLOCKED: the renewal batch cannot be routed.", "calls": []}]}
+        ],
+    }
+
+    result = await replay_self_test_case(
+        CASES["motor_renewal_scenario"],
+        _written(tmp_path, payload),
+        projects_root=PROJECTS_ROOT,
+        work_dir=work_dir,
+    )
+
+    assert "execution" in result.failed_layers
+    (execution,) = [reason for reason in result.reasons if reason.startswith("turn 1 execution:")]
+    assert execution.startswith(
+        "turn 1 execution: node rating_features raised LiveSwitchScenarioError: "
+    )
+    assert "renewal_batch" in execution
+
+
 @pytest.mark.parametrize(
     ("edit", "reasons"),
     [
