@@ -96,6 +96,10 @@ With `provider = "databricks"`, `model` is the name of a serving endpoint in you
 
 The workspace address comes from `DATABRICKS_HOST`, not from `haute.toml`, so the assistant always talks to the same workspace as the rest of the project.
 
+### Choosing a Claude model
+
+With `provider = "anthropic"`, `model` must be a Claude model that thinks before it answers, such as `claude-opus-5-5` or `claude-sonnet-5-5`. Sending a message with any other Claude model is refused, and the message names the models that work. While the model thinks, the chat shows **Thinking…**.
+
 ### [assistant.egress]
 
 The egress policy decides what project material the assistant may send to the model. Every setting is required, so the policy is always a deliberate choice.
