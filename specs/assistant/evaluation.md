@@ -6,7 +6,7 @@ The evaluation judges every assistant change against the tasks analysts ask
 for, area by area. This document owns the fixture projects, the egress profiles
 cases run under, the case format, the reference trajectories, the two
 evaluation tiers, the scoring layers, the data findings layer and its
-recovered-within-budget rate, the efficiency metrics, the boundary
+recovery metric, the efficiency metrics, the boundary
 between the assistant and execution, the live runner's commands and variants,
 and how evidence is reported. The assistant
 itself is specified in [the assistant specification](high-level.md) and its
@@ -154,20 +154,22 @@ Each turn's expectations are closed and every key is required:
   provider round trips, the last being the closing reply that follows an
   apply.
 - `data_findings`: `null` for a turn whose saved graph's data must be clean,
-  or the closed `{reported, kept}` for a turn whose data checks must report an
+  or the closed `{reported, kept}` for a turn whose request invites an
   advisory finding, each a list of `{kind, node}` findings whose
   kind the data check can raise as advisory (`execution_failed`,
   `rows_emptied`, `banding_all_default`, `rating_misses`, `join_unmatched`,
   `join_validation_failed`, `join_fan_out` or `column_all_null`; informational
-  findings need no action, so none is declared). `reported` names the findings,
-  such as a recovery case's seeded bug, that the data checks the model receives
-  in the turn must report, and is never empty. `kept` names the reported
-  findings the saved graph keeps because correcting them would contradict a
-  value the analyst stated, as the system prompt's rule on stated values
-  requires; every other advisory finding must be gone from the saved graph. A
-  finding named twice, a `kept` finding not `reported`, or a kept finding on a
-  turn that saves nothing fails loading. The layer is scored as Scoring layers
-  describes.
+  findings need no action, so none is declared). `reported` names the findings
+  a data check reports when the model makes the mistake the request invites,
+  such as a recovery case's seeded bug, and is never empty; no check the model
+  receives has to report them, because a model that avoids the mistake never
+  meets them, and the seeded reference trajectories prove each one is raised.
+  `kept` names the reported findings the saved graph keeps because correcting
+  them would contradict a value the analyst stated, as the system prompt's rule
+  on stated values requires; every other advisory finding must be gone from
+  the saved graph. A finding named twice, a `kept` finding not `reported`, or a
+  kept finding on a turn that saves nothing fails loading. The layer is scored
+  as Scoring layers describes.
 
 A turn that saves nothing declares no node configurations and no goldens.
 
@@ -201,7 +203,11 @@ accident: `smoke_rating_step` rates the driver ages its project holds (25 and
 **Seeded recovery cases.** Five `recovery` cases on `data_recovery` measure
 recovery from a pipeline that runs but is wrong. In each, the request leads to a
 natural plan whose data check reports the seeded bug as an advisory finding,
-and each declares that finding in `data_findings`:
+and each declares that finding in `data_findings`. A model may also avoid the
+mistake from the start (live runs banded the Boolean column on `true` and
+`false`, filtered with `is_in`, and joined on `region` and `cover_type`); its
+case then passes on its saved graph, and the recovery metric counts it as
+avoided:
 
 | Case | Split | Request | Seeded bug, as the check reports it | Expected recovery |
 |---|---|---|---|---|
@@ -311,9 +317,10 @@ one error at `rating_features`' failing step with `vehicle_bands`
 `upstream_failed`. Their `efficiency` limits allow one tool call and two
 provider round trips. The five seeded recovery trajectories replay in process
 mode too, and each passes every layer, its data findings layer measured: its
-first dry-run's check reports the seeded bug, and the harness's check of the
+first dry-run's check reports the seeded bug, which proves the declared
+`reported` finding is what the trap raises, and the harness's check of the
 saved graph finds it gone, or, for `recovery_rating_casing`, kept and shown on
-the change card. In thread mode every check reports `worker_mode_unsupported`,
+the change card, so each is `recovered`. In thread mode every check reports `worker_mode_unsupported`,
 so the data findings layer of every replay is not measured and fails nothing.
 Replay proves the tools, validators and
 contracts; it cannot show that a prompt change helps a model.
@@ -342,11 +349,12 @@ repository, with three commands:
   layer and keeps its transcript, and the next case runs in a fresh process.
 - `compare` reads two reports of the same evidence kind and reports, per area,
   each report's case, pass, crash and not-applicable counts with its data
-  findings counts and recovered-within-budget rate; every case run in both
+  findings counts and recovery metric; every case run in both
   that flipped between pass and fail, with the first failing layer on its
   failing side; every case run in both whose data findings flipped between
   passed and failed (a layer not measured in one report has not flipped); both
-  runs' recovered-within-budget rates and their difference; the cases each report lists as not applicable, which are never
+  runs' recovery metrics with the difference of their recovered-within-budget
+  rates and of their avoided counts; the cases each report lists as not applicable, which are never
   a flip, a pass or a failure; the cases only one report holds, run or not
   applicable; and per area the median of each efficiency metric in both reports
   and their difference.
@@ -471,13 +479,16 @@ records, value-free:
 - `cards`: for each change the turn saved, its change card's check outcome and
   the nodes of the advisory findings the card showed the analyst.
 
-A turn that declares no data findings passes the layer when the saved graph's
-check reports no advisory finding on the nodes the turn changed, and fails it
-otherwise. A turn that declares them is judged in three parts, each only when a
-check it reads ran: some received check that ran reported every `reported`
-finding; the saved graph's advisory findings on the changed nodes are exactly
-the `kept` ones, so every other one is gone and no stated value was changed to
-remove a kept one; and some change card showed the analyst each kept finding.
+The layer judges the saved graph, never the trap. A turn passes it when the
+saved graph's advisory findings on the nodes it changed are exactly its `kept`
+findings (none when it declares nothing), so every other one is gone and no
+stated value was changed to remove a kept one, and some change card showed the
+analyst each kept finding; each part is judged only when a check it reads ran
+(the harness's check of the saved graph, and a change card's check). What the
+model received never passes or fails the layer: it only classifies the turn
+for the recovery metric (below). This replaces the rule that a declaring turn
+also failed when "no data check the model received reported" a `reported`
+finding, which failed live runs whose model never made the seeded mistake.
 A layer for which no check ran is `not_measured`, which neither passes nor
 fails: thread-mode replay, where every check reports
 `worker_mode_unsupported`, measures no layer, and a live check that could not
@@ -493,23 +504,34 @@ counted against the case. One ordinary case declares a finding:
 1500, which no quote in the corpus's inputs exceeds, so its `rows_emptied` is
 kept rather than read as a failure to recover.
 
-**Recovered-within-budget rate.** A turn enters the metric when its
-expectations say it saves and at least one data check it received reported an
-advisory finding. Such a turn recovered within budget when it completed with
-its expected outcome kind, saved at least one change, and the saved graph's
-check reports no advisory finding on the nodes it changed other than the
-findings its case declares kept, each of which a change card showed the
-analyst. It did not recover when it ended with another outcome or saved
-nothing: a turn whose four failed dry-runs per plan, or whose tool-call budget,
-are spent ends `blocked` or failed, so reaching the expected outcome is what
-"within budget" means. A turn that saved but whose saved graph's check measured
-none of its changed nodes leaves the metric. A case is in the metric when one of
-its turns is, and recovered when every one of its turns in the metric
-recovered. The rate is the share of cases in the metric that recovered, over a
-report's cases (one run, so one model) and over each area's; it is null when no
-case is in the metric. A kept finding counts as told because the change card
-shows the analyst every advisory finding of the plan it saved; the model's own
-words are not scored.
+**Recovery metric.** A turn whose expectations say it saves is classified by
+whether a data check it received reported an advisory finding and by its saved
+graph. Its saved graph is clean when it completed with its expected outcome
+kind, saved at least one change, and passes the data findings layer as above
+(only the kept findings remain, each shown on a change card):
+
+| Received an advisory finding | Turn | Class |
+|---|---|---|
+| yes | saved a clean graph | `recovered` |
+| no | saved a clean graph | `avoided` |
+| either | completed and saved, but the saved graph fails the layer | `not_recovered` |
+| yes | ended with another outcome or saved nothing | `not_recovered` |
+| no | ended with another outcome or saved nothing | outside the metric |
+| either | saved, but the saved graph's check measured none of its changed nodes | outside the metric |
+
+A turn whose four failed dry-runs per plan, or whose tool-call budget, are
+spent ends `blocked` or failed, so reaching the expected outcome is what
+"within budget" means; a turn that asked or blocked without meeting a finding
+says nothing about recovery and fails its protocol layer instead. A case is
+`not_recovered` when one of its turns is, else `recovered` when one is, else
+`avoided` when one is, and outside the metric otherwise; it counts as having
+received a finding when one of its turns in the metric did. Over a report's
+cases (one run, so one model) and over each area's, the report gives the
+number of cases that received a finding (`received`), that recovered and that
+avoided one, and the recovered-within-budget rate, recovered over received,
+null when no case received one. An avoided case never enters the rate. A kept
+finding counts as told because the change card shows the analyst every
+advisory finding of the plan it saved; the model's own words are not scored.
 
 ## Execution boundary
 
@@ -577,23 +599,24 @@ different kinds, so replay and live results are never combined or compared as
 one score. A data check the assistant runs never replaces the harness's
 independent execution goldens.
 
-The report (shape version 6) records the run (its id, start time, variant,
+The report (shape version 7) records the run (its id, start time, variant,
 provider, model, matched configuration and Haute version), whether every case
-it ran passed, the recovered-within-budget rate for the run's model (`cases`
-in the metric, `recovered` and `rate`), per area the counts of cases run, cases
+it ran passed, the recovery metric for the run's model (`received`,
+`recovered`, `avoided` and `rate`), per area the counts of cases run, cases
 passed, cases crashed and cases not applicable, the counts of cases whose data
 findings layer passed, failed and was not measured, the area's
-recovered-within-budget rate and the median of each efficiency metric over the
+recovery metric and the median of each efficiency metric over the
 cases run that did not crash, and per
 case run its identity, fixture version, area, split, egress profile, provider,
 model, pass or fail per correctness layer, first failing layer, the turn-and-layer-prefixed
 reasons, its crash (the traceback, or null), its data findings layer (status,
-whether it gates the case, and its place in the recovery metric), the summed metrics, and per turn its outcome kind, saved-change count,
+whether it gates the case, its class in the recovery metric and whether it
+received an advisory finding there), the summed metrics, and per turn its outcome kind, saved-change count,
 terminal, the node types and edges of the saved graph, ordered tool names with
 value-free status, error code, validation path and validation reason, the
 turn's metrics, and its data findings layer: status, whether it gates, its
 reasons, the checks the model received, the saved graph's check, the change
-cards' checks and its place in the recovery metric, each by finding kind, node
+cards' checks and its class in the recovery metric, each by finding kind, node
 name, status and reason. Its `not_applicable` list names, apart from the cases run, each
 selected case inapplicable to the run's variant with its fixture version, area
 and split; such a case has no result, so nothing reading the report counts it

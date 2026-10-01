@@ -31,7 +31,12 @@ ScoredLayer = Literal[
     "protocol", "structure", "configuration", "collateral", "editor", "execution", "data_findings"
 ]
 DataFindingsStatus = Literal["passed", "failed", "not_measured"]
-Recovery = Literal["recovered", "not_recovered"]
+#: A turn's or case's place in the recovery metric: it received an advisory
+#: finding and its saved graph is clean (``recovered``), received none and its
+#: saved graph is clean (``avoided``), or neither (``not_recovered``).
+Recovery = Literal["recovered", "avoided", "not_recovered"]
+#: A case's recovery from its turns': the first of these any turn has.
+RECOVERY_PRECEDENCE: tuple[Recovery, ...] = ("not_recovered", "recovered", "avoided")
 
 #: The correctness layers, in report order.
 SELF_TEST_LAYERS: tuple[SelfTestLayer, ...] = (
@@ -57,7 +62,7 @@ METRICS: tuple[str, ...] = (
     "time_to_validated_plan_ms",
     "end_to_end_ms",
 )
-REPORT_SCHEMA_VERSION = 6
+REPORT_SCHEMA_VERSION = 7
 _SUPPORT_MATRIX_VERSION = 2
 
 
@@ -195,14 +200,17 @@ def _turn_payload(turn: Any) -> dict[str, object]:
 
 
 def _recovery_payload(results: Sequence[SelfTestResult]) -> dict[str, object]:
-    """The recovered-within-budget rate over the cases in its metric (``rate`` null when none)."""
+    """The recovery metric over *results*: the cases that received an advisory
+    finding, those that recovered and those that avoided one, and the
+    recovered-within-budget rate, recovered over received (null when none received)."""
 
-    measured = [result.recovery for result in results if result.recovery is not None]
-    recovered = sum(recovery == "recovered" for recovery in measured)
+    received = sum(result.advisory_received for result in results)
+    recovered = sum(result.recovery == "recovered" for result in results)
     return {
-        "cases": len(measured),
+        "received": received,
         "recovered": recovered,
-        "rate": recovered / len(measured) if measured else None,
+        "avoided": sum(result.recovery == "avoided" for result in results),
+        "rate": recovered / received if received else None,
     }
 
 
@@ -212,7 +220,7 @@ def report_payload(
     *,
     not_applicable: Sequence[SelfTestCase] = (),
 ) -> dict[str, object]:
-    """Build the closed content-redacted report v6.
+    """Build the closed content-redacted report v7.
 
     One report holds one kind of evidence: replay results prove the tools and
     contracts, live results measure a model, and the two are never combined.
@@ -222,8 +230,8 @@ def report_payload(
     crashed case fails, keeps its traceback and is counted apart, and its
     area's metric medians are taken over the cases that did not crash. The
     data findings layer is reported apart from the correctness layers, per
-    turn, per case and per area, with the recovered-within-budget rate per
-    area and for the run's model.
+    turn, per case and per area, with the recovery metric's counts and
+    recovered-within-budget rate per area and for the run's model.
     """
 
     evidence = {result.evidence for result in results}
@@ -249,6 +257,7 @@ def report_payload(
                 "status": result.data_findings,
                 "gates": result.data_findings_gate,
                 "recovery": result.recovery,
+                "received": result.advisory_received,
             },
             "metrics": dict(result.metrics),
             "turns": [_turn_payload(turn) for turn in result.turns],
@@ -336,11 +345,12 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
     """Compare two reports of one evidence kind per area.
 
     Returns each area's case, pass, crash and not-applicable counts in both reports,
-    with its data findings counts and recovered-within-budget rate, every case
-    run in both that flipped between pass and fail with the first failing layer
-    on its failing side, every case run in both whose data findings flipped
-    between passed and failed, the recovered-within-budget rate of both runs
-    and its difference, the cases each report lists as not
+    with its data findings counts and recovery metric, every case run in both
+    that flipped between pass and fail with the first failing layer on its
+    failing side, every case run in both whose data findings flipped between
+    passed and failed, the recovery metric of both runs with the differences
+    of their recovered-within-budget rates and avoided counts, the cases each
+    report lists as not
     applicable to its variant (never a flip, a pass or a failure), the cases
     only one report holds, run or not applicable, and per area the median of
     each efficiency metric in both reports and their difference.
@@ -418,6 +428,7 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
             "rate_difference": (
                 None if old_rate is None or new_rate is None else new_rate - old_rate
             ),
+            "avoided_difference": after["recovery"]["avoided"] - before["recovery"]["avoided"],
         },
         "not_applicable": {
             "before": sorted(case["id"] for case in before["not_applicable"]),

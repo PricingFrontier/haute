@@ -82,6 +82,7 @@ from haute.schemas import AssistantChangeDataCheck, AssistantTurnOutcomeKind
 from scripts.assistant_eval_report import (
     DATA_FINDINGS_LAYER,
     METRICS,
+    RECOVERY_PRECEDENCE,
     SELF_TEST_LAYERS,
     DataFindingsStatus,
     Recovery,
@@ -231,13 +232,16 @@ FindingRef = tuple[str, str]
 
 @dataclass(frozen=True, slots=True)
 class SelfTestDataFindingsExpectation:
-    """The advisory findings a case expects a turn's data checks to report.
+    """The advisory findings a turn's request invites, and those its saved graph keeps.
 
-    *reported* are the advisory findings the data checks the model receives in
-    the turn must report, such as a recovery case's seeded bug. *kept* are the
-    reported findings the saved graph keeps because correcting them would
-    contradict a value the analyst stated; every other advisory finding must be
-    gone from it. A turn that declares nothing expects a clean saved graph.
+    *reported* are the advisory findings a data check reports when the model
+    makes the mistake the request invites, such as a recovery case's seeded
+    bug; no check is required to report them, since a model that avoids the
+    mistake never meets them, and the seeded trajectories prove each one.
+    *kept* are the reported findings the saved graph keeps because correcting
+    them would contradict a value the analyst stated; every other advisory
+    finding must be gone from it. A turn that declares nothing expects a clean
+    saved graph.
     """
 
     reported: tuple[FindingRef, ...]
@@ -367,9 +371,9 @@ class SelfTestDataFindings:
     ``status`` is ``not_measured`` when no check the layer reads ran (thread
     mode, where every check reports ``worker_mode_unsupported``). ``gates`` is
     true for a case in the ``recovery`` area, where recovering from data
-    findings is the point, so a failure fails the case. ``recovery`` places the
-    turn in the recovered-within-budget metric: ``None`` when the turn is
-    outside it.
+    findings is the point, so a failure fails the case. ``recovery`` classifies
+    the turn for the recovery metric (``recovered``, ``avoided`` or
+    ``not_recovered``): ``None`` when the turn is outside it.
     """
 
     status: DataFindingsStatus
@@ -379,6 +383,12 @@ class SelfTestDataFindings:
     final: SelfTestFinalCheck | None
     cards: tuple[SelfTestCard, ...]
     recovery: Recovery | None
+
+    @property
+    def advisory_received(self) -> bool:
+        """Whether a data check the model received reported an advisory finding."""
+
+        return any(check.advisory for check in self.received)
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,13 +490,25 @@ class SelfTestResult:
 
     @property
     def recovery(self) -> Recovery | None:
-        """The case in the recovered-within-budget metric: ``None`` outside it,
-        ``recovered`` when each of its turns in the metric recovered."""
+        """The case in the recovery metric: ``None`` outside it, ``not_recovered``
+        when one of its turns did not recover, else ``recovered`` when one
+        recovered, else ``avoided``."""
 
-        turns = [turn.data_findings.recovery for turn in self.turns]
-        if all(recovery is None for recovery in turns):
-            return None
-        return "not_recovered" if "not_recovered" in turns else "recovered"
+        turns = {turn.data_findings.recovery for turn in self.turns}
+        return next(
+            (recovery for recovery in RECOVERY_PRECEDENCE if recovery in turns),
+            None,
+        )
+
+    @property
+    def advisory_received(self) -> bool:
+        """Whether a turn in the recovery metric received an advisory finding: the
+        cases that did are the recovered rate's denominator."""
+
+        return any(
+            turn.data_findings.recovery is not None and turn.data_findings.advisory_received
+            for turn in self.turns
+        )
 
     @property
     def tool_diagnostics(self) -> tuple[SelfTestToolDiagnostic, ...]:
@@ -624,9 +646,9 @@ def _data_findings(value: object, path: str) -> SelfTestDataFindingsExpectation 
     reported = _finding_refs(value["reported"], f"{path}.reported")
     kept = _finding_refs(value["kept"], f"{path}.kept")
     if not reported:
-        raise ValueError(f"{path}.reported must name a finding the turn's checks report")
+        raise ValueError(f"{path}.reported must name a finding the turn's request invites")
     if not set(kept) <= set(reported):
-        raise ValueError(f"{path}.kept may hold only findings the turn's checks reported")
+        raise ValueError(f"{path}.kept may hold only findings the turn declares reported")
     return SelfTestDataFindingsExpectation(reported=reported, kept=kept)
 
 
@@ -1046,48 +1068,40 @@ def _ref_words(ref: FindingRef) -> str:
     return f"{kind} on {node}"
 
 
-def _declared_findings_reasons(
-    declared: SelfTestDataFindingsExpectation,
-    received: Sequence[SelfTestReceivedCheck],
+def _saved_graph_reasons(
+    kept: Sequence[FindingRef],
     final: SelfTestFinalCheck | None,
     cards: Sequence[SelfTestCard],
 ) -> tuple[list[str], bool]:
-    """A declaring turn's reasons, and whether any part of the declaration was measured.
+    """A turn's reasons from its saved graph, and whether any part was measured.
 
-    Each part is judged only when a check it reads ran: the received checks for
-    the declared findings, the harness's check of the saved graph for what remains,
-    and the change cards for the kept findings the analyst was shown.
+    Each part is judged only when a check it reads ran: the harness's check of
+    the saved graph for what remains on the changed nodes, which must be
+    exactly the *kept* findings, and the change cards for the kept findings the
+    analyst was shown. What the model received is never judged here: it only
+    classifies the turn for the recovery metric.
     """
 
     reasons: list[str] = []
     measured = False
-    if any(check.outcome == "checked" for check in received):
-        measured = True
-        seen = {ref for check in received for ref in check.advisory}
-        reasons.extend(
-            f"no data check the model received reported {_ref_words(ref)}"
-            for ref in declared.reported
-            if ref not in seen
-        )
-    kept = set(declared.kept)
     if final is not None and final.measured:
         measured = True
         remaining = set(final.advisory)
         reasons.extend(
-            f"the saved graph's check still reports {_ref_words(ref)}"
-            for ref in sorted(remaining - kept)
+            f"the saved graph's check reports {_ref_words(ref)}"
+            for ref in sorted(remaining - set(kept))
         )
         reasons.extend(
             f"the saved graph's check no longer reports {_ref_words(ref)}, which a value "
             "the analyst stated causes"
-            for ref in sorted(kept - remaining)
+            for ref in sorted(set(kept) - remaining)
         )
     if kept and any(card.outcome == "checked" for card in cards):
         measured = True
         shown = {node for card in cards for node in card.advisory_nodes}
         reasons.extend(
             f"no change card showed the analyst {_ref_words(ref)}"
-            for ref in declared.kept
+            for ref in kept
             if ref[1] not in shown
         )
     return reasons, measured
@@ -1098,33 +1112,35 @@ def _recovery(
     telemetry: SelfTestTelemetry,
     received: Sequence[SelfTestReceivedCheck],
     final: SelfTestFinalCheck | None,
-    cards: Sequence[SelfTestCard],
+    reasons: Sequence[str],
 ) -> Recovery | None:
-    """Whether a turn that received an advisory finding recovered within its budget.
+    """Classify a turn for the recovery metric by its saved graph and what it received.
 
-    The metric holds a turn whose expectations save and that received at least
-    one advisory finding. It recovered when it completed with its expected
-    outcome (a spent dry-run or tool-call budget ends a turn otherwise), saved,
-    and the saved graph's check reports no advisory finding on the nodes it
-    changed beyond the kept findings its case declares, each shown on a change
-    card. A turn that saved and whose saved graph could not be checked is left
-    out (``None``).
+    The metric holds a turn whose expectations save. One that completed with
+    its expected outcome, saved, and whose saved graph passes the layer
+    (*reasons* empty) ``recovered`` when a data check it received reported an
+    advisory finding and ``avoided`` when none did; a saved graph that fails
+    the layer is ``not_recovered``. A turn that did not complete with its
+    expected outcome or saved nothing (a spent dry-run or tool-call budget
+    ends a turn so) is ``not_recovered`` when it received an advisory finding
+    and outside the metric when it received none. A turn whose saved graph's
+    check measured none of its changed nodes is outside the metric.
     """
 
-    if not expected.saves or not any(check.advisory for check in received):
+    if not expected.saves:
         return None
+    received_advisory = any(check.advisory for check in received)
     if (
         telemetry.terminal != "completed"
         or telemetry.outcome != expected.outcome
         or telemetry.saved_changes == 0
     ):
-        return "not_recovered"
+        return "not_recovered" if received_advisory else None
     if final is None or not final.measured:
         return None
-    kept = set() if expected.data_findings is None else set(expected.data_findings.kept)
-    shown = {node for card in cards for node in card.advisory_nodes}
-    recovered = set(final.advisory) <= kept and all(node in shown for _kind, node in kept)
-    return "recovered" if recovered else "not_recovered"
+    if reasons:
+        return "not_recovered"
+    return "recovered" if received_advisory else "avoided"
 
 
 def score_data_findings(
@@ -1138,25 +1154,17 @@ def score_data_findings(
 ) -> SelfTestDataFindings:
     """Score the data findings layer, which sits beside the correctness layers.
 
-    A turn that declares its findings passes when its checks reported each
-    declared finding, the saved graph keeps exactly the declared kept findings
-    among its advisory ones, and a change card showed the analyst each kept
-    finding. A turn that declares none passes when the saved graph's check
-    reports no advisory finding on the nodes the turn changed. A layer no check
-    ran for is ``not_measured``. The layer fails the case only when it *gates*,
-    in the ``recovery`` area.
+    The layer judges the saved graph: it passes when the saved graph's advisory
+    findings on the nodes the turn changed are exactly the kept findings the
+    turn declares (none when it declares nothing) and a change card showed the
+    analyst each kept finding. Whether the model received a finding never
+    passes or fails it; it classifies the turn for the recovery metric. A
+    layer no check ran for is ``not_measured``. The layer fails the case only
+    when it *gates*, in the ``recovery`` area.
     """
 
-    declared = expected.data_findings
-    if declared is not None:
-        reasons, measured = _declared_findings_reasons(declared, received, final, cards)
-    else:
-        measured = final is not None and final.measured
-        reasons = (
-            [f"the saved graph's check reports {_ref_words(ref)}" for ref in sorted(final.advisory)]
-            if final is not None and measured
-            else []
-        )
+    kept = () if expected.data_findings is None else expected.data_findings.kept
+    reasons, measured = _saved_graph_reasons(kept, final, cards)
     status: DataFindingsStatus = "failed" if reasons else "passed" if measured else "not_measured"
     return SelfTestDataFindings(
         status=status,
@@ -1165,7 +1173,7 @@ def score_data_findings(
         received=tuple(received),
         final=final,
         cards=tuple(cards),
-        recovery=_recovery(expected, telemetry, received, final, cards),
+        recovery=_recovery(expected, telemetry, received, final, reasons),
     )
 
 
