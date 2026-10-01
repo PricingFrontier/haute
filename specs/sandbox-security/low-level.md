@@ -91,7 +91,11 @@
    binding named `df` is hidden from node code. Callers whose code box operates
    on one implicit frame named `df` — external files, explore, post-code
    hooks, and `_polars_steps.resolve_free_code_columns` for a frame-mode
-   surface — opt in explicitly with `alias_first_input_as_df=True`.
+   surface — opt in explicitly with `alias_first_input_as_df=True`. The
+   free-code columns route runs `resolve_free_code_columns` in the interactive
+   preview worker under a `PREVIEW_EAGER` admission and
+   `FREE_CODE_COLUMNS_TIMEOUT_SECONDS`, so a snippet that never finishes is
+   stopped with its worker rather than pinning a server thread.
 2. Call `validate_user_code(code)`. On `UnsafeCodeError` whose `__cause__` is a
    `SyntaxError`, re-raise the bare `SyntaxError` instead — this normalizes the error
    type callers see for a plain typo versus a guard rejection.

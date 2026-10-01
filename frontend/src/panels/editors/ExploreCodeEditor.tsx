@@ -17,6 +17,7 @@ export default function ExploreCodeEditor(props: {
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
+  nodeId: string
 }) {
   return <SteppedCodePane {...props} inputNames={[]} start="frame" codeHint="assign to df" />
 }

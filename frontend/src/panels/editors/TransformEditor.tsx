@@ -15,6 +15,7 @@ export default function TransformEditor({
   errorLine,
   runError,
   upstreamColumns,
+  nodeId,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -25,6 +26,7 @@ export default function TransformEditor({
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
+  nodeId: string
 }) {
   const hasInput = inputSources.length > 0
   const inputsCanFormStarter =
@@ -45,6 +47,7 @@ export default function TransformEditor({
       runError={runError}
       upstreamColumns={upstreamColumns}
       start="input"
+      nodeId={nodeId}
       codeHint={hasInput ? "use input names, assign to df" : "assign to df"}
       starterCode={starterCode}
     />

@@ -107,7 +107,7 @@ Out of scope (owned elsewhere, linked where relevant):
 
 - **The accident guard catches what would hang or stop the server, and nothing
   else.** Project code run inside the server (node code through `_exec_user_code`,
-  including the Free code steps the step render endpoint resolves columns for, the preamble, pivot formulas and expression steps) is parsed by
+  including the Free code steps the free-code columns endpoint resolves columns for, the preamble, pivot formulas and expression steps) is parsed by
   `validate_user_code` before it runs. A direct call to `input()` (it waits for
   console input the server never receives), `exit()` or `quit()` (they stop the server
   process) or `breakpoint()` (it waits for a debugger on the server's console) is
@@ -288,7 +288,8 @@ Out of scope (owned elsewhere, linked where relevant):
   `_builders.py`, `chunking.py`, and `_model_scorer.py`/`deploy/_scorer.py` reuse
   the same `_exec_user_code` entry point for node execution and scoring-time code
   execution, and `_polars_steps.py` reuses it to resolve the columns after each
-  Free code step for the step render endpoint.
+  Free code step for the free-code columns endpoint, which runs it in the isolated
+  interactive preview worker with a short deadline, as a preview runs node code.
 - Depended on by [explore-eda](../explore-eda/high-level.md): `routes/_pivot_service.py`
   imports `validate_user_code` and `safe_globals` directly to validate and `eval()`
   configured pivot formulas without going through `_exec_user_code`.

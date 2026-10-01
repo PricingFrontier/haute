@@ -107,6 +107,7 @@ export default function PolarsStepsEditor({
   runError,
   upstreamColumns,
   start,
+  nodeId,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -122,6 +123,8 @@ export default function PolarsStepsEditor({
   /** The frame a frame-mode surface starts from, as far as the preview knows it. */
   upstreamColumns?: { name: string; dtype: string }[]
   start: StepStart
+  /** The node being edited: its free-code columns resolve one request at a time. */
+  nodeId: string
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
@@ -141,7 +144,7 @@ export default function PolarsStepsEditor({
     }),
     [inputSources, isFrame, upstreamColumns],
   )
-  const rendered = useRenderedSteps(steps, inputNames, start, known, (code) => {
+  const rendered = useRenderedSteps(steps, inputNames, start, known, nodeId, (code) => {
     if (config.code !== code) onUpdate("code", code)
   })
   const source: ColumnSource = useMemo(

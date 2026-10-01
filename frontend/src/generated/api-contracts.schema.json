@@ -11011,20 +11011,30 @@
       "title": "OptimiserStatusResponse",
       "type": "object"
     },
-    "PolarsStepsRenderResponse": {
-      "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request. A successful render\ncarries one ``free_code_columns`` entry per free-code step.",
+    "PolarsFreeCodeColumnsResponse": {
+      "description": "One entry per free-code step, in step order.",
       "properties": {
-        "code": {
-          "default": "",
-          "title": "Code",
-          "type": "string"
-        },
         "free_code_columns": {
           "items": {
             "$ref": "#/$defs/FreeCodeColumns"
           },
           "title": "Free Code Columns",
           "type": "array"
+        }
+      },
+      "required": [
+        "free_code_columns"
+      ],
+      "title": "PolarsFreeCodeColumnsResponse",
+      "type": "object"
+    },
+    "PolarsStepsRenderResponse": {
+      "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request.",
+      "properties": {
+        "code": {
+          "default": "",
+          "title": "Code",
+          "type": "string"
         },
         "message": {
           "default": "",
@@ -11063,8 +11073,7 @@
         "code",
         "step_lines",
         "step_index",
-        "message",
-        "free_code_columns"
+        "message"
       ],
       "title": "PolarsStepsRenderResponse",
       "type": "object"
@@ -13191,6 +13200,9 @@
     "OptimiserStatusResponse": {
       "$ref": "#/$defs/OptimiserStatusResponse"
     },
+    "PolarsFreeCodeColumnsResponse": {
+      "$ref": "#/$defs/PolarsFreeCodeColumnsResponse"
+    },
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
@@ -13303,6 +13315,7 @@
     "BrowseFilesResponse",
     "EditorIdentitiesResponse",
     "PolarsStepsRenderResponse",
+    "PolarsFreeCodeColumnsResponse",
     "ExecutionSettings",
     "OptimiserSolveResponse",
     "OptimiserEstimateResponse",
@@ -13329,6 +13342,7 @@
     "editor": [
       "EditorIdentitiesResponse",
       "PolarsStepsRenderResponse",
+      "PolarsFreeCodeColumnsResponse",
       "ExecutionSettings"
     ],
     "explore": [

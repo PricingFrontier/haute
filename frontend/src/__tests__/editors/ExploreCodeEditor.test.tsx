@@ -25,7 +25,7 @@ afterEach(cleanup)
 
 describe("ExploreCodeEditor", () => {
   it("renders the Polars editor chrome for analysis data preparation", () => {
-    render(<ExploreCodeEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />)
+    render(<ExploreCodeEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={[]} />)
 
     expect(screen.getByText("Polars Code")).toBeTruthy()
     expect(screen.getByText("assign to df")).toBeTruthy()
@@ -35,6 +35,7 @@ describe("ExploreCodeEditor", () => {
   it("passes config code and upstream columns to the code editor", () => {
     render(
       <ExploreCodeEditor
+        nodeId="node-1"
         config={{ code: "df = df.filter(pl.col('premium') > 0)" }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -52,7 +53,7 @@ describe("ExploreCodeEditor", () => {
 
   it("updates the code config key when the editor changes", () => {
     const onUpdate = vi.fn()
-    render(<ExploreCodeEditor config={{}} onUpdate={onUpdate} inputSources={[]} />)
+    render(<ExploreCodeEditor nodeId="node-1" config={{}} onUpdate={onUpdate} inputSources={[]} />)
 
     fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "df = df.head(10)" } })
 

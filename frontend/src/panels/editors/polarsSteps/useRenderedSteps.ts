@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { renderPolarsSteps } from "../../../api/client"
+import { renderPolarsSteps, resolveFreeCodeColumns } from "../../../api/client"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import type { ColumnInfo } from "./derivedColumns"
 import type { Step } from "./types"
@@ -8,7 +8,7 @@ import type { Step } from "./types"
 /** The columns the editor knows: each input's by name, and a frame-mode surface's `df`. */
 export type KnownColumns = { inputs: Readonly<Record<string, ColumnInfo[]>>; frame: ColumnInfo[] }
 
-/** The columns after one free-code step, or why the render could not resolve them. */
+/** The columns after one free-code step, or why they could not be resolved. */
 export type FreeCodeColumns = { columns: ColumnInfo[] | null; message: string }
 
 export type RenderedStepsState = {
@@ -25,10 +25,9 @@ export type RenderedStepsState = {
   /** Inclusive generated-code line ranges for the successful current render. */
   stepLines: number[][]
   /**
-   * By step id, the columns the last successful render resolved after each
-   * free-code step whose earlier steps and known columns are still the ones
-   * it rendered, so later renders (pending, or failing on a half-built later
-   * step) keep them.
+   * By step id, the columns last resolved after each free-code step whose
+   * earlier steps and known columns are still the ones that request carried,
+   * so later renders (pending, or failing on a half-built later step) keep them.
    */
   freeCode: ReadonlyMap<string, FreeCodeColumns>
 }
@@ -44,16 +43,19 @@ const signatureOf = (steps: Step[], index: number, knownKey: string) => `${known
  * Render `steps` through the backend, debounced, tagging every request with
  * the steps revision it was made for so an older response can never replace a
  * newer one. `inputNames` are the surface's eligible input names and `start`
- * its start mode; both travel with every request, with the `known` columns of
- * the eligible inputs (and, in `frame` mode, of `df`) so the render resolves
- * each free-code step's columns. `onRendered` fires with the code of a
- * successful render for the current revision only.
+ * its start mode; both travel with every request. `onRendered` fires with the
+ * code of a successful render for the current revision only, at once: the
+ * columns after each free-code step are a second request, for `nodeId` with
+ * the `known` columns of the eligible inputs (and, in `frame` mode, of `df`),
+ * made only after that render and only for a list with free code, because
+ * resolving them runs the snippet.
  */
 export function useRenderedSteps(
   steps: Step[],
   inputNames: string[],
   start: StepStart,
   known: KnownColumns,
+  nodeId: string,
   onRendered?: (code: string) => void,
 ): RenderedStepsState {
   const revisionRef = useRef(0)
@@ -91,9 +93,10 @@ export function useRenderedSteps(
     setState((prev) => ({ ...prev, status: "pending", revision, stepLines: [] }))
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      renderPolarsSteps({ steps, inputNames, start, inputColumns, frameColumns, signal: controller.signal })
+      const current = () => !controller.signal.aborted && revision === revisionRef.current
+      renderPolarsSteps({ steps, inputNames, start, signal: controller.signal })
         .then((response) => {
-          if (controller.signal.aborted || revision !== revisionRef.current) return
+          if (!current()) return
           if (response.ok) {
             setState({
               status: "ok",
@@ -103,15 +106,32 @@ export function useRenderedSteps(
               revision,
               stepLines: response.step_lines,
             })
-            setResolved(
-              response.free_code_columns.flatMap((entry) => {
-                const step = steps[entry.step_index]
-                return step === undefined
-                  ? []
-                  : [{ signature: signatureOf(steps, entry.step_index, knownKey), id: step.id, columns: { columns: entry.columns, message: entry.message } }]
-              }),
-            )
             onRenderedRef.current?.(response.code)
+            if (!steps.some((s) => s.kind === "free_code")) {
+              setResolved([])
+              return
+            }
+            const resolvedAt = (index: number, columns: FreeCodeColumns): Resolved => ({
+              signature: signatureOf(steps, index, knownKey),
+              id: steps[index].id,
+              columns,
+            })
+            resolveFreeCodeColumns({ nodeId, steps, inputNames, start, inputColumns, frameColumns, signal: controller.signal })
+              .then((columns) => {
+                if (!current()) return
+                setResolved(
+                  columns.free_code_columns.flatMap((entry) =>
+                    steps[entry.step_index] === undefined ? [] : [resolvedAt(entry.step_index, { columns: entry.columns, message: entry.message })],
+                  ),
+                )
+              })
+              .catch((err: unknown) => {
+                if (!current()) return
+                if (err instanceof DOMException && err.name === "AbortError") return
+                // A failed request is each free-code step's reason, never a silent gap.
+                const message = `the request failed: ${err instanceof Error ? err.message : String(err)}`
+                setResolved(steps.flatMap((s, index) => (s.kind === "free_code" ? [resolvedAt(index, { columns: null, message })] : [])))
+              })
           } else {
             setState((prev) => ({
               ...prev,
@@ -144,7 +164,7 @@ export function useRenderedSteps(
     // The serialised keys are the change signal; `steps`/`inputNames` and the
     // known columns are read from the closure of the same render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepsKey, namesKey, start, knownKey])
+  }, [stepsKey, namesKey, start, knownKey, nodeId])
 
   const freeCode = useMemo(() => {
     const current = new Map<string, FreeCodeColumns>()

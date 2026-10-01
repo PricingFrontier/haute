@@ -62,6 +62,7 @@ export type {
   EditorIdentitiesResponse as EditorIdentityBatchResponse,
   EditorIdentityResponseNode as EditorNodeIdentity,
   ExecutionSettings,
+  PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
 export interface SchemaWarning {

@@ -511,15 +511,18 @@ the editor. The editor starts at a compact 120px height, can be resized vertical
 and fills the available height as its box grows. It can
 be edited, reordered and deleted like any other step, and can be followed by
 low-code steps. Column completion uses the columns known before the snippet.
-After the snippet, later cards use the columns the render endpoint resolved for
-it: the endpoint runs the steps up to and including the snippet over empty
-frames of the input columns the editor knows and reads the resulting schema. In
+After the snippet, later cards use the columns the free-code columns endpoint
+resolved for it, which the editor asks for after each successful render of a
+list with a snippet, so the code panel never waits on it: the endpoint runs the
+steps up to and including the snippet over empty frames of the input columns
+the editor knows, in the preview worker with a short deadline, and reads the
+resulting schema. In
 a Transform those columns are the whole list, so a later card flags a name
 outside them and the snippet's collapsed card notes the columns it adds or
 removes; on a frame-mode surface they only seed suggestions, as the frame's own
 columns do. While a snippet's columns cannot be resolved (an input whose columns
-are not known yet, code that needs the preamble, or code that fails on an empty
-frame) its collapsed card says why in a muted note and later column fields
+are not known yet, code that needs the preamble, code that fails on an empty
+frame, or code that does not finish within the deadline) its collapsed card says why in a muted note and later column fields
 accept names typed by the user. Resolved columns stay in use while the steps up
 to the snippet are unchanged, even while a later card is pending or unfinished,
 so suggestions do not flicker or vanish while a card is being built. Collapsed cards show the first

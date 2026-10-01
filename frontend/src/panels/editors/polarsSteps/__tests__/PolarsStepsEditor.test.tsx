@@ -8,6 +8,7 @@ import { useState } from "react"
 
 vi.mock("../../../../api/client", () => ({
   renderPolarsSteps: vi.fn(),
+  resolveFreeCodeColumns: vi.fn(),
 }))
 
 vi.mock("../../CodeEditor", () => ({
@@ -16,7 +17,7 @@ vi.mock("../../CodeEditor", () => ({
   ),
 }))
 
-import { renderPolarsSteps } from "../../../../api/client"
+import { renderPolarsSteps, resolveFreeCodeColumns } from "../../../../api/client"
 import GeneratedCodePanel, { PENDING_FADE_MS } from "../GeneratedCodePanel"
 import PolarsStepsEditor from "../PolarsStepsEditor"
 import useKeyboardShortcuts from "../../../../hooks/useKeyboardShortcuts"
@@ -29,6 +30,13 @@ import useGraphStore, { resetGraphStoreForTests } from "../../../../stores/useGr
 import { makeNode } from "../../../../test-utils/factories"
 
 const mockRender = vi.mocked(renderPolarsSteps)
+const mockResolve = vi.mocked(resolveFreeCodeColumns)
+
+// Every case answers the free-code columns request with nothing unless it says otherwise.
+beforeEach(() => {
+  mockResolve.mockReset()
+  mockResolve.mockResolvedValue({ free_code_columns: [] })
+})
 
 const quotes: InputSource = { sourceNodeId: "q", name: "quotes", sourceLabel: "Quotes", edgeId: "e1" }
 const rates: InputSource = { sourceNodeId: "r", name: "rates", sourceLabel: "Rates", edgeId: "e2" }
@@ -49,7 +57,7 @@ const freeCode: Step = { id: "code", kind: "free_code", code: "# prepare\ndf = d
 
 function okFor(steps: unknown[]) {
   const code = steps.map((_, i) => (i === 0 ? "df = quotes" : `df = df.step_${i}()`)).join("\n")
-  return { ok: true, code, step_lines: steps.map((_, i) => [i + 1, i + 1]), step_index: null, message: "", free_code_columns: [] }
+  return { ok: true, code, step_lines: steps.map((_, i) => [i + 1, i + 1]), step_index: null, message: "" }
 }
 
 /** The most recent steps written to the config; the debounced code write may land after it. */
@@ -81,6 +89,7 @@ function Harness({
   const [config, setConfig] = useState(initial)
   return (
     <PolarsStepsEditor
+      nodeId="rated"
       start={start}
       inputNames={inputNames}
       config={config}
@@ -110,6 +119,7 @@ function Harness({
 function HistoryHarness() {
   const node = useGraphStore((state) => state.nodes[0])
   return <PolarsStepsEditor
+    nodeId={node.id}
     start="input"
     config={node.data.config as Record<string, unknown>}
     inputSources={[quotes]}
@@ -262,7 +272,6 @@ describe("PolarsStepsEditor", () => {
       step_lines: [],
       step_index: 1,
       message: "Add at least one condition.",
-      free_code_columns: [],
     }))
     render(<Harness initial={{ steps: [source, filter, limit] }} inputSources={[quotes]} runError="This transform has no code yet. Step 1: Add at least one condition." />)
     const limitButton = screen.getByRole("button", { name: "Step 2: Limit rows" })
@@ -284,7 +293,6 @@ describe("PolarsStepsEditor", () => {
       step_lines: [],
       step_index: 0,
       message: "Unknown input 'policies'; connected inputs: quotes.",
-      free_code_columns: [],
     }))
     render(<Harness initial={{ steps: [{ ...source, input: "policies" }, limit] }} inputSources={[quotes]} runError="failed" />)
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Start from: Unknown input 'policies'"), { timeout: 5000 })
@@ -297,7 +305,6 @@ describe("PolarsStepsEditor", () => {
       step_lines: [],
       step_index: 1,
       message: "Column name must be a non-empty string.",
-      free_code_columns: [],
     }))
     const { rerender } = render(<Harness initial={{ steps: [source, { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "premium" } } }] }} inputSources={[quotes]} />)
     await waitFor(() => expect(screen.getByTestId("polars-code-note")).toHaveTextContent("Step 1 isn't finished: it needs a name for the new column."), { timeout: 5000 })
@@ -324,7 +331,6 @@ describe("PolarsStepsEditor", () => {
       step_lines: [[1, 1], [2, 5]],
       step_index: null,
       message: "",
-      free_code_columns: [],
     }))
     const spy = vi.fn()
     const onReplace = vi.fn()
@@ -348,7 +354,6 @@ describe("PolarsStepsEditor", () => {
       step_lines: [[1, 1], [2, 5], [6, 6]],
       step_index: null,
       message: "",
-      free_code_columns: [],
     })
     const { rerender } = render(<Harness initial={{ steps: [source, freeCode, limit] }} inputSources={[quotes]} errorLine={4} />)
     await waitFor(() => expect(screen.getByRole("button", { name: "Step 1: Free code" }).closest("[data-testid='polars-step-card']")).toHaveTextContent("Failed when the pipeline ran"), { timeout: 5000 })
@@ -501,7 +506,6 @@ describe("PolarsStepsEditor", () => {
       step_lines: [],
       step_index: 0,
       message: "Unknown input 'quotes'; connected inputs: none.",
-      free_code_columns: [],
     }))
     const onReplace = vi.fn()
     render(<Harness initial={{ steps: [source] }} inputSources={[]} onReplace={onReplace} />)
@@ -524,7 +528,6 @@ describe("PolarsStepsEditor in frame mode", () => {
       step_lines: steps.map((_, i) => [i + 1, i + 1]),
       step_index: null,
       message: "",
-      free_code_columns: [],
     }))
   })
   afterEach(cleanup)
@@ -568,7 +571,7 @@ describe("PolarsStepsEditor in frame mode", () => {
     await waitFor(() => expect(lastSteps(spy)).toEqual([limit, filter]), { timeout: 5000 })
     expect(screen.getByRole("button", { name: "Step 1: Limit rows" })).toBeInTheDocument()
 
-    mockRender.mockImplementation(async () => ({ ok: false, code: "", step_lines: [], step_index: 0, message: "Row limit must be a whole number greater than zero.", free_code_columns: [] }))
+    mockRender.mockImplementation(async () => ({ ok: false, code: "", step_lines: [], step_index: 0, message: "Row limit must be a whole number greater than zero." }))
     cleanup()
     render(<Harness initial={{ steps: [limit, filter] }} inputSources={[]} start="frame" runError="failed" />)
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Step 1: Row limit must be a whole number greater than zero."), { timeout: 5000 })
@@ -716,7 +719,7 @@ describe("PolarsStepsEditor notes and linked code", () => {
     const code = () => screen.getByTestId("polars-generated-code")
     await waitFor(() => expect(code()).toHaveTextContent("df = df.step_1()"), { timeout: 5000 })
     expect(code()).not.toHaveAttribute("data-stale")
-    mockRender.mockImplementation(async () => ({ ok: false, code: "", step_lines: [], step_index: 1, message: "Row limit must be at least 1.", free_code_columns: [] }))
+    mockRender.mockImplementation(async () => ({ ok: false, code: "", step_lines: [], step_index: 1, message: "Row limit must be at least 1." }))
     fireEvent.click(screen.getByRole("button", { name: "Step 1: Limit rows" }))
     const input = screen.getByLabelText("Row limit")
     fireEvent.change(input, { target: { value: "7" } })
@@ -763,27 +766,25 @@ describe("PolarsStepsEditor notes and linked code", () => {
     await waitFor(() => expect(cardOf("Step 2: Filter rows")).toHaveTextContent("Not in the data at this step: gross"), { timeout: 5000 })
   })
 
-  it("offers the cards after free code the columns the render resolved for it, and says why when it could not", async () => {
+  it("offers the cards after free code the columns resolved for it, and says why when they could not be", async () => {
     const band: Step = { id: "code", kind: "free_code", code: "df = df.with_columns(band=pl.lit(1))" }
     const typo: Step = { id: "t", kind: "filter", match: "all", conditions: [{ column: "bnad", operator: "is_null" }] }
     const fresh: Step = { id: "f2", kind: "filter", match: "all", conditions: [{ column: "", operator: "is_null" }] }
-    mockRender.mockImplementation(async ({ steps }) => ({
-      ...okFor(steps),
+    mockResolve.mockResolvedValue({
       free_code_columns: [{ step_index: 1, columns: [...COLUMNS, { name: "band", dtype: "Int32" }], message: "" }],
-    }))
+    })
     render(<Harness initial={{ steps: [source, band, typo, fresh] }} inputSources={[quotesTyped]} />)
     await waitFor(() => expect(cardOf("Step 1: Free code")).toHaveTextContent("+band"), { timeout: 5000 })
-    expect(mockRender.mock.calls[0][0]).toMatchObject({ inputColumns: { quotes: COLUMNS }, frameColumns: [] })
+    expect(mockResolve.mock.calls[0][0]).toMatchObject({ nodeId: "rated", inputColumns: { quotes: COLUMNS }, frameColumns: [] })
     expect(cardOf("Step 2: Filter rows")).toHaveTextContent("Not in the data at this step: bnad")
     fireEvent.click(screen.getByRole("button", { name: "Step 3: Filter rows" }))
     fireEvent.focus(screen.getByRole("combobox", { name: "Filter condition 1 column" }))
     expect(screen.getByRole("option", { name: /band/ })).toBeInTheDocument()
 
     cleanup()
-    mockRender.mockImplementation(async ({ steps }) => ({
-      ...okFor(steps),
+    mockResolve.mockResolvedValue({
       free_code_columns: [{ step_index: 1, columns: null, message: "NameError: name 'helper' is not defined" }],
-    }))
+    })
     render(<Harness initial={{ steps: [source, { ...band, code: "df = helper(df)" }, typo] }} inputSources={[quotesTyped]} />)
     await waitFor(
       () => expect(cardOf("Step 1: Free code")).toHaveTextContent("Columns after this code are not known: NameError: name 'helper' is not defined"),
@@ -849,7 +850,7 @@ describe("PolarsStepsEditor notes and linked code", () => {
   })
 
   it("tints every line of a step that spans several", async () => {
-    mockRender.mockImplementation(async () => ({ ok: true, code: 'df = quotes\ndf = df.group_by(\n    ["region"],\n)', step_lines: [[1, 1], [2, 4]], step_index: null, message: "", free_code_columns: [] }))
+    mockRender.mockImplementation(async () => ({ ok: true, code: 'df = quotes\ndf = df.group_by(\n    ["region"],\n)', step_lines: [[1, 1], [2, 4]], step_index: null, message: "" }))
     render(<Harness initial={{ steps: [source, limit] }} inputSources={[quotes]} />)
     await waitFor(() => expect(lineOf(4)).toBeInTheDocument(), { timeout: 5000 })
     fireEvent.mouseEnter(cardOf("Step 1: Limit rows"))

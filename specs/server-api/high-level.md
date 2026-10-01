@@ -309,13 +309,27 @@ become diagnostic-unavailable rather than a fabricated success.
 and its input names and returns either the rendered code with each step's line range or
 the failing step index and message. Both outcomes are ordinary responses, so a half-built
 step list shows as an editor message rather than a network error; only a malformed
-request is a transport error. The endpoint reads and writes no project state. The request
-also carries the columns the editor knows for each input (and for a frame-mode surface's
-`df`), and a successful render returns, for each Free code step, the columns of `df` after
-it: the rendered steps up to that one run as node code over empty frames of those columns
-and only the resulting schema is read, or the entry says in one line why it could not be
-resolved. The steps themselves read no rows; Free code that reads a file itself does so on
-each render, as it does in a preview.
+request is a transport error. The endpoint reads and writes no project state and runs no
+authored code, so the code text never waits on a snippet.
+
+**Free-code columns.** `POST /api/pipeline/polars-steps/free-code-columns` takes the same
+step list with the node id and the columns the editor knows for each input (and for a
+frame-mode surface's `df`), and returns, for each Free code step, the columns of `df`
+after it: the rendered steps up to that one run as node code over empty frames of those
+columns and only the resulting schema is read, or the entry says in one line why it could
+not be resolved. The editor asks for them after a successful render of a list that has a
+Free code step. Because this runs authored code, it runs where previews do: in the
+isolated interactive preview worker under the preview memory budget, with a short
+deadline (`FREE_CODE_COLUMNS_TIMEOUT_SECONDS`, 5 seconds, since the frames are empty) and
+one running request per node, a newer one stopping an older one. A snippet that never
+finishes has its worker stopped and replaced at the deadline, and every Free code step of
+that request reports that the code did not finish in time; a worker that runs out of
+memory or stops otherwise is reported the same way, never as an error. One request
+resolves every Free code step of the list, so one snippet that does not finish leaves the
+earlier ones unresolved for that request too. In the thread execution mode (a development
+fallback) the deadline bounds the response but cannot stop the snippet's thread. The
+steps themselves read no rows; Free code that reads a file itself does so on each
+resolution, as it does in a preview.
 
 ## Design rationale
 

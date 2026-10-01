@@ -19,6 +19,7 @@ import {
   estimateTrainingRam,
   commitMilestone,
   renderPolarsSteps,
+  resolveFreeCodeColumns,
   resolveEditorNodeIdentities,
   resolveOutputDestination,
   writeOutput,
@@ -340,51 +341,62 @@ describe("client runtime contracts", () => {
   })
 
   it("renderPolarsSteps resolves rendered code and a failing step as data", async () => {
-    const rendered = {
-      ok: true,
-      code: "df = df.filter(x)",
-      step_lines: [[1, 1]],
-      step_index: null,
-      message: "",
-      free_code_columns: [{ step_index: 0, columns: null, message: "The columns of input 'quotes' are not known yet." }],
-    }
+    const rendered = { ok: true, code: "df = df.filter(x)", step_lines: [[1, 1]], step_index: null, message: "" }
     mockFetch.mockReturnValue(jsonResponse(rendered))
 
+    await expect(renderPolarsSteps({ steps: [{ kind: "filter" }], inputNames: ["quotes"], start: "input" })).resolves.toEqual(rendered)
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/polars-steps/render")
+    expect(JSON.parse(String(init?.body))).toEqual({ steps: [{ kind: "filter" }], input_names: ["quotes"], start: "input" })
+
+    // A step validation failure is data, not a rejected request.
+    const failed = { ok: false, code: "", step_lines: [], step_index: 2, message: "Pick a column." }
+    mockFetch.mockReturnValue(jsonResponse(failed))
+    await expect(renderPolarsSteps({ steps: [], inputNames: [], start: "frame" })).resolves.toEqual(failed)
+  })
+
+  it("renderPolarsSteps rejects a malformed step line range", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ ok: true, code: "df = df", step_lines: [[1, "2"]], step_index: null, message: "" }))
+
+    await expect(renderPolarsSteps({ steps: [], inputNames: [], start: "frame" })).rejects.toThrow(
+      "PolarsStepsRenderResponse: invalid contract at /step_lines/0/1: type",
+    )
+  })
+
+  it("resolveFreeCodeColumns posts the node, steps and known columns and resolves each free-code step's entry", async () => {
+    const columns = {
+      free_code_columns: [
+        { step_index: 1, columns: [{ name: "premium", dtype: "Float64" }], message: "" },
+        { step_index: 3, columns: null, message: "The code did not finish within 5 seconds." },
+      ],
+    }
+    mockFetch.mockReturnValue(jsonResponse(columns))
+
     await expect(
-      renderPolarsSteps({
-        steps: [{ kind: "filter" }],
+      resolveFreeCodeColumns({
+        nodeId: "rated",
+        steps: [{ kind: "free_code" }],
         inputNames: ["quotes"],
         start: "input",
         inputColumns: { quotes: [{ name: "premium", dtype: "Float64" }] },
         frameColumns: [],
       }),
-    ).resolves.toEqual(rendered)
+    ).resolves.toEqual(columns)
     const [url, init] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/pipeline/polars-steps/render")
+    expect(url).toBe("/api/pipeline/polars-steps/free-code-columns")
     expect(JSON.parse(String(init?.body))).toEqual({
-      steps: [{ kind: "filter" }],
+      node_id: "rated",
+      steps: [{ kind: "free_code" }],
       input_names: ["quotes"],
       start: "input",
       input_columns: { quotes: [{ name: "premium", dtype: "Float64" }] },
       frame_columns: [],
     })
 
-    // A step validation failure is data, not a rejected request.
-    const failed = { ok: false, code: "", step_lines: [], step_index: 2, message: "Pick a column.", free_code_columns: [] }
-    mockFetch.mockReturnValue(jsonResponse(failed))
+    mockFetch.mockReturnValue(jsonResponse({ free_code_columns: [{ step_index: "1", columns: null, message: "" }] }))
     await expect(
-      renderPolarsSteps({ steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [] }),
-    ).resolves.toEqual(failed)
-  })
-
-  it("renderPolarsSteps rejects a malformed step line range", async () => {
-    mockFetch.mockReturnValue(jsonResponse({
-      ok: true, code: "df = df", step_lines: [[1, "2"]], step_index: null, message: "", free_code_columns: [],
-    }))
-
-    await expect(
-      renderPolarsSteps({ steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [] }),
-    ).rejects.toThrow("PolarsStepsRenderResponse: invalid contract at /step_lines/0/1: type")
+      resolveFreeCodeColumns({ nodeId: "rated", steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [] }),
+    ).rejects.toThrow("PolarsFreeCodeColumnsResponse: invalid contract at /free_code_columns/0/step_index: type")
   })
 
   it("fetchIoCapabilities rejects unknown V1 discriminants", async () => {

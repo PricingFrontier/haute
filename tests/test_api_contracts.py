@@ -663,6 +663,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/EditorIdentitiesResponse"},
         },
     },
+    "/api/pipeline/polars-steps/free-code-columns": {
+        "POST": {
+            "request_ref": "#/components/schemas/PolarsFreeCodeColumnsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PolarsFreeCodeColumnsResponse"},
+        },
+    },
     "/api/pipeline/polars-steps/render": {
         "POST": {
             "request_ref": "#/components/schemas/PolarsStepsRenderRequest",

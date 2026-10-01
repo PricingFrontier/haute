@@ -31,6 +31,7 @@ describe("SteppedCodePane", () => {
     const onReplace = vi.fn()
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ steps: [] }}
         onUpdate={vi.fn()}
         onReplaceConfig={onReplace}
@@ -45,6 +46,7 @@ describe("SteppedCodePane", () => {
     expect(screen.queryByText("Polars Code")).not.toBeInTheDocument()
     expect(stepsEditorProps.at(-1)).toMatchObject({
       start,
+      nodeId: "node-1",
       inputNames: [...inputNames],
       runError: "boom",
       onReplaceConfig: onReplace,
@@ -54,6 +56,7 @@ describe("SteppedCodePane", () => {
   it("renders the code box with its hint when there is no steps list", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ code: "df = df.head(2)" }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -72,6 +75,7 @@ describe("SteppedCodePane", () => {
   it("shows the discard notice above the code box after steps were discarded on load", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ code: "df = df.head(3)", _steps_discarded: "Steps were discarded because the function body no longer matches the rendered steps." }}
         onUpdate={vi.fn()}
         inputSources={[]}
