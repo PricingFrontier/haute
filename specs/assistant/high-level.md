@@ -1472,7 +1472,7 @@ memory cap. Its deadline is 30 seconds, fixed rather than configurable and
 absolute from the moment the check starts, and that one deadline is carried
 through every stage. The server's work before admission reads only
 configuration, file metadata and published-generation pointers, never an
-input's content. The check never waits for a worker slot or a starting worker:
+input's content and never a snapshot's parts. The check never waits for a worker slot or a starting worker:
 it tries once to take the slot its affinity selects, and when that slot is held,
 or its worker is not running, it does not run and reports `worker_busy`. Every
 read that can hash an input's whole content (an input's source signature, the
@@ -1482,7 +1482,9 @@ and the run. Editor requests have priority: when an editor preview, trace,
 output assembly or free-code column resolution, or any other interactive
 request that waits for its slot, needs the slot a check holds, the check is
 stopped and reports `superseded_by_preview`, and the waiting request runs next,
-on the replacement worker, before any other request. At the deadline, on
+on the replacement worker, before any other request: while an interactive
+request is pending for a slot, a check that asks for it is refused as
+`worker_busy` even if the slot is momentarily free. At the deadline, on
 supersession by a newer check in the same session (`superseded`), on
 supersession by an editor request, and when the turn stops (`cancelled`), the
 check's worker process is terminated, and its slot is released only after
@@ -1510,11 +1512,16 @@ first.
 | Quote Input from a flat file (any path that is not JSON, JSONL, NDJSON or XML) | always, from its file, as a preview reads it directly | never; as for a direct Data Input, a file missing at run time is an execution failure and `source_changed` |
 | Quote Input from a structured file (JSON, JSONL, NDJSON or XML) | each table it reads has a published table snapshot in a readable state as above | a table it reads has no published snapshot or is in a non-readable state |
 
-The published state, including `building` while a refresh runs and the previous
-generation is still readable, is read on the server through the same read-only
-status the editor's input-cache panel shows, which overlays a running refresh on
-the published generation's state. Freshness (`fresh` or `stale`) needs the
-source's content signature, so it is decided in the worker before the walk. A
+The published state is read on the server through the read-only status the
+editor's input-cache panel shows. It looks for a running refresh first, before
+touching the snapshot store, so `building` is reported while the previous
+generation is still readable; otherwise, for the check, it reads only the
+published generation pointer and that the generation's files exist. Verifying
+the generation (its part sizes, Parquet footers and, for a generation this
+process has not verified before, every part's content hash) happens in the
+worker before the walk, where a generation that fails is `corrupt`. Freshness
+(`fresh` or `stale`) needs the source's content signature, so it is decided in
+the worker too. A
 refresh the server cannot see, such as one a preview's preparation runs in
 another worker process, changes a generation pointer the binding signs and so
 ends the check as `source_changed`.
@@ -1690,22 +1697,28 @@ lineage under that scenario, which covers the input file signatures, published
 snapshot generation pointers, a file-sourced Apply Optimisation artifact and the
 preamble fingerprint that execution caches already sign, together with the
 identity of each local Model Scoring node's cached model file and an EBM's
-cached contract, which that identity does not sign; and `freshness_tokens`, the
+cached contract, which that identity does not sign; `freshness_tokens`, the
 native revision or stat token of every file the source generation signs, which
-reading never touches a file's content. The source generation and the tokens are
-read in the worker at the start of the check and again at its end; when the two
-source generations differ the check is `not_run` with `source_changed`, so no
-finding describes inputs or a model that changed under it. A later freshness
-comparison re-observes only the tokens, so it never hashes a file on the
+reading never touches a file's content; and `identity_components`, the parts of
+that identity that are not file contents and cost only configuration reads:
+the set of signed file paths and, for each run-sourced Model Scoring node, the
+resolved MLflow backend identity, which also selects its model cache directory.
+All three are read in the worker at the start of the check and again at its
+end; when the two source generations differ the check is `not_run` with
+`source_changed`, so no finding describes inputs or a model that changed under
+it. A later freshness comparison re-derives the identity components from
+configuration and re-observes the tokens, so it never hashes a file on the
 server.
 Findings are not plan facts: they are outside the plan hash, never computed or
 awaited under the save lock, and never recomputed or read by apply, so they
 never change what apply saves. A consumer shows findings only when both the
 graph digest and the scenario they record equal those of the graph it shows. A
 scenario mismatch hides them with a note naming the checked scenario, because
-they describe another branch; a changed or missing freshness token within the
-same scenario (a refreshed input, a replaced model file or EBM contract) keeps
-them visible, labelled as computed from earlier inputs. A change
+they describe another branch; within the same scenario, a changed or missing
+freshness token (a refreshed input, a replaced model file or EBM contract) or a
+changed identity component (a destination moved to another tracking server or
+local folder while the old cached files stay untouched) keeps them visible,
+labelled as computed from earlier inputs. A change
 card shows the findings of the dry-run whose plan hash it applied under those
 rules. The model-facing view states the checked scenario and omits the digests,
 as dry-run results omit revisions; the stored result keeps the whole binding.
@@ -1835,7 +1848,13 @@ authorises a check.
   fully attributed response, an oversized result is cut within its allocation
   while the dry-run's fields are unchanged, and a successful dry-run that leaves
   no room for the smallest result carries the omission note and stays
-  successful; with the flag
+  successful, and a `no_checkable_nodes` result reduced for size still matches
+  the closed `not_run` shape; a cold snapshot generation is verified, and its
+  parts hashed, only in the worker, never on the server; a check arriving after
+  a pre-emption's replacement worker is installed but before the queued preview
+  resumes is `worker_busy`; changing a run-sourced model's destination
+  configuration, with the graph and the old cached files unchanged, labels the
+  stored findings; with the flag
   false no check is attempted; a change card never shows findings for another
   graph digest, hides them after a scenario-only change, and labels them after
   a same-scenario input refresh; and latency is recorded on 100,000, 1,000,000
