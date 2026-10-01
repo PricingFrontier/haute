@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
 from fastapi import HTTPException
@@ -144,6 +144,10 @@ from haute.routes._supersession import SupersededRequestError, SupersessionCoord
 from haute.routes.pipeline import preview_timeout
 from haute.schemas import AssistantBuildPlan, AssistantChangeRecord
 
+if TYPE_CHECKING:
+    # The data check imports this module; its names are imported where they are used.
+    from haute.assistant._data_check import DataCheckResult, NodeDataCheckRequest
+
 logger = get_logger(component="assistant.tools")
 
 _INTERNAL_ERROR_DETAIL = "The assistant tool failed unexpectedly."
@@ -174,10 +178,11 @@ _INTERNAL_PROJECT_TOOLS = frozenset(
         "apply_graph_plan",
     }
 )
+# Reads the executor runs under the save lock. `inspect_node` takes the lock
+# itself around its parts' reads, so its data part's check runs outside it.
 _SAVE_LOCK_READ_TOOLS = frozenset(
     {
         "get_pipeline",
-        "inspect_node",
         "find_data",
         "get_project_knowledge",
     }
@@ -1857,6 +1862,10 @@ _AVAILABLE_PARTS = {
     ),
     "config": "The config part is permitted: it returns the node's saved configuration.",
     "profile": ("The profile part is permitted: it summarises the values in the node's columns."),
+    "data": (
+        "The data part is permitted: it runs the node's lineage over the project's data and "
+        "returns value-free counts, each node's status and error, and a column's nulls."
+    ),
 }
 
 
@@ -1869,7 +1878,57 @@ def _part_requirement(policy: EgressPolicy, part: str) -> str | None:
         return 'max_sensitivity = "restricted"'
     if part == "profile" and not policy.allow_row_samples:
         return "allow_row_samples = true"
+    if part == "data" and not policy.permits_data_checks:
+        return "allow_aggregate_statistics = true"
     return None
+
+
+def _prepare_node_data(
+    source_file: str, node: str, column: str | None, policy: EgressPolicy
+) -> tuple[NodeDataCheckRequest, str] | dict[str, object]:
+    """The data part's read of the saved graph, under the save lock: its request and revision.
+
+    The check itself runs after the lock is released.
+    """
+
+    from haute.assistant._data_check import NodeDataCheckRequest
+
+    try:
+        graph = _parse_graph(source_file)
+        validation_error = _validate_top_level_target(graph, node)
+        if validation_error is not None:
+            return validation_error
+        project_revision = _project_revision(source_file, graph)
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        return _error("data_unavailable", _error_message(exc, operation="inspect_node"))
+    return NodeDataCheckRequest(graph, node, column, policy), project_revision
+
+
+async def _awaited_check(
+    run: Callable[[ExecutionCancellationToken], Awaitable[DataCheckResult]],
+) -> DataCheckResult:
+    """Run one data check to its result, which a stopped turn makes `cancelled`.
+
+    The check runs as its own task under a token this call owns, and the
+    call's activity row reads "Checking the data" meanwhile. When the call is
+    cancelled (the turn stopped), the token stops the check, which reports
+    `cancelled` once its worker has stopped, and the cancellation is taken
+    back so the call returns that result as the turn's record of it.
+    """
+
+    report_tool_progress(DATA_CHECK_PROGRESS_TITLE)
+    stopped = ExecutionCancellationToken()
+    running = asyncio.ensure_future(run(stopped))
+    try:
+        return await asyncio.shield(running)
+    except asyncio.CancelledError:
+        stopped.cancel()
+        check = await running
+        # The stop is answered: this call returns the check's result.
+        current = asyncio.current_task()
+        if current is not None:
+            current.uncancel()
+        return check
 
 
 async def inspect_node(
@@ -1877,6 +1936,7 @@ async def inspect_node(
     node: str,
     parts: Sequence[str] = ("schema",),
     input_name: str | None = None,
+    column: str | None = None,
     *,
     session_id: str,
 ) -> dict[str, object]:
@@ -1884,7 +1944,9 @@ async def inspect_node(
 
     A denied part is listed under ``withheld`` with the setting it needs while
     the permitted parts answer; when every part is denied the call is refused.
-    A part that fails fails the call, naming the part.
+    A part that fails fails the call, naming the part. The parts read the
+    saved graph under the save lock; the data part's check runs after the
+    lock is released, and a check that does not run is its answer.
     """
 
     if input_name is not None and "profile" not in parts:
@@ -1893,6 +1955,13 @@ async def inspect_node(
             'input names the frame the "profile" part reads; add "profile" to parts or omit input.',
             validation_path="inspect_node.input",
             validation_reason="input_without_profile",
+        )
+    if column is not None and "data" not in parts:
+        return _error(
+            "invalid_request",
+            'column names the column the "data" part follows; add "data" to parts or omit column.',
+            validation_path="inspect_node.column",
+            validation_reason="column_without_data",
         )
     try:
         policy = resolve_egress_policy(Path.cwd().resolve())
@@ -1916,24 +1985,49 @@ async def inspect_node(
         )
     result: dict[str, object] = {"node": node}
     revisions: set[object] = set()
-    for part in permitted:
-        if part == "schema":
-            answer = await asyncio.to_thread(node_schema, source_file, node)
-        elif part == "config":
-            answer = await asyncio.to_thread(node_config, source_file, node)
-        else:
-            answer = await column_profiles(source_file, node, input_name, session_id=session_id)
-        error = answer.get("error")
-        if isinstance(error, Mapping):
-            return {"error": {**error, "part": part}}
-        revisions.add(answer.pop("project_revision"))
-        answer.pop("node")
-        result[part] = answer
+    data_request: NodeDataCheckRequest | None = None
+    async with save_lock:
+        for part in permitted:
+            if part == "data":
+                prepared = await asyncio.to_thread(
+                    _prepare_node_data, source_file, node, column, policy
+                )
+                if isinstance(prepared, dict):
+                    return {
+                        "error": {**cast(Mapping[str, object], prepared["error"]), "part": part}
+                    }
+                data_request, revision = prepared
+                revisions.add(revision)
+                continue
+            if part == "schema":
+                answer = await asyncio.to_thread(node_schema, source_file, node)
+            elif part == "config":
+                answer = await asyncio.to_thread(node_config, source_file, node)
+            else:
+                answer = await column_profiles(source_file, node, input_name, session_id=session_id)
+            error = answer.get("error")
+            if isinstance(error, Mapping):
+                return {"error": {**error, "part": part}}
+            revisions.add(answer.pop("project_revision"))
+            answer.pop("node")
+            result[part] = answer
     if len(revisions) != 1:
         raise RuntimeError("inspect_node parts described different project revisions")
     if withheld:
         result["withheld"] = withheld
     result["project_revision"] = revisions.pop()
+    if data_request is not None:
+        # The data check imports this module, so it is imported where it is used.
+        from haute.assistant._data_check import fit_node_data_check, run_node_data_check
+
+        request = data_request
+        check = await _awaited_check(
+            lambda stopped: run_node_data_check(
+                request, session_id=session_id, cancellation=stopped
+            )
+        )
+        attributed = _attributed_tool_result("inspect_node", result)
+        result.update(fit_node_data_check(check, _MAX_TOOL_CONTEXT_BYTES - _json_size(attributed)))
     return result
 
 
@@ -2548,20 +2642,9 @@ async def _checked_dry_run(
         policy=gate.policy,
         submitted=tuple(operations),
     )
-    report_tool_progress(DATA_CHECK_PROGRESS_TITLE)
-    stopped = ExecutionCancellationToken()
-    running = asyncio.ensure_future(
-        run_data_check(request, session_id=gate.session_id, cancellation=stopped)
+    check = await _awaited_check(
+        lambda stopped: run_data_check(request, session_id=gate.session_id, cancellation=stopped)
     )
-    try:
-        check = await asyncio.shield(running)
-    except asyncio.CancelledError:
-        stopped.cancel()
-        check = await running
-        # The stop is answered: this call returns the dry-run with its check.
-        current = asyncio.current_task()
-        if current is not None:
-            current.uncancel()
     if not _PLAN_STORE.record_data_check(plan.plan_hash, check):
         logger.info("assistant_data_check_not_stored", plan_hash=plan.plan_hash)
     attributed = _attributed_tool_result("dry_run_graph_edits", result)
@@ -3527,14 +3610,16 @@ def build_tool_executor(
             if name == "get_pipeline":
                 operation = partial(get_pipeline, source_file)
             elif name == "inspect_node":
-                # Each part prepares on a thread; a profile collects in the
-                # interactive preview worker.
+                # Each part prepares on a thread under the save lock the call
+                # takes itself; a profile collects, and a data check runs, in
+                # the interactive preview worker.
                 worker_call = partial(
                     inspect_node,
                     source_file,
                     arguments["node"],
                     arguments.get("parts", ("schema",)),
                     arguments.get("input"),
+                    arguments.get("column"),
                     session_id=session_id,
                 )
             elif name == "find_data":

@@ -340,10 +340,13 @@ _PROMPT_DRY_RUN_RETRY = (
 _PROMPT_DATA_CHECK = (
     "A dry-run can return `data_check`: advisory and informational findings measured by "
     "running the planned graph's changed nodes over the project's data. When an advisory "
-    "finding shows the plan is wrong (every row in a band's default, a join that matches "
-    "nothing, a filter that empties its input), correct the plan and dry-run again before "
-    "applying; informational findings need no action, and neither a clean check nor one "
-    "that did not run proves the plan correct. "
+    "finding shows a choice of yours is wrong (every row in a band's default, a join that "
+    "matches nothing, a filter that empties its input), correct the plan and dry-run again "
+    "before applying; values the analyst stated, such as rating keys that match no rows, "
+    "stay as stated, and you tell the analyst what the check found. Informational findings "
+    "need no action, and neither a clean check nor one that did not run proves the plan "
+    "correct. To find why a saved node fails or why a column is null, call `inspect_node` "
+    'with parts ["data"] (and `column`) before reading code: one call answers it. '
 )
 
 _PROMPT_OUTCOME_CONTRACT = (

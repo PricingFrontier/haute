@@ -487,15 +487,20 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         import haute.assistant._tools as tools_module
 
         async def observe_lock(*_args: object, **_kwargs: object) -> dict[str, object]:
-            return {"save_lock_held": tools_module.save_lock.locked()}
+            return {
+                "node": "totals",
+                "save_lock_held": tools_module.save_lock.locked(),
+                "project_revision": "r",
+            }
 
-        monkeypatch.setattr(tools_module, "inspect_node", observe_lock)
+        # `inspect_node` takes the save lock itself around its parts' reads.
+        monkeypatch.setattr(tools_module, "column_profiles", observe_lock)
 
         result = await tools_module.build_tool_executor("main.py")(
             "inspect_node", {"node": "totals", "parts": ["profile"], "input": "claims"}
         )
 
-        assert result["save_lock_held"] is True
+        assert result["profile"]["save_lock_held"] is True
 
     def test_frames_downstream_of_a_join_and_an_aggregation_profile_in_the_preview_worker(
         self, join_profile_project: Path, monkeypatch: pytest.MonkeyPatch

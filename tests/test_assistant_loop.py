@@ -2397,8 +2397,9 @@ class TestSystemPrompt:
 
     def test_the_policy_states_aggregate_statistics_in_one_line(self):
         """The data-check permission is one line either way. Off, it says no data
-        check runs, so a dry-run proves schemas and never that the data came out
-        right; on, it says only what may be sent, never that a check ran."""
+        check runs and `inspect_node` withholds its data part, so a dry-run proves
+        schemas and never that the data came out right; on, it says only what may
+        be sent, never that a check ran."""
 
         from haute.assistant._render import render_egress_policy
 
@@ -2410,8 +2411,9 @@ class TestSystemPrompt:
             "never row values)"
         ) in permitted.splitlines()
         assert (
-            "- Aggregate data statistics: not permitted; no data check runs, so a "
-            "dry-run proves schemas, never that the data came out right"
+            "- Aggregate data statistics: not permitted; no data check runs and "
+            "`inspect_node` withholds its data part, so a dry-run proves schemas, never "
+            "that the data came out right"
         ) in denied.splitlines()
         for policy in (permitted, denied):
             assert sum("Aggregate data statistics" in line for line in policy.splitlines()) == 1

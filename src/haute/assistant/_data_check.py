@@ -7,8 +7,11 @@ ports: rows in and out, null counts of new and changed columns, per-rule
 banding claims, rating misses and unused entries, Edge Join matches and
 duplicated keys, and execution failures with their provenance. It returns
 counts and shares only, never a row value or a configuration value, and its
-findings are advisory or informational. The specification is "Data checks"
-in ``specs/assistant/high-level.md`` and ``specs/assistant/low-level.md``.
+findings are advisory or informational. The same check answers
+``inspect_node``'s data part over one saved node's lineage
+(:func:`run_node_data_check`), where it can also follow one column's nulls.
+The specification is "Data checks" in ``specs/assistant/high-level.md`` and
+``specs/assistant/low-level.md``.
 
 This module owns the check whole: eligibility (on the server, reading only
 configuration, file metadata and published-generation pointers), the job
@@ -92,6 +95,7 @@ from haute._rating import (
 )
 from haute._rating_step_config import normalise_rating_tables
 from haute._source_cache import SourceCacheStore
+from haute._submodel_instances import runtime_instance_id
 from haute._topo import canonical_topological_order
 from haute._types import SINK_ONLY_NODE_TYPES, GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._worker_isolation import WorkerTerminalReason, resolve_worker_memory_enforcement
@@ -137,7 +141,12 @@ DATA_CHECK_OPERATION = "assistant_data_check"
 DATA_CHECK_OMITTED_NOTE = (
     "The data check's result did not fit in this tool result; it is stored with the plan."
 )
+NODE_DATA_OMITTED_NOTE = (
+    "The data part's result did not fit in this tool result; ask for the data part on its own."
+)
 _ROW_BOUND = _MAX_PROFILE_ROWS
+# The aggregate that counts a followed column's nulls in one measured frame.
+_COLUMN_NULLS = "__column_nulls__"
 _SHARE_DIGITS = 4
 _OPAQUE_LOAD_FILE_TYPES = frozenset({"pickle", "joblib", "catboost"})
 # The node types whose builders bind the preamble, as a preview injects its failure.
@@ -485,6 +494,33 @@ DataCheckView = Annotated[CheckedCheck | NotRunCheck, Field(discriminator="outco
 DATA_CHECK_VIEW: TypeAdapter[CheckedCheck | NotRunCheck] = TypeAdapter(DataCheckView)
 
 
+class ColumnLineageEntry(_Closed):
+    node: str
+    port: str | None
+    rows: int
+    nulls: int
+    share: float | None
+    input_nulls: int | None
+    truncated: bool
+
+
+class ColumnLineage(_Closed):
+    name: str
+    first_null_node: str | None
+    lineage: list[ColumnLineageEntry]
+
+
+class NodeCheckedCheck(CheckedCheck):
+    """An inspection's checked object: a dry-run's, plus the followed column (or null)."""
+
+    column: ColumnLineage | None
+
+
+NodeDataView = Annotated[NodeCheckedCheck | NotRunCheck, Field(discriminator="outcome")]
+#: Validates the object ``inspect_node``'s data part returns.
+NODE_DATA_VIEW: TypeAdapter[NodeCheckedCheck | NotRunCheck] = TypeAdapter(NodeDataView)
+
+
 # ---------------------------------------------------------------------------
 # Request, binding and stored result
 # ---------------------------------------------------------------------------
@@ -508,13 +544,29 @@ class DataCheckRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeDataCheckRequest:
+    """What ``inspect_node``'s data part checks: one saved node's lineage.
+
+    *graph* is the saved graph the call parsed under the save lock; *column*
+    is the column whose nulls the check follows along the lineage, or ``None``.
+    """
+
+    graph: PipelineGraph
+    node: str
+    column: str | None
+    policy: EgressPolicy
+
+
+@dataclass(frozen=True, slots=True)
 class DataCheckBinding:
     """What a check's findings describe: its plan, graph, scenario and inputs.
 
-    ``source_generation`` is ``None`` for a check that never read its inputs.
+    ``plan_hash`` is ``None`` for an inspection of the saved graph, which no
+    plan stores. ``source_generation`` is ``None`` for a check that never
+    read its inputs.
     """
 
-    plan_hash: str
+    plan_hash: str | None
     graph_digest: str
     scenario: str
     source_generation: str | None = None
@@ -609,54 +661,149 @@ async def run_data_check(
     graph = request.candidate_graph
     binding = DataCheckBinding(request.plan_hash, "", graph.active_source)
     try:
-        flat = await asyncio.to_thread(flatten_graph, graph)
-        digest = await asyncio.to_thread(graph_fingerprint, flat)
-        binding = DataCheckBinding(request.plan_hash, digest, graph.active_source)
-        return await _run_data_check(request, flat, binding, session_id, cancellation, started)
-    except Exception as exc:
-        logger.error(
-            "assistant_data_check_failed",
-            error_class=type(exc).__name__,
-            error_message=str(exc),
-            exc_info=True,
+        flat, binding = await _bound(graph, request.plan_hash)
+        if resolve_interactive_execution_mode() != "process":
+            return _not_run(binding, "worker_mode_unsupported", started)
+        if request.verification_tier != "schema":
+            return _not_run(binding, "not_schema_tier", started)
+        changed = changed_nodes(graph, request.diff)
+        return await _run_check(
+            _CheckScope(
+                graph=graph,
+                flat=flat,
+                nodes=tuple(changed),
+                cap_order=tuple(changed),
+                column=None,
+                submitted=request.submitted,
+                policy=request.policy,
+                inspection=False,
+            ),
+            binding,
+            session_id,
+            cancellation,
+            started,
         )
-        return _not_run(binding, "internal_error", started)
+    except Exception as exc:
+        return _defect(binding, exc, started)
 
 
-async def _run_data_check(
-    request: DataCheckRequest,
-    flat: PipelineGraph,
+async def run_node_data_check(
+    request: NodeDataCheckRequest,
+    *,
+    session_id: str,
+    cancellation: ExecutionCancellationToken | None = None,
+) -> DataCheckResult:
+    """Check the saved graph's lineage of *request*'s node; never raises for an outcome.
+
+    ``inspect_node``'s data part. The check is a dry-run's in every rule but
+    which nodes it measures: the node's top-level lineage under the graph's
+    active scenario, the node cap keeping the eligible nodes nearest the node.
+    With a column, it also follows that column's nulls along the lineage. It
+    shares the session's one check at a time with a dry-run's check.
+    """
+    started = time.monotonic()
+    graph = request.graph
+    binding = DataCheckBinding(None, "", graph.active_source)
+    try:
+        flat, binding = await _bound(graph, None)
+        if resolve_interactive_execution_mode() != "process":
+            return _not_run(binding, "worker_mode_unsupported", started)
+        scope = await asyncio.to_thread(_inspection_scope, request, flat)
+        return await _run_check(scope, binding, session_id, cancellation, started)
+    except Exception as exc:
+        return _defect(binding, exc, started)
+
+
+async def _bound(
+    graph: PipelineGraph, plan_hash: str | None
+) -> tuple[PipelineGraph, DataCheckBinding]:
+    """The flattened graph and a binding naming its digest and scenario."""
+    flat = await asyncio.to_thread(flatten_graph, graph)
+    digest = await asyncio.to_thread(graph_fingerprint, flat)
+    return flat, DataCheckBinding(plan_hash, digest, graph.active_source)
+
+
+def _defect(binding: DataCheckBinding, exc: Exception, started: float) -> DataCheckResult:
+    logger.error(
+        "assistant_data_check_failed",
+        error_class=type(exc).__name__,
+        error_message=str(exc),
+        exc_info=True,
+    )
+    return _not_run(binding, "internal_error", started)
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckScope:
+    """What one check measures: a dry-run's changed nodes, or an inspected node's lineage.
+
+    *nodes* are in the order records and findings rank; *cap_order* holds the
+    same nodes in the order the node cap keeps them.
+    """
+
+    graph: PipelineGraph
+    flat: PipelineGraph
+    nodes: tuple[str, ...]
+    cap_order: tuple[str, ...]
+    column: str | None
+    submitted: tuple[Mapping[str, object], ...]
+    policy: EgressPolicy
+    inspection: bool
+
+
+def _inspection_scope(request: NodeDataCheckRequest, flat: PipelineGraph) -> _CheckScope:
+    """An inspected node's lineage, the cap keeping the nodes nearest it."""
+    nodes = inspection_nodes(request.graph, flat, request.node)
+    return _CheckScope(
+        graph=request.graph,
+        flat=flat,
+        nodes=tuple(nodes),
+        cap_order=tuple(reversed(nodes)),
+        column=request.column,
+        submitted=(),
+        policy=request.policy,
+        inspection=True,
+    )
+
+
+def _scope_job(
+    scope: _CheckScope, exclusions: Mapping[str, _Exclusion | None]
+) -> DataCheckJob | None:
+    """The worker's job for the scope's nodes no server-side reason excludes, or ``None``."""
+    candidates = tuple(node for node in scope.nodes if exclusions[node] is None)
+    if not candidates:
+        return None
+    return DataCheckJob(
+        candidate_graph=scope.graph,
+        scenario=scope.graph.active_source,
+        candidates=candidates,
+        cap_order=tuple(node for node in scope.cap_order if exclusions[node] is None),
+        column=scope.column,
+        submitted=scope.submitted,
+        policy=scope.policy,
+    )
+
+
+async def _run_check(
+    scope: _CheckScope,
     binding: DataCheckBinding,
     session_id: str,
     cancellation: ExecutionCancellationToken | None,
     started: float,
 ) -> DataCheckResult:
     deadline = started + DATA_CHECK_DEADLINE_SECONDS
-    if resolve_interactive_execution_mode() != "process":
-        return _not_run(binding, "worker_mode_unsupported", started)
-    if request.verification_tier != "schema":
-        return _not_run(binding, "not_schema_tier", started)
-    graph = request.candidate_graph
-    changed = changed_nodes(graph, request.diff)
     # Configuration, file metadata and pointers only, but file reads all the same.
-    exclusions = await asyncio.to_thread(server_exclusions, graph, flat, changed)
-    candidates = tuple(node for node in changed if exclusions[node] is None)
+    exclusions = await asyncio.to_thread(server_exclusions, scope.graph, scope.flat, scope.nodes)
     excluded = {
         node: _not_checked_record(node, exclusion)
         for node, exclusion in exclusions.items()
         if exclusion is not None
     }
-    if not candidates:
+    job = _scope_job(scope, exclusions)
+    if job is None:
         return _not_run(
-            binding, "no_checkable_nodes", started, nodes=[excluded[node] for node in changed]
+            binding, "no_checkable_nodes", started, nodes=[excluded[node] for node in scope.nodes]
         )
-    job = DataCheckJob(
-        candidate_graph=graph,
-        scenario=graph.active_source,
-        candidates=candidates,
-        submitted=request.submitted,
-        policy=request.policy,
-    )
     stop = _CheckStop(cancellation)
     key = data_check_session_key(session_id)
     try:
@@ -672,7 +819,9 @@ async def _run_data_check(
         return _not_run(binding, "admission_refused", started, detail=exc.reason)
     except InteractiveWorkerError as exc:
         return _not_run(binding, _worker_failure_reason(exc), started)
-    return _checked_result(binding, outcome, changed, excluded, started)
+    return _checked_result(
+        binding, outcome, scope.nodes, excluded, started, inspection=scope.inspection
+    )
 
 
 async def _admitted_check(
@@ -781,7 +930,10 @@ def _checked_result(
     changed: Sequence[str],
     excluded: Mapping[str, Mapping[str, object]],
     started: float,
+    *,
+    inspection: bool,
 ) -> DataCheckResult:
+    """The check object of a worker outcome; an inspection's adds its followed column."""
     records = {**excluded, **outcome.records}
     nodes = [dict(records[node]) for node in changed]
     if outcome.binding is not None:
@@ -810,7 +962,13 @@ def _checked_result(
         "findings_omitted": 0,
         "detail_truncated": False,
     }
-    DATA_CHECK_VIEW.validate_python(check)
+    if inspection:
+        check["column"] = None if outcome.column is None else deepcopy(dict(outcome.column))
+        NODE_DATA_VIEW.validate_python(check)
+    else:
+        if outcome.column is not None:
+            raise RuntimeError("A dry-run's data check follows no column.")
+        DATA_CHECK_VIEW.validate_python(check)
     logger.info(
         "assistant_data_check",
         outcome="checked",
@@ -841,6 +999,21 @@ def changed_nodes(graph: PipelineGraph, diff: SemanticDiff) -> list[str]:
     """
     seeds = diff_seed_nodes(graph, diff, preamble_widens=False)
     return [node for node in _canonical_order(graph) if node in seeds]
+
+
+def inspection_nodes(graph: PipelineGraph, flat: PipelineGraph, node: str) -> list[str]:
+    """*node* and its top-level ancestors as a preview of the active scenario runs them.
+
+    In the flattened lineage's topological order (ties broken by node id). A
+    node inside a submodel occurrence runs flattened under a runtime id and
+    is never one of them.
+    """
+    top_level = {candidate.id for candidate in graph.nodes}
+    if node not in top_level:
+        raise ValueError(f"Node {node!r} is not a top-level node of the saved graph.")
+    with runtime_project_root_scope(graph.source_file):
+        lineage = _lineage(flat, node, graph.active_source)
+    return [node_id for node_id in _canonical_order(lineage) if node_id in top_level]
 
 
 def _canonical_order(graph: PipelineGraph) -> list[str]:
@@ -986,17 +1159,27 @@ def _not_checked_record(node_id: str, exclusion: _Exclusion) -> dict[str, object
 
 @dataclass(frozen=True, slots=True)
 class DataCheckJob:
-    """What crosses into the worker: the candidate graph and the nodes to check.
+    """What crosses into the worker: the graph checked and the nodes to check.
 
-    *candidates* are the changed nodes no server-side reason excludes, in
-    the changed nodes' order.
+    *candidate_graph* is a plan's candidate graph, or the saved graph an
+    inspection reads. *candidates* are the nodes no server-side reason
+    excludes, in the order records and findings rank (the changed nodes'
+    order, or an inspected lineage's topological order); *cap_order* holds
+    the same nodes in the order the node cap keeps them. *column* is the
+    column an inspection follows, or ``None``.
     """
 
     candidate_graph: PipelineGraph
     scenario: str
     candidates: tuple[str, ...]
+    cap_order: tuple[str, ...]
+    column: str | None
     submitted: tuple[Mapping[str, object], ...]
     policy: EgressPolicy
+
+    def __post_init__(self) -> None:
+        if sorted(self.cap_order) != sorted(self.candidates):
+            raise ValueError("A data check's cap order must hold exactly its candidates.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1016,6 +1199,8 @@ class WorkerOutcome:
     records: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     findings: tuple[Mapping[str, object], ...] = ()
     binding: BindingRead | None = None
+    column: Mapping[str, object] | None = None
+    """An inspection's followed column: its lineage of null counts."""
 
 
 def _run_data_check_job(job: DataCheckJob, budget: IsolatedExecutionBudget) -> WorkerOutcome:
@@ -1039,8 +1224,8 @@ def measure_candidate(job: DataCheckJob, execution_context: ExecutionContext) ->
         lineages = {node: _lineage(flat, node, job.scenario) for node in job.candidates}
         unreadable = _unreadable_inputs(flat, lineages.values())
         records: dict[str, Mapping[str, object]] = {}
-        checked: list[str] = []
-        for node_id in job.candidates:
+        kept: set[str] = set()
+        for node_id in job.cap_order:
             blocking = next(
                 (
                     input_id
@@ -1051,22 +1236,24 @@ def measure_candidate(job: DataCheckJob, execution_context: ExecutionContext) ->
             )
             if blocking is not None:
                 records[node_id] = _not_checked_record(node_id, _input_not_prepared(blocking))
-            elif len(checked) >= DATA_CHECK_MAX_NODES:
+            elif len(kept) >= DATA_CHECK_MAX_NODES:
                 records[node_id] = _not_checked_record(node_id, _Exclusion("node_cap"))
             else:
-                checked.append(node_id)
+                kept.add(node_id)
+        checked = [node_id for node_id in job.candidates if node_id in kept]
         if not checked:
             return WorkerOutcome("no_checkable_nodes", records)
         lineage = _union_lineage(flat, [lineages[node_id] for node_id in checked])
         start = read_binding(lineage, job.scenario)
-        queries = _DataCheckQueries(_ROW_BOUND)
+        queries = _DataCheckQueries(_ROW_BOUND, column=job.column)
         walked = _measure(lineage, checked, job.scenario, queries, execution_context)
         end = read_binding(lineage, job.scenario)
         if end.source_generation != start.source_generation:
             return WorkerOutcome("source_changed", binding=end)
         judged = _Judgement(job, flat, queries, walked, checked)
         records.update(judged.records)
-        return WorkerOutcome("checked", records, judged.findings(), end)
+        column = None if job.column is None else judged.column_lineage(job.column)
+        return WorkerOutcome("checked", records, judged.findings(), end, column)
 
 
 def _cache_store() -> SourceCacheStore:
@@ -1311,22 +1498,31 @@ class _DataCheckQueries:
     """The one-row aggregates of each checked node, built from structured configuration.
 
     Banding, rating and join measurements read only the node's inputs; output
-    ports are counted by rows and the nulls of new and changed columns. Each
-    query's layout is remembered per node for reading its row back.
+    ports are counted by rows and the nulls of new and changed columns. With
+    a followed *column*, every frame that carries it also counts its nulls.
+    Each query's layout is remembered per node for reading its row back.
     """
 
-    def __init__(self, row_bound: int) -> None:
+    def __init__(self, row_bound: int, *, column: str | None) -> None:
         self.row_bound = row_bound
+        self.column = column
         self.plans: dict[str, _NodePlan] = {}
 
     def plan(self, node_id: str) -> _NodePlan:
         return self.plans.setdefault(node_id, _NodePlan())
 
+    def _column_nulls(self, schema: pl.Schema) -> list[pl.Expr]:
+        """The followed column's null count, when this frame carries the column."""
+        if self.column is None or self.column not in schema:
+            return []
+        return [pl.col(self.column).null_count().alias(_COLUMN_NULLS)]
+
     # -- inputs ---------------------------------------------------------
 
     def input_query(self, node: GraphNode, measured: MeasuredInput) -> pl.LazyFrame:
+        schema = measured.frame.collect_schema()
         counted = measured.frame.select(
-            pl.len().alias("rows"), *_every_column(measured.frame.collect_schema())
+            pl.len().alias("rows"), *_every_column(schema), *self._column_nulls(schema)
         )
         try:
             parts = self._structured_parts(node, measured)
@@ -1521,6 +1717,7 @@ class _DataCheckQueries:
                 pl.col(name).null_count().alias(f"nulls_{position}")
                 for position, (name, _kind) in enumerate(measured)
             ],
+            *self._column_nulls(schema),
         )
 
 
@@ -1607,17 +1804,29 @@ class _Judgement:
                 raise RuntimeError(f"The measuring walk did not visit checked node {node_id!r}.")
             self.records[node_id] = self._record(measurement)
 
+    @staticmethod
+    def _reported(node_id: str) -> str:
+        """The node a failure is reported against: a runtime node's occurrence.
+
+        A submodel occurrence runs flattened, and the nodes inside it stay
+        behind the submodel boundary, so the occurrence is named instead.
+        """
+        while (instance := runtime_instance_id(node_id)) is not None:
+            node_id = instance
+        return node_id
+
     def _error(self, failure: AttributedFailure) -> dict[str, Any]:
-        record = self.errors.get(failure.node_id)
+        node = self._reported(failure.node_id)
+        record = self.errors.get(node)
         if record is None:
             record = execution_error_record(
                 failure.error,
                 graph=self.job.candidate_graph,
-                node=failure.node_id,
+                node=node,
                 submitted=self.job.submitted,
                 policy=self.job.policy,
             )
-            self.errors[failure.node_id] = record
+            self.errors[node] = record
         return record
 
     def _record(self, measurement: NodeMeasurement) -> Mapping[str, Any]:
@@ -1628,7 +1837,7 @@ class _Judgement:
             return {
                 "node": node_id,
                 "status": "upstream_failed",
-                "failed_node": failure.node_id,
+                "failed_node": self._reported(failure.node_id),
                 "at_or_upstream": failure.at_or_upstream,
             }
         detail = _NodeDetail.read(
@@ -1667,20 +1876,59 @@ class _Judgement:
         for node_id, detail in self.details.items():
             for sequence, finding in enumerate(self._node_findings(node_id, detail)):
                 ranked.append(_ranked(finding, position[node_id], sequence))
+        reported: set[str] = set()
         for root, failure in self.attributed.items():
-            if self._replaced(root, failure):
+            node = self._reported(root)
+            if node in reported or self._replaced(root, failure):
                 continue
+            reported.add(node)
             finding = {
                 "kind": "execution_failed",
                 "severity": "advisory",
-                "node": root,
+                "node": node,
                 "truncated": False,
                 "error": self._error(failure),
                 "at_or_upstream": failure.at_or_upstream,
             }
-            ranked.append(_ranked(finding, self._failure_position(root, position), 0))
+            ranked.append(_ranked(finding, self._failure_position(node, position), 0))
         ranked.sort(key=lambda item: item[:4])
         return tuple(finding for *_rank, finding in ranked)
+
+    def column_lineage(self, column: str) -> dict[str, Any]:
+        """*column*'s null counts along the measured nodes, and where its nulls start.
+
+        One entry per measured output port that carries the column, in the
+        checked nodes' order. ``input_nulls`` sums the column's nulls over the
+        node's inputs that carry it (``None`` when none does); the first node
+        whose port holds more nulls than that is where they appear or grow.
+        """
+        lineage: list[dict[str, Any]] = []
+        first: str | None = None
+        for node_id in self.checked:
+            measurement = self.measurements[node_id]
+            if measurement.status != "measured":
+                continue
+            carrying = [row for _name, row in measurement.inputs if _COLUMN_NULLS in row]
+            input_nulls = sum(_count(row, _COLUMN_NULLS) for row in carrying) if carrying else None
+            inputs_truncated = any(_count(row, "rows") >= self.bound for row in carrying)
+            for port, row in measurement.outputs:
+                if _COLUMN_NULLS not in row:
+                    continue
+                rows, nulls = _count(row, "rows"), _count(row, _COLUMN_NULLS)
+                lineage.append(
+                    {
+                        "node": node_id,
+                        "port": port,
+                        "rows": rows,
+                        "nulls": nulls,
+                        "share": _share(nulls, rows),
+                        "input_nulls": input_nulls,
+                        "truncated": rows >= self.bound or inputs_truncated,
+                    }
+                )
+                if first is None and nulls > (input_nulls or 0):
+                    first = node_id
+        return {"name": column, "first_null_node": first, "lineage": lineage}
 
     def _failure_position(self, root: str, position: Mapping[str, int]) -> int:
         """A failure ranks with the first checked node that reports it."""
@@ -2147,7 +2395,44 @@ def fit_data_check(result: DataCheckResult, room_bytes: int) -> dict[str, Any]:
     when even the empty view does not fit, or ``{}`` when not even the note
     does. The stored check is never reduced: this works on a copy.
     """
-    allocation = min(DATA_CHECK_DETAIL_BYTES, room_bytes - _key_bytes("data_check"))
+    return _fit(
+        result,
+        room_bytes,
+        key="data_check",
+        omitted_key="data_check_omitted",
+        note=DATA_CHECK_OMITTED_NOTE,
+        adapter=DATA_CHECK_VIEW,
+    )
+
+
+def fit_node_data_check(result: DataCheckResult, room_bytes: int) -> dict[str, Any]:
+    """``inspect_node``'s data part as it may reach the model with *room_bytes* to spare.
+
+    *room_bytes* is the tool-result limit less the size of the fully
+    attributed ``inspect_node`` result without the part. Returns ``{"data":
+    <view>}`` reduced as a dry-run's check is (its ``column`` never reduced),
+    ``{"data_omitted": <note>}``, or ``{}``.
+    """
+    return _fit(
+        result,
+        room_bytes,
+        key="data",
+        omitted_key="data_omitted",
+        note=NODE_DATA_OMITTED_NOTE,
+        adapter=NODE_DATA_VIEW,
+    )
+
+
+def _fit(
+    result: DataCheckResult,
+    room_bytes: int,
+    *,
+    key: str,
+    omitted_key: str,
+    note: str,
+    adapter: TypeAdapter[Any],
+) -> dict[str, Any]:
+    allocation = min(DATA_CHECK_DETAIL_BYTES, room_bytes - _key_bytes(key))
     view: dict[str, Any] = deepcopy(dict(result.check))
     checked = view["outcome"] == "checked"
     if checked:
@@ -2163,10 +2448,10 @@ def fit_data_check(result: DataCheckResult, room_bytes: int) -> dict[str, Any]:
         view["findings"].pop()
         view["findings_omitted"] += 1
     if _json_size(view) <= allocation:
-        DATA_CHECK_VIEW.validate_python(view)
-        return {"data_check": view}
-    if _json_size(DATA_CHECK_OMITTED_NOTE) + _key_bytes("data_check_omitted") <= room_bytes:
-        return {"data_check_omitted": DATA_CHECK_OMITTED_NOTE}
+        adapter.validate_python(view)
+        return {key: view}
+    if _json_size(note) + _key_bytes(omitted_key) <= room_bytes:
+        return {omitted_key: note}
     return {}
 
 

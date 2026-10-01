@@ -60,8 +60,8 @@ Out of scope:
   deliberately absent from the v1 tool surface (see Design rationale). The one execution
   the assistant may cause beyond schema resolution is the bounded, value-free data check
   that `[assistant.egress].allow_aggregate_statistics` authorises, specified under
-  [Data checks](#data-checks); it is
-  not a tool the model calls.
+  [Data checks](#data-checks): it runs after a dry-run, and over a saved node's lineage
+  when the model asks for `inspect_node`'s data part. It is not a tool of its own.
 - Submodel creation, dissolution, or edits *inside* a submodel's own graph — v1 tools
   operate on the top-level flat graph only and reject submodel-internal targets loudly.
 - Provider-side model behaviour, pricing, or availability.
@@ -491,8 +491,8 @@ it:
   brief), edges,
   a preamble-presence/digest summary (never executable source), and which
   singletons exist.
-- `inspect_node` — one top-level node, in the parts the call names: `schema`, `config`
-  and `profile`, with `schema` alone when the call names none. Each part is checked
+- `inspect_node` — one top-level node, in the parts the call names: `schema`, `config`,
+  `profile` and `data`, with `schema` alone when the call names none. Each part is checked
   against the egress policy on its own, so a part the policy denies is listed under
   `withheld` with the `[assistant.egress]` setting it needs while the permitted parts
   still answer; a call whose every part is denied is refused with
@@ -537,7 +537,7 @@ it:
     small-cardinality columns, bounds for numerics and dates, and never a row. A column
     with many distinct values has its values withheld, reducing unnecessary disclosure;
     low-cardinality strings can still be returned, including repeated personal data. This
-    is the only part that reads project data, and the project's explicit
+    is the only part that returns values from project data, and the project's explicit
     `allow_row_samples` policy is therefore the authorization boundary. The call's
     optional `input` profiles one of the node's inputs, named as the schema part reports
     it, instead of the node's own output; `input` without the `profile` part is an
@@ -548,6 +548,15 @@ it:
     and requires a profile before a literal comparison only when `allow_row_samples`
     permits one; otherwise it tells the model to ask the analyst which values to match,
     beginning `NEEDS_INPUT:`.
+  - `data` (`allow_aggregate_statistics`) — why the saved node fails or why one of its
+    columns is null, answered in one call: the [data check](#data-checks) run over the
+    node's lineage in the saved graph under the active scenario, returning each lineage
+    node's status with its recorded error and step or line, each failure once at the node
+    it is attributed to, rows in and out, join matches and findings, and, with the call's
+    optional `column`, that column's null count at each lineage node whose output has it
+    and the first node where its nulls appear or grow. Counts only, never a value.
+    `column` without the `data` part is an invalid request. See
+    [A saved node's data](#a-saved-nodes-data).
 - `find_data` — the data files visible to the project, and, when the call names a file
   `path`, that file's column names and dtypes too, with no preview collection or row
   values. Listing names visible subdirectories of one project directory and accepts a
@@ -882,7 +891,9 @@ model; the error names the nodes the plan adds, by id and ref.
   capability and graph-plan authority does not authorise execution. It runs automatically
   after an eligible dry-run rather than on request, because a model that must choose to
   call a check often will not, and it never replaces the evaluation's independent
-  execution goldens.
+  execution goldens. The same check also answers a question about the saved graph, as
+  `inspect_node`'s data part: "why is this column null" was otherwise answered by
+  guessing from code, and a part of the read tool keeps the tool count at eight.
 - **Catalog completeness is guarded like the node registry.** The catalog mirrors
   `validate_registry_complete()`'s pattern: a check at import time fails loudly if any
   `NodeType` lacks a catalog entry, so a new node type cannot ship invisible to the assistant.
@@ -1103,7 +1114,8 @@ explicit runtime authorization instead of reusing graph-plan authority. The
 data check is such a definition: its authorization is
 `[assistant.egress].allow_aggregate_statistics`, never the plan's authority,
 and [its contract](#data-checks) bounds it to
-measuring the lineage of the plan's changed nodes, value-free, issuing no sink,
+measuring the lineage of the plan's changed nodes, or of one saved node the
+model inspects, value-free, issuing no sink,
 external-write, training, optimisation, deployment or Git operation of its own.
 It does not contain the project and model-authored Python that lineage runs,
 which has the process's privileges as in any preview. Its findings sit outside
@@ -1291,7 +1303,8 @@ widen these class ceilings.
 
 **Aggregate statistics.** `allow_aggregate_statistics` authorises the
 [data check](#data-checks): executing the lineage of
-the nodes a plan changes over project data in the preview worker, and sending
+the nodes a plan changes, or of the saved node `inspect_node`'s data part names,
+over project data in the preview worker, and sending
 the model value-free counts and shares derived from those rows (rows in and
 out, null shares, per-rule banding counts, rating misses, join matches), never
 a row value, a quantile of values or a distinct value. Its minimum sensitivity
@@ -1318,10 +1331,13 @@ in one line, when it is true:
 
 and when it is false:
 
-`- Aggregate data statistics: not permitted; no data check runs, so a dry-run proves schemas, never that the data came out right`
+`- Aggregate data statistics: not permitted; no data check runs and `inspect_node` withholds its data part, so a dry-run proves schemas, never that the data came out right`
 
 The flag, under a ceiling above `public`, is what lets a dry-run run its data
-check; nothing else reads it.
+check and `inspect_node` answer its data part; nothing else reads it. A data part
+the policy forbids is listed under `withheld` with its `required_policy`
+(`allow_aggregate_statistics = true`, or `max_sensitivity = "internal"` under
+`public`), as every withheld part is.
 
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
@@ -1415,8 +1431,10 @@ closes that gap. After an eligible dry-run, when the egress policy permits it,
 it measures the nodes the plan changes in the plan's candidate graph and returns
 value-free advisory and informational findings, which the dry-run result
 carries to the model and the change card shows the analyst. It runs without
-being asked: `inspect_node`'s profile part, which reads one frame of the saved
-graph under `allow_row_samples`, remains the only data read the model requests.
+being asked. The same check answers `inspect_node`'s data part for a node of the
+saved graph, measuring that node's lineage instead of a plan's changed nodes
+([A saved node's data](#a-saved-nodes-data)); every rule below holds for it
+except where that section says otherwise.
 The [low-level specification](low-level.md#data-checks) names the seams,
 constants, the closed result shapes and a worked example.
 
@@ -1618,7 +1636,10 @@ measure; so a failing node that two checked nodes both read is reported once.
 Two checked nodes that reach one failing ancestor through different unmeasured
 producers each attribute the failure to their own producer, both marked
 `at_or_upstream`, because the check cannot prove the two failures share a cause
-without measuring the ancestors it does not measure. The error record
+without measuring the ancestors it does not measure. A failure attributed to a
+node inside a submodel occurrence, which runs flattened, is reported against the
+occurrence, the node the model can name; the nodes inside it stay behind the
+submodel boundary. The error record
 maps exception classes as follows: a Polars error, an exception raised from node
 or step code, or a preamble failure is `authored_code`, reported as every
 execution error is (type, step or line, disclosable columns, text only under
@@ -1817,19 +1838,25 @@ ran found nothing. A persisted change record keeps its check, and a record saved
 before data checks existed has none.
 
 **What the model is told.** One paragraph of the system prompt says that a
-dry-run can return `data_check`; that when an advisory finding shows the plan is
-wrong (every row in a band's default, a join that matches nothing, a filter that
-empties its input) the model corrects the plan and dry-runs again before
-applying; that informational findings need no action; and that neither a clean
-check nor one that did not run proves the plan correct. The dry-run tool's
-description names `data_check`.
+dry-run can return `data_check`; that when an advisory finding shows a choice of
+the model's is wrong (every row in a band's default, a join that matches nothing,
+a filter that empties its input) the model corrects the plan and dry-runs again
+before applying, while values the analyst stated, such as rating keys that match
+no rows, stay as stated and the model tells the analyst what the check found;
+that informational findings need no action; that neither a clean check nor one
+that did not run proves the plan correct; and that `inspect_node`'s data part,
+with `column`, answers why a saved node fails or why a column is null in one
+call, before reading code. The dry-run tool's description names `data_check`, and
+`inspect_node`'s description states the data part's rules.
 
-**What it is not.** The check is not an assistant execution tool: it runs
-automatically and the model cannot invoke, widen or target it, so the system
-prompt's statement that no execution tool is available stays true and running or
-materialising a pipeline stays unavailable. It contains project or
-model-authored Python no more than a preview does. No finding blocks an apply,
-the saved graph is never checked, the evaluation does not score findings, and a
+**What it is not.** The check is not an assistant execution tool: a dry-run's
+check runs automatically and the model cannot invoke, widen or target it, and
+`inspect_node`'s data part measures counts over one saved node's lineage and
+nothing more, so the system prompt's statement that no execution tool is
+available stays true and running or materialising a pipeline stays unavailable.
+It contains project or model-authored Python no more than a preview does. No
+finding blocks an apply, a saved node is checked only when the model asks for its
+data part, the evaluation does not score findings, and a
 data check never replaces the evaluation's independent execution goldens. It
 checks no inactive scenario, no lineage through an opaque Load File or a
 non-local model or optimiser artifact, and no join inside code or a step list,
@@ -1846,6 +1873,70 @@ there is no default. A check that cannot run, an ineligible node and a failing
 node are reasons and statuses in the result, never dry-run errors, and the
 dry-run's plan and response are the same whatever the check reports. Findings
 are never shown for a graph whose digest or scenario differs from theirs.
+
+### A saved node's data
+
+`inspect_node`'s data part runs the same check over the saved graph, so that
+"why is `total_incurred` null for some quotes?" or "why does this node fail?" is
+answered from one call rather than by guessing from code. Every rule above holds
+for it, with these differences.
+
+**What it measures.** The saved graph is parsed, with the call's project
+revision, under the save lock; the check then runs after the lock is released,
+as a dry-run's does. It executes the inspected node's lineage under the saved
+graph's active scenario, flattened and pruned at Source Switches as above. The
+nodes it would check are the lineage's top-level nodes: the inspected node and
+its ancestors, never a node inside a submodel occurrence. Each is given the
+eligibility reasons above in their precedence, and the node cap keeps the 8
+eligible nodes nearest the inspected node (in reverse topological order) rather
+than the first 8, because the question is about that node. A failure further
+upstream is then reported `at_or_upstream` against the producer the nearest
+measured nodes read, and nulls that arrive from beyond them show as their inputs'
+nulls. The node records list every top-level node of the lineage in topological
+order, ties broken by node id, and findings rank by that order.
+
+**One error for one cause.** Because the measured nodes run in topological
+order, a failure is attributed once, to the first measured node that raises it,
+which carries the error record (its class, type, step or line, the columns the
+policy discloses, and its text only under `allow_row_samples`); every measured
+node downstream of it is `upstream_failed` naming it, and the findings hold one
+`execution_failed` for it, however many downstream nodes the failure stops. A
+preview of each node on its own would report the same failure again at each of
+them.
+
+**A column's nulls.** The call's optional `column` names a column to follow.
+Each measured input frame and output port that carries it also counts its nulls,
+and the result adds `column`: the column's `name`; `lineage`, one entry per
+measured output port that carries the column, in node order, each with its
+`node`, `port`, `rows`, `nulls`, `share`, `input_nulls` (its nulls summed over
+the node's measured inputs that carry the column, or `null` when none does: a
+source, or the node that creates the column) and `truncated` (when that port or
+an input it is compared with reached the row bound); and `first_null_node`, the
+node of the first entry whose nulls exceed its `input_nulls` (a `null` counting
+as 0), where the column's nulls appear or grow, or `null` when no measured node
+adds any. An Edge Join on the path reports its matched base rows in its node
+record, so a join that leaves rows unmatched is visible beside the nulls it
+creates. A column no measured frame carries gives an empty `lineage`, never an
+error. Counts only: no value of the column is read into the result. Without
+`column` the result's `column` is `null`.
+
+**Permission, waiting and stopping.** The part answers only when the policy
+permits data checks; otherwise it is withheld with its `required_policy` while
+the other parts answer. The call waits for the check, which keeps its 30-second
+deadline, admission, worker priority and refusals, and a check that cannot run
+is the part's answer, `not_run` with one reason, never a tool error
+(`not_schema_tier` never applies). An inspection and a dry-run's check share the
+session's one check at a time, so a newer one supersedes an older one. While it
+runs the call's activity row reads "Checking the data". Stopping the turn stops
+the check, which reports `cancelled`, and that result is the turn's record of the
+call.
+
+**Size and keeping.** The part is reduced like a dry-run's check, in the room
+the rest of the `inspect_node` result leaves under the tool-result limit; the
+`column` object is never reduced. When even the empty part does not fit, the
+result carries the note "The data part's result did not fit in this tool result;
+ask for the data part on its own." under `data_omitted`. Nothing is kept: the
+result is not stored, has no plan hash and reaches no change card.
 
 ## Provider qualification
 

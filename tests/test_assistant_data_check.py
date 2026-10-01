@@ -4,7 +4,9 @@ Most tests run the worker half in-process (``measure_candidate``) under an
 admitted context, which is the code the interactive worker runs; the tests
 that prove the worker boundary (busy slots, pre-emption, deadlines, cold
 generations hashed only in the worker) run in process mode, which the suite's
-autouse fixture otherwise replaces with thread mode.
+autouse fixture otherwise replaces with thread mode. The last section proves
+``inspect_node``'s data part (ASSIST-42), the same check over a saved node's
+lineage.
 """
 
 from __future__ import annotations
@@ -29,13 +31,17 @@ from haute.assistant import _data_check as data_check
 from haute.assistant._config import EgressPolicy
 from haute.assistant._data_check import (
     DATA_CHECK_VIEW,
+    NODE_DATA_OMITTED_NOTE,
+    NODE_DATA_VIEW,
     DataCheckBinding,
     DataCheckJob,
     DataCheckRequest,
     DataCheckResult,
+    NodeDataCheckRequest,
     changed_nodes,
     data_check_visibility,
     fit_data_check,
+    fit_node_data_check,
     measure_candidate,
     run_data_check,
     server_exclusions,
@@ -137,10 +143,13 @@ def _diff(*added: str) -> SemanticDiff:
 def _job(graph: PipelineGraph, *changed: str, policy: EgressPolicy = _POLICY) -> DataCheckJob:
     order = changed_nodes(graph, _diff(*changed))
     exclusions = server_exclusions(graph, flatten_graph(graph), order)
+    candidates = tuple(node for node in order if exclusions[node] is None)
     return DataCheckJob(
         candidate_graph=graph,
         scenario=graph.active_source,
-        candidates=tuple(node for node in order if exclusions[node] is None),
+        candidates=candidates,
+        cap_order=candidates,
+        column=None,
         submitted=(),
         policy=policy,
     )
@@ -164,7 +173,9 @@ def _findings(outcome: data_check.WorkerOutcome, kind: str) -> list[Mapping[str,
 def _view(outcome: data_check.WorkerOutcome, graph: PipelineGraph, *changed: str) -> dict[str, Any]:
     """The model-facing object the server builds from a worker outcome."""
     binding = DataCheckBinding("plan", "digest", graph.active_source)
-    result = data_check._checked_result(binding, outcome, list(changed), {}, time.monotonic())
+    result = data_check._checked_result(
+        binding, outcome, list(changed), {}, time.monotonic(), inspection=False
+    )
     DATA_CHECK_VIEW.validate_python(result.check)
     return dict(result.check)
 
@@ -762,7 +773,9 @@ def _stored(
     from haute._cache import graph_fingerprint
 
     binding = DataCheckBinding("plan", graph_fingerprint(flatten_graph(graph)), graph.active_source)
-    return data_check._checked_result(binding, outcome, list(changed), {}, time.monotonic())
+    return data_check._checked_result(
+        binding, outcome, list(changed), {}, time.monotonic(), inspection=False
+    )
 
 
 @pytest.mark.parametrize(("artifact", "replaced"), [("model.cbm", 0), ("model.ebm", 1)])
@@ -1843,3 +1856,343 @@ def _one_token_usage() -> Any:
     from haute.assistant._providers import ProviderUsage
 
     return ProviderUsage(input_tokens=1, output_tokens=1)
+
+
+# ---------------------------------------------------------------------------
+# A saved node's data: inspect_node's data part (ASSIST-42)
+# ---------------------------------------------------------------------------
+
+
+def _inspect(graph: PipelineGraph, node: str, column: str | None = None) -> dict[str, Any]:
+    """An inspection's worker half, in-process, as the object the data part returns."""
+    scope = data_check._inspection_scope(
+        NodeDataCheckRequest(graph, node, column, _POLICY), flatten_graph(graph)
+    )
+    exclusions = server_exclusions(graph, scope.flat, scope.nodes)
+    job = data_check._scope_job(scope, exclusions)
+    assert job is not None
+    context = create_admitted_execution_context(
+        operation="assistant_data_check", profile=ExecutionProfile.PREVIEW_EAGER
+    )
+    try:
+        outcome = measure_candidate(job, context)
+    finally:
+        context.release_admission()
+    excluded = {
+        node_id: data_check._not_checked_record(node_id, exclusion)
+        for node_id, exclusion in exclusions.items()
+        if exclusion is not None
+    }
+    result = data_check._checked_result(
+        DataCheckBinding(None, "digest", graph.active_source),
+        outcome,
+        scope.nodes,
+        excluded,
+        time.monotonic(),
+        inspection=True,
+    )
+    NODE_DATA_VIEW.validate_python(result.check)
+    return dict(result.check)
+
+
+def _record(view: Mapping[str, Any], node: str) -> Mapping[str, Any]:
+    return next(record for record in view["nodes"] if record["node"] == node)
+
+
+# A stepped Transform whose free-code step casts text to a number, which fails on rows.
+_FAILING_STEPS = {
+    "steps": [
+        {"id": "start", "kind": "source", "input": "quotes"},
+        {
+            "id": "logic",
+            "kind": "free_code",
+            "code": "# Read the region as a number\n"
+            "df = df.with_columns(pl.col('region').cast(pl.Int64))",
+        },
+    ]
+}
+
+
+def test_an_inspection_reports_repeated_downstream_failures_once_at_their_cause(
+    project: Path,
+) -> None:
+    """Three nodes below a failing step would each fail with it in a preview; the
+    inspection reports one error, with its step, at the node that raised it."""
+    graph = _graph(
+        project,
+        [
+            _parquet("quotes"),
+            _node("as_number", "polars", _FAILING_STEPS),
+            _code("regions_only", "df = as_number.select('region')"),
+            _code("doubled", "df = regions_only.with_columns(twice=pl.col('region') * 2)"),
+            _code("final", "df = doubled"),
+        ],
+        [
+            _edge("quotes", "as_number"),
+            _edge("as_number", "regions_only"),
+            _edge("regions_only", "doubled"),
+            _edge("doubled", "final"),
+        ],
+    )
+
+    view = _inspect(graph, "final")
+
+    assert [record["node"] for record in view["nodes"]] == [
+        "quotes",
+        "as_number",
+        "regions_only",
+        "doubled",
+        "final",
+    ]
+    assert _record(view, "quotes")["status"] == "checked"
+    failed = _record(view, "as_number")
+    assert failed["status"] == "failed"
+    assert failed["inputs"] == [{"input": "quotes", "rows": 10, "truncated": False}]
+    assert failed["error"]["class"] == "authored_code"
+    assert failed["error"]["step"] == {"id": "logic", "number": 2}
+    assert failed["error"]["text"] is None and failed["error"]["withheld"]
+    for node in ("regions_only", "doubled", "final"):
+        assert _record(view, node) == {
+            "node": node,
+            "status": "upstream_failed",
+            "failed_node": "as_number",
+            "at_or_upstream": False,
+        }
+    assert [(finding["kind"], finding["node"]) for finding in view["findings"]] == [
+        ("execution_failed", "as_number")
+    ]
+    assert view["column"] is None
+
+
+def _loaded_graph(project: Path) -> PipelineGraph:
+    """Quotes left-joined to a region table that lacks one of their four regions."""
+    return _graph(
+        project,
+        [
+            _parquet("quotes"),
+            _parquet("regions"),
+            _node("with_regions", "edgeJoin", {"how": "left", "on": "region", "validate": "m:1"}),
+            _code(
+                "loaded",
+                "df = with_regions.with_columns(loaded=pl.col('premium') * pl.col('loading'))",
+            ),
+        ],
+        [
+            _edge("quotes", "with_regions", role="base"),
+            _edge("regions", "with_regions", role="join"),
+            _edge("with_regions", "loaded"),
+        ],
+    )
+
+
+def test_an_inspection_follows_a_columns_nulls_to_the_join_that_makes_them(
+    project: Path,
+) -> None:
+    graph = _loaded_graph(project)
+
+    view = _inspect(graph, "loaded", "loading")
+
+    assert [record["node"] for record in view["nodes"]] == [
+        "quotes",
+        "regions",
+        "with_regions",
+        "loaded",
+    ]
+    assert view["column"] == {
+        "name": "loading",
+        "first_null_node": "with_regions",
+        "lineage": [
+            {
+                "node": "regions",
+                "port": None,
+                "rows": 3,
+                "nulls": 0,
+                "share": 0.0,
+                "input_nulls": None,
+                "truncated": False,
+            },
+            {
+                "node": "with_regions",
+                "port": None,
+                "rows": 10,
+                "nulls": 3,
+                "share": 0.3,
+                "input_nulls": 0,
+                "truncated": False,
+            },
+            {
+                "node": "loaded",
+                "port": None,
+                "rows": 10,
+                "nulls": 3,
+                "share": 0.3,
+                "input_nulls": 3,
+                "truncated": False,
+            },
+        ],
+    }
+    joined = _record(view, "with_regions")
+    assert (joined["join"]["base_rows"], joined["join"]["matched_base_rows"]) == (10, 7)
+    # `loading` arrives unchanged from regions: only `column` counts it at the join.
+    assert joined["outputs"][0]["columns"] == []
+    # A column no measured frame carries is an empty lineage, never an error.
+    assert _inspect(graph, "loaded", "nowhere")["column"] == {
+        "name": "nowhere",
+        "first_null_node": None,
+        "lineage": [],
+    }
+
+
+def test_an_inspection_keeps_the_eight_nodes_nearest_the_inspected_node(project: Path) -> None:
+    """The lineage's first nodes fall outside the cap; a failure there is reported
+    once, at or upstream of the producer the nearest checked node reads."""
+    chain = [f"n{index}" for index in range(1, 10)]
+    nodes = [_parquet("quotes"), _node("n1", "polars", _FAILING_STEPS)]
+    edges = [_edge("quotes", "n1")]
+    for previous, name in zip(chain, chain[1:], strict=False):
+        nodes.append(_code(name, f"df = {previous}"))
+        edges.append(_edge(previous, name))
+
+    view = _inspect(_graph(project, nodes, edges), "n9")
+
+    assert [record["node"] for record in view["nodes"]] == ["quotes", *chain]
+    for node in ("quotes", "n1"):
+        assert (_record(view, node)["status"], _record(view, node)["reason"]) == (
+            "not_checked",
+            "node_cap",
+        )
+    for node in chain[1:]:
+        assert _record(view, node) == {
+            "node": node,
+            "status": "upstream_failed",
+            "failed_node": "n1",
+            "at_or_upstream": True,
+        }
+    [failure] = view["findings"]
+    assert (failure["kind"], failure["node"], failure["at_or_upstream"]) == (
+        "execution_failed",
+        "n1",
+        True,
+    )
+
+
+def test_a_failure_inside_a_submodel_occurrence_is_reported_against_the_occurrence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The occurrence runs flattened, but its runtime node ids stay behind the
+    submodel boundary: the failure names the occurrence the model can name."""
+    import shutil
+
+    from haute.routes._helpers import parse_pipeline_to_graph
+
+    copy = tmp_path / "p"
+    shutil.copytree(
+        Path(__file__).parent / "assistant_eval" / "projects" / "submodel_pricing", copy
+    )
+    module = copy / "modules" / "vehicle_factors.py"
+    module.write_bytes(
+        module.read_bytes().replace(b'pl.col("vehicle_year")', b'pl.col("vehicle_yr")')
+    )
+    monkeypatch.chdir(copy)
+    set_project_root(copy)
+    graph = parse_pipeline_to_graph(copy / "pipeline.py")
+
+    view = _inspect(graph, "premium")
+
+    assert [record["node"] for record in view["nodes"]] == ["policies", "premium"]
+    premium = _record(view, "premium")
+    assert (premium["status"], premium["failed_node"]) == ("upstream_failed", "vehicle_factors")
+    [failure] = view["findings"]
+    assert (failure["kind"], failure["node"]) == ("execution_failed", "vehicle_factors")
+    assert "submodel_runtime" not in json.dumps(view)
+
+
+def test_an_inspection_too_large_for_its_room_is_reduced_then_omitted(project: Path) -> None:
+    view = _inspect(_loaded_graph(project), "loaded", "loading")
+    result = DataCheckResult(view, DataCheckBinding(None, "digest", "live"))
+
+    assert fit_node_data_check(result, 256_000) == {"data": view}
+    reduced = fit_node_data_check(result, _compact_size(view))["data"]
+    assert reduced["detail_truncated"] is True
+    assert reduced["column"] == view["column"]
+    NODE_DATA_VIEW.validate_python(reduced)
+    # Room for exactly the note, its key and that key's separators.
+    room = _compact_size(NODE_DATA_OMITTED_NOTE) + _compact_size("data_omitted") + 2
+    assert fit_node_data_check(result, room) == {"data_omitted": NODE_DATA_OMITTED_NOTE}
+    assert fit_node_data_check(result, room - 1) == {}
+    # A dry-run's view refuses an inspection's column.
+    with pytest.raises(ValueError, match="column"):
+        DATA_CHECK_VIEW.validate_python(view)
+
+
+async def test_the_data_part_answers_in_thread_mode_and_is_withheld_without_the_flag(
+    pipeline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A check that cannot run is the part's answer, never an error; `column` needs
+    the part; and a policy without the flag withholds the part like any other."""
+    from haute.assistant._tools import build_tool_executor
+
+    execute = build_tool_executor("main.py", session_id="s")
+    answered = dict(
+        await execute("inspect_node", {"node": "quotes", "parts": ["data"], "column": "premium"})
+    )
+    assert "error" not in answered, answered
+    assert (answered["data"]["outcome"], answered["data"]["reason"]) == (
+        "not_run",
+        "worker_mode_unsupported",
+    )
+    NODE_DATA_VIEW.validate_python(answered["data"])
+    assert len(str(answered["project_revision"])) == 64
+    assert "withheld" not in answered
+
+    refused = dict(await execute("inspect_node", {"node": "quotes", "column": "premium"}))
+    assert refused["error"]["code"] == "invalid_request"
+    assert refused["error"]["validation_reason"] == "column_without_data"
+
+    _policy_without_checks(monkeypatch)
+    withheld = dict(
+        await build_tool_executor("main.py", session_id="s")(
+            "inspect_node", {"node": "quotes", "parts": ["schema", "data"]}
+        )
+    )
+    assert "schema" in withheld and "data" not in withheld
+    assert withheld["withheld"] == [
+        {"part": "data", "required_policy": "allow_aggregate_statistics = true"}
+    ]
+
+
+async def test_a_stopped_turn_stops_an_inspection_whose_check_runs_outside_the_save_lock(
+    pipeline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute.assistant import _tools
+
+    started = asyncio.Event()
+    lock_held: list[bool] = []
+
+    async def until_stopped(
+        request: NodeDataCheckRequest,
+        *,
+        session_id: str,
+        cancellation: ExecutionCancellationToken,
+    ) -> DataCheckResult:
+        assert (request.node, session_id) == ("quotes", "stop")
+        lock_held.append(_tools.save_lock.locked())
+        started.set()
+        while not cancellation.cancelled:
+            await asyncio.sleep(0.01)
+        return data_check._not_run(
+            DataCheckBinding(None, "digest", "live"), "cancelled", time.monotonic()
+        )
+
+    monkeypatch.setattr(data_check, "run_node_data_check", until_stopped)
+    call = asyncio.ensure_future(
+        _tools.build_tool_executor("main.py", session_id="stop")(
+            "inspect_node", {"node": "quotes", "parts": ["data"]}
+        )
+    )
+    await asyncio.wait_for(started.wait(), 30)
+    call.cancel()
+    result = await call
+
+    assert lock_held == [False]
+    assert (result["data"]["outcome"], result["data"]["reason"]) == ("not_run", "cancelled")

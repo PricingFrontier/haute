@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from haute._graph_utils import (
     _edge_id,
@@ -44,11 +44,28 @@ class ResolvedSubmodelInstance:
     definition: SubmodelDefinition
 
 
+_RUNTIME_PREFIX = "submodel_runtime/"
+
+
 def qualified_runtime_node_id(instance_id: str, local_node_id: str) -> str:
     """Return a deterministic, delimiter-safe runtime id for one cloned child."""
     if not instance_id or not local_node_id:
         raise ValueError("Runtime submodel ids require non-empty instance and local ids.")
-    return f"submodel_runtime/{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+    return f"{_RUNTIME_PREFIX}{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+
+
+def runtime_instance_id(node_id: str) -> str | None:
+    """The occurrence a :func:`qualified_runtime_node_id` id was cloned for, or ``None``.
+
+    ``None`` for an id that is not a runtime id. The occurrence's own id may
+    itself be a runtime id, for a submodel nested inside another.
+    """
+    if not node_id.startswith(_RUNTIME_PREFIX):
+        return None
+    instance, separator, local = node_id[len(_RUNTIME_PREFIX) :].partition("/")
+    if not instance or not separator or not local:
+        raise ValueError(f"Malformed runtime submodel node id: {node_id!r}")
+    return unquote(instance)
 
 
 def _definition_registry(graph: PipelineGraph) -> dict[str, SubmodelDefinition]:

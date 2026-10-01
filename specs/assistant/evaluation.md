@@ -40,6 +40,10 @@ generated code included. All data is synthetic.
 - `broken_pricing` is seeded broken: its stepped `rating_features` Transform
   reads a column its source does not have, so recovery cases start from a
   failing node.
+- `claims_join` joins a claims table onto ten quotes on `policy_id` with a
+  left `m:1` Edge Join (`quote_claims`) and divides `total_incurred` by
+  `premium` in a stepped `loss_ratio` Transform. Three quotes' policies have no
+  claims row, so their `total_incurred` is null from the join on.
 - `ordinary_pricing`, `join_parquets`, `showcase_parquets`, `stepped_pricing`
   and `polars_corpus` are small projects for focused cases; `polars_corpus`'s
   data files are the Polars step corpus's normal synthetic inputs from
@@ -150,7 +154,10 @@ on numbers, dates and categories, multi-table rating, joins with exact port
 roles, quote responses and batch outputs, Model Training and Model Scoring
 setup, optimiser setup, adjacent edits around a submodel occurrence, a new
 scenario on the Source Switch, Explore pivots, recovery of a seeded broken node,
-read-only questions, delegated choices ("pick sensible bands"), multi-turn
+read-only questions (among them two answered from one `inspect_node` data call:
+`claims_null_diagnosis`, why a column is null for some rows, and
+`broken_bands_diagnosis`, why a node has no data when the node it reads fails),
+delegated choices ("pick sensible bands"), multi-turn
 refinement, multi-stage builds saved as several plans in one turn, focused
 clarification, prompt injection, and refused requests to execute pipelines,
 write externally or edit inside a submodel, including a turn that saves the
@@ -241,7 +248,14 @@ the config of a node whose saved list or map it restates; that every
 restatement of a saved list or map follows that turn's config read of the node,
 or is the `metadata_only` rewrite the dry-run refuses as `config_withheld`; and
 that the first provider request's turn context lists the columns the feature
-transform's first dry-run reads. Replay proves the tools, validators and
+transform's first dry-run reads. The two data-question trajectories
+(`claims_null_diagnosis` and `broken_bands_diagnosis`) also replay in process
+mode, with the preview workers started in the case's copy, and the test asserts
+that their one `inspect_node` data call measured what their answers state: the
+join where `total_incurred` first goes null and how many quotes it matches, and
+one error at `rating_features`' failing step with `vehicle_bands`
+`upstream_failed`. Their `efficiency` limits allow one tool call and two
+provider round trips. Replay proves the tools, validators and
 contracts; it cannot show that a prompt change helps a model.
 
 **Tier 1: live runs, on demand.** `scripts/run_assistant_self_test.py` is the
@@ -370,11 +384,13 @@ executes nothing until the turn has ended. Under the `project` profile's
 `allow_aggregate_statistics`, the [data check](high-level.md#data-checks) a
 dry-run may run executes inside the assistant under test, never as the
 harness's evidence: its findings are part of what the model sees, and they
-never stand in for a golden. A live case starts the interactive preview workers
-inside its project copy, as the server does, so its checks run; a transcript
-records each dry-run's `data_check` with the rest of the tool result. Replay
-runs in thread mode, where a check reports `worker_mode_unsupported`, which
-changes no recorded status.
+never stand in for a golden; the same holds for the check `inspect_node`'s data
+part runs over a saved node's lineage. A live case starts the interactive
+preview workers inside its project copy, as the server does, so its checks run;
+a transcript records each dry-run's `data_check` and each data part with the
+rest of the tool result. Replay runs in thread mode, where a check reports
+`worker_mode_unsupported`, which changes no recorded status; the two
+data-question trajectories are also replayed in process mode (see Tiers).
 It then parses the saved pipeline, flattens its submodel occurrences as a
 preview does, and runs each golden node through the production preview engine
 up to that node only, under the golden's scenario,

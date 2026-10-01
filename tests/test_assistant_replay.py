@@ -17,7 +17,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 import pytest
@@ -149,6 +149,93 @@ async def test_replay(trajectory, work_dir: Path) -> None:
     assert (result.evidence, result.provider, result.model) == ("replay", "replay", trajectory.id)
     assert _get_project_root() == root_before
     assert Path.cwd() == cwd_before
+
+
+def _expect_null_traced_to_the_join(data: dict[str, Any]) -> None:
+    """`total_incurred` first goes null at the left join, which matches 7 of 10 quotes."""
+
+    assert data["column"]["first_null_node"] == "quote_claims"
+    assert [
+        (entry["node"], entry["nulls"], entry["input_nulls"]) for entry in data["column"]["lineage"]
+    ] == [("claims", 0, None), ("quote_claims", 3, 0), ("loss_ratio", 3, 3)]
+    join = next(node for node in data["nodes"] if node["node"] == "quote_claims")["join"]
+    assert (join["base_rows"], join["matched_base_rows"]) == (10, 7)
+
+
+def _expect_one_error_at_the_failing_step(data: dict[str, Any]) -> None:
+    """rating_features fails in its free-code step; vehicle_bands stops on it, silently."""
+
+    statuses = {node["node"]: node for node in data["nodes"]}
+    assert [node["node"] for node in data["nodes"]] == [
+        "quotes",
+        "rating_features",
+        "vehicle_bands",
+    ]
+    failed = statuses["rating_features"]
+    assert (failed["status"], failed["error"]["step"]) == ("failed", {"id": "logic", "number": 2})
+    assert failed["error"]["columns"] == ["vehicle_year"]
+    assert statuses["vehicle_bands"] == {
+        "node": "vehicle_bands",
+        "status": "upstream_failed",
+        "failed_node": "rating_features",
+        "at_or_upstream": False,
+    }
+    assert [(finding["kind"], finding["node"]) for finding in data["findings"]] == [
+        ("execution_failed", "rating_features")
+    ]
+    assert data["column"] is None
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(TURN_TIMEOUT)
+@pytest.mark.parametrize(
+    ("trajectory_id", "expect"),
+    [
+        ("claims_null_diagnosis", _expect_null_traced_to_the_join),
+        ("broken_bands_diagnosis", _expect_one_error_at_the_failing_step),
+    ],
+)
+async def test_a_data_question_is_answered_from_one_check_in_the_preview_worker(
+    trajectory_id: str,
+    expect: Any,
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In process mode, as the server runs, the trajectory's one `inspect_node`
+    data call measures the saved lineage in the preview worker, and its result
+    says what the trajectory's answer says. Thread-mode replay (``test_replay``)
+    only reaches `worker_mode_unsupported`."""
+
+    from haute.assistant._data_check import NODE_DATA_VIEW
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    # This exercises the worker route, not native memory-cap availability.
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    trajectory = next(item for item in TRAJECTORIES if item.id == trajectory_id)
+    provider = TrajectoryProvider(trajectory)
+    transcript: list[dict[str, object]] = []
+
+    result = await run_self_test_case(
+        CASES[trajectory.case],
+        projects_root=PROJECTS_ROOT,
+        config=replay_config(trajectory),
+        work_dir=work_dir,
+        provider_factory=lambda _config: provider,
+        evidence="replay",
+        transcript=transcript,
+    )
+    provider.verify(result.tool_diagnostics)
+
+    assert result.reasons == ()
+    [entry] = transcript
+    events = cast(list[dict[str, Any]], entry["events"])
+    [call] = [event for event in events if "tool" in event]
+    assert call["tool"] == "inspect_node"
+    data = call["result"]["data"]
+    NODE_DATA_VIEW.validate_python(data)
+    assert data["outcome"] == "checked", data
+    expect(data)
 
 
 async def test_a_tool_result_with_another_status_names_the_turn_and_round(

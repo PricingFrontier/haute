@@ -423,8 +423,9 @@ def render_egress_policy(egress: EgressPolicy) -> str:
                 "- Aggregate data statistics: permitted (value-free counts and shares, "
                 "never row values)"
                 if egress.allow_aggregate_statistics
-                else "- Aggregate data statistics: not permitted; no data check runs, so a "
-                "dry-run proves schemas, never that the data came out right"
+                else "- Aggregate data statistics: not permitted; no data check runs and "
+                "`inspect_node` withholds its data part, so a dry-run proves schemas, never "
+                "that the data came out right"
             ),
             _COLUMN_VALUES_PROFILED if egress.allow_row_samples else _COLUMN_VALUES_ASKED,
         )

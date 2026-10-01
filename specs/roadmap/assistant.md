@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-42 | Planned | P2 | One call answers why a saved node fails or why a column is null. |
 | ASSIST-43 | Planned | P2 | Evaluation scores data findings as an extra layer and measures recovery from them. |
 | ASSIST-44 | Deferred | P3 | Near-certain data bugs block apply unless explicitly accepted. |
 | ASSIST-50 | Deferred | P3 | The model can write structured steps with formula text. |
@@ -85,22 +84,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-42 — Inspect a saved node's data
-**Why:** "Why is `total_incurred` null for some quotes?" can only be answered
-by guessing from code.
-
-**Plan:** Expose the same check for the saved graph: per-node status with the
-recorded error and step line, upstream failures collapsed to the node that
-caused them, a column's null share along its lineage, and join matches on the
-path.
-
-**Acceptance:** A replayed null-diagnosis request is answered from one call;
-repeated downstream errors collapse to one attributed error.
-
-**Dependencies:** `ASSIST-41`, `ASSIST-35`.
-
-**Evidence:** `src/haute/_graph_walker.py`; `src/haute/trace.py`.
 
 ### ASSIST-43 — Data findings in evaluation
 **Why:** Recovery from pipelines that run but are wrong is the loop analysts

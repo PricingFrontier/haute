@@ -1971,12 +1971,18 @@ class TestDatabricksProvider:
         parts = {
             "type": "array",
             "description": inspect["properties"]["parts"]["description"],
-            "items": {"type": "string", "enum": ["schema", "config", "profile"]},
+            "items": {"type": "string", "enum": ["schema", "config", "profile", "data"]},
         }
         source = {"type": "string", "description": inspect["properties"]["input"]["description"]}
+        column = {"type": "string", "description": inspect["properties"]["column"]["description"]}
         assert _strict_tool_schema(inspect, "anthropic") == {
             "type": "object",
-            "properties": {"node": {"type": "string"}, "parts": parts, "input": source},
+            "properties": {
+                "node": {"type": "string"},
+                "parts": parts,
+                "input": source,
+                "column": column,
+            },
             "required": ["node"],
             "additionalProperties": False,
         }
@@ -1986,8 +1992,9 @@ class TestDatabricksProvider:
                 "node": {"type": "string"},
                 "parts": {**parts, "type": ["array", "null"]},
                 "input": {**source, "type": ["string", "null"]},
+                "column": {**column, "type": ["string", "null"]},
             },
-            "required": ["node", "parts", "input"],
+            "required": ["node", "parts", "input", "column"],
             "additionalProperties": False,
         }
 

@@ -934,6 +934,8 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "schema",
             "config",
             "profile",
+            "data",
+            "data_omitted",
             "withheld",
             "project_revision",
         ),
@@ -1024,8 +1026,9 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         ["code", "message"],
     )
     optional_success_fields = {
-        # Each part answers only when the call asked for it and the policy permits it.
-        "inspect_node": {"schema", "config", "profile", "withheld"},
+        # Each part answers only when the call asked for it and the policy permits it;
+        # a data part that does not fit the result is replaced by its omission note.
+        "inspect_node": {"schema", "config", "profile", "data", "data_omitted", "withheld"},
         # A file's schema, and the revision its evidence enters, only for a `path`.
         "find_data": {"schema", "project_revision"},
         # The build-plan item the change was recorded against, only for an apply naming one.
@@ -1150,7 +1153,7 @@ MUTATING_OPERATION_IDS = frozenset({"apply_graph_plan"})
 #: The one operation that changes session state, the build plan, and nothing in the project.
 SESSION_OPERATION_IDS = frozenset({"update_build_plan"})
 #: The parts `inspect_node` can return, in the order it answers them.
-INSPECT_NODE_PARTS = ("schema", "config", "profile")
+INSPECT_NODE_PARTS = ("schema", "config", "profile", "data")
 #: Ids one `read_reference` call may name.
 MAX_REFERENCE_IDS = 12
 #: A build-plan item id as `update_build_plan` and `apply_graph_plan` take it.
@@ -1161,9 +1164,13 @@ _BUILD_PLAN_ITEM_ID: dict[str, object] = {
 #: Each operation's egress class: the most sensitive project material it can send.
 _OPERATION_EGRESS = {
     "get_pipeline": "internal-project-metadata",
-    # Per part: schema, config, profile. The profile is the one data-reading
-    # capability, so its class is distinct and a policy review can see it plainly.
-    "inspect_node": "internal-schema-only, restricted-redacted, restricted-value-profile",
+    # Per part: schema, config, profile, data. The profile is the one part that
+    # returns values from data, so its class is distinct and a policy review can see
+    # it plainly; the data part runs the node's lineage and returns counts only.
+    "inspect_node": (
+        "internal-schema-only, restricted-redacted, restricted-value-profile, "
+        "internal-aggregate-statistics"
+    ),
     "find_data": "internal-schema-only",
     "read_reference": "none",
     "get_project_knowledge": "policy-filtered-project-content",
@@ -1192,8 +1199,15 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "categories - a 'fault' or 'status' column may hold Y/N, true/false, or a "
             "description, and the schema alone cannot tell you which. A profile returns no "
             "rows: a value appears only as a distinct level, and a high-cardinality column "
-            "is withheld. A part the egress policy does not permit is listed under "
-            "`withheld` with the setting it needs."
+            'is withheld. "data": why the node fails or why a column is null, in one call: '
+            "the node's lineage runs over the project's data under the active scenario (the "
+            "call waits up to 30 seconds) and returns value-free counts: each lineage node's "
+            "status, a failure reported once at the node that raised it with its error type "
+            "and step or line while the nodes it stops are `upstream_failed`, rows in and out, "
+            "Edge Join matches and findings; with `column`, that column's null count at each "
+            "node whose output has it and `first_null_node`, where its nulls appear or grow. "
+            'A check that cannot run returns `outcome` "not_run" with its reason. A part the '
+            "egress policy does not permit is listed under `withheld` with the setting it needs."
         ),
         "find_data": (
             "List the safe installed-format data files in one project directory, "
@@ -1258,6 +1272,13 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
                         "Profile this input of the node instead of the node's own "
                         "output, named exactly as the schema part reports it under "
                         "'inputs'. Only with the \"profile\" part."
+                    ),
+                },
+                "column": {
+                    "type": "string",
+                    "description": (
+                        "A column whose null count the data part follows along the node's "
+                        'lineage. Only with the "data" part.'
                     ),
                 },
             },
