@@ -883,6 +883,21 @@ def _snapshot_source_signature(
         return None
 
 
+def _snapshot_source_file(graph: PipelineGraph, config: Mapping[str, object]) -> Path | None:
+    """The file :func:`_snapshot_source_signature` hashes (``None`` when none).
+
+    Called only for an input whose generation pointer resolved, whose cache
+    identity already validated and anchored this configuration.
+    """
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import signed_source_file
+
+    return signed_source_file(
+        config,
+        base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+    )
+
+
 def mlflow_backend_signature(config: Mapping[str, object]) -> object:
     """Secret-free identity of the backend an MLflow-sourced node reads from.
 
@@ -1079,17 +1094,25 @@ def dataframe_graph_input_identity(
 def runtime_input_signed_paths(graph: PipelineGraph) -> tuple[Path, ...]:
     """The resolved local files :func:`dataframe_graph_input_identity` signs for every node.
 
-    Paths only, read from configuration: listing them touches no file's
-    content. The preamble's imported utility modules, which the identity
-    signs through the preamble fingerprint, are not listed.
+    Each node's signed paths, and for a snapshot-backed input the original
+    source file its source signature hashes beside the generation pointer,
+    listed only while it exists: a source that is gone is signed as missing,
+    not as a file. Read from configuration plus that existence check, so
+    listing them touches no file's content. The preamble's imported utility
+    modules, which the identity signs through the preamble fingerprint, are
+    not listed.
     """
     canonical = canonical_dataframe_execution_graph(graph)
-    paths = {
-        path.resolve()
-        for node in canonical.nodes
-        if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
-        for path in _runtime_file_signature_paths(canonical, node).values()
-    }
+    paths: set[Path] = set()
+    for node in canonical.nodes:
+        if node.data.nodeType not in _RUNTIME_INPUT_NODE_TYPES:
+            continue
+        signed = _runtime_file_signature_paths(canonical, node)
+        paths.update(path.resolve() for path in signed.values())
+        if "snapshot_pointer" in signed:
+            source = _snapshot_source_file(canonical, node.data.config)
+            if source is not None:
+                paths.add(source.resolve())
     return tuple(sorted(paths, key=str))
 
 

@@ -195,23 +195,44 @@ def source_cache_identity(
     return SourceCacheIdentity(provider=provider, descriptor=descriptor)
 
 
-def source_signature(
-    config: Mapping[str, Any],
-    *,
-    base_dir: str | Path | None = None,
-) -> str | None:
-    """Return a verified local-file signature when the provider has one."""
+def _local_source_path(config: Mapping[str, Any], base_dir: str | Path | None) -> Path | None:
+    """The local file a ``file`` provider reads, or ``None`` for any other provider."""
     validated = validate_data_input_config(config)
     # Lakehouse locators are tables/directories whose freshness needs a
     # provider version token. Treating a directory as a missing file made an
     # unchanged string falsely report "fresh" forever.
     if validated["inputType"] != "file":
         return None
-    anchored = _resolved_config_path(validated, base_dir)
-    path = Path(str(anchored["path"]))
+    return Path(str(_resolved_config_path(validated, base_dir)["path"]))
+
+
+def source_signature(
+    config: Mapping[str, Any],
+    *,
+    base_dir: str | Path | None = None,
+) -> str | None:
+    """Return a verified local-file signature when the provider has one."""
+    path = _local_source_path(config, base_dir)
+    if path is None:
+        return None
     if not path.is_file():
         return "missing"
     return file_signature(path).source_signature
+
+
+def signed_source_file(
+    config: Mapping[str, Any],
+    *,
+    base_dir: str | Path | None = None,
+) -> Path | None:
+    """The file whose content :func:`source_signature` signs, or ``None`` when it signs none.
+
+    A provider without a local signature, and a source file that is gone
+    (signed as ``"missing"``), have none. Configuration and one existence
+    check: the file's content is never read.
+    """
+    path = _local_source_path(config, base_dir)
+    return path if path is not None and path.is_file() else None
 
 
 @dataclass(slots=True)

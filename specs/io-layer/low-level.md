@@ -77,6 +77,11 @@ relationship is recorded in `specs/ownership.toml`.
   one, otherwise a stat trusted only for a file modified at least two seconds earlier,
   because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
   that window would otherwise keep a stale signature (git's racy-index rule).
+  `signed_source_file` names the file `source_signature` hashes: a `file` provider's
+  anchored path while it exists, otherwise `None` (another provider, or a source that is
+  gone and signs as `missing`), from configuration and one existence check, never the
+  content. The assistant's data check records that file's freshness token
+  ([assistant](../assistant/low-level.md)).
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 

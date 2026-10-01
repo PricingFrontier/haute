@@ -857,6 +857,45 @@ def test_findings_are_hidden_for_another_graph_or_scenario_and_labelled_after_a_
     assert data_check_visibility(stored, graph) == "earlier_inputs"
 
 
+def test_findings_are_labelled_after_a_snapshot_backed_source_changes_without_a_refresh(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source generation signs a snapshot-backed input's original file beside
+    its generation pointer, so an edited CSV labels the findings while the pointer
+    stays put, and the comparison hashes nothing; a source gone at the check
+    leaves them current until it returns."""
+    from haute._json_shred import _source_proof
+
+    def no_hash(path: Path) -> str:
+        raise AssertionError(f"the freshness comparison hashed {path}")
+
+    source = project / "data" / "edited.csv"
+    graph = _graph(
+        project,
+        [_csv_input(project, "edited"), _code("reads", "df = edited")],
+        [_edge("edited", "reads")],
+    )
+    stored = _stored(graph, _measure(graph, "reads"), "reads")
+    tokens = stored.binding.freshness_tokens
+    [pointer] = [path for path in tokens if path.endswith("current.json")]
+    assert str(source.resolve()) in tokens
+    assert data_check_visibility(stored, graph) == "current"
+
+    source.write_text("region,premium\neast,9.0\n", encoding="utf-8")
+    with monkeypatch.context() as server:
+        server.setattr(_source_proof, "_hash_file", no_hash)
+        assert data_check._freshness_token(pointer) == tokens[pointer]
+        assert data_check_visibility(stored, graph) == "earlier_inputs"
+
+    source.unlink()
+    gone = _stored(graph, _measure(graph, "reads"), "reads")
+    assert gone.check["nodes"][0]["status"] == "checked"
+    assert str(source.resolve()) not in gone.binding.freshness_tokens
+    assert data_check_visibility(gone, graph) == "current"
+    source.write_text("region,premium\neast,9.0\n", encoding="utf-8")
+    assert data_check_visibility(gone, graph) == "earlier_inputs"
+
+
 # ---------------------------------------------------------------------------
 # Outcomes that never run, and the size of the model-facing view
 # ---------------------------------------------------------------------------

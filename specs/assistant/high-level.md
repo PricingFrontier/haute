@@ -1727,23 +1727,28 @@ preamble fingerprint that execution caches already sign, together with the
 identity of each local Model Scoring node's cached model file and an EBM's
 cached contract, which that identity does not sign; `freshness_tokens`, the
 native revision or stat token of every file the source generation signs, which
-reading never touches a file's content; and `identity_components`, the parts of
-that identity that are not file contents and cost only configuration reads:
-the set of signed file paths and, for each run-sourced Model Scoring node, the
-resolved MLflow backend identity, which also selects its model cache directory.
+reading never touches a file's content, a snapshot-backed input's original
+source file included beside its generation pointer while that file exists (a
+source that is gone is signed as missing, not as a file), so a source edited
+without refreshing its snapshot labels the findings; and
+`identity_components`, the parts of that identity that are not file contents
+and cost only configuration reads and that existence check: the set of signed
+file paths and, for each run-sourced Model Scoring node, the resolved MLflow
+backend identity, which also selects its model cache directory.
 All three are read in the worker at the start of the check and again at its
 end; when the two source generations differ the check is `not_run` with
 `source_changed`, so no finding describes inputs or a model that changed under
 it. A later freshness comparison re-derives the identity components from
-configuration and re-observes the tokens, so it never hashes a file on the
-server.
+configuration (and whether each snapshot-backed source file exists) and
+re-observes the tokens, so it never hashes a file on the server.
 Findings are not plan facts: they are outside the plan hash, never computed or
 awaited under the save lock, and never recomputed or read by apply, so they
 never change what apply saves. A consumer shows findings only when both the
 graph digest and the scenario they record equal those of the graph it shows. A
 scenario mismatch hides them with a note naming the checked scenario, because
 they describe another branch; within the same scenario, a changed or missing
-freshness token (a refreshed input, a replaced model file or EBM contract) or a
+freshness token (a refreshed input, an edited or removed source file, a
+replaced model file or EBM contract) or a
 changed identity component (a destination moved to another tracking server or
 local folder while the old cached files stay untouched) keeps them visible,
 labelled as computed from earlier inputs. A change

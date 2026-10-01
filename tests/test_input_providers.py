@@ -18,6 +18,7 @@ from haute._input_providers import (
     build_input_snapshot,
     recording_schema_tiers,
     resolve_data_input,
+    signed_source_file,
     source_cache_identity,
     source_signature,
 )
@@ -568,6 +569,7 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
     }
 
     assert source_signature(config, base_dir=tmp_path) is None
+    assert signed_source_file(config, base_dir=tmp_path) is None
 
 
 def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
