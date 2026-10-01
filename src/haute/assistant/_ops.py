@@ -504,7 +504,22 @@ _NAME_LISTS = frozenset({"inputs", "selected_columns"})
 _NAME_KEYED_MAPS = frozenset({"input_scenario_map", "inputMapping", "column_renames"})
 
 
-def _withheld_entries_changed(
+@dataclass(frozen=True, slots=True)
+class ConfigVisibility:
+    """What the planning model has seen of saved node configuration this turn.
+
+    *withheld* says the session's egress policy withholds it, so the model
+    sees none. Otherwise *read* holds the nodes whose saved configuration it
+    has seen in the running turn: an ``inspect_node`` config part that returned
+    it, or a node an earlier apply of the turn added. An earlier turn's reads
+    do not count, because compaction drops their results from the history.
+    """
+
+    withheld: bool
+    read: frozenset[str] = frozenset()
+
+
+def _saved_entries_changed(
     node_type: NodeType, key: str, saved: object, written: object
 ) -> str | None:
     """The saved entries of a non-empty list or map *written* would change or drop.
@@ -542,39 +557,58 @@ def _withheld_entries_changed(
     return None
 
 
-def _refuse_withheld_rewrite(
-    node: GraphNode, written: Mapping[str, Any], new_node_ids: Sequence[str]
-) -> None:
-    """Refuse an update that retypes a saved list or map the model cannot read.
+_EDIT_STEPS_FIX = (
+    "Change the steps with edit_steps, naming them by the ids the graph brief lists; the "
+    "steps you do not name stay as saved."
+)
 
-    Applies only while the session's egress policy withholds saved node
-    configuration and to a node this plan did not add: ``update_node``
-    replaces a key's whole value, so a rewrite of a list or map the model has
-    not read loses or corrupts the entries it does not restate.
+
+def _refuse_blind_rewrite(
+    node: GraphNode,
+    written: Mapping[str, Any],
+    new_node_ids: Sequence[str],
+    visibility: ConfigVisibility,
+) -> None:
+    """Refuse an update that retypes a saved list or map the model has not seen.
+
+    ``update_node`` replaces a key's whole value, so a rewrite of a list or map
+    the model has not read loses or corrupts the entries it does not restate.
+    A node this plan added holds only what the model wrote, and a node whose
+    configuration the running turn read (*visibility*) is known; any other
+    rewrite must keep every saved entry. Under a withholding policy the model
+    cannot read it at all and is pointed at the analyst; otherwise at reading
+    the node first.
     """
 
-    if node.id in new_node_ids:
+    if node.id in new_node_ids or (not visibility.withheld and node.id in visibility.read):
         return
     for key, value in written.items():
-        changed = _withheld_entries_changed(
-            node.data.nodeType, key, node.data.config.get(key), value
-        )
+        changed = _saved_entries_changed(node.data.nodeType, key, node.data.config.get(key), value)
         if changed is None:
             continue
-        fix = (
-            "Change the steps with edit_steps, naming them by the ids the graph brief "
-            "lists; the steps you do not name stay as saved."
-            if key == "steps"
-            else "Do not retype configuration you cannot read: ask the analyst for what "
-            "the change needs instead, in a reply line that starts with NEEDS_INPUT:."
-        )
+        where = {"node": node.id, "field": key}
+        if visibility.withheld:
+            raise AssistantOperationError(
+                "config_withheld",
+                f"The saved configuration of node {node.id!r} is withheld from you under this "
+                f"project's egress policy, so update_node cannot replace {key!r}: it would "
+                f"change or drop the {changed}, which you cannot read.",
+                where=where,
+                fix=_EDIT_STEPS_FIX
+                if key == "steps"
+                else "Do not retype configuration you cannot read: ask the analyst for what "
+                "the change needs instead, in a reply line that starts with NEEDS_INPUT:.",
+            )
         raise AssistantOperationError(
-            "config_withheld",
-            f"The saved configuration of node {node.id!r} is withheld from you under this "
-            f"project's egress policy, so update_node cannot replace {key!r}: it would "
-            f"change or drop the {changed}, which you cannot read.",
-            where={"node": node.id, "field": key},
-            fix=fix,
+            "config_unread",
+            f"update_node replaces {key!r} of node {node.id!r} whole, and you have not read "
+            f"that node's saved configuration in this turn: it would change or drop the "
+            f"{changed}.",
+            where=where,
+            fix=_EDIT_STEPS_FIX
+            if key == "steps"
+            else f'Read the node with inspect_node with parts ["config"], then resend the '
+            f"update with {key!r} keeping its existing entries beside your change.",
         )
 
 
@@ -584,13 +618,15 @@ def _apply_update_node(
     refs: Mapping[str, str],
     nested_ids: set[str],
     *,
-    withheld_from: Sequence[str] | None = None,
+    new_node_ids: Sequence[str],
+    visibility: ConfigVisibility | None,
 ) -> str:
     """Apply one update and return the id of the node it wrote.
 
-    *withheld_from*, when given, says the session's egress policy withholds
-    saved node configuration; it holds the ids of the nodes this plan added,
-    whose configuration the model wrote (see ``_refuse_withheld_rewrite``).
+    *new_node_ids* are the nodes this plan added. *visibility*, when given,
+    says what the planning model has seen of saved configuration, which
+    refuses a blind rewrite (see ``_refuse_blind_rewrite``); an apply that
+    replays a judged plan passes None.
     """
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="update target")
@@ -605,8 +641,8 @@ def _apply_update_node(
         removable_keys=set(node.data.config),
     )
     written = _resolve_output_rows(node.data.nodeType, op.config, refs, graph)
-    if withheld_from is not None:
-        _refuse_withheld_rewrite(node, written, withheld_from)
+    if visibility is not None:
+        _refuse_blind_rewrite(node, written, new_node_ids, visibility)
 
     config = dict(node.data.config)
     for key, value in written.items():
@@ -1292,7 +1328,7 @@ def _apply_ops_with_refs(
     ops: Sequence[GraphEditOp],
     positions: Sequence[int] | None = None,
     *,
-    config_withheld: bool = False,
+    config_visibility: ConfigVisibility | None = None,
 ) -> AppliedOps:
     """Apply a batch to a copy of *graph*.
 
@@ -1303,9 +1339,9 @@ def _apply_ops_with_refs(
     the working graph it was judged against. *positions*, when given, holds
     each operation's index in the batch the model sent, before its recipe
     operations expanded; every index a failure or ``writers`` reports is one.
-    *config_withheld* says the session's egress policy withholds saved node
-    configuration from the model, which refuses a blind rewrite of a saved list
-    or map (``_refuse_withheld_rewrite``).
+    *config_visibility*, given for a model's dry-run, says what the model has
+    seen of saved node configuration, which refuses a blind rewrite of a saved
+    list or map (``_refuse_blind_rewrite``).
     """
 
     def position(index: int) -> int:
@@ -1336,7 +1372,8 @@ def _apply_ops_with_refs(
                     op,
                     refs,
                     nested_ids,
-                    withheld_from=new_node_ids if config_withheld else None,
+                    new_node_ids=new_node_ids,
+                    visibility=config_visibility,
                 )
                 writers[written] = position(index)
             elif isinstance(op, EditStepsOp):
@@ -3023,18 +3060,20 @@ def prepare_graph_edit(
     postconditions: Sequence[Mapping[str, Any]] = (),
     *,
     positions: Sequence[int] | None = None,
-    config_withheld: bool = False,
+    config_visibility: ConfigVisibility | None = None,
 ) -> PreparedGraphEdit:
     """Parse, apply, and validate an edit once against one exact snapshot.
 
     *positions* holds each operation's index in the batch the model sent,
-    which every located failure reports. *config_withheld* refuses a blind
-    rewrite of saved configuration the model cannot read (see
+    which every located failure reports. *config_visibility* refuses a blind
+    rewrite of saved configuration the model has not seen (see
     ``_apply_ops_with_refs``).
     """
 
     ops = parse_ops(raw_ops, positions)
-    applied = _apply_ops_with_refs(snapshot.graph, ops, positions, config_withheld=config_withheld)
+    applied = _apply_ops_with_refs(
+        snapshot.graph, ops, positions, config_visibility=config_visibility
+    )
     result, refs = applied.graph, applied.refs
     diff = _semantic_diff(snapshot.graph, result, ops, applied)
     try:
@@ -3339,6 +3378,7 @@ __all__ = [
     "AddEdgeOp",
     "AddNodeOp",
     "AssistantOperationError",
+    "ConfigVisibility",
     "DeleteEdgeOp",
     "DeleteNodeOp",
     "GraphEditOp",

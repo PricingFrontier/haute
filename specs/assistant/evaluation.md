@@ -159,7 +159,10 @@ reachable through the assistant's tools, examples, recipes or prompt, and no
 case id is a teaching example's name. A request names every node the case's
 expectations name that does not exist yet (for example "a data input called
 region_loadings"), so an expectation never depends on a name the analyst did
-not give.
+not give. Likewise a `node_configs` subset holds only what the request states,
+never a value the engine supplies when the key is absent: `motor_online_optimiser`
+expects no `step_column` on its expander, whose blank step column runs as
+`scenario_index`.
 
 ## Reference trajectories
 
@@ -192,7 +195,8 @@ rewrites. And because `update_node` replaces each key it writes whole, a
 trajectory that restates a saved non-empty list or map (rating factors, rating
 tables, output mappings, a scenario map) first reads that node's config with
 `inspect_node`'s config part, in the same turn, as a model must: an earlier
-turn's tool results are compacted out of the history. The one exception is the
+turn's tool results are compacted out of the history; the dry-run itself refuses
+such a rewrite without that read as `config_unread`. The one exception is the
 `metadata_only` list edit, whose blind rewrite the dry-run refuses as
 `config_withheld` before the turn asks.
 The `smoke_step_edit` trajectory inserts its step with `edit_steps` after the

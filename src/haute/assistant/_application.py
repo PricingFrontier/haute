@@ -40,6 +40,7 @@ from haute.assistant._change_record import (
 )
 from haute.assistant._ops import (
     AssistantOperationError,
+    ConfigVisibility,
     GraphEditPlan,
     LocatedPlanError,
     PlanReceipt,
@@ -975,14 +976,14 @@ def build_verified_plan(
     validate_graph: GraphValidator,
     source_file: str,
     positions: Sequence[int] | None = None,
-    config_withheld: bool = False,
+    config_visibility: ConfigVisibility | None = None,
 ) -> VerifiedPlan:
     """Build one plan through the shared edit and save-verification pipeline.
 
     *positions* holds each operation's index in the batch the model sent;
-    *config_withheld* says the model cannot read saved node configuration, so
-    a blind rewrite of it is refused (a dry-run's check; an apply replays a
-    plan that passed it).
+    *config_visibility* says what the model has seen of saved node
+    configuration, so a blind rewrite of it is refused (a dry-run's check; an
+    apply replays a plan that passed it and passes None).
     """
 
     prepared = prepare_graph_edit(
@@ -990,7 +991,7 @@ def build_verified_plan(
         operations,
         postconditions,
         positions=positions,
-        config_withheld=config_withheld,
+        config_visibility=config_visibility,
     )
     try:
         _prove_written_configs_parse(
@@ -1132,7 +1133,7 @@ class PipelineApplicationService:
         summary: str,
         assumptions: Sequence[str] = (),
         positions: Sequence[int] | None = None,
-        config_withheld: bool = False,
+        config_visibility: ConfigVisibility | None = None,
     ) -> DryRunResult:
         """Validate and retain an exact no-write plan against saved state.
 
@@ -1140,8 +1141,9 @@ class PipelineApplicationService:
         for the change card the apply builds. *positions* holds each
         operation's index in the batch the model sent, before its recipe
         operations expanded, which every located failure reports.
-        *config_withheld* says the session's egress policy withholds saved
-        node configuration from the model, which refuses a blind rewrite of it.
+        *config_visibility* says what the model has seen of saved node
+        configuration, which refuses a blind rewrite of it; None checks no
+        rewrite, for a plan no model composed.
         """
 
         receipt = PlanReceipt(summary, tuple(assumptions))
@@ -1164,7 +1166,7 @@ class PipelineApplicationService:
             ),
             source_file=source_file,
             positions=positions,
-            config_withheld=config_withheld,
+            config_visibility=config_visibility,
         )
         self.plan_store.put(verified.plan, receipt)
         return DryRunResult(

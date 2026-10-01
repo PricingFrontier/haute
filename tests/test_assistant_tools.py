@@ -1084,12 +1084,6 @@ class TestSubmodelBoundaryValidation:
         monkeypatch.setattr(tools_module, "parse_pipeline_to_graph", lambda _path: graph)
         return graph
 
-    def test_submodel_placeholder_is_boundary_error(self, patched_parse, tmp_path):
-        from haute.assistant._tools import node_schema
-
-        result = node_schema("main.py", "submodel__sm1")
-        assert result["error"]["code"] == "submodel_boundary"
-
     def test_submodel_internal_child_is_boundary_error_never_resolved(
         self, patched_parse, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1113,18 +1107,109 @@ class TestSubmodelBoundaryValidation:
         result = node_schema("main.py", "nowhere")
         assert result["error"]["code"] == "unknown_node"
 
-    @pytest.mark.parametrize("node", ["inner_child", "submodel__sm1"])
-    def test_a_boundary_error_is_final_and_says_to_block(self, patched_parse, node: str):
+    def test_a_boundary_error_is_final_and_says_to_block(self, patched_parse):
         """Nothing the model corrects makes a submodel's nodes readable or editable,
         so the error is not retryable and says to report a blocker."""
 
         from haute.assistant._tools import _with_retryable, node_schema
 
-        error = _with_retryable(node_schema("main.py", node))["error"]
+        error = _with_retryable(node_schema("main.py", "inner_child"))["error"]
 
         assert (error["code"], error["retryable"]) == ("submodel_boundary", False)
         assert "cannot be read or edited by the assistant" in error["message"]
         assert "BLOCKED:" in error["fix"] and "editor" in error["fix"]
+
+
+@pytest.fixture()
+def submodel_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The evaluation's submodel project: `policies` feeds the `vehicle_factors`
+    occurrence's `vehicles` port, whose `factored` port feeds `premium`."""
+
+    import shutil
+    from collections import OrderedDict
+
+    from haute._sandbox import set_project_root
+    from haute.assistant import _tools
+
+    root = tmp_path / "s"
+    shutil.copytree(
+        Path(__file__).parent / "assistant_eval" / "projects" / "submodel_pricing", root
+    )
+    monkeypatch.chdir(root)
+    set_project_root(root)  # restored by the autouse _restore_project_root
+    monkeypatch.setattr(_tools, "_BRIEF_CACHE", OrderedDict())
+    _egress_toml(root, max_sensitivity="restricted")
+    return root
+
+
+_POLICY_COLUMNS = ["policy_id", "vehicle_year", "base_rate", "region"]
+
+
+class TestSubmodelOccurrenceSchema:
+    """A top-level submodel occurrence's columns are metadata the model may read,
+    named by its ports; its configuration, code and inner nodes stay off limits."""
+
+    async def test_the_schema_part_names_the_ports_and_what_the_submodel_adds(
+        self, submodel_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("pipeline.py")(
+            "inspect_node", {"node": "vehicle_factors", "parts": ["schema"]}
+        )
+
+        schema = result["schema"]
+        assert {port: [c["name"] for c in cols] for port, cols in schema["ports"].items()} == {
+            "factored": [*_POLICY_COLUMNS, "vehicle_age", "vehicle_factor"]
+        }
+        assert {name: [c["name"] for c in cols] for name, cols in schema["inputs"].items()} == {
+            "vehicles": _POLICY_COLUMNS
+        }
+
+    async def test_a_consumer_names_its_input_by_the_occurrence_port(self, submodel_project: Path):
+        from haute.assistant._tools import node_schema
+
+        schema = node_schema("pipeline.py", "premium")
+
+        assert list(schema["inputs"]) == ["factored"]
+
+    @pytest.mark.parametrize(
+        ("node", "parts", "schema_readable"),
+        [("vehicle_factors", ["config"], True), ("vehicle_age", ["schema"], False)],
+    )
+    async def test_its_config_and_inner_nodes_stay_off_limits(
+        self, submodel_project: Path, node: str, parts: list[str], schema_readable: bool
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("pipeline.py")(
+            "inspect_node", {"node": node, "parts": parts}
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("submodel_boundary", False)
+        assert "BLOCKED:" in error["fix"]
+        assert ('parts ["schema"]' in error["fix"]) is schema_readable
+
+    def test_the_brief_lists_the_occurrence_ports_and_the_consumer_input(
+        self, submodel_project: Path
+    ):
+        from haute.assistant._render import render_turn_context
+        from haute.assistant._tools import build_turn_context
+
+        policy = _policy(max_sensitivity="restricted", executable=False)
+        context = render_turn_context(build_turn_context("pipeline.py", policy))
+
+        assert (
+            '- input `vehicles` from `policies`: ["policy_id", "vehicle_year", "base_rate", '
+            '"region"]' in context
+        )
+        assert (
+            '- output port `factored`: ["policy_id", "vehicle_year", "base_rate", "region", '
+            '"vehicle_age", "vehicle_factor"]' in context
+        )
+        assert "- input `factored` from `vehicle_factors`: [" in context
+        assert "submodel_runtime" not in context and "not resolved" not in context
 
 
 # ---------------------------------------------------------------------------
@@ -1856,6 +1941,37 @@ class TestToolExecutorDispatch:
         # container is not something the model can see from the type alone.
         assert ("not a JSON-encoded string" in error["message"]) is (received == "string")
 
+    async def test_json_text_that_does_not_decode_is_located_at_its_error(self, project_root: Path):
+        """A model whose provider sends arrays as JSON text cannot send the value
+        itself; when its text does not decode, the error names the decoder's
+        message, the character and the text around it, so the retry can correct
+        that spot. Seen live: an unterminated string in a free-code step."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        code = '# Add a column\\ndf = df.with_columns(k=pl.col(\\"v\\") / 1000)'
+        ops = (
+            '[{"op": "update_node", "node": "quotes", "config": {"steps": [{"id": "logic", '
+            f'"kind": "free_code", "code": "{code}}}]}}}}, {{"op": "delete_node", "node": "x"}}]'
+        )
+        position = ops.index('op": "delete_node')
+
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits", {"summary": "Test plan.", "ops": ops}
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("invalid_request", True)
+        assert error["validation_path"] == "dry_run_graph_edits.ops"
+        assert error["validation_reason"] == "invalid_json_text"
+        assert error["message"].startswith(
+            "dry_run_graph_edits.ops is JSON text with an error at character "
+            f"{position} (Expecting ',' delimiter): "
+        )
+        assert '1000)}]}}, {"<<here>>op": "delete_node"' in error["message"]
+        assert "not a JSON-encoded string" not in error["message"]
+        assert "character" in error["fix"] and "escape" in error["fix"]
+
     async def test_wrong_type_spells_the_json_boolean_literals_without_the_value(
         self, project_root: Path
     ):
@@ -2527,7 +2643,7 @@ class TestStepsFirstAuthoring:
         ops = [{"op": "update_node", "node": node, "config": {**config, "steps": steps}}]
 
         plan = await dry_run_graph_edits(
-            "main.py", ops, summary="Test plan.", config_withheld=False
+            "main.py", ops, summary="Test plan.", config_visibility=None
         )
         assert "error" not in plan, plan
         applied = await apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
@@ -2557,7 +2673,7 @@ class TestStepsFirstAuthoring:
             "main.py",
             _august_ops("df = pl.concat([df, additional_drivers_claims])"),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
         assert "error" not in filled, filled
         assert "error" not in await apply_graph_plan(
@@ -2568,7 +2684,7 @@ class TestStepsFirstAuthoring:
             "main.py",
             [{"op": "rename_node", "node": "additional_drivers_claims", "new_name": "drivers"}],
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
         assert refused["error"]["code"] == "rename_has_consumers"
         assert refused["error"]["consumers"] == [
@@ -2579,7 +2695,7 @@ class TestStepsFirstAuthoring:
             "main.py",
             [{"op": "rename_node", "node": "proposer_claims", "new_name": "proposer"}],
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
         assert "error" not in plan, plan
         diff = _stored_plan(plan).diff
@@ -3575,7 +3691,7 @@ class TestExecutionErrorEgress:
             "main.py",
             _free_code_node("quotes", _RAISE_WITH_ROWS),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3591,7 +3707,7 @@ class TestExecutionErrorEgress:
             "main.py",
             _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()"),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3623,7 +3739,7 @@ class TestExecutionErrorEgress:
             "raise pl.exceptions.ComputeError(f\"column '{rows['quote_id'][0]}' is bad\")\n"
         )
         result = await dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", code), summary="Test plan.", config_withheld=False
+            "main.py", _free_code_node("quotes", code), summary="Test plan.", config_visibility=None
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3641,7 +3757,7 @@ class TestExecutionErrorEgress:
                 "quotes", '# Rename one column\ndf = df.rename({"missing_col": "renamed"})'
             ),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3717,7 +3833,7 @@ class TestFailureColumnNamesFollowTheEgressPolicy:
             "main.py",
             _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()"),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3811,7 +3927,7 @@ def consumer(typed: pl.LazyFrame) -> pl.LazyFrame:
             "main.py",
             _free_code_node("quotes", '# Rename one column\ndf = df.rename({"absent_col": "x"})'),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3906,7 +4022,7 @@ class TestPreambleFailureEgress:
             "main.py",
             _free_code_node("quotes", "df = df"),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert result["error"]["code"] == "preamble_failed", result
@@ -3959,7 +4075,7 @@ class TestPreambleFailureEgress:
             "main.py",
             _free_code_node("quotes", "df = df"),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
         schema = node_schema("main.py", "quotes")
 
@@ -3989,7 +4105,7 @@ class TestPreambleFailureEgress:
             "main.py",
             _free_code_node("quotes", _RAISE_WITH_ROWS),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
 
         assert "ValueError in step 2 ('logic') of node 'probe'" in result["error"]["message"]
@@ -4009,7 +4125,7 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
     assert [step["kind"] for step in steps] == ["source", "free_code"]
     ops = [{"op": "update_node", "node": "august_totals", "config": {"steps": steps}}]
     plan = await tools_module.dry_run_graph_edits(
-        "main.py", ops, summary="Test plan.", config_withheld=False
+        "main.py", ops, summary="Test plan.", config_visibility=None
     )
     applied = await tools_module.apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
     assert "error" not in applied, applied
@@ -4052,24 +4168,25 @@ def _policy(*, max_sensitivity: str, executable: bool):
 async def _apply_ops(ops: list[dict[str, object]]) -> None:
     from haute.assistant._tools import apply_graph_plan, dry_run_graph_edits
 
-    plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.", config_withheld=False)
+    plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.", config_visibility=None)
     assert "error" not in plan, plan
     applied = await apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
     assert "error" not in applied, applied
 
 
 @pytest.mark.parametrize(
-    ("max_sensitivity", "refused"), [("internal", True), ("restricted", False)]
+    ("max_sensitivity", "code"), [("internal", "config_withheld"), ("restricted", "config_unread")]
 )
-async def test_a_dry_run_refuses_retyping_steps_the_policy_withholds(
+async def test_a_dry_run_refuses_retyping_steps_the_turn_has_not_seen(
     steps_first_project: Path,
     monkeypatch: pytest.MonkeyPatch,
     max_sensitivity: str,
-    refused: bool,
+    code: str,
 ):
-    """Under a policy that withholds saved configuration, the executor's dry-run
-    refuses an update_node that would retype a saved step list, located and
-    retryable; a policy that lets the model read it does not."""
+    """The executor's dry-run refuses an update_node that would retype a saved
+    step list the model has not seen, located and retryable: as withheld under a
+    policy that withholds saved configuration, as unread under one that lets the
+    model read it but before this turn read the node."""
 
     import haute.assistant._tools as tools_module
 
@@ -4084,14 +4201,71 @@ async def test_a_dry_run_refuses_retyping_steps_the_policy_withholds(
     july = _august_ops(_AUGUST_ONLY.replace("2026-08", "2026-07"))
     result = await execute("dry_run_graph_edits", {"summary": "Retype the steps.", "ops": july})
 
-    if not refused:
-        assert "error" not in result, result
-        return
     error = result["error"]
-    assert (error["code"], error["retryable"]) == ("config_withheld", True)
+    assert (error["code"], error["retryable"]) == (code, True)
     assert error["where"] == {"op_index": 0, "node": "august_totals", "field": "steps"}
-    assert "saved steps entries 'logic'," in error["message"]
+    assert "saved steps entries 'logic'" in error["message"]
     assert "edit_steps" in error["fix"]
+
+
+async def test_a_readable_node_is_rewritten_only_after_this_turn_read_or_added_it(
+    steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Under a readable policy the turn that returned a node's config may retype
+    its lists, and so may the turn that added the node; a read in an earlier turn
+    does not count, because compaction drops its result."""
+
+    import haute.assistant._tools as tools_module
+
+    await _apply_ops(_august_ops(_AUGUST_ONLY))
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: _policy(max_sensitivity="restricted", executable=False),
+    )
+    july = {
+        "summary": "Retype the steps.",
+        "ops": _august_ops(_AUGUST_ONLY.replace("2026-08", "2026-07")),
+    }
+    earlier = tools_module.build_tool_executor("main.py")
+    read = await earlier("inspect_node", {"node": "august_totals", "parts": ["config"]})
+    assert "config" in read, read
+
+    execute = tools_module.build_tool_executor("main.py")
+    refused = await execute("dry_run_graph_edits", july)
+    assert refused["error"]["code"] == "config_unread"
+    assert "config" in await execute("inspect_node", {"node": "august_totals", "parts": ["config"]})
+    assert "error" not in await execute("dry_run_graph_edits", july)
+
+    steps = [
+        {"id": "start", "kind": "source", "input": "quotes"},
+        {"id": "logic", "kind": "free_code", "code": "# Keep all\ndf = df"},
+    ]
+    added = await execute(
+        "dry_run_graph_edits",
+        {
+            "summary": "Add a transform.",
+            "ops": [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "extra",
+                    "config": {"steps": steps},
+                },
+                {"op": "add_edge", "source": "quotes", "target": "extra"},
+            ],
+        },
+    )
+    assert "error" not in await execute("apply_graph_plan", {"plan_hash": added["plan_hash"]})
+    retyped = [steps[0], {**steps[1], "code": "# Keep two\ndf = df.head(2)"}]
+    result = await execute(
+        "dry_run_graph_edits",
+        {
+            "summary": "Retype the added steps.",
+            "ops": [{"op": "update_node", "node": "extra", "config": {"steps": retyped}}],
+        },
+    )
+    assert "error" not in result, result
 
 
 class TestStepAuthoringViews:
@@ -4709,19 +4883,14 @@ class TestBriefBoundaries:
 
         monkeypatch.setattr(_tools, "_BRIEF_CACHE", OrderedDict())
 
-    def test_a_submodel_has_no_columns_and_a_multi_frame_node_lists_each_port(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_a_multi_frame_node_lists_each_port(self, monkeypatch: pytest.MonkeyPatch):
         from haute.assistant import _tools
         from haute.assistant._render import Authoring, BriefFrame, BriefNode
 
-        monkeypatch.setattr(
-            _tools, "flatten_graph", lambda _graph: PipelineGraph(nodes=[_node("a")], edges=[])
-        )
         ports = {"main": pl.LazyFrame({"x": [1]}), "rest": pl.LazyFrame({"y": [1]})}
         monkeypatch.setattr(_tools, "_resolve_schema_outputs", lambda *_a, **_k: {"a": ports})
 
-        nodes = _tools._brief_nodes(_graph_with_submodel())
+        nodes = _tools._brief_nodes(PipelineGraph(nodes=[_node("a")], edges=[]))
 
         assert nodes == (
             BriefNode(
@@ -4732,7 +4901,6 @@ class TestBriefBoundaries:
                 (),
                 (BriefFrame("main", ("x",)), BriefFrame("rest", ("y",))),
             ),
-            BriefNode("submodel__sm1", "submodel", "submodel__sm1", None, (), None),
         )
 
     def test_the_brief_cache_keeps_only_the_latest_revisions(self, monkeypatch: pytest.MonkeyPatch):

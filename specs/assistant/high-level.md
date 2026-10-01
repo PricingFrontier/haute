@@ -265,17 +265,25 @@ completes the dry-run/apply sequence, asks one focused question on a line starti
 line starting `BLOCKED:`. When it saved part of a request and another part cannot be done
 (a run, a file write, a deployment, training), it names that part on a `BLOCKED:` line, so
 the turn ends `blocked` with its saves listed rather than `applied`. It never asks the
-analyst to confirm a value, name or threshold the request already states. When
+analyst to confirm a value, name or threshold the request already states, or anything a
+tool can answer: it looks that up first, such as whether a column exists (`find_data` on
+the file, or `inspect_node`'s schema part) or which labels a banded column holds (the
+banding node's config). The second live evaluation of 2026-10-01 saw a model ask whether a
+stated column existed in a file it could list, and what labels a banded column held when
+its banding node's configuration was readable. When
 the analyst delegates a choice ("pick any", "you choose"), the prompt tells the model to
 make a reasonable choice, state it, and proceed; it asks only for choices that change the
 result materially and that the analyst has not delegated.
 
-The controller reads an outcome marker on any line of the final round's text, after
-whitespace, a list marker and markdown emphasis (`**NEEDS_INPUT:**`, `- _BLOCKED:_`); the
-last marked line decides, and its detail is the text after the marker. The live
-evaluation of 2026-10-01 had nine questions and blockers scored as plain answers because
-the model wrote them after a sentence of prose or in bold, and the rule that the marker
-must open the reply was the only cause. A message whose text asks or blocks never saves:
+The controller reads an outcome marker anywhere in the final round's text: `NEEDS_INPUT:`
+or `BLOCKED:` as a whole, case-sensitive word with its colon, bare or wrapped in backticks
+or markdown emphasis (`**NEEDS_INPUT:**`, `**NEEDS_INPUT**:`, `` `BLOCKED:` ``). The last
+marker decides, and its detail is the text after the marker and its wrapping. The prompt
+still tells the model to start a line with the marker. The live evaluation of 2026-10-01
+had nine questions and blockers scored as plain answers because the model wrote them after
+a sentence of prose or in bold, and a second run that day ended a reply with "However,
+`BLOCKED:` Pipeline execution is not available", mid-line and in backticks. A message
+whose text asks or blocks never saves:
 an `apply_graph_plan` it carries is refused without running, with a tool error saying
 nothing was applied because the same message asked or blocked. The same evaluation saw a
 model ask for a list it could not read and, in that same message, apply a list it had
@@ -450,8 +458,11 @@ asks while authoring, whatever storage layer holds the answer:
     node answers with those inputs and a stable reason rather than refusing.
     This is what lets the agent wire a mid-graph transform against the columns that
     actually exist *at that point* — post-join, post-derivation — not just the source file's
-    columns. A node emitting several frames reports one schema per output port; the submodel
-    placeholder itself is not addressable (the v1 submodel boundary, as for edits).
+    columns. A node emitting several frames reports one schema per output port. A
+    top-level submodel occurrence answers this part too, resolved on the same flattened
+    graph: its output ports' columns and its input ports' columns, named by port, so a
+    question about what a submodel adds is answered from metadata. Its configuration,
+    its code and the nodes inside it stay behind the v1 submodel boundary, as for edits.
   - `config` (`restricted`) — the node's structured config. Credential-shaped
     fields are always redacted; executable code (`code`, `preamble`, `query`,
     `script`, at any depth, so a free-code step's `code` too) is redacted unless
@@ -1212,26 +1223,35 @@ turn context's graph brief, base revision, selection and preview error are
 `internal` too: under a `public` policy the block carries only the policy.
 Below `restricted` the turn context says plainly that saved node configuration
 is withheld (factors, tables, mappings, scenario maps and code) and that a list
-or map the model has not read must not be rewritten; it mentions the config
-part's redaction of code only when the config part is readable.
+or map the model has not read must not be rewritten; when the config part is
+readable it says that before replacing a saved list or map the model reads that
+node's config in the same turn and keeps its entries, and it mentions the config
+part's redaction of code only then.
 
-**Blind rewrites of withheld configuration are refused.** `update_node`
-replaces a key's whole value, so changing one factor, rating table, response
-row or scenario route means restating the whole list or map. While the policy
-withholds saved configuration from the model, a dry-run refuses an
+**Blind rewrites of saved configuration are refused.** `update_node` replaces a
+key's whole value, so changing one factor, rating table, response row or
+scenario route means restating the whole list or map. A dry-run refuses an
 `update_node` on a saved node that replaces a key holding a non-empty list or
 map unless the new value keeps every saved entry unchanged (a list entry equal
-to it, a map key with an equal value; new entries may be added). The located,
-retryable `config_withheld` error names the node, the key and the saved entries
-it would change or drop by their metadata identities only (an output column, an
-output path, a pivot or step id, an input name), counting them where a list or
-map has none, and tells the model that it cannot read that configuration under
-the project's policy, so it asks the analyst on a `NEEDS_INPUT:` line rather
-than retyping it; a step list's fix points at `edit_steps`. A node the plan adds
-is the model's own and is not guarded. In the live evaluation of 2026-10-01
-under an `internal` policy, 11 of 37 failing case-runs came from retyping such
-lists and six of them saved silent corruptions of a rating or the response
-contract; item-level edits (ASSIST-52) remain the way to change one entry
+to it, a map key with an equal value; new entries may be added) or the model has
+seen that node's configuration in the running turn: an `inspect_node` config
+part returned it, or an apply of the turn added the node. An earlier turn's read
+does not count, because compaction drops its result from what the model sees. A
+node the plan adds is the model's own and is not guarded. The located,
+retryable error names the node, the key and the saved entries it would change
+or drop by their metadata identities only (an output column, an output path, a
+pivot or step id, an input name), counting them where a list or map has none.
+While the policy withholds saved configuration it is `config_withheld`: the
+model cannot read that configuration, so it asks the analyst on a
+`NEEDS_INPUT:` line rather than retyping it. Where the policy lets the model
+read it, it is `config_unread`, and its fix says to read the node with
+`inspect_node`'s config part and resend the update keeping the existing
+entries. Either way a step list's fix points at `edit_steps`. In the live
+evaluation of 2026-10-01 under an `internal` policy, 11 of 37 failing case-runs
+came from retyping such lists and six of them saved silent corruptions of a
+rating or the response contract; a second run that day, with configuration
+readable, replaced a response's mapping without reading it and dropped two of
+its rows. Item-level edits (ASSIST-52) remain the way to change one entry
 without reading the rest.
 
 Project knowledge is derived from a bounded saved-graph fact, a value-free

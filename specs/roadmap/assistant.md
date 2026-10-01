@@ -259,7 +259,8 @@ restricted egress policy.
 **Evidence:** `src/haute/assistant/_ops.py::_apply_update_node`. On 2026-10-01,
 under internal egress, 11 of 37 failing live case-runs came from retyping
 withheld lists and 6 were saved as silent corruptions; the dry-run's
-`config_withheld` guard (`_ops.py::_refuse_withheld_rewrite`) now refuses them.
+`config_withheld` guard (`_ops.py::_refuse_blind_rewrite`) now refuses them, and
+under a readable policy a rewrite of a node the turn has not read is `config_unread`.
 
 ### ASSIST-53 — Qualification per model
 **Why:** Nothing records which models the assistant works with. Deferred until

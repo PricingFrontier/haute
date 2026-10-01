@@ -22,6 +22,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.assistant._ops import (
     AssistantOperationError,
+    ConfigVisibility,
     OpValidationError,
     PlanReceipt,
     _apply_ops_with_refs,
@@ -445,7 +446,16 @@ _LICENCE = {
 def _withheld(graph: PipelineGraph, raw_ops: list[dict]) -> PipelineGraph:
     """Apply *raw_ops* as a dry-run does when the policy withholds saved node configuration."""
 
-    return _apply_ops_with_refs(graph, parse_ops(raw_ops), config_withheld=True).graph
+    return _apply_ops_with_refs(
+        graph, parse_ops(raw_ops), config_visibility=ConfigVisibility(withheld=True)
+    ).graph
+
+
+def _readable(graph: PipelineGraph, raw_ops: list[dict], *, read: set[str]) -> PipelineGraph:
+    """Apply *raw_ops* as a dry-run does under a readable policy, after this turn read *read*."""
+
+    visibility = ConfigVisibility(withheld=False, read=frozenset(read))
+    return _apply_ops_with_refs(graph, parse_ops(raw_ops), config_visibility=visibility).graph
 
 
 def test_an_output_row_ref_to_a_node_the_plan_deleted_is_an_unknown_reference():
@@ -471,8 +481,8 @@ def test_an_output_row_ref_to_a_node_the_plan_deleted_is_an_unknown_reference():
         )
 
 
-class TestWithheldConfigGuard:
-    """An update that would retype a saved list or map the model cannot read is refused."""
+class TestBlindRewriteGuard:
+    """An update that would retype a saved list or map the model has not seen is refused."""
 
     def _bands(self) -> PipelineGraph:
         return _graph(
@@ -573,7 +583,7 @@ class TestWithheldConfigGuard:
             )
         assert caught.value.fix is not None and "edit_steps" in caught.value.fix
 
-    def test_a_node_the_plan_adds_and_a_readable_policy_are_not_guarded(self):
+    def test_a_node_the_plan_adds_and_a_node_read_this_turn_are_not_guarded(self):
         added = _withheld(
             self._bands(),
             [
@@ -587,11 +597,72 @@ class TestWithheldConfigGuard:
             ],
         )
         assert _get(added, "more").data.config["factors"] == [_LICENCE]
-        readable = _apply(
+        read = _readable(
+            self._bands(),
+            [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
+            read={"bands"},
+        )
+        assert _get(read, "bands").data.config["factors"] == [_LICENCE]
+
+    def test_a_readable_rewrite_of_a_node_this_turn_did_not_read_is_refused(self):
+        """Readable configuration the model did not read this turn is as unseen as
+        withheld configuration: the dropped rows are named by their output paths
+        and the fix says to read the node first, retryably."""
+
+        saved = [
+            {
+                "enabled": True,
+                "output_path": f"$[:].{name}",
+                "source_column": name,
+                "source_port": "priced",
+            }
+            for name in ("quote_id", "expected_frequency", "region")
+        ]
+        response = _graph([_node("quote_response", "output", outputMapping=saved)])
+        rows = [saved[0], {**saved[0], "output_path": "$[:].premium", "source_column": "premium"}]
+
+        with pytest.raises(AssistantOperationError) as caught:
+            _readable(
+                response,
+                [
+                    {
+                        "op": "update_node",
+                        "node": "quote_response",
+                        "config": {"outputMapping": rows},
+                    }
+                ],
+                read={"other"},
+            )
+
+        error = caught.value
+        assert error.code == "config_unread"
+        assert error.where == {"op_index": 0, "node": "quote_response", "field": "outputMapping"}
+        assert "'$[:].expected_frequency', '$[:].region'" in str(error)
+        assert "'$[:].quote_id'" not in str(error)
+        assert error.fix is not None
+        assert 'inspect_node with parts ["config"]' in error.fix
+        assert "existing entries" in error.fix
+        kept = _readable(
+            response,
+            [
+                {
+                    "op": "update_node",
+                    "node": "quote_response",
+                    "config": {"outputMapping": [*saved, rows[1]]},
+                }
+            ],
+            read=set(),
+        )
+        assert _get(kept, "quote_response").data.config["outputMapping"] == [*saved, rows[1]]
+
+    def test_without_a_visibility_nothing_is_guarded(self):
+        """An apply replays a plan its dry-run already judged."""
+
+        replayed = _apply(
             self._bands(),
             [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
         )
-        assert _get(readable, "bands").data.config["factors"] == [_LICENCE]
+        assert _get(replayed, "bands").data.config["factors"] == [_LICENCE]
 
 
 # ---------------------------------------------------------------------------

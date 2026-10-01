@@ -435,7 +435,7 @@ def test_walkthrough_guesses_fail_where_the_card_shape_is_valid_first_time(
             _SOURCE_FILE,
             _card_operations(card, {**minimal, "config": guess}, fixture),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
     )
     accepted = asyncio.run(
@@ -443,7 +443,7 @@ def test_walkthrough_guesses_fail_where_the_card_shape_is_valid_first_time(
             _SOURCE_FILE,
             _card_operations(card, minimal, fixture),
             summary="Test plan.",
-            config_withheld=False,
+            config_visibility=None,
         )
     )
 

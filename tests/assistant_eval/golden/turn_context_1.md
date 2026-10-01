@@ -4,7 +4,7 @@ Haute wrote this block for the current turn from the saved project; it describes
 ### Project egress policy
 - Provider trust: `organization`
 - Highest sensitivity sent: `restricted` (saved pipeline metadata needs `internal`; saved node configuration needs `restricted`)
-- Saved node configuration: readable through `inspect_node`'s config part
+- Saved node configuration: readable through `inspect_node`'s config part. `update_node` replaces a key's whole value: before replacing a saved list or map, read that node's config in this turn and keep its entries
 - Project knowledge: permitted
 - Executable source: permitted
 - Column value profiles: not permitted; `inspect_node` withholds its profile part, and an error raised while node code runs reports its type, step or line and column names without its text

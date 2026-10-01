@@ -86,8 +86,8 @@ _APPLY_IN_OUTCOME_MESSAGE_RESULT = {
     "error": {
         "code": "apply_in_outcome_message",
         "message": (
-            "Nothing was applied: this message also starts a line with NEEDS_INPUT: or "
-            "BLOCKED:, so it asks the analyst or reports a blocker."
+            "Nothing was applied: this message also carries NEEDS_INPUT: or BLOCKED:, so "
+            "it asks the analyst or reports a blocker."
         ),
         "fix": (
             "Apply a plan in a message that neither asks nor blocks; ask or report the "
@@ -127,22 +127,20 @@ _INCOMPLETE_DETAILS: dict[_OpenState, str] = {
 }
 
 
-# A line that opens, after whitespace, a list marker and markdown emphasis, with
-# an outcome marker: `NEEDS_INPUT:`, `**NEEDS_INPUT:**`, `**NEEDS_INPUT**:`,
-# `- _BLOCKED:_`, `1. BLOCKED:`. The match ends after the marker's emphasis.
-_OUTCOME_MARKER = re.compile(
-    r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?[*_]*(NEEDS_INPUT|BLOCKED)[*_]*:[*_]*",
-    re.MULTILINE,
-)
+# An outcome marker anywhere in a line, as a whole word and case-sensitive, with
+# the backticks or markdown emphasis that wrap it: `NEEDS_INPUT:`,
+# `**NEEDS_INPUT:**`, `**NEEDS_INPUT**:`, `_BLOCKED:_`, ``BLOCKED:``. The match
+# ends after the marker's wrapping.
+_OUTCOME_MARKER = re.compile(r"(?<![A-Za-z0-9_])[`*_]*(NEEDS_INPUT|BLOCKED)[`*_]*:[`*_]*")
 
 
 def _prefixed_outcome(response_text: str, changes: Sequence[str]) -> AssistantTurnOutcome | None:
     """Read a round's `NEEDS_INPUT:`/`BLOCKED:` outcome, or None without one.
 
-    The last line that opens with a marker (see `_OUTCOME_MARKER`) decides; its
-    detail is the text after the marker, stripped, and a marker without detail
-    is no outcome. *changes* are the ids of the changes the turn saved before
-    it, which the outcome lists.
+    The last marker in the text (see `_OUTCOME_MARKER`) decides; its detail is
+    the text after the marker and its wrapping, stripped, and a marker without
+    detail is no outcome. *changes* are the ids of the changes the turn saved
+    before it, which the outcome lists.
     """
 
     markers = list(_OUTCOME_MARKER.finditer(response_text))
@@ -339,7 +337,10 @@ _PROMPT_OUTCOME_CONTRACT = (
     "blocker. A message that asks or blocks applies nothing. If you saved part of the "
     "request and another part cannot be done (run, write a file, deploy, train), start "
     "a line with `BLOCKED:` naming that part. Never ask the analyst to confirm a value, "
-    "name or threshold the request already states. "
+    "name or threshold the request already states, or anything a tool can answer: look "
+    "it up first, such as whether a column exists (`find_data` with the file's path, or "
+    "`inspect_node`'s schema part) or which labels a banded column holds (its banding "
+    "node's config). "
 )
 
 _PROMPT_UNAVAILABLE_OPERATIONS = (
@@ -1076,9 +1077,13 @@ async def run_turn(
                     blocked_text = dry_runs.blocker(len(saved_changes))
                     turn_messages.append({"role": "assistant", "content": blocked_text})
                     yield AssistantTextDeltaEvent(text=blocked_text)
-                    turn_outcome = _prefixed_outcome(blocked_text, saved_changes)
-                    if turn_outcome is None:
-                        raise RuntimeError("the dry-run blocker must be a BLOCKED: outcome")
+                    # Built, not parsed: its last error can quote the model's own
+                    # text, which may hold a marker of its own.
+                    turn_outcome = AssistantTurnOutcome(
+                        kind="blocked",
+                        detail=blocked_text.removeprefix("BLOCKED:").strip(),
+                        changes=list(saved_changes),
+                    )
                     yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
                     return
                 request_messages.extend(

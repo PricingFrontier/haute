@@ -380,6 +380,32 @@ describe("transcript order and turn outcomes", () => {
     ])
   })
 
+  it("removes a marker written inside a line, with its wrapping, and keeps the text before it", async () => {
+    const detail = "Pipeline execution is not available."
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Saved both nodes.\n\nHowever, `BLOCKED:` " },
+      { type: "text_delta", text: detail },
+      completed({ kind: "blocked", detail, changes: [] }),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "Saved both nodes.\n\nHowever,", streaming: false },
+      { kind: "outcome", outcome: { kind: "blocked", detail, changes: [] } },
+    ])
+  })
+
+  it("removes an emphasised marker", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Reading it.\n**NEEDS_INPUT**: Which objective?" },
+      completed({ kind: "needs_input", detail: "Which objective?", changes: [] }),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "Reading it.", streaming: false },
+      { kind: "outcome", outcome: { kind: "needs_input", detail: "Which objective?", changes: [] } },
+    ])
+  })
+
   it("replaces a blocker that follows a tool row with the blocked outcome", async () => {
     const detail = "graph validation failed after one corrected retry (x); no graph changes were applied."
     const entries = await liveEntries([

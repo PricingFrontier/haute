@@ -57,6 +57,13 @@ from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
+from haute._submodel_instances import (
+    ResolvedSubmodelInstance,
+    bound_input_port,
+    bound_output_port,
+    qualified_runtime_node_id,
+    resolve_submodel_instances,
+)
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute._worker_isolation import resolve_worker_memory_enforcement
@@ -83,6 +90,7 @@ from haute.assistant._ops import (
     SUBMODEL_BOUNDARY_FIX,
     SUBMODEL_BOUNDARY_TEXT,
     AssistantOperationError,
+    ConfigVisibility,
     LocatedPlanError,
     OpValidationError,
     PlanStore,
@@ -365,7 +373,7 @@ def _input_columns(
 
     try:
         flat = flatten_graph(graph)
-        inputs = _node_inputs(flat, node)
+        inputs = _node_inputs(graph, flat, node)
     except Exception as exc:  # noqa: BLE001 - an unresolvable site discloses nothing
         logger.info("assistant_failure_schema_unresolved", node=node, error=type(exc).__name__)
         return {}
@@ -374,15 +382,16 @@ def _input_columns(
     for item in inputs:
         if input_name is not None and item.name != input_name:
             continue
+        source = item.runtime_source
         try:
-            if item.source not in outputs:
-                outputs[item.source] = _resolve_schema_outputs(
-                    flat, graph, target=item.source, preserve=frozenset({item.source})
-                )[item.source]
-            columns[item.name] = _frame_column_names(outputs[item.source], item.source_port)
+            if source not in outputs:
+                outputs[source] = _resolve_schema_outputs(
+                    flat, graph, target=source, preserve=frozenset({source})
+                )[source]
+            columns[item.name] = _frame_column_names(outputs[source], item.runtime_port)
         except Exception as exc:  # noqa: BLE001 - an unresolvable frame discloses nothing
             logger.info(
-                "assistant_failure_schema_unresolved", node=item.source, error=type(exc).__name__
+                "assistant_failure_schema_unresolved", node=source, error=type(exc).__name__
             )
     return columns
 
@@ -558,10 +567,36 @@ def _nested_graph_nodes(metadata: object) -> set[str]:
     return set()
 
 
-def _validate_top_level_target(graph: PipelineGraph, node: str) -> dict[str, object] | None:
+#: The fix of a refused read of a submodel occurrence, whose columns are readable.
+_OCCURRENCE_BOUNDARY_FIX = (
+    'inspect_node with parts ["schema"] reads the columns its ports take and give; for '
+    "anything else, reply with a line starting BLOCKED: that asks the analyst to look in "
+    "the editor."
+)
+
+
+def _validate_top_level_target(
+    graph: PipelineGraph, node: str, *, occurrence_schema: bool = False
+) -> dict[str, object] | None:
+    """None when *node* is a top-level node the read may answer, else its error.
+
+    A submodel occurrence answers only its schema (*occurrence_schema*): the
+    columns of its ports are metadata, while its configuration, its code and
+    the nodes inside it stay behind the submodel boundary.
+    """
+
     top_level = {candidate.id: candidate for candidate in graph.nodes}
     candidate = top_level.get(node)
     if candidate is not None:
+        if candidate.data.nodeType == NodeType.SUBMODEL:
+            if occurrence_schema:
+                return None
+            return _error(
+                SUBMODEL_BOUNDARY_CODE,
+                f"Node {node!r} is a submodel occurrence: its configuration, its code and the "
+                "nodes inside it cannot be read or edited by the assistant.",
+                fix=_OCCURRENCE_BOUNDARY_FIX,
+            )
         if candidate.data.nodeType in _BOUNDARY_NODE_TYPES:
             return _error(
                 SUBMODEL_BOUNDARY_CODE,
@@ -586,32 +621,87 @@ def _validate_top_level_target(graph: PipelineGraph, node: str) -> dict[str, obj
 
 @dataclass(frozen=True, slots=True)
 class _NodeInput:
-    """One incoming edge described the way the node's own code sees it."""
+    """One incoming edge described the way the node's own saved code sees it.
+
+    `name` is the input name that code binds and `source` the node the edge
+    comes from, both as the saved graph has them. `runtime_source` and
+    `runtime_port` are the node and port of the flattened graph the engine runs
+    that supply the frame: for an edge out of a submodel occurrence, the inner
+    node its output port names.
+    """
 
     name: str
     source: str
-    source_port: str | None
+    runtime_source: str
+    runtime_port: str | None
 
 
-def _node_inputs(flat: PipelineGraph, node: str) -> tuple[_NodeInput, ...]:
-    """Return each incoming edge as (code-visible input name, source, port)."""
+def _node_inputs(graph: PipelineGraph, flat: PipelineGraph, node: str) -> tuple[_NodeInput, ...]:
+    """Return each incoming edge of *node*, named as its saved code names it.
 
-    nodes_by_id = {candidate.id: candidate for candidate in flat.nodes}
+    A top-level node's inputs are the saved graph's edges, each located in
+    *flat*, the flattened graph; an edge into a submodel occurrence is named by
+    the input port it binds. A node only *flat* holds, one inside a submodel
+    that a failure was located at, has no saved edges, so its inputs are
+    *flat*'s, named as the flattened code binds them.
+    """
+
+    if node not in graph.node_map:
+        flat_nodes = flat.node_map
+        return tuple(
+            _NodeInput(
+                name=edge_input_name(edge, flat_nodes[edge.source]),
+                source=edge.source,
+                runtime_source=edge.source,
+                runtime_port=edge.sourceHandle,
+            )
+            for edge in flat.edges
+            if edge.target == node and edge.source in flat_nodes
+        )
+    instances = resolve_submodel_instances(graph)
+    occurrence = instances.get(node)
     inputs: list[_NodeInput] = []
-    for edge in flat.edges:
+    for edge in graph.edges:
         if edge.target != node:
             continue
-        source_node = nodes_by_id.get(edge.source)
+        source_node = graph.node_map.get(edge.source)
         if source_node is None:
             continue
+        origin = instances.get(edge.source)
+        if origin is None:
+            runtime_source, runtime_port = edge.source, edge.sourceHandle
+        else:
+            port = bound_output_port(origin, edge)
+            runtime_source = qualified_runtime_node_id(edge.source, port.source.node_id)
+            runtime_port = port.source.handle_id
         inputs.append(
             _NodeInput(
-                name=edge_input_name(edge, source_node),
+                name=(
+                    edge_input_name(edge, source_node)
+                    if occurrence is None
+                    else bound_input_port(occurrence, edge).name
+                ),
                 source=edge.source,
-                source_port=edge.sourceHandle,
+                runtime_source=runtime_source,
+                runtime_port=runtime_port,
             )
         )
     return tuple(inputs)
+
+
+def _occurrence_ports(
+    instance: ResolvedSubmodelInstance,
+) -> tuple[tuple[str, str, str | None], ...]:
+    """Each output port of a submodel occurrence: its name and the flattened node and port."""
+
+    return tuple(
+        (
+            port.name,
+            qualified_runtime_node_id(instance.node.id, port.source.node_id),
+            port.source.handle_id,
+        )
+        for port in instance.definition.output_ports
+    )
 
 
 def _resolve_frame_outputs(
@@ -693,7 +783,10 @@ def _input_schemas_from_outputs(
     inputs: Sequence[_NodeInput],
     lazy_outputs: Mapping[str, object],
 ) -> dict[str, object]:
-    return {item.name: _port_schema(lazy_outputs[item.source], item.source_port) for item in inputs}
+    return {
+        item.name: _port_schema(lazy_outputs[item.runtime_source], item.runtime_port)
+        for item in inputs
+    }
 
 
 def _input_schemas_independently(
@@ -714,14 +807,14 @@ def _input_schemas_independently(
             lazy_outputs = _resolve_schema_outputs(
                 flat,
                 graph,
-                target=item.source,
-                preserve=frozenset({item.source}),
+                target=item.runtime_source,
+                preserve=frozenset({item.runtime_source}),
             )
-            resolved[item.name] = _port_schema(lazy_outputs[item.source], item.source_port)
+            resolved[item.name] = _port_schema(lazy_outputs[item.runtime_source], item.runtime_port)
         except Exception as exc:  # noqa: BLE001 - one unresolvable input is reportable
             resolved[item.name] = {
                 "unresolved_reason": _execution_error_message(
-                    exc, operation="inspect_node", site=_FailureSite(graph, item.source)
+                    exc, operation="inspect_node", site=_FailureSite(graph, item.runtime_source)
                 ),
                 "source": item.source,
             }
@@ -763,24 +856,27 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
 
     try:
         graph = _parse_graph(source_file)
-        validation_error = _validate_top_level_target(graph, node)
+        validation_error = _validate_top_level_target(graph, node, occurrence_schema=True)
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
         flat = flatten_graph(graph)
-        inputs = _node_inputs(flat, node)
+        inputs = _node_inputs(graph, flat, node)
+        occurrence = resolve_submodel_instances(graph).get(node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "schema_unresolvable",
             _error_message(exc, operation="inspect_node"),
         )
+    if occurrence is not None:
+        return _occurrence_schema(graph, flat, occurrence, inputs, project_revision)
 
     try:
         lazy_outputs = _resolve_schema_outputs(
             flat,
             graph,
             target=node,
-            preserve=frozenset({node, *(item.source for item in inputs)}),
+            preserve=frozenset({node, *(item.runtime_source for item in inputs)}),
         )
         output = lazy_outputs[node]
         result: dict[str, object] = {"node": node}
@@ -826,6 +922,46 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
                 exc, operation="inspect_node", site=_FailureSite(graph, node), step=step
             ),
             **({} if step is None else {"step": step.step_id}),
+            inputs=_input_schemas_independently(flat, graph, inputs),
+        )
+
+
+def _occurrence_schema(
+    graph: PipelineGraph,
+    flat: PipelineGraph,
+    occurrence: ResolvedSubmodelInstance,
+    inputs: Sequence[_NodeInput],
+    project_revision: str,
+) -> dict[str, object]:
+    """A submodel occurrence's schema part: each output port's and input port's columns.
+
+    Each port resolves on the flattened graph the engine runs, at the inner node
+    the definition names, which the answer names only by its port.
+    """
+
+    try:
+        ports: dict[str, object] = {}
+        outputs: dict[str, object] = {}
+        for name, runtime, handle in _occurrence_ports(occurrence):
+            resolved = _resolve_schema_outputs(
+                flat,
+                graph,
+                target=runtime,
+                preserve=frozenset({runtime, *(item.runtime_source for item in inputs)}),
+            )
+            ports[name] = _port_schema(resolved[runtime], handle)
+            outputs.update(resolved)
+        result: dict[str, object] = {"node": occurrence.node.id, "ports": ports}
+        if inputs:
+            result["inputs"] = _input_schemas_from_outputs(inputs, outputs)
+        result["project_revision"] = project_revision
+        return result
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        # No site: the failing node is inside the submodel, whose code is not
+        # the model's to read, so the message names no column.
+        return _error(
+            "schema_unresolvable",
+            _execution_error_message(exc, operation="inspect_node", site=None),
             inputs=_input_schemas_independently(flat, graph, inputs),
         )
 
@@ -979,24 +1115,51 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
                 resolved[node_id] = (None, exc)
         return resolved[node_id]
 
-    nodes: list[BriefNode] = []
-    for node in graph.nodes:
-        node_type = node.data.nodeType
-        if node_type in _BOUNDARY_NODE_TYPES or node.id not in flat_ids:
-            nodes.append(BriefNode(node.id, node_type.value, node.data.label, None, (), None))
-            continue
+    def brief_inputs(node_id: str) -> tuple[BriefInput, ...]:
         inputs = []
-        for item in _node_inputs(flat, node.id):
-            source_output, _failure = output_of(item.source)
+        for item in _node_inputs(graph, flat, node_id):
+            source_output, _failure = output_of(item.runtime_source)
             inputs.append(
                 BriefInput(
                     item.name,
                     item.source,
                     None
                     if source_output is None
-                    else tuple(_frame_column_names(source_output, item.source_port)),
+                    else tuple(_frame_column_names(source_output, item.runtime_port)),
                 )
             )
+        return tuple(inputs)
+
+    def occurrence_frames(occurrence: ResolvedSubmodelInstance) -> tuple[BriefFrame, ...] | None:
+        frames = []
+        for name, runtime, handle in _occurrence_ports(occurrence):
+            output, _failure = output_of(runtime)
+            if output is None:
+                return None
+            frames.append(BriefFrame(name, tuple(_frame_column_names(output, handle))))
+        return tuple(frames)
+
+    occurrences = resolve_submodel_instances(graph)
+    nodes: list[BriefNode] = []
+    for node in graph.nodes:
+        node_type = node.data.nodeType
+        if node.id in occurrences:
+            # Its ports' columns are metadata; its configuration and inner nodes are not.
+            nodes.append(
+                BriefNode(
+                    node.id,
+                    node_type.value,
+                    node.data.label,
+                    None,
+                    brief_inputs(node.id),
+                    occurrence_frames(occurrences[node.id]),
+                )
+            )
+            continue
+        if node_type in _BOUNDARY_NODE_TYPES or node.id not in flat_ids:
+            nodes.append(BriefNode(node.id, node_type.value, node.data.label, None, (), None))
+            continue
+        inputs = brief_inputs(node.id)
         output, failure = output_of(node.id)
         authoring = node_authoring(node_type, node.data.config)
         if authoring is not None and _incomplete(failure):
@@ -1009,7 +1172,7 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
                 node_type.value,
                 node.data.label,
                 authoring,
-                tuple(inputs),
+                inputs,
                 None if output is None else _brief_frames(output),
                 _switch_scenarios(node),
             )
@@ -1322,7 +1485,7 @@ def _prepare_column_profile(
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-        inputs = _node_inputs(flatten_graph(graph), node)
+        inputs = _node_inputs(graph, flatten_graph(graph), node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("profile_unavailable", _error_message(exc, operation="inspect_node"))
     if input_name is not None and all(item.name != input_name for item in inputs):
@@ -1379,23 +1542,25 @@ def _collect_column_profile(
             frame = cast(pl.LazyFrame, output)
         else:
             match = next(
-                item for item in _node_inputs(flat, request.node) if item.name == request.input_name
+                item
+                for item in _node_inputs(request.graph, flat, request.node)
+                if item.name == request.input_name
             )
             lazy_outputs = _resolve_frame_outputs(
                 flat,
                 request.graph,
-                target=match.source,
-                preserve={match.source},
+                target=match.runtime_source,
+                preserve={match.runtime_source},
                 execution_context=execution_context,
             )
-            source_output = lazy_outputs[match.source]
+            source_output = lazy_outputs[match.runtime_source]
             if isinstance(source_output, dict):
-                if match.source_port is None or match.source_port not in source_output:
+                if match.runtime_port is None or match.runtime_port not in source_output:
                     return _error(
                         "profile_unavailable",
                         f"Input {request.input_name!r} does not resolve to one emitted frame.",
                     )
-                frame = source_output[match.source_port]
+                frame = source_output[match.runtime_port]
             else:
                 frame = cast(pl.LazyFrame, source_output)
         return _profile_frame(frame, execution_context=execution_context)
@@ -2154,7 +2319,7 @@ async def dry_run_graph_edits(
     ops_payload: object,
     *,
     summary: str,
-    config_withheld: bool,
+    config_visibility: ConfigVisibility | None,
     assumptions: Sequence[str] = (),
     postconditions: object = (),
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
@@ -2163,9 +2328,9 @@ async def dry_run_graph_edits(
 
     Each `recipe` operation is expanded in place first; every failure names an
     operation by its index in *ops_payload*, and a recipe operation's by its
-    `recipe` too. *config_withheld* says the session's egress policy withholds
-    saved node configuration (`inspect_node` refuses its config part), so a
-    blind rewrite of a saved list or map is refused.
+    `recipe` too. *config_visibility* says what the model has seen of saved
+    node configuration, so a blind rewrite of a saved list or map is refused;
+    the executor always passes it, and None checks no rewrite.
     """
 
     try:
@@ -2183,7 +2348,7 @@ async def dry_run_graph_edits(
                     summary=summary,
                     assumptions=assumptions,
                     positions=batch.positions or None,
-                    config_withheld=config_withheld,
+                    config_visibility=config_visibility,
                 )
             )
         return result.as_dict()
@@ -2458,6 +2623,46 @@ def _json_type_name(value: object) -> str:
     return type(value).__name__
 
 
+#: Characters of the model's own JSON text shown on each side of a decode error.
+_JSON_ERROR_EXCERPT = 30
+
+
+def _refuse_undecodable_json_text(text: str, path: str) -> None:
+    """Locate the decode error of JSON text sent where an array or object belongs.
+
+    A provider that sends containers as JSON text (Databricks' Qwen dialect)
+    cannot send the value itself, so a text that opens like JSON but does not
+    decode is refused at the decoder's character with the text around it: the
+    model's own argument, already in its history. Text that decodes returns,
+    for the plain wrong-type refusal.
+    """
+
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as exc:
+        start = max(0, exc.pos - _JSON_ERROR_EXCERPT)
+        end = exc.pos + _JSON_ERROR_EXCERPT
+        excerpt = (
+            ("..." if start else "")
+            + text[start : exc.pos]
+            + "<<here>>"
+            + text[exc.pos : end]
+            + ("..." if end < len(text) else "")
+        )
+        raise _ToolArgumentValidationError(
+            path,
+            "invalid_json_text",
+            f"{path} is JSON text with an error at character {exc.pos} ({exc.msg}): {excerpt}",
+            fields={
+                "fix": (
+                    "Correct the JSON text at that character and resend the call. Inside a "
+                    "string such as a step's code, escape each double quote as \\\" and each "
+                    "newline as \\n, and close the string before the next key."
+                )
+            },
+        ) from None
+
+
 def _validate_tool_value(
     value: object,
     schema: Mapping[str, object],
@@ -2558,6 +2763,12 @@ def _validate_tool_value(
         # and "has the wrong JSON type" gave the model nothing to act on — it
         # cannot see that it sent a string where an array was required.
         received = _json_type_name(value)
+        if (
+            isinstance(value, str)
+            and {"array", "object"} & set(expected_types)
+            and value.lstrip()[:1] in ("[", "{")
+        ):
+            _refuse_undecodable_json_text(value, path)
         article = "an" if received[:1] in "aeiou" else "a"
         # A boolean spells its literals: a model writing Python's `True`
         # cannot tell from the type name alone that JSON wants `true`.
@@ -2808,6 +3019,23 @@ def _observe_project_source_evidence(
             )
 
 
+def _added_node_ids(result: Mapping[str, object]) -> tuple[str, ...]:
+    """The nodes a successful apply's change record lists as added."""
+
+    if "error" in result:
+        return ()
+    change = result.get("change")
+    changes = change.get("changes") if isinstance(change, Mapping) else None
+    nodes = changes.get("nodes") if isinstance(changes, Mapping) else None
+    if not isinstance(nodes, list):
+        raise RuntimeError("a saved apply must carry its change record's nodes")
+    return tuple(
+        entry["id"]
+        for entry in nodes
+        if isinstance(entry, Mapping) and entry.get("change") == "added"
+    )
+
+
 def build_tool_executor(
     source_file: str,
     *,
@@ -2824,6 +3052,10 @@ def build_tool_executor(
     project_root = Path.cwd().resolve()
     ledger = SourceEvidenceLedger() if evidence is None else evidence
     ledger.begin_turn()
+    # The nodes whose saved configuration this turn has seen: an inspect_node
+    # config part returned to the model, or a node an apply of the turn added.
+    # The executor lives for one turn, so earlier turns' reads never count.
+    seen_config: set[str] = set()
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         started = time.monotonic()
@@ -2909,14 +3141,17 @@ def build_tool_executor(
                     source_file,
                     arguments.get("ops"),
                     summary=arguments["summary"],
-                    config_withheld=_part_requirement(policy, "config") is not None,
+                    config_visibility=ConfigVisibility(
+                        withheld=_part_requirement(policy, "config") is not None,
+                        read=frozenset(seen_config),
+                    ),
                     assumptions=arguments.get("assumptions", ()),
                     postconditions=arguments.get("postconditions", ()),
                     project_sources=ledger.sources(),
                 ),
             )
         if name == "apply_graph_plan":
-            return _bounded_tool_result(
+            applied = _bounded_tool_result(
                 name,
                 await apply_graph_plan(
                     source_file,
@@ -2924,6 +3159,8 @@ def build_tool_executor(
                     session_id=session_id,
                 ),
             )
+            seen_config.update(_added_node_ids(applied))
+            return applied
 
         try:
             operation: Callable[[], dict[str, object]] | None = None
@@ -2975,6 +3212,8 @@ def build_tool_executor(
                 return bounded
             result = dict(bounded)
             if "error" not in result:
+                if name == "inspect_node" and "config" in result:
+                    seen_config.add(arguments["node"])
                 _observe_project_source_evidence(
                     ledger,
                     name=name,

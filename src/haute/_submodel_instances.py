@@ -195,7 +195,7 @@ def resolve_submodel_instances(
                     source=edge.source,
                     target=edge.target,
                 )
-            _output_port(resolved[edge.source], edge)
+            bound_output_port(resolved[edge.source], edge)
         if edge.target in resolved:
             if edge.source not in parent_node_ids:
                 raise ParseError(
@@ -205,7 +205,7 @@ def resolve_submodel_instances(
                     target=edge.target,
                 )
             instance = resolved[edge.target]
-            port = _input_port(instance, edge)
+            port = bound_input_port(instance, edge)
             binding_key = (edge.target, port.name)
             previous_edge_id = bound_input_ports.get(binding_key)
             if previous_edge_id is not None:
@@ -254,10 +254,11 @@ def _port_name(
     return port_name
 
 
-def _input_port(
+def bound_input_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelInputPort:
+    """The public input port a parent edge into *instance* binds."""
     port_name = _port_name(
         edge=edge,
         handle=edge.targetHandle,
@@ -279,10 +280,11 @@ def _input_port(
     )
 
 
-def _output_port(
+def bound_output_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelOutputPort:
+    """The public output port a parent edge out of *instance* binds."""
     port_name = _port_name(
         edge=edge,
         handle=edge.sourceHandle,
@@ -868,7 +870,7 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=edge.source,
                 )
-            output = _output_port(source_instance, edge)
+            output = bound_output_port(source_instance, edge)
             source_variants = [
                 (
                     id_maps[edge.source][output.source.node_id],
@@ -892,7 +894,7 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=edge.target,
                 )
-            input_port = _input_port(target_instance, edge)
+            input_port = bound_input_port(target_instance, edge)
             if not input_port.targets:
                 raise ParseError(
                     "Submodel input port bound by a parent edge has no internal targets.",
@@ -927,7 +929,7 @@ def expand_submodel_instances(
                     continue
                 if edge.target in selected_ids:
                     assert target_instance is not None
-                    old_name = _input_port(target_instance, edge).name
+                    old_name = bound_input_port(target_instance, edge).name
                 else:
                     old_name = _boundary_edge_input_name(
                         edge,

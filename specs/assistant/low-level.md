@@ -971,7 +971,8 @@ the turn that follows.
    and no further changes were applied. The message is exactly what the tool result
    already returned to the
    model, so the outcome adds no value the model had not seen. It then emits `completed`
-   with the `blocked` outcome, whose detail is that message after its `BLOCKED:` marker,
+   with the `blocked` outcome, whose detail is that message after its `BLOCKED:` marker
+   (built, not parsed, since the error message can quote the model's own text),
    and performs no further dry-run or provider round. A further dry-run call in the same
    provider round is refused without running as `dry_run_retry_limit` (not retryable) and
    does not change the recorded blocker. The system prompt states the same rule.
@@ -1032,14 +1033,20 @@ the turn that follows.
    `completed` with the `committed_unverified` outcome, whose detail is the tool row's
    summary of that error. This check precedes the dry-run budget check, so the budget's
    blocker can never follow a committed save in the same round. Otherwise a
-   `TurnStop("end")` whose final-round text has a line opening with `NEEDS_INPUT:` or
-   `BLOCKED:` completes with the `needs_input` or `blocked` outcome, whatever the open
-   state (`_prefixed_outcome`). A line opens with a marker after any whitespace, one list
-   marker (`-`, `*`, `+`, `1.`, `1)`) and markdown emphasis around the marker or its colon
-   (`**NEEDS_INPUT:**`, `**NEEDS_INPUT**:`, `_BLOCKED:_`); a marker inside a sentence is
-   not one. The last marked line decides, and the detail is all the text after its marker,
-   stripped; a last marker with no detail is no outcome. An `apply_graph_plan` call whose
-   own assistant message carries such a line before it is refused without running: its
+   `TurnStop("end")` whose final-round text carries `NEEDS_INPUT:` or `BLOCKED:`
+   completes with the `needs_input` or `blocked` outcome, whatever the open state
+   (`_prefixed_outcome`). A marker counts anywhere in a line: the uppercase word with its
+   colon, case-sensitive, not preceded by a letter, digit or underscore, bare or wrapped in
+   backticks or markdown emphasis around the marker or its colon (`**NEEDS_INPUT:**`,
+   `**NEEDS_INPUT**:`, `_BLOCKED:_`, `` `BLOCKED:` ``, `However, BLOCKED: ...`);
+   `blocked:` and `NOT_BLOCKED:` are not markers. The last marker decides, and the detail
+   is all the text after it and its wrapping, stripped; a last marker with no detail is no
+   outcome. The dry-run budget's blocker is built as a `blocked` outcome rather than
+   parsed, since its last error can quote the model's own text. The editor's transcript
+   removes the marker the same way (`useAssistantStore.withoutOutcomeText`): the reply
+   ends with the marker, its wrapping and the detail, and the text before the marker
+   stays. An `apply_graph_plan` call whose
+   own assistant message carries a marker before it is refused without running: its
    result is the loop's `apply_in_outcome_message` error (retryable, with a fix), saying
    nothing was applied because the same message asks or blocks, and it changes neither the
    saved ids nor the open state. Every adapter streams a message's text before its tool
@@ -1087,10 +1094,16 @@ the turn that follows.
    (`node_schema`) parses the
    saved pipeline, then proceeds in this order:
    1. **Validate the target id against the original hierarchical graph** — a submodel
-      placeholder, or an id found only inside a submodel's nested graph → structured error
+      port node, or an id found only inside a submodel's nested graph → structured error
       naming the v1 submodel boundary (the same classification the ops engine applies to
-      submodel-internal targets); an id found nowhere → unknown-node error; only an
-      original top-level executable node proceeds. Validating after flattening would be
+      submodel-internal targets); an id found nowhere → unknown-node error; an original
+      top-level executable node or a top-level submodel occurrence proceeds. An
+      occurrence answers `ports` (each output port's columns, resolved at the inner node
+      and port its definition names, `qualified_runtime_node_id`) and `inputs` (keyed by
+      the input port each parent edge binds); a failure inside it names no column. Its
+      config and profile parts are refused as `submodel_boundary` with a message saying
+      its configuration, code and inner nodes cannot be read or edited and a fix naming
+      the schema part before the `BLOCKED:` reply. Validating after flattening would be
       wrong twice over: a submodel-internal child id becomes executable once inlined (a
       boundary bypass), and an unknown id would be indistinguishable from a dissolved
       placeholder.
@@ -1234,7 +1247,8 @@ the turn that follows.
    edit of a submodel or of a node inside one (`inspect_node`, or an operation's node,
    source or target) is `submodel_boundary`, whose message says submodels and the nodes
    inside them cannot be read or edited by the assistant and whose fix says to reply
-   with a `BLOCKED:` line asking the analyst to make the change in the editor. The plan domain locates
+   with a `BLOCKED:` line asking the analyst to make the change in the editor (a read of
+   an occurrence's config or profile part names its readable schema part first). The plan domain locates
    its failures: `OpValidationError` and `AssistantOperationError` carry `where` (any
    of `op_index`, `node`, `field`, `step`), `fix` (one concrete correction), `graph`
    (the graph the failure was judged against) and `did_you_mean` (close names the
@@ -1269,21 +1283,34 @@ the turn that follows.
    'rates'.`), and `fix` and `context.inputs` are the raising node's. A plain exception
    that is not Haute's keeps the sanitized internal detail.
 
-   While the session's policy withholds saved configuration (the config part's
-   requirement is unmet), `dry_run_graph_edits` passes `config_withheld` to the plan
-   domain, and an `update_node` on a node the plan did not add that replaces a key whose
-   current value is a non-empty list or map is refused as `config_withheld` unless the
-   new value keeps every entry: each list entry present unchanged, each map key present
-   with an equal value (`None`, which removes the key, keeps none). The error is located
-   at the operation, node and key, names the entries it would change or drop by their
-   identity where that is metadata (`outputColumn` for banding factors, rating tables
-   and combined outputs, `output_path` for response rows, `id` for pivots and steps,
-   `name` for constants, the entry itself for `inputs` and `selected_columns`, the key
-   for `input_scenario_map`, `inputMapping` and `column_renames`) and otherwise by entry
-   position or as a count of a map's keys, never a rule value. Its message says the
-   model cannot read that configuration under the project's egress policy, and its fix
-   says to ask the analyst on a `NEEDS_INPUT:` line instead of retyping it, or, for
-   `steps`, to change them with `edit_steps`. An apply replays a plan that passed it. The dry-run boundary renders `where`, `fix`, and,
+   The executor's `dry_run_graph_edits` passes the plan domain a `ConfigVisibility`:
+   `withheld` when the session's policy withholds saved configuration (the config
+   part's requirement is unmet), and otherwise `read`, the nodes whose saved
+   configuration the running turn has seen. The executor is built per turn and records
+   a node when a successful `inspect_node` result carries its config part (after the
+   result bound, so a result too large to return records nothing) and each node a
+   successful apply's change record lists as `added`; an earlier turn's reads do not
+   count, because compaction drops their results. An `update_node` on a node the plan
+   did not add, and not seen this turn under a readable policy, that replaces a key
+   whose current value is a non-empty list or map is refused
+   (`_refuse_blind_rewrite`) unless the new value keeps every entry: each list entry
+   present unchanged, each map key present with an equal value (`None`, which removes
+   the key, keeps none). The error is located at the operation, node and key, names the
+   entries it would change or drop by their identity where that is metadata
+   (`outputColumn` for banding factors, rating tables and combined outputs,
+   `output_path` for response rows, `id` for pivots and steps, `name` for constants, the
+   entry itself for `inputs` and `selected_columns`, the key for `input_scenario_map`,
+   `inputMapping` and `column_renames`) and otherwise by entry position or as a count of
+   a map's keys, never a rule value. Under a withholding policy it is `config_withheld`:
+   its message says the model cannot read that configuration under the project's
+   egress policy, and its fix says to ask the analyst on a `NEEDS_INPUT:` line instead
+   of retyping it. Under a readable one it is `config_unread`: its message says the
+   model has not read the node's saved configuration in this turn, and its fix says to
+   read the node with `inspect_node`'s config part and resend the update keeping the
+   key's existing entries. For `steps` either fix says to change them with
+   `edit_steps`. Both are retryable. A `ConfigVisibility` of `None` checks no rewrite:
+   an apply replays a plan that passed its dry-run, and an example's dry-run check
+   composes nothing from memory. The dry-run boundary renders `where`, `fix`, and,
    when `where.node` is set, `context.inputs`: each incoming input's code-visible name
    and its column names, resolved schema-only per source by `_input_columns`, the same
    resolution that decides which Polars-named columns an execution failure may name.
@@ -1329,7 +1356,18 @@ the turn that follows.
    it needs, without the rejected value being echoed, and adding an explicit
    "send the value itself, not a JSON-encoded string of it" when a string arrived where an
    array or object was declared — the exact shape a gateway dialect produces, and one the
-   model cannot infer from a bare type complaint. A `wrong_type` message also repeats the
+   model cannot infer from a bare type complaint. Such a string that opens like JSON (`[`
+   or `{`) but does not decode is instead `invalid_json_text`: its message names the
+   decoder's message, the character position and up to thirty characters on each side
+   with the position marked (`ops is JSON text with an error at character 486 (Expecting
+   ',' delimiter): ...1000)}]}}, {"<<here>>op": ...`), and its `fix` says to correct that
+   spot and resend, escaping quotes and newlines inside a string such as a step's code.
+   A model whose provider sends containers as JSON text cannot send the value itself, so
+   the live evaluation of 2026-10-01 saw Qwen resend the same broken text after the
+   type-only message until the identical-request stop ended the turn. The excerpt is the
+   model's own argument, already in its history, like a rejected key. Each different
+   text is progress for the dry-run budget, because the budget compares the whole
+   arguments of a call whose error names no operation. A `wrong_type` message also repeats the
    field's own schema description when it has one, so a categorical rule `value` sent as a
    boolean or number reads the text form it must take. None of these are persisted, because
    `_session._persisted_message` copies exactly `code`, `validation_path`, and
@@ -2003,7 +2041,10 @@ fixture for route tests). The implemented coverage is:
   `update_node` that changes, drops or removes saved list or map entries is refused as
   `config_withheld` naming the node, key and entries by metadata only (map keys counted
   unless they are input names, a step list pointed at `edit_steps`), while keeping every
-  saved entry, a node the plan adds and a readable policy pass; a submodel edit is a
+  saved entry and a node the plan adds pass; under a readable policy a rewrite of a node
+  the turn has not read is `config_unread` naming the dropped response rows by output
+  path, with a fix to read the node's config, and one the turn read passes; without a
+  visibility nothing is guarded; a submodel edit is a
   `submodel_boundary` error; ref resolution (unknown ref, duplicate ref,
   ref shadowing an existing id); each unknown node reference case naming its fix (a ref
   without `$`, an `add_node` later in the batch by id or ref, an undeclared `$ref`, and a
@@ -2054,8 +2095,14 @@ fixture for route tests). The implemented coverage is:
   `STEP_KINDS`; the `guide` reference's `step_grammar` equals the renderer's step
   fields.
 - **`tests/test_assistant_tools.py`** — through the executor: the dry-run refuses
-  retyping a saved step list under an `internal` policy as a located, retryable
-  `config_withheld` and allows it under `restricted`; a parser refusal is located at the
+  retyping a saved step list as a located, retryable `config_withheld` under an
+  `internal` policy and `config_unread` under `restricted`; under `restricted` it allows
+  the rewrite once that executor's turn read the node's config or added the node, and
+  not after a read by an earlier turn's executor; a submodel occurrence's schema part
+  names its `factored` output and `vehicles` input ports, its consumer's input is named
+  by the port, its config part and an inner node stay `submodel_boundary`, and the turn
+  context lists the occurrence's input and output port and the consumer's input from the
+  occurrence; a parser refusal is located at the
   node and operation that wrote it (`invalid_config` for a rating row without its factor,
   `schema_unresolvable` with the parser's fix for number breakpoints on a Date column),
   and a schema failure at the node that raised, naming the terminal; a categorical factor
@@ -2134,7 +2181,9 @@ fixture for route tests). The implemented coverage is:
   value-free reasons without invoking an operation; an `unknown_field` rejection pins the
   named rejected keys and closed allowlist, and a `wrong_type` rejection pins the expected
   and received JSON types for both a stringified container and a lone object sent where a
-  batch was declared. The rendered graph is asserted to
+  batch was declared, while JSON text with an unterminated code string is
+  `invalid_json_text` naming the decoder's message, the character and the marked
+  excerpt, with a fix. The rendered graph is asserted to
   name edge handles in the operation vocabulary. Dataset
   coverage pins installed-registry extension parity and rejects direct hidden,
   state-directory, and credential-file listing/schema inspection; preview
@@ -2393,9 +2442,10 @@ fixture for route tests). The implemented coverage is:
   and an edited wire-operation field description each fail with the changed lines in
   the unified diff of every affected file and of the hashes file.
 - **`tests/test_assistant_loop.py`** — against a scripted fake provider: text-only turn;
-  an outcome marker on any line of the final round, after prose, a list marker or
-  markdown emphasis, decides the outcome (the last one wins, with the text after it as
-  detail) while a marker inside a sentence does not; an apply in a message that asks is
+  an outcome marker anywhere in the final round, after prose or a list marker, bare or
+  wrapped in backticks or markdown emphasis, decides the outcome (the last one wins, with
+  the text after it and its wrapping as detail) while lowercase text, a marker inside a
+  longer word and a marker without detail do not; an apply in a message that asks is
   refused unrun with `apply_in_outcome_message`; the egress policy says saved
   configuration is withheld below `restricted` and mentions the redaction of code only
   when the config part is readable;
@@ -2415,7 +2465,8 @@ fixture for route tests). The implemented coverage is:
   after two attempts, the same diagnostic for an unchanged operation stops, the same
   diagnostic after its operation changed does not, four failures that each change the
   plan spend the budget whatever their class, three independent errors converge to an
-  applied turn, and repeated malformed calls block with their own wording; read-only
+  applied turn, repeated malformed calls block with their own wording, and undecodable
+  JSON texts that differ are progress while resending one stops; read-only
   questions, explanation requests after a read, and authoring wording without a dry-run end
   `answered` with no controller reminder; a validated plan left unapplied receives exactly
   one reminder naming the plan hash and then ends `incomplete` with its reason; a failed

@@ -331,12 +331,20 @@ function appendActivity(entries: TranscriptEntry[], entry: TranscriptEntry): Tra
   return [...closeAssistant(entries), entry]
 }
 
-const OUTCOME_MARKERS = { needs_input: "NEEDS_INPUT:", blocked: "BLOCKED:" } as const
+const OUTCOME_MARKERS = { needs_input: "NEEDS_INPUT", blocked: "BLOCKED" } as const
+
+/**
+ * The backend's outcome marker (`_loop._OUTCOME_MARKER`) at the end of a text:
+ * a whole, case-sensitive word with its colon and the backticks or emphasis
+ * that wrap it, such as `**NEEDS_INPUT**:` or a backticked `BLOCKED:`.
+ */
+const TRAILING_OUTCOME_MARKER = /(?<![A-Za-z0-9_])[`*_]*(NEEDS_INPUT|BLOCKED)[`*_]*:[`*_]*$/
 
 /**
  * Remove the model's `NEEDS_INPUT:`/`BLOCKED:` text, which the outcome card
  * shows instead. By the backend contract the last assistant segment ends with
- * the marker followed by the outcome's detail; anything else is contract drift.
+ * the marker, anywhere in a line, followed by the outcome's detail; anything
+ * else is contract drift.
  */
 function withoutOutcomeText(
   entries: TranscriptEntry[],
@@ -349,12 +357,13 @@ function withoutOutcomeText(
   const body = text.endsWith(detail)
     ? text.slice(0, text.length - detail.length).trimEnd()
     : null
-  if (segment?.kind !== "assistant" || body === null || !body.endsWith(marker)) {
+  const found = body === null ? null : TRAILING_OUTCOME_MARKER.exec(body)
+  if (segment?.kind !== "assistant" || body === null || found?.[1] !== marker) {
     throw new Error(
-      `Assistant contract violation: the turn's reply does not end with its ${marker} outcome.`,
+      `Assistant contract violation: the turn's reply does not end with its ${marker}: outcome.`,
     )
   }
-  const rest = body.slice(0, body.length - marker.length).trimEnd()
+  const rest = body.slice(0, found.index).trimEnd()
   return rest
     ? entries.map((entry, entryIndex) => (entryIndex === index ? { ...segment, text: rest } : entry))
     : entries.filter((_, entryIndex) => entryIndex !== index)

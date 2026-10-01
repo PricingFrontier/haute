@@ -36,7 +36,6 @@
         "node_configs": {
           "price_scenarios": {
             "stepCount": 5,
-            "step_column": "scenario_index",
             "column_name": "price_factor",
             "min_value": 0.9,
             "max_value": 1.1,

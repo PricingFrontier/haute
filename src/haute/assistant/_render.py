@@ -394,7 +394,9 @@ def render_egress_policy(egress: EgressPolicy) -> str:
             f"- Highest sensitivity sent: `{egress.max_sensitivity}` (saved pipeline "
             "metadata needs `internal`; saved node configuration needs `restricted`)",
             (
-                "- Saved node configuration: readable through `inspect_node`'s config part"
+                "- Saved node configuration: readable through `inspect_node`'s config part. "
+                "`update_node` replaces a key's whole value: before replacing a saved list "
+                "or map, read that node's config in this turn and keep its entries"
                 if config_readable
                 else "- Saved node configuration: withheld; `inspect_node` refuses its config "
                 "part for every node, so you cannot see any node's factors, tables, "

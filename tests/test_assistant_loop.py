@@ -890,6 +890,50 @@ class TestMutationCompletionController:
             "Last error: ops[1]: unknown field 'colour'."
         )
 
+    async def test_a_different_malformed_text_is_progress_and_only_a_resend_stops(
+        self, store, session_id
+    ):
+        """Undecodable JSON text is refused with the same code, reason and fix
+        wherever it breaks; each different text the model sends after reading
+        its located error is progress, and only resending the same text stops."""
+
+        texts = ['[{"op": "add_node"', '[{"op": "add_node",]', '[{"op": "add_node",]']
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": text}),
+                    TurnStop("tool_use", _usage()),
+                ]
+                for index, text in enumerate(texts, start=1)
+            ]
+        )
+        calls = 0
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            return {
+                "error": {
+                    "code": "invalid_request",
+                    "message": f"ops is JSON text with an error at character {calls}",
+                    "validation_path": "dry_run_graph_edits.ops",
+                    "validation_reason": "invalid_json_text",
+                    "fix": "Correct the JSON text at that character and resend the call.",
+                }
+            }
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        assert calls == 3
+        assert len(provider.calls) == 3
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert text.startswith(
+            "BLOCKED: the dry-run call was rejected by its input schema and the same "
+            "request was sent again (invalid_request)"
+        )
+
     async def test_retries_unqualified_end_once_and_accepts_explicit_blocker(
         self, store, session_id
     ):
@@ -1449,13 +1493,22 @@ class TestTurnOutcome:
                 "blocked",
                 "the file is missing.\nIt has no rows.",
             ),
+            (
+                "Saved both nodes.\n\nHowever, `BLOCKED:` Pipeline execution is not available.",
+                "blocked",
+                "Pipeline execution is not available.",
+            ),
+            ("I would reply NEEDS_INPUT: here.", "needs_input", "here."),
+            ("Which one? `NEEDS_INPUT`: Which objective?", "needs_input", "Which objective?"),
+            ("BLOCKED: no tool. Or **NEEDS_INPUT:** which file?", "needs_input", "which file?"),
         ],
     )
-    async def test_a_marker_opening_any_line_of_the_final_round_is_its_outcome(
+    async def test_the_last_marker_in_the_final_round_is_its_outcome(
         self, store, session_id, text: str, kind: str, detail: str
     ):
-        """The last line that starts, after list markers, whitespace and markdown
-        emphasis, with an outcome marker decides; its detail is the text after it."""
+        """The last outcome marker anywhere in the final round's text decides,
+        wrapped in backticks or emphasis or not; its detail is the text after it,
+        without the marker's wrapping."""
 
         provider = ScriptedProvider([[TextDelta(text), TurnStop("end", _usage())]])
 
@@ -1464,10 +1517,16 @@ class TestTurnOutcome:
         outcome = _assert_single_terminal(events).outcome
         assert (outcome.kind, outcome.detail) == (kind, detail)
 
-    async def test_a_marker_inside_a_sentence_is_not_an_outcome(self, store, session_id):
-        provider = ScriptedProvider(
-            [[TextDelta("I would reply NEEDS_INPUT: here."), TurnStop("end", _usage())]]
-        )
+    @pytest.mark.parametrize(
+        "text",
+        ["I am blocked: nothing runs.", "NOT_BLOCKED: fine.", "NEEDS_INPUTS: none.", "BLOCKED:"],
+    )
+    async def test_text_without_an_exact_marker_and_detail_is_not_an_outcome(
+        self, store, session_id, text: str
+    ):
+        """A marker is case-sensitive, a whole word with its colon, and needs a detail."""
+
+        provider = ScriptedProvider([[TextDelta(text), TurnStop("end", _usage())]])
 
         events = await _run(store, session_id, "What do you do?", provider=provider)
 
@@ -2066,6 +2125,8 @@ class TestSystemPrompt:
         assert "A message that asks or blocks applies nothing." in prompt
         assert "start a line with `BLOCKED:` naming that part" in prompt
         assert "Never ask the analyst to confirm a value, name or threshold" in prompt
+        assert "or anything a tool can answer: look it up first" in prompt
+        assert "which labels a banded column holds (its banding node's config)" in prompt
         assert "never with Polars code" in prompt
         assert "- `submodel` (Submodel, read-only to you)" in prompt
         assert "Number and date ranges have no recipe" in prompt
@@ -2170,6 +2231,7 @@ class TestSystemPrompt:
         assert "never rewrite a list or map you have not read" in internal
         assert "redacts" not in internal
         assert "- Saved node configuration: readable through `inspect_node`" in restricted
+        assert "read that node's config in this turn and keep its entries" in restricted
         assert "`inspect_node`'s config part redacts node code" in restricted
 
     def test_recipe_operations_reach_the_provider_wire_within_the_property_budget(self):
