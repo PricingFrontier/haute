@@ -365,11 +365,11 @@ tool-call budget, never a case's.
 ## Execution boundary
 
 Execution happens in the harness, never in the assistant. The assistant has no
-execution tool, and the harness executes nothing until the turn has ended. The
-[data check](high-level.md#approved-change-contract--data-checks) a dry-run runs
-under the `project` profile's `allow_aggregate_statistics` belongs to the
+execution tool, and the harness executes nothing until the turn has ended.
+Under the `project` profile's `allow_aggregate_statistics`, the
+[data check](high-level.md#approved-change-contract--data-checks) belongs to the
 assistant under test, never to the harness: its findings are part of what the
-model saw, and they never replace or stand in for a golden.
+model sees, and they never stand in for a golden.
 It then parses the saved pipeline, flattens its submodel occurrences as a
 preview does, and runs each golden node through the production preview engine
 up to that node only, under the golden's scenario,

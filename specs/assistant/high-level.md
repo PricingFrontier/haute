@@ -1079,7 +1079,9 @@ field membership, requiredness, discriminator values, and node-type enums are th
 maintained in a second hand-written schema.
 
 Graph authoring never runs the graph, collects rows, invokes a sink, or
-materialises a configured output. Dry-run constructs the production lazy plan
+materialises a configured output. The data check that may follow a dry-run is
+not graph authoring: the plan is complete and stored before it starts, and
+nothing it collects enters the plan. Dry-run constructs the production lazy plan
 far enough to resolve affected schemas only, so valid graph edits do not
 require a second user confirmation after the user
 has asked the assistant to author the pipeline. This includes Polars code,
@@ -1314,7 +1316,10 @@ and stated in the turn context, and gates nothing else.
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
 executable source is available only through `inspect_node`'s config part when
-`allow_executable_source` permits it. Resolving a schema still runs the
+`allow_executable_source` permits it. Rows are read only behind a flag of their
+own: `inspect_node`'s profile part returns a frame's values under
+`allow_row_samples`, and the [data check](#approved-change-contract--data-checks)
+returns value-free counts under `allow_aggregate_statistics`. Resolving a schema still runs the
 preamble and node code over the project's inputs, and that code, or Polars
 itself when a cast or computation meets a bad value, can put row values in an
 exception. Unless `allow_row_samples` permits row samples, such a failure
@@ -1635,7 +1640,13 @@ authorises a check.
   never replaces the evaluation's independent execution goldens. No check of an
   inactive scenario, of a lineage through Model Scoring or Apply Optimisation,
   or of a join inside code or a step list, and no configurable bound, deadline,
-  cap or threshold.
+  cap or threshold. Excluding scored lineages means every node downstream of a
+  Model Scoring node reports `artifact_in_lineage`, including the rating and
+  output nodes of a fixture that scores a model, so recovery cases downstream of
+  scoring are not exercised until a later package admits locally available
+  artifacts. The thresholds (0.10 for rating misses, 0.5 for mostly-default
+  bands and mostly-null columns) are starting values that ASSIST-43's
+  evaluation measures.
 - **Failure and compatibility semantics.** A `haute.toml` whose
   `[assistant.egress]` lacks `allow_aggregate_statistics` fails with a
   configuration error naming the key; there is no default and no migration. A
