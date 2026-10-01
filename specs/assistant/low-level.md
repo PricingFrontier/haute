@@ -2765,8 +2765,9 @@ the product already owns.
   on the model's request under `allow_row_samples`; `build_verified_plan` in
   `src/haute/assistant/_application.py` resolves schemas and collects nothing.
   `EgressPolicy.allow_aggregate_statistics` is parsed, hashed and rendered and
-  read by nothing else. The interactive worker pool always waits for a slot, and
-  no walk measures aggregates or records a failure's provenance.
+  read by nothing else. The interactive worker pool always waits for a slot, a
+  waiter keeps the slot object it selected across a replacement, and no walk
+  measures aggregates or records a failure's provenance.
 - **Unresolved target.** One assistant module owns the check: eligibility, the
   request that crosses into the worker, the worker half, the measurements, the
   findings and the result model. The dry-run tool calls it after the plan is
@@ -2788,46 +2789,100 @@ decimal places only when rendered. The admission operation name is
 `assistant_data_check`; the session supersession key and the worker affinity key
 are both `("assistant_data_check", session_id)`.
 
-**On the server, before admission.** In order: the worker mode
-(`resolve_interactive_execution_mode` in `src/haute/_interactive_workers.py`;
-`thread` ends the check as `worker_mode_unsupported`), the plan's tier, then
-eligibility. The changed nodes come from the plan's `SemanticDiff` through the
-same seed derivation `_diff_seed_nodes` uses (one shared helper with a flag for
-the preamble widening, not a copy). Eligibility applies the high-level
-precedence with: `SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`; a Load File's
-`fileType`; a Model Scoring node's locality, decided by the same
-`resolve_backend` (configuration only) and disk-cache path helpers
-(`_disk_cache_root`, `_artifact_cache_path`, with the EBM contract artifact)
-that the fast path of `load_mlflow_model` in `src/haute/_mlflow_io.py` uses, so
-the check counts as local exactly what a preview would load without a tracking
-or registry call; an Apply Optimisation node's `sourceType`; the lineage
-(`source_lineage_graph` in `src/haute/execution.py`, under the candidate graph's
-`active_source`); and each snapshot-backed input's
-`SourceCacheStore.status(identity, source_signature=...)`, with the identity
-and signature from `source_cache_identity` and `source_signature` in
-`src/haute/_input_providers.py`, read and never prepared: `ready` with `fresh`
-or `unknown`, or `ready` with the signature `missing`, is readable, and every
-other state is `input_not_prepared`. The binding is computed here:
-`graph_fingerprint` (in `src/haute/_cache.py`) of `flatten_graph(result_graph)`,
-the checked scenario, and `dataframe_graph_input_identity(...).digest` (in
-`src/haute/execution.py`) over the lineage, read before admission and again
-after the worker returns.
+**On the server, before admission.** The server reads only configuration, file
+metadata and published-generation pointers, never an input's content. In
+order: the worker mode (`resolve_interactive_execution_mode` in
+`src/haute/_interactive_workers.py`; `thread` ends the check as
+`worker_mode_unsupported`), the plan's tier, then eligibility. The changed
+nodes come from the plan's `SemanticDiff` through the same seed derivation
+`_diff_seed_nodes` uses (one shared helper with a flag for the preamble
+widening, not a copy). Eligibility applies the high-level precedence with:
+`SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`; a Load File's `fileType`; a
+Model Scoring node's locality, decided by the same `resolve_backend`
+(configuration only) and disk-cache path helpers (`_disk_cache_root`,
+`_artifact_cache_path`, with the EBM contract artifact) that the fast path of
+`load_mlflow_model` in `src/haute/_mlflow_io.py` uses, as a file-existence test
+only, so the check counts as local exactly what a preview would load without a
+tracking or registry call; an Apply Optimisation node's `sourceType`; the
+lineage (`source_lineage_graph` in `src/haute/execution.py`, under the
+candidate graph's `active_source`); and each snapshot-backed input's published
+state from `input_snapshot_read_status`, a shared read-only helper extracted
+from `_status_for_config` in `src/haute/routes/input_cache.py`, which that
+route then calls as well. The helper combines `SourceCacheStore.status`, for
+the identity `source_cache_identity` in `src/haute/_input_providers.py`
+derives from configuration, with the active-refresh state the route already
+overlays: the editor's running input-cache build (`input_snapshot_build_running`)
+and this process's preparation single-flight in
+`src/haute/_input_preparation.py`, read through a read-only probe of that
+single-flight. It therefore reports `building` while a previous generation is
+still `ready`. The check calls it without a source signature, so it reads no
+input content: `ready` passes this stage whatever its freshness, and `building`,
+`missing`, `corrupt` and `failed` make the nodes that read the input
+`input_not_prepared`. The graph digest (`graph_fingerprint` in
+`src/haute/_cache.py` of `flatten_graph(result_graph)`, which reads the preamble
+and the utility module sources it imports, not data) and the checked scenario
+are recorded here.
 
-**Worker pool extension.** `src/haute/_interactive_workers.py` gains two
-options on a pool run, both used only by the check. A non-waiting acquisition
-tries the affinity slot's lock once and raises a busy error at once when it is
-held, where every other caller keeps waiting; the check maps it to
-`worker_busy`. A pre-emptible job registers itself on its slot while it runs;
-any waiting request for that slot (every caller but another check) marks the
-registered job pre-empted before it starts waiting for the lock. The pre-emptible job's stop reason reads that mark,
-so its result wait stops and replaces the worker exactly as a timeout does
-(`_stop_and_replace`: terminate, join, confirm the process has exited, start
-the replacement) before the lock is released, and the check maps the outcome to
-`superseded_by_preview`. The check passes as its timeout what remains of its 30
-seconds at submission, so the pool's own deadline ends the run at the check's
-deadline. Termination is confirmed in `_close_slot`; a worker that cannot be
-confirmed dead raises the pool's termination error, which the check reports as
-`internal_error`.
+**In the worker, around the walk.** Every read that can hash an input's whole
+content runs in the killable worker, inside the deadline. Before the walk the
+worker computes each snapshot-backed input's `source_signature` (in
+`src/haute/_input_providers.py`) and from it the freshness the high-level table
+uses: a node whose lineage reads a `stale` input becomes `input_not_prepared`,
+while `fresh`, `unknown` and a `missing` signature (the original file is gone
+and the published generation stays authoritative) remain readable. It then
+reads the start binding: `source_generation`, one digest over
+`dataframe_graph_input_identity(...).digest` (in `src/haute/execution.py`) for
+the lineage, which already signs local input files, snapshot generation
+pointers and a file-sourced Apply Optimisation artifact
+(`_local_runtime_input_path_fields` lists its `artifact_path`), and over the
+identity of each local Model Scoring node's cached artifact, computed by the
+loader's own helpers in `src/haute/_mlflow_io.py` (`_local_artifact_fingerprint`,
+or `_ebm_identity_fingerprint` with the cached contract), which that identity
+does not sign; and `freshness_tokens`, the `observe_freshness` token (in
+`src/haute/_json_shred/_source_proof.py`: a native file revision or a stat,
+never content) of every file the digest signs, cached model files and EBM
+contracts included. After the walk it reads both again, and a different digest
+makes the check `source_changed`. A later freshness comparison, such as the
+change card's, re-observes only the stored tokens on the server, so it never
+hashes a file: a changed or missing token labels the findings as computed from
+earlier inputs, without deciding whether the content changed.
+
+**Worker pool extension.** `src/haute/_interactive_workers.py` changes in four
+ways; every caller shares the first, and only the check uses the others.
+
+- Scheduling survives worker generations. Today `run` selects a slot object,
+  waits on that slot's own lock and submits through that object, while a
+  replacement installs a new slot with a new lock, so a request that waited
+  through a replacement would submit to the retired worker's closed queues.
+  Each slot index instead gets one scheduling lock, created with the pool and
+  kept across replacements. `run` takes its index's scheduling lock, then reads
+  that index's current slot under `_state_lock` and checks that it is open
+  before submitting. A replacement happens while the job that ended the old
+  worker still holds the scheduling lock, so a waiter takes it only once the
+  replacement is installed, and submits to the replacement.
+- A non-waiting acquisition tries the scheduling lock once and raises a busy
+  error when it is held, where every other caller keeps waiting; the check maps
+  it to `worker_busy`. The check never starts the pool or a worker: a pool that
+  has not started is also `worker_busy`.
+- A pre-emptible job registers itself on its index while it runs, and any
+  waiting request for that index (every caller but another check) marks the
+  registered job pre-empted before it starts waiting. The job's stop reason
+  reads the mark, so its result wait stops and replaces the worker as a timeout
+  does (`_stop_and_replace`: terminate, join, confirm the process has exited,
+  start the replacement) before the scheduling lock is released, and the check
+  maps the outcome to `superseded_by_preview`. The pre-empting request is
+  already waiting on that lock, and a check never waits, so interactive priority
+  holds across the handoff: the replacement's first job is a waiting
+  interactive request.
+- The check's run carries one absolute monotonic deadline rather than a
+  duration. It bounds the submission of the request to the worker's queue (a
+  put with the remaining time), the result wait and the release acknowledgement,
+  so the run ends at the check's deadline whatever stage it is in. Termination
+  and the replacement's readiness then take at most the pool's own bounds (two
+  2-second joins and the 30-second start timeout): the documented cost of
+  keeping the slot usable. Termination is confirmed in `_close_slot`; a worker
+  that cannot be confirmed dead raises the pool's termination error, which the
+  check reports as `internal_error`.
 
 **Graph walker extension.** `src/haute/_graph_walker.py` gains a measuring walk
 purpose beside `SINK`, `DISPLAY` and `CHUNK`, with its own `CollectPolicy`
@@ -2873,17 +2928,22 @@ nothing but loses the diagnosis.
 `SupersededRequestError` to `superseded`; a cancelled turn to `cancelled`;
 anything else to `internal_error`. No outcome raises out of the dry-run tool.
 
-**Result model.** The model-facing value is one of two closed objects,
-discriminated by `outcome`, with these fields and no others:
+**Result model.** The dry-run result carries the check under exactly one of
+two keys, or under neither: `data_check`, whose value is one of two closed
+objects discriminated by `outcome`, or `data_check_omitted`, whose value is the
+fixed note "The data check's result did not fit in this tool result; it is
+stored with the plan." (see **Size budget**). The two objects have these fields
+and no others:
 
 - `checked`: `version` (int), `outcome`, `scenario` (str), `row_bound` (int),
   `elapsed_ms` (int), `nodes` (list of node records, one per changed node in the
-  changed nodes' order), `findings` (list), `findings_omitted` (int),
-  `detail_truncated` (bool).
+  changed nodes' order, less those dropped for size), `nodes_omitted` (int),
+  `findings` (list), `findings_omitted` (int), `detail_truncated` (bool).
 - `not_run`: `version`, `outcome`, `scenario`, `reason` (one of the high-level
   not-run reasons), `detail` (str, the admission's reason for
   `admission_refused`, otherwise null), `elapsed_ms`, `nodes` (the `not_checked`
-  records of every changed node for `no_checkable_nodes`, otherwise empty).
+  records of every changed node for `no_checkable_nodes`, otherwise empty, less
+  those dropped for size), `nodes_omitted` (int).
 
 A node record is discriminated by `status`:
 
@@ -2924,7 +2984,7 @@ a finding because a share finding needs a non-zero denominator), `rules` (list
 of int), `rules_omitted` (int), `validate` (str), `side` (`base`, `join` or
 `both`), `duplicate_key_tuples` (`{base, join}`), `error` (an error record) and
 `at_or_upstream` (bool). The stored result adds `binding`: `{plan_hash,
-graph_digest, source_generation, scenario}`.
+graph_digest, source_generation, freshness_tokens, scenario}`.
 
 A worked example, for a plan that joins a region table onto quotes, bands the
 joined region, and reads the band into a Quote Response:
@@ -3009,6 +3069,7 @@ joined region, and reads the band into a Quote Response:
       "remedy": null
     }
   ],
+  "nodes_omitted": 0,
   "findings": [
     {
       "kind": "banding_all_default",
@@ -3034,16 +3095,33 @@ joined region, and reads the band into a Quote Response:
 }
 ```
 
-**Size budget.** The detail is serialised as compact UTF-8 JSON and bounded in
-this order: findings past `DATA_CHECK_MAX_FINDINGS`, or past
-`DATA_CHECK_FINDINGS_BYTES` from the end of their order, are dropped and counted
-in `findings_omitted`; then, while the whole detail exceeds
-`DATA_CHECK_DETAIL_BYTES`, the last `checked` or `failed` record still holding
-detail is reduced to `detail_omitted` and `detail_truncated` becomes true. The
-dry-run response keeps every plan field; if attaching the detail would push it
-past `_MAX_TOOL_CONTEXT_BYTES` (256,000), the detail is cut to `version`,
-`outcome`, `scenario`, `reason`, `findings` and `detail_truncated: true`, and
-then to its outcome alone with a note, before `_bounded_tool_result` sees it.
+**Size budget.** Sizes are of compact UTF-8 JSON, and room is measured on the
+fully attributed tool result, the value `_bounded_tool_result` measures after
+`_attributed_tool_result` adds its fields. The room R is
+`_MAX_TOOL_CONTEXT_BYTES` (256,000) less the size of the attributed dry-run
+result without the check; the allocation is the smaller of
+`DATA_CHECK_DETAIL_BYTES` and R less the bytes the `data_check` key and its
+separator add. Starting from the full object, the reduction applies these
+steps in order, each repeated until the object fits the allocation before the
+next starts; every step removes an element of a finite list, so it always ends:
+
+1. Findings beyond `DATA_CHECK_MAX_FINDINGS`, and then beyond
+   `DATA_CHECK_FINDINGS_BYTES`, are dropped from the end of their order into
+   `findings_omitted`. This step applies whatever the room.
+2. The last `checked` or `failed` record still holding detail is reduced to
+   `{node, status, detail_omitted: true}`, and `detail_truncated` becomes true.
+3. The last node record of any status, `not_checked` and reduced records
+   included, is dropped into `nodes_omitted`, and `detail_truncated` becomes
+   true.
+4. The last finding is dropped into `findings_omitted`.
+5. When the object with no nodes and no findings still does not fit, the result
+   carries `data_check_omitted` instead of `data_check`, and carries neither
+   when even that note does not fit R.
+
+The stored check is never reduced: it is kept whole beside the plan, whatever
+reaches the model. The dry-run's own fields are never reduced for the check, and
+a dry-run whose own attributed result exceeds the limit is
+`tool_result_too_large` exactly as it is without a check.
 
 - **Non-goals.** As in the high-level contract. The schema tier, the plan hash
   and `build_verified_plan` are unchanged, and editor callers of the worker pool
@@ -3054,21 +3132,32 @@ then to its outcome alone with a note, before `_bounded_tool_result` sees it.
   Testing when it lands, seeds candidate graphs under `tmp_path` and proves each
   finding kind, each eligibility reason and its precedence, and each not-run
   reason. Its pool tests run in process mode (the test suite's autouse fixture
-  selects thread mode): an occupied slot gives `worker_busy` with no wait, two
-  sessions never wait for each other, an editor preview during a check gives
-  `superseded_by_preview` after the check's worker has exited, and a free-code
-  `map_batches` callback that never returns is terminated at a shortened
-  deadline with the slot serving the next request. Its walker tests prove a
+  selects thread mode). An occupied slot gives `worker_busy` with no wait, and
+  so does a slot whose worker is still starting; two sessions never wait for
+  each other. An editor preview queued on the slot before the check's worker is
+  terminated makes the check `superseded_by_preview`, then runs on the
+  replacement worker (its process id differs from the check's, whose process
+  has exited) and succeeds, ahead of any check. A free-code `map_batches`
+  callback that never returns, a binding read hashing an input slowed past the
+  deadline and a dispatch delayed past it each end the check at a shortened
+  deadline, with the slot serving the next request. Its walker tests prove a
   raising node read by two checked nodes reported once with an independent
-  branch measured,
-  and a rating miss whose input measurements survive. It proves that the plan
-  hash and the dry-run's evidence are identical with and without a check; that
-  no input snapshot, source cache, node-output snapshot or model cache entry
-  gains a generation or a file during a check; that an excluded Load File's
-  loader is never invoked; that a check result contains no data or
-  configuration value; that the detail stays within 32,000 bytes while the
-  dry-run's plan fields are unchanged; and that the binding hides findings for
-  another graph digest or scenario and labels them for refreshed inputs. The
-  latency of a check on 100,000, 1,000,000 and 5,000,000 rows is recorded in
-  the evaluation's evidence.
+  branch measured, and a rating miss whose input measurements survive. Its
+  binding tests replace a cached model file, and separately an EBM's cached
+  contract, with the graph configuration unchanged: during a check this gives
+  `source_changed`, and after it the stored findings are labelled. Its status
+  test runs an input-cache refresh while the previous generation stays readable
+  and gets `input_not_prepared` with the input named. Its size tests measure the
+  fully attributed dry-run result: an oversized check is reduced step by step
+  to its allocation with the dry-run's fields unchanged, and a successful
+  dry-run that leaves no room for the empty object carries
+  `data_check_omitted`, or nothing, and stays successful. It also proves that
+  the plan hash and the dry-run's evidence are identical with and without a
+  check; that no input snapshot, source cache, node-output snapshot or model
+  cache entry gains a generation or a file during a check; that an excluded
+  Load File's loader is never invoked; that a check result contains no data or
+  configuration value; and that the binding hides findings for another graph
+  digest or scenario and labels them for refreshed inputs. The latency of a
+  check on 100,000, 1,000,000 and 5,000,000 rows is recorded in the
+  evaluation's evidence.
 - **Roadmap package.** [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run).

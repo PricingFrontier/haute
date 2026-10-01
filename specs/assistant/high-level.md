@@ -1469,14 +1469,20 @@ operation name `assistant_data_check` (refused at once rather than waiting) and
 runs through `src/haute/_interactive_workers.py::run_in_interactive_worker`,
 under the isolated budget derived from that admission and the worker's native
 memory cap. Its deadline is 30 seconds, fixed rather than configurable and
-absolute from the moment the check starts: it covers eligibility, the binding
-reads, admission, worker-slot acquisition and startup, and the run. The check
-never waits for a worker slot: it tries once to take the slot its affinity
-selects, and when that slot is held it does not run and reports `worker_busy`.
-Editor requests have priority: when an editor preview, trace, output assembly
-or free-code column resolution, or any other interactive request that waits for
-its slot, needs the slot a check holds, the check is stopped and reports `superseded_by_preview`, and the editor request takes the
-slot after the check's worker has been replaced. At the deadline, on
+absolute from the moment the check starts, and that one deadline is carried
+through every stage. The server's work before admission reads only
+configuration, file metadata and published-generation pointers, never an
+input's content. The check never waits for a worker slot or a starting worker:
+it tries once to take the slot its affinity selects, and when that slot is held,
+or its worker is not running, it does not run and reports `worker_busy`. Every
+read that can hash an input's whole content (an input's source signature, the
+binding's input identity and the cached model's identity) runs in the worker,
+where the deadline's termination bounds it together with the request's dispatch
+and the run. Editor requests have priority: when an editor preview, trace,
+output assembly or free-code column resolution, or any other interactive
+request that waits for its slot, needs the slot a check holds, the check is
+stopped and reports `superseded_by_preview`, and the waiting request runs next,
+on the replacement worker, before any other request. At the deadline, on
 supersession by a newer check in the same session (`superseded`), on
 supersession by an editor request, and when the turn stops (`cancelled`), the
 check's worker process is terminated, and its slot is released only after
@@ -1503,6 +1509,15 @@ first.
 | Data Input from a snapshot (every other file format, inline records, database and Databricks inputs) | its published generation is `ready` and `fresh`; `ready` and `unknown`, which is how database and Databricks inputs always read because they have no local source signature; or `ready` while its original file is missing, since a published generation stays authoritative | `ready` and `stale` (its file changed, so a preview would refresh it), `building` (a refresh is in progress; the check never waits for it), `missing`, `corrupt` or `failed` |
 | Quote Input from a flat file (any path that is not JSON, JSONL, NDJSON or XML) | always, from its file, as a preview reads it directly | never; as for a direct Data Input, a file missing at run time is an execution failure and `source_changed` |
 | Quote Input from a structured file (JSON, JSONL, NDJSON or XML) | each table it reads has a published table snapshot in a readable state as above | a table it reads has no published snapshot or is in a non-readable state |
+
+The published state, including `building` while a refresh runs and the previous
+generation is still readable, is read on the server through the same read-only
+status the editor's input-cache panel shows, which overlays a running refresh on
+the published generation's state. Freshness (`fresh` or `stale`) needs the
+source's content signature, so it is decided in the worker before the walk. A
+refresh the server cannot see, such as one a preview's preparation runs in
+another worker process, changes a generation pointer the binding signs and so
+ends the check as `source_changed`.
 
 Each measured frame, which is a checked node's output port or one of its input
 frames, is cut to its first 1,000,000 rows with `head`, the bound
@@ -1649,36 +1664,48 @@ are ordered advisory first, then by the changed nodes' order, then by the order
 of the kinds in the table above. At most 20 are returned, with the number
 omitted.
 
-**How large it may be.** The check's detail is bounded at 32,000 bytes of
-compact UTF-8 JSON, well under the 256,000-byte limit above which a tool result
-becomes `tool_result_too_large`. Findings take at most 16,000 bytes of it,
-dropping from the end of their order. When the node records do not fit the
-rest, the measurement detail of the last checked node is replaced by
-`detail_omitted`, and so on backwards, and `detail_truncated` says so. The
-dry-run's own response is never reduced for the check: if attaching the
-detail would still push the whole response over its limit, the detail is cut to
-its outcome and findings, and then to its outcome alone with a note, so a check
-never turns a successful dry-run into an error.
+**How large it may be.** The model-facing check is bounded at 32,000 bytes of
+compact UTF-8 JSON, and never more than the room the dry-run's own response
+leaves under the 256,000-byte limit above which a tool result becomes
+`tool_result_too_large`, measured on the fully attributed result the limiter
+measures. Findings take at most 16,000 bytes of it. When the result does not
+fit, it is reduced in a fixed order that always ends: the last node record
+holding detail loses it (`detail_omitted`), then the last node record of any
+status is dropped (`nodes_omitted`), then the last finding is dropped
+(`findings_omitted`). When even the empty result does not fit, the dry-run
+result carries a fixed one-line note that the check's result was omitted for
+size instead of the check, and nothing when even the note does not fit. The
+stored check is never reduced, and the dry-run's own fields are never reduced
+for the check, so a check never turns a successful dry-run into an error. The
+low-level contract states the variants and each step.
 
 **What findings are bound to.** A check result records its binding: the check
 `version` (1, incremented whenever a measurement, threshold or shape changes);
 the `plan_hash` it was computed for; `graph_digest`,
 `src/haute/_cache.py::graph_fingerprint` of the flattened candidate graph, which
 covers node configuration, edges, the preamble and imported utility modules but
-not the active scenario; the checked `scenario`; and `source_generation`, the
-digest of `src/haute/execution.py::dataframe_graph_input_identity` over the
-check's lineage under that scenario, which covers the input file signatures,
-published snapshot generation pointers and the preamble fingerprint that
-execution caches already sign. The source generation is read before execution
-and again after it; when the two differ the check is `not_run` with
-`source_changed`, so no finding describes inputs that changed under it.
+not the active scenario; the checked `scenario`; `source_generation`, a digest
+of `src/haute/execution.py::dataframe_graph_input_identity` over the check's
+lineage under that scenario, which covers the input file signatures, published
+snapshot generation pointers, a file-sourced Apply Optimisation artifact and the
+preamble fingerprint that execution caches already sign, together with the
+identity of each local Model Scoring node's cached model file and an EBM's
+cached contract, which that identity does not sign; and `freshness_tokens`, the
+native revision or stat token of every file the source generation signs, which
+reading never touches a file's content. The source generation and the tokens are
+read in the worker at the start of the check and again at its end; when the two
+source generations differ the check is `not_run` with `source_changed`, so no
+finding describes inputs or a model that changed under it. A later freshness
+comparison re-observes only the tokens, so it never hashes a file on the
+server.
 Findings are not plan facts: they are outside the plan hash, never computed or
 awaited under the save lock, and never recomputed or read by apply, so they
 never change what apply saves. A consumer shows findings only when both the
 graph digest and the scenario they record equal those of the graph it shows. A
 scenario mismatch hides them with a note naming the checked scenario, because
-they describe another branch; a source generation that differs within the same
-scenario keeps them visible, labelled as computed from earlier inputs. A change
+they describe another branch; a changed or missing freshness token within the
+same scenario (a refreshed input, a replaced model file or EBM contract) keeps
+them visible, labelled as computed from earlier inputs. A change
 card shows the findings of the dry-run whose plan hash it applied under those
 rules. The model-facing view states the checked scenario and omits the digests,
 as dry-run results omit revisions; the stored result keeps the whole binding.
@@ -1735,8 +1762,9 @@ error, determined in this order: `worker_mode_unsupported` (thread mode),
 `not_schema_tier` (a structural plan has nothing executable to measure),
 `no_checkable_nodes` (each changed node reports why), `admission_refused` (with
 the admission's reason, as a preview reports it), `worker_busy` (its worker
-slot was held), and then whichever of these ends the run: `deadline` (30 seconds
-passed), `memory_limited` (the worker exceeded the preview memory budget),
+slot was held or its worker was not running), and then whichever of these ends
+the run: `deadline` (30 seconds passed), `memory_limited` (the worker exceeded
+the preview memory budget),
 `superseded` (a newer check in the session replaced it),
 `superseded_by_preview` (an editor request needed its worker), `cancelled` (the
 turn stopped), `source_changed`, or `internal_error` (a defect in the check
@@ -1788,15 +1816,26 @@ authorises a check.
   check result; a frame above 1,000,000 rows reports `truncated`; a check whose
   worker slot is occupied reports `worker_busy` without waiting; checks from two
   sessions run side by side or report `worker_busy`, never wait for each other;
-  an editor preview arriving during a check reports `superseded_by_preview`,
-  its worker process has exited before the preview runs, and the preview
-  succeeds; a free-code callback that never reaches a checkpoint is stopped at
+  an editor preview queued while a check runs makes the check report
+  `superseded_by_preview`, and the preview then runs on the replacement worker
+  (a new process, after the check's process has exited) and succeeds; under a
+  shortened deadline, a binding read that hashes a slow input, a delayed
+  dispatch and a slot whose worker is still starting each end the check at its
+  deadline or as `worker_busy`, never waiting beyond the deadline plus
+  termination; a free-code callback that never reaches a checkpoint is stopped at
   the deadline with its worker process terminated and the slot usable again;
   thread mode reports `worker_mode_unsupported`; an excluded Load File's loader
   is never invoked; a Model Scoring node runs only from the disk model cache and
-  is `artifact_not_local` otherwise; admission refusal and a stopped turn report
-  their reasons with the dry-run unchanged; an oversized detail is cut within
-  its 32,000 bytes while the dry-run's response is unchanged; with the flag
+  is `artifact_not_local` otherwise; replacing the cached model file or an EBM's
+  cached contract with the graph configuration unchanged ends a running check
+  as `source_changed` and labels earlier findings; a refresh in progress while
+  the previous generation is readable makes the nodes that read it
+  `input_not_prepared`; admission refusal and a stopped turn report their
+  reasons with the dry-run unchanged; the size reduction is measured on the
+  fully attributed response, an oversized result is cut within its allocation
+  while the dry-run's fields are unchanged, and a successful dry-run that leaves
+  no room for the smallest result carries the omission note and stays
+  successful; with the flag
   false no check is attempted; a change card never shows findings for another
   graph digest, hides them after a scenario-only change, and labels them after
   a same-scenario input refresh; and latency is recorded on 100,000, 1,000,000
