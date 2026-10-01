@@ -446,6 +446,38 @@ def _resolve_base_url(table: dict[str, object], provider: AssistantProvider) -> 
     return _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
 
 
+#: Claude models that take adaptive thinking (`{"type": "adaptive"}`) and an
+#: effort level, the only Claude models the Anthropic adapter runs.
+ADAPTIVE_THINKING_MODELS = frozenset(
+    {
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-5",
+        "claude-sonnet-5-5",
+    }
+)
+
+
+def unsupported_anthropic_model(model: str) -> str | None:
+    """Why the Anthropic adapter cannot run *model*, or None when it can."""
+
+    if model in ADAPTIVE_THINKING_MODELS:
+        return None
+    return (
+        f"Anthropic model {model!r} is not one Haute runs: the assistant uses adaptive "
+        "thinking, which these Claude models support: "
+        f"{', '.join(sorted(ADAPTIVE_THINKING_MODELS))}."
+    )
+
+
 def _resolve_config(
     table: dict[str, object],
 ) -> AssistantConfig | tuple[str, str | None, str | None]:
@@ -506,6 +538,9 @@ def _resolve_config(
     api_key = os.getenv(key_name)
     if not api_key:
         return f"Missing API key environment variable: {key_name}.", provider, model
+
+    if provider == "anthropic" and (unsupported := unsupported_anthropic_model(model)):
+        return unsupported, provider, model
 
     return AssistantConfig(
         provider=provider,
@@ -618,6 +653,7 @@ def resolve_egress_policy(project_root: Path | None = None) -> EgressPolicy:
 
 
 __all__ = [
+    "ADAPTIVE_THINKING_MODELS",
     "AssistantConfig",
     "EgressPolicy",
     "AssistantProvider",
@@ -630,4 +666,5 @@ __all__ = [
     "mutations_readiness",
     "resolve_assistant_config",
     "resolve_egress_policy",
+    "unsupported_anthropic_model",
 ]

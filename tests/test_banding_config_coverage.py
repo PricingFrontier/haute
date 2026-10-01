@@ -20,26 +20,37 @@ from haute._banding_config import (
 class TestValidateMapValue:
     def test_none_rejected(self):
         with pytest.raises(ValueError, match="must map to a non-empty value"):
-            _validate_map_value(None, "rule")
+            _validate_map_value(None, "categorical", "north")
 
     def test_empty_string_rejected(self):
         with pytest.raises(ValueError, match="must map to a non-empty value"):
-            _validate_map_value("", "rule")
+            _validate_map_value("", "categorical", "north")
 
     def test_non_scalar_rejected(self):
         with pytest.raises(ValueError, match="must map to a JSON scalar value"):
-            _validate_map_value({"nested": 1}, "rule")
+            _validate_map_value({"nested": 1}, "categorical", "north")
 
     def test_non_finite_float_rejected(self):
         with pytest.raises(ValueError, match="must map to a JSON scalar value"):
-            _validate_map_value(math.inf, "rule")
+            _validate_map_value(math.inf, "categorical", "north")
+
+    def test_a_refusal_is_typed_with_its_setting_and_the_values_it_quotes(self):
+        """A caller that must not disclose configuration knows what a message quotes."""
+
+        from haute.errors import ConfigSettingError
+
+        with pytest.raises(ConfigSettingError) as caught:
+            _validate_map_value(None, "categorical", "north")
+
+        assert (caught.value.setting, caught.value.values) == ("factors", ("north",))
+        assert str(caught.value) == "categorical rule 'north' must map to a non-empty value"
 
     def test_scalar_accepted(self):
         # No exception for valid scalars.
-        _validate_map_value("ok", "rule")
-        _validate_map_value(3, "rule")
-        _validate_map_value(1.5, "rule")
-        _validate_map_value(True, "rule")
+        _validate_map_value("ok", "categorical", "north")
+        _validate_map_value(3, "categorical", "north")
+        _validate_map_value(1.5, "categorical", "north")
+        _validate_map_value(True, "categorical", "north")
 
 
 # ---------------------------------------------------------------------------

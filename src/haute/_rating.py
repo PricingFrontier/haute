@@ -32,7 +32,7 @@ from haute._rating_step_config import (
     validate_unique_rating_table_outputs,
 )
 from haute._types import _Frame
-from haute._validation_error import HauteValidationError
+from haute._validation_error import ConfigSettingError, HauteValidationError
 from haute.errors import RatingExtremaUndefinedError, RatingFactorMissingError
 
 logger = get_logger(component="rating")
@@ -57,8 +57,10 @@ def require_banding_type(banding_type: str, *, subject: str = "Banding") -> None
     """Raise unless *banding_type* is one of the banding types; there is no default."""
     if banding_type not in SUPPORTED_BANDING_TYPES:
         allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
-        raise ValueError(
-            f"{subject} has unsupported banding type {banding_type!r}; expected one of: {allowed}"
+        raise ConfigSettingError(
+            f"{subject} has unsupported banding type {banding_type!r}; expected one of: {allowed}",
+            setting="factors",
+            values=(banding_type,),
         )
 
 
@@ -82,7 +84,11 @@ def parse_breakpoint_boundary(boundary: str) -> float | date | datetime:
         pass
     else:
         if not math.isfinite(number):
-            raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
+            raise ConfigSettingError(
+                f"Breakpoint has non-finite boundary '{boundary}'",
+                setting="factors",
+                values=(boundary,),
+            )
         return number
     try:
         if _DATE_BOUNDARY.fullmatch(text):
@@ -91,9 +97,11 @@ def parse_breakpoint_boundary(boundary: str) -> float | date | datetime:
             return datetime.fromisoformat(text)
     except ValueError:
         pass
-    raise ValueError(
+    raise ConfigSettingError(
         f"Breakpoint has unreadable boundary '{boundary}'; expected a number, a date "
-        "(YYYY-MM-DD) or a date and time (YYYY-MM-DD HH:MM)"
+        "(YYYY-MM-DD) or a date and time (YYYY-MM-DD HH:MM)",
+        setting="factors",
+        values=(boundary,),
     )
 
 
@@ -113,8 +121,9 @@ def breakpoints_kind(breakpoints: list[dict[str, Any]] | dict[str, Any]) -> Boun
         if (boundary := str(bp.get("boundary", "") or "").strip())
     }
     if len(kinds) > 1:
-        raise ValueError(
-            "Breakpoints mix " + " and ".join(sorted(kinds)) + " boundaries; use one kind"
+        raise ConfigSettingError(
+            "Breakpoints mix " + " and ".join(sorted(kinds)) + " boundaries; use one kind",
+            setting="factors",
         )
     return kinds.pop() if kinds else "number"
 
@@ -131,7 +140,11 @@ def _banding_rule_comparators(
             continue
         evaluator = SUPPORTED_BANDING_OPERATORS.get(op)
         if evaluator is None:
-            raise ValueError(f"Banding rule has unsupported operator '{op}' for op{suffix}")
+            raise ConfigSettingError(
+                f"Banding rule has unsupported operator '{op}' for op{suffix}",
+                setting="factors",
+                values=(op,),
+            )
         if isinstance(val, date):
             # A date or date-and-time boundary, already read from the breakpoint.
             comparators.append((op, val))
@@ -139,9 +152,17 @@ def _banding_rule_comparators(
         try:
             num = float(val)
         except (ValueError, TypeError):
-            raise ValueError(f"Banding rule has non-numeric threshold '{val}' for op{suffix}")
+            raise ConfigSettingError(
+                f"Banding rule has non-numeric threshold '{val}' for op{suffix}",
+                setting="factors",
+                values=(val,),
+            )
         if not math.isfinite(num):
-            raise ValueError(f"Banding rule has non-finite threshold '{val}' for op{suffix}")
+            raise ConfigSettingError(
+                f"Banding rule has non-finite threshold '{val}' for op{suffix}",
+                setting="factors",
+                values=(val,),
+            )
         comparators.append((op, num))
     return comparators
 
@@ -158,6 +179,24 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
     for p in parts[1:]:
         result = result & p
     return result
+
+
+def _column_kind_fix(dtype: Any) -> str:
+    """The boundaries a column of *dtype* takes, for a breakpoint-kind mismatch."""
+
+    if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
+        return (
+            "A Datetime column's boundaries are dates like 2024-12-31 or dates and times "
+            "like 2024-12-31 18:00."
+        )
+    if dtype == pl.Date:
+        return "A Date column's boundaries are dates like 2024-12-31."
+    if dtype is not None and dtype.is_numeric():
+        return "A number column's boundaries are numbers like 25."
+    return (
+        "Breakpoints band a number, Date or Datetime column; band this column with "
+        "categorical rules."
+    )
 
 
 def _is_temporal(dtype: Any) -> bool:
@@ -183,7 +222,11 @@ def banding_comparison_expr(
         return col
     if kind == "number":
         if _is_temporal(dtype) or (dtype is not None and not dtype.is_numeric()):
-            raise ValueError(f"{subject} has number breakpoints, but its column is {dtype}")
+            raise ConfigSettingError(
+                f"{subject} has number breakpoints, but its column is {dtype}",
+                setting="factors",
+                fix=_column_kind_fix(dtype),
+            )
         if dtype in (pl.Float32, pl.Float64):
             return pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
         return col
@@ -193,7 +236,11 @@ def banding_comparison_expr(
     if (dtype == pl.Date) and kind == "date":
         return col
     what = "date" if kind == "date" else "date-and-time"
-    raise ValueError(f"{subject} has {what} breakpoints, but its column is {dtype}")
+    raise ConfigSettingError(
+        f"{subject} has {what} breakpoints, but its column is {dtype}",
+        setting="factors",
+        fix=_column_kind_fix(dtype),
+    )
 
 
 def banding_temporal_ordinal_expr(col: pl.Expr, dtype: Any) -> pl.Expr:
@@ -277,7 +324,9 @@ def banding_rule_claim_expr(
     if mode == "categorical":
         claims = banding_categorical_claims(prepared)
         if not claims:
-            raise ValueError(_no_usable_rule_message(output_column, "categorical"))
+            raise ConfigSettingError(
+                _no_usable_rule_message(output_column, "categorical"), setting="factors"
+            )
         return (
             column_expr.cast(pl.Utf8)
             .replace_strict(
@@ -297,7 +346,9 @@ def banding_rule_claim_expr(
         claim = pl.lit(index, dtype=pl.Int32)
         chain = pl.when(cond).then(claim) if chain is None else chain.when(cond).then(claim)
     if chain is None:
-        raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
+        raise ConfigSettingError(
+            _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+        )
     claimed: pl.Expr = chain.otherwise(unclaimed).alias("claim")
     return claimed
 
@@ -342,7 +393,10 @@ def _apply_banding(
         }
         if not remap:
             if has_configured_rules:
-                raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
+                raise ConfigSettingError(
+                    f"Banding output {output_column!r} has no usable categorical rule",
+                    setting="factors",
+                )
             return lf
         cat_expr = col.cast(pl.Utf8).replace_strict(remap, default=default_lit).alias(output_column)
         return lf.with_columns(cat_expr)
@@ -372,7 +426,9 @@ def _apply_banding(
 
     if chain is None:
         if has_configured_rules:
-            raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
+            raise ConfigSettingError(
+                _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+            )
         return lf
     final_expr = chain.otherwise(default_lit).alias(output_column)
     return lf.with_columns(final_expr)
@@ -430,19 +486,21 @@ def _breakpoints_to_rules_with_sources(
     # Reject more than one open-ended boundary: only the last would ever win,
     # so extras would be silently dropped (fail loud instead).
     if open_ended_count > 1:
-        raise ValueError(
+        raise ConfigSettingError(
             "A breakpoints factor may have at most one open-ended boundary "
-            f"(empty boundary); found {open_ended_count}"
+            f"(empty boundary); found {open_ended_count}",
+            setting="factors",
         )
 
     # An open-ended boundary needs at least one bounded breakpoint to anchor
     # its lower edge.  A sole open-ended breakpoint would otherwise produce no
     # rules at all and silently emit no output column — fail loud instead.
     if open_ended is not None and not bounded:
-        raise ValueError(
+        raise ConfigSettingError(
             "A breakpoints factor with only an open-ended boundary (no bounded "
             "breakpoints) cannot define any interval; add at least one bounded "
-            "breakpoint"
+            "breakpoint",
+            setting="factors",
         )
 
     # Sort by boundary value
@@ -452,7 +510,11 @@ def _breakpoints_to_rules_with_sources(
     seen_boundaries: set[float | date] = set()
     for entry in bounded:
         if entry["boundary"] in seen_boundaries:
-            raise ValueError(f"Duplicate breakpoint boundary '{entry['boundary']}'")
+            raise ConfigSettingError(
+                f"Duplicate breakpoint boundary '{entry['boundary']}'",
+                setting="factors",
+                values=(entry["boundary"],),
+            )
         seen_boundaries.add(entry["boundary"])
 
     rules: list[tuple[dict[str, Any], int]] = []
@@ -530,7 +592,10 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
                 for rule in rules
             )
             if not usable:
-                raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
+                raise ConfigSettingError(
+                    f"Banding output {output_column!r} has no usable categorical rule",
+                    setting="factors",
+                )
             continue
 
         intervals = _breakpoints_to_rules(
@@ -542,7 +607,9 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
             for rule in intervals
         )
         if not usable:
-            raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
+            raise ConfigSettingError(
+                _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+            )
     return factors
 
 
@@ -697,7 +764,7 @@ def rating_dtype_descriptor(dtype: pl.DataType) -> dict[str, Any]:
         return {
             _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.get(key, key): value for key, value in spec.items()
         }
-    raise ValueError(f"unsupported rating factor dtype {dtype}")
+    raise ConfigSettingError(f"unsupported rating factor dtype {dtype}", setting="tables")
 
 
 def is_rating_dtype_descriptor(value: object) -> bool:
@@ -741,7 +808,11 @@ def is_rating_dtype_descriptor(value: object) -> bool:
 def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
     """Reconstruct a supported rating-factor dtype from its JSON descriptor."""
     if not is_rating_dtype_descriptor(descriptor):
-        raise ValueError(f"invalid rating factor dtype descriptor {descriptor!r}")
+        raise ConfigSettingError(
+            f"invalid rating factor dtype descriptor {descriptor!r}",
+            setting="tables",
+            values=(descriptor,),
+        )
 
     # The predicate above checks the exact descriptor shape, so the shared
     # codec only has to parse a spec it already accepts.
@@ -763,7 +834,9 @@ def _duration_key_to_physical(value: str, time_unit: str) -> int:
     if match is None or not any(
         match.group(name) is not None for name in ("days", "hours", "minutes", "seconds")
     ):
-        raise ValueError(f"invalid ISO-8601 duration rating key {value!r}")
+        raise ConfigSettingError(
+            f"invalid ISO-8601 duration rating key {value!r}", setting="tables", values=(value,)
+        )
     try:
         seconds = (
             Decimal(match.group("days") or 0) * 86_400
@@ -773,10 +846,16 @@ def _duration_key_to_physical(value: str, time_unit: str) -> int:
         )
         physical = seconds * _DURATION_UNITS_PER_SECOND[time_unit]
     except (InvalidOperation, KeyError) as exc:
-        raise ValueError(f"invalid {time_unit!r} duration rating key {value!r}") from exc
+        raise ConfigSettingError(
+            f"invalid {time_unit!r} duration rating key {value!r}",
+            setting="tables",
+            values=(value,),
+        ) from exc
     if physical != physical.to_integral_value():
-        raise ValueError(
-            f"duration rating key {value!r} is not exactly representable as {time_unit}"
+        raise ConfigSettingError(
+            f"duration rating key {value!r} is not exactly representable as {time_unit}",
+            setting="tables",
+            values=(value,),
         )
     result = int(physical)
     return -result if match.group("sign") else result
@@ -954,12 +1033,13 @@ def _validate_supported_factor_dtypes(
 ) -> None:
     for factor, dtype in original_dtypes.items():
         if _is_unsupported_factor_dtype(dtype):
-            raise ValueError(
+            raise ConfigSettingError(
                 f"Rating table {table_label!r} factor {factor!r} has unsupported dtype {dtype}. "
                 "Supported scalar dtypes are Int8, Int16, Int32, Int64, Int128, "
                 "UInt8, UInt16, UInt32, UInt64, Float32, Float64, Boolean, String, "
                 "Categorical, Enum, Date, Time, Datetime, Duration, Decimal, and Null. "
-                "Cast this factor upstream to a supported scalar dtype."
+                "Cast this factor upstream to a supported scalar dtype.",
+                setting="tables",
             )
 
 
@@ -971,9 +1051,11 @@ def _normalise_on_missing(value: object) -> str:
     if not normalised:
         return "error"
     if normalised not in _SUPPORTED_ON_MISSING:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Unsupported rating table onMissing {normalised!r}; "
-            f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}"
+            f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}",
+            setting="tables",
+            values=(normalised,),
         )
     return normalised
 
@@ -1058,9 +1140,11 @@ def _normalise_combine_operation(operation: object) -> str:
     """Return a validated rating combine operation."""
     normalised = str(operation or "multiply")
     if normalised not in _SUPPORTED_COMBINE_OPERATIONS:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Unsupported rating combine operation {normalised!r}; "
-            f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}"
+            f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}",
+            setting="combinedOutputs",
+            values=(normalised,),
         )
     return normalised
 
@@ -1104,11 +1188,13 @@ def _apply_rating_table(
     factors = [] if raw_factors is None else raw_factors
     entries = [] if raw_entries is None else raw_entries
     if not isinstance(factors, list):
-        raise ValueError("rating table factors must be a list")
+        raise ConfigSettingError("rating table factors must be a list", setting="tables")
     if not isinstance(entries, list):
-        raise ValueError("rating table entries must be a list")
+        raise ConfigSettingError("rating table entries must be a list", setting="tables")
     if entries and not factors:
-        raise ValueError("rating table entries require a non-empty factors list")
+        raise ConfigSettingError(
+            "rating table entries require a non-empty factors list", setting="tables"
+        )
     output_col: str = table.get("outputColumn", "")
     default_raw = table.get("defaultValue")
     on_missing = _normalise_on_missing(table.get("onMissing"))
@@ -1180,8 +1266,9 @@ def _apply_rating_table(
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
     _bad_count = lookup.filter(pl.col("value").is_nan() | pl.col("value").is_infinite()).height
     if _bad_count:
-        raise ValueError(
-            f"Rating table for '{output_col}' contains {_bad_count} NaN or Inf entries"
+        raise ConfigSettingError(
+            f"Rating table for '{output_col}' contains {_bad_count} NaN or Inf entries",
+            setting="tables",
         )
     # Reject null entry values too (3a.3): sidecar validation has always
     # required a value per entry, and a null rate would neutral-fill in
@@ -1190,9 +1277,10 @@ def _apply_rating_table(
     # keeps the miss guard's "no matching entry" diagnosis always true.
     _null_count = lookup.get_column("value").null_count()
     if _null_count:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Rating table for '{output_col}' contains {_null_count} null entry "
-            "value(s); every entry requires a finite numeric value"
+            "value(s); every entry requires a finite numeric value",
+            setting="tables",
         )
 
     # B15: Select only factor columns + "value" to avoid polluting the main
@@ -1319,13 +1407,15 @@ def _combine_rating_columns(
             duplicate_columns.append(column)
         seen_columns.add(column)
     if duplicate_columns:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Rating output {output_col!r} cannot combine duplicate participant "
-            f"column(s) {duplicate_columns!r}"
+            f"column(s) {duplicate_columns!r}",
+            setting="combinedOutputs",
         )
     if output_col in seen_columns:
-        raise ValueError(
-            f"Rating output column {output_col!r} cannot overwrite a participant column"
+        raise ConfigSettingError(
+            f"Rating output column {output_col!r} cannot overwrite a participant column",
+            setting="combinedOutputs",
         )
     if not columns:
         return lf
@@ -1415,7 +1505,9 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     if raw_outputs is None or raw_outputs == []:
         return []
     if not isinstance(raw_outputs, list):
-        raise ValueError("ratingStep combinedOutputs must be a list")
+        raise ConfigSettingError(
+            "ratingStep combinedOutputs must be a list", setting="combinedOutputs"
+        )
 
     outputs: list[dict[str, Any]] = []
     seen_output_cols: set[str] = {
@@ -1425,14 +1517,20 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     }
     for idx, item in enumerate(raw_outputs):
         if not isinstance(item, dict):
-            raise ValueError(f"ratingStep combinedOutputs[{idx}] must be an object")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}] must be an object", setting="combinedOutputs"
+            )
         output_col = str(item.get("outputColumn", "") or "").strip()
         if not output_col:
-            raise ValueError(f"ratingStep combinedOutputs[{idx}] requires outputColumn")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}] requires outputColumn",
+                setting="combinedOutputs",
+            )
         if output_col in seen_output_cols:
-            raise ValueError(
+            raise ConfigSettingError(
                 f"ratingStep combinedOutputs[{idx}].outputColumn {output_col!r} "
-                "duplicates another rating output column"
+                "duplicates another rating output column",
+                setting="combinedOutputs",
             )
         seen_output_cols.add(output_col)
         operation = _normalise_combine_operation(item.get("operation", "multiply"))
@@ -1443,15 +1541,21 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
             or isinstance(base_raw, bool)
             or (isinstance(base_raw, str) and not base_raw.strip())
         ):
-            raise ValueError(f"ratingStep combinedOutputs[{idx}] requires baseValue")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}] requires baseValue", setting="combinedOutputs"
+            )
         try:
             base_value = float(base_raw)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"ratingStep combinedOutputs[{idx}].baseValue must be numeric"
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}].baseValue must be numeric",
+                setting="combinedOutputs",
             ) from exc
         if not math.isfinite(base_value):
-            raise ValueError(f"ratingStep combinedOutputs[{idx}].baseValue must be finite")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}].baseValue must be finite",
+                setting="combinedOutputs",
+            )
         outputs.append(
             {
                 "outputColumn": output_col,

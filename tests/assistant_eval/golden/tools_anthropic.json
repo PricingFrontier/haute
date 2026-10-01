@@ -89,7 +89,8 @@
           "type": "string"
         },
         "limit": {
-          "type": "integer"
+          "type": "integer",
+          "description": "At least 1, at most 10."
         }
       },
       "required": [
@@ -159,7 +160,8 @@
                 ]
               },
               "name": {
-                "type": "string"
+                "type": "string",
+                "description": "add_node: the new node's name, which becomes its id. When the analyst names the node (\"add X\", \"as X\", \"called X\", \"named X\"), use exactly that name, with no suffix such as _node or _input."
               },
               "config": {
                 "type": "object",
@@ -265,10 +267,12 @@
                 "type": "string"
               },
               "nodes": {
-                "type": "integer"
+                "type": "integer",
+                "description": "At least 0."
               },
               "edges": {
-                "type": "integer"
+                "type": "integer",
+                "description": "At least 0."
               },
               "sha256": {
                 "type": "string"

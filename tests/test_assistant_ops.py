@@ -20,7 +20,14 @@ import pytest
 
 from haute._graph_utils import _sanitize_func_name
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from haute.assistant._ops import OpValidationError, PlanReceipt, apply_ops, parse_ops
+from haute.assistant._ops import (
+    AssistantOperationError,
+    OpValidationError,
+    PlanReceipt,
+    _apply_ops_with_refs,
+    apply_ops,
+    parse_ops,
+)
 
 #: The receipt every plan these tests store carries.
 _RECEIPT = PlanReceipt("Test plan.")
@@ -412,6 +419,156 @@ class TestUpdateNode:
     def test_unknown_node_rejected(self):
         with pytest.raises(OpValidationError):
             _apply(_graph([]), [{"op": "update_node", "node": "ghost", "config": {}}])
+
+
+_AGE = {
+    "banding": "breakpoints",
+    "column": "driver_age",
+    "outputColumn": "age_band",
+    "rules": [{"boundary": "24", "label": "17-24"}, {"boundary": "", "label": "25+"}],
+}
+_REGION = {
+    "banding": "categorical",
+    "column": "region_code",
+    "outputColumn": "region",
+    "rules": [{"value": "NW", "assignment": "North"}],
+    "default": "Other",
+}
+_LICENCE = {
+    "banding": "breakpoints",
+    "column": "licence_years",
+    "outputColumn": "licence_band",
+    "rules": [{"boundary": "2", "label": "new"}, {"boundary": "", "label": "settled"}],
+}
+
+
+def _withheld(graph: PipelineGraph, raw_ops: list[dict]) -> PipelineGraph:
+    """Apply *raw_ops* as a dry-run does when the policy withholds saved node configuration."""
+
+    return _apply_ops_with_refs(graph, parse_ops(raw_ops), config_withheld=True).graph
+
+
+class TestWithheldConfigGuard:
+    """An update that would retype a saved list or map the model cannot read is refused."""
+
+    def _bands(self) -> PipelineGraph:
+        return _graph(
+            [
+                _node("bands", "banding", factors=[_AGE, _REGION]),
+                _node(
+                    "policies",
+                    "liveSwitch",
+                    input_scenario_map={"quotes": "live", "batch_quotes": "nb_batch"},
+                    inputs=["quotes", "batch_quotes"],
+                ),
+                _node("shaped", "polars", steps=_LOGIC, contract={"region_code": "01"}),
+            ]
+        )
+
+    def test_changing_a_saved_entry_names_the_node_key_and_entry_never_its_rules(self):
+        changed = {**_REGION, "rules": [{"value": "NW", "assignment": "North West"}]}
+        with pytest.raises(AssistantOperationError) as caught:
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "bands", "config": {"factors": [_AGE, changed]}}],
+            )
+
+        error = caught.value
+        assert error.code == "config_withheld"
+        assert error.where == {"op_index": 0, "node": "bands", "field": "factors"}
+        assert "'region'" in str(error) and "'age_band'" not in str(error)
+        assert "egress policy" in str(error)
+        assert "North" not in str(error) and "NW" not in str(error)
+        assert error.fix is not None and "NEEDS_INPUT:" in error.fix
+
+    def test_a_retyped_list_that_drops_entries_names_each_one(self):
+        with pytest.raises(AssistantOperationError, match="'age_band', 'region'"):
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
+            )
+
+    def test_removing_a_saved_list_is_refused(self):
+        with pytest.raises(AssistantOperationError, match="'age_band', 'region'"):
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "bands", "config": {"factors": None}}],
+            )
+
+    def test_keeping_every_saved_entry_unchanged_passes(self):
+        out = _withheld(
+            self._bands(),
+            [
+                {
+                    "op": "update_node",
+                    "node": "bands",
+                    "config": {"factors": [_AGE, _REGION, _LICENCE]},
+                }
+            ],
+        )
+        assert _get(out, "bands").data.config["factors"] == [_AGE, _REGION, _LICENCE]
+
+    def test_a_map_keyed_by_input_names_names_the_changed_input(self):
+        with pytest.raises(AssistantOperationError, match="'batch_quotes'") as caught:
+            _withheld(
+                self._bands(),
+                [
+                    {
+                        "op": "update_node",
+                        "node": "policies",
+                        "config": {
+                            "input_scenario_map": {"quotes": "live", "batch_quotes": "batch_quotes"}
+                        },
+                    }
+                ],
+            )
+        assert "nb_batch" not in str(caught.value)
+
+    def test_a_map_keyed_by_values_is_counted_never_named(self):
+        with pytest.raises(AssistantOperationError, match="1 of its 1 keys") as caught:
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "shaped", "config": {"contract": {}}}],
+            )
+        assert "region_code" not in str(caught.value)
+
+    def test_a_retyped_step_list_points_at_edit_steps(self):
+        with pytest.raises(AssistantOperationError, match="'logic'") as caught:
+            _withheld(
+                self._bands(),
+                [
+                    {
+                        "op": "update_node",
+                        "node": "shaped",
+                        "config": {
+                            "steps": [
+                                {"id": "logic", "kind": "free_code", "code": "df = df.head(3)"}
+                            ]
+                        },
+                    }
+                ],
+            )
+        assert caught.value.fix is not None and "edit_steps" in caught.value.fix
+
+    def test_a_node_the_plan_adds_and_a_readable_policy_are_not_guarded(self):
+        added = _withheld(
+            self._bands(),
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "banding",
+                    "name": "more",
+                    "config": {"factors": [_AGE]},
+                },
+                {"op": "update_node", "node": "more", "config": {"factors": [_LICENCE]}},
+            ],
+        )
+        assert _get(added, "more").data.config["factors"] == [_LICENCE]
+        readable = _apply(
+            self._bands(),
+            [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
+        )
+        assert _get(readable, "bands").data.config["factors"] == [_LICENCE]
 
 
 # ---------------------------------------------------------------------------
@@ -1140,18 +1297,22 @@ class TestSubmodelBoundary:
 
     def test_op_targeting_submodel_internal_node_rejected(self):
         base = self._graph_with_submodel()
-        with pytest.raises(OpValidationError):
+        with pytest.raises(AssistantOperationError) as caught:
             _apply(
                 base,
                 [
                     {"op": "update_node", "node": "inner_child", "config": {"code": "df"}},
                 ],
             )
+        assert caught.value.code == "submodel_boundary"
+        assert "cannot be read or edited by the assistant" in str(caught.value)
+        assert caught.value.fix is not None and "BLOCKED:" in caught.value.fix
 
     def test_delete_submodel_placeholder_rejected(self):
         base = self._graph_with_submodel()
-        with pytest.raises(OpValidationError):
+        with pytest.raises(AssistantOperationError, match="submodel") as caught:
             _apply(base, [{"op": "delete_node", "node": "submodel__sm1"}])
+        assert caught.value.code == "submodel_boundary"
 
 
 # ---------------------------------------------------------------------------

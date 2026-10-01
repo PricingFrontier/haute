@@ -7,7 +7,7 @@
     "pivots[].rows[] / columns[]": "Placements {id, field, number_format, decimal_places, use_grouping}; a row placement also has sort \"ascending\" or \"descending\".",
     "pivots[].values[]": "Aggregations {id, field, aggregation (sum, count, average, min, max, median, distinct_count), reference (always <field>_<aggregation>, such as premium_sum), display_name, sort_rows, color_scale, color_scale_split_by, number_format, decimal_places, use_grouping}.",
     "pivots[].value_order": "The ids of the pivot's values and formulas in display order.",
-    "steps": "Optional step cards that shape the frame before it is explored; df is already the input. An Explore node has no output and ends its branch."
+    "steps": "Optional step cards that shape the frame before it is explored; df is already the input. A pivot table the analyst asks for is a pivots entry, never a step. An Explore node has no output and ends its branch."
   },
   "inputs": [
     {

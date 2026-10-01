@@ -39,6 +39,7 @@ from haute._graph_utils import (
 )
 from haute._lru_cache import LRUCache
 from haute._node_config_recovery import _DISCRIMINANTS
+from haute._output_assembler import is_active_mapping_entry
 from haute._polars_steps import (
     STEPPED_NODE_TYPES,
     STEPPED_SURFACE_LABELS,
@@ -84,9 +85,19 @@ from haute.assistant._wire_ops import (
 from haute.schemas import ASSISTANT_MAX_ASSUMPTIONS, ASSISTANT_RECEIPT_TEXT_LIMIT
 
 _SUBMODEL_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
+#: The error a read or an edit of a submodel or a node inside one returns. No
+#: correction clears it, so the model reports a blocker instead of retrying.
+SUBMODEL_BOUNDARY_CODE = "submodel_boundary"
+SUBMODEL_BOUNDARY_TEXT = (
+    "submodels and the nodes inside them cannot be read or edited by the assistant."
+)
+SUBMODEL_BOUNDARY_FIX = (
+    "Reply with a line starting BLOCKED: that asks the analyst to make this change in the editor."
+)
 _X_STEP = 280.0
 _Y_STEP = 120.0
 _ANY_HANDLE = object()
+_MISSING = object()
 _GRAPH_EDIT_OP_MODELS = (
     AddNodeOp,
     UpdateNodeOp,
@@ -181,11 +192,11 @@ def _resolve_node_id(
         node_id = raw_id
 
     if node_id in nested_ids:
-        _invalid(
-            f"{role} {raw_id!r} crosses the submodel boundary; "
-            "submodel-internal nodes are not editable by assistant operations",
+        raise AssistantOperationError(
+            SUBMODEL_BOUNDARY_CODE,
+            f"{role} {raw_id!r} is inside a submodel: {SUBMODEL_BOUNDARY_TEXT}",
             where={"node": node_id},
-            fix="Edit only top-level nodes; leave submodel internals to the analyst.",
+            fix=SUBMODEL_BOUNDARY_FIX,
         )
 
     index = _node_index(graph, node_id)
@@ -199,11 +210,11 @@ def _resolve_node_id(
 
     node_type = graph.nodes[index].data.nodeType
     if node_type in _SUBMODEL_TYPES:
-        _invalid(
-            f"{role} {raw_id!r} is a submodel boundary; "
-            "submodel placeholders and ports are not editable by assistant operations",
+        raise AssistantOperationError(
+            SUBMODEL_BOUNDARY_CODE,
+            f"{role} {raw_id!r} is a submodel boundary: {SUBMODEL_BOUNDARY_TEXT}",
             where={"node": node_id},
-            fix="Edit only ordinary top-level nodes; leave submodels to the analyst.",
+            fix=SUBMODEL_BOUNDARY_FIX,
         )
     return node_id
 
@@ -381,6 +392,49 @@ def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[
     return defaults
 
 
+def _resolve_output_rows(
+    node_type: NodeType, config: Mapping[str, Any], refs: Mapping[str, str], graph: PipelineGraph
+) -> Mapping[str, Any]:
+    """*config* with each ``outputMapping`` row's ``$ref`` source_port resolved.
+
+    A ``source_port`` names the incoming frame a row reads, by the input name
+    its edge gives: a ``$ref`` resolves to that name for the node the ref
+    declared. Any other config is returned as written.
+    """
+
+    rows = config.get("outputMapping")
+    if node_type != NodeType.OUTPUT or not isinstance(rows, list):
+        return config
+    resolved: list[object] = []
+    for row in rows:
+        port = row.get("source_port") if isinstance(row, Mapping) else None
+        if isinstance(port, str) and port.startswith("$"):
+            ref = port[1:]
+            if ref not in refs:
+                raise UnknownNodeReferenceError(
+                    port,
+                    "output mapping source",
+                    f"Unknown batch reference {port!r}",
+                    fix=f"Declare ref {ref!r} on an earlier add_node in the same plan, "
+                    "or write the incoming edge's name.",
+                )
+            source = graph.nodes[cast(int, _node_index(graph, refs[ref]))]
+            try:
+                name = executable_input_name(
+                    node_type=source.data.nodeType, label=source.data.label, source_handle=None
+                )
+            except ValueError:
+                _invalid(
+                    f"Output mapping source {port!r} names a node whose frames are named by "
+                    "their ports",
+                    where={"field": "outputMapping"},
+                    fix="Write the source_port as the incoming edge's port name.",
+                )
+            row = {**cast(Mapping[str, Any], row), "source_port": name}
+        resolved.append(row)
+    return {**config, "outputMapping": resolved}
+
+
 def _apply_add_node(
     graph: PipelineGraph,
     op: AddNodeOp,
@@ -403,17 +457,18 @@ def _apply_add_node(
             fix=f"Choose another name, or change {node_id!r} with update_node.",
         )
     _check_stepped_write(op.node_type, node_id, None, op.config)
+    written = _resolve_output_rows(op.node_type, op.config, refs, graph)
     node = GraphNode(
         id=node_id,
         type=op.node_type.value,
         data=NodeData(
             label=node_id,
             nodeType=op.node_type,
-            config={**_palette_config_for(op.node_type, op.config), **deepcopy(op.config)},
+            config={**_palette_config_for(op.node_type, written), **deepcopy(written)},
         ),
         position={"x": 0.0, "y": 0.0},
     )
-    _require_landed(node, op.config, operation="add_node", null_removes=False)
+    _require_landed(node, written, operation="add_node", null_removes=False)
     graph.nodes.append(node)
     new_node_ids.append(node_id)
 
@@ -426,13 +481,115 @@ def _apply_add_node(
         refs[op.ref] = node_id
 
 
+#: The field that names each entry of a config list, where that name is pipeline
+#: metadata (an output column, an output path, a pivot id): what a refused blind
+#: rewrite may say it would change. ``steps`` entries are named by their ids on
+#: every stepped node type.
+_LIST_ENTRY_NAMES: Mapping[tuple[NodeType, str], str] = MappingProxyType(
+    {
+        (NodeType.BANDING, "factors"): "outputColumn",
+        (NodeType.RATING_STEP, "tables"): "outputColumn",
+        (NodeType.RATING_STEP, "combinedOutputs"): "outputColumn",
+        (NodeType.OUTPUT, "outputMapping"): "output_path",
+        (NodeType.EXPLORE, "pivots"): "id",
+        (NodeType.CONSTANT, "values"): "name",
+    }
+)
+#: Config lists whose entries are themselves input or column names.
+_NAME_LISTS = frozenset({"inputs", "selected_columns"})
+#: Config maps keyed by input or column names; any other map's keys can be
+#: category values, so a refusal counts them instead of naming them.
+_NAME_KEYED_MAPS = frozenset({"input_scenario_map", "inputMapping", "column_renames"})
+
+
+def _withheld_entries_changed(
+    node_type: NodeType, key: str, saved: object, written: object
+) -> str | None:
+    """The saved entries of a non-empty list or map *written* would change or drop.
+
+    An entry is kept when *written* holds it unchanged: a list entry equal to
+    it, or the same map key with an equal value. The changed entries are named
+    by metadata only (see ``_LIST_ENTRY_NAMES``) and otherwise described by
+    position or count. None when *saved* is not a non-empty list or map, or
+    every entry is kept.
+    """
+
+    if isinstance(saved, list) and saved:
+        kept = written if isinstance(written, list) else []
+        lost = [position for position, entry in enumerate(saved, start=1) if entry not in kept]
+        if not lost:
+            return None
+        field = "id" if key == "steps" else _LIST_ENTRY_NAMES.get((node_type, key))
+
+        def name(position: int) -> str:
+            entry = saved[position - 1]
+            if key in _NAME_LISTS and isinstance(entry, str):
+                return repr(entry)
+            label = entry.get(field) if field and isinstance(entry, Mapping) else None
+            return repr(label) if isinstance(label, str) and label else f"entry {position}"
+
+        return f"saved {key} entries " + ", ".join(name(position) for position in lost)
+    if isinstance(saved, Mapping) and saved:
+        target = written if isinstance(written, Mapping) else {}
+        lost_keys = [name for name, value in saved.items() if target.get(name, _MISSING) != value]
+        if not lost_keys:
+            return None
+        if key in _NAME_KEYED_MAPS:
+            return f"saved {key} entries " + ", ".join(repr(str(name)) for name in lost_keys)
+        return f"{len(lost_keys)} of its {len(saved)} keys of the saved {key}"
+    return None
+
+
+def _refuse_withheld_rewrite(
+    node: GraphNode, written: Mapping[str, Any], new_node_ids: Sequence[str]
+) -> None:
+    """Refuse an update that retypes a saved list or map the model cannot read.
+
+    Applies only while the session's egress policy withholds saved node
+    configuration and to a node this plan did not add: ``update_node``
+    replaces a key's whole value, so a rewrite of a list or map the model has
+    not read loses or corrupts the entries it does not restate.
+    """
+
+    if node.id in new_node_ids:
+        return
+    for key, value in written.items():
+        changed = _withheld_entries_changed(
+            node.data.nodeType, key, node.data.config.get(key), value
+        )
+        if changed is None:
+            continue
+        fix = (
+            "Change the steps with edit_steps, naming them by the ids the graph brief "
+            "lists; the steps you do not name stay as saved."
+            if key == "steps"
+            else "Do not retype configuration you cannot read: ask the analyst for what "
+            "the change needs instead, in a reply line that starts with NEEDS_INPUT:."
+        )
+        raise AssistantOperationError(
+            "config_withheld",
+            f"The saved configuration of node {node.id!r} is withheld from you under this "
+            f"project's egress policy, so update_node cannot replace {key!r}: it would "
+            f"change or drop the {changed}, which you cannot read.",
+            where={"node": node.id, "field": key},
+            fix=fix,
+        )
+
+
 def _apply_update_node(
     graph: PipelineGraph,
     op: UpdateNodeOp,
     refs: Mapping[str, str],
     nested_ids: set[str],
+    *,
+    withheld_from: Sequence[str] | None = None,
 ) -> str:
-    """Apply one update and return the id of the node it wrote."""
+    """Apply one update and return the id of the node it wrote.
+
+    *withheld_from*, when given, says the session's egress policy withholds
+    saved node configuration; it holds the ids of the nodes this plan added,
+    whose configuration the model wrote (see ``_refuse_withheld_rewrite``).
+    """
 
     node_id = _resolve_node_id(op.node, graph, refs, nested_ids, role="update target")
     index = _node_index(graph, node_id)
@@ -445,15 +602,18 @@ def _apply_update_node(
         operation="update_node",
         removable_keys=set(node.data.config),
     )
+    written = _resolve_output_rows(node.data.nodeType, op.config, refs, graph)
+    if withheld_from is not None:
+        _refuse_withheld_rewrite(node, written, withheld_from)
 
     config = dict(node.data.config)
-    for key, value in op.config.items():
+    for key, value in written.items():
         if value is None:
             config.pop(key, None)
         else:
             config[key] = value
     updated = node.with_config(config)
-    _require_landed(updated, op.config, operation="update_node", null_removes=True)
+    _require_landed(updated, written, operation="update_node", null_removes=True)
     _replace_node(graph, index, updated)
     return node_id
 
@@ -829,7 +989,9 @@ def _apply_add_edge(
     op: AddEdgeOp,
     refs: Mapping[str, str],
     nested_ids: set[str],
-) -> None:
+) -> str:
+    """Apply one edge addition and return its target's id."""
+
     source = _resolve_node_id(op.source, graph, refs, nested_ids, role="edge source")
     target = _resolve_node_id(op.target, graph, refs, nested_ids, role="edge target")
     # An exact duplicate would share its React Flow id with the existing
@@ -862,6 +1024,7 @@ def _apply_add_edge(
             f"Invalid edge: {exc}",
             fix="Correct the edge's source, target and handles against get_pipeline.",
         ) from exc
+    return target
 
 
 def _apply_delete_edge(
@@ -869,7 +1032,9 @@ def _apply_delete_edge(
     op: DeleteEdgeOp,
     refs: Mapping[str, str],
     nested_ids: set[str],
-) -> None:
+) -> str:
+    """Apply one edge removal and return its target's id."""
+
     source = _resolve_node_id(op.source, graph, refs, nested_ids, role="edge source")
     target = _resolve_node_id(op.target, graph, refs, nested_ids, role="edge target")
 
@@ -903,6 +1068,7 @@ def _apply_delete_edge(
             fix="Add the edge's source_handle and target_handle from get_pipeline.",
         )
     del graph.edges[matches[0]]
+    return target
 
 
 def _parents_by_node(graph: PipelineGraph) -> dict[str, tuple[str, ...]]:
@@ -990,8 +1156,10 @@ class AppliedOps:
     """A batch applied to a copy of its graph.
 
     ``writers`` maps each node the batch added, updated or renamed to the
-    index of the last operation that did, so a failure found after the whole
-    batch can name the operation that wrote its node. ``step_changes`` holds
+    index of the last operation that did, and a node whose incoming edges
+    alone the batch added or removed to the first operation that did, so a
+    failure found after the whole batch can name the operation that wrote
+    its node. ``step_changes`` holds
     one ``<node>:steps[<id>]`` identity per step an ``edit_steps`` inserted,
     replaced or removed, ids assigned by the operation included.
     ``rename_changes`` holds one ``<node>:<field>`` identity per consumer
@@ -1121,6 +1289,8 @@ def _apply_ops_with_refs(
     graph: PipelineGraph,
     ops: Sequence[GraphEditOp],
     positions: Sequence[int] | None = None,
+    *,
+    config_withheld: bool = False,
 ) -> AppliedOps:
     """Apply a batch to a copy of *graph*.
 
@@ -1131,6 +1301,9 @@ def _apply_ops_with_refs(
     the working graph it was judged against. *positions*, when given, holds
     each operation's index in the batch the model sent, before its recipe
     operations expanded; every index a failure or ``writers`` reports is one.
+    *config_withheld* says the session's egress policy withholds saved node
+    configuration from the model, which refuses a blind rewrite of a saved list
+    or map (``_refuse_withheld_rewrite``).
     """
 
     def position(index: int) -> int:
@@ -1156,7 +1329,14 @@ def _apply_ops_with_refs(
                 _apply_add_node(working, op, refs, new_node_ids)
                 writers[new_node_ids[-1]] = position(index)
             elif isinstance(op, UpdateNodeOp):
-                writers[_apply_update_node(working, op, refs, nested_ids)] = position(index)
+                written = _apply_update_node(
+                    working,
+                    op,
+                    refs,
+                    nested_ids,
+                    withheld_from=new_node_ids if config_withheld else None,
+                )
+                writers[written] = position(index)
             elif isinstance(op, EditStepsOp):
                 edited_id, step_ids = _apply_edit_steps(working, op, refs, nested_ids)
                 writers[edited_id] = position(index)
@@ -1179,9 +1359,10 @@ def _apply_ops_with_refs(
                 deleted = _apply_delete_node(working, op, refs, nested_ids, new_node_ids)
                 rename_changes.pop(deleted, None)
             elif isinstance(op, AddEdgeOp):
-                _apply_add_edge(working, op, refs, nested_ids)
+                writers.setdefault(_apply_add_edge(working, op, refs, nested_ids), position(index))
             elif isinstance(op, DeleteEdgeOp):
-                _apply_delete_edge(working, op, refs, nested_ids)
+                target = _apply_delete_edge(working, op, refs, nested_ids)
+                writers.setdefault(target, position(index))
             elif isinstance(op, UpdatePreambleOp):
                 working.preamble = op.preamble
             else:
@@ -2603,6 +2784,36 @@ def _df_indexing_fix(
     )
 
 
+def _unwired_step_input(
+    graph: PipelineGraph,
+    node: GraphNode,
+    steps: Sequence[object],
+    step_index: int | None,
+    input_names: Sequence[str],
+) -> str | None:
+    """The node a failing source, join or concat step reads that no edge connects.
+
+    Only an input name that is the id of a node in *graph* counts, so the fix
+    can name the ``add_edge`` that connects it.
+    """
+
+    if step_index is None:
+        return None
+    step = steps[step_index]
+    if not isinstance(step, Mapping):
+        return None
+    names = step.get("inputs") if step.get("kind") == "concat" else [step.get("input")]
+    nodes = {candidate.id for candidate in graph.nodes if candidate.id != node.id}
+    return next(
+        (
+            name
+            for name in names or ()
+            if isinstance(name, str) and name not in input_names and name in nodes
+        ),
+        None,
+    )
+
+
 def _validate_assistant_authored_steps(
     result: PipelineGraph,
     node: GraphNode,
@@ -2630,11 +2841,17 @@ def _validate_assistant_authored_steps(
         )
     except PolarsStepError as exc:
         step = _step_id_at(steps, exc.step_index)
+        unwired = _unwired_step_input(result, node, steps, exc.step_index, input_names)
         _invalid(
             f"Node {node.id!r} has an invalid step list: {exc} New logic on a "
             f"{label} is written as {form}.",
             where={"node": node.id, "field": "steps", **({} if step is None else {"step": step})},
-            fix=f"Write the steps as {form}.",
+            fix=(
+                f"Write the steps as {form}."
+                if unwired is None
+                else f"Connect {unwired!r} to {node.id!r} in the same plan: "
+                f'{{"op": "add_edge", "source": "{unwired}", "target": "{node.id}"}}.'
+            ),
         )
     lines = rendered.code.split("\n")
     frame_names = {_BARE_INPUT_NAME, *input_names}
@@ -2700,6 +2917,39 @@ def _validate_assistant_authored_steps(
             )
 
 
+def _validate_output_rows_read_inputs(
+    result: PipelineGraph, node: GraphNode, nodes_by_id: Mapping[str, GraphNode]
+) -> None:
+    """Refuse an assistant-written output row whose source_port names no incoming edge.
+
+    The engine lets a one-input output's rows name any frame, so a wrong name
+    saves silently; the assistant's rows must name the frame they read.
+    """
+
+    rows = node.data.config.get("outputMapping")
+    names = _incoming_input_names(result, node.id, nodes_by_id)
+    for position, row in enumerate(rows if isinstance(rows, list) else [], start=1):
+        if not isinstance(row, Mapping) or "enabled" not in row:
+            continue  # the mapping's own validator refuses a malformed row
+        port = row.get("source_port")
+        if not is_active_mapping_entry(dict(row)) or port in names:
+            continue
+        connected = ", ".join(repr(name) for name in names) or "none"
+        unwired = isinstance(port, str) and port in nodes_by_id and port != node.id
+        _invalid(
+            f"Row {position} of the outputMapping of node {node.id!r} reads source_port {port!r}, "
+            f"which no incoming edge provides; its incoming edges are {connected}.",
+            where={"node": node.id, "field": "outputMapping"},
+            fix=(
+                f"Connect {port!r} to {node.id!r} in the same plan: "
+                f'{{"op": "add_edge", "source": "{port}", "target": "{node.id}"}}.'
+                if unwired
+                else f"Set row {position}'s source_port to the name of an incoming edge: "
+                f"{connected}."
+            ),
+        )
+
+
 def _validate_assistant_authored_graph(
     result: PipelineGraph,
     diff: SemanticDiff,
@@ -2742,6 +2992,16 @@ def _validate_assistant_authored_graph(
                 _incoming_input_names(result, node_id, nodes_by_id),
             )
 
+    mapping_changed = {
+        change.removesuffix(":outputMapping")
+        for change in config_changes
+        if change.endswith(":outputMapping")
+    }
+    for node_id in sorted(set(authored_added) | mapping_changed):
+        node = nodes_by_id.get(node_id)
+        if node is not None and node.data.nodeType == NodeType.OUTPUT:
+            _validate_output_rows_read_inputs(result, node, nodes_by_id)
+
     incident_nodes = {node_id for edge in result.edges for node_id in (edge.source, edge.target)}
     disconnected = sorted(set(authored_added) - incident_nodes)
     if disconnected:
@@ -2761,15 +3021,18 @@ def prepare_graph_edit(
     postconditions: Sequence[Mapping[str, Any]] = (),
     *,
     positions: Sequence[int] | None = None,
+    config_withheld: bool = False,
 ) -> PreparedGraphEdit:
     """Parse, apply, and validate an edit once against one exact snapshot.
 
     *positions* holds each operation's index in the batch the model sent,
-    which every located failure reports.
+    which every located failure reports. *config_withheld* refuses a blind
+    rewrite of saved configuration the model cannot read (see
+    ``_apply_ops_with_refs``).
     """
 
     ops = parse_ops(raw_ops, positions)
-    applied = _apply_ops_with_refs(snapshot.graph, ops, positions)
+    applied = _apply_ops_with_refs(snapshot.graph, ops, positions, config_withheld=config_withheld)
     result, refs = applied.graph, applied.refs
     diff = _semantic_diff(snapshot.graph, result, ops, applied)
     try:

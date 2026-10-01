@@ -35,10 +35,12 @@ def _write_toml(root: Path, body: str) -> None:
     (root / "haute.toml").write_text(body, encoding="utf-8")
 
 
-def _configured(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _configured(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *, model: str = "claude-opus-5-5"
+) -> None:
     _write_toml(
         root,
-        '[assistant]\nprovider = "anthropic"\nmodel = "m"\n'
+        f'[assistant]\nprovider = "anthropic"\nmodel = "{model}"\n'
         '[assistant.egress]\ntrust = "external"\nmax_sensitivity = "public"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
         "allow_row_samples = false\n",
@@ -107,10 +109,28 @@ class TestReadinessMatrix:
         status = assistant_readiness()
         assert status.configured is True
         assert status.reason is None
-        assert (status.provider, status.model) == ("anthropic", "m")
+        assert (status.provider, status.model) == ("anthropic", "claude-opus-5-5")
         assert status.endpoint_host == "api.anthropic.com"
         assert status.trust == "external"
         assert status.max_sensitivity == "public"
+
+    def test_a_claude_model_without_adaptive_thinking_is_not_ready(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Every Claude request runs adaptive thinking, so a model without it is
+        refused at readiness, with the reason the provider would give, rather than
+        reported ready and refused by the provider when a message is sent."""
+
+        _configured(project_root, monkeypatch, model="claude-haiku-4-5")
+
+        status = assistant_readiness()
+
+        assert status.configured is False
+        assert (status.provider, status.model) == ("anthropic", "claude-haiku-4-5")
+        assert (status.reason or "").startswith(
+            "Anthropic model 'claude-haiku-4-5' is not one Haute runs"
+        )
+        assert "claude-opus-5-5" in (status.reason or "")
 
     def test_legacy_configuration_names_required_egress_migration(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch

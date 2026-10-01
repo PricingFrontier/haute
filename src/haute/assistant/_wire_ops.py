@@ -116,7 +116,13 @@ _UPDATE_CONFIG_DESCRIPTION = (
 class AddNodeOp(_OpModel):
     op: Literal["add_node"] = "add_node"
     node_type: NodeType = Field(description=_NODE_TYPE_DESCRIPTION)
-    name: str
+    name: str = Field(
+        description=(
+            "add_node: the new node's name, which becomes its id. When the analyst names "
+            'the node ("add X", "as X", "called X", "named X"), use exactly that name, '
+            "with no suffix such as _node or _input."
+        )
+    )
     config: dict[str, Any] = Field(default_factory=dict, description=_ADD_CONFIG_DESCRIPTION)
     ref: str | None = Field(
         default=None,

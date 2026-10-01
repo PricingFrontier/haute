@@ -76,7 +76,12 @@ from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, stre
 from haute._source_cache import SourceCacheError
 from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
-from haute.errors import ContractMismatchError, SchemaMismatchError, is_public_contract_error
+from haute.errors import (
+    ContractMismatchError,
+    SchemaMismatchError,
+    is_public_contract_error,
+    mark_failing_node,
+)
 
 if TYPE_CHECKING:
     from haute._node_snapshots import NodeSnapshotArtifact
@@ -893,7 +898,12 @@ class _Walk:
     def _walk_node(self, node_id: str) -> None:
         started = time.perf_counter()
         if not self.policy.record_failures:
-            self._visit(node_id)
+            try:
+                self._visit(node_id)
+            except Exception as exc:
+                # A run that raises says which node it was building or running.
+                mark_failing_node(exc, node_id)
+                raise
         else:
             try:
                 self._visit(node_id)

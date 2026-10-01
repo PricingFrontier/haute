@@ -793,6 +793,31 @@ class TestInspectNode:
             {"part": "schema", "required_policy": 'max_sensitivity = "internal"'},
             {"part": "config", "required_policy": 'max_sensitivity = "internal"'},
         ]
+        assert "available" not in error
+
+    async def test_a_denied_config_part_says_which_parts_the_policy_permits(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The model that asked only for a withheld config part learns that the
+        schema part, which lists output columns and struct fields, is permitted."""
+
+        import haute.assistant._tools as tools_module
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: _policy(max_sensitivity="internal", executable=False),
+        )
+
+        result = await tools_module.build_tool_executor("main.py")(
+            "inspect_node", {"node": "enriched", "parts": ["config"]}
+        )
+
+        error = result["error"]
+        assert error["code"] == "egress_policy_denied"
+        assert error["available"] == ["schema"]
+        assert "The schema part is permitted" in error["message"]
+        assert "struct" in error["message"]
 
     async def test_input_without_the_profile_part_is_an_invalid_request(self, project_root: Path):
         from haute.assistant._tools import build_tool_executor
@@ -1087,6 +1112,19 @@ class TestSubmodelBoundaryValidation:
 
         result = node_schema("main.py", "nowhere")
         assert result["error"]["code"] == "unknown_node"
+
+    @pytest.mark.parametrize("node", ["inner_child", "submodel__sm1"])
+    def test_a_boundary_error_is_final_and_says_to_block(self, patched_parse, node: str):
+        """Nothing the model corrects makes a submodel's nodes readable or editable,
+        so the error is not retryable and says to report a blocker."""
+
+        from haute.assistant._tools import _with_retryable, node_schema
+
+        error = _with_retryable(node_schema("main.py", node))["error"]
+
+        assert (error["code"], error["retryable"]) == ("submodel_boundary", False)
+        assert "cannot be read or edited by the assistant" in error["message"]
+        assert "BLOCKED:" in error["fix"] and "editor" in error["fix"]
 
 
 # ---------------------------------------------------------------------------
@@ -2254,7 +2292,29 @@ class TestClosedSchemaKeywords:
 
         assert excinfo.value.path == "tool.field"
         assert excinfo.value.reason == "too_long"
-        assert str(excinfo.value) == "tool.field is too long"
+        assert str(excinfo.value) == "tool.field is too long: at most 3 characters"
+
+    @pytest.mark.parametrize(
+        ("schema", "value", "message"),
+        [
+            ({"type": "integer", "maximum": 10}, 12, "tool.field is above its maximum of 10"),
+            ({"type": "integer", "minimum": 1}, 0, "tool.field is below its minimum of 1"),
+            (
+                {"type": "array", "maxItems": 2},
+                [1, 2, 3],
+                "tool.field has too many items: at most 2",
+            ),
+            ({"type": "array", "minItems": 1}, [], "tool.field has too few items: at least 1"),
+            ({"type": "string", "minLength": 2}, "a", "tool.field is too short: at least 2"),
+        ],
+    )
+    def test_a_bound_rejection_states_the_bound(self, schema, value, message):
+        from haute.assistant._tools import _ToolArgumentValidationError, _validate_tool_value
+
+        with pytest.raises(_ToolArgumentValidationError) as excinfo:
+            _validate_tool_value(value, schema, path="tool.field")
+
+        assert str(excinfo.value).startswith(message)
 
     def test_unique_items_rejects_repeated_members(self):
         from haute.assistant._tools import _ToolArgumentValidationError, _validate_tool_value
@@ -2466,7 +2526,9 @@ class TestStepsFirstAuthoring:
         before = parse_pipeline_to_graph(steps_first_project / "main.py")
         ops = [{"op": "update_node", "node": node, "config": {**config, "steps": steps}}]
 
-        plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.")
+        plan = await dry_run_graph_edits(
+            "main.py", ops, summary="Test plan.", config_withheld=False
+        )
         assert "error" not in plan, plan
         applied = await apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
         assert "error" not in applied, applied
@@ -2495,6 +2557,7 @@ class TestStepsFirstAuthoring:
             "main.py",
             _august_ops("df = pl.concat([df, additional_drivers_claims])"),
             summary="Test plan.",
+            config_withheld=False,
         )
         assert "error" not in filled, filled
         assert "error" not in await apply_graph_plan(
@@ -2505,6 +2568,7 @@ class TestStepsFirstAuthoring:
             "main.py",
             [{"op": "rename_node", "node": "additional_drivers_claims", "new_name": "drivers"}],
             summary="Test plan.",
+            config_withheld=False,
         )
         assert refused["error"]["code"] == "rename_has_consumers"
         assert refused["error"]["consumers"] == [
@@ -2515,6 +2579,7 @@ class TestStepsFirstAuthoring:
             "main.py",
             [{"op": "rename_node", "node": "proposer_claims", "new_name": "proposer"}],
             summary="Test plan.",
+            config_withheld=False,
         )
         assert "error" not in plan, plan
         diff = _stored_plan(plan).diff
@@ -2741,6 +2806,307 @@ class TestRecipeOperations:
         assert "(operation 2) before operation 1" in error["fix"]
 
 
+RATING_SOURCE = """\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="rating fixture")
+
+
+@pipeline.polars
+def policies() -> pl.LazyFrame:
+    return pl.LazyFrame(
+        {
+            "driver_age": [19, 40],
+            "region_code": ["NW", "SE"],
+            "inception_date": ["2024-03-01", "2025-06-01"],
+        }
+    ).with_columns(pl.col("inception_date").str.to_date())
+"""
+
+_AGE_FACTOR = {
+    "banding": "breakpoints",
+    "column": "driver_age",
+    "outputColumn": "age_band",
+    "rules": [{"boundary": "24", "label": "young"}, {"boundary": "", "label": "older"}],
+    "default": "unknown",
+}
+
+
+@pytest.fixture()
+def rating_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A code-mode source of driver ages, region codes and inception dates."""
+
+    from haute._sandbox import set_project_root
+    from haute.assistant import _tools
+    from haute.assistant._ops import PlanStore
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
+    monkeypatch.setattr(_tools, "mutations_readiness", lambda _root: (True, None))
+    (tmp_path / "main.py").write_text(RATING_SOURCE, encoding="utf-8")
+    _egress_toml(tmp_path, max_sensitivity="restricted")
+    return tmp_path
+
+
+def _bands(*factors: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {
+            "op": "add_node",
+            "node_type": "banding",
+            "name": "bands",
+            "config": {"factors": list(factors)},
+        },
+        {"op": "add_edge", "source": "policies", "target": "bands"},
+    ]
+
+
+class TestConfigErrors:
+    """A config a node's parser refuses reaches the model located and retryable,
+    at the node that raised it and the operation that wrote it."""
+
+    async def test_number_breakpoints_on_a_date_column_name_the_date_form(
+        self, rating_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        dated = {
+            "banding": "breakpoints",
+            "column": "inception_date",
+            "outputColumn": "inception_year",
+            "rules": [{"boundary": "2024", "label": "2024"}, {"boundary": "", "label": "later"}],
+            "default": "unknown",
+        }
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits", {"summary": "Band years.", "ops": _bands(dated)}
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("schema_unresolvable", True)
+        assert error["where"] == {"op_index": 0, "node": "bands", "field": "factors"}
+        assert "has number breakpoints, but its column is Date" in error["message"]
+        assert "2024-12-31" in error["fix"]
+
+    async def test_a_rating_row_without_its_factor_is_a_located_config_error(
+        self, rating_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        rates = {
+            "op": "add_node",
+            "node_type": "ratingStep",
+            "name": "rates",
+            "config": {
+                "tables": [
+                    {
+                        "factors": ["age_band"],
+                        "outputColumn": "age_factor",
+                        "entries": [{"factor_values": ["young"], "value": 1.2}],
+                        "defaultValue": 1.0,
+                    }
+                ]
+            },
+        }
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Rate ages.",
+                "ops": [
+                    *_bands(_AGE_FACTOR),
+                    rates,
+                    {"op": "add_edge", "source": "bands", "target": "rates"},
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("invalid_config", True)
+        assert error["where"] == {"op_index": 2, "node": "rates", "field": "tables"}
+        assert "requires factor 'age_band'" in error["message"]
+        assert '{"age_band": <value>, "value": <number>}' in error["fix"]
+
+    async def test_a_schema_failure_names_the_node_that_raised_not_the_terminal(
+        self, rating_project: Path
+    ):
+        """Emptying the bands leaves the rating step without its factor: the
+        failure is located at the rating step the plan did not touch, while the
+        message names the terminal whose validation reached it."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        rates = {
+            "op": "add_node",
+            "node_type": "ratingStep",
+            "name": "rates",
+            "config": {
+                "tables": [
+                    {
+                        "factors": ["age_band"],
+                        "outputColumn": "age_factor",
+                        "entries": [{"age_band": "young", "value": 1.2}],
+                        "defaultValue": 1.0,
+                    }
+                ]
+            },
+        }
+        priced = {
+            "op": "add_node",
+            "node_type": "polars",
+            "name": "priced",
+            "config": {
+                "steps": [
+                    {"id": "start", "kind": "source", "input": "rates"},
+                    {"id": "logic", "kind": "free_code", "code": "# Keep\ndf = df"},
+                ]
+            },
+        }
+        execute = build_tool_executor("main.py")
+        plan = await execute(
+            "dry_run_graph_edits",
+            {
+                "summary": "Rate ages.",
+                "ops": [
+                    *_bands(_AGE_FACTOR),
+                    rates,
+                    {"op": "add_edge", "source": "bands", "target": "rates"},
+                    priced,
+                    {"op": "add_edge", "source": "rates", "target": "priced"},
+                ],
+            },
+        )
+        assert "error" not in plan, plan
+        assert "error" not in await execute("apply_graph_plan", {"plan_hash": plan["plan_hash"]})
+
+        result = await execute(
+            "dry_run_graph_edits",
+            {
+                "summary": "Empty the bands.",
+                "ops": [{"op": "update_node", "node": "bands", "config": {"factors": []}}],
+            },
+        )
+
+        error = result["error"]
+        assert error["code"] == "schema_unresolvable"
+        assert error["where"] == {"node": "rates"}
+        assert "Schema validation of node 'priced' failed at node 'rates'" in error["message"]
+        assert "needs the column 'age_band'" in error["message"]
+
+
+async def test_categorical_rules_on_a_number_column_point_at_breakpoints(rating_project: Path):
+    from haute.assistant._tools import build_tool_executor
+
+    ages = {
+        "banding": "categorical",
+        "column": "driver_age",
+        "outputColumn": "age_band",
+        "rules": [{"value": "19", "assignment": "young"}],
+        "default": "older",
+    }
+    result = await build_tool_executor("main.py")(
+        "dry_run_graph_edits", {"summary": "Band ages.", "ops": _bands(ages)}
+    )
+
+    error = result["error"]
+    assert (error["code"], error["retryable"]) == ("invalid_config", True)
+    assert error["where"] == {"op_index": 0, "node": "bands", "field": "factors"}
+    assert "'driver_age', a Int64 column, with categorical rules" in error["message"]
+    assert 'banding: "breakpoints"' in error["fix"]
+
+
+async def test_a_dry_run_validates_every_scenario_a_switch_maps(steps_first_project: Path):
+    """Dropping the input the batch scenario routes to resolves under the live
+    scenario, so only validating every mapped scenario catches it; the brief
+    names the switch's scenarios, which are pipeline metadata."""
+
+    from haute.assistant._render import render_turn_context
+    from haute.assistant._tools import (
+        build_tool_executor,
+        build_turn_context,
+        resolve_egress_policy,
+    )
+
+    _egress_toml(steps_first_project, max_sensitivity="internal")
+    execute = build_tool_executor("main.py")
+    switch = {
+        "op": "add_node",
+        "node_type": "liveSwitch",
+        "name": "policies",
+        "config": {
+            "input_scenario_map": {"quotes": "live", "regions": "nb_batch"},
+            "inputs": ["quotes", "regions"],
+        },
+    }
+    kept = {
+        "op": "add_node",
+        "node_type": "polars",
+        "name": "kept",
+        "config": {
+            "steps": [
+                {"id": "start", "kind": "source", "input": "policies"},
+                {"id": "logic", "kind": "free_code", "code": "# Keep\ndf = df"},
+            ]
+        },
+    }
+    plan = await execute(
+        "dry_run_graph_edits",
+        {
+            "summary": "Route quotes or regions.",
+            "ops": [
+                switch,
+                {"op": "add_edge", "source": "quotes", "target": "policies"},
+                {"op": "add_edge", "source": "regions", "target": "policies"},
+                kept,
+                {"op": "add_edge", "source": "policies", "target": "kept"},
+            ],
+        },
+    )
+    assert "error" not in plan, plan
+    assert "error" not in await execute("apply_graph_plan", {"plan_hash": plan["plan_hash"]})
+    brief = render_turn_context(
+        build_turn_context("main.py", resolve_egress_policy(steps_first_project))
+    )
+    assert '  - scenarios: ["live", "nb_batch"]' in brief
+
+    dropped = await execute(
+        "dry_run_graph_edits",
+        {
+            "summary": "Drop the regions source.",
+            "ops": [{"op": "delete_edge", "source": "regions", "target": "policies"}],
+        },
+    )
+
+    error = dropped["error"]
+    assert (error["code"], error["retryable"]) == ("scenario_unrouted", True)
+    assert error["where"] == {"op_index": 0, "node": "policies", "field": "input_scenario_map"}
+    assert "routes scenario 'nb_batch' to 'regions', which no incoming edge" in error["message"]
+
+    premium = {"kind": "free_code", "code": "# Premium only\ndf = df.select('premium')"}
+    narrowed = await execute(
+        "dry_run_graph_edits",
+        {
+            "summary": "Keep the premium.",
+            "ops": [
+                {
+                    "op": "edit_steps",
+                    "node": "kept",
+                    "edits": [{"replace": "logic", "step": premium}],
+                }
+            ],
+        },
+    )
+
+    error = narrowed["error"]
+    assert error["code"] == "schema_unresolvable"
+    # The column the edit reads is required of the switch, whose batch input lacks it.
+    assert error["where"] == {"node": "policies"}
+    assert (
+        "Schema validation of node 'kept' failed at node 'policies' under scenario 'nb_batch'"
+        in error["message"]
+    )
+
+
 class TestActionableErrors:
     """A tool error says where it happened, what the node's inputs hold and how
     to fix it, through the executor the model calls."""
@@ -2825,6 +3191,151 @@ class TestActionableErrors:
         assert error["did_you_mean"][0] == "dry_run_graph_edits"
         assert error["fix"] == "Call dry_run_graph_edits instead."
         assert error["retryable"] is True
+
+    @pytest.mark.parametrize("name", ["ask", "ask_user", "clarify", "question"])
+    async def test_a_tool_for_asking_the_analyst_says_how_to_ask(
+        self, steps_first_project: Path, name: str
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(name, {})
+
+        error = result["error"]
+        assert error["code"] == "unknown_tool"
+        assert error["fix"] == (
+            "To ask the analyst, end your reply with a line starting NEEDS_INPUT:."
+        )
+
+    async def test_update_node_with_step_edits_points_at_edit_steps(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Add a step.",
+                "ops": [
+                    {
+                        "op": "update_node",
+                        "node": "august_totals",
+                        "edits": [{"remove": "logic"}],
+                    }
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert (error["code"], error["validation_reason"]) == ("invalid_request", "unknown_field")
+        assert error["unknown_fields"] == ["edits"]
+        assert '{"op": "edit_steps"' in error["fix"]
+
+    async def test_a_response_output_after_a_node_the_plan_adds_reads_it_by_id(
+        self, steps_first_project: Path
+    ):
+        """A response_output recipe whose source is a $ref saves the referenced
+        node's frame name in its rows, never the ref."""
+
+        from haute.assistant._tools import build_tool_executor
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        execute = build_tool_executor("main.py")
+        plan = await execute(
+            "dry_run_graph_edits",
+            {
+                "summary": "Band regions and respond with them.",
+                "ops": [
+                    {**_REGION_BANDING, "ref": "bands"},
+                    {
+                        "op": "recipe",
+                        "recipe": "response_output",
+                        "arguments": {
+                            "source": "$bands",
+                            "output_name": "response",
+                            "output_columns": ["region_group"],
+                        },
+                    },
+                ],
+            },
+        )
+        assert "error" not in plan, plan
+        applied = await execute("apply_graph_plan", {"plan_hash": plan["plan_hash"]})
+        assert "error" not in applied, applied
+
+        graph = parse_pipeline_to_graph(steps_first_project / "main.py")
+        response = next(node for node in graph.nodes if node.id == "response")
+        assert [row["source_port"] for row in response.data.config["outputMapping"]] == [
+            "region_band"
+        ]
+
+    async def test_an_output_row_reading_no_incoming_frame_is_located(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        row = {
+            "source_port": "rated_quotes",
+            "source_column": "premium",
+            "output_path": "$[:].premium",
+            "enabled": True,
+        }
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Respond with the premium.",
+                "ops": [
+                    {
+                        "op": "add_node",
+                        "node_type": "output",
+                        "name": "response",
+                        "config": {"outputMapping": [row], "outputFormat": "json"},
+                    },
+                    {"op": "add_edge", "source": "quotes", "target": "response"},
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("invalid_ops", True)
+        assert error["where"] == {"op_index": 0, "node": "response", "field": "outputMapping"}
+        assert "'rated_quotes'" in error["message"] and "'quotes'" in error["message"]
+        assert error["fix"] == "Set row 1's source_port to the name of an incoming edge: 'quotes'."
+
+    async def test_a_step_reading_an_unconnected_node_names_the_edge_to_add(
+        self, steps_first_project: Path
+    ):
+        """The step reads a node that exists but is not wired in: the fix is the
+        add_edge that connects it, not the step form again."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        steps = [
+            {"id": "start", "kind": "source", "input": "quotes"},
+            {"id": "logic", "kind": "free_code", "code": "# Keep it\ndf = df"},
+        ]
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Read the quotes.",
+                "ops": [{"op": "update_node", "node": "august_totals", "config": {"steps": steps}}],
+            },
+        )
+
+        error = result["error"]
+        assert error["where"] == {
+            "op_index": 0,
+            "node": "august_totals",
+            "field": "steps",
+            "step": "start",
+        }
+        assert error["fix"] == (
+            "Connect 'quotes' to 'august_totals' in the same plan: {\"op\": \"add_edge\", "
+            '"source": "quotes", "target": "august_totals"}.'
+        )
 
     async def test_an_edge_to_a_node_added_later_in_the_plan_names_the_move(
         self, steps_first_project: Path
@@ -3042,7 +3553,10 @@ class TestExecutionErrorEgress:
         from haute.assistant._tools import dry_run_graph_edits
 
         result = await dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", _RAISE_WITH_ROWS), summary="Test plan."
+            "main.py",
+            _free_code_node("quotes", _RAISE_WITH_ROWS),
+            summary="Test plan.",
+            config_withheld=False,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3058,6 +3572,7 @@ class TestExecutionErrorEgress:
             "main.py",
             _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()"),
             summary="Test plan.",
+            config_withheld=False,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3089,7 +3604,7 @@ class TestExecutionErrorEgress:
             "raise pl.exceptions.ComputeError(f\"column '{rows['quote_id'][0]}' is bad\")\n"
         )
         result = await dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", code), summary="Test plan."
+            "main.py", _free_code_node("quotes", code), summary="Test plan.", config_withheld=False
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3107,6 +3622,7 @@ class TestExecutionErrorEgress:
                 "quotes", '# Rename one column\ndf = df.rename({"missing_col": "renamed"})'
             ),
             summary="Test plan.",
+            config_withheld=False,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3182,6 +3698,7 @@ class TestFailureColumnNamesFollowTheEgressPolicy:
             "main.py",
             _free_code_node("typed", "# Materialise\ndf = df.collect().lazy()"),
             summary="Test plan.",
+            config_withheld=False,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3275,6 +3792,7 @@ def consumer(typed: pl.LazyFrame) -> pl.LazyFrame:
             "main.py",
             _free_code_node("quotes", '# Rename one column\ndf = df.rename({"absent_col": "x"})'),
             summary="Test plan.",
+            config_withheld=False,
         )
 
         assert result["error"]["code"] == "schema_unresolvable", result
@@ -3305,6 +3823,53 @@ def _allow_row_samples(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture()
+def broken_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The evaluation's broken pricing project: its feature step reads a column
+    its input does not hold."""
+
+    import shutil
+
+    from haute._sandbox import set_project_root
+
+    root = tmp_path / "b"
+    shutil.copytree(Path(__file__).parent / "assistant_eval" / "projects" / "broken_pricing", root)
+    # A Parquet scan reads its file directly, so no input snapshot is needed.
+    pl.read_csv(root / "data" / "quotes.csv").write_parquet(root / "data" / "quotes.parquet")
+    config = root / "config" / "data_input" / "quotes.json"
+    config.write_text(
+        json.dumps(
+            {
+                **json.loads(config.read_text(encoding="utf-8")),
+                "format": "parquet",
+                "path": "data/quotes.parquet",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(root)
+    set_project_root(root)  # restored by the autouse _restore_project_root
+    _egress_toml(root, max_sensitivity="internal")
+    return root
+
+
+def test_a_node_whose_step_fails_names_the_step_and_its_inputs(broken_project: Path):
+    """The schema part of a failing stepped node says which step raised and what
+    each input holds, as an empty node does, while the missing column itself
+    stays withheld."""
+
+    from haute.assistant._tools import node_schema
+
+    error = node_schema("pipeline.py", "rating_features")["error"]
+
+    assert error["code"] == "schema_unresolvable"
+    assert error["step"] == "logic"
+    assert "in step 2 ('logic') of node 'rating_features'" in error["message"]
+    columns = {column["name"] for column in error["inputs"]["quotes"]}
+    assert {"year_of_manufacture", "driver_age"} <= columns
+    assert "vehicle_year" not in json.dumps(error)
+
+
 class TestPreambleFailureEgress:
     """The preamble is authored code that can read project data at import, so its
     failure is reduced exactly as a node-code failure is."""
@@ -3319,7 +3884,10 @@ class TestPreambleFailureEgress:
         from haute.assistant._tools import dry_run_graph_edits
 
         result = await dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", "df = df"), summary="Test plan."
+            "main.py",
+            _free_code_node("quotes", "df = df"),
+            summary="Test plan.",
+            config_withheld=False,
         )
 
         assert result["error"]["code"] == "preamble_failed", result
@@ -3369,7 +3937,10 @@ class TestPreambleFailureEgress:
         _allow_row_samples(monkeypatch)
 
         planned = await dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", "df = df"), summary="Test plan."
+            "main.py",
+            _free_code_node("quotes", "df = df"),
+            summary="Test plan.",
+            config_withheld=False,
         )
         schema = node_schema("main.py", "quotes")
 
@@ -3396,7 +3967,10 @@ class TestPreambleFailureEgress:
         )
 
         result = await tools_module.dry_run_graph_edits(
-            "main.py", _free_code_node("quotes", _RAISE_WITH_ROWS), summary="Test plan."
+            "main.py",
+            _free_code_node("quotes", _RAISE_WITH_ROWS),
+            summary="Test plan.",
+            config_withheld=False,
         )
 
         assert "ValueError in step 2 ('logic') of node 'probe'" in result["error"]["message"]
@@ -3415,7 +3989,9 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
     steps = _guide_step_lists()[0]
     assert [step["kind"] for step in steps] == ["source", "free_code"]
     ops = [{"op": "update_node", "node": "august_totals", "config": {"steps": steps}}]
-    plan = await tools_module.dry_run_graph_edits("main.py", ops, summary="Test plan.")
+    plan = await tools_module.dry_run_graph_edits(
+        "main.py", ops, summary="Test plan.", config_withheld=False
+    )
     applied = await tools_module.apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
     assert "error" not in applied, applied
     monkeypatch.setattr(
@@ -3457,10 +4033,46 @@ def _policy(*, max_sensitivity: str, executable: bool):
 async def _apply_ops(ops: list[dict[str, object]]) -> None:
     from haute.assistant._tools import apply_graph_plan, dry_run_graph_edits
 
-    plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.")
+    plan = await dry_run_graph_edits("main.py", ops, summary="Test plan.", config_withheld=False)
     assert "error" not in plan, plan
     applied = await apply_graph_plan("main.py", plan["plan_hash"], session_id="test")
     assert "error" not in applied, applied
+
+
+@pytest.mark.parametrize(
+    ("max_sensitivity", "refused"), [("internal", True), ("restricted", False)]
+)
+async def test_a_dry_run_refuses_retyping_steps_the_policy_withholds(
+    steps_first_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    max_sensitivity: str,
+    refused: bool,
+):
+    """Under a policy that withholds saved configuration, the executor's dry-run
+    refuses an update_node that would retype a saved step list, located and
+    retryable; a policy that lets the model read it does not."""
+
+    import haute.assistant._tools as tools_module
+
+    await _apply_ops(_august_ops(_AUGUST_ONLY))
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: _policy(max_sensitivity=max_sensitivity, executable=False),
+    )
+    execute = tools_module.build_tool_executor("main.py")
+
+    july = _august_ops(_AUGUST_ONLY.replace("2026-08", "2026-07"))
+    result = await execute("dry_run_graph_edits", {"summary": "Retype the steps.", "ops": july})
+
+    if not refused:
+        assert "error" not in result, result
+        return
+    error = result["error"]
+    assert (error["code"], error["retryable"]) == ("config_withheld", True)
+    assert error["where"] == {"op_index": 0, "node": "august_totals", "field": "steps"}
+    assert "saved steps entries 'logic'," in error["message"]
+    assert "edit_steps" in error["fix"]
 
 
 class TestStepAuthoringViews:

@@ -136,7 +136,9 @@ edited in place.  A node in code mode (a `code` config without `steps`) is
 edited through its `code`.  Never switch a node between steps and code; that is
 the analyst's choice in the editor.  To edit a structured step, read
 `step_grammar`, which comes with this guide: each step kind with its fields and
-the closed vocabularies those fields take.
+the closed vocabularies those fields take.  A `pivot` step reshapes a frame; an
+analyst's pivot table on an Explore node is a `pivots` entry in its config,
+never a step.
 
 A `polars` node fed by `proposer_claims` and `additional_drivers_claims` that
 totals both sources' August claims per policy:

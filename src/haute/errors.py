@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, ClassVar, TypeGuard
 
+from haute._validation_error import ConfigSettingError as ConfigSettingError
 from haute._validation_error import HauteValidationError as HauteValidationError
 
 
@@ -72,6 +73,28 @@ class HauteError(Exception):
         for field_name in self.public_fields:
             payload[field_name] = getattr(self, field_name)
         return payload
+
+
+_FAILING_NODE_ATTRIBUTE = "haute_failing_node"
+
+
+def mark_failing_node(exc: BaseException, node_id: str) -> None:
+    """Record that *exc* was raised while the graph walk built or ran *node_id*.
+
+    The innermost record wins: a failure already marked keeps its node. A
+    failure a lazy frame raises only when a later caller reads its schema is
+    never marked, because no node was running when it was raised.
+    """
+
+    if failing_node(exc) is None:
+        setattr(exc, _FAILING_NODE_ATTRIBUTE, node_id)
+
+
+def failing_node(exc: BaseException) -> str | None:
+    """The node the graph walk was building or running when *exc* was raised."""
+
+    node_id = getattr(exc, _FAILING_NODE_ATTRIBUTE, None)
+    return node_id if isinstance(node_id, str) else None
 
 
 def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:

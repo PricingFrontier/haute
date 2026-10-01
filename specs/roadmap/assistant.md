@@ -276,7 +276,10 @@ restricted egress policy.
 
 **Dependencies:** `ASSIST-35`.
 
-**Evidence:** `src/haute/assistant/_ops.py::_apply_update_node`.
+**Evidence:** `src/haute/assistant/_ops.py::_apply_update_node`. On 2026-10-01,
+under internal egress, 11 of 37 failing live case-runs came from retyping
+withheld lists and 6 were saved as silent corruptions; the dry-run's
+`config_withheld` guard (`_ops.py::_refuse_withheld_rewrite`) now refuses them.
 
 ### ASSIST-53 — Qualification per model
 **Why:** Nothing records which models the assistant works with. Deferred until

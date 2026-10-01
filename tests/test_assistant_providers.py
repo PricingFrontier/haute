@@ -110,6 +110,41 @@ def test_controller_messages_are_provider_visible_as_user_messages():
     ]
 
 
+@pytest.mark.parametrize("records", [True, False])
+def test_the_omission_note_leads_the_next_user_message_on_the_openai_wire(records: bool):
+    """A compacted history's leading note never travels as a user message of its
+    own: it leads the first record's request, or the turn's own message when no
+    record was kept, so two user messages are never consecutive."""
+
+    from haute.assistant._providers import _openai_messages
+
+    note = {"role": "controller", "content": "## Earlier turns left out\nTwo turns."}
+    record = [
+        {"role": "user", "content": "add a factor"},
+        {"role": "assistant", "content": "Saved.\n\n## Turn record"},
+    ]
+    turn = [
+        {"role": "user", "content": "now rename it"},
+        {"role": "context", "content": "## Turn context\nbrief"},
+    ]
+
+    translated = _openai_messages(_SYSTEM, [note, *(record if records else []), *turn])
+
+    roles = [message["role"] for message in translated]
+    assert roles == (["system", "user", "assistant", "user"] if records else ["system", "user"])
+    assert all(roles[i : i + 2] != ["user", "user"] for i in range(len(roles) - 1))
+    if records:
+        assert translated[1]["content"] == "## Earlier turns left out\nTwo turns.\n\nadd a factor"
+        assert translated[3]["content"] == (
+            "## Turn context\nbrief\n\n## Analyst message\nnow rename it"
+        )
+    else:
+        assert translated[1]["content"] == (
+            "## Turn context\nbrief\n\n## Analyst message\n"
+            "## Earlier turns left out\nTwo turns.\n\nnow rename it"
+        )
+
+
 def test_anthropic_round_results_share_one_user_message():
     from haute.assistant._providers import _anthropic_messages
 
@@ -399,7 +434,7 @@ class TestAnthropicProvider:
     def test_every_adaptive_thinking_model_is_accepted(self):
         from dataclasses import replace
 
-        from haute.assistant._providers import ADAPTIVE_THINKING_MODELS
+        from haute.assistant._config import ADAPTIVE_THINKING_MODELS
 
         for model in sorted(ADAPTIVE_THINKING_MODELS):
             provider = AnthropicProvider(
@@ -1969,6 +2004,105 @@ class TestDatabricksProvider:
         assert entries[0]["field"] == "ops"
         assert entries[0]["declared_types"] == ["array"]
         assert encoded not in repr(captured), "the rejected value itself is never logged"
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments", "decoded", "event"),
+        [
+            (
+                "dry_run_graph_edits",
+                {"summary": "s", "ops": [], "assumptions": "- Keep the default band."},
+                {"summary": "s", "ops": [], "assumptions": ["- Keep the default band."]},
+                "assistant_databricks_argument_wrapped_in_array",
+            ),
+            (
+                "find_data",
+                {"recursive": "True"},
+                {"recursive": True},
+                "assistant_databricks_argument_python_boolean",
+            ),
+            (
+                "find_data",
+                {"recursive": "False"},
+                {"recursive": False},
+                "assistant_databricks_argument_python_boolean",
+            ),
+        ],
+    )
+    async def test_decodes_a_plain_text_list_and_a_python_boolean_by_the_declared_type(
+        self, tool_name: str, arguments: dict, decoded: dict, event: str
+    ):
+        """Qwen sends a declared list of sentences as one plain sentence and a
+        boolean as Python's `True`: each decodes by its declared schema, logged by
+        shape, never by value."""
+
+        import structlog.testing
+
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        definition = next(tool for tool in TOOL_DEFINITIONS if tool["name"] == tool_name)
+        client = _FakeOpenAIClient(_openai_tool_chunks(tool_name, arguments))
+
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                DatabricksProvider(
+                    _config(
+                        "databricks",
+                        base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                    ),
+                    client=client,
+                ),
+                tools=[definition],
+            )
+
+        (tool,) = [item for item in events if isinstance(item, ToolCallRequest)]
+        assert tool.arguments == decoded
+        (entry,) = [item for item in captured if item.get("event") == event]
+        assert entry["field"] in arguments
+        assert "Keep the default" not in repr(captured)
+
+    def test_the_portable_projection_keeps_numeric_bounds_in_the_description(self):
+        """The wire subset drops `minimum` and `maximum`; their values travel in the
+        description, so the model can see the bound it would otherwise only learn
+        from a rejection."""
+
+        from haute.assistant._providers import _portable_tools
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        (knowledge,) = [
+            tool
+            for tool in _portable_tools(TOOL_DEFINITIONS)
+            if tool["name"] == "get_project_knowledge"
+        ]
+        limit = knowledge["input_schema"]["properties"]["limit"]
+
+        assert "maximum" not in limit
+        assert limit == {"type": "integer", "description": "At least 1, at most 10."}
+
+    async def test_a_list_looking_string_is_never_wrapped(self):
+        """A string that opens like a JSON array but does not parse stays a string,
+        for canonical validation to refuse; only plain text is wrapped."""
+
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
+        arguments = {"summary": "s", "ops": [], "assumptions": "['one', 'two']"}
+        client = _FakeOpenAIClient(_openai_tool_chunks("dry_run_graph_edits", arguments))
+
+        events = await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            ),
+            tools=[definition],
+        )
+
+        (tool,) = [item for item in events if isinstance(item, ToolCallRequest)]
+        assert tool.arguments["assumptions"] == "['one', 'two']"
 
     async def test_malformed_stream_retains_databricks_error_identity(self):
         ns = SimpleNamespace

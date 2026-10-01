@@ -294,7 +294,8 @@ class BriefNode:
     """One top-level node of the graph brief.
 
     `authoring` is set only on a stepped surface; `outputs` is None when the
-    node's own schema does not resolve.
+    node's own schema does not resolve. `scenarios` are the source scenarios a
+    Source Switch routes, which are pipeline metadata, sorted.
     """
 
     id: str
@@ -303,6 +304,7 @@ class BriefNode:
     authoring: Authoring | None
     inputs: tuple[BriefInput, ...]
     outputs: tuple[BriefFrame, ...] | None
+    scenarios: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,18 +386,27 @@ def render_egress_policy(egress: EgressPolicy) -> str:
     def permitted(allowed: bool) -> str:
         return "permitted" if allowed else "not permitted"
 
+    config_readable = egress.max_sensitivity == "restricted"
     return "\n".join(
         (
             "### Project egress policy",
             f"- Provider trust: `{egress.trust}`",
             f"- Highest sensitivity sent: `{egress.max_sensitivity}` (saved pipeline "
             "metadata needs `internal`; saved node configuration needs `restricted`)",
+            (
+                "- Saved node configuration: readable through `inspect_node`'s config part"
+                if config_readable
+                else "- Saved node configuration: withheld; `inspect_node` refuses its config "
+                "part for every node, so you cannot see any node's factors, tables, "
+                "mappings, scenario maps and code. `update_node` replaces a key's whole "
+                "value: never rewrite a list or map you have not read; ask the analyst instead"
+            ),
             f"- Project knowledge: {permitted(egress.allow_project_knowledge)}",
             f"- Executable source: {permitted(egress.allow_executable_source)}"
             + (
-                ""
-                if egress.allow_executable_source
-                else "; `inspect_node`'s config part redacts node code"
+                "; `inspect_node`'s config part redacts node code"
+                if config_readable and not egress.allow_executable_source
+                else ""
             ),
             f"- Column value profiles: {permitted(egress.allow_row_samples)}"
             + (
@@ -477,6 +488,8 @@ def _brief_node_lines(
         for frame in node.outputs:
             where = "output" if frame.port is None else f"output port `{frame.port}`"
             lines.append(f"  - {where}: {_columns(frame.columns)}")
+    if node.scenarios:
+        lines.append(f"  - scenarios: {_columns(node.scenarios)}")
     return lines
 
 

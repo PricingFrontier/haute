@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast
 
+from haute._graph_utils import _sanitize_func_name
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -608,6 +609,8 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
     created: str | None = ref
     if recipe_id == "response_output":
         created = None
+        # A `$ref` source stays a ref in the row; the plan resolves it to the
+        # frame name of the node the ref declared.
         operations = _output_operations(
             values,
             source=values["source"],
@@ -699,7 +702,8 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
             _output_operations(
                 values,
                 source=f"${created}",
-                source_port=values["name"],
+                # The created node's id, which names the frame its edge carries.
+                source_port=_sanitize_func_name(values["name"]),
                 ref=f"{created}_output",
             )
         )

@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import pytest
 
+from haute._graph_utils import _sanitize_func_name
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.assistant._ops import (
     ProjectSnapshot,
@@ -452,7 +453,7 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
             "config": {
                 "outputMapping": [
                     {
-                        "source_port": arguments["name"],
+                        "source_port": _sanitize_func_name(str(arguments["name"])),
                         "source_column": output_column,
                         "output_path": f"$[:].{output_column}",
                         "enabled": True,
@@ -463,6 +464,21 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
         }
     ]
     assert recipe[-1] == {"op": "add_edge", "source": "$made", "target": "$made_output"}
+
+
+def test_a_recipe_output_reads_the_created_node_by_its_id() -> None:
+    """The created node's id is its sanitised name, and so is the frame name its
+    response output's rows read."""
+
+    from haute.assistant._recipes import expand_recipe
+
+    arguments = _arguments("categorical_banding")
+    arguments.update(name="Region Band", output_name="response", output_columns=["region_group"])
+
+    recipe = expand_recipe("categorical_banding", arguments, ref="made")
+
+    output = next(op for op in recipe if op["op"] == "add_node" and op["node_type"] == "output")
+    assert output["config"]["outputMapping"][0]["source_port"] == "Region_Band"
 
 
 @pytest.mark.parametrize(

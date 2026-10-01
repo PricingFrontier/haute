@@ -47,6 +47,11 @@ TRAJECTORIES = load_trajectories(TRAJECTORIES_ROOT)
 CORPUS_ITEMS = ("attach_regional_rates", "high_premium_quotes", "underwriting_decision")
 #: Seconds one replayed turn may take before the replay counts as hung.
 TURN_TIMEOUT = 120
+#: Trajectories that change an entry of a saved list the model cannot read
+#: under the replay's internal egress: the dry-run refuses the blind rewrite
+#: (`config_withheld`) until these cases run under a policy that lets the model
+#: read saved configuration, so their replays are expected to diverge there.
+WITHHELD_CONFIG_EDITS = frozenset({"motor_licence_band_refine", "motor_region_regroup"})
 
 
 @pytest.fixture
@@ -126,7 +131,20 @@ def test_corpus_trajectories_author_the_corpus_and_its_goldens(
         pytest.param(
             trajectory,
             id=trajectory.id,
-            marks=pytest.mark.timeout(TURN_TIMEOUT * len(trajectory.turns)),
+            marks=[
+                pytest.mark.timeout(TURN_TIMEOUT * len(trajectory.turns)),
+                *(
+                    [
+                        pytest.mark.xfail(
+                            strict=True,
+                            raises=TrajectoryDivergedError,
+                            reason="rewrites saved configuration the internal policy withholds",
+                        )
+                    ]
+                    if trajectory.id in WITHHELD_CONFIG_EDITS
+                    else []
+                ),
+            ],
         )
         for trajectory in TRAJECTORIES
     ],

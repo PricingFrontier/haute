@@ -203,7 +203,9 @@ text. Earlier turns' tool calls and results are not resent: the turn context des
 saved graph as the turn starts, and the model reads anything else again. The records are
 bounded by a character budget, not a message count. When they exceed it the oldest records
 are dropped whole, newest kept, and a leading Haute note says how many earlier turns were
-left out; a turn is never cut in the middle, and the current turn is never cut at all.
+left out (on the OpenAI-compatible wire it leads the next user message, so two user
+messages never follow each other); a turn is never cut in the middle, and the current
+turn is never cut at all.
 Records are built from what a persisted turn keeps (its text, its outcome and its saved
 change records), so a chat revived after a restart compacts the same way. Mid-tier models
 get a short context that still names every change the conversation saved; thinking from
@@ -258,17 +260,32 @@ always releases the session reservation even if history persistence or response 
 raises, so a failed cleanup cannot turn into a permanent 409 for that session.
 When the user's request authorizes a mutation and the required intent is known, the
 system prompt tells the model not to end after merely announcing a future tool call: it
-completes the dry-run/apply sequence, asks one focused question prefixed `NEEDS_INPUT:` when
-material intent is ambiguous, or reports a concrete tool blocker prefixed `BLOCKED:`. When
+completes the dry-run/apply sequence, asks one focused question on a line starting
+`NEEDS_INPUT:` when material intent is ambiguous, or reports a concrete tool blocker on a
+line starting `BLOCKED:`. When it saved part of a request and another part cannot be done
+(a run, a file write, a deployment, training), it names that part on a `BLOCKED:` line, so
+the turn ends `blocked` with its saves listed rather than `applied`. It never asks the
+analyst to confirm a value, name or threshold the request already states. When
 the analyst delegates a choice ("pick any", "you choose"), the prompt tells the model to
 make a reasonable choice, state it, and proceed; it asks only for choices that change the
 result materially and that the analyst has not delegated.
+
+The controller reads an outcome marker on any line of the final round's text, after
+whitespace, a list marker and markdown emphasis (`**NEEDS_INPUT:**`, `- _BLOCKED:_`); the
+last marked line decides, and its detail is the text after the marker. The live
+evaluation of 2026-10-01 had nine questions and blockers scored as plain answers because
+the model wrote them after a sentence of prose or in bold, and the rule that the marker
+must open the reply was the only cause. A message whose text asks or blocks never saves:
+an `apply_graph_plan` it carries is refused without running, with a tool error saying
+nothing was applied because the same message asked or blocked. The same evaluation saw a
+model ask for a list it could not read and, in that same message, apply a list it had
+invented.
 
 The controller is structural: nothing it does depends on the words of the request. It
 tracks one fact across the turn's dry-runs, the state the latest one left: a **validated
 plan** (the latest dry-run succeeded) or a **failed dry-run** (the latest dry-run failed);
 only an apply that saves clears it. When the model ends a
-round with text that does not begin `NEEDS_INPUT:` or `BLOCKED:` while that state is
+round with text that carries no outcome marker while that state is
 open, the controller sends one internal, non-transcript reminder naming it (apply the
 validated plan with its exact hash, or correct and dry-run the failed plan, or report a
 question or blocker) and requests one more provider round. A second such end completes
@@ -440,7 +457,16 @@ asks while authoring, whatever storage layer holds the answer:
     `script`, at any depth, so a free-code step's `code` too) is redacted unless
     the policy's `allow_executable_source` permits it. The whole part is still
     treated as `restricted` and is withheld unless the configured policy permits
-    that class.
+    that class. A call whose every part is withheld says which parts the policy
+    does permit: the schema part lists every output column, a struct column's
+    dtype naming its fields, which is how a model that cannot read an output
+    node's rows can still see the response's shape.
+  A Source Switch's schema part also lists the scenarios it routes (`scenarios`),
+  as the graph brief does: scenario names are pipeline metadata.
+  A node whose schema fails to resolve still answers each input's columns, as an
+  empty node does, and names the failing step when its line says or the step list
+  has one step besides `source` steps; the missing column itself is named only
+  when the policy already discloses it.
   - `profile` (`allow_row_samples`) — what the values in a frame actually look like, for
     the one question a schema cannot answer: how a categorical column encodes itself. A
     `fault` column typed `String` may hold `Y`/`N`, `true`/`false`, or
@@ -681,7 +707,8 @@ model; the error names the nodes the plan adds, by id and ref.
   `arguments` reach the provider as an object whose description gives each recipe's
   argument names, and the complete argument schema is the `recipe:<id>` reference.
   Unsupported validation vocabulary is
-  omitted. The complete canonical operation schema remains the sole execution-time
+  omitted, except a number's `minimum` and `maximum`, which the projection states in its
+  description, and a rejection by a bound names the bound. The complete canonical operation schema remains the sole execution-time
   authority, so portability never weakens validation. Some Databricks-hosted OpenAI-compatible models encode function
   arguments whose declared type is an array, object, boolean, integer, or number as a JSON
   string. The Databricks adapter decodes only valid, correctly typed, schema-declared
@@ -694,7 +721,13 @@ model; the error names the nodes the plan adds, by id and ref.
   `output_columns` arrays decode by that recipe's argument schema. An unknown or
   ambiguous discriminator selects no branch, and nothing below it is decoded. Numeric results must be finite, booleans never satisfy integer or
   number declarations, and string or null declarations are never decoded. The adapter
-  does not infer a type from an undeclared or ambiguous schema. An
+  does not infer a type from an undeclared or ambiguous schema. Two further spellings,
+  seen live on 2026-10-01 in eleven `assumptions` and five `find_data.recursive` calls,
+  decode by the declared type alone and are logged by shape: plain text where a list of
+  text is declared becomes a one-item list (text that opens like JSON never does), and
+  Python's `True` or `False` where a boolean is declared becomes that boolean. The
+  `assumptions` list stays a list on the wire, because the change card shows each
+  assumption as its own bullet, bounds their number and persists each one. An
   invalid or wrong-type encoding is left unchanged for the canonical tool validator to
   reject as a structured, recoverable tool result; it is never guessed, repaired, or
   executed, and it does not terminate the provider stream.
@@ -1015,12 +1048,17 @@ A recipe cannot grant authority, choose an omitted pricing assumption, or
 bypass revision, egress, save, or verification policy. The categorical-banding recipe
 uses closed rules containing exactly a non-empty string `value` and non-empty
 `assignment`. Execution casts the banded column to text before matching, so a rule value
-is written in that text form: a boolean column's values are `"true"` and `"false"`, an
-integer column's values are their digits (`"3"`), and a string column's values are
+is written in that text form: a boolean column's values are `"true"` and `"false"`, a
+number is written as its digits (`"3"`), and a string column's values are
 matched exactly. A boolean or numeric rule value is refused at planning with a message
 that states the text form it must take, and two rules with the same value are refused
 there too, so a recipe never saves rules that match no row or that collide once saved.
-There is no numeric-banding recipe. The reference-join recipe offers the join modes
+There is no numeric-banding recipe, and the recipe index says so: number and date ranges
+are banded with a `banding` node using `banding: breakpoints`. A dry-run refuses a
+categorical factor a plan writes (by the recipe or directly) on a number, date or time
+column, whatever the rules say, with a located fix pointing at breakpoints, because
+categorical rules match only the listed values; an analyst may still band such a column
+categorically in the editor. The reference-join recipe offers the join modes
 `inner`, `left`, `right`, `full`, `semi`, and `anti`; it always joins on explicit key
 lists, so it never offers `cross`. Recipe argument
 descriptions distinguish graph node names from output column names. The rating-step recipe
@@ -1046,7 +1084,12 @@ rating recipe's optional `output_name` and non-empty `output_columns` must be su
 together; they deterministically add and connect one response `output` node with a
 canonical JSON mapping for exactly those columns inside the same plan. The standalone
 `response_output` recipe requires `source`, `output_name`, and `output_columns` and
-creates that same mapping directly after the saved source. A bare output name is a material
+creates that same mapping directly after its source. Each mapping row's `source_port`
+names the frame it reads by the input name its edge gives: the created node's id for a
+recipe's own output, and, when `source` is a `$ref` to a node the plan adds, the ref,
+which the plan resolves to that node's name rather than saving the ref. A dry-run refuses
+a response row the plan writes whose `source_port` names no incoming edge, because the
+engine lets a one-input response read any name and the wrong name would save silently. A bare output name is a material
 mapping ambiguity and requires clarification. A recipe argument failure is a structured
 error located at the `recipe` operation, with `fix` naming the correction and the
 `recipe:<id>` reference that holds the argument schema.
@@ -1149,6 +1192,29 @@ and an `internal` policy withholds `inspect_node`'s config part before node
 configuration is parsed, while the call's schema part still answers. The
 turn context's graph brief, base revision, selection and preview error are
 `internal` too: under a `public` policy the block carries only the policy.
+Below `restricted` the turn context says plainly that saved node configuration
+is withheld (factors, tables, mappings, scenario maps and code) and that a list
+or map the model has not read must not be rewritten; it mentions the config
+part's redaction of code only when the config part is readable.
+
+**Blind rewrites of withheld configuration are refused.** `update_node`
+replaces a key's whole value, so changing one factor, rating table, response
+row or scenario route means restating the whole list or map. While the policy
+withholds saved configuration from the model, a dry-run refuses an
+`update_node` on a saved node that replaces a key holding a non-empty list or
+map unless the new value keeps every saved entry unchanged (a list entry equal
+to it, a map key with an equal value; new entries may be added). The located,
+retryable `config_withheld` error names the node, the key and the saved entries
+it would change or drop by their metadata identities only (an output column, an
+output path, a pivot or step id, an input name), counting them where a list or
+map has none, and tells the model that it cannot read that configuration under
+the project's policy, so it asks the analyst on a `NEEDS_INPUT:` line rather
+than retyping it; a step list's fix points at `edit_steps`. A node the plan adds
+is the model's own and is not guarded. In the live evaluation of 2026-10-01
+under an `internal` policy, 11 of 37 failing case-runs came from retyping such
+lists and six of them saved silent corruptions of a rating or the response
+contract; item-level edits (ASSIST-52) remain the way to change one entry
+without reading the rest.
 
 Project knowledge is derived from a bounded saved-graph fact, a value-free
 `haute.toml` digest fact, and allowlisted ordinary documentation, never from an
@@ -1222,10 +1288,12 @@ Loud, typed, and never averaged away:
   Databricks workspace host raises `ConfigError` or a not-ready reason before
   SDK probing/client construction. Error text names the configuration/environment
   field but never repeats a URL or credential-bearing value.
-- **A Claude model without adaptive thinking** — constructing the Anthropic adapter for a
-  model outside the supported set raises `ConfigError` naming the model and the supported
-  ones, so the message route answers 400 before the stream opens. The adapter never runs a
-  model with its thinking or effort silently dropped.
+- **A Claude model without adaptive thinking** — readiness reports an Anthropic model
+  outside the supported set as not ready, with a reason naming the model and the supported
+  ones, so the panel's readiness card says so before a message is sent and the message
+  route answers 400 with the same reason; constructing the Anthropic adapter for such a
+  model raises the same `ConfigError`. The adapter never runs a model with its thinking or
+  effort silently dropped.
 - **Provider failures** (bad key, rate limit, overloaded, network, malformed stream) raise an
   assistant-specific `HauteError` subclass whose hand-authored message carries the provider
   name and failure class but never the raw provider response body. Databricks owns a
@@ -1245,6 +1313,21 @@ Loud, typed, and never averaged away:
   missing dataset, a schema the engine cannot resolve — unfetched Databricks cache, missing
   trained artifact, invalid node code) are structured tool results returned to the model —
   visible in the chat activity log — not turn failures.
+  A node setting a config parser refuses (a rating row without its factor, number
+  breakpoints on a Date column) is a typed `ConfigSettingError` naming the setting, and
+  reaches the model as a located, retryable error at the node and the operation that wrote
+  it, with the parser's fix ("a Date column's boundaries are dates like 2024-12-31"),
+  rather than as the internal-failure detail. A schema failure is located at the node that
+  raised it, with the operation that touched that node when one did, while its message
+  names the terminal whose validation reached it. Only a genuine internal failure keeps
+  the sanitized internal detail. A read or edit of a submodel or a node inside one is
+  refused as not retryable, saying the assistant cannot read or edit it and should report
+  a blocker asking the analyst to edit it in the editor.
+- **Every scenario a Source Switch routes is validated** — a dry-run refuses a switch the
+  plan touches that routes a scenario to no connected input (`scenario_unrouted`), and
+  resolves every target again under each other scenario a switch maps, so dropping an input
+  a batch scenario needs fails loudly instead of passing because only the live scenario
+  was checked.
 - **Save failures roll back** via the save service's existing staged-write transaction; a
   failed `apply_graph_plan` never leaves a partially-written pipeline, and the error
   (sanitized) is what the model sees.

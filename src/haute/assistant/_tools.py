@@ -63,9 +63,11 @@ from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
     CommittedVerificationError,
     FailedStep,
+    InvalidConfigError,
     PipelineApplicationService,
     PreambleFailedError,
     SchemaUnresolvableError,
+    _failed_step,
 )
 from haute.assistant._assets import authoring_guide, example_index, load_example
 from haute.assistant._catalog import (
@@ -77,6 +79,9 @@ from haute.assistant._catalog import (
 from haute.assistant._change_record import touched_node_ids
 from haute.assistant._config import EgressPolicy, mutations_readiness, resolve_egress_policy
 from haute.assistant._ops import (
+    SUBMODEL_BOUNDARY_CODE,
+    SUBMODEL_BOUNDARY_FIX,
+    SUBMODEL_BOUNDARY_TEXT,
     AssistantOperationError,
     LocatedPlanError,
     OpValidationError,
@@ -102,7 +107,13 @@ from haute.assistant._render import (
     render_context_update,
     render_pipeline_graph,
 )
-from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError, PreambleError
+from haute.errors import (
+    ConfigSettingError,
+    HauteError,
+    InvalidPathError,
+    PathOutsideProjectError,
+    PreambleError,
+)
 from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
@@ -282,6 +293,46 @@ def _submitted_names(submitted: object) -> set[str]:
     return names
 
 
+def _submitted_scalars(submitted: object) -> set[str]:
+    """The text of every scalar the operations the model sent hold."""
+
+    scalars: set[str] = set()
+    pending = [submitted]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Mapping):
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            pending.extend(item)
+        elif isinstance(item, str | int | float | bool):
+            scalars.add(str(item))
+    return scalars
+
+
+def _config_setting_message(exc: ConfigSettingError, *, submitted: object) -> str:
+    """A config parser's refusal, unless it quotes configuration the model cannot read.
+
+    Its column and output names are pipeline metadata; the configured values
+    it quotes (a boundary, a category) are the node's saved configuration. The
+    text is shown when the policy lets the model read saved configuration, or
+    when every quoted value is one the model's own operations sent.
+    """
+
+    if exc.values:
+        try:
+            policy = resolve_egress_policy(Path.cwd().resolve())
+            readable = _part_requirement(policy, "config") is None
+        except Exception:  # noqa: BLE001 - an unreadable policy withholds
+            readable = False
+        sent = _submitted_scalars(submitted)
+        if not readable and not all(str(value) in sent for value in exc.values):
+            return (
+                f"Its {exc.setting} setting is invalid; the parser's message quotes saved "
+                "configuration this project's egress policy withholds."
+            )
+    return str(exc)
+
+
 def _frame_column_names(output: object, port: str | None) -> list[str]:
     """Column names of one resolved output, selecting `port` when it emits several.
 
@@ -431,6 +482,8 @@ def _execution_failure(
     messages included, and anything else is an internal failure.
     """
 
+    if isinstance(exc, ConfigSettingError):
+        return _config_setting_message(exc, submitted=() if site is None else site.submitted), ()
     preamble = isinstance(exc, PreambleError)
     line = user_code_line(exc)
     if not preamble and not isinstance(exc, pl.exceptions.PolarsError) and line is None:
@@ -511,8 +564,9 @@ def _validate_top_level_target(graph: PipelineGraph, node: str) -> dict[str, obj
     if candidate is not None:
         if candidate.data.nodeType in _BOUNDARY_NODE_TYPES:
             return _error(
-                "submodel_boundary",
-                f"Node {node!r} is a submodel boundary and cannot be inspected directly.",
+                SUBMODEL_BOUNDARY_CODE,
+                f"Node {node!r} is a submodel boundary: {SUBMODEL_BOUNDARY_TEXT}",
+                fix=SUBMODEL_BOUNDARY_FIX,
             )
         return None
 
@@ -523,8 +577,9 @@ def _validate_top_level_target(graph: PipelineGraph, node: str) -> dict[str, obj
     }
     if node in nested_ids:
         return _error(
-            "submodel_boundary",
-            f"Node {node!r} is inside a submodel and cannot be inspected directly.",
+            SUBMODEL_BOUNDARY_CODE,
+            f"Node {node!r} is inside a submodel: {SUBMODEL_BOUNDARY_TEXT}",
+            fix=SUBMODEL_BOUNDARY_FIX,
         )
     return _error("unknown_node", f"Unknown node {node!r}.")
 
@@ -673,6 +728,33 @@ def _input_schemas_independently(
     return resolved
 
 
+def _failing_step(graph: PipelineGraph, node: str, exc: Exception) -> FailedStep | None:
+    """The step of *node* a schema failure came from, when that is known without rerunning.
+
+    A failure raised on a line of the node's code names the step that line
+    renders. A lazy plan failure surfaces after the code ran, with no line;
+    when every step but one only binds an input (`source`), the plan can fail
+    only in that one, the taught `[source, free_code]` form. Any other step
+    list is not replayed, because that would run authored code again.
+    """
+
+    located = _failed_step(graph, frozenset({node}), exc)
+    if located is not None or not isinstance(exc, pl.exceptions.PolarsError):
+        return located
+    config = next(candidate.data.config for candidate in graph.nodes if candidate.id == node)
+    steps = config.get("steps")
+    if not isinstance(steps, list):
+        return None
+    working = [
+        (number, step)
+        for number, step in enumerate(steps, start=1)
+        if isinstance(step, Mapping) and step.get("kind") != "source"
+    ]
+    if len(working) != 1 or not isinstance(step_id := working[0][1].get("id"), str):
+        return None
+    return FailedStep(node=node, number=working[0][0], step_id=step_id)
+
+
 def node_schema(source_file: str, node: str) -> dict[str, object]:
     """`inspect_node`'s schema part: one top-level node's output and input schemas.
 
@@ -708,6 +790,9 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
             result["columns"] = _schema_for_frame(cast(pl.LazyFrame, output))
         if inputs:
             result["inputs"] = _input_schemas_from_outputs(inputs, lazy_outputs)
+        target = next(candidate for candidate in graph.nodes if candidate.id == node)
+        if scenarios := _switch_scenarios(target):
+            result["scenarios"] = list(scenarios)
         result["project_revision"] = project_revision
         return result
     except NotImplementedError as exc:
@@ -732,9 +817,16 @@ def node_schema(source_file: str, node: str) -> dict[str, object]:
             "project_revision": project_revision,
         }
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        # Like an empty node, a failing one still answers which columns arrive on
+        # each input, and names the step that raised when that is known.
+        step = _failing_step(graph, node, exc)
         return _error(
             "schema_unresolvable",
-            _execution_error_message(exc, operation="inspect_node", site=_FailureSite(graph, node)),
+            _execution_error_message(
+                exc, operation="inspect_node", site=_FailureSite(graph, node), step=step
+            ),
+            **({} if step is None else {"step": step.step_id}),
+            inputs=_input_schemas_independently(flat, graph, inputs),
         )
 
 
@@ -919,9 +1011,21 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
                 authoring,
                 tuple(inputs),
                 None if output is None else _brief_frames(output),
+                _switch_scenarios(node),
             )
         )
     return tuple(nodes)
+
+
+def _switch_scenarios(node: GraphNode) -> tuple[str, ...]:
+    """The source scenarios a Source Switch routes, sorted: names, never its routing."""
+
+    if node.data.nodeType != NodeType.LIVE_SWITCH:
+        return ()
+    routing = node.data.config.get("input_scenario_map")
+    if not isinstance(routing, Mapping):
+        return ()
+    return tuple(sorted({value for value in routing.values() if isinstance(value, str)}))
 
 
 def _cached_brief_nodes(graph: PipelineGraph, revision: str) -> tuple[BriefNode, ...]:
@@ -1446,6 +1550,17 @@ async def column_profiles(
     }
 
 
+#: What each `inspect_node` part answers, said when a denied call can use it instead.
+_AVAILABLE_PARTS = {
+    "schema": (
+        "The schema part is permitted: it lists the node's output columns with their "
+        "dtypes, where a struct dtype names its fields, and each input's columns."
+    ),
+    "config": "The config part is permitted: it returns the node's saved configuration.",
+    "profile": ("The profile part is permitted: it summarises the values in the node's columns."),
+}
+
+
 def _part_requirement(policy: EgressPolicy, part: str) -> str | None:
     """The `[assistant.egress]` setting an `inspect_node` part needs, or None when permitted."""
 
@@ -1492,11 +1607,13 @@ async def inspect_node(
     ]
     permitted = [part for part in requested if _part_requirement(policy, part) is None]
     if not permitted:
+        available = [part for part in INSPECT_NODE_PARTS if _part_requirement(policy, part) is None]
         return _error(
             "egress_policy_denied",
             "The egress policy permits none of the requested parts; withheld names the "
-            "setting each one needs.",
+            "setting each one needs." + "".join(f" {_AVAILABLE_PARTS[part]}" for part in available),
             withheld=withheld,
+            **({"available": available} if available else {}),
         )
     result: dict[str, object] = {"node": node}
     revisions: set[object] = set()
@@ -1982,9 +2099,18 @@ def _operation_error(exc: LocatedPlanError, *, operation: str) -> dict[str, obje
         failure, named = _execution_failure(
             exc.failure, operation=operation, site=site, step=exc.step
         )
+        if isinstance(exc.failure, ConfigSettingError):
+            correction = exc.failure.fix or (
+                f"Correct {exc.failure.setting} on node {exc.node!r} as the message says, "
+                "then dry-run again."
+            )
+            return _located_error(exc.code, f"{exc} {failure}", exc, fix=lambda _: correction)
         return _located_error(
             exc.code, f"{exc} {failure}", exc, named_columns=named, fix=_schema_fix(exc)
         )
+    if isinstance(exc, InvalidConfigError):
+        message = _config_setting_message(exc.failure, submitted=exc.submitted)
+        return _located_error(exc.code, f"{exc} {message}", exc)
     if isinstance(exc, PreambleFailedError):
         # A preamble failure names no column, so it needs no failure site.
         failure = _execution_error_message(exc.failure, operation=operation, site=None)
@@ -2028,6 +2154,7 @@ async def dry_run_graph_edits(
     ops_payload: object,
     *,
     summary: str,
+    config_withheld: bool,
     assumptions: Sequence[str] = (),
     postconditions: object = (),
     project_sources: tuple[Path | ProjectSourceEvidence, ...] = (),
@@ -2036,7 +2163,9 @@ async def dry_run_graph_edits(
 
     Each `recipe` operation is expanded in place first; every failure names an
     operation by its index in *ops_payload*, and a recipe operation's by its
-    `recipe` too.
+    `recipe` too. *config_withheld* says the session's egress policy withholds
+    saved node configuration (`inspect_node` refuses its config part), so a
+    blind rewrite of a saved list or map is refused.
     """
 
     try:
@@ -2054,6 +2183,7 @@ async def dry_run_graph_edits(
                     summary=summary,
                     assumptions=assumptions,
                     positions=batch.positions or None,
+                    config_withheld=config_withheld,
                 )
             )
         return result.as_dict()
@@ -2180,23 +2310,27 @@ _REMOVED_TOOLS: dict[str, str] = {
 }
 
 
+#: Tool names a model reaches for to ask the analyst, which is a reply, not a tool.
+_ASKING_TOOL_NAMES = frozenset({"ask", "ask_user", "clarify", "question"})
+
+
 def _dispatch_error(name: str, message: str) -> dict[str, object]:
     fields: dict[str, object] = {"name": name, "valid_names": list(_TOOL_NAMES)}
     close = difflib.get_close_matches(name, _TOOL_NAMES, n=3, cutoff=0.6)
     if close:
         fields["did_you_mean"] = close
-    return _error(
-        "unknown_tool",
-        message,
-        fix=f"Call {close[0]} instead." if close else "Call one of valid_names.",
-        **fields,
-    )
+    if name in _ASKING_TOOL_NAMES:
+        fix = "To ask the analyst, end your reply with a line starting NEEDS_INPUT:."
+    else:
+        fix = f"Call {close[0]} instead." if close else "Call one of valid_names."
+    return _error("unknown_tool", message, fix=fix, **fields)
 
 
 #: Error codes no corrected call can clear within the turn: an internal
 #: failure, a policy refusal, an interrupted call, a spent dry-run budget, a
-#: save that committed unverified, or a result too large for the model's
-#: context. Every other code is a rejection the model can correct.
+#: save that committed unverified, a result too large for the model's
+#: context, or a read or edit of a submodel's nodes. Every other code is a
+#: rejection the model can correct.
 _NON_RETRYABLE_CODES = frozenset(
     {
         "tool_failed",
@@ -2208,6 +2342,7 @@ _NON_RETRYABLE_CODES = frozenset(
         "dry_run_retry_limit",
         "verification_failed",
         "tool_result_too_large",
+        SUBMODEL_BOUNDARY_CODE,
     }
 )
 
@@ -2273,6 +2408,16 @@ class _ToolArgumentValidationError(ValueError):
         # so these never reach durable history.
         self.fields = dict(fields or {})
         super().__init__(message)
+
+
+#: Fields one graph operation does not take that another does, with the
+#: correction an `unknown_field` rejection carries.
+_MISPLACED_FIELD_FIXES: dict[tuple[object, str], str] = {
+    ("update_node", "edits"): (
+        'Change steps by id with {"op": "edit_steps", "node": <node id>, "edits": [...]}; '
+        "update_node writes config keys."
+    ),
+}
 
 
 def _json_type_matches(value: object, expected: str) -> bool:
@@ -2443,26 +2588,35 @@ def _validate_tool_value(
             raise RuntimeError(f"Invalid operation object schema at {path}")
         required = {str(item) for item in raw_required}
         missing = sorted(required.difference(value))
-        if missing:
+        unknown = sorted(str(key) for key in value if key not in raw_properties)
+        additional = schema.get("additionalProperties", True)
+        # A field another operation takes says which operation was meant, so it
+        # is reported ahead of the fields this one misses.
+        misplaced = [_MISPLACED_FIELD_FIXES.get((value.get("op"), key)) for key in unknown]
+        hinted = additional is False and any(misplaced)
+        if missing and not hinted:
             missing_path = f"{path}.{missing[0]}"
             raise _ToolArgumentValidationError(
                 missing_path,
                 "missing_required",
                 f"{missing_path} is required",
             )
-        unknown = sorted(str(key) for key in value if key not in raw_properties)
-        additional = schema.get("additionalProperties", True)
         if unknown and additional is False:
             # Naming the rejected key and the closed allowlist is what makes
             # this correctable in one retry. Both are already known to the
             # model — it sent the key, and the allowlist is its own schema.
             allowed = sorted(str(key) for key in raw_properties)
+            fix = next((item for item in misplaced if item is not None), None)
             raise _ToolArgumentValidationError(
                 path,
                 "unknown_field",
                 f"{path} does not allow the field(s) {', '.join(unknown)}; "
                 f"this variant accepts only {', '.join(allowed)}",
-                fields={"unknown_fields": unknown, "allowed_fields": allowed},
+                fields={
+                    "unknown_fields": unknown,
+                    "allowed_fields": allowed,
+                    **({"fix": fix} if fix is not None else {}),
+                },
             )
         for key, item in value.items():
             property_schema = raw_properties.get(key)
@@ -2478,13 +2632,13 @@ def _validate_tool_value(
             raise _ToolArgumentValidationError(
                 path,
                 "too_few_items",
-                f"{path} has too few items",
+                f"{path} has too few items: at least {minimum}",
             )
         if isinstance(maximum, int) and len(value) > maximum:
             raise _ToolArgumentValidationError(
                 path,
                 "too_many_items",
-                f"{path} has too many items",
+                f"{path} has too many items: at most {maximum}",
             )
         if schema.get("uniqueItems") is True and _has_duplicate_items(value):
             raise _ToolArgumentValidationError(
@@ -2504,13 +2658,13 @@ def _validate_tool_value(
             raise _ToolArgumentValidationError(
                 path,
                 "too_short",
-                f"{path} is too short",
+                f"{path} is too short: at least {minimum_length} characters",
             )
         if isinstance(maximum_length, int) and len(value) > maximum_length:
             raise _ToolArgumentValidationError(
                 path,
                 "too_long",
-                f"{path} is too long",
+                f"{path} is too long: at most {maximum_length} characters",
             )
         pattern = schema.get("pattern")
         if isinstance(pattern, str) and re.search(pattern, value) is None:
@@ -2527,13 +2681,13 @@ def _validate_tool_value(
             raise _ToolArgumentValidationError(
                 path,
                 "below_minimum",
-                f"{path} is below its minimum",
+                f"{path} is below its minimum of {minimum}",
             )
         if isinstance(maximum, int | float) and value > maximum:
             raise _ToolArgumentValidationError(
                 path,
                 "above_maximum",
-                f"{path} is above its maximum",
+                f"{path} is above its maximum of {maximum}",
             )
 
 
@@ -2755,6 +2909,7 @@ def build_tool_executor(
                     source_file,
                     arguments.get("ops"),
                     summary=arguments["summary"],
+                    config_withheld=_part_requirement(policy, "config") is not None,
                     assumptions=arguments.get("assumptions", ()),
                     postconditions=arguments.get("postconditions", ()),
                     project_sources=ledger.sources(),

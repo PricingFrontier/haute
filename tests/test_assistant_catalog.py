@@ -266,6 +266,10 @@ class TestResolvedDescriptors:
             "df" in anti_pattern and "discard" in anti_pattern
             for anti_pattern in by_id["polars"].anti_patterns
         )
+        assert any(
+            "pivots entry on the Explore node, never a step" in anti_pattern
+            for anti_pattern in by_id["explore"].anti_patterns
+        )
 
     def test_node_descriptors_serve_their_card_without_its_test_fixture(self):
         from haute.assistant._node_cards import CARD_CONFIG_NAMES

@@ -13,11 +13,12 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from haute._ast_helpers import _extract_function_bodies, _is_pipeline_authored_decorator
+from haute._banding_config import normalise_banding_factors
 from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
 from haute._git import commit_parent
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
-from haute._graph_utils import _sanitize_func_name
+from haute._graph_utils import _sanitize_func_name, edge_input_name
 from haute._input_providers import (
     DeclaredTableSchema,
     InferredInputSchema,
@@ -26,6 +27,8 @@ from haute._input_providers import (
 )
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
+from haute._rating import _normalise_combined_outputs, validate_banding_config
+from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import new_logic_steps
@@ -55,10 +58,12 @@ from haute.assistant._ops import (
 from haute.codegen import graph_to_code_multi
 from haute.errors import (
     ConfigError,
+    ConfigSettingError,
     HauteError,
     HauteValidationError,
     ParseError,
     PreambleError,
+    failing_node,
 )
 from haute.execution import execute_lazy_graph
 from haute.executor import (
@@ -171,12 +176,15 @@ class SchemaUnresolvableError(AssistantOperationError):
     Resolving a schema runs node code over the project's inputs, so the
     failure's own text can quote row values: a Polars cast error names the
     cell it could not parse, and node code can put collected values in its
-    exception. The message therefore names only the target; the tool
-    boundary renders ``failure`` under the project's egress policy. ``graph``
-    is the graph that ran, whose schema metadata (and, only when executable
-    source is permitted, its authored code) may name a column in that
-    failure; ``submitted`` is the operations payload the model sent for this
-    plan, whose text the provider already holds.
+    exception. The message therefore names only the nodes and the scenario;
+    the tool boundary renders ``failure`` under the project's egress policy.
+    ``node`` is the node the walk was building or running when the failure
+    was raised, else the validated ``target`` itself; ``scenario`` is the
+    source scenario it was validated under when that is not the active one.
+    ``graph`` is the graph that ran, whose schema metadata (and, only when
+    executable source is permitted, its authored code) may name a column in
+    that failure; ``submitted`` is the operations payload the model sent for
+    this plan, whose text the provider already holds.
     """
 
     def __init__(
@@ -187,16 +195,55 @@ class SchemaUnresolvableError(AssistantOperationError):
         step: FailedStep | None,
         graph: PipelineGraph,
         submitted: Sequence[Mapping[str, Any]],
+        target: str | None = None,
+        scenario: str | None = None,
     ) -> None:
         where: dict[str, object] = {"node": node}
         if step is not None:
             where = {"node": step.node, "field": "steps", "step": step.step_id}
-        super().__init__(
-            "schema_unresolvable", f"Schema validation failed for node {node!r}.", where=where
+        elif isinstance(failure, ConfigSettingError):
+            where = {"node": node, "field": failure.setting}
+        message = (
+            f"Schema validation failed for node {node!r}"
+            if target is None or target == node
+            else f"Schema validation of node {target!r} failed at node {node!r}"
         )
+        if scenario is not None:
+            message += f" under scenario {scenario!r}"
+        super().__init__("schema_unresolvable", f"{message}.", where=where)
         self.node = node
         self.failure = failure
         self.step = step
+        self.graph = graph
+        self.submitted = tuple(submitted)
+
+
+class InvalidConfigError(AssistantOperationError):
+    """A node config this plan writes that its node type's parser refuses.
+
+    The parser's message can quote configured values, so it is ``failure``,
+    rendered at the tool boundary under the project's egress policy;
+    ``submitted`` is the operations payload the model sent, whose values the
+    provider already holds.
+    """
+
+    def __init__(
+        self,
+        node: str,
+        failure: ConfigSettingError,
+        *,
+        graph: PipelineGraph,
+        submitted: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__(
+            "invalid_config",
+            f"The {failure.setting} setting of node {node!r} is invalid.",
+            where={"node": node, "field": failure.setting},
+            fix=failure.fix
+            or f"Correct {failure.setting} on node {node!r} as the message says, then dry-run "
+            "again.",
+        )
+        self.failure = failure
         self.graph = graph
         self.submitted = tuple(submitted)
 
@@ -324,7 +371,9 @@ class _PreparedGraph:
         )
 
 
-def _resolve_lazy_output(prepared: _PreparedGraph, target: str) -> tuple[Any, RecordedSchemaTiers]:
+def _resolve_lazy_output(
+    prepared: _PreparedGraph, target: str, scenario: str | None = None
+) -> tuple[Any, RecordedSchemaTiers]:
     """Build one node's lazy output (a frame, or a frame per port) without rows.
 
     `schema_only=True` states the invariant this path already holds: callers
@@ -333,7 +382,8 @@ def _resolve_lazy_output(prepared: _PreparedGraph, target: str) -> tuple[Any, Re
     during materialisation — does not apply to it. The resolution records the
     inferred and declared schema tiers, so a local file input with no snapshot
     yet resolves from its file and an API Input table from its declared
-    contract; the inputs that did are returned with the output.
+    contract; the inputs that did are returned with the output. *scenario*
+    replaces the graph's active source scenario.
     """
 
     with recording_schema_tiers() as recorded:
@@ -343,7 +393,7 @@ def _resolve_lazy_output(prepared: _PreparedGraph, target: str) -> tuple[Any, Re
             target_node_id=target,
             preserve_node_ids={target},
             preamble_ns=prepared.preamble_ns,
-            source=prepared.graph.active_source,
+            source=scenario or prepared.graph.active_source,
             enforce_contracts=True,
             schema_only=True,
         )
@@ -373,7 +423,7 @@ def _declared_input_evidence(
 
 
 def _resolve_target_evidence(
-    prepared: _PreparedGraph, target: str
+    prepared: _PreparedGraph, target: str, scenario: str | None = None
 ) -> tuple[Mapping[str, object], RecordedSchemaTiers]:
     """Resolve one terminal's schema through the production lazy engine.
 
@@ -381,7 +431,7 @@ def _resolve_target_evidence(
     was inferred from their file or taken from their declared contract.
     """
 
-    output, recorded = _resolve_lazy_output(prepared, target)
+    output, recorded = _resolve_lazy_output(prepared, target, scenario)
     extra: dict[str, object]
     if isinstance(output, dict):
         ports = {port: _frame_schema(frame) for port, frame in sorted(output.items())}
@@ -487,7 +537,16 @@ def _schema_evidence(
 
     `submitted` is the plan's operations payload, carried on a
     `SchemaUnresolvableError` so the tool boundary may name a column the
-    model's own text names.
+    model's own text names. The error names the node the walk was building
+    or running when the failure was raised, when it says, else the target.
+
+    Outside strict mode every target that resolved is resolved again under
+    each other scenario a Source Switch in the graph maps, so a plan that drops
+    an input a scenario routes to fails here rather than only when that
+    scenario runs. Those checks add no evidence: verification after a save
+    replays the active scenario's evidence only. A failure the saved pipeline
+    shows too under that scenario, on a target the plan does not own, is a
+    `pre_existing_schema_failure:<node>:<scenario>` warning.
     """
 
     if not targets:
@@ -524,13 +583,32 @@ def _schema_evidence(
                 # failure, and the tool log records it server-side.
                 warnings.append(f"pre_existing_schema_failure:{target}")
                 continue
-        raise SchemaUnresolvableError(
-            target,
-            failure,
-            step=_failed_step(graph, changed, failure),
-            graph=graph,
-            submitted=submitted,
-        ) from failure
+        raise _schema_failure(graph, target, failure, changed=changed, submitted=submitted)
+    if baseline is not None:
+        resolved = [str(item["node"]) for item in evidence]
+        for scenario in sorted(_mapped_scenarios(prepared.flattened) - {graph.active_source}):
+            for target in resolved:
+                try:
+                    _resolve_target_evidence(prepared, target, scenario)
+                    continue
+                except Exception as exc:
+                    failure = exc
+                if target not in changed and target in baseline_nodes:
+                    try:
+                        if prepared_baseline is None:
+                            prepared_baseline = _PreparedGraph.build(baseline)
+                        _resolve_target_evidence(prepared_baseline, target, scenario)
+                    except Exception:
+                        warnings.append(f"pre_existing_schema_failure:{target}:{scenario}")
+                        continue
+                raise _schema_failure(
+                    graph,
+                    target,
+                    failure,
+                    changed=changed,
+                    submitted=submitted,
+                    scenario=scenario,
+                )
     evidence.extend(
         _inferred_input_evidence(node, inferred_inputs[node]) for node in sorted(inferred_inputs)
     )
@@ -539,6 +617,173 @@ def _schema_evidence(
         for node, table in sorted(declared_tables)
     )
     return tuple(evidence), tuple(warnings)
+
+
+def _mapped_scenarios(graph: PipelineGraph) -> frozenset[str]:
+    """Every source scenario a Source Switch in *graph* maps one of its inputs to."""
+
+    return frozenset(
+        scenario
+        for node in graph.nodes
+        if node.data.nodeType == NodeType.LIVE_SWITCH
+        for scenario in (node.data.config.get("input_scenario_map") or {}).values()
+        if isinstance(scenario, str)
+    )
+
+
+def _schema_failure(
+    graph: PipelineGraph,
+    target: str,
+    failure: Exception,
+    *,
+    changed: frozenset[str],
+    submitted: Sequence[Mapping[str, Any]],
+    scenario: str | None = None,
+) -> SchemaUnresolvableError:
+    """The failure validating *target* raised, at the node the walk names."""
+
+    return SchemaUnresolvableError(
+        failing_node(failure) or target,
+        failure,
+        step=_failed_step(graph, changed, failure),
+        graph=graph,
+        submitted=submitted,
+        target=target,
+        scenario=scenario,
+    )
+
+
+def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collection[str]) -> None:
+    """Refuse a Source Switch the plan touches that maps a scenario to no connected input.
+
+    Under that scenario the switch would have no input, so a plan that drops
+    an input a scenario routes to, or routes one to an input no edge
+    connects, fails here with the switch, the scenario and the inputs named:
+    all pipeline metadata.
+    """
+
+    nodes = {node.id: node for node in graph.nodes}
+    for node_id in sorted(node_ids):
+        node = nodes.get(node_id)
+        if node is None or node.data.nodeType != NodeType.LIVE_SWITCH:
+            continue
+        routing = node.data.config.get("input_scenario_map")
+        if not isinstance(routing, Mapping):
+            continue
+        connected = {
+            edge_input_name(edge, nodes[edge.source])
+            for edge in graph.edges
+            if edge.target == node_id and edge.source in nodes
+        }
+        for scenario in sorted({value for value in routing.values() if isinstance(value, str)}):
+            routed = sorted(str(name) for name, value in routing.items() if value == scenario)
+            if connected & set(routed):
+                continue
+            names = ", ".join(repr(name) for name in routed)
+            raise AssistantOperationError(
+                "scenario_unrouted",
+                f"Source Switch {node_id!r} routes scenario {scenario!r} to {names}, which no "
+                "incoming edge provides, so under that scenario it would have no input.",
+                where={"node": node_id, "field": "input_scenario_map"},
+                fix=(
+                    f"Connect {routed[0]!r} to {node_id!r} with add_edge, or route scenario "
+                    f"{scenario!r} to an input that is connected."
+                ),
+            )
+
+
+def _parse_rating_step_config(config: dict[str, Any]) -> None:
+    normalise_rating_step_config(config)
+    _normalise_combined_outputs(config)
+
+
+#: Each node type's config parser, which a node this plan writes must pass.
+_CONFIG_PARSERS: Mapping[NodeType, Callable[[dict[str, Any]], object]] = {
+    NodeType.BANDING: validate_banding_config,
+    NodeType.RATING_STEP: _parse_rating_step_config,
+}
+
+
+def _prove_written_configs_parse(
+    graph: PipelineGraph,
+    node_ids: Collection[str],
+    *,
+    submitted: Sequence[Mapping[str, Any]],
+) -> None:
+    """Run each written node's config parser, so a refusal names the node.
+
+    The same parsers run later inside save validation, code generation and the
+    engine, where a refusal no longer says which node it came from.
+    """
+
+    for node in graph.nodes:
+        parse = _CONFIG_PARSERS.get(node.data.nodeType)
+        if parse is None or node.id not in node_ids or node.data.config.get("instanceOf"):
+            continue
+        try:
+            parse(dict(node.data.config))
+        except ConfigSettingError as exc:
+            raise InvalidConfigError(node.id, exc, graph=graph, submitted=submitted) from exc
+
+
+def _prove_categorical_factors_band_text(
+    graph: PipelineGraph,
+    baseline: PipelineGraph,
+    node_ids: Collection[str],
+    *,
+    submitted: Sequence[Mapping[str, Any]],
+) -> None:
+    """Refuse a categorical factor this plan writes on a number, date or time column.
+
+    Categorical rules match a column's text, so a range of ages or dates
+    written as categories matches only the listed values. Only a factor the
+    saved node does not already hold is judged.
+    """
+
+    saved = {node.id: node.data.config.get("factors") or [] for node in baseline.nodes}
+    prepared: _PreparedGraph | None = None
+    for node in graph.nodes:
+        if (
+            node.data.nodeType != NodeType.BANDING
+            or node.id not in node_ids
+            or node.data.config.get("instanceOf")
+        ):
+            continue
+        written = [
+            factor
+            for factor in normalise_banding_factors(dict(node.data.config))
+            if factor.get("banding") == "categorical" and factor not in saved.get(node.id, [])
+        ]
+        edges = [edge for edge in graph.edges if edge.target == node.id]
+        if not written or len(edges) != 1:
+            continue  # a banding node reads one input; save validation judges the wiring
+        if prepared is None:
+            prepared = _PreparedGraph.build(graph)
+        source = edges[0].source
+        try:
+            output, _recorded = _resolve_lazy_output(prepared, source)
+            frame = output[edges[0].sourceHandle] if isinstance(output, dict) else output
+            schema = frame.collect_schema()
+        except Exception as exc:
+            raise _schema_failure(
+                graph, source, exc, changed=frozenset(node_ids), submitted=submitted
+            ) from exc
+        for factor in written:
+            column = factor.get("column")
+            dtype = schema.get(column) if isinstance(column, str) else None
+            if dtype is None or not (dtype.is_numeric() or dtype.is_temporal()):
+                continue
+            raise AssistantOperationError(
+                "invalid_config",
+                f"Banding output {factor.get('outputColumn')!r} bands {column!r}, a {dtype} "
+                "column, with categorical rules, which match only the listed values; a "
+                "number or date range is banded with breakpoints.",
+                where={"node": node.id, "field": "factors"},
+                fix=(
+                    'Use banding: "breakpoints", with rules {"boundary": "<upper bound>", '
+                    '"label": "<band>"} and an empty boundary on the last.'
+                ),
+            )
 
 
 def _prove_steps_survive_save(
@@ -726,19 +971,35 @@ def build_verified_plan(
     validate_graph: GraphValidator,
     source_file: str,
     positions: Sequence[int] | None = None,
+    config_withheld: bool = False,
 ) -> VerifiedPlan:
     """Build one plan through the shared edit and save-verification pipeline.
 
-    *positions* holds each operation's index in the batch the model sent.
+    *positions* holds each operation's index in the batch the model sent;
+    *config_withheld* says the model cannot read saved node configuration, so
+    a blind rewrite of it is refused (a dry-run's check; an apply replays a
+    plan that passed it).
     """
 
-    prepared = prepare_graph_edit(snapshot, operations, postconditions, positions=positions)
+    prepared = prepare_graph_edit(
+        snapshot,
+        operations,
+        postconditions,
+        positions=positions,
+        config_withheld=config_withheld,
+    )
     try:
+        _prove_written_configs_parse(
+            prepared.result_graph, prepared.diff.complete.written_nodes, submitted=operations
+        )
         warnings = validate_graph(prepared.result_graph)
         _prove_steps_survive_save(
             prepared.result_graph,
             prepared.diff.complete.written_nodes,
             source_file=source_file,
+        )
+        _prove_switches_route_their_scenarios(
+            prepared.result_graph, _diff_seed_nodes(prepared.result_graph, prepared.diff)
         )
         targets = _schema_validation_targets(prepared.result_graph, prepared.diff)
         evidence, schema_warnings = _schema_evidence(
@@ -746,6 +1007,12 @@ def build_verified_plan(
             targets,
             baseline=snapshot.graph,
             changed=_diff_seed_nodes(prepared.result_graph, prepared.diff),
+            submitted=operations,
+        )
+        _prove_categorical_factors_band_text(
+            prepared.result_graph,
+            snapshot.graph,
+            prepared.diff.complete.written_nodes,
             submitted=operations,
         )
         _prove_nodes_ready(
@@ -861,6 +1128,7 @@ class PipelineApplicationService:
         summary: str,
         assumptions: Sequence[str] = (),
         positions: Sequence[int] | None = None,
+        config_withheld: bool = False,
     ) -> DryRunResult:
         """Validate and retain an exact no-write plan against saved state.
 
@@ -868,6 +1136,8 @@ class PipelineApplicationService:
         for the change card the apply builds. *positions* holds each
         operation's index in the batch the model sent, before its recipe
         operations expanded, which every located failure reports.
+        *config_withheld* says the session's egress policy withholds saved
+        node configuration from the model, which refuses a blind rewrite of it.
         """
 
         receipt = PlanReceipt(summary, tuple(assumptions))
@@ -890,6 +1160,7 @@ class PipelineApplicationService:
             ),
             source_file=source_file,
             positions=positions,
+            config_withheld=config_withheld,
         )
         self.plan_store.put(verified.plan, receipt)
         return DryRunResult(
@@ -1168,6 +1439,7 @@ __all__ = [
     "ApplicationResult",
     "CommittedVerificationError",
     "DryRunResult",
+    "InvalidConfigError",
     "PipelineApplicationService",
     "PreambleFailedError",
     "UndoResult",

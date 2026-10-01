@@ -1030,9 +1030,11 @@ def test_dry_run_rejects_trace_regression_polars_plan_before_storing(
 def test_dry_run_rejects_invalid_banding_semantics_before_storing(
     project_root: Path,
 ) -> None:
+    from haute.assistant._application import InvalidConfigError
+
     service = _service(project_root)
 
-    with pytest.raises(Exception, match="banding.*age"):
+    with pytest.raises(InvalidConfigError, match="factors setting of node 'age_band'") as caught:
         service.dry_run(
             "main.py",
             [
@@ -1058,6 +1060,8 @@ def test_dry_run_rejects_invalid_banding_semantics_before_storing(
         ).plan
 
     assert len(service.plan_store) == 0
+    assert caught.value.where == {"op_index": 0, "node": "age_band", "field": "factors"}
+    assert "unsupported banding type 'age'" in str(caught.value.failure)
 
 
 class TestOutputTargetEvidence:

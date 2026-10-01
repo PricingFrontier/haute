@@ -804,6 +804,11 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         )
     if node_type == NodeType.EDGE_JOIN:
         anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
+    if node_type == NodeType.EXPLORE:
+        anti_patterns.append(
+            "An analyst's pivot table is a pivots entry on the Explore node, never a step; "
+            "Explore steps only shape the frame before it is explored."
+        )
     return NodeCapabilityDescriptor(
         node_type.value,
         _DISPLAY_NAMES[node_type],

@@ -19,7 +19,12 @@ from typing import Any, Literal, Protocol, TypeAlias
 
 from haute._env import int_env
 from haute._logging import get_logger
-from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV, AssistantConfig
+from haute.assistant._config import (
+    DEFAULT_TURN_TIMEOUT,
+    TURN_TIMEOUT_ENV,
+    AssistantConfig,
+    unsupported_anthropic_model,
+)
 from haute.errors import ConfigError, HauteError
 
 logger = get_logger(component="assistant.providers")
@@ -528,6 +533,17 @@ def _portable_composed_object(
     return projected
 
 
+def _numeric_bounds(schema: Mapping[str, object]) -> str | None:
+    """A number's `minimum` and `maximum` in words, which the wire subset drops."""
+
+    bounds = [
+        f"{word} {schema[keyword]}"
+        for keyword, word in (("minimum", "at least"), ("maximum", "at most"))
+        if isinstance(schema.get(keyword), int | float) and not isinstance(schema[keyword], bool)
+    ]
+    return f"{', '.join(bounds)}.".capitalize() if bounds else None
+
+
 def _portable_tool_schema(
     schema: Mapping[str, object],
     budget: _SchemaBudget | None = None,
@@ -544,8 +560,12 @@ def _portable_tool_schema(
     if projected_type is not None:
         projected["type"] = projected_type
 
-    description = schema.get("description")
-    if isinstance(description, str):
+    description = " ".join(
+        part
+        for part in (schema.get("description"), _numeric_bounds(schema))
+        if isinstance(part, str) and part
+    )
+    if description:
         projected["description"] = description
 
     enum = schema.get("enum")
@@ -685,7 +705,10 @@ def _decode_databricks_value(value: Any, schema: Mapping[str, object], path: str
 
     A string is decoded only when the schema exclusively declares a compatible
     JSON type and the decoded value has that type; otherwise it stays a
-    string for the canonical validator. An object's declared properties, an
+    string for the canonical validator. Two spellings decode by the declared
+    type alone, logged: plain text where a list of text is declared becomes a
+    one-item list (text opening like JSON never does), and `True`
+    or `False` where a boolean is declared becomes that boolean. An object's declared properties, an
     object union's selected branch and an array's declared items are walked
     the same way, so a recipe operation's ``arguments`` decode by that
     recipe's argument schema. A schema that declares nothing below a value
@@ -696,6 +719,25 @@ def _decode_databricks_value(value: Any, schema: Mapping[str, object], path: str
         expected = _declared_compatible_types(schema)
         if not expected:
             return value
+        items = schema.get("items")
+        if (
+            expected == {"array"}
+            and isinstance(items, Mapping)
+            and items.get("type") == "string"
+            and value.lstrip()[:1] not in {"[", "{", '"'}
+        ):
+            # A declared list of text sent as one plain text: the one item it is.
+            # Text that opens like JSON is decoded below, or stays text and fails.
+            logger.warning(
+                "assistant_databricks_argument_wrapped_in_array",
+                field=path,
+                encoded_length=len(value),
+            )
+            return [value]
+        if expected == {"boolean"} and value in {"True", "False"}:
+            # Python's spelling of a JSON boolean, which `json.loads` refuses.
+            logger.warning("assistant_databricks_argument_python_boolean", field=path)
+            return value == "True"
         try:
             decoded = json.loads(value, parse_constant=_reject_json_constant)
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -826,25 +868,6 @@ MID_CONVERSATION_SYSTEM_MODELS = frozenset(
     }
 )
 
-#: Claude models that take adaptive thinking (`{"type": "adaptive"}`) and an
-#: effort level, the only Claude models the Anthropic adapter runs.
-ADAPTIVE_THINKING_MODELS = frozenset(
-    {
-        "claude-fable-5",
-        "claude-fable-5-1",
-        "claude-mythos-5",
-        "claude-mythos-5-1",
-        "claude-opus-4-6",
-        "claude-opus-4-7",
-        "claude-opus-4-8",
-        "claude-opus-5",
-        "claude-opus-5-5",
-        "claude-sonnet-4-6",
-        "claude-sonnet-5",
-        "claude-sonnet-5-5",
-    }
-)
-
 #: The effort every Claude request carries: valid on every model in
 #: `ADAPTIVE_THINKING_MODELS`, and Anthropic's starting point for multistep tool use.
 ANTHROPIC_EFFORT = "medium"
@@ -960,12 +983,9 @@ class AnthropicProvider:
     """
 
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
-        if config.model not in ADAPTIVE_THINKING_MODELS:
-            raise ConfigError(
-                f"Anthropic model {config.model!r} is not one Haute runs: the assistant "
-                "uses adaptive thinking, which these Claude models support: "
-                f"{', '.join(sorted(ADAPTIVE_THINKING_MODELS))}."
-            )
+        unsupported = unsupported_anthropic_model(config.model)
+        if unsupported is not None:
+            raise ConfigError(unsupported)
         self.config = config
         self.client = _load_anthropic_client(config) if client is None else client
 
@@ -1191,12 +1211,19 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
     """Translate neutral history into OpenAI Chat Completions messages."""
 
     translated: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    previous_role: object = None
     for message in messages:
         role = message.get("role")
         content = message.get("content")
         if message.get("provider_content") is not None:
             raise RuntimeError("replay content belongs to the adapter that emitted it")
-        if role == "assistant" and message.get("tool_calls"):
+        if role == "user" and previous_role == "controller":
+            # A compacted history's leading note leads the user message after
+            # it: two consecutive user messages are refused by some gateways.
+            if not isinstance(content, str):
+                raise RuntimeError("a user message after a controller note must be text")
+            translated[-1]["content"] = f"{translated[-1]['content']}\n\n{content}"
+        elif role == "assistant" and message.get("tool_calls"):
             translated.append(
                 {
                     "role": "assistant",
@@ -1234,6 +1261,7 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
                 _with_leading_context(translated[-1], content)
         else:
             translated.append({"role": role, "content": content})
+        previous_role = role
     return translated
 
 
@@ -1536,7 +1564,6 @@ def create_provider(config: AssistantConfig) -> AssistantProvider:
 
 
 __all__ = [
-    "ADAPTIVE_THINKING_MODELS",
     "ANTHROPIC_EFFORT",
     "AnthropicProvider",
     "AssistantProvider",

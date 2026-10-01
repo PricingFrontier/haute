@@ -742,7 +742,11 @@ the prepared order. The Data Output sink (`prepare_data_output`) runs through
 `walk_graph` and slices its own write by `WalkResult.write_recipes`;
 `execution.execute_lazy_graph` returns the walk's frames, order, parents and names, and
 copies its join and write recipes and pre-shaping frames into the caller's dictionaries
-once the walk has finished.
+once the walk has finished. A walk that does not record node failures marks an exception
+raised while it builds or runs a node with that node's id
+(`errors.mark_failing_node`, read by `errors.failing_node`; the innermost node wins) and
+re-raises it unchanged, so a caller can say which node failed; a failure a lazy frame
+raises only when a later caller reads its schema carries no mark.
 
 A display walk (`CollectPolicy.display(...)`) is described under **Display walks** below;
 the preview and the trace run one. Its caller plans the strategy
