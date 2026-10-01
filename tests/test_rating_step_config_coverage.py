@@ -194,6 +194,26 @@ def test_normalise_table_not_object_raises() -> None:
         normalise_rating_step_config({"tables": [42]})
 
 
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (42, "ratingStep tables[0].entries[1] must be an object"),
+        ({"band": "high"}, "ratingStep tables[0].entries[1] requires value"),
+    ],
+    ids=["non-object-row", "row-without-value"],
+)
+def test_a_malformed_rating_row_is_refused_by_position(row: object, message: str) -> None:
+    from haute.errors import ConfigSettingError
+
+    config = {"tables": [{"factors": ["band"], "entries": [{"band": "low", "value": 1.0}, row]}]}
+
+    with pytest.raises(ConfigSettingError) as caught:
+        normalise_rating_step_config(config)
+
+    assert str(caught.value) == message
+    assert caught.value.setting == "tables"
+
+
 def test_duplicate_table_output_columns_are_rejected_with_both_indices() -> None:
     config = {
         "tables": [

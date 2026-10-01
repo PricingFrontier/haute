@@ -25,6 +25,7 @@ from haute._json_shred._source_proof import (
     _StrongFileRevision,
     clear_file_signatures,
     file_signature,
+    freshness_record,
     observe_freshness,
 )
 
@@ -613,3 +614,36 @@ def test_a_broken_revision_record_is_refused(broken: str) -> None:
         record = {**posix, "kind": "stat"}
 
     assert _source_proof._parse_revision(record) is None
+
+
+# ------------------------------------------------------------ freshness record
+
+
+def test_the_freshness_record_of_a_native_revision_is_its_revision_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: _POSIX_REVISION)
+
+    assert freshness_record(path) == _source_proof._revision_record(_POSIX_REVISION)
+
+
+def test_without_a_native_revision_the_freshness_record_is_the_files_stat(
+    tmp_path: Path, without_native_revision: list[tuple[str, dict[str, Any]]]
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    observed = path.stat()
+
+    record = freshness_record(path)
+
+    assert record == {
+        "kind": "stat",
+        "device": observed.st_dev,
+        "inode": observed.st_ino,
+        "size": observed.st_size,
+        "mtime_ns": observed.st_mtime_ns,
+        "ctime_ns": observed.st_ctime_ns,
+    }
+    assert json.loads(json.dumps(record)) == record
+    _write(path, "id,value\n1,a\n2,b\n")
+    assert freshness_record(path) != record

@@ -456,3 +456,36 @@ def test_date_entries_reject_other_spellings_on_both_paths(entry: str) -> None:
             {"rate": 2.0},
             factor_input_dtypes={"factor": pl.Date},
         )
+
+
+def test_a_duration_key_reads_an_iso_8601_spelling_exactly() -> None:
+    """A Duration factor's string key is the ISO-8601 duration Polars displays."""
+    import datetime
+
+    dtype = pl.Duration("ms")
+
+    assert normalise_rating_key("PT1.5S", dtype) == normalise_rating_key(
+        datetime.timedelta(milliseconds=1500), dtype
+    )
+    assert normalise_rating_key("-P1DT2H", dtype) == normalise_rating_key(
+        -datetime.timedelta(days=1, hours=2), dtype
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("1 second", "invalid ISO-8601 duration rating key '1 second'"),
+        ("PT", "invalid ISO-8601 duration rating key 'PT'"),
+        ("PT0.0001S", "duration rating key 'PT0.0001S' is not exactly representable as ms"),
+    ],
+    ids=["not-iso-8601", "no-component", "finer-than-the-time-unit"],
+)
+def test_a_duration_key_that_names_no_exact_duration_is_refused(key: str, message: str) -> None:
+    from haute.errors import ConfigSettingError
+
+    with pytest.raises(ConfigSettingError) as caught:
+        normalise_rating_key(key, pl.Duration("ms"))
+
+    assert str(caught.value) == message
+    assert (caught.value.setting, caught.value.values) == ("tables", (key,))

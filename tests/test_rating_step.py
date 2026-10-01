@@ -596,6 +596,40 @@ class TestRatingStepExecutor:
         with pytest.raises(ValueError, match="requires baseValue"):
             _build_node_fn(node)
 
+    @pytest.mark.parametrize(
+        ("combined_output", "message"),
+        [
+            ("premium", "ratingStep combinedOutputs[1] must be an object"),
+            (
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": "abc"},
+                "ratingStep combinedOutputs[1].baseValue must be numeric",
+            ),
+            (
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": "inf"},
+                "ratingStep combinedOutputs[1].baseValue must be finite",
+            ),
+        ],
+        ids=["not-an-object", "non-numeric-base", "non-finite-base"],
+    )
+    def test_a_malformed_combined_output_is_refused_by_position(self, combined_output, message):
+        """A combined output that cannot price fails the build, naming its position."""
+        from haute.errors import ConfigSettingError
+
+        node = _rating_node(
+            "malformed_combined_output",
+            [],
+            combined_outputs=[
+                {"outputColumn": "base", "operation": "multiply", "baseValue": 100},
+                combined_output,
+            ],
+        )
+
+        with pytest.raises(ConfigSettingError) as caught:
+            _build_node_fn(node)
+
+        assert str(caught.value) == message
+        assert caught.value.setting == "combinedOutputs"
+
     def test_combined_outputs_blank_output_column_raises(self):
         """Configured combined outputs must have an explicit output column."""
         node = _rating_node(

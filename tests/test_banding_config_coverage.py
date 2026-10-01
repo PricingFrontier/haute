@@ -10,7 +10,9 @@ from haute._banding_config import (
     _compact_rule_map,
     _validate_map_value,
     compact_banding_config_for_sidecar,
+    normalise_banding_factors,
 )
+from haute.errors import ConfigSettingError
 
 # ---------------------------------------------------------------------------
 # _validate_map_value
@@ -203,3 +205,43 @@ class TestCompactConfigShapes:
     def test_factor_must_be_object(self):
         with pytest.raises(ValueError, match="banding factors\\[0\\] must be an object"):
             compact_banding_config_for_sidecar({"factors": ["x"]})
+
+
+# ---------------------------------------------------------------------------
+# normalise_banding_factors — reading a sidecar's factors back
+# ---------------------------------------------------------------------------
+
+
+class TestNormaliseSidecarFactors:
+    def test_a_compact_categorical_map_expands_to_rule_rows(self):
+        config = {"factors": [{"banding": "categorical", "rules": {"north": "A", "1": 2}}]}
+
+        assert normalise_banding_factors(config)[0]["rules"] == [
+            {"value": "north", "assignment": "A"},
+            {"value": "1", "assignment": 2},
+        ]
+
+    @pytest.mark.parametrize(
+        ("factors", "message"),
+        [
+            (
+                [{"banding": "categorical", "rules": {"north": "A", "": "B"}}],
+                "categorical rule key must not be empty",
+            ),
+            (
+                [{"banding": "categorical", "rules": 5}],
+                "categorical banding rules must be a list",
+            ),
+            (
+                [{"banding": "categorical", "rules": {}}, "north"],
+                "banding factors[1] must be an object",
+            ),
+        ],
+        ids=["empty-categorical-key", "scalar-rules", "non-object-factor"],
+    )
+    def test_a_malformed_factor_is_refused_as_a_factors_setting(self, factors, message):
+        with pytest.raises(ConfigSettingError) as caught:
+            normalise_banding_factors({"factors": factors})
+
+        assert str(caught.value) == message
+        assert caught.value.setting == "factors"
