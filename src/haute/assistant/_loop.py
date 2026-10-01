@@ -16,12 +16,14 @@ from haute._types import NodeType
 from haute.assistant._assets import example_index
 from haute.assistant._catalog import (
     EDGE_NAME_PLACEHOLDER,
+    INSPECT_NODE_PARTS,
     capability_manifest,
     compact_manifest,
     materialise_json,
     tool_progress_reporter,
     tool_title,
 )
+from haute.assistant._change_record import not_run_words
 from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV
 from haute.assistant._node_cards import node_card
 from haute.assistant._providers import (
@@ -532,19 +534,247 @@ def _provider_tools(tools: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str,
 
 
 _SUMMARY_LIMIT = 160
+#: A data check, or an inspection's data part, that did not fit in the tool result.
+_DATA_CHECK_TOO_LARGE = "data checked, result too large to show"
 
 
-def _compact_summary(value: Mapping[str, Any]) -> str:
-    """Render tool arguments compactly for the chat activity row."""
+def _bounded(text: str) -> str:
+    """*text* on one line, cut to the activity row's limit."""
 
-    rendered = json.dumps(value, separators=(", ", ": "), default=str)
-    if len(rendered) > _SUMMARY_LIMIT:
-        return rendered[: _SUMMARY_LIMIT - 1] + "…"
-    return rendered
+    line = " ".join(text.split())
+    return line if len(line) <= _SUMMARY_LIMIT else line[: _SUMMARY_LIMIT - 1] + "…"
 
 
-def _result_summary(payload: Mapping[str, Any], is_error: bool) -> str:
-    """Render a tool result: the error message, or the payload's shape."""
+def _counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _strings(value: object) -> list[str]:
+    """A list's string items; anything that is not a list names nothing."""
+
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _sentence(segments: Sequence[str], separator: str = "; ") -> str:
+    """Segments written here, joined into one line that starts with a capital."""
+
+    text = separator.join(segments)
+    return text[:1].upper() + text[1:]
+
+
+def _data_check_words(check: Mapping[str, Any], *, inspection: bool) -> str:
+    """A data check's outcome in words: its findings counted by severity, or why it did not run.
+
+    The check is the closed view the tool validated, so its fields are read
+    directly. Only its outcome, its reason and its findings' severities are
+    read, never a measured count.
+    """
+
+    if check["outcome"] == "not_run":
+        reason = check["reason"]
+        # A dry-run checks its changed nodes; an inspection the node's lineage.
+        if inspection and reason == "no_checkable_nodes":
+            return "data not checked: no node in its lineage could be checked"
+        return f"data not checked: {not_run_words(reason)}"
+    findings: list[Mapping[str, Any]] = check["findings"]
+    omitted: int = check["findings_omitted"]
+    advisory = sum(1 for finding in findings if finding["severity"] == "advisory")
+    counts = [
+        f"{count} {severity}"
+        for count, severity in (
+            (advisory, "advisory"),
+            (len(findings) - advisory, "informational"),
+        )
+        if count
+    ]
+    if not counts:
+        found = _counted(omitted, "finding") if omitted else "no findings"
+        return f"data checked: {found}"
+    words = ", ".join(counts) + (" finding" if len(findings) == 1 else " findings")
+    return f"data checked: {words}" + (f" and {omitted} more" if omitted else "")
+
+
+def _inspect_node_started(arguments: Mapping[str, Any]) -> str:
+    node = arguments.get("node")
+    if not isinstance(node, str):
+        return ""
+    asked = _strings(arguments.get("parts", ["schema"]))
+    parts = [part for part in INSPECT_NODE_PARTS if part in asked]
+    return f"{node}: {', '.join(parts)}" if parts else node
+
+
+def _find_data_started(arguments: Mapping[str, Any]) -> str:
+    path = arguments.get("path")
+    if isinstance(path, str):
+        return f"Schema of {path}"
+    directory = arguments.get("directory")
+    where = f"Data files in {directory}" if isinstance(directory, str) else "Project data files"
+    return where + (", including subfolders" if arguments.get("recursive") is True else "")
+
+
+def _apply_started(arguments: Mapping[str, Any]) -> str:
+    item = arguments.get("item")
+    return f"For checklist item {item}" if isinstance(item, str) else ""
+
+
+def _update_build_plan_started(arguments: Mapping[str, Any]) -> str:
+    items = arguments.get("items")
+    complete = arguments.get("complete")
+    segments: list[str] = []
+    if isinstance(items, list):
+        segments.append(f"set {_counted(len(items), 'item')}")
+    if isinstance(complete, str):
+        segments.append(f"mark {complete} done")
+    return _sentence(segments, ", ")
+
+
+def _text_argument(key: str) -> Callable[[Mapping[str, Any]], str]:
+    def summary(arguments: Mapping[str, Any]) -> str:
+        value = arguments.get(key)
+        return value if isinstance(value, str) else ""
+
+    return summary
+
+
+#: Each tool's running-row summary, from the arguments the model sent. The
+#: arguments are not validated yet, so only their strings and lists are read.
+_STARTED_SUMMARIES: dict[str, Callable[[Mapping[str, Any]], str]] = {
+    "inspect_node": _inspect_node_started,
+    "find_data": _find_data_started,
+    "read_reference": lambda arguments: ", ".join(_strings(arguments.get("ids"))),
+    "get_project_knowledge": _text_argument("query"),
+    "dry_run_graph_edits": _text_argument("summary"),
+    "apply_graph_plan": _apply_started,
+    "update_build_plan": _update_build_plan_started,
+}
+
+
+def _get_pipeline_finished(payload: Mapping[str, Any]) -> str:
+    nodes = payload.get("nodes")
+    return _counted(len(nodes), "node") if isinstance(nodes, list) else ""
+
+
+def _inspect_node_finished(payload: Mapping[str, Any]) -> str:
+    answered = [part for part in ("schema", "config", "profile") if part in payload]
+    segments = [", ".join(answered)] if answered else []
+    check = payload.get("data")
+    if isinstance(check, Mapping):
+        segments.append(_data_check_words(check, inspection=True))
+    elif "data_omitted" in payload:
+        segments.append(_DATA_CHECK_TOO_LARGE)
+    withheld = payload.get("withheld")
+    held = [
+        entry["part"]
+        for entry in (withheld if isinstance(withheld, list) else [])
+        if isinstance(entry, Mapping) and isinstance(entry.get("part"), str)
+    ]
+    if held:
+        segments.append(f"{', '.join(held)} withheld by policy")
+    return _sentence(segments)
+
+
+def _find_data_finished(payload: Mapping[str, Any]) -> str:
+    schema = payload.get("schema")
+    if isinstance(schema, Mapping) and isinstance(schema.get("path"), str):
+        columns = schema.get("columns")
+        counted = f", {_counted(len(columns), 'column')}" if isinstance(columns, list) else ""
+        return f"Schema of {schema['path']}{counted}"
+    datasets = payload.get("datasets")
+    if not isinstance(datasets, list):
+        return ""
+    found = [_counted(len(datasets), "file")]
+    directories = payload.get("directories")
+    if isinstance(directories, list) and directories:
+        found.append(_counted(len(directories), "folder"))
+    if payload.get("truncated") is True:
+        found.append("more not listed")
+    return ", ".join(found)
+
+
+def _read_reference_finished(payload: Mapping[str, Any]) -> str:
+    references = payload.get("references")
+    return ", ".join(
+        reference["id"]
+        for reference in (references if isinstance(references, list) else [])
+        if isinstance(reference, Mapping) and isinstance(reference.get("id"), str)
+    )
+
+
+def _project_knowledge_finished(payload: Mapping[str, Any]) -> str:
+    items = payload.get("items")
+    return _counted(len(items), "item") if isinstance(items, list) else ""
+
+
+def _dry_run_finished(payload: Mapping[str, Any]) -> str:
+    segments: list[str] = []
+    # Only a validated plan's result counts its operations (the row's title
+    # shows the count), and a persisted result keeps that count.
+    if "operations" in payload:
+        warnings = payload.get("warnings")
+        counted = (
+            f", {_counted(len(warnings), 'warning')}"
+            if isinstance(warnings, list) and warnings
+            else ""
+        )
+        segments.append(f"plan is valid{counted}")
+    check = payload.get("data_check")
+    if isinstance(check, Mapping):
+        segments.append(_data_check_words(check, inspection=False))
+    elif "data_check_omitted" in payload:
+        segments.append(_DATA_CHECK_TOO_LARGE)
+    return _sentence(segments)
+
+
+def _apply_finished(payload: Mapping[str, Any]) -> str:
+    change = payload.get("change")
+    if not isinstance(change, Mapping):
+        return ""
+    item = payload.get("item")
+    saved = f"Saved for checklist item {item}" if isinstance(item, str) else "Saved"
+    summary = change.get("summary")
+    return f"{saved}: {summary}" if isinstance(summary, str) else saved
+
+
+def _update_build_plan_finished(payload: Mapping[str, Any]) -> str:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return ""
+    done = sum(1 for item in items if isinstance(item, Mapping) and item.get("complete") is True)
+    return f"{done} of {len(items)} done"
+
+
+#: Each tool's finished-row summary, read only from the result: a resumed row,
+#: whose arguments are redacted, reads what its persisted result kept.
+_FINISHED_SUMMARIES: dict[str, Callable[[Mapping[str, Any]], str]] = {
+    "get_pipeline": _get_pipeline_finished,
+    "inspect_node": _inspect_node_finished,
+    "find_data": _find_data_finished,
+    "read_reference": _read_reference_finished,
+    "get_project_knowledge": _project_knowledge_finished,
+    "dry_run_graph_edits": _dry_run_finished,
+    "apply_graph_plan": _apply_finished,
+    "update_build_plan": _update_build_plan_finished,
+}
+
+
+def _started_summary(name: str, arguments: Mapping[str, Any]) -> str:
+    """A running activity row's summary: what the call asks for, in plain words.
+
+    Built only from the model's own arguments; a tool with nothing to name,
+    and a name no tool has, have none.
+    """
+
+    summarise = _STARTED_SUMMARIES.get(name)
+    return "" if summarise is None else _bounded(summarise(arguments))
+
+
+def _result_summary(name: str, payload: Mapping[str, Any], is_error: bool) -> str:
+    """A finished activity row's summary: the error message, or the result in plain words.
+
+    A success is described from the counts, names and ids the result already
+    returned to the model, never from data values; a result without the
+    fields a tool's summary reads, and a name no tool has, have none.
+    """
 
     if is_error:
         error = payload.get("error")
@@ -557,7 +787,8 @@ def _result_summary(payload: Mapping[str, Any], is_error: bool) -> str:
                     else message[: _SUMMARY_LIMIT - 1] + "…"
                 )
         return "tool error"
-    return _compact_summary(dict(payload))
+    summarise = _FINISHED_SUMMARIES.get(name)
+    return "" if summarise is None else _bounded(summarise(payload))
 
 
 def _stable_error_code(payload: Mapping[str, Any]) -> str | None:
@@ -605,7 +836,7 @@ class _DryRunProgress:
             self.code = code
         # The chat's tool-row summary of the error the model was just shown:
         # the blocker repeats it and so carries nothing that result did not.
-        self.message = _result_summary(payload, True)
+        self.message = _result_summary(call.name, payload, True)
         self.malformed = code in _MALFORMED_CALL_ERROR_CODES
         self.failed += 1
         request = _canonical([call.name, call.arguments])
@@ -978,7 +1209,7 @@ async def run_turn(
                             id=event.id,
                             name=event.name,
                             title=tool_title(event.name, event.arguments),
-                            summary=_compact_summary(event.arguments),
+                            summary=_started_summary(event.name, event.arguments),
                         )
                         payload: Mapping[str, Any]
                         plan_before = session.build_plan.current
@@ -1031,7 +1262,9 @@ async def run_turn(
                             event.name == "apply_graph_plan"
                             and _stable_error_code(payload) == _COMMITTED_UNVERIFIED_ERROR_CODE
                         ):
-                            committed_unverified_detail = _result_summary(payload, is_error)
+                            committed_unverified_detail = _result_summary(
+                                event.name, payload, is_error
+                            )
                             # The save committed, so its record is a change the
                             # turn saved, and the analyst can undo it.
                             if "change" in payload:
@@ -1044,7 +1277,7 @@ async def run_turn(
                                 name=event.name,
                                 title=tool_title(event.name, event.arguments, payload),
                                 is_error=is_error,
-                                summary=_result_summary(payload, is_error),
+                                summary=_result_summary(event.name, payload, is_error),
                             )
                         if change is not None and interrupt is None:
                             yield AssistantChangeAppliedEvent(change=change)

@@ -1819,6 +1819,299 @@ class TestToolRoundTrip:
         assert terminal.type == "completed", "a tool error must not fail the turn"
 
 
+def _check(*severities: str, omitted: int = 0) -> dict[str, Any]:
+    """A checked data-check view whose findings have *severities*."""
+
+    return {
+        "version": 1,
+        "outcome": "checked",
+        "scenario": "live",
+        "row_bound": 10_000,
+        "elapsed_ms": 40,
+        "nodes": [{"node": "value_band", "status": "checked", "detail_omitted": True}],
+        "nodes_omitted": 0,
+        "findings": [
+            {"kind": "column_mostly_null", "severity": severity, "node": "value_band"}
+            for severity in severities
+        ],
+        "findings_omitted": omitted,
+        "detail_truncated": False,
+    }
+
+
+def _not_run(reason: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "outcome": "not_run",
+        "scenario": "live",
+        "reason": reason,
+        "detail": None,
+        "elapsed_ms": 3,
+        "nodes": [],
+        "nodes_omitted": 0,
+    }
+
+
+_DRY_RUN_RESULT: dict[str, Any] = {
+    "plan_hash": "a" * 64,
+    "operations": 2,
+    "verification_tier": "schema",
+    "evidence": {"schemas_resolved": 2},
+    "warnings": [],
+    "changes": {"nodes": [{"id": "value_band", "type": "Banding", "change": "added"}]},
+}
+_CHECKLIST_ITEMS = [
+    {"id": stage, "title": f"Add {stage}", "complete": complete, "changes": int(complete)}
+    for stage, complete in (
+        ("source", True),
+        ("value_band", True),
+        ("rating", False),
+        ("output", False),
+    )
+]
+#: (tool, arguments, the running row's summary)
+_STARTED_SUMMARY_CASES: list[tuple[str, dict[str, Any], str]] = [
+    ("get_pipeline", {}, ""),
+    ("inspect_node", {"node": "value_band"}, "value_band: schema"),
+    (
+        "inspect_node",
+        {"node": "value_band", "parts": ["data", "schema"]},
+        "value_band: schema, data",
+    ),
+    ("find_data", {}, "Project data files"),
+    (
+        "find_data",
+        {"directory": "data", "recursive": True},
+        "Data files in data, including subfolders",
+    ),
+    ("find_data", {"path": "data/quotes.parquet"}, "Schema of data/quotes.parquet"),
+    (
+        "read_reference",
+        {"ids": ["node:banding", "recipe:rating_step"]},
+        "node:banding, recipe:rating_step",
+    ),
+    ("get_project_knowledge", {"query": "vehicle value bands"}, "vehicle value bands"),
+    (
+        "dry_run_graph_edits",
+        {
+            "summary": "Add a banding node named value_band\nafter rating_features.",
+            "ops": [{"op": "add_node", "id": "value_band", "type": "banding"}],
+        },
+        "Add a banding node named value_band after rating_features.",
+    ),
+    ("apply_graph_plan", {"plan_hash": "a" * 64}, ""),
+    (
+        "apply_graph_plan",
+        {"plan_hash": "a" * 64, "item": "value_band"},
+        "For checklist item value_band",
+    ),
+    (
+        "update_build_plan",
+        {"items": [{"id": item["id"], "title": item["title"]} for item in _CHECKLIST_ITEMS]},
+        "Set 4 items",
+    ),
+    ("update_build_plan", {"complete": "value_band"}, "Mark value_band done"),
+    ("no_such_tool", {"node": "value_band"}, ""),
+]
+#: (tool, result, the finished row's summary)
+_FINISHED_SUMMARY_CASES: list[tuple[str, dict[str, Any], str]] = [
+    (
+        "get_pipeline",
+        {"nodes": [{"id": "quotes"}, {"id": "value_band"}], "edges": [], "project_revision": "r"},
+        "2 nodes",
+    ),
+    (
+        "inspect_node",
+        {"node": "value_band", "schema": {"columns": []}, "config": {}, "project_revision": "r"},
+        "Schema, config",
+    ),
+    (
+        "inspect_node",
+        {"node": "value_band", "schema": {}, "data": _check("advisory"), "project_revision": "r"},
+        "Schema; data checked: 1 advisory finding",
+    ),
+    (
+        "inspect_node",
+        {
+            "node": "value_band",
+            "data": _not_run("worker_busy"),
+            "withheld": [{"part": "profile", "required_policy": "allow_row_samples = true"}],
+            "project_revision": "r",
+        },
+        "Data not checked: the preview worker was busy; profile withheld by policy",
+    ),
+    (
+        "inspect_node",
+        {"node": "value_band", "data": _not_run("no_checkable_nodes"), "project_revision": "r"},
+        "Data not checked: no node in its lineage could be checked",
+    ),
+    (
+        "inspect_node",
+        {"node": "value_band", "data_omitted": "did not fit", "project_revision": "r"},
+        "Data checked, result too large to show",
+    ),
+    (
+        "find_data",
+        {
+            "datasets": [{"name": "quotes.parquet", "path": "data/quotes.parquet"}],
+            "directories": [],
+            "recursive": False,
+            "truncated": False,
+            "schema": {
+                "path": "data/quotes.parquet",
+                "columns": [{"name": "age"}, {"name": "value"}, {"name": "region"}],
+            },
+            "project_revision": "r",
+        },
+        "Schema of data/quotes.parquet, 3 columns",
+    ),
+    (
+        "find_data",
+        {
+            "datasets": [{"name": "a.csv"}, {"name": "b.csv"}],
+            "directories": ["raw"],
+            "recursive": False,
+            "truncated": True,
+        },
+        "2 files, 1 folder, more not listed",
+    ),
+    (
+        "read_reference",
+        {"count": 1, "references": [{"id": "node:banding", "content": {"id": "banding"}}]},
+        "node:banding",
+    ),
+    ("get_project_knowledge", {"items": [{"source": "notes.md"}] * 3, "trust": "x"}, "3 items"),
+    ("dry_run_graph_edits", _DRY_RUN_RESULT, "Plan is valid"),
+    (
+        "dry_run_graph_edits",
+        {**_DRY_RUN_RESULT, "data_check": _check()},
+        "Plan is valid; data checked: no findings",
+    ),
+    (
+        "dry_run_graph_edits",
+        {
+            **_DRY_RUN_RESULT,
+            "warnings": ["Edge renamed."],
+            "data_check": _check("advisory", "informational", "informational"),
+        },
+        "Plan is valid, 1 warning; data checked: 1 advisory, 2 informational findings",
+    ),
+    (
+        "dry_run_graph_edits",
+        {**_DRY_RUN_RESULT, "data_check": _check("advisory", omitted=2)},
+        "Plan is valid; data checked: 1 advisory finding and 2 more",
+    ),
+    (
+        "dry_run_graph_edits",
+        {**_DRY_RUN_RESULT, "data_check": _not_run("worker_busy")},
+        "Plan is valid; data not checked: the preview worker was busy",
+    ),
+    (
+        "dry_run_graph_edits",
+        {**_DRY_RUN_RESULT, "data_check_omitted": "did not fit"},
+        "Plan is valid; data checked, result too large to show",
+    ),
+    ("apply_graph_plan", _APPLIED, "Saved: Add an age band after quotes."),
+    (
+        "apply_graph_plan",
+        {**_APPLIED, "item": "age"},
+        "Saved for checklist item age: Add an age band after quotes.",
+    ),
+    ("update_build_plan", {"items": _CHECKLIST_ITEMS}, "2 of 4 done"),
+    # A resumed row reads the persisted result, which keeps only evidence scalars.
+    ("dry_run_graph_edits", {"redacted": True, "operations": 2}, "Plan is valid"),
+    ("get_pipeline", {"redacted": True, "project_revision": "r"}, ""),
+    ("no_such_tool", {"nodes": [{"id": "quotes"}]}, ""),
+]
+
+
+class TestToolActivitySummaries:
+    """Spec: assistant low-level — Tool titles and summaries. Each activity row
+    reads in plain words, from the call's arguments while it runs and from its
+    result once it is done, and never shows JSON."""
+
+    @pytest.mark.parametrize(("name", "arguments", "expected"), _STARTED_SUMMARY_CASES)
+    def test_a_running_row_names_what_the_call_asks_for(
+        self, name: str, arguments: dict[str, Any], expected: str
+    ):
+        from haute.assistant._loop import _started_summary
+
+        assert _started_summary(name, arguments) == expected
+
+    @pytest.mark.parametrize(("name", "payload", "expected"), _FINISHED_SUMMARY_CASES)
+    def test_a_finished_row_says_what_the_result_holds(
+        self, name: str, payload: dict[str, Any], expected: str
+    ):
+        from haute.assistant._loop import _result_summary
+
+        assert _result_summary(name, payload, False) == expected
+
+    def test_no_summary_shows_a_json_object_or_array(self):
+        """Arguments are not validated when the row starts, so a malformed value
+        contributes nothing rather than its JSON."""
+
+        from haute.assistant._loop import _result_summary, _started_summary
+
+        malformed = [
+            ("inspect_node", {"node": {"id": "value_band"}, "parts": ["schema"]}),
+            ("read_reference", {"ids": [{"id": "node:banding"}]}),
+            ("get_project_knowledge", {"query": ["bands"]}),
+            ("dry_run_graph_edits", {"summary": {"text": "x"}, "ops": []}),
+            ("update_build_plan", {"items": {"id": "a"}, "complete": ["a"]}),
+            ("find_data", {"path": ["a"], "directory": {"d": 1}}),
+        ]
+        summaries = [
+            *(_started_summary(name, arguments) for name, arguments, _ in _STARTED_SUMMARY_CASES),
+            *(_started_summary(name, arguments) for name, arguments in malformed),
+            *(
+                _result_summary(name, payload, False)
+                for name, payload, _ in _FINISHED_SUMMARY_CASES
+            ),
+        ]
+        for summary in summaries:
+            assert "{" not in summary and "[" not in summary, summary
+        assert [_started_summary(name, arguments) for name, arguments in malformed[:4]] == [""] * 4
+
+    def test_a_long_summary_is_one_line_cut_to_the_limit(self):
+        from haute.assistant._loop import _SUMMARY_LIMIT, _started_summary
+
+        summary = _started_summary(
+            "dry_run_graph_edits", {"summary": "Band vehicle value.\n" * 30, "ops": []}
+        )
+        assert len(summary) == _SUMMARY_LIMIT
+        assert "\n" not in summary and summary.endswith("…")
+
+    async def test_the_stream_carries_both_summaries(self, store, session_id):
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(
+                        "t1", "inspect_node", {"node": "value_band", "parts": ["schema", "data"]}
+                    ),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [TextDelta("Checked."), TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {
+                "node": "value_band",
+                "schema": {"columns": [{"name": "value_band", "dtype": "String"}]},
+                "data": _check("advisory"),
+                "project_revision": "r",
+            }
+
+        events = await _run(
+            store, session_id, "check it", provider=provider, execute_tool=execute_tool
+        )
+
+        started = next(event for event in events if event.type == "tool_started")
+        finished = next(event for event in events if event.type == "tool_finished")
+        assert started.summary == "value_band: schema, data"
+        assert finished.summary == "Schema; data checked: 1 advisory finding"
+
+
 # ---------------------------------------------------------------------------
 # Limits and failures
 # ---------------------------------------------------------------------------

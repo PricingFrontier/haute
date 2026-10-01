@@ -240,7 +240,9 @@ get the compacted history and no caching or thinking changes.
 assistant text deltas, a content-free thinking status while a Claude model thinks,
 tool-call started/finished activity (the tool's name, a plain-words
 title written beside the tool such as "Reading the pipeline", "Checking 3 changes" or
-"Applying 3 changes", and a compact argument and result summary), a change-applied event
+"Applying 3 changes", and a one-line summary in plain words, never JSON, of what the call
+asks for while it runs and of what its result holds once done, such as "value_band:
+schema, data" or "Plan is valid; data checked: 1 advisory finding"), a change-applied event
 after each successful apply carrying its change card (see **Change cards**), a
 build-plan event carrying the whole plan after each tool call that changed the session's
 build plan (see **Build plans for multi-stage requests**), and exactly

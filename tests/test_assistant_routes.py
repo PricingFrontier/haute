@@ -347,7 +347,8 @@ class TestSessionResume:
         assert tool["name"] == "apply_graph_plan"
         # The finished title the live row showed, read from the persisted result.
         assert tool["title"] == "Applying 2 changes"
-        assert "redacted" in tool["summary"]
+        # The finished summary, read from the persisted change record.
+        assert tool["summary"] == "Saved: Add an age band after quotes."
         assert tool["is_error"] is False
         # The stored change record follows its tool entry, as the live card did.
         assert AssistantChangeRecord.model_validate(body["history"][3]["change"]) == (

@@ -162,8 +162,8 @@ def get_assistant_status() -> AssistantStatusResponse:
 def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEntry]:
     """Map a session's stored neutral history to rehydratable transcript entries.
 
-    Tool entries reuse the same compact result summary and finished title the
-    live stream shows; the persisted message's explicit ``is_error`` flag is
+    Tool entries reuse the finished title and summary the live stream computes,
+    read from the stored result; the persisted message's explicit ``is_error`` flag is
     authoritative. A successful apply's stored change record follows its tool
     entry as a ``change`` entry, as the live ``change_applied`` event did. A
     turn stored with an outcome ends with one ``outcome`` entry carrying it,
@@ -190,7 +190,7 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                         kind="tool",
                         name=name,
                         title=tool_title(name, {}, content),
-                        summary=_loop._result_summary(content, is_error),
+                        summary=_loop._result_summary(name, content, is_error),
                         is_error=is_error,
                     )
                 )

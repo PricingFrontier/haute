@@ -205,6 +205,12 @@ _NOT_RUN_WORDS: dict[str, str] = {
 _NOT_CHECKED_NAMED = 5
 
 
+def not_run_words(reason: str) -> str:
+    """Why a data check did not run, in the plain words the change card uses."""
+
+    return _NOT_RUN_WORDS[reason]
+
+
 def _not_checked_words(record: Mapping[str, Any]) -> str:
     """Why one changed node was not checked, with the step that would let it be."""
 
@@ -244,7 +250,7 @@ def _not_checked_line(check: Mapping[str, Any]) -> str | None:
     if check["outcome"] == "not_run":
         if check["reason"] == "no_checkable_nodes" and check["nodes"]:
             return f"Data not checked: {_named_nodes(check['nodes'])}."
-        return f"Data not checked: {_NOT_RUN_WORDS[check['reason']]}."
+        return f"Data not checked: {not_run_words(check['reason'])}."
     skipped = [
         record
         for record in check["nodes"]
@@ -464,5 +470,6 @@ __all__ = [
     "field_words",
     "finding_words",
     "graph_changes",
+    "not_run_words",
     "touched_node_ids",
 ]

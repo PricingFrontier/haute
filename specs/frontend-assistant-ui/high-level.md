@@ -89,8 +89,10 @@ incrementally as deltas arrive. While a Claude model thinks, a "Thinking…" sta
 below the transcript until its next text or tool row; what it thinks is never shown or
 kept. Tool activity renders as compact rows in-place in the
 transcript, each headed by the plain-words title the backend writes ("Reading the
-pipeline", "Checking 3 changes", "Applying 3 changes") rather than the tool's name, with
-failures marked distinctly — so the analyst can follow what the agent actually did, in
+pipeline", "Checking 3 changes", "Applying 3 changes") rather than the tool's name, over
+the backend's one-line plain-words summary of what the call asks for and then what it
+found ("value_band: schema, data", "Plan is valid; data checked: no findings"), never raw
+JSON, with failures marked distinctly — so the analyst can follow what the agent actually did, in
 order: text streamed after a tool row renders below it as a new text segment, never back
 in an earlier bubble. A running row takes the title of each stage the backend reports
 ("Checking the data" while a dry-run's data check runs). After each apply a change card
