@@ -34,6 +34,7 @@ from haute.assistant._providers import (
     ThinkingStarted,
     ToolCallRequest,
     TurnStop,
+    turn_deadline,
 )
 from haute.assistant._session import AssistantSession, AssistantTurn, SessionStore
 from haute.errors import HauteError
@@ -1179,7 +1180,15 @@ async def run_turn(
                     messages=request_messages,
                     tools=provider_tools,
                 )
-                async for event in active_stream:
+                while True:
+                    # Each step of the stream runs under the turn's deadline, so a
+                    # provider's pre-stream retry never waits past it; the variable
+                    # is set and reset within the step, never across a yield.
+                    with turn_deadline(deadline):
+                        try:
+                            event = await anext(active_stream)
+                        except StopAsyncIteration:
+                            break
                     if isinstance(event, TextDelta):
                         round_text.append(event.text)
                         yield AssistantTextDeltaEvent(text=event.text)

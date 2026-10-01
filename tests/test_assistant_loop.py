@@ -2157,6 +2157,33 @@ class TestLimits:
         assert terminal.type == "failed"
         assert "time" in terminal.message.lower()
 
+    async def test_a_provider_stream_runs_under_the_turns_deadline(self, store, session_id):
+        """A provider's pre-stream retry waits only within the turn: each step of
+        its stream, and of any stream it wraps, sees the turn's deadline, and
+        nothing outside a step does."""
+
+        import time
+
+        from haute.assistant._providers import current_turn_deadline
+
+        seen: list[float | None] = []
+
+        class DeadlineProvider:
+            async def stream_turn(self, *, system, messages, tools):
+                seen.append(current_turn_deadline())
+                yield TextDelta("hi")
+                seen.append(current_turn_deadline())
+                yield TurnStop("end", _usage())
+
+        started = time.monotonic()
+        events = await _run(store, session_id, "hi", provider=DeadlineProvider(), turn_timeout=30)
+        finished = time.monotonic()
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert len(seen) == 2 and seen[0] == seen[1]
+        assert seen[0] is not None and started + 30 <= seen[0] <= finished + 30
+        assert current_turn_deadline() is None
+
     async def test_provider_error_becomes_failed_event(self, store, session_id):
         provider = ScriptedProvider(
             [[TextDelta("par"), AssistantProviderError("anthropic", "rate_limit")]]

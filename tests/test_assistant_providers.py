@@ -29,6 +29,9 @@ Authored test-first per CLAUDE.md TDD.
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from types import SimpleNamespace
 
 import anthropic
@@ -46,6 +49,8 @@ from haute.assistant._providers import (
     ToolCallRequest,
     TurnStop,
     _classify_sdk_error,
+    _retry_after_seconds,
+    turn_deadline,
 )
 
 # ---------------------------------------------------------------------------
@@ -1435,6 +1440,19 @@ class TestOpenAIProvider:
 # ---------------------------------------------------------------------------
 
 
+#: Every pre-stream retry at once, so a test never waits.
+_IMMEDIATE_RETRIES = {"connection": (0.0, 0.0), "rate_limit": (0.0, 0.0)}
+
+
+def _rate_limited(retry_after: str | None = None) -> openai.RateLimitError:
+    """A real SDK rate-limit error, its 429 response carrying *retry_after*."""
+
+    request = httpx.Request("POST", "https://workspace.example/serving")
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    response = httpx.Response(429, request=request, headers=headers)
+    return openai.RateLimitError("REQUEST_LIMIT_EXCEEDED", response=response, body=None)
+
+
 class TestDatabricksProvider:
     async def test_reuses_openai_compatible_request_contract(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())
@@ -1458,7 +1476,7 @@ class TestDatabricksProvider:
         rate_limit_error = type("RateLimitError", (Exception,), {})
 
         class ImmediateRetryProvider(DatabricksProvider):
-            pre_stream_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         client = _SequencedOpenAIClient(
             [
@@ -1484,7 +1502,7 @@ class TestDatabricksProvider:
         rate_limit_error = type("RateLimitError", (Exception,), {})
 
         class ImmediateRetryProvider(DatabricksProvider):
-            pre_stream_retry_delays = (0.0,)
+            pre_stream_retry_delays = {"rate_limit": (0.0,)}
 
         client = _SequencedOpenAIClient(
             [rate_limit_error("secret-one"), rate_limit_error("secret-two")]
@@ -1500,11 +1518,111 @@ class TestDatabricksProvider:
         assert "secret" not in str(exc_info.value)
         assert client.calls == 2
 
-    def test_pre_stream_retry_is_two_retries_after_one_and_three_seconds(self):
-        assert DatabricksProvider.pre_stream_retry_delays == (1.0, 3.0)
+    def test_a_rate_limit_waits_longer_and_more_often_than_a_connection_failure(self):
+        """Live: two evaluations in parallel hit Databricks' workspace input
+        tokens-per-minute limit; one and three seconds were too short to outlast it."""
+
+        assert DatabricksProvider.pre_stream_retry_delays == {
+            "connection": (1.0, 3.0),
+            "rate_limit": (5.0, 15.0, 30.0),
+        }
         # The direct OpenAI client keeps the SDK's own bounded retries instead,
         # so no provider nests an adapter retry over an SDK retry.
-        assert OpenAIProvider.pre_stream_retry_delays == ()
+        assert OpenAIProvider.pre_stream_retry_delays == {}
+
+    async def test_a_rate_limit_waits_what_its_retry_after_header_asks(self):
+        import structlog.testing
+
+        class SlowScheduleProvider(DatabricksProvider):
+            # The schedule would outlast the test: only the header can be waited.
+            pre_stream_retry_delays = {"rate_limit": (600.0,)}
+
+        client = _SequencedOpenAIClient([_rate_limited("0.01"), _openai_text_tool_chunks()])
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                SlowScheduleProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+
+        assert events[0] == TextDelta(text="Hi")
+        assert client.calls == 2
+        (retry,) = [
+            entry for entry in captured if entry["event"] == "assistant_provider_request_retry"
+        ]
+        assert (retry["failure_class"], retry["delay_seconds"], retry["delay_source"]) == (
+            "rate_limit",
+            0.01,
+            "retry_after",
+        )
+
+    @pytest.mark.parametrize(
+        ("schedule", "retry_after"),
+        [((600.0,), None), ((0.0,), "600")],
+        ids=["schedule", "retry-after"],
+    )
+    async def test_a_wait_past_the_turns_deadline_fails_at_once_as_a_rate_limit(
+        self, schedule: tuple[float, ...], retry_after: str | None
+    ):
+        """A wait the turn cannot outlast is not taken, so the turn fails with the
+        rate-limit failure rather than its time limit."""
+
+        import structlog.testing
+
+        class ScheduledProvider(DatabricksProvider):
+            pre_stream_retry_delays = {"rate_limit": schedule}
+
+        client = _SequencedOpenAIClient([_rate_limited(retry_after), _openai_text_tool_chunks()])
+        started = time.monotonic()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.raises(AssistantProviderError) as exc_info,
+            turn_deadline(time.monotonic() + 60.0),
+        ):
+            await _collect(
+                ScheduledProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+
+        assert time.monotonic() - started < 30.0
+        assert str(exc_info.value) == (
+            "databricks provider rate_limit failure: the provider request could not be completed"
+        )
+        assert client.calls == 1
+        (abandoned,) = [
+            entry
+            for entry in captured
+            if entry["event"] == "assistant_provider_request_retry_past_deadline"
+        ]
+        assert abandoned["delay_seconds"] == 600.0
+
+    @pytest.mark.parametrize(
+        ("header", "seconds"),
+        [
+            ("7", 7.0),
+            ("0.5", 0.5),
+            ("-3", 0.0),
+            (format_datetime(datetime.now(UTC) - timedelta(minutes=1), usegmt=True), 0.0),
+            ("soon", None),
+            (None, None),
+        ],
+        ids=["seconds", "fraction", "negative", "past-date", "unreadable", "absent"],
+    )
+    def test_retry_after_reads_seconds_or_an_http_date(
+        self, header: str | None, seconds: float | None
+    ):
+        assert _retry_after_seconds(_rate_limited(header)) == seconds
+
+    def test_retry_after_reads_a_future_http_date_and_needs_a_response(self):
+        later = format_datetime(datetime.now(UTC) + timedelta(seconds=90), usegmt=True)
+
+        waited = _retry_after_seconds(_rate_limited(later))
+
+        assert waited is not None and 80.0 <= waited <= 90.0
+        assert _retry_after_seconds(type("RateLimitError", (Exception,), {})()) is None
 
     @pytest.mark.parametrize(
         "error",
@@ -1522,7 +1640,7 @@ class TestDatabricksProvider:
         import structlog.testing
 
         class ImmediateRetryProvider(DatabricksProvider):
-            pre_stream_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         client = _SequencedOpenAIClient([error, _openai_text_tool_chunks()])
         with structlog.testing.capture_logs() as captured:
@@ -1545,7 +1663,7 @@ class TestDatabricksProvider:
 
     async def test_exhausted_pre_stream_timeouts_fail_typed(self):
         class ImmediateRetryProvider(DatabricksProvider):
-            pre_stream_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         client = _SequencedOpenAIClient([_sdk_timeout(), _sdk_timeout(), _sdk_timeout()])
         with pytest.raises(AssistantProviderError) as exc_info:
@@ -1564,7 +1682,7 @@ class TestDatabricksProvider:
         """Replaying a started stream could duplicate text or tool calls."""
 
         class ImmediateRetryProvider(DatabricksProvider):
-            pre_stream_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         first_chunk = _openai_text_tool_chunks()[:1]
         client = _SequencedOpenAIClient(
@@ -1586,7 +1704,7 @@ class TestDatabricksProvider:
 
     async def test_non_transient_pre_stream_failure_is_not_retried(self):
         class ImmediateRetryProvider(DatabricksProvider):
-            pre_stream_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         authentication_error = type("AuthenticationError", (Exception,), {})
         client = _SequencedOpenAIClient(

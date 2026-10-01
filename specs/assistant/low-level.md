@@ -1488,7 +1488,11 @@ the turn that follows.
    returns `invalid_request`. That path never raises a `KeyError`, echoes any other rejected
    value, or invokes the operation.
 6. Limits: a wall-clock deadline (`HAUTE_ASSISTANT_TURN_TIMEOUT`) checked around provider
-   streaming and before each tool dispatch, and a per-turn tool-call cap
+   streaming and before each tool dispatch, and passed to the provider: the loop runs each
+   step of a provider stream (`anext`) inside `turn_deadline(deadline)` and never across a
+   `yield`, so the context variable is set and reset in one context and any stream the
+   provider wraps sees it, and an adapter's pre-stream retry never waits past it; and a
+   per-turn tool-call cap
    (`HAUTE_ASSISTANT_MAX_TOOL_CALLS`). Hitting either aborts the provider stream and emits
    `failed` naming the limit. A non-mutating tool still running at the deadline is cancelled
    rather than drained; the interrupted call receives a matched, value-free
@@ -1556,9 +1560,23 @@ the turn that follows.
   timeout equal to `HAUTE_ASSISTANT_TURN_TIMEOUT`. Databricks client construction disables
   the OpenAI SDK's internal retries. `DatabricksProvider` retries only a pre-stream SDK
   exception classified `rate_limit` or `connection` (connection, timeout, or network
-  failures), at most twice, after one and three seconds, against the identical
-  model/endpoint request. Each retry is logged by provider identity, failure class, SDK
-  exception class name, and ordinal without the raw response. A failure after a stream
+  failures), against the identical model/endpoint request, by the per-category schedule
+  `pre_stream_retry_delays`: `connection` at most twice, after one and three seconds, and
+  `rate_limit` at most three times, after five, fifteen and thirty seconds, each category
+  counting its own retries. A rate limit whose SDK error carries an HTTP response with a
+  `Retry-After` header waits what the header asks (`_retry_after_seconds`: delta-seconds, or
+  an HTTP date less the current time, never below zero) in place of that retry's scheduled
+  delay, still within the schedule's count; a header that is neither form is ignored. A wait
+  that would end at or after the turn's deadline is not taken: the exception is raised at
+  once and classified as below, so the turn fails as `rate_limit` (or `connection`) rather
+  than at its time limit. The deadline reaches the adapter through
+  `turn_deadline(deadline)`, a context variable the loop sets around each `anext` of a
+  provider stream (read with `current_turn_deadline()`); outside a turn there is none and
+  only the schedule's count bounds the retries. Each retry is logged as
+  `assistant_provider_request_retry` by provider identity, failure class, SDK exception class
+  name, ordinal, delay and its source (`schedule` or `retry_after`) without the raw
+  response, and a retry not taken for the deadline as
+  `assistant_provider_request_retry_past_deadline`. A failure after a stream
   object exists is never retried; exhausted retries retain the sanitized `databricks`
   failure class (`rate_limit` or `connection`). The direct OpenAI client keeps the SDK's
   own two request retries, which cover the same pre-stream connection and timeout
@@ -2653,7 +2671,15 @@ fixture for route tests). The implemented coverage is:
   OpenAI content-delta dialects (plain string, and gateway content-part lists where `text`
   parts stream, `reasoning` parts stay unsurfaced, and unknown part types or non-text
   shapes raise `malformed_stream`); the Databricks adapter reuses the
-  OpenAI-compatible request while preserving `databricks` failure attribution; each lane
+  OpenAI-compatible request while preserving `databricks` failure attribution; its
+  pre-stream retry schedules (a connection failure twice after one and three seconds, a
+  rate limit three times after five, fifteen and thirty seconds, none on the direct OpenAI
+  client), a real SDK rate-limit error waiting what its `Retry-After` header asks in place of
+  a schedule it could not outlast, `_retry_after_seconds` reading delta-seconds, a fraction,
+  a negative value as zero, a past and a future HTTP date, and nothing from an unreadable
+  header, no header or no response, and a wait past the turn's deadline, from the schedule
+  or from the header, not taken: the call fails at once, after one request, with the
+  sanitized `databricks provider rate_limit failure` message; each lane
   sends its projection: Anthropic and OpenAI the canonical schema itself for every
   non-strict tool (the operation union with each branch's required fields), strict
   exactly for the six closed tools that do not change the project (the five read tools
@@ -2715,7 +2741,9 @@ fixture for route tests). The implemented coverage is:
   configuration is withheld below `restricted` and mentions the redaction of code only
   when the config part is readable, and states aggregate data statistics in one line,
   permitted, or not permitted with no data check run and schemas proved;
-  tool round-trip; tool error fed back; cap and timeout terminal events; completed/failed
+  tool round-trip; tool error fed back; cap and timeout terminal events; each step of a
+  provider stream seeing the turn's deadline and nothing outside a turn seeing one;
+  completed/failed
   exactly-one-terminal checks; cancellation drains an in-flight tool, closes the provider
   stream, and releases the session lock; closing at each tool lifecycle yield never
   persists an unmatched call; a raising history append still releases the lock;

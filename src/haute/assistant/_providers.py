@@ -12,9 +12,15 @@ import asyncio
 import copy
 import json
 import math
+import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from inspect import isawaitable
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeAlias
 
 from haute._env import int_env
@@ -117,10 +123,57 @@ def _provider_error(provider: str, failure_class: str, detail: str) -> Assistant
     return AssistantProviderError(provider, failure_class, detail)
 
 
-#: Failure categories a request raised before any response stream exists may
-#: retry: none produced partial output, so resending cannot duplicate text or
-#: tool calls.
-_PRE_STREAM_RETRYABLE_CATEGORIES = frozenset({"rate_limit", "connection"})
+#: The running turn's deadline, as ``time.monotonic()``: the loop sets it while
+#: each step of a provider stream runs, so an adapter's pre-stream retry never
+#: waits past it. ``None`` outside a turn.
+_TURN_DEADLINE: ContextVar[float | None] = ContextVar("assistant_turn_deadline", default=None)
+
+
+@contextmanager
+def turn_deadline(deadline: float) -> Iterator[None]:
+    """Make *deadline* the turn deadline of the provider stream steps run inside.
+
+    The loop enters it around each ``anext`` of a provider stream and never
+    across a ``yield``, so the variable is set and reset in one context.
+    """
+
+    token = _TURN_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _TURN_DEADLINE.reset(token)
+
+
+def current_turn_deadline() -> float | None:
+    """The running turn's deadline while a provider stream step runs, else ``None``."""
+
+    return _TURN_DEADLINE.get()
+
+
+def _retry_after_seconds(error: Exception) -> float | None:
+    """The wait a failed request's ``Retry-After`` response header asks for, in seconds.
+
+    The OpenAI SDK's status errors carry the HTTP response. The header is
+    delta-seconds or an HTTP date; ``None`` when the error has no response,
+    the response no such header, or the header neither form.
+    """
+
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    raw = None if headers is None else headers.get("retry-after")
+    if not isinstance(raw, str):
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            return None
+        seconds = (when - datetime.now(UTC)).total_seconds()
+    return max(seconds, 0.0) if math.isfinite(seconds) else None
+
 
 #: Connect bound for OpenAI-compatible clients. The SDK default (five seconds)
 #: timed out live against a Databricks serving endpoint's cold connection.
@@ -1476,9 +1529,11 @@ class OpenAIProvider:
     """
 
     provider_name = "openai"
-    #: Adapter-level pre-stream retry delays. Empty here: the direct OpenAI
-    #: client keeps the SDK's own bounded request retries instead.
-    pre_stream_retry_delays: tuple[float, ...] = ()
+    #: Adapter-level pre-stream retry delays by failure category: a request
+    #: that failed before any response stream existed produced no partial
+    #: output, so resending it cannot duplicate text or tool calls. Empty here:
+    #: the direct OpenAI client keeps the SDK's own bounded request retries.
+    pre_stream_retry_delays: Mapping[str, tuple[float, ...]] = MappingProxyType({})
     #: The lane's projection of the tool schemas, and whose strict rules its
     #: strict tools follow (None: no tool is sent strict).
     tool_projection: ToolProjection = "canonical"
@@ -1509,28 +1564,44 @@ class OpenAIProvider:
         return dict(_without_strict_nulls(arguments, input_schemas[name]))
 
     async def _create_stream(self, request: Mapping[str, Any]) -> Any:
-        """Open the response stream, retrying only failures raised before it exists."""
+        """Open the response stream, retrying only failures raised before it exists.
 
-        delays = self.pre_stream_retry_delays
-        for retry_index in range(len(delays) + 1):
+        A category retries at most as many times as its schedule has delays,
+        waiting each delay in turn; a rate limit whose error carries a
+        ``Retry-After`` header waits what the header asks instead. A wait that
+        would end at or after the turn's deadline is not taken: the failure
+        is raised at once, so the turn fails with the provider failure rather
+        than its time limit.
+        """
+
+        retries: dict[str, int] = {}
+        while True:
             try:
                 return await self.client.chat.completions.create(**request)
             except Exception as exc:
                 category = _failure_category(exc)
-                if retry_index >= len(delays) or category not in _PRE_STREAM_RETRYABLE_CATEGORIES:
+                delays = self.pre_stream_retry_delays.get(category, ())
+                retry_index = retries.get(category, 0)
+                if retry_index >= len(delays):
                     raise
-                delay = delays[retry_index]
-                logger.warning(
-                    "assistant_provider_request_retry",
-                    provider=self.provider_name,
-                    failure_class=category,
-                    error_class=type(exc).__name__,
-                    retry=retry_index + 1,
-                    max_retries=len(delays),
-                    delay_seconds=delay,
-                )
+                retry_after = _retry_after_seconds(exc) if category == "rate_limit" else None
+                delay = delays[retry_index] if retry_after is None else retry_after
+                details = {
+                    "provider": self.provider_name,
+                    "failure_class": category,
+                    "error_class": type(exc).__name__,
+                    "retry": retry_index + 1,
+                    "max_retries": len(delays),
+                    "delay_seconds": delay,
+                    "delay_source": "schedule" if retry_after is None else "retry_after",
+                }
+                deadline = _TURN_DEADLINE.get()
+                if deadline is not None and time.monotonic() + delay >= deadline:
+                    logger.warning("assistant_provider_request_retry_past_deadline", **details)
+                    raise
+                retries[category] = retry_index + 1
+                logger.warning("assistant_provider_request_retry", **details)
                 await asyncio.sleep(delay)
-        raise AssertionError("unreachable provider retry state")
 
     async def stream_turn(
         self,
@@ -1753,7 +1824,11 @@ class DatabricksProvider(OpenAIProvider):
     """
 
     provider_name = "databricks"
-    pre_stream_retry_delays = (1.0, 3.0)
+    #: A connection failure retries twice, quickly; a rate limit (a workspace's
+    #: tokens-per-minute limit among them) waits longer, three times.
+    pre_stream_retry_delays = MappingProxyType(
+        {"connection": (1.0, 3.0), "rate_limit": (5.0, 15.0, 30.0)}
+    )
     strict_dialect = None
 
     def __init__(

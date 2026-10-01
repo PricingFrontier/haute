@@ -2023,7 +2023,13 @@ Loud, typed, and never averaged away:
   name and failure class but never the raw provider response body. Databricks owns a
   documented, bounded retry for a rate-limit, connection, or timeout exception raised before
   a response stream exists: such a failure produced no partial output, so it is safe to send
-  again. It makes two retries on the same model and endpoint, after one and three seconds.
+  again on the same model and endpoint. A connection or timeout failure retries twice, after
+  one and three seconds. A rate limit needs longer (two live evaluations run in parallel
+  exhausted a workspace's input tokens-per-minute limit, which one and three seconds did not
+  outlast): it retries three times, after five, fifteen and thirty seconds, or after the wait
+  the error's `Retry-After` response header asks for when it carries one. No wait runs past
+  the turn's deadline: a retry whose wait would end at or after it is not taken, and the turn
+  fails at once with the existing rate-limit (or connection) failure, never its time limit.
   Its SDK-level retries are disabled so this is one observable bound, not a nested retry
   cascade. The direct OpenAI and Anthropic adapters keep their SDKs' own bounded request
   retries (two), which already cover the same pre-stream connection and timeout failures,
