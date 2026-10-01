@@ -334,7 +334,8 @@ names the changed files.
 
 **Undo and Compare.** The analyst can undo an assistant change from its card with one
 click, and compare the pipeline before it with the current one. Undo
-(`POST /api/assistant/changes/undo` with `session_id` and `change_id`) reads the graph at
+(`POST /api/assistant/changes/undo` with `session_id`, `change_id` and the canvas
+`source_file`, bound like every assistant request) reads the graph at
 the change's parent commit (the read-only historical parse the comparison view uses) and
 saves it through the same transactional save service as a forward save, whose Git commit
 message is `Undo: ` and the change's headline. The save restores the parent's files byte
