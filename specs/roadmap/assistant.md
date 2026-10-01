@@ -109,7 +109,9 @@ values; latency is recorded on 100k, 1M and 5M rows.
 **Dependencies:** `ASSIST-40`.
 
 **Evidence:** `src/haute/_rating.py::banding_rule_claim_expr`;
-`src/haute/assistant/_application.py::build_verified_plan`.
+`src/haute/assistant/_application.py::build_verified_plan`;
+`src/haute/_interactive_workers.py::InteractiveWorkerPool`;
+`src/haute/_graph_walker.py::CollectPolicy`.
 
 ### ASSIST-42 — Inspect a saved node's data
 **Why:** "Why is `total_incurred` null for some quotes?" can only be answered
