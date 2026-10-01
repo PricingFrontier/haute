@@ -58,7 +58,7 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def configured(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (project_root / "haute.toml").write_text(
-        '[assistant]\nprovider = "anthropic"\nmodel = "test-model"\n'
+        '[assistant]\nprovider = "anthropic"\nmodel = "claude-opus-5-5"\n'
         '[assistant.egress]\ntrust = "external"\nmax_sensitivity = "public"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
         "allow_row_samples = false\n",
@@ -133,7 +133,7 @@ class TestStatus:
         body = client.get("/api/assistant/status").json()
         assert body["configured"] is True
         assert body["reason"] is None
-        assert (body["provider"], body["model"]) == ("anthropic", "test-model")
+        assert (body["provider"], body["model"]) == ("anthropic", "claude-opus-5-5")
         # tmp project has no recorded git working branch -> mutations disabled
         assert body["mutations_enabled"] is False
         assert body["mutations_reason"]
@@ -506,7 +506,7 @@ class TestMessageTurn:
         (configured / "other.py").write_text(_OTHER_PIPELINE, encoding="utf-8")
         executor_sources: list[str] = []
 
-        def build_executor(source_file, *, session_id, prior_messages):
+        def build_executor(source_file, *, session_id, evidence):
             executor_sources.append(source_file)
 
             async def execute_tool(_name, _arguments):
@@ -637,6 +637,29 @@ class TestRouteEdges:
         assert response.status_code == 400
         assert "config" in response.json()["detail"].lower()
 
+    def test_a_claude_model_without_adaptive_thinking_is_a_400_before_the_stream(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+    ):
+        toml = configured / "haute.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace("claude-opus-5-5", "claude-haiku-4-5"),
+            encoding="utf-8",
+        )
+        session_id = client.post("/api/assistant/session", json=_CANVAS).json()["session_id"]
+
+        response = client.post("/api/assistant/message", json=_message(session_id))
+
+        assert response.status_code == 400
+        assert (
+            "Anthropic model 'claude-haiku-4-5' is not one Haute runs"
+            in (response.json()["detail"])
+        )
+        session = store.lookup(session_id)
+        assert session is not None and not session.lock.locked()
+
 
 class TestProviderFactory:
     def test_builds_each_configured_adapter(self):
@@ -657,7 +680,7 @@ class TestProviderFactory:
         )
         anthropic_config = AssistantConfig(
             provider="anthropic",
-            model="m",
+            model="claude-opus-5-5",
             base_url=None,
             api_key="k",
             max_output_tokens=8192,
@@ -748,7 +771,7 @@ class TestTurnReservation:
         session = store.lookup(session_id)
         assert session is not None and not session.lock.locked()
 
-    async def test_tool_executor_receives_exact_provider_history_window(
+    async def test_tool_executor_receives_the_session_s_evidence_ledger(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.routes.assistant as assistant_routes
@@ -765,15 +788,14 @@ class TestTurnReservation:
                 {"role": "assistant", "content": "done"},
             ],
         )
-        expected_history = store.history_window(session)
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, prior_messages):
+        def build_executor(source_file, *, session_id, evidence):
             captured.update(
                 {
                     "source_file": source_file,
                     "session_id": session_id,
-                    "prior_messages": prior_messages,
+                    "evidence": evidence,
                 }
             )
 
@@ -802,8 +824,9 @@ class TestTurnReservation:
         assert captured == {
             "source_file": "main.py",
             "session_id": session.id,
-            "prior_messages": expected_history,
+            "evidence": session.evidence,
         }
+        assert captured["evidence"] is session.evidence
 
     async def test_a_reply_to_a_question_sends_only_the_rendered_turn_context(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
@@ -828,12 +851,12 @@ class TestTurnReservation:
         )
         captured: dict[str, object] = {}
 
-        def build_executor(source_file, *, session_id, prior_messages):
+        def build_executor(source_file, *, session_id, evidence):
             captured.update(
                 {
                     "source_file": source_file,
                     "session_id": session_id,
-                    "prior_messages": prior_messages,
+                    "evidence": evidence,
                 }
             )
 
@@ -861,7 +884,7 @@ class TestTurnReservation:
         chunks = [chunk async for chunk in response.body_iterator]
 
         assert any("completed" in chunk for chunk in chunks)
-        assert set(captured) == {"source_file", "session_id", "prior_messages"}
+        assert set(captured) == {"source_file", "session_id", "evidence"}
         assert len(provider.calls) == 1
         context = provider.calls[0]["messages"][-1]
         assert context["role"] == "context"
@@ -916,7 +939,7 @@ class TestTurnReservation:
         assert session is not None
         assert not session.lock.locked(), "a pre-stream failure must not leak the reservation"
 
-    async def test_history_evidence_failure_releases_the_turn_reservation(
+    async def test_an_executor_build_failure_releases_the_turn_reservation(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.routes.assistant as assistant_routes
@@ -926,10 +949,10 @@ class TestTurnReservation:
         monkeypatch.setattr(assistant_routes, "session_store", store)
         session = store.create("main.py")
 
-        def reject_history(*args, **kwargs):
+        def reject_executor(*args, **kwargs):
             raise ValueError("invalid project evidence")
 
-        monkeypatch.setattr(assistant_routes, "build_tool_executor", reject_history)
+        monkeypatch.setattr(assistant_routes, "build_tool_executor", reject_executor)
 
         with pytest.raises(ValueError, match="invalid project evidence"):
             await assistant_routes.post_assistant_message(
@@ -969,7 +992,7 @@ pipeline.connect("quotes", "adults")
 
 def _egress_toml(*, max_sensitivity: str, allow_row_samples: bool) -> str:
     return (
-        '[assistant]\nprovider = "anthropic"\nmodel = "test-model"\n'
+        '[assistant]\nprovider = "anthropic"\nmodel = "claude-opus-5-5"\n'
         '[assistant.egress]\ntrust = "organization"\n'
         f'max_sensitivity = "{max_sensitivity}"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"

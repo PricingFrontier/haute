@@ -25,7 +25,9 @@ from haute.assistant._config import DEFAULT_TURN_TIMEOUT, TURN_TIMEOUT_ENV
 from haute.assistant._providers import (
     AssistantProvider,
     AssistantProviderError,
+    ReplayContent,
     TextDelta,
+    ThinkingStarted,
     ToolCallRequest,
     TurnStop,
 )
@@ -38,6 +40,7 @@ from haute.schemas import (
     AssistantFailedEvent,
     AssistantStreamEvent,
     AssistantTextDeltaEvent,
+    AssistantThinkingEvent,
     AssistantToolFinishedEvent,
     AssistantToolStartedEvent,
     AssistantTurnOutcome,
@@ -603,9 +606,17 @@ def _attempted(call: ToolCallRequest, error: Mapping[str, Any]) -> object:
 
 
 def _assistant_message(
-    text_parts: list[str], tool_calls: list[ToolCallRequest]
+    text_parts: list[str],
+    tool_calls: list[ToolCallRequest],
+    replay: tuple[Mapping[str, Any], ...] | None = None,
 ) -> dict[str, Any] | None:
-    if not text_parts and not tool_calls:
+    """One round's assistant message; *replay* goes only into the turn's own later rounds.
+
+    The provider that emitted *replay* receives those blocks back verbatim as
+    `provider_content`, so a message holding only thinking still returns.
+    """
+
+    if not text_parts and not tool_calls and replay is None:
         return None
     message: dict[str, Any] = {
         "role": "assistant",
@@ -616,6 +627,8 @@ def _assistant_message(
             {"id": call.id, "name": call.name, "arguments": dict(call.arguments)}
             for call in tool_calls
         ]
+    if replay is not None:
+        message["provider_content"] = [dict(block) for block in replay]
     return message
 
 
@@ -780,6 +793,11 @@ async def run_turn(
     round whose applies saved changes; it becomes a ``context`` message after
     that round's tool results, likewise never stored. A successful apply does
     not end the turn.
+
+    Earlier turns reach the provider as the store's compacted history
+    (:meth:`SessionStore.provider_history`); this turn's rounds follow it
+    verbatim. A round's ``ReplayContent`` rides on its assistant message into
+    this turn's later rounds only, never into the stored turn.
     """
 
     if reservation is None:
@@ -794,7 +812,7 @@ async def run_turn(
     provider_tools = _provider_tools(tools)
     user_message: dict[str, Any] = {"role": "user", "content": user_text}
     request_messages: list[Mapping[str, Any]] = [
-        *store.history_window(session),
+        *store.provider_history(session),
         user_message,
     ]
     if turn_context:
@@ -829,6 +847,7 @@ async def run_turn(
                 round_results = []
                 round_committed = False
                 round_changes: list[AssistantChangeRecord] = []
+                round_replay: tuple[Mapping[str, Any], ...] | None = None
                 stop: TurnStop | None = None
                 # The stream is owned so the outer finally can aclose() it:
                 # an abnormal turn exit must shut the provider's SDK stream
@@ -842,6 +861,12 @@ async def run_turn(
                     if isinstance(event, TextDelta):
                         round_text.append(event.text)
                         yield AssistantTextDeltaEvent(text=event.text)
+                    elif isinstance(event, ThinkingStarted):
+                        yield AssistantThinkingEvent()
+                    elif isinstance(event, ReplayContent):
+                        if round_replay is not None:
+                            raise RuntimeError("a provider round replays its content once")
+                        round_replay = event.blocks
                     elif isinstance(event, ToolCallRequest):
                         if committed_unverified_detail is not None:
                             logger.warning(
@@ -964,7 +989,7 @@ async def run_turn(
                             [
                                 message
                                 for message in (
-                                    _assistant_message(round_text, round_calls),
+                                    _assistant_message(round_text, round_calls, round_replay),
                                     *round_results,
                                 )
                                 if message is not None
@@ -1012,7 +1037,7 @@ async def run_turn(
                     [
                         message
                         for message in (
-                            _assistant_message(round_text, round_calls),
+                            _assistant_message(round_text, round_calls, round_replay),
                             *round_results,
                         )
                         if message is not None

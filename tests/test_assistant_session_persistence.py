@@ -621,9 +621,64 @@ class TestBounds:
 
         assert revived is not None
         tool_message = next(
-            message for message in restarted.history_window(revived) if message["role"] == "tool"
+            message for message in revived.history[0].messages if message.role == "tool"
         )
-        assert tool_message["is_error"] is True
+        assert tool_message.as_dict()["is_error"] is True
+
+    def test_a_revived_chat_compacts_to_the_same_records_with_an_empty_ledger(self, tmp_path: Path):
+        """Records read only what persistence keeps: the request and final text,
+        the outcome and each saved change record. The ledger is never stored."""
+
+        from haute.assistant._ops import ProjectSourceEvidence
+
+        change = {
+            "id": "a" * 64,
+            "summary": "Add an age band after quotes.",
+            "changes": {"nodes": [{"id": "age_band", "type": "Banding", "change": "added"}]},
+            "git_sha": None,
+            "parent_sha": None,
+            "revision": "e" * 16,
+        }
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        session.evidence.observe(
+            ("schema", "data/quotes.parquet"),
+            ProjectSourceEvidence(path=tmp_path / "quotes.parquet", digest="f" * 64, kind="schema"),
+        )
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "Add an age band."},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "name": "apply_graph_plan", "arguments": {}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "c1",
+                        "name": "apply_graph_plan",
+                        "content": {"applied_operations": 2, "change": change},
+                        "is_error": False,
+                    },
+                    {"role": "assistant", "content": "Saved the band."},
+                ],
+                "outcome": {"kind": "applied", "detail": None, "changes": ["a" * 64]},
+                "undone": [],
+            },
+        )
+        live = store.provider_history(session)
+
+        restarted = _store(tmp_path)
+        revived = restarted.lookup(session.id)
+
+        assert revived is not None
+        assert restarted.provider_history(revived) == live
+        assert f"- Saved `{'a' * 64}` at revision `{'e' * 16}`" in str(live[1]["content"])
+        assert "redacted" not in json.dumps(live)
+        assert revived.evidence.sources() == ()
+        assert "evidence" not in revived.as_dict()
 
 
 class TestDegradation:

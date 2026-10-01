@@ -2,7 +2,8 @@
 
 The snapshot is the session-stable system prompt for one fixed source file,
 the turn context of two turns of that project rendered from fixed data, the
-turn context update after an apply in the second turn, the canonical tool
+turn context update after an apply in the second turn, the compacted history
+of fixed earlier turns, the canonical tool
 definitions, and each provider adapter's wire projection of
 them, plus a sha256 of each rendered file. The system prompt is rendered once
 per turn and must come out identical, so the snapshot shows one prefix for
@@ -36,7 +37,10 @@ from haute.assistant._render import (
     StepsProblem,
     StepSummary,
     TurnContext,
+    render_turn_record,
 )
+from haute.assistant._session import AssistantTurn, SessionStore
+from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_ROOT = PROJECT_ROOT / "tests" / "assistant_eval" / "golden"
@@ -147,6 +151,98 @@ GOLDEN_UPDATE = ContextUpdate(
         truncated=False,
     ),
 )
+
+
+def _golden_change(number: int, summary: str, node: str) -> dict[str, object]:
+    return {
+        "id": f"<change-{number}>",
+        "summary": summary,
+        "changes": {"nodes": [{"id": node, "type": "Banding", "change": "added"}]},
+        "git_sha": None,
+        "parent_sha": None,
+        "revision": f"<document-revision-{number}>",
+    }
+
+
+def _golden_apply_round(call_id: str, change: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": call_id, "name": "apply_graph_plan", "arguments": {}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": "apply_graph_plan",
+            "content": {"applied_operations": 2, "change": change},
+            "is_error": False,
+        },
+    ]
+
+
+def _golden_history_turns() -> list[AssistantTurn]:
+    """Three earlier turns: the first is left out, the other two become records."""
+
+    quotes = _golden_change(0, "Load data/quotes.parquet as quotes.", "quotes")
+    age = _golden_change(1, "Band driver_age into four age bands after quotes.", "age_band")
+    vehicle = _golden_change(2, "Group vehicle_group into three vehicle bands.", "vehicle_band")
+    question = "Which rating table should rate the age band?"
+    return [
+        AssistantTurn.from_messages(
+            [
+                {"role": "user", "content": "Load the quotes file."},
+                *_golden_apply_round("apply-0", quotes),
+                {"role": "assistant", "content": "Added the quotes input."},
+            ],
+            outcome=AssistantTurnOutcome(kind="applied", detail=None, changes=["<change-0>"]),
+        ),
+        AssistantTurn.from_messages(
+            [
+                {
+                    "role": "user",
+                    "content": "Add an age band after quotes, then a vehicle group band.",
+                },
+                *_golden_apply_round("apply-1", age),
+                *_golden_apply_round("apply-2", vehicle),
+                {"role": "assistant", "content": "Saved both bands."},
+            ],
+            outcome=AssistantTurnOutcome(
+                kind="applied", detail=None, changes=["<change-1>", "<change-2>"]
+            ),
+            undone=[AssistantChangeRecord.model_validate(vehicle)],
+        ),
+        AssistantTurn.from_messages(
+            [
+                {"role": "user", "content": "Rate the age band."},
+                {"role": "assistant", "content": f"NEEDS_INPUT: {question}"},
+            ],
+            outcome=AssistantTurnOutcome(kind="needs_input", detail=question, changes=[]),
+        ),
+    ]
+
+
+def render_golden_history() -> str:
+    """The provider history the fourth turn of a chat receives, one message per section.
+
+    The budget fits exactly the two newest records, so the oldest turn is left
+    out and the omission note leads.
+    """
+
+    turns = _golden_history_turns()
+    budget = sum(
+        len(turn.record().request) + len(render_turn_record(turn.record())) for turn in turns[1:]
+    )
+    store = SessionStore(max_provider_history_chars=budget)
+    session = store.create(GOLDEN_SOURCE_FILE)
+    for turn in turns:
+        store.append(session, turn)
+    return "\n\n".join(
+        f"----- {message['role']} -----\n{message['content']}"
+        for message in store.provider_history(session)
+    )
+
+
 HAUTE_VERSION_PLACEHOLDER = "<haute-version>"
 CAPABILITY_HASH_PLACEHOLDER = "<capability-hash>"
 
@@ -194,6 +290,7 @@ def render_golden() -> dict[str, str]:
             for number, context in enumerate(GOLDEN_TURNS, start=1)
         },
         "context_update.md": render_context_update(GOLDEN_UPDATE) + "\n",
+        "turn_records.md": render_golden_history() + "\n",
         "tools_canonical.json": _json_text(TOOL_DEFINITIONS),
         "tools_anthropic.json": _json_text(portable),
         "tools_openai.json": _json_text(_openai_tools(portable)),

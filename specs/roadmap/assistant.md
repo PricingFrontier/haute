@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-37 | Planned | P2 | Context stays short on mid-tier models; strong models get caching and thinking. |
 | ASSIST-38 | Planned | P3 | Each provider gets the tool-schema shape it handles best. |
 | ASSIST-39 | Planned | P3 | A multi-stage build shows a checklist of its stages. |
 | ASSIST-40 | Planned | P1 | Data checks have a specified execution contract and their own egress permission. |
@@ -90,26 +89,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-37 — History compaction, prompt caching and thinking
-**Why:** A message-count window discards context without regard to tokens,
-the evidence ledger is tied to that window, and the Anthropic adapter uses no
-prompt caching, thinking or effort and drops thinking blocks.
-
-**Plan:** Keep an append-only history compacted at turn boundaries into turn
-records (request, final text, change cards, revisions, open questions), carry
-the evidence ledger in session state, and for Anthropic add a cache
-breakpoint on the stable prefix, adaptive thinking with progress updates,
-explicit effort, and thinking replay within a turn.
-
-**Acceptance:** A ten-turn replay keeps its change cards through compaction;
-a follow-up dry-run does not fail on stale evidence; adapter tests assert the
-cache breakpoint and a stable thinking prefix.
-
-**Dependencies:** `ASSIST-14`, `ASSIST-24`, `ASSIST-31`.
-
-**Evidence:** `src/haute/assistant/_session.py::history_window`;
-`src/haute/assistant/_providers.py::AnthropicProvider`.
 
 ### ASSIST-38 — Tool-schema projections per provider
 **Why:** Every provider receives one conservative projection that strips

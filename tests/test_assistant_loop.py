@@ -185,7 +185,7 @@ class TestTextOnlyTurn:
         assert roles[0] == "user"
         assert "assistant" in roles
 
-    async def test_windowed_history_reaches_provider_on_next_turn(self, store, session_id):
+    async def test_earlier_turns_reach_the_provider_as_records(self, store, session_id):
         provider = ScriptedProvider(
             [
                 [TextDelta("first"), TurnStop("end", _usage())],
@@ -195,10 +195,12 @@ class TestTextOnlyTurn:
         await _run(store, session_id, "one", provider=provider)
         await _run(store, session_id, "two", provider=provider)
 
-        second_call_messages = provider.calls[1]["messages"]
-        contents = [message.get("content") for message in second_call_messages]
-        assert "one" in contents, "prior turn's user message must be in the window"
-        assert "two" in contents, "current user message must be sent"
+        record, reply, current = provider.calls[1]["messages"]
+        assert record == {"role": "user", "content": "one"}
+        assert reply["role"] == "assistant"
+        assert reply["content"].startswith("first\n\n## Turn record\n")
+        assert "- Outcome: `answered`" in reply["content"]
+        assert current == {"role": "user", "content": "two"}
 
     async def test_turn_after_a_long_tool_turn_still_sees_the_original_request(
         self, store, session_id
@@ -229,12 +231,11 @@ class TestTextOnlyTurn:
         await _run(store, session_id, "Is that all?", provider=provider)
 
         follow_up = provider.calls[-1]["messages"]
+        assert [message["role"] for message in follow_up] == ["user", "assistant", "user"]
         assert follow_up[0] == {"role": "user", "content": "What does this pipeline do?"}
+        assert follow_up[1]["content"].startswith("It reads quotes.\n\n## Turn record\n")
         assert follow_up[-1] == {"role": "user", "content": "Is that all?"}
-        call_ids = [call["id"] for message in follow_up for call in message.get("tool_calls", ())]
-        result_ids = [message["tool_call_id"] for message in follow_up if message["role"] == "tool"]
-        assert call_ids and call_ids == result_ids
-        assert call_ids[-1] == "t20", "the newest rounds are the ones kept"
+        assert not any(message.get("tool_calls") for message in follow_up)
 
 
 class TestGraphPlanEvents:
@@ -2128,6 +2129,16 @@ def _turn(user: str, assistant: str) -> list[dict]:
     ]
 
 
+_CALL = {"id": "t1", "name": "get_pipeline", "arguments": {}}
+_RESULT = {
+    "role": "tool",
+    "tool_call_id": "t1",
+    "name": "get_pipeline",
+    "content": {"ok": True},
+    "is_error": False,
+}
+
+
 class TestSessionRetention:
     def test_stored_history_cap_evicts_whole_oldest_turns(self):
         store = SessionStore(max_stored_messages=6)
@@ -2140,94 +2151,89 @@ class TestSessionRetention:
         first_user = session.history[0].messages[0].content
         assert first_user == "u2", "oldest whole turns must be evicted first"
 
-    def test_provider_window_carries_newest_complete_turns_only(self):
-        store = SessionStore(max_provider_messages=4)
+    def test_a_record_holds_the_request_the_final_text_and_no_tool_traffic(self):
+        store = SessionStore()
+        session = store.create("main.py")
+        store.append(
+            session,
+            [
+                {"role": "user", "content": "request"},
+                {"role": "assistant", "content": "Let me look.", "tool_calls": [_CALL]},
+                _RESULT,
+                {"role": "controller", "content": "continue"},
+                {"role": "assistant", "content": "answer"},
+            ],
+        )
+
+        history = store.provider_history(session)
+
+        assert [message["role"] for message in history] == ["user", "assistant"]
+        assert history[0]["content"] == "request"
+        assert history[1]["content"].startswith("answer\n\n## Turn record\n")
+        assert "Let me look." not in history[1]["content"]
+        assert "continue" not in history[1]["content"]
+        assert "- Outcome: none: the turn failed or was stopped" in history[1]["content"]
+
+    def test_a_turn_ending_on_tool_calls_records_no_reply(self):
+        store = SessionStore()
+        session = store.create("main.py")
+        store.append(
+            session,
+            [
+                {"role": "user", "content": "request"},
+                {"role": "assistant", "content": "Looking.", "tool_calls": [_CALL]},
+                _RESULT,
+            ],
+        )
+
+        (_request, reply) = store.provider_history(session)
+
+        assert reply["content"].startswith("## Turn record\n")
+
+    def test_the_oldest_records_drop_whole_behind_a_note_saying_how_many(self):
+        probe = SessionStore()
+        sized = probe.create("main.py")
+        probe.append(sized, _turn("u0", "a0"))
+        record_size = sum(len(str(m["content"])) for m in probe.provider_history(sized))
+        store = SessionStore(max_provider_history_chars=2 * record_size)
         session = store.create("main.py")
         for index in range(4):
             store.append(session, _turn(f"u{index}", f"a{index}"))
-        window = store.history_window(session)
-        contents = [message["content"] for message in window]
-        assert contents == ["u2", "a2", "u3", "a3"]
 
-    def test_oversized_newest_turn_drops_its_oldest_rounds_whole(self):
-        store = SessionStore(max_provider_messages=7)
-        session = store.create("main.py")
-        store.append(session, _turn("older", "older answer"))
-        rounds: list[dict] = []
-        for index in range(4):
-            rounds.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {"id": f"a{index}", "name": "get_pipeline", "arguments": {}},
-                        {"id": f"b{index}", "name": "get_pipeline", "arguments": {}},
-                    ],
-                }
-            )
-            for call_id in (f"a{index}", f"b{index}"):
-                rounds.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": "get_pipeline",
-                        "content": {"ok": True},
-                        "is_error": False,
-                    }
-                )
-        store.append(
-            session,
-            [
-                {"role": "user", "content": "request"},
-                *rounds,
-                {"role": "controller", "content": "continue"},
-                {"role": "assistant", "content": "answer"},
-            ],
-        )
+        history = store.provider_history(session)
 
-        window = store.history_window(session)
-
-        # 1 user + 4 rounds of 3 + controller + answer = 15 > 7: the three
-        # oldest rounds go whole, the newest round and the fixed messages stay.
-        assert [message["role"] for message in window] == [
+        assert [message["role"] for message in history] == [
+            "controller",
             "user",
             "assistant",
-            "tool",
-            "tool",
-            "controller",
+            "user",
             "assistant",
         ]
-        assert window[0]["content"] == "request"
-        assert [call["id"] for call in window[1]["tool_calls"]] == ["a3", "b3"]
-        assert [message["tool_call_id"] for message in window[2:4]] == ["a3", "b3"]
+        assert history[0]["content"].startswith("## Earlier turns left out\n")
+        assert "the 2 earliest turns of this chat" in history[0]["content"]
+        assert [history[1]["content"], history[3]["content"]] == ["u2", "u3"]
+        assert history[2]["content"].startswith("a2\n\n")
 
-    def test_newest_turn_keeps_its_request_when_no_round_fits(self):
-        store = SessionStore(max_provider_messages=2)
+    def test_a_record_larger_than_the_budget_leaves_only_the_note(self):
+        store = SessionStore(max_provider_history_chars=10)
         session = store.create("main.py")
-        store.append(
-            session,
-            [
-                {"role": "user", "content": "request"},
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{"id": "t1", "name": "get_pipeline", "arguments": {}}],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "t1",
-                    "name": "get_pipeline",
-                    "content": {"ok": True},
-                    "is_error": False,
-                },
-                {"role": "controller", "content": "continue"},
-                {"role": "assistant", "content": "answer"},
-            ],
-        )
+        store.append(session, _turn("a request longer than ten characters", "answer"))
 
-        window = store.history_window(session)
+        history = store.provider_history(session)
 
-        assert [message["content"] for message in window] == ["request", "continue", "answer"]
+        assert history == [
+            {
+                "role": "controller",
+                "content": history[0]["content"],
+            }
+        ]
+        assert "the earliest turn of this chat" in history[0]["content"]
+
+    def test_a_session_without_turns_has_no_history(self):
+        store = SessionStore()
+        session = store.create("main.py")
+
+        assert store.provider_history(session) == []
 
     def test_lru_evicts_idle_session_and_evicted_id_is_unknown(self):
         store = SessionStore(max_live_sessions=2)
@@ -2288,6 +2294,125 @@ class TestSessionRetention:
         reservation.release()
         assert busy.id in store
         assert idle.id not in store
+
+
+def _change(number: int) -> dict[str, Any]:
+    return {
+        **_APPLIED["change"],
+        "id": f"{number:064x}",
+        "summary": f"Add band {number} after quotes.",
+        "revision": f"rev{number}",
+    }
+
+
+class TestCompactedHistory:
+    async def test_a_ten_turn_conversation_keeps_every_change_card_through_compaction(
+        self, store, session_id
+    ):
+        """Each turn dry-runs and applies one plan: six stored messages a turn,
+        so the tenth turn's history would not fit a forty-message window, yet its
+        records name all nine earlier change cards and carry no tool traffic."""
+
+        rounds: list[list[object]] = []
+        for number in range(10):
+            rounds += [
+                [
+                    ToolCallRequest(f"dry-{number}", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [
+                    ToolCallRequest(f"apply-{number}", "apply_graph_plan", {"plan_hash": "p"}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [TextDelta(f"Saved band {number}."), TurnStop("end", _usage())],
+            ]
+        provider = ScriptedProvider(rounds)
+        applied = iter(range(10))
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "dry_run_graph_edits":
+                return {"plan_hash": "p", "operations": 1}
+            return {**_APPLIED, "change": _change(next(applied))}
+
+        for number in range(10):
+            events = await _run(
+                store,
+                session_id,
+                f"Add band {number}.",
+                provider=provider,
+                execute_tool=execute_tool,
+            )
+            assert _assert_single_terminal(events).outcome.kind == "applied"
+
+        tenth = provider.calls[-3]["messages"]
+        assert tenth[-1] == {"role": "user", "content": "Add band 9."}
+        history = tenth[:-1]
+        assert [message["role"] for message in history] == ["user", "assistant"] * 9
+        assert not any("tool_calls" in message or message["role"] == "tool" for message in tenth)
+        for number in range(9):
+            request, record = history[2 * number : 2 * number + 2]
+            assert request["content"] == f"Add band {number}."
+            change = _change(number)
+            assert record["content"].startswith(f"Saved band {number}.\n\n## Turn record\n")
+            assert (
+                f"- Saved `{change['id']}` at revision `{change['revision']}`: "
+                f'"{change["summary"]}"'
+            ) in record["content"]
+        session = store.lookup(session_id)
+        assert session is not None
+        assert [change.id for turn in session.history for change in turn.record().changes] == [
+            _change(number)["id"] for number in range(10)
+        ]
+
+    async def test_thinking_streams_a_status_and_its_replay_stays_within_the_turn(
+        self, store, session_id
+    ):
+        from haute.assistant._providers import ReplayContent, ThinkingStarted
+
+        blocks = (
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+            {"type": "tool_use", "id": "t1", "name": "get_pipeline", "input": {}},
+        )
+        provider = ScriptedProvider(
+            [
+                [
+                    ThinkingStarted(),
+                    ToolCallRequest("t1", "get_pipeline", {}),
+                    ReplayContent(blocks),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [TextDelta("It reads quotes."), TurnStop("end", _usage())],
+                [TextDelta("Yes."), TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"ok": True}
+
+        events = await _run(
+            store, session_id, "What reads quotes?", provider=provider, execute_tool=execute_tool
+        )
+        await _run(store, session_id, "Only that?", provider=provider)
+
+        assert [event.type for event in events][:2] == ["thinking", "tool_started"]
+        replayed = provider.calls[1]["messages"][1]
+        assert replayed["provider_content"] == list(blocks)
+        assert replayed["tool_calls"] == [{"id": "t1", "name": "get_pipeline", "arguments": {}}]
+        assert not any("provider_content" in message for message in provider.calls[2]["messages"])
+        session = store.lookup(session_id)
+        assert session is not None
+        assert "provider_content" not in str(session.as_dict())
+
+    async def test_a_second_replay_in_one_round_fails_the_turn(self, store, session_id):
+        from haute.assistant._providers import ReplayContent
+
+        provider = ScriptedProvider(
+            [[ReplayContent(()), ReplayContent(()), TurnStop("end", _usage())]]
+        )
+
+        events = await _run(store, session_id, "hi", provider=provider)
+
+        assert _assert_single_terminal(events).type == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -2373,11 +2498,9 @@ class TestSessionStoreMisuse:
         with pytest.raises(KeyError):
             store.append(foreign, _turn("u", "a"))
 
-    def test_history_window_rejects_negative_limits(self):
-        store = SessionStore()
-        session = store.create("a.py")
-        with pytest.raises(ValueError, match="non-negative"):
-            store.history_window(session, max_messages=-1)
+    def test_provider_history_budget_must_be_positive(self):
+        with pytest.raises(ValueError, match="max_provider_history_chars must be a positive"):
+            SessionStore(max_provider_history_chars=0)
 
     def test_store_limits_must_be_positive(self):
         with pytest.raises(ValueError, match="positive"):

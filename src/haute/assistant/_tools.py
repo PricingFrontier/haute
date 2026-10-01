@@ -83,6 +83,7 @@ from haute.assistant._ops import (
     PlanStore,
     ProjectSourceEvidence,
     RenameConsumersError,
+    SourceEvidenceLedger,
     build_project_snapshot,
     dataset_schema_digest,
 )
@@ -2602,7 +2603,7 @@ def _bounded_tool_result(
 
 
 def _observe_project_source_evidence(
-    observed: dict[tuple[str, str], ProjectSourceEvidence],
+    ledger: SourceEvidenceLedger,
     *,
     name: str,
     result: Mapping[str, object],
@@ -2616,21 +2617,18 @@ def _observe_project_source_evidence(
     """
 
     if name == "find_data":
-        vanished = [
-            key
-            for key, evidence in observed.items()
-            if evidence.kind == "schema" and not evidence.path.is_file()
-        ]
-        for key in vanished:
-            del observed[key]
+        ledger.drop_vanished_schemas()
         schema = result.get("schema")
         raw_path = schema.get("path") if isinstance(schema, Mapping) else None
         raw_digest = schema.get("source_digest") if isinstance(schema, Mapping) else None
         if isinstance(raw_path, str) and isinstance(raw_digest, str):
-            observed[("schema", raw_path)] = ProjectSourceEvidence(
-                path=contained_path(project_root, raw_path),
-                digest=raw_digest,
-                kind="schema",
+            ledger.observe(
+                ("schema", raw_path),
+                ProjectSourceEvidence(
+                    path=contained_path(project_root, raw_path),
+                    digest=raw_digest,
+                    kind="schema",
+                ),
             )
         return
 
@@ -2646,53 +2644,32 @@ def _observe_project_source_evidence(
             and isinstance(item.get("source_digest"), str)
         ):
             raw_source = item["source"]
-            observed[("content", raw_source)] = ProjectSourceEvidence(
-                path=contained_path(project_root, raw_source),
-                digest=item["source_digest"],
-                kind="content",
+            ledger.observe(
+                ("content", raw_source),
+                ProjectSourceEvidence(
+                    path=contained_path(project_root, raw_source),
+                    digest=item["source_digest"],
+                    kind="content",
+                ),
             )
-
-
-def _project_source_evidence_from_history(
-    messages: Sequence[Mapping[str, Any]],
-    *,
-    project_root: Path,
-) -> dict[tuple[str, str], ProjectSourceEvidence]:
-    """Recover evidence from the exact provider-visible history window."""
-
-    observed: dict[tuple[str, str], ProjectSourceEvidence] = {}
-    for message in messages:
-        if message.get("role") != "tool" or message.get("is_error") is True:
-            continue
-        name = message.get("name")
-        result = message.get("content")
-        if not isinstance(name, str) or not isinstance(result, Mapping) or "error" in result:
-            continue
-        _observe_project_source_evidence(
-            observed,
-            name=name,
-            result=result,
-            project_root=project_root,
-        )
-    return observed
 
 
 def build_tool_executor(
     source_file: str,
     *,
     session_id: str = "legacy",
-    prior_messages: Sequence[Mapping[str, Any]] = (),
+    evidence: SourceEvidenceLedger | None = None,
 ) -> Callable[[str, dict[str, Any]], Awaitable[Mapping[str, object]]]:
-    """Build the loop's non-raising, source-bound async tool dispatcher."""
+    """Build the loop's non-raising, source-bound async tool dispatcher for one turn.
+
+    *evidence* is the session's evidence ledger; building the executor starts a
+    turn on it, so what earlier turns observed is carried. An executor built
+    without one keeps a ledger of its own.
+    """
 
     project_root = Path.cwd().resolve()
-    observed_project_sources = _project_source_evidence_from_history(
-        prior_messages,
-        project_root=project_root,
-    )
-
-    def observed_sources() -> tuple[ProjectSourceEvidence, ...]:
-        return tuple(observed_project_sources[key] for key in sorted(observed_project_sources))
+    ledger = SourceEvidenceLedger() if evidence is None else evidence
+    ledger.begin_turn()
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         started = time.monotonic()
@@ -2762,6 +2739,16 @@ def build_tool_executor(
                 ),
             )
         if name == "dry_run_graph_edits":
+            # Evidence an earlier turn observed binds this plan only while it
+            # still holds; the model no longer sees the result it came from.
+            try:
+                released = await asyncio.to_thread(ledger.release_stale_carried, project_root)
+            except Exception as exc:  # noqa: BLE001 - executor must not raise
+                return _bounded_tool_result(
+                    name, _error("operation_failed", _error_message(exc, operation=name))
+                )
+            for kind, path in released:
+                logger.info("assistant_evidence_released", kind=kind, path=path)
             return _bounded_tool_result(
                 name,
                 await dry_run_graph_edits(
@@ -2770,7 +2757,7 @@ def build_tool_executor(
                     summary=arguments["summary"],
                     assumptions=arguments.get("assumptions", ()),
                     postconditions=arguments.get("postconditions", ()),
-                    project_sources=observed_sources(),
+                    project_sources=ledger.sources(),
                 ),
             )
         if name == "apply_graph_plan":
@@ -2834,7 +2821,7 @@ def build_tool_executor(
             result = dict(bounded)
             if "error" not in result:
                 _observe_project_source_evidence(
-                    observed_project_sources,
+                    ledger,
                     name=name,
                     result=result,
                     project_root=project_root,

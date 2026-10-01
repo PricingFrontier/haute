@@ -86,6 +86,11 @@ export interface AssistantStoreState {
   pipelineSource: string | null
   entries: TranscriptEntry[]
   turnStatus: "idle" | "streaming"
+  /**
+   * The model is thinking: set by a `thinking` event, cleared by any other
+   * event and when the turn ends. The panel shows a status, never the thinking.
+   */
+  thinking: boolean
   status: AssistantStatus | "unknown" | "error"
   /**
    * The detail of a status fetch refused with 400: a malformed `haute.toml` or
@@ -454,6 +459,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   pipelineSource: null,
   entries: [],
   turnStatus: "idle",
+  thinking: false,
   status: "unknown",
   statusErrorDetail: null,
   notice: null,
@@ -632,7 +638,13 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
             throw new Error("Assistant stream contract violation: received an event after a terminal event.")
           }
 
+          // Thinking lasts until the model's next text, tool or terminal event.
+          if ((event.type === "thinking") !== get().thinking) {
+            set({ thinking: event.type === "thinking" })
+          }
           switch (event.type) {
+            case "thinking":
+              break
             case "text_delta":
               set((state) => ({ entries: appendAssistantText(state.entries, event.text) }))
               break
@@ -676,7 +688,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     } finally {
       if (activeController === controller) {
         activeController = null
-        set({ turnStatus: "idle" })
+        set({ turnStatus: "idle", thinking: false })
         useUIStore.getState().endAssistantTurn()
         // The turn gave this conversation its first message, and therefore its
         // title and its place in the list. Refresh so going back shows it —

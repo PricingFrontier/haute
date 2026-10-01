@@ -412,7 +412,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         execute_tool = build_tool_executor(
             session.source_file,
             session_id=session.id,
-            prior_messages=session_store.history_window(session),
+            evidence=session.evidence,
         )
     except BaseException:
         # Pre-stream failure after the reservation: the turn will never run,

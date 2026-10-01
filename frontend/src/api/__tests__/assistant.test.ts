@@ -382,6 +382,14 @@ describe("streamAssistantMessage", () => {
     expect(events[3]).toEqual({ type: "change_applied", change: CHANGE })
   })
 
+  it("parses the field-less thinking status", async () => {
+    const events = await collectEvents([
+      'data: {"type":"thinking"}\n\n',
+      'data: {"type":"text_delta","text":"x"}\n\n',
+    ])
+    expect(events).toEqual([{ type: "thinking" }, { type: "text_delta", text: "x" }])
+  })
+
   it("ignores keep-alive and empty frames", async () => {
     const events = await collectEvents([
       ": ping\n\n",

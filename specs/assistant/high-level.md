@@ -115,8 +115,9 @@ offer is rejected before the candidate is promoted or touched in the live LRU,
 so asking to resume the wrong pipeline cannot evict a useful session. A *message* against an
 unknown session id still fails with 404 rather than silently creating a fresh one.
 Retention is bounded
-everywhere: the provider request carries a sliding window of recent turns (the system
-prompt carries only the compact manifest identity/index), stored history is capped per session, and
+everywhere: the provider request carries the current turn whole and compact records of
+earlier turns within a character budget (the system prompt carries only the compact
+manifest identity/index; see Conversation history), stored history is capped per session, and
 live sessions are LRU-capped — evicting an idle session drops only its in-memory record;
 its persisted file revives it on the next lookup, so eviction is invisible to the client.
 A session with a running turn is never evicted. Persisted files have their own cap:
@@ -189,8 +190,42 @@ never stored with the turn. Under a `public` policy it says only that the graph 
 revision are withheld. So a later stage of a multi-part request dry-runs from the columns
 the earlier stages produced without reading the graph.
 
+**Conversation history.** The session history is append-only: every turn is stored whole,
+with its tool calls and results, and the transcript and Undo read it. What the provider
+receives is a compacted view, built at the turn boundary. The current turn travels
+verbatim, round by round. Each earlier turn travels as one turn record, a pair of
+messages: the analyst's request, then the assistant's final text followed by a short
+record Haute wrote of how the turn ended (its outcome, with the controller's reason for an
+unfinished dry-run or the verification error of a committed save), the change cards it
+saved (id, summary and the document revision each save produced), the revision it ended
+on, and the changes the analyst undid after it. A question the turn ended on is its final
+text. Earlier turns' tool calls and results are not resent: the turn context describes the
+saved graph as the turn starts, and the model reads anything else again. The records are
+bounded by a character budget, not a message count. When they exceed it the oldest records
+are dropped whole, newest kept, and a leading Haute note says how many earlier turns were
+left out; a turn is never cut in the middle, and the current turn is never cut at all.
+Records are built from what a persisted turn keeps (its text, its outcome and its saved
+change records), so a chat revived after a restart compacts the same way. Mid-tier models
+get a short context that still names every change the conversation saved; thinking from
+earlier turns is never replayed, which is the compaction shape the providers' preserved
+thinking accepts.
+
+**Prompt caching and thinking on Claude models.** The Anthropic adapter marks the stable
+prefix, the tool definitions and the frozen system prompt, as one prompt-cache breakpoint,
+so every round of every turn of a session reads it from the cache; the turn context, the
+history and the current turn all follow the breakpoint. On the Claude models that support
+adaptive thinking it enables it with an explicit `medium` effort. Within a turn the
+thinking blocks of each assistant message are sent back unchanged, signatures and order
+included, in that message, so each round's request is the previous round's request with
+the new messages appended; compaction drops them at the turn boundary. While the model
+thinks, the panel shows a "Thinking…" status; the thinking itself never reaches the panel
+and is not stored with the turn. A Claude model outside the supported set is refused
+before the turn starts, naming the models Haute runs. The OpenAI and Databricks adapters
+get the compacted history and no caching or thinking changes.
+
 **Turns.** Posting a user message starts a turn, streamed back as typed server-sent events:
-assistant text deltas, tool-call started/finished activity (the tool's name, a plain-words
+assistant text deltas, a content-free thinking status while a Claude model thinks,
+tool-call started/finished activity (the tool's name, a plain-words
 title written beside the tool such as "Reading the pipeline", "Checking 3 changes" or
 "Applying 3 changes", and a compact argument and result summary), a change-applied event
 after each successful apply carrying its change card (see **Change cards**), and exactly
@@ -663,6 +698,19 @@ model; the error names the nodes the plan adds, by id and ref.
   invalid or wrong-type encoding is left unchanged for the canonical tool validator to
   reject as a structured, recoverable tool result; it is never guessed, repaired, or
   executed, and it does not terminate the provider stream.
+- **Turn records, not a message-count window.** A window of the newest messages drops
+  context without regard to its size: one tool-heavy turn pushes every earlier request out
+  while a schema result of thousands of tokens stays in. Compacting at the turn
+  boundary keeps what a later turn acts on (what was asked, what was said, what was saved
+  and how the turn ended) and drops what the turn context and a fresh read restate (earlier
+  tool calls and results). Replaying nothing of an earlier turn but its record is also the
+  one client-side compaction shape under which Claude's signed thinking stays valid.
+- **One explicit effort for Claude models.** `medium` is valid on every Claude model with
+  adaptive thinking, is Anthropic's recommended starting point for multistep tool use on
+  the current Opus and Sonnet models (and the current Opus's own default), and keeps
+  thinking within the default 8,192-token output budget per provider call, which a
+  `max_tokens` stop turns into a failed turn. It is fixed in code rather than configured:
+  there is no evaluation evidence yet for choosing another level per project.
 - **The same save path as the GUI, not a parallel mutation engine.** Haute's philosophy is
   a single execution engine and a single write path. Because every assistant mutation goes
   through the transactional save service, the assistant cannot produce any on-disk state the
@@ -851,18 +899,29 @@ future operation actually inspects them. The cache index itself and live
 browser state are excluded. Every saved-state read returns the revision it
 describes.
 
-Each turn's tool executor starts with the source/schema evidence present in
-the exact bounded history window sent to the provider, then adds evidence
-returned during the current turn. A follow-up turn therefore cannot form a
-replacement plan from a previously returned dataset schema or project fact
-while silently dropping that evidence from the plan revision.
-Restart-redacted tool payloads contain no reusable source detail and seed no
-evidence, matching what the provider can actually observe after restart.
-When the model inspects datasets again (any `find_data` call),
-dataset-schema evidence whose file no longer exists is dropped, so a dataset renamed
-after it was inspected blocks planning only until the model looks again. A missing or
-changed evidence file fails planning with `project_source_missing` or
-`stale_project_evidence` naming the project-relative file and the call that refreshes it.
+Each session keeps an evidence ledger in its live state: the exact source and
+schema facts its tool results returned in any of its turns (a `find_data`
+schema or a `get_project_knowledge` item, each a project-relative path and a
+digest). It is not read back from the provider history, which compaction no
+longer fills with earlier turns' tool results. Every dry-run includes the
+ledger's facts in the plan revision, so a plan formed after a fact was
+returned binds that fact, and an apply refuses the plan if the fact changed in
+between. A fact returned in the current turn that is missing or changed when a
+dry-run plans fails it with `project_source_missing` or
+`stale_project_evidence`, naming the project-relative file and the call that
+refreshes it: the model is reading that result now. A fact carried from an
+earlier turn that has since gone missing or changed is released from the
+ledger at the dry-run instead, and the dry-run proceeds. The model no longer
+sees that earlier tool result, and the dry-run resolves every schema afresh, so
+a plan built on outdated knowledge still fails on what the files hold now;
+failing every later plan on a fact the conversation has moved past would block
+it on a file the model may no longer use. A carried fact that still holds keeps
+binding plans. When the model inspects datasets again (any `find_data` call),
+dataset-schema evidence whose file no longer exists is dropped, so a dataset
+renamed after it was inspected in the current turn blocks planning only until
+the model looks again. The ledger is never persisted, because a digest of a
+schema payload is enumerable: a chat revived after a restart starts with an
+empty ledger, matching the redacted tool payloads it revives with.
 
 `dry_run_graph_edits` accepts the closed operation union (the primitive operations and
 one `recipe` branch per installed recipe), explicit
@@ -1163,6 +1222,10 @@ Loud, typed, and never averaged away:
   Databricks workspace host raises `ConfigError` or a not-ready reason before
   SDK probing/client construction. Error text names the configuration/environment
   field but never repeats a URL or credential-bearing value.
+- **A Claude model without adaptive thinking** — constructing the Anthropic adapter for a
+  model outside the supported set raises `ConfigError` naming the model and the supported
+  ones, so the message route answers 400 before the stream opens. The adapter never runs a
+  model with its thinking or effort silently dropped.
 - **Provider failures** (bad key, rate limit, overloaded, network, malformed stream) raise an
   assistant-specific `HauteError` subclass whose hand-authored message carries the provider
   name and failure class but never the raw provider response body. Databricks owns a

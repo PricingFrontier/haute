@@ -1258,8 +1258,14 @@ async def _run_turn(
         transcript.append({"request": turn.request, "events": events})
     started_at = time.monotonic()
     observed_provider = _ObservedProvider(provider, started_at, variant)
+    session = store.lookup(session_id)
+    if session is None:
+        raise RuntimeError("the evaluation session must stay live between its turns")
+    # The executor the message route builds: on the session's evidence ledger.
     observed_tools = _ObservedToolExecutor(
-        build_tool_executor(source_file, session_id=session_id), started_at, events
+        build_tool_executor(source_file, session_id=session_id, evidence=session.evidence),
+        started_at,
+        events,
     )
     text_parts: list[str] = []
     terminal: SelfTestTerminal = "failed"

@@ -31,7 +31,7 @@ from haute._polars_steps import (
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._config import EgressPolicy
-from haute.schemas import AssistantChangeRecord
+from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
 
 
 def _node_type(node: GraphNode) -> str:
@@ -596,6 +596,87 @@ def render_context_update(update: ContextUpdate) -> str:
     return "\n\n".join(sections)
 
 
+@dataclass(frozen=True, slots=True)
+class TurnRecord:
+    """An earlier turn as the provider sees it once the conversation is compacted.
+
+    `reply` is the turn's final assistant text, empty when its last assistant
+    message carried tool calls or no text; `outcome` is none for a failed or
+    cancelled turn; `changes` are the records of the changes its applies saved, in
+    order; `undone` the ids of the changes the analyst undid after it.
+    """
+
+    request: str
+    reply: str
+    outcome: AssistantTurnOutcome | None
+    changes: tuple[AssistantChangeRecord, ...]
+    undone: tuple[str, ...]
+
+
+# How each outcome reads in a turn record. `needs_input` and `blocked` carry their
+# detail in the reply itself; the other two kinds with a detail append it.
+_RECORD_OUTCOMES = {
+    "applied": "`applied`: it saved the changes below and finished",
+    "answered": "`answered`: it replied without saving a change",
+    "needs_input": "`needs_input`: it asked the analyst the question in its reply",
+    "blocked": "`blocked`: its reply names the blocker",
+    "incomplete": "`incomplete`",
+    "committed_unverified": (
+        "`committed_unverified`: its last save committed, but verification failed"
+    ),
+}
+
+
+def _one_line_quoted(text: str) -> str:
+    """Model-written text as one JSON-quoted line, whatever its length."""
+
+    return json.dumps(" ".join(text.split()), ensure_ascii=False)
+
+
+def render_turn_record(record: TurnRecord) -> str:
+    """Render the assistant half of an earlier turn's record: its reply, then Haute's record."""
+
+    outcome = record.outcome
+    if outcome is None:
+        outcome_line = "none: the turn failed or was stopped before it finished"
+    else:
+        outcome_line = _RECORD_OUTCOMES[outcome.kind]
+        if outcome.kind in {"incomplete", "committed_unverified"}:
+            assert outcome.detail is not None  # the outcome model requires one
+            outcome_line += f": {_one_line_quoted(outcome.detail)}"
+    lines = [
+        "## Turn record",
+        "Haute wrote this record when the turn ended; it is not part of the reply.",
+        f"- Outcome: {outcome_line}",
+        *(
+            f"- Saved `{change.id}` at revision `{change.revision}`: "
+            f"{_one_line_quoted(change.summary)}"
+            for change in record.changes
+        ),
+    ]
+    if record.changes:
+        lines.append(f"- Ended at revision `{record.changes[-1].revision}`")
+    lines.extend(
+        f"- Undone by the analyst after this turn: `{change_id}`" for change_id in record.undone
+    )
+    block = "\n".join(lines)
+    return f"{record.reply}\n\n{block}" if record.reply else block
+
+
+def render_omitted_turns(count: int) -> str:
+    """The note that leads a compacted history whose *count* oldest records were dropped."""
+
+    if count < 1:
+        raise ValueError("an omission note names at least one left-out turn")
+    turns = "earliest turn" if count == 1 else f"{count} earliest turns"
+    return (
+        "## Earlier turns left out\n"
+        f"Haute left the {turns} of this chat out of the conversation to keep it short. "
+        "The turn records that follow cover the later turns, and the turn context "
+        "describes the saved graph as this turn starts."
+    )
+
+
 __all__ = [
     "BRIEF_CHARACTER_LIMIT",
     "BRIEF_COLUMN_LIMIT",
@@ -611,10 +692,13 @@ __all__ = [
     "StepSummary",
     "StepsProblem",
     "TurnContext",
+    "TurnRecord",
     "node_authoring",
     "render_authoring",
     "render_context_update",
     "render_egress_policy",
+    "render_omitted_turns",
     "render_pipeline_graph",
     "render_turn_context",
+    "render_turn_record",
 ]

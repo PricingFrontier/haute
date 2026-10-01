@@ -2121,44 +2121,62 @@ class TestExecutorArms:
         assert result["error"]["code"] == "stale_project_evidence"
         assert "data/quotes.parquet" in result["error"]["message"]
 
-    @pytest.mark.parametrize("replayed", [False, True], ids=["live-turn", "from-history"])
     async def test_a_renamed_dataset_blocks_planning_only_until_datasets_are_listed(
-        self, project_root: Path, replayed: bool
+        self, project_root: Path
     ):
         from haute.assistant._tools import build_tool_executor
 
         pl.DataFrame({"id": [1]}).write_parquet(project_root / "data" / "extra.parquet")
-        first_turn = build_tool_executor("main.py")
-        schema = await first_turn("find_data", {"path": "data/extra.parquet"})
+        execute_tool = build_tool_executor("main.py")
+        await execute_tool("find_data", {"path": "data/extra.parquet"})
         (project_root / "data" / "extra.parquet").rename(project_root / "data" / "moved.parquet")
         rename = {
             "summary": "Rename enriched.",
             "ops": [{"op": "rename_node", "node": "enriched", "new_name": "renamed"}],
         }
 
-        blocked = await first_turn("dry_run_graph_edits", rename)
+        blocked = await execute_tool("dry_run_graph_edits", rename)
         assert blocked["error"]["code"] == "project_source_missing"
         assert "data/extra.parquet" in blocked["error"]["message"]
 
-        listed = await first_turn("find_data", {"directory": "data"})
-        execute_tool = (
-            build_tool_executor(
-                "main.py",
-                prior_messages=[
-                    {"role": "tool", "name": name, "content": content, "is_error": False}
-                    for name, content in (
-                        ("find_data", schema),
-                        ("find_data", listed),
-                    )
-                ],
-            )
-            if replayed
-            else first_turn
-        )
+        await execute_tool("find_data", {"directory": "data"})
         plan = await execute_tool("dry_run_graph_edits", rename)
 
         assert "error" not in plan, plan
         assert "schema:data/extra.parquet" not in _revision_sources(plan)
+
+    @pytest.mark.parametrize("change", ["rewritten", "renamed"])
+    async def test_a_follow_up_dry_run_releases_evidence_an_earlier_turn_saw_go_stale(
+        self, project_root: Path, change: str
+    ):
+        """The model no longer sees an earlier turn's schema result, so a dataset
+        that changed since never fails the next turn's dry-run."""
+
+        from haute.assistant._ops import SourceEvidenceLedger
+        from haute.assistant._tools import build_tool_executor
+
+        dataset = project_root / "data" / "extra.parquet"
+        pl.DataFrame({"id": [1]}).write_parquet(dataset)
+        ledger = SourceEvidenceLedger()
+        first_turn = build_tool_executor("main.py", evidence=ledger)
+        await first_turn("find_data", {"path": "data/extra.parquet"})
+        if change == "rewritten":
+            pl.DataFrame({"id": [1, 2]}).write_parquet(dataset)
+        else:
+            dataset.rename(project_root / "data" / "moved.parquet")
+
+        next_turn = build_tool_executor("main.py", evidence=ledger)
+        plan = await next_turn(
+            "dry_run_graph_edits",
+            {
+                "summary": "Rename enriched.",
+                "ops": [{"op": "rename_node", "node": "enriched", "new_name": "renamed"}],
+            },
+        )
+
+        assert "error" not in plan, plan
+        assert "schema:data/extra.parquet" not in _revision_sources(plan)
+        assert ledger.sources() == ()
 
     async def test_a_new_excel_input_is_refused_with_the_preview_remedy(self, project_root: Path):
         from haute._sandbox import set_project_root
@@ -2193,26 +2211,19 @@ class TestExecutorArms:
         assert "format 'excel' reads only eagerly" in result["error"]["message"]
         assert "Preview this input first" in result["error"]["message"]
 
-    async def test_new_turn_carries_provider_visible_schema_evidence_into_plan(
+    async def test_a_schema_an_earlier_turn_saw_binds_the_next_turn_s_plan(
         self,
         project_root: Path,
     ):
+        """The session's ledger carries the evidence, not the provider history."""
+
+        from haute.assistant._ops import SourceEvidenceLedger
         from haute.assistant._tools import build_tool_executor
 
-        first_turn = build_tool_executor("main.py")
-        schema = await first_turn("find_data", {"path": "data/quotes.parquet"})
-        second_turn = build_tool_executor(
-            "main.py",
-            prior_messages=[
-                {
-                    "role": "tool",
-                    "tool_call_id": "schema-1",
-                    "name": "find_data",
-                    "content": schema,
-                    "is_error": False,
-                }
-            ],
-        )
+        ledger = SourceEvidenceLedger()
+        first_turn = build_tool_executor("main.py", evidence=ledger)
+        await first_turn("find_data", {"path": "data/quotes.parquet"})
+        second_turn = build_tool_executor("main.py", evidence=ledger)
 
         plan = await second_turn(
             "dry_run_graph_edits",

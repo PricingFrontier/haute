@@ -9,6 +9,7 @@ inject a client at the adapter seam.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import math
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
@@ -56,7 +57,23 @@ class TurnStop:
     usage: ProviderUsage
 
 
-ProviderEvent: TypeAlias = TextDelta | ToolCallRequest | TurnStop
+@dataclass(frozen=True, slots=True)
+class ThinkingStarted:
+    """The model opened a thinking block. It carries none of the thinking."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayContent:
+    """One round's assistant content as its provider must receive it back.
+
+    The blocks are the provider's own wire content, in stream order; the loop
+    treats them as opaque and sends them back only within the same turn.
+    """
+
+    blocks: tuple[Mapping[str, Any], ...]
+
+
+ProviderEvent: TypeAlias = TextDelta | ToolCallRequest | TurnStop | ThinkingStarted | ReplayContent
 
 
 class AssistantProvider(Protocol):
@@ -152,6 +169,14 @@ def _usage_value(value: object, provider: str, field: str) -> int:
     if result < 0:
         raise _provider_error(provider, "malformed_stream", f"invalid {field} usage")
     return result
+
+
+def _text_value(value: object) -> str:
+    """One text field of a streamed Anthropic content block, or a malformed stream."""
+
+    if not isinstance(value, str):
+        raise _provider_error("anthropic", "malformed_stream", "a content block field is not text")
+    return value
 
 
 def _attr(value: object, name: str, default: object = None) -> object:
@@ -801,6 +826,29 @@ MID_CONVERSATION_SYSTEM_MODELS = frozenset(
     }
 )
 
+#: Claude models that take adaptive thinking (`{"type": "adaptive"}`) and an
+#: effort level, the only Claude models the Anthropic adapter runs.
+ADAPTIVE_THINKING_MODELS = frozenset(
+    {
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-5",
+        "claude-sonnet-5-5",
+    }
+)
+
+#: The effort every Claude request carries: valid on every model in
+#: `ADAPTIVE_THINKING_MODELS`, and Anthropic's starting point for multistep tool use.
+ANTHROPIC_EFFORT = "medium"
+
 
 def _with_leading_context(previous: dict[str, Any] | None, context: object) -> None:
     """Prepend a turn context to the user message it follows, in place."""
@@ -869,6 +917,15 @@ def _anthropic_messages(
                 translated[-1]["content"].append(result_block)
             else:
                 translated.append({"role": "user", "content": [result_block]})
+        elif role == "assistant" and message.get("provider_content") is not None:
+            # Within a turn the message goes back exactly as the model produced
+            # it, thinking blocks and their signatures included.
+            replayed = [dict(block) for block in message["provider_content"]]
+            replayed_ids = [block["id"] for block in replayed if block.get("type") == "tool_use"]
+            call_ids = [call["id"] for call in message.get("tool_calls") or ()]
+            if replayed_ids != call_ids:
+                raise RuntimeError("replayed content must carry exactly the message's tool calls")
+            translated.append({"role": "assistant", "content": replayed})
         elif role == "assistant" and message.get("tool_calls"):
             blocks: list[dict[str, Any]] = []
             if content not in (None, ""):
@@ -892,9 +949,23 @@ def _anthropic_messages(
 
 
 class AnthropicProvider:
-    """Normalize the Anthropic Messages streaming API."""
+    """Normalize the Anthropic Messages streaming API.
+
+    Every request marks the tool definitions and the frozen system prompt as
+    one prompt-cache breakpoint and runs adaptive thinking at
+    `ANTHROPIC_EFFORT`, so only the models in `ADAPTIVE_THINKING_MODELS` are
+    accepted. A round whose message holds a thinking block ends with its
+    content blocks in stream order (`ReplayContent`), for the loop to send back
+    verbatim within the turn.
+    """
 
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
+        if config.model not in ADAPTIVE_THINKING_MODELS:
+            raise ConfigError(
+                f"Anthropic model {config.model!r} is not one Haute runs: the assistant "
+                "uses adaptive thinking, which these Claude models support: "
+                f"{', '.join(sorted(ADAPTIVE_THINKING_MODELS))}."
+            )
         self.config = config
         self.client = _load_anthropic_client(config) if client is None else client
 
@@ -910,18 +981,28 @@ class AnthropicProvider:
         stop_reason: Literal["end", "tool_use"] | None = None
         stop_emitted = False
         pending_tools: dict[int, dict[str, Any]] = {}
+        # Thinking and text blocks still streaming, by index, and every finished
+        # content block by index: the round's replay content when it thinks.
+        pending_thinking: dict[int, dict[str, list[str]]] = {}
+        pending_text: dict[int, list[str]] = {}
+        finished: dict[int, dict[str, Any]] = {}
+        thought = False
         wire_tools = _portable_tools(tools)
 
         try:
             stream = self.client.messages.stream(
                 model=self.config.model,
-                system=system,
+                # The one cache breakpoint: tools render before the system
+                # prompt, so it caches both. Everything per-turn is in messages.
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                 messages=_anthropic_messages(
                     messages,
                     system_context=self.config.model in MID_CONVERSATION_SYSTEM_MODELS,
                 ),
                 tools=wire_tools,
                 max_tokens=self.config.max_output_tokens,
+                thinking={"type": "adaptive"},
+                output_config={"effort": ANTHROPIC_EFFORT},
             )
             async with stream as response:
                 async for event in response:
@@ -934,7 +1015,33 @@ class AnthropicProvider:
                     elif event_type == "content_block_start":
                         index = _attr(event, "index")
                         block = _attr(event, "content_block")
-                        if _attr(block, "type") == "tool_use":
+                        block_type = _attr(block, "type")
+                        if block_type in {"thinking", "redacted_thinking"}:
+                            if not isinstance(index, int):
+                                raise _provider_error(
+                                    "anthropic", "malformed_stream", "thinking block has no index"
+                                )
+                            if index in finished or index in pending_thinking:
+                                raise _provider_error(
+                                    "anthropic",
+                                    "malformed_stream",
+                                    "duplicate thinking block index",
+                                )
+                            thought = True
+                            if block_type == "thinking":
+                                pending_thinking[index] = {
+                                    "thinking": [_text_value(_attr(block, "thinking", ""))],
+                                    "signature": [_text_value(_attr(block, "signature", ""))],
+                                }
+                            else:
+                                finished[index] = {
+                                    "type": "redacted_thinking",
+                                    "data": _text_value(_attr(block, "data")),
+                                }
+                            yield ThinkingStarted()
+                        elif block_type == "text" and isinstance(index, int):
+                            pending_text[index] = [_text_value(_attr(block, "text", ""))]
+                        elif block_type == "tool_use":
                             if not isinstance(index, int):
                                 raise _provider_error(
                                     "anthropic", "malformed_stream", "tool block has no index"
@@ -962,7 +1069,22 @@ class AnthropicProvider:
                                     raise _provider_error(
                                         "anthropic", "malformed_stream", "text delta is not text"
                                     )
+                                if isinstance(index, int):
+                                    pending_text.setdefault(index, []).append(text)
                                 yield TextDelta(text=text)
+                        elif delta_type in {"thinking_delta", "signature_delta"}:
+                            if not isinstance(index, int) or index not in pending_thinking:
+                                raise _provider_error(
+                                    "anthropic",
+                                    "malformed_stream",
+                                    "thinking fragment has no block",
+                                )
+                            field_name = (
+                                "thinking" if delta_type == "thinking_delta" else "signature"
+                            )
+                            pending_thinking[index][field_name].append(
+                                _text_value(_attr(delta, field_name))
+                            )
                         elif delta_type == "input_json_delta":
                             if not isinstance(index, int) or index not in pending_tools:
                                 raise _provider_error(
@@ -980,6 +1102,23 @@ class AnthropicProvider:
                         index = _attr(event, "index")
                         if not isinstance(index, int):
                             continue
+                        thinking = pending_thinking.pop(index, None)
+                        if thinking is not None:
+                            signature = "".join(thinking["signature"])
+                            if not signature:
+                                raise _provider_error(
+                                    "anthropic",
+                                    "malformed_stream",
+                                    "thinking block has no signature",
+                                )
+                            finished[index] = {
+                                "type": "thinking",
+                                "thinking": "".join(thinking["thinking"]),
+                                "signature": signature,
+                            }
+                        text_parts = pending_text.pop(index, None)
+                        if text_parts is not None and "".join(text_parts):
+                            finished[index] = {"type": "text", "text": "".join(text_parts)}
                         tool = pending_tools.pop(index, None)
                         if tool is not None:
                             tool_id = tool["id"]
@@ -995,6 +1134,14 @@ class AnthropicProvider:
                                 "".join(tool["fragments"]),
                                 initial=tool["initial"],
                             )
+                            # Its own copy: the replay must not follow what a
+                            # tool later does to the arguments it was given.
+                            finished[index] = {
+                                "type": "tool_use",
+                                "id": tool_id,
+                                "name": tool_name,
+                                "input": copy.deepcopy(arguments),
+                            }
                             yield ToolCallRequest(tool_id, tool_name, arguments)
                     elif event_type == "message_delta":
                         delta = _attr(event, "delta")
@@ -1011,9 +1158,19 @@ class AnthropicProvider:
                             raise _provider_error(
                                 "anthropic", "malformed_stream", "stream ended inside a tool block"
                             )
+                        if pending_thinking:
+                            raise _provider_error(
+                                "anthropic",
+                                "malformed_stream",
+                                "stream ended inside a thinking block",
+                            )
                         if stop_reason is None:
                             raise _provider_error(
                                 "anthropic", "malformed_stream", "message has no stop reason"
+                            )
+                        if thought:
+                            yield ReplayContent(
+                                tuple(finished[index] for index in sorted(finished))
                             )
                         yield TurnStop(
                             stop_reason,
@@ -1037,6 +1194,8 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
     for message in messages:
         role = message.get("role")
         content = message.get("content")
+        if message.get("provider_content") is not None:
+            raise RuntimeError("replay content belongs to the adapter that emitted it")
         if role == "assistant" and message.get("tool_calls"):
             translated.append(
                 {
@@ -1377,6 +1536,8 @@ def create_provider(config: AssistantConfig) -> AssistantProvider:
 
 
 __all__ = [
+    "ADAPTIVE_THINKING_MODELS",
+    "ANTHROPIC_EFFORT",
     "AnthropicProvider",
     "AssistantProvider",
     "AssistantProviderError",
@@ -1386,7 +1547,9 @@ __all__ = [
     "OpenAIProvider",
     "ProviderEvent",
     "ProviderUsage",
+    "ReplayContent",
     "TextDelta",
+    "ThinkingStarted",
     "ToolCallRequest",
     "TurnStop",
 ]

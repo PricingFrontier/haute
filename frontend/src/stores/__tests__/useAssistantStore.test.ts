@@ -69,6 +69,7 @@ function resetStores() {
     pipelineSource: null,
     entries: [],
     turnStatus: "idle",
+    thinking: false,
     status: READY_STATUS,
     statusErrorDetail: null,
     notice: null,
@@ -157,6 +158,30 @@ describe("sendMessage transcript flow", () => {
       kind: "outcome",
       outcome: { kind: "answered", detail: null, changes: [] },
     })
+  })
+
+  it("raises the thinking flag until the next text or tool event, adding no entry", async () => {
+    const seen: boolean[] = []
+    const events: AssistantStreamEvent[] = [
+      { type: "thinking" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "ok" },
+      { type: "thinking" },
+      { type: "text_delta", text: "Done." },
+      { type: "thinking" },
+    ]
+    vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
+      for (const event of events) {
+        opts.onEvent(event)
+        seen.push(useAssistantStore.getState().thinking)
+      }
+    })
+    await useAssistantStore.getState().sendMessage("read", SEND_OPTS)
+
+    expect(seen).toEqual([true, false, false, true, false, true])
+    const { thinking, entries } = useAssistantStore.getState()
+    expect(thinking).toBe(false)
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "assistant", "marker"])
   })
 
   it("settles activity rows from started to ok with the summary", async () => {

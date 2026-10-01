@@ -56,7 +56,8 @@ from haute.assistant._providers import (
 def _config(provider: str, base_url: str | None = None) -> AssistantConfig:
     return AssistantConfig(
         provider=provider,  # type: ignore[arg-type]
-        model="test-model",
+        # The Anthropic adapter runs only Claude models with adaptive thinking.
+        model="claude-opus-5-5" if provider == "anthropic" else "test-model",
         base_url=base_url,
         api_key="sk-test-secret",
         max_output_tokens=1234,
@@ -354,10 +355,169 @@ class TestAnthropicProvider:
         await _collect(AnthropicProvider(_config("anthropic"), client=client))
         kwargs = client.captured_kwargs
         assert kwargs is not None
-        assert kwargs["model"] == "test-model"
-        assert kwargs["system"] == _SYSTEM
+        assert kwargs["model"] == "claude-opus-5-5"
         assert kwargs["tools"] == _TOOLS
         assert kwargs["max_tokens"] == 1234
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "medium"}
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5"])
+    async def test_the_one_cache_breakpoint_is_the_frozen_system_prompt(self, model: str):
+        """Tools render before the system prompt, so the marker on its one block
+        caches both; the turn context, mid-conversation system message or
+        leading text alike, follows it inside `messages`."""
+
+        from dataclasses import replace
+
+        client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        provider = AnthropicProvider(replace(_config("anthropic"), model=model), client=client)
+        messages = [*_MESSAGES, {"role": "context", "content": "## Turn context"}]
+        async for _event in provider.stream_turn(system=_SYSTEM, messages=messages, tools=_TOOLS):
+            pass
+
+        kwargs = client.captured_kwargs
+        assert kwargs is not None
+        assert kwargs["system"] == [
+            {"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}
+        ]
+        assert "cache_control" not in kwargs
+        rendered = json.dumps({"tools": kwargs["tools"], "messages": kwargs["messages"]})
+        assert "cache_control" not in rendered
+        assert "## Turn context" in json.dumps(kwargs["messages"])
+
+    @pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-4-5", "test-model"])
+    def test_a_model_without_adaptive_thinking_is_refused(self, model: str):
+        from dataclasses import replace
+
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError, match=f"Anthropic model '{model}' is not one Haute runs"):
+            AnthropicProvider(
+                replace(_config("anthropic"), model=model), client=_FakeAnthropicClient([])
+            )
+
+    def test_every_adaptive_thinking_model_is_accepted(self):
+        from dataclasses import replace
+
+        from haute.assistant._providers import ADAPTIVE_THINKING_MODELS
+
+        for model in sorted(ADAPTIVE_THINKING_MODELS):
+            provider = AnthropicProvider(
+                replace(_config("anthropic"), model=model), client=_FakeAnthropicClient([])
+            )
+            assert provider.config.model == model
+
+    async def test_thinking_blocks_return_in_stream_order_with_their_signatures(self):
+        from haute.assistant._providers import ReplayContent, ThinkingStarted
+
+        ns = SimpleNamespace
+        events = [
+            ns(type="message_start", message=ns(usage=ns(input_tokens=3))),
+            ns(
+                type="content_block_start",
+                index=0,
+                content_block=ns(type="thinking", thinking="", signature=""),
+            ),
+            ns(type="content_block_delta", index=0, delta=ns(type="thinking_delta", thinking="")),
+            ns(
+                type="content_block_delta", index=0, delta=ns(type="signature_delta", signature="s")
+            ),
+            ns(
+                type="content_block_delta", index=0, delta=ns(type="signature_delta", signature="1")
+            ),
+            ns(type="content_block_stop", index=0),
+            ns(type="content_block_start", index=1, content_block=ns(type="text", text="")),
+            ns(type="content_block_delta", index=1, delta=ns(type="text_delta", text="Checking.")),
+            ns(type="content_block_stop", index=1),
+            ns(
+                type="content_block_start",
+                index=2,
+                content_block=ns(type="redacted_thinking", data="opaque"),
+            ),
+            ns(type="content_block_stop", index=2),
+            ns(
+                type="content_block_start",
+                index=3,
+                content_block=ns(type="tool_use", id="toolu_1", name="get_pipeline", input={}),
+            ),
+            ns(
+                type="content_block_delta",
+                index=3,
+                delta=ns(type="input_json_delta", partial_json="{}"),
+            ),
+            ns(type="content_block_stop", index=3),
+            ns(type="message_delta", delta=ns(stop_reason="tool_use"), usage=ns(output_tokens=9)),
+            ns(type="message_stop"),
+        ]
+        client = _FakeAnthropicClient(events)
+        out = await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+        assert [type(event).__name__ for event in out] == [
+            "ThinkingStarted",
+            "TextDelta",
+            "ThinkingStarted",
+            "ToolCallRequest",
+            "ReplayContent",
+            "TurnStop",
+        ]
+        assert out[0] == ThinkingStarted()
+        replay = out[4]
+        assert isinstance(replay, ReplayContent)
+        assert replay.blocks == (
+            {"type": "thinking", "thinking": "", "signature": "s1"},
+            {"type": "text", "text": "Checking."},
+            {"type": "redacted_thinking", "data": "opaque"},
+            {"type": "tool_use", "id": "toolu_1", "name": "get_pipeline", "input": {}},
+        )
+
+    async def test_a_round_without_thinking_returns_no_replay_content(self):
+        from haute.assistant._providers import ReplayContent, ThinkingStarted
+
+        client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        out = await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+        assert not [event for event in out if isinstance(event, ReplayContent | ThinkingStarted)]
+
+    async def test_a_thinking_block_without_a_signature_is_malformed(self):
+        ns = SimpleNamespace
+        events = [
+            ns(type="message_start", message=ns(usage=ns(input_tokens=3))),
+            ns(
+                type="content_block_start",
+                index=0,
+                content_block=ns(type="thinking", thinking="", signature=""),
+            ),
+            ns(type="content_block_stop", index=0),
+        ]
+        client = _FakeAnthropicClient(events)
+        with pytest.raises(AssistantProviderError, match="no signature"):
+            await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+    def test_replayed_content_is_sent_verbatim_and_carries_the_message_s_calls(self):
+        from haute.assistant._providers import _anthropic_messages, _openai_messages
+
+        blocks = [
+            {"type": "thinking", "thinking": "", "signature": "s1"},
+            {"type": "tool_use", "id": "a", "name": "get_pipeline", "input": {}},
+        ]
+        replayed = [
+            _CONTEXT_TURN[0],
+            {**_CONTEXT_TURN[2], "provider_content": blocks},
+            _CONTEXT_TURN[3],
+        ]
+
+        translated = _anthropic_messages(replayed, system_context=False)
+
+        assert translated[1] == {"role": "assistant", "content": blocks}
+        mismatched = [
+            _CONTEXT_TURN[0],
+            {**_CONTEXT_TURN[2], "provider_content": blocks[:1]},
+            _CONTEXT_TURN[3],
+        ]
+        with pytest.raises(RuntimeError, match="exactly the message's tool calls"):
+            _anthropic_messages(mismatched, system_context=False)
+        with pytest.raises(RuntimeError, match="belongs to the adapter that emitted it"):
+            _openai_messages(_SYSTEM, replayed)
 
     @pytest.mark.parametrize(
         ("model", "roles"),
@@ -439,6 +599,132 @@ class TestAnthropicProvider:
             await _collect(AnthropicProvider(_config("anthropic"), client=client))
         assert "DO-NOT-LEAK" not in str(excinfo.value)
         assert "anthropic" in str(excinfo.value).lower()
+
+
+class _ScriptedAnthropicClient:
+    """One scripted event list per request, keeping a frozen copy of every request."""
+
+    def __init__(self, rounds: list[list[object]]):
+        self.requests: list[dict] = []
+        outer = self
+        remaining = list(rounds)
+
+        class _Messages:
+            def stream(self, **kwargs):
+                outer.requests.append(json.loads(json.dumps(kwargs)))
+                return _FakeAnthropicStream(remaining.pop(0))
+
+        self.messages = _Messages()
+
+
+def _thinking_round(signature: str, tool_id: str | None) -> list[object]:
+    """A round that thinks, then calls `get_pipeline` or, without *tool_id*, answers."""
+
+    ns = SimpleNamespace
+    events: list[object] = [
+        ns(type="message_start", message=ns(usage=ns(input_tokens=3))),
+        ns(type="content_block_start", index=0, content_block=ns(type="thinking", thinking="")),
+        ns(
+            type="content_block_delta",
+            index=0,
+            delta=ns(type="signature_delta", signature=signature),
+        ),
+        ns(type="content_block_stop", index=0),
+    ]
+    if tool_id is None:
+        events += [
+            ns(type="content_block_start", index=1, content_block=ns(type="text", text="")),
+            ns(type="content_block_delta", index=1, delta=ns(type="text_delta", text="Done.")),
+            ns(type="content_block_stop", index=1),
+        ]
+    else:
+        events += [
+            ns(
+                type="content_block_start",
+                index=1,
+                content_block=ns(type="tool_use", id=tool_id, name="get_pipeline", input={}),
+            ),
+            ns(type="content_block_stop", index=1),
+        ]
+    reason = "end_turn" if tool_id is None else "tool_use"
+    return [
+        *events,
+        ns(type="message_delta", delta=ns(stop_reason=reason), usage=ns(output_tokens=4)),
+        ns(type="message_stop"),
+    ]
+
+
+class TestAnthropicTurnPrefix:
+    """Within a turn every round's request extends the previous one byte for byte,
+    with each signed thinking block back in its message; compaction leaves no
+    thinking for the next turn."""
+
+    async def test_rounds_extend_one_byte_identical_prefix_and_the_next_turn_has_no_thinking(
+        self,
+    ):
+        from haute.assistant._loop import run_turn
+        from haute.assistant._session import SessionStore
+
+        client = _ScriptedAnthropicClient(
+            [
+                _thinking_round("sig-1", "toolu_1"),
+                _thinking_round("sig-2", "toolu_2"),
+                _thinking_round("sig-3", None),
+                _thinking_round("sig-4", None),
+            ]
+        )
+        provider = AnthropicProvider(_config("anthropic"), client=client)
+        store = SessionStore()
+        session = store.create("main.py")
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"nodes": []}
+
+        for text in ("What reads quotes?", "And after it?"):
+            events = [
+                event
+                async for event in run_turn(
+                    store,
+                    session.id,
+                    text,
+                    provider=provider,
+                    tools=_TOOLS,
+                    execute_tool=execute_tool,
+                    system_prompt=_SYSTEM,
+                    turn_timeout=5.0,
+                    max_tool_calls=4,
+                    turn_context="## Turn context\nbrief",
+                )
+            ]
+            assert events[-1].type == "completed"
+            assert "thinking" in [event.type for event in events]
+
+        first_turn, second_turn = client.requests[:3], client.requests[3]
+        for earlier, later in zip(first_turn, first_turn[1:], strict=False):
+            assert json.dumps(later["system"]) == json.dumps(earlier["system"])
+            assert json.dumps(later["tools"]) == json.dumps(earlier["tools"])
+            shared = later["messages"][: len(earlier["messages"])]
+            assert [json.dumps(m, sort_keys=True) for m in shared] == [
+                json.dumps(m, sort_keys=True) for m in earlier["messages"]
+            ]
+        replayed = [m for m in first_turn[2]["messages"] if m["role"] == "assistant"]
+        assert [message["content"] for message in replayed] == [
+            [
+                {"type": "thinking", "thinking": "", "signature": "sig-1"},
+                {"type": "tool_use", "id": "toolu_1", "name": "get_pipeline", "input": {}},
+            ],
+            [
+                {"type": "thinking", "thinking": "", "signature": "sig-2"},
+                {"type": "tool_use", "id": "toolu_2", "name": "get_pipeline", "input": {}},
+            ],
+        ]
+        assert '"thinking"' not in json.dumps(second_turn["messages"])
+        assert "toolu_1" not in json.dumps(second_turn["messages"])
+        assert second_turn["messages"][0] == {"role": "user", "content": "What reads quotes?"}
+        assert second_turn["messages"][1]["role"] == "assistant"
+        assert second_turn["messages"][1]["content"].startswith("Done.\n\n## Turn record\n")
+        stored = json.dumps(store.lookup(session.id).as_dict())
+        assert "sig-1" not in stored and "provider_content" not in stored
 
 
 # ---------------------------------------------------------------------------

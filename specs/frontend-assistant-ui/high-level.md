@@ -84,7 +84,9 @@ rather than offering a bare retry that cannot succeed until the file changes.
 
 **A turn streams into the transcript live.** Sending a message appends the user entry,
 disables the composer, and swaps the send button for a stop button. Assistant text renders
-incrementally as deltas arrive. Tool activity renders as compact rows in-place in the
+incrementally as deltas arrive. While a Claude model thinks, a "Thinking…" status shows
+below the transcript until its next text or tool row; what it thinks is never shown or
+kept. Tool activity renders as compact rows in-place in the
 transcript, each headed by the plain-words title the backend writes ("Reading the
 pipeline", "Checking 3 changes", "Applying 3 changes") rather than the tool's name, with
 failures marked distinctly — so the analyst can follow what the agent actually did, in

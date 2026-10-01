@@ -10,17 +10,22 @@ between the loop and those adapters:
   ``tool_results=[{"tool_call_id", "name", "content", "is_error"}]``.
 * :class:`AssistantTurn` groups one user message with all assistant/tool
   messages produced while answering it.  Turns are the indivisible unit for
-  both retention policies.
+  retention and for the provider's compacted history.
 * :class:`SessionStore` owns process-local sessions, their one-turn locks,
-  provider history windows, and bounded retention.
+  the compacted provider history, and bounded retention.
 
 Messages and turns have explicit ``as_dict`` methods, so their serialized
 form contains only ordinary JSON values.  A session itself is not
-serialized wholesale because its ``asyncio.Lock`` is live runtime state;
-``AssistantSession.as_dict`` intentionally omits that lock.
+serialized wholesale because its ``asyncio.Lock`` and evidence ledger are
+live runtime state; ``AssistantSession.as_dict`` intentionally omits both.
 
-The default limits are deliberately fixed in this module: a provider window
-contains at most 40 complete messages, stored history retains at most 200
+The stored history is append-only.  The provider never sees it whole: each
+earlier turn reaches it as a compact turn record (its request, final text and
+Haute's record of its outcome and saved changes), the newest records within a
+character budget (:meth:`SessionStore.provider_history`).
+
+The default limits are deliberately fixed in this module: the earlier turns'
+records hold at most 24,000 characters, stored history retains at most 200
 messages where whole turns permit it, and the live-session LRU has capacity
 for 32 sessions.  If every existing session is busy, creation temporarily
 keeps those busy sessions rather than evicting one; the next creation or
@@ -45,12 +50,14 @@ from uuid import uuid4
 from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute.assistant._ops import SourceEvidenceLedger
+from haute.assistant._render import TurnRecord, render_omitted_turns, render_turn_record
 from haute.schemas import AssistantChangeRecord, AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
 
-PROVIDER_WINDOW_MESSAGES = 40
-"""Maximum number of complete historical messages sent to a provider."""
+PROVIDER_HISTORY_CHARACTERS = 24_000
+"""Maximum characters of earlier-turn records sent to a provider; the current turn is outside it."""
 
 STORED_HISTORY_MESSAGES = 200
 """Maximum stored historical messages, subject to whole-turn retention."""
@@ -549,58 +556,60 @@ class AssistantTurn:
             "undone": [record.model_dump(mode="json") for record in self.undone],
         }
 
+    def record(self) -> TurnRecord:
+        """This turn as a compact record for a later turn's provider history.
 
-def _trim_turn_rounds(
-    messages: tuple[AssistantMessage, ...],
-    limit: int,
-) -> tuple[AssistantMessage, ...]:
-    """Drop one turn's oldest tool-call rounds whole until it fits *limit*.
+        Everything it reads survives persistence: the request and final text,
+        the outcome, the undone records, and each saved change's record, which
+        a committed apply's tool result carries whether or not its
+        verification passed.
+        """
 
-    A round is an assistant message carrying tool calls together with the
-    ``tool`` messages answering them, so no call is ever separated from its
-    result. The user message and every message outside a round (text
-    replies, controller messages) are always kept, even when they alone
-    exceed *limit*: the newest turn's request must reach the provider.
-    """
-
-    units: list[tuple[bool, list[AssistantMessage]]] = []
-    pending: set[str] = set()
-    for message in messages:
-        if message.role == "tool":
-            if message.tool_call_id not in pending:
-                raise ValueError("a tool result does not follow its tool call")
-            pending.discard(message.tool_call_id)
-            units[-1][1].append(message)
-            continue
-        if pending:
-            raise ValueError("a tool call is not followed by its result")
-        if message.role == "assistant" and message.tool_calls:
-            answered = {result.tool_call_id for result in message.tool_results}
-            pending = {call.id for call in message.tool_calls} - answered
-            units.append((True, [message]))
-        else:
-            units.append((False, [message]))
-    if pending:
-        raise ValueError("a tool call is not followed by its result")
-
-    total = len(messages)
-    kept: list[list[AssistantMessage]] = []
-    for is_round, unit in units:
-        if is_round and total > limit:
-            total -= len(unit)
-            continue
-        kept.append(unit)
-    return tuple(message for unit in kept for message in unit)
+        request = self.messages[0].content
+        if not isinstance(request, str):
+            raise TypeError("a turn's request must be text")
+        last_reply = next(
+            (message for message in reversed(self.messages) if message.role == "assistant"),
+            None,
+        )
+        reply = (
+            last_reply.content
+            if last_reply is not None
+            and not last_reply.tool_calls
+            and isinstance(last_reply.content, str)
+            else ""
+        )
+        changes = tuple(
+            AssistantChangeRecord.model_validate(message.content["change"])
+            for message in self.messages
+            if message.role == "tool"
+            and isinstance(message.content, dict)
+            and "change" in message.content
+        )
+        return TurnRecord(
+            request=request,
+            reply=reply,
+            outcome=self.outcome,
+            changes=changes,
+            undone=tuple(change.id for change in self.undone),
+        )
 
 
 @dataclass(slots=True)
 class AssistantSession:
-    """One process-local assistant session bound to a pipeline source file."""
+    """One process-local assistant session bound to a pipeline source file.
+
+    ``evidence`` is the session's evidence ledger, live state like ``lock``:
+    it is never serialized, so a revived session starts with an empty one.
+    """
 
     id: str
     source_file: str
     history: list[AssistantTurn] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    evidence: SourceEvidenceLedger = field(
+        default_factory=SourceEvidenceLedger, repr=False, compare=False
+    )
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
@@ -724,18 +733,18 @@ class SessionStore:
     def __init__(
         self,
         *,
-        max_provider_messages: int = PROVIDER_WINDOW_MESSAGES,
+        max_provider_history_chars: int = PROVIDER_HISTORY_CHARACTERS,
         max_stored_messages: int = STORED_HISTORY_MESSAGES,
         max_live_sessions: int = MAX_LIVE_SESSIONS,
         max_persisted_sessions: int = MAX_PERSISTED_SESSIONS,
         clock: Callable[[], float] = time.time,
         storage_dir: Callable[[], Path] | None = None,
     ) -> None:
-        self._validate_limit("max_provider_messages", max_provider_messages)
+        self._validate_limit("max_provider_history_chars", max_provider_history_chars)
         self._validate_limit("max_stored_messages", max_stored_messages)
         self._validate_limit("max_live_sessions", max_live_sessions)
         self._validate_limit("max_persisted_sessions", max_persisted_sessions)
-        self.max_provider_messages = max_provider_messages
+        self.max_provider_history_chars = max_provider_history_chars
         self.max_stored_messages = max_stored_messages
         self.max_live_sessions = max_live_sessions
         self.max_persisted_sessions = max_persisted_sessions
@@ -1017,9 +1026,8 @@ class SessionStore:
         """Append one complete turn, prune whole oldest turns, and persist.
 
         A turn that is itself larger than ``max_stored_messages`` remains
-        intact; splitting it would violate the provider conversation shape.
-        The provider window instead keeps an oversized newest turn with its
-        oldest tool-call rounds dropped whole (:meth:`history_window`).
+        intact: a turn is never split. A later turn's provider sees it only as
+        its compact record (:meth:`provider_history`).
         """
 
         session = self._require(session_ref)
@@ -1048,37 +1056,36 @@ class SessionStore:
             session.history.pop(0)
         self._touch(session)
 
-    def history_window(
-        self,
-        session_ref: SessionRef,
-        *,
-        max_messages: int | None = None,
-    ) -> list[dict[str, JSONValue]]:
-        """Return the newest contiguous complete-turn provider history window.
+    def provider_history(self, session_ref: SessionRef) -> list[dict[str, JSONValue]]:
+        """Return the session's earlier turns as the provider sees them: compact records.
 
-        The newest turn is always included. When it alone exceeds the limit,
-        its oldest tool-call rounds are dropped whole (see
-        :func:`_trim_turn_rounds`) and no older turn is added.
+        Each stored turn becomes a ``user`` message holding its request and an
+        ``assistant`` message holding :func:`render_turn_record`. Records are
+        kept newest first while the characters of both messages fit
+        ``max_provider_history_chars``; the older ones are dropped whole, never
+        cut, and a leading ``controller`` note then says how many were left out.
+        No earlier tool call, result or thinking is included.
         """
 
         session = self._require(session_ref)
-        limit = self.max_provider_messages if max_messages is None else max_messages
-        if type(limit) is not int or limit < 0:
-            raise ValueError("max_messages must be a non-negative integer")
-
-        selected: list[tuple[AssistantMessage, ...]] = []
-        count = 0
+        kept: list[tuple[str, str]] = []
+        size = 0
         for turn in reversed(session.history):
-            if count + turn.message_count <= limit:
-                selected.append(turn.messages)
-                count += turn.message_count
-                continue
-            if not selected:
-                selected.append(_trim_turn_rounds(turn.messages, limit))
-            break
-        selected.reverse()
+            record = turn.record()
+            reply = render_turn_record(record)
+            size += len(record.request) + len(reply)
+            if size > self.max_provider_history_chars:
+                break
+            kept.append((record.request, reply))
+        omitted = len(session.history) - len(kept)
         self._touch(session)
-        return [message.as_dict() for messages in selected for message in messages]
+        messages: list[dict[str, JSONValue]] = []
+        if omitted:
+            messages.append({"role": "controller", "content": render_omitted_turns(omitted)})
+        for request, reply in reversed(kept):
+            messages.append({"role": "user", "content": request})
+            messages.append({"role": "assistant", "content": reply})
+        return messages
 
     def _coerce_turn(self, turn: TurnInput) -> AssistantTurn:
         if isinstance(turn, AssistantTurn):
@@ -1107,7 +1114,7 @@ __all__ = [
     "JSONValue",
     "MAX_LIVE_SESSIONS",
     "MAX_PERSISTED_SESSIONS",
-    "PROVIDER_WINDOW_MESSAGES",
+    "PROVIDER_HISTORY_CHARACTERS",
     "STORED_HISTORY_MESSAGES",
     "SessionStore",
     "SessionSummary",

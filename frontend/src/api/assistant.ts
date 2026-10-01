@@ -76,6 +76,8 @@ export interface AssistantChangeRecord {
 
 export type AssistantStreamEvent =
   | { type: "text_delta"; text: string }
+  /** The model is thinking; the event carries none of the thinking. */
+  | { type: "thinking" }
   | { type: "tool_started"; id: string; name: string; title: string; summary: string }
   | {
       type: "tool_finished"
@@ -300,6 +302,8 @@ function parseEvent(payload: string): AssistantStreamEvent {
   switch (type) {
     case "text_delta":
       return { type, text: requireString(parsed.text, "stream event.text") }
+    case "thinking":
+      return { type }
     case "tool_started":
       return {
         type,

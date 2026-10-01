@@ -22,7 +22,7 @@ from pathlib import Path
 from threading import RLock
 from time import monotonic
 from types import MappingProxyType
-from typing import Any, Literal, NoReturn, TypeVar, cast
+from typing import Any, Literal, NoReturn, TypeAlias, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -1383,6 +1383,78 @@ def _evidence_manifest_entry(
             "get_project_knowledge again, then plan again.",
         )
     return f"{evidence.kind}:{relative}", actual
+
+
+EvidenceKey: TypeAlias = tuple[str, str]
+"""A ledger entry's identity: its evidence kind and the path the tool result named."""
+
+# The codes `_evidence_manifest_entry` raises for evidence that no longer holds.
+_RELEASABLE_EVIDENCE_CODES = frozenset({"project_source_missing", "stale_project_evidence"})
+
+
+class SourceEvidenceLedger:
+    """One session's evidence ledger: the project facts its tool results returned.
+
+    Each entry is the `ProjectSourceEvidence` a successful `find_data` schema or
+    `get_project_knowledge` item returned. It is *current* when the running turn
+    observed it and *carried* when an earlier turn did. Every dry-run includes all
+    entries in its snapshot (`sources`), so a plan binds the facts returned before
+    it: a current entry that no longer holds fails the dry-run, while a carried one
+    is released first (`release_stale_carried`), because the model no longer sees
+    the result it came from. Live process state: a session never serializes it.
+    """
+
+    __slots__ = ("_current", "_entries")
+
+    def __init__(self) -> None:
+        self._entries: dict[EvidenceKey, ProjectSourceEvidence] = {}
+        self._current: set[EvidenceKey] = set()
+
+    def begin_turn(self) -> None:
+        """Start a turn: every entry an earlier turn observed is now carried."""
+
+        self._current.clear()
+
+    def observe(self, key: EvidenceKey, evidence: ProjectSourceEvidence) -> None:
+        """Add or replace an entry the running turn's tool result returned."""
+
+        self._entries[key] = evidence
+        self._current.add(key)
+
+    def drop_vanished_schemas(self) -> None:
+        """Drop schema evidence whose file no longer exists, as a dataset listing does."""
+
+        for key in [
+            key
+            for key, evidence in self._entries.items()
+            if evidence.kind == "schema" and not evidence.path.is_file()
+        ]:
+            del self._entries[key]
+            self._current.discard(key)
+
+    def release_stale_carried(self, project_root: Path) -> tuple[EvidenceKey, ...]:
+        """Drop each carried entry whose file is missing or changed; return their keys.
+
+        Any other failure while checking an entry propagates: it is not evidence
+        that the fact went stale.
+        """
+
+        root = project_root.resolve()
+        released: list[EvidenceKey] = []
+        for key in sorted(set(self._entries) - self._current):
+            try:
+                _evidence_manifest_entry(root, self._entries[key])
+            except AssistantOperationError as exc:
+                if exc.code not in _RELEASABLE_EVIDENCE_CODES:
+                    raise
+                del self._entries[key]
+                released.append(key)
+        return tuple(released)
+
+    def sources(self) -> tuple[ProjectSourceEvidence, ...]:
+        """Every entry, in key order, for a dry-run's snapshot."""
+
+        return tuple(self._entries[key] for key in sorted(self._entries))
 
 
 @dataclass(frozen=True, slots=True)
@@ -3015,6 +3087,7 @@ __all__ = [
     "ProjectSourceEvidence",
     "ProjectSnapshot",
     "RenameConsumersError",
+    "SourceEvidenceLedger",
     "RenameNodeOp",
     "UpdateNodeOp",
     "UpdatePreambleOp",

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, Bot, Plus } from "lucide-react"
+import { ArrowLeft, Bot, Loader2, Plus } from "lucide-react"
 
 import PanelShell from "../PanelShell"
 import TranscriptEntryView, { type OutcomeReply } from "./TranscriptEntryView"
@@ -32,6 +32,7 @@ export default function AssistantPanel({
   const setAssistantOpen = useUIStore((state) => state.setAssistantOpen)
   const entries = useAssistantStore((state) => state.entries)
   const turnStatus = useAssistantStore((state) => state.turnStatus)
+  const thinking = useAssistantStore((state) => state.thinking)
   const status = useAssistantStore((state) => state.status)
   const notice = useAssistantStore((state) => state.notice)
   const refreshStatus = useAssistantStore((state) => state.refreshStatus)
@@ -75,7 +76,7 @@ export default function AssistantPanel({
     if (transcript && turnStatus === "streaming") {
       transcript.scrollTop = transcript.scrollHeight
     }
-  }, [entries, turnStatus])
+  }, [entries, turnStatus, thinking])
 
   const statusError = status === "error"
 
@@ -191,6 +192,17 @@ export default function AssistantPanel({
               reply={index === entries.length - 1 ? reply : undefined}
             />
           ))}
+          {thinking && (
+            <div
+              data-testid="assistant-thinking"
+              role="status"
+              className="flex items-center gap-1.5 text-[11px]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+              Thinking…
+            </div>
+          )}
         </div>
       )}
 

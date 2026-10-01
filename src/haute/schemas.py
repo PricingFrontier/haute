@@ -401,6 +401,12 @@ class AssistantTextDeltaEvent(BaseModel):
     text: str
 
 
+class AssistantThinkingEvent(BaseModel):
+    """The model is thinking: a status for the panel, carrying none of the thinking."""
+
+    type: Literal["thinking"] = "thinking"
+
+
 class AssistantToolStartedEvent(BaseModel):
     type: Literal["tool_started"] = "tool_started"
     id: str
@@ -445,6 +451,7 @@ class AssistantCancelledEvent(BaseModel):
 
 AssistantStreamEvent = Annotated[
     AssistantTextDeltaEvent
+    | AssistantThinkingEvent
     | AssistantToolStartedEvent
     | AssistantToolFinishedEvent
     | AssistantChangeAppliedEvent

@@ -40,6 +40,7 @@ function seed(partial: Partial<AssistantStoreState>) {
     pipelineSource: "main.py",
     entries: [],
     turnStatus: "idle",
+    thinking: false,
     status: READY_STATUS,
     statusErrorDetail: null,
     notice: null,
@@ -99,6 +100,17 @@ describe("transcript", () => {
     ])
     expect(rows[1]).toHaveTextContent("Reading the pipeline.")
     expect(rows[3]).toHaveTextContent("It has three nodes.")
+  })
+
+  it("shows the thinking status only while the model thinks", () => {
+    seed({ entries: [{ kind: "user", text: "go" }], turnStatus: "streaming", thinking: true })
+    renderPanel()
+
+    expect(screen.getByTestId("assistant-thinking")).toHaveTextContent("Thinking…")
+
+    act(() => useAssistantStore.setState({ thinking: false }))
+
+    expect(screen.queryByTestId("assistant-thinking")).toBeNull()
   })
 
   it("sends the one-click reply from the latest question", () => {
