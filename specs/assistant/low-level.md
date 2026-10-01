@@ -852,7 +852,10 @@ the turn that follows.
      tables, mappings, scenario maps and code are not visible, and that `update_node`
      replaces a key's whole value, so a list or map not read is never rewritten and the
      model asks instead; the note that the config part redacts node code appears only
-     when the config part is readable), followed by
+     when the config part is readable; and one line on aggregate data statistics,
+     `permitted (value-free counts and shares, never row values)` under
+     `allow_aggregate_statistics` and otherwise `not permitted; no data check runs, so a
+     dry-run proves schemas, never that the data came out right`), followed by
      the column-value rule it implies: with `allow_row_samples`, call
      `inspect_node` with the `profile` part before comparing a column to a literal and answer
      `NEEDS_INPUT:` when its values are withheld; without it, ask which values to match,
@@ -1877,10 +1880,15 @@ the turn that follows.
   allowlist source, different strictness, both deliberate.
 - **The assistant configuration is closed.** The outer accepted key set is
   exactly `provider`, `model`, `base_url`, and `egress`; the nested table has
-  exactly the five required fields: `trust`, `max_sensitivity`,
-  `allow_project_knowledge`, `allow_executable_source`, and
-  `allow_row_samples`. Unknown or missing fields fail
-  with their full TOML path. A non-string `base_url` raises `ConfigError`, any
+  exactly the six required fields: `trust`, `max_sensitivity`,
+  `allow_project_knowledge`, `allow_executable_source`, `allow_row_samples`,
+  and `allow_aggregate_statistics`. Unknown or missing fields fail
+  with their full TOML path, and each `allow_` field must be a boolean. Under
+  `trust = "external"` the policy must be `public` with executable source, row
+  samples and aggregate statistics all false; any of them true is a
+  `ConfigError` naming `[assistant].egress`. `EgressPolicy.policy_hash` covers
+  all six fields, so changing any of them changes the hash. A non-string
+  `base_url` raises `ConfigError`, any
   `base_url` on Anthropic or Databricks is a not-ready reason, and OpenAI accepts only an
   absolute credential-free HTTP(S) URL with a hostname and valid port.
   Databricks requires `DATABRICKS_HOST` to be an absolute credential-free
@@ -2063,6 +2071,13 @@ the turn that follows.
   validated, reported flag that no code path consults is worse than no flag, because a
   project reads its own configuration as a grant that silently never applies.
   Credential keys and inline row-value keys stay redacted under every policy.
+  `allow_aggregate_statistics` is the one exception while its capability is
+  unbuilt: it gates the data check of the
+  [approved change contract](#approved-change-contract--data-checks), and until
+  ASSIST-41 delivers that check the flag is validated, hashed and stated in the
+  turn context's policy line, and no other code path reads it. The policy line
+  is truthful either way, because with the flag true it states only what may be
+  sent, never that a check ran.
 - **The schema part collects nothing** — the invariant is testable: the part's plan
   construction plus `collect_schema()` must never invoke `LazyFrame.collect` (asserted by
   poisoning `collect` in tests). The two honest cost exceptions are inherited, not assistant
@@ -2518,7 +2533,12 @@ fixture for route tests). The implemented coverage is:
   (ready, no-repository, unset, detached, divergent, invalid, git-unavailable — asserting
   each state's mapped reason, including invalid's joined `errors`), and the named
   policy reason under `trust = "external"`; an Anthropic model without adaptive thinking
-  is not ready, with the adapter's reason.
+  is not ready, with the adapter's reason; the egress table is closed and requires every
+  key, so a table without `allow_aggregate_statistics` fails naming
+  `[assistant].egress.allow_aggregate_statistics` and a non-boolean value fails naming the
+  key; `trust = "external"` rejects `allow_aggregate_statistics = true` as it rejects a
+  non-public ceiling, executable source and row samples; and the policy hash changes with
+  the flag.
 - **`tests/test_assistant_providers.py`** — adapters normalise scripted fake SDK streams to
   `ProviderEvent`s; SDK exception classes map to `AssistantProviderError` variants; lazy
   import failure produces the readiness reason, not an ImportError at server start; the
@@ -2585,7 +2605,8 @@ fixture for route tests). The implemented coverage is:
   longer word and a marker without detail do not; an apply in a message that asks is
   refused unrun with `apply_in_outcome_message`; the egress policy says saved
   configuration is withheld below `restricted` and mentions the redaction of code only
-  when the config part is readable;
+  when the config part is readable, and states aggregate data statistics in one line,
+  permitted, or not permitted with no data check run and schemas proved;
   tool round-trip; tool error fed back; cap and timeout terminal events; completed/failed
   exactly-one-terminal checks; cancellation drains an in-flight tool, closes the provider
   stream, and releases the session lock; closing at each tool lifecycle yield never
@@ -2715,9 +2736,9 @@ then restores, the sandbox project root, so one project or the invoking reposito
 escape into another fixture's application service. The invoking project supplies the provider,
 model, credentials and provider trust (trust describes the endpoint); the egress allowances are
 the case's egress profile, never the invoking project's: `project` (`max_sensitivity =
-"restricted"` with project knowledge and executable source permitted and row samples withheld)
-or `metadata_only` (`max_sensitivity = "internal"` with project knowledge, executable source and
-row samples all withheld). An `external` trust is refused
+"restricted"` with project knowledge, executable source and aggregate statistics permitted and
+row samples withheld) or `metadata_only` (`max_sensitivity = "internal"` with project knowledge,
+executable source, row samples and aggregate statistics all withheld). An `external` trust is refused
 before any case runs, because external trust is public-only and a public ceiling denies the
 project metadata tools every case needs. `record` exits non-zero on any failed case, writes
 the redacted report described above, and with `--transcripts` writes local-only transcripts under
@@ -2729,3 +2750,92 @@ measurement and regression loop per area, not a qualification gate. The package 
 gate, while exemplar
 `.py` assets are omitted from coverage because they are parsed package data rather than
 importable modules (they remain parser- and lint-checked).
+
+## Approved change contract — data checks
+
+The [high-level contract](high-level.md#approved-change-contract--data-checks)
+states the check's behaviour, bounds, result, findings, binding and eligibility.
+This section fixes where it lives, what it reuses and its constants, so the
+implementation adds no second copy of a rule the product already owns.
+
+- **Current limitation.** The only assistant code path that collects rows is
+  `inspect_node`'s profile part (`column_profiles` in
+  `src/haute/assistant/_tools.py`), which measures one frame of the saved graph
+  on the model's request under `allow_row_samples`; `build_verified_plan` in
+  `src/haute/assistant/_application.py` resolves schemas and collects nothing.
+  `EgressPolicy.allow_aggregate_statistics` is parsed, hashed and rendered and
+  read by nothing else.
+- **Unresolved target.** One assistant module owns the check: eligibility, the
+  request that crosses into the worker, the worker half, the measurements, the
+  findings and the result model. The dry-run tool calls it after the plan is
+  stored, and only when the policy permits it.
+
+**Constants.** `DATA_CHECK_VERSION = 1`; the row bound is `_MAX_PROFILE_ROWS`
+(1,000,000) imported from `src/haute/assistant/_tools.py`, never a second
+literal; `DATA_CHECK_TIMEOUT_SECONDS = 30.0`; `DATA_CHECK_MAX_NODES = 8`;
+`DATA_CHECK_MAX_FINDINGS = 20`; `DATA_CHECK_MAX_COLUMNS = 20`;
+`DATA_CHECK_MAX_RULE_COUNTS = 100`; `DATA_CHECK_MAX_RULE_POSITIONS = 20`;
+`RATING_MISS_ADVISORY_SHARE = 0.10`; `MOSTLY_DEFAULT_SHARE = 0.5`;
+`MOSTLY_NULL_SHARE = 0.5`; shares are rounded to 4 decimal places. The
+admission operation name is `assistant_data_check` and the supersession key is
+`("assistant_data_check", session_id)`.
+
+**On the server, before admission.** The changed nodes come from the plan's
+`SemanticDiff` through the same seed derivation `_diff_seed_nodes` uses (one
+shared helper with a flag for the preamble widening, not a copy). Topological
+order, the sink-only set (`SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`), the
+artifact node types (`MODEL_SCORE`, `OPTIMISER_APPLY`) and the lineage
+(`source_lineage_graph` in `src/haute/execution.py`, under the candidate graph's
+`active_source`) decide eligibility. An input's currency is read without
+preparing it, from the source-cache identity that `prepare_input_snapshots`
+(`src/haute/_input_preparation.py`) reuses; only a current generation is
+readable. The binding is computed here: `graph_fingerprint` (in
+`src/haute/_cache.py`) of `flatten_graph(result_graph)`, and
+`dataframe_graph_input_identity(...).digest` (in `src/haute/execution.py`) over
+the lineage, read before admission and again after the worker returns.
+
+**In the worker.** The request is plain data, as `_ColumnProfileRequest` is: the
+candidate graph, the ordered checked node ids and the measurement plan per node
+(which inputs, which factors, tables and join keys). One lazy walk builds the
+lineage through `execute_lazy_graph` (in `src/haute/execution.py`) with
+`prepare_inputs=False`, no seed plan and no snapshot capture, preserving each
+checked node and the frames it reads; `_resolve_frame_outputs` is the model,
+except that its walk prepares inputs and this one must not. Each measured frame
+is cut with `head(row_bound)` and reduced by lazy aggregates only (row counts,
+null counts, claim counts from `banding_rule_claim_expr` in
+`src/haute/_rating.py`, rating key lookups canonicalised by that module's own
+key helpers, key semi-join and duplicate-key counts with the keys
+`build_edge_join_kwargs` in `src/haute/_edge_join.py` resolves), collected under
+the worker's isolated execution context. No frame is collected whole and none
+crosses the process boundary; the result holds JSON scalars only, through
+`json_safe_scalar` (`src/haute/_column_summary.py`). A node that raises is
+recorded against that node and the walk measures the other checked nodes; the
+worker renders each failure with the profile part's renderer
+(`_execution_error_message`), so its text follows `allow_row_samples` exactly
+as today.
+
+**Outcomes.** `ExecutionAdmissionError` maps to `admission_refused` with its
+`reason`; `InteractiveWorkerTimeoutError` to `deadline`; a worker terminal
+reason `memory_limited` to `memory_limited`; `SupersededRequestError` to
+`superseded`; a cancelled turn to `cancelled`; anything else to
+`internal_error`, logged as `assistant_data_check_failed` with its class and
+message and returned with the sanitized internal detail. No outcome raises out
+of the dry-run tool.
+
+**Result model.** A frozen result whose model-facing projection omits the
+binding, as `DryRunResult.as_dict` omits digests, and whose stored form keeps
+it beside the findings wherever they are kept.
+
+- **Non-goals.** As in the high-level contract. The schema tier, the plan hash
+  and `build_verified_plan` are unchanged.
+- **Failure and compatibility semantics.** As in the high-level contract; a
+  defect in the check never fails a dry-run.
+- **Acceptance evidence.** A new assistant data-check test module, named in
+  Testing when it lands, seeds candidate graphs under `tmp_path` and proves each
+  finding kind and each not-run reason; that the plan hash and the dry-run's
+  evidence are identical with and without a check; that no input snapshot,
+  source cache or node-output snapshot gains a generation during a check; that a
+  check result contains no data or configuration value; and that a binding
+  mismatch hides findings. The latency of a check on 100,000, 1,000,000 and
+  5,000,000 rows is recorded in the evaluation's evidence.
+- **Roadmap package.** [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run).

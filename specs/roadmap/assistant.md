@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-40 | Planned | P1 | Data checks have a specified execution contract and their own egress permission. |
 | ASSIST-41 | Planned | P1 | A dry-run reports advisory findings when changed nodes produce implausible data. |
 | ASSIST-42 | Planned | P2 | One call answers why a saved node fails or why a column is null. |
 | ASSIST-43 | Planned | P2 | Evaluation scores data findings as an extra layer and measures recovery from them. |
@@ -88,30 +87,6 @@ to the build journeys the evaluation targets first.
 
 ## Planned improvements
 
-### ASSIST-40 — The data-check execution contract and permission
-**Why:** Dry-run proves schemas only, so pipelines that run but are wrong pass
-(every row in the default band, an emptied filter, a join that matches
-nothing, rating-table misses). Checking data executes the pipeline, which the
-specification's "no execution tools" boundary and its rule that execution
-defines its own authorisation both govern, and project Python runs with
-process privileges.
-
-**Plan:** Specify the check before building it: what it executes (the changed
-nodes' lineage in the interactive preview worker, under admission, a deadline
-and a node cap, never sinks, training, optimisation or deployment), what it
-returns (value-free counts and shares, with truncation and sampling recorded),
-what it is bound to (the candidate graph, source generation and check
-version), and add a required `allow_aggregate_statistics` flag to
-`[assistant.egress]`.
-
-**Acceptance:** A Codex plan review of the specification is resolved; the
-configuration test requires the new flag and rejects it under external trust.
-
-**Dependencies:** `ASSIST-10`, `ASSIST-16`.
-
-**Evidence:** `src/haute/assistant/_config.py::resolve_egress_policy`;
-`src/haute/_execution_admission.py`.
-
 ### ASSIST-41 — Advisory data findings after dry-run
 **Why:** A model that must choose to call a check tool often will not, and the
 analyst never sees the data-level consequences of a plan.
@@ -121,7 +96,10 @@ after an eligible schema-tier dry-run, outside the save lock and the plan
 hash, and attach advisory findings to the dry-run result and the change card:
 rows in and out, null shares of new columns, per-rule banding counts, rating
 misses and unused entries, join matches, and execution errors; ineligible
-nodes report why they were not checked.
+nodes report why they were not checked. The check implements the contract in
+[the assistant specification's approved change contract](../assistant/high-level.md#approved-change-contract--data-checks)
+and [its low-level counterpart](../assistant/low-level.md#approved-change-contract--data-checks);
+landing it folds both into present-tense sections and removes them.
 
 **Acceptance:** Seeded scenarios report all-default banding, a 60% rating
 miss share, an emptied filter and a failed many-to-one join validation; a

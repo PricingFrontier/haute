@@ -69,11 +69,11 @@ provider is refused before any case runs. The profiles are a closed set:
 
 - `project`, the policy a configured project holds and the profile of every
   case but two: `max_sensitivity = "restricted"`, so `inspect_node` reads saved
-  node configuration, with project knowledge and executable source permitted
-  and row samples not.
+  node configuration, with project knowledge, executable source and aggregate
+  statistics permitted and row samples not.
 - `metadata_only`: `max_sensitivity = "internal"`, with project knowledge,
-  executable source and row samples all withheld, so saved node configuration
-  is withheld too. Two cases run under it: `motor_value_band_factor_withheld`,
+  executable source, row samples and aggregate statistics all withheld, so
+  saved node configuration is withheld too. Two cases run under it: `motor_value_band_factor_withheld`,
   a list edit whose blind rewrite the dry-run must refuse as `config_withheld`
   so that the turn asks (`needs_input`) and saves nothing, and
   `breakpoint_age_banding`, which adds a node from schemas alone.
@@ -365,7 +365,11 @@ tool-call budget, never a case's.
 ## Execution boundary
 
 Execution happens in the harness, never in the assistant. The assistant has no
-execution tool, and the harness executes nothing until the turn has ended.
+execution tool, and the harness executes nothing until the turn has ended. The
+[data check](high-level.md#approved-change-contract--data-checks) a dry-run runs
+under the `project` profile's `allow_aggregate_statistics` belongs to the
+assistant under test, never to the harness: its findings are part of what the
+model saw, and they never replace or stand in for a golden.
 It then parses the saved pipeline, flattens its submodel occurrences as a
 preview does, and runs each golden node through the production preview engine
 up to that node only, under the golden's scenario,

@@ -64,13 +64,16 @@ _APPLIED: dict[str, Any] = {
 }
 
 
-def _egress(*, allow_row_samples: bool = True) -> EgressPolicy:
+def _egress(
+    *, allow_row_samples: bool = True, allow_aggregate_statistics: bool = False
+) -> EgressPolicy:
     return EgressPolicy(
         trust="organization",
         max_sensitivity="restricted",
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=allow_row_samples,
+        allow_aggregate_statistics=allow_aggregate_statistics,
     )
 
 
@@ -2301,6 +2304,27 @@ class TestSystemPrompt:
         assert "- Saved node configuration: readable through `inspect_node`" in restricted
         assert "read that node's config in this turn and keep its entries" in restricted
         assert "`inspect_node`'s config part redacts node code" in restricted
+
+    def test_the_policy_states_aggregate_statistics_in_one_line(self):
+        """The data-check permission is one line either way. Off, it says no data
+        check runs, so a dry-run proves schemas and never that the data came out
+        right; on, it says only what may be sent, never that a check ran."""
+
+        from haute.assistant._render import render_egress_policy
+
+        permitted = render_egress_policy(_egress(allow_aggregate_statistics=True))
+        denied = render_egress_policy(_egress(allow_aggregate_statistics=False))
+
+        assert (
+            "- Aggregate data statistics: permitted (value-free counts and shares, "
+            "never row values)"
+        ) in permitted.splitlines()
+        assert (
+            "- Aggregate data statistics: not permitted; no data check runs, so a "
+            "dry-run proves schemas, never that the data came out right"
+        ) in denied.splitlines()
+        for policy in (permitted, denied):
+            assert sum("Aggregate data statistics" in line for line in policy.splitlines()) == 1
 
     def test_recipe_operations_reach_the_provider_wire_within_the_property_budget(self):
         """In the compatible projection the recipe branches merge into the operation

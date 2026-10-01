@@ -43,7 +43,8 @@ def _configured(
         f'[assistant]\nprovider = "anthropic"\nmodel = "{model}"\n'
         '[assistant.egress]\ntrust = "external"\nmax_sensitivity = "public"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
@@ -56,7 +57,8 @@ def _write_databricks_toml(root: Path, *, base_url: str | None = None) -> None:
         + base_url_line
         + '[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "internal"\n'
         "allow_project_knowledge = true\nallow_executable_source = true\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
     )
 
 
@@ -86,7 +88,8 @@ class TestReadinessMatrix:
             '[assistant]\nprovider = "anthropic"\nmodel = "m"\n'
             '[assistant.egress]\ntrust = "external"\nmax_sensitivity = "public"\n'
             "allow_project_knowledge = false\nallow_executable_source = false\n"
-            "allow_row_samples = false\n",
+            "allow_row_samples = false\n"
+            "allow_aggregate_statistics = false\n",
         )
         status = assistant_readiness()
         assert status.configured is False
@@ -164,7 +167,8 @@ class TestReadinessMatrix:
             '[assistant]\nprovider = "openai"\nmodel = "m"\nbase_url = "https://dbx"\n'
             '[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "internal"\n'
             "allow_project_knowledge = true\nallow_executable_source = false\n"
-            "allow_row_samples = false\n",
+            "allow_row_samples = false\n"
+            "allow_aggregate_statistics = false\n",
         )
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         status = assistant_readiness()
@@ -183,7 +187,8 @@ class TestReadinessMatrix:
             "[assistant.egress]\n"
             f'trust = "{"local" if "localhost" in base_url else "organization"}"\n'
             'max_sensitivity = "internal"\nallow_project_knowledge = false\n'
-            "allow_executable_source = false\nallow_row_samples = false\n",
+            "allow_executable_source = false\nallow_row_samples = false\n"
+            "allow_aggregate_statistics = false\n",
         )
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         assert resolve_assistant_config().base_url == base_url
@@ -200,7 +205,13 @@ class TestEgressPolicy:
         project_knowledge: bool = False,
         source: bool = False,
         rows: bool = False,
+        aggregates: bool | str | None = False,
     ) -> None:
+        # None omits the key; a string is written verbatim as its TOML value.
+        aggregates_line = ""
+        if aggregates is not None:
+            value = str(aggregates).lower() if isinstance(aggregates, bool) else aggregates
+            aggregates_line = f"allow_aggregate_statistics = {value}\n"
         _write_toml(
             root,
             '[assistant]\nprovider = "openai"\nmodel = "m"\n'
@@ -208,8 +219,81 @@ class TestEgressPolicy:
             f'max_sensitivity = "{max_sensitivity}"\n'
             f"allow_project_knowledge = {str(project_knowledge).lower()}\n"
             f"allow_executable_source = {str(source).lower()}\n"
-            f"allow_row_samples = {str(rows).lower()}\n",
+            f"allow_row_samples = {str(rows).lower()}\n" + aggregates_line,
         )
+
+    def test_aggregate_statistics_is_required(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Like every egress key it has no default: an older table without it
+        fails naming the key rather than running with a guessed permission."""
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        self._openai(
+            project_root,
+            base_url="https://api.example/v1",
+            trust="organization",
+            max_sensitivity="restricted",
+            aggregates=None,
+        )
+        with pytest.raises(
+            ConfigError,
+            match=r"Missing required assistant egress key\(s\): "
+            r"\[assistant\]\.egress\.allow_aggregate_statistics\.",
+        ):
+            resolve_assistant_config()
+
+    def test_aggregate_statistics_must_be_a_boolean(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        self._openai(
+            project_root,
+            base_url="https://api.example/v1",
+            trust="organization",
+            max_sensitivity="restricted",
+            aggregates='"yes"',
+        )
+        with pytest.raises(
+            ConfigError,
+            match=r"\[assistant\]\.egress\.allow_aggregate_statistics must be a boolean",
+        ):
+            resolve_assistant_config()
+
+    def test_external_trust_rejects_aggregate_statistics(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A data check executes the pipeline over project data, so an external
+        endpoint is refused it exactly as it is refused row samples."""
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        self._openai(
+            project_root,
+            base_url="https://api.example/v1",
+            trust="external",
+            aggregates=True,
+        )
+        with pytest.raises(ConfigError, match=r"public-only .*aggregate statistics"):
+            resolve_assistant_config()
+
+    def test_the_policy_hash_covers_aggregate_statistics(self):
+        policy = _config.EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=False,
+            allow_aggregate_statistics=False,
+        )
+        widened = _config.EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=False,
+            allow_aggregate_statistics=True,
+        )
+        assert policy.policy_hash != widened.policy_hash
 
     def test_local_requires_loopback_host(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -231,9 +315,11 @@ class TestEgressPolicy:
             project_knowledge=True,
             source=True,
             rows=True,
+            aggregates=True,
         )
         config = resolve_assistant_config()
         assert config.egress.trust == "local"
+        assert config.egress.allow_aggregate_statistics is True
         assert config.endpoint_host == "127.0.0.1"
 
     @pytest.mark.parametrize("trust", ["organization", "external"])
@@ -246,8 +332,13 @@ class TestEgressPolicy:
             resolve_assistant_config()
 
     @pytest.mark.parametrize(
-        ("max_sensitivity", "source", "rows"),
-        [("internal", False, False), ("public", True, False), ("public", False, True)],
+        ("max_sensitivity", "source", "rows", "aggregates"),
+        [
+            ("internal", False, False, False),
+            ("public", True, False, False),
+            ("public", False, True, False),
+            ("public", False, False, True),
+        ],
     )
     def test_external_cannot_be_widened(
         self,
@@ -256,6 +347,7 @@ class TestEgressPolicy:
         max_sensitivity: str,
         source: bool,
         rows: bool,
+        aggregates: bool,
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         self._openai(
@@ -265,6 +357,7 @@ class TestEgressPolicy:
             max_sensitivity=max_sensitivity,
             source=source,
             rows=rows,
+            aggregates=aggregates,
         )
         with pytest.raises(ConfigError, match=r"\[assistant\]\.egress"):
             resolve_assistant_config()
@@ -403,12 +496,14 @@ class TestDatabricksConfiguration:
         [
             'trust = "unknown"\nmax_sensitivity = "public"\n'
             "allow_project_knowledge = false\nallow_executable_source = false\n"
-            "allow_row_samples = false\n",
+            "allow_row_samples = false\n"
+            "allow_aggregate_statistics = false\n",
             'trust = "external"\nmax_sensitivity = "public"\n'
             "allow_project_knowledge = false\nallow_executable_source = false\n",
             'trust = "external"\nmax_sensitivity = "public"\n'
             "allow_project_knowledge = false\nallow_executable_source = false\n"
-            "allow_row_samples = false\nextra = true\n",
+            "allow_row_samples = false\nallow_aggregate_statistics = false\n"
+            "extra = true\n",
         ],
     )
     def test_egress_table_is_closed_and_required(

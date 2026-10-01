@@ -82,6 +82,7 @@ max_sensitivity = "restricted"
 allow_project_knowledge = true
 allow_executable_source = true
 allow_row_samples = false
+allow_aggregate_statistics = true
 ```
 
 ### [assistant]
@@ -113,8 +114,9 @@ The egress policy decides what project material the assistant may send to the mo
 | `allow_project_knowledge` | Whether the assistant may use background facts about the project: a summary of the saved pipeline, a digest of `haute.toml` without its values, and the project's own documentation. |
 | `allow_executable_source` | Whether the assistant may read the code in your nodes and in the pipeline's imports. Without it, code is withheld when the assistant inspects a node. |
 | `allow_row_samples` | Whether actual values from your data may be sent: profiles of a column's values, and error messages that quote a value. Without it, the assistant sees column names and types, and an error is reported by its type and the step that raised it. |
+| `allow_aggregate_statistics` | Whether the assistant may run the nodes it changes over your data, as a preview does, to check what they produce, and send the model counts and shares from that check: how many rows each node reads and keeps, how many of a new column's values are missing, how many rows fall into each band, how many rows a rating table has no entry for, and how many rows a join matches. The values themselves are never sent. Without it, the assistant checks only that a change fits the pipeline's columns and types, not that its data comes out right. |
 
-An `external` endpoint must use `max_sensitivity = "public"` and cannot allow executable source or row samples. In practice that means an external service gets an assistant that can neither read nor edit the pipeline, so use `organization` for your own Databricks workspace.
+An `external` endpoint must use `max_sensitivity = "public"` and cannot allow executable source, row samples or aggregate statistics. In practice that means an external service gets an assistant that can neither read nor edit the pipeline, so use `organization` for your own Databricks workspace.
 
 ---
 

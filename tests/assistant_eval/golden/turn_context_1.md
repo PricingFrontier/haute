@@ -8,6 +8,7 @@ Haute wrote this block for the current turn from the saved project; it describes
 - Project knowledge: permitted
 - Executable source: permitted
 - Column value profiles: not permitted; `inspect_node` withholds its profile part, and an error raised while node code runs reports its type, step or line and column names without its text
+- Aggregate data statistics: not permitted; no data check runs, so a dry-run proves schemas, never that the data came out right
 Column value profiles are not permitted. When your code compares a column to a literal value the request does not state, do not guess a comparison: begin the response with `NEEDS_INPUT:` and ask the analyst which values to match.
 
 ### Pipeline

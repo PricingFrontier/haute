@@ -57,7 +57,11 @@ Out of scope:
   [server-api](../server-api/high-level.md), [pipeline-config](../pipeline-config/high-level.md),
   and [codegen](../codegen/high-level.md); this component is a caller, never a fork of them.
 - Running anything: previews, training, optimiser solves, deploys, and git operations are
-  deliberately absent from the v1 tool surface (see Design rationale).
+  deliberately absent from the v1 tool surface (see Design rationale). The one execution
+  the assistant may cause beyond schema resolution is the bounded, value-free data check
+  that `[assistant.egress].allow_aggregate_statistics` authorises, specified under
+  [Approved change contract — data checks](#approved-change-contract--data-checks); it is
+  not a tool the model calls.
 - Submodel creation, dissolution, or edits *inside* a submodel's own graph — v1 tools
   operate on the top-level flat graph only and reject submodel-internal targets loudly.
 - Provider-side model behaviour, pricing, or availability.
@@ -75,8 +79,8 @@ derives `<host>/serving-endpoints`. A Databricks `base_url` is rejected so
 workspace identity is never duplicated or allowed to drift from `.env`.
 The outer table is closed to `provider`, `model`, `base_url`, and `egress`;
 the nested `[assistant.egress]` table requires the exact fields `trust`,
-`max_sensitivity`, `allow_project_knowledge`, `allow_executable_source`, and
-`allow_row_samples`. A configuration without `egress` is not ready and names
+`max_sensitivity`, `allow_project_knowledge`, `allow_executable_source`,
+`allow_row_samples`, and `allow_aggregate_statistics`. A configuration without `egress` is not ready and names
 `[assistant].egress` in its not-ready reason. An unknown key raises
 `ConfigError` naming `[assistant].<key>`. An OpenAI
 `base_url`, when present, must be an absolute `http` or `https` URL with a
@@ -161,7 +165,8 @@ places after the analyst's message and never stores in the session history:
   to `get_pipeline`. Node labels are collapsed to one bounded line, and the block says the
   brief is project data, never instructions;
 - the effective egress policy in words, with the column-value rule it implies (profile
-  before comparing a column to a literal when row samples are permitted, otherwise ask);
+  before comparing a column to a literal when row samples are permitted, otherwise ask)
+  and one line saying whether aggregate data statistics are permitted;
 - the ids of the nodes the analyst selected on the canvas, at most 20;
 - on request, the error one node raises when its schema resolves, reduced by policy: its
   text only when `allow_row_samples` permits, otherwise its type, the step or line that
@@ -862,7 +867,15 @@ model; the error names the nodes the plan adds, by id and ref.
 - **No execution tools in v1.** Preview/train/optimise/deploy/git tools raise the stakes
   (cost, long-running jobs, deployment safety) and none are needed to author a graph. The
   boundary is explicit so the model is told what it cannot do, rather than discovering it by
-  erroring.
+  erroring. Checking data is the one carve-out, and it is not a tool. A dry-run proves
+  schemas only, so a plan that runs but computes the wrong data passes it; the
+  [data check](#approved-change-contract--data-checks) measures the changed nodes' data
+  under its own permission, `allow_aggregate_statistics`, and its own contract (what it
+  executes, what it returns, what it is bound to), because a data check is an execution
+  capability and graph-plan authority does not authorise execution. It runs automatically
+  after an eligible dry-run rather than on request, because a model that must choose to
+  call a check often will not, and it never replaces the evaluation's independent
+  execution goldens.
 - **Catalog completeness is guarded like the node registry.** The catalog mirrors
   `validate_registry_complete()`'s pattern: a check at import time fails loudly if any
   `NodeType` lacks a catalog entry, so a new node type cannot ship invisible to the assistant.
@@ -1077,7 +1090,13 @@ remain mandatory. Actually running a pipeline or performing an external write
 is protected at execution time, not graph-authoring time. V1 exposes no
 assistant execution tool; any future execution, training, optimisation,
 deployment, Git or other external-side-effect tool must define its own
-explicit runtime authorization instead of reusing graph-plan authority.
+explicit runtime authorization instead of reusing graph-plan authority. The
+data check is such a definition: its authorization is
+`[assistant.egress].allow_aggregate_statistics`, never the plan's authority,
+and [its contract](#approved-change-contract--data-checks) bounds it to
+measuring the lineage of the plan's changed nodes, value-free, without sinks or
+external writes. Its findings sit outside the plan hash and the save lock and
+never change what apply saves.
 
 `apply_graph_plan` accepts a plan hash, not a replacement operation payload.
 Under the shared save lock it reloads the snapshot, rejects a stale revision,
@@ -1249,12 +1268,48 @@ boundary and live runner are specified in [the assistant evaluation](evaluation.
 `[assistant.egress]` is required and closed. It contains exactly `trust`
 (`local`, `organization`, or `external`), `max_sensitivity` (`public`,
 `internal`, or `restricted`), and the required booleans
-`allow_project_knowledge`, `allow_executable_source`, and
-`allow_row_samples`. A configuration without `egress` is not ready and
-names `[assistant].egress` in its not-ready reason. Local endpoints must be
-loopback; organization and external endpoints must use HTTPS; external policy
-is public-only and cannot enable executable source or row samples. Project
-configuration may narrow but never widen these class ceilings.
+`allow_project_knowledge`, `allow_executable_source`, `allow_row_samples`, and
+`allow_aggregate_statistics`. No key has a default: a missing key is a
+configuration error naming its full path, such as
+`[assistant].egress.allow_aggregate_statistics`. A configuration without
+`egress` is not ready and names `[assistant].egress` in its not-ready reason.
+Local endpoints must be loopback; organization and external endpoints must use
+HTTPS; external policy is public-only and cannot enable executable source, row
+samples or aggregate statistics. Project configuration may narrow but never
+widen these class ceilings.
+
+**Aggregate statistics.** `allow_aggregate_statistics` authorises the
+[data check](#approved-change-contract--data-checks): executing the lineage of
+the nodes a plan changes over project data in the preview worker, and sending
+the model value-free counts and shares derived from those rows (rows in and
+out, null shares, per-rule banding counts, rating misses, join matches), never
+a row value, a quantile of values or a distinct value. Its minimum sensitivity
+is `internal`. The results are value-free metadata of the class `internal`
+already permits (`find_data` returns a dataset's schema and estimated row count
+at `internal`); they name nodes and columns, which are internal pipeline
+metadata, and carry no configuration value, so they do not need `restricted`.
+Under `public` no check runs, as no project read does. Value-free is not
+anonymous: a count over a predicate the model wrote (a filter literal, a
+categorical rule value, a join key) says how many rows satisfy it, including
+whether any do, so a check can disclose whether a value occurs in the data. The
+explicit flag is the authorization boundary, as `allow_row_samples` is for
+profiles; the result's shape limits what is sent, not what can be inferred from
+it. The flag is independent of `allow_row_samples` in both directions: row
+samples are a disclosure decision, while the data check is an execution
+decision with its own cost, because node code that the schema tier only plans
+then runs over rows. The text of an execution error inside a check result still
+follows `allow_row_samples`, as every execution error's does. The turn context's
+egress policy states the flag
+in one line, when it is true:
+
+`- Aggregate data statistics: permitted (value-free counts and shares, never row values)`
+
+and when it is false:
+
+`- Aggregate data statistics: not permitted; no data check runs, so a dry-run proves schemas, never that the data came out right`
+
+Until the check is delivered, the flag is validated, part of the policy hash
+and stated in the turn context, and gates nothing else.
 
 Schema inspection is schema-only: assistant schema results never contain
 preview rows. Raw rows are unavailable through ordinary read tools, and
@@ -1333,6 +1388,271 @@ separate. Persistence retains bounded redacted summaries, stable identifiers,
 revisions, decisions, graph-update evidence, and value-free validation path/reason
 metadata; it does not copy raw row, source, document, configuration payloads, or
 deterministic payload digests into restartable history.
+
+## Approved change contract — data checks
+
+This section specifies the data check before it is built. The permission it
+relies on, `allow_aggregate_statistics`, is delivered and described under
+[Egress and project knowledge](#egress-and-project-knowledge); every other
+record here is unresolved until its roadmap package lands, when it folds into
+the sections above and this section is removed. The
+[low-level contract](low-level.md#approved-change-contract--data-checks) names
+the seams, constants and shapes.
+
+- **Current limitation.** A dry-run proves schemas only. Plan construction, the
+  schema tier and apply's verification collect no rows, so a plan that runs but
+  computes the wrong data validates, applies and reports success: every row in a
+  banding default, a filter that empties its input, an Edge Join that matches
+  nothing, a rating table most rows miss, a join that multiplies rows on
+  duplicate keys. The one capability that reads data, `inspect_node`'s profile
+  part, reads one frame of the saved graph, needs `allow_row_samples`, and runs
+  only when the model chooses to call it.
+- **Unresolved target.** After an eligible dry-run, a data check measures the
+  nodes the plan changes in the plan's candidate graph and returns value-free
+  advisory and informational findings, exactly as the records below specify.
+  [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run)
+  builds it and attaches its result to the dry-run result and the change card.
+  ASSIST-42 measures the saved graph under the same contract, ASSIST-43 scores
+  findings in evaluation, and ASSIST-44 decides whether any finding may block.
+
+**What the check executes.** The check executes the lineage of its checked
+nodes in the dry-run's candidate graph: the `result_graph` of the
+`VerifiedPlan` that `src/haute/assistant/_application.py::build_verified_plan`
+returned for the stored plan, never the saved graph. The candidate graph is
+flattened and its preamble compiled as for a preview. The lineage is each
+checked node and its ancestors up to the sources, under the graph's active
+source scenario and pruned at Source Switches as
+`src/haute/execution.py::source_lineage_graph` prunes them. A node downstream
+of a checked node never runs unless it is checked itself. Quote Response, Data
+Output, Explore, Model Training and Optimisation nodes have no output frame, so
+no lineage contains one: the check never invokes a sink, publishes an output or
+performs an external write, and it never trains, optimises, deploys or touches
+Git. It never builds, refreshes, publishes or clears an input snapshot, source
+cache or node-output snapshot, never fetches remote data, and never loads a
+trained artifact (see **Eligibility**). Node and preamble code run as in an
+editor preview, under the same sandbox and with no bypass; what the check adds
+to the schema tier is that rows are collected.
+
+The check runs where the editor's previews and the profile part run: one
+`PREVIEW_EAGER` admission from
+`src/haute/_execution_admission.py::create_admitted_execution_context` under the
+operation name `assistant_data_check`, then the interactive preview worker
+through `src/haute/_interactive_workers.py::run_in_interactive_worker`, under
+the isolated budget derived from that admission and the worker's native memory
+cap. Admission refuses at once rather than waiting. Under
+`HAUTE_INTERACTIVE_EXECUTION_MODE=thread` the check runs on a server thread: at
+the deadline the check returns `deadline`, its cancellation token stops the
+engine at its next checkpoint, and its admission is released when the thread
+ends, as the free-code column resolution does. Its deadline is 30 seconds from
+the admission request to the result,
+fixed rather than configurable, and at most 8 nodes are checked per check. No
+frame leaves the worker: it returns only the value-free result below. One check
+runs per assistant session at a time: a newer check supersedes and stops an
+older one still running, and a stopped turn stops its check before the dry-run
+call ends.
+
+The check starts after the dry-run has stored its plan, outside the save lock.
+Its outcome never changes the plan, its hash, its verification tier, its
+evidence or its warnings, and a dry-run that fails runs no check.
+
+**Which data it reads and how rows are bounded.** The lineage runs over the
+inputs an editor preview reads, uncapped at the sources: a Parquet Data Input
+scanned directly, and every other input from its current published snapshot (a
+snapshot-backed Data Input, including database and Databricks inputs, and each
+Quote Input table). The check never prepares an input: when an input's snapshot
+is not current (none built yet, stale, building, partial or corrupt), the nodes
+whose lineage reads it are not checked (see **Eligibility**). Each measured
+frame, which is a checked node's output (per port) or one of its input frames,
+is cut to its first 1,000,000 rows with `head`, the bound `inspect_node`'s
+profile part applies (`_MAX_PROFILE_ROWS` in `src/haute/assistant/_tools.py`).
+The frames a measured frame is computed from are not cut, so an Edge Join's
+join side, a rating step's input and a filter's input are complete, and Polars
+pushes the cut upstream only where the result is unchanged. Cutting the sources
+instead would distort a join of two large inputs, whose first rows barely
+overlap, and would report a filter as emptying its input whenever the matching
+rows of a sorted file lie beyond the cut. Nothing is sampled at random. Every
+row count records `truncated` when its frame reached the bound. Below the bound
+every count is exact over the whole frame, as the Banding editor's whole-dataset
+statistics are. At the bound, counts and shares describe the frame's first
+1,000,000 rows in the engine's order, which is not a random sample and, for a
+frame whose row order the engine does not fix (after a join or a group-by
+without maintained order), not reproducible between runs; every finding computed
+from a truncated frame carries `truncated: true`.
+
+**What it returns.** The result is value-free: counts and shares, with the node
+ids, port and input names, column names and configuration positions that say
+what was counted. It never carries a row value; a quantile, minimum, maximum or
+mean of data values; a distinct value or level; a configuration value (a rule
+value or assignment, a table entry or default, a filter literal, code); or the
+text of an execution error unless `allow_row_samples` permits that text. Every
+share comes with its numerator and denominator counts and is rounded to four
+decimal places. For each changed node the result reports:
+
+- `status`: `checked`; `failed` when the node itself raised, with the envelope
+  every execution error uses (exception type, node, step or line, the columns
+  the egress policy discloses, and the error's own text only under
+  `allow_row_samples`), rendered in the worker where the traceback is;
+  `upstream_failed` naming the ancestor that raised; or `not_checked` with its
+  reason.
+- Rows in and out: the row count of each input frame, by its code-visible input
+  name, and of each output port, each with `truncated`.
+- Null counts: for each new or changed column, its null count over the output
+  rows. A column is new when no input frame has it, and changed when an input
+  has it with another dtype or the node's structured configuration writes it (a
+  banding factor's output column, a rating table's or combined output's column,
+  a `with_column` step's target). At most 20 columns per node, in output order,
+  with the number omitted.
+- Banding, for a Banding node: per factor, by its 0-based position in `factors`
+  and its output column, the rows the factor read; the rows each rule claims, as
+  a list aligned with the factor's `rules` by 0-based position; and the
+  defaulted rows. Claims are the claim index of
+  `src/haute/_rating.py::banding_rule_claim_expr`, computed on the frame that
+  factor reads, so a row counts against exactly the rule whose assignment
+  execution writes and an unclaimed row is a defaulted row. A factor with more
+  than 100 rules reports its claimed and defaulted totals and the number of
+  rules that claim no row instead of the list. A draft factor that execution
+  skips is reported as `skipped`, with no counts.
+- Rating, for a Rating Step: per table, by its 0-based position in `tables` and
+  its output column, the rows the table read; the rows whose factor key has no
+  entry, keys canonicalised exactly as the lookup canonicalises them and counted
+  alike whether `defaultValue` fills them, `"onMissing": "neutral"` leaves them
+  null, or the default `"onMissing": "error"` raises (a raise is also the node's
+  `failed` status); the number of entries; and the number of entries no row's
+  key matched. A table execution skips is reported as `skipped`, with no counts.
+- Edge Join: the join type and declared `validate`, the key column names, the
+  base and join rows, the base rows whose key matches at least one join row, and
+  per side the number of key tuples that occur more than once. A key tuple with
+  a null part never matches and is never counted as duplicated, as the join
+  itself never matches nulls. A cross join reports rows only.
+
+Code-mode nodes and free-code steps are measured like every node, by rows in
+and out, null counts and errors. Banding, rating and join measurements come only
+from structured configuration, so a join written in code or in a step list is
+measured by its node's rows in and out.
+
+The result also carries the check `version`, `row_bound` (1,000,000), its
+`outcome` (`checked`, or `not_run` with one reason), its findings and its
+elapsed milliseconds.
+
+**Findings and thresholds.** A finding names its `kind`, its `severity`, its
+node, the counts behind it and `truncated`. A severity is `advisory`, meaning
+the data looks wrong and the model should look before it applies, or
+`informational`, meaning worth knowing and often intended. No finding blocks
+apply. The kinds are a closed set:
+
+| Kind | Severity | Raised when |
+|---|---|---|
+| `execution_failed` | advisory | A checked node or an ancestor in its lineage raised while the check computed it; one finding per raising node. |
+| `rows_emptied` | advisory | A checked node's output has 0 rows while at least one of its inputs has at least 1. |
+| `banding_all_default` | advisory | A banding factor read at least 1 row and no rule claims any. |
+| `banding_mostly_default` | informational | A banding factor's defaulted share is at least 0.5 and some rule claims a row. |
+| `banding_rules_unclaimed` | informational | Rules of a factor that is not all-default claim no row; the finding lists up to 20 rule positions. |
+| `rating_misses` | advisory | A rating table's miss share (missed rows over rows read) is at least 0.10. |
+| `rating_misses` | informational | A rating table's miss share is above 0 and below 0.10. |
+| `rating_entries_unused` | informational | At least one of a rating table's entries matched no row. |
+| `join_unmatched` | advisory | A `left`, `inner` or `semi` Edge Join's base has at least 1 row and none matches a join row. |
+| `join_partial` | informational | A `left`, `inner` or `semi` Edge Join's matched base share is above 0 and below 1. |
+| `join_validation_failed` | advisory | An Edge Join's `validate` requires unique keys on a side (`m:1` the join side, `1:m` the base side, `1:1` both) and that side has a duplicated key tuple. |
+| `join_fan_out` | advisory | A `left` or `inner` Edge Join whose `validate` is not `1:m` or `m:m` has more output rows than base rows, neither truncated, and a duplicated key tuple on its join side. |
+| `column_all_null` | advisory | A new or changed column is null in every output row, with at least 1 row. |
+| `column_mostly_null` | informational | A new or changed column's null share is at least 0.5 and below 1. |
+
+A `join_validation_failed` finding replaces the `execution_failed` finding of the
+join whose validation raised, because it states the cause. Findings are ordered
+advisory first, then by the changed nodes' order, then by the table's order; at
+most 20 are returned, with the number omitted.
+
+**What findings are bound to.** A check result records its binding: the check
+`version` (1, incremented whenever a measurement, threshold or shape changes);
+the `plan_hash` it was computed for; `graph_digest`,
+`src/haute/_cache.py::graph_fingerprint` of the flattened candidate graph, which
+covers node configuration, edges, the preamble and imported utility modules; and
+`source_generation`, the digest of
+`src/haute/execution.py::dataframe_graph_input_identity` over the check's
+lineage under the active scenario, which covers the input file signatures,
+published snapshot generation pointers and the preamble fingerprint that
+execution caches already sign. The source generation is read before execution
+and again after it; when the two differ the check is `not_run` with
+`source_changed`, so no finding describes inputs that changed under it.
+Findings are not plan facts: they are outside the plan hash, never computed or
+awaited under the save lock, and never recomputed or read by apply, so they
+never change what apply saves. A consumer shows findings only for the graph
+digest they record: a change card shows those of the dry-run whose plan hash it
+applied, and labels them as computed from an earlier source generation when the
+source generation at apply differs. The model-facing view omits the binding, as
+dry-run results omit revisions and digests; the stored result keeps it.
+
+**Eligibility.** The changed nodes are the nodes the plan's semantic diff adds
+or whose configuration it writes, the new ids of nodes it renames, and the
+target of every edge it adds or removes, when present in the candidate graph:
+the seeds of `src/haute/assistant/_application.py::_diff_seed_nodes` without its
+widening to every node when the preamble changes, so a preamble-only plan checks
+nothing. They are taken in the candidate graph's topological order, ties broken
+by node id, and each one that is not checked reports exactly one reason:
+
+- `sink_only`: a Quote Response, Data Output, Explore, Model Training or
+  Optimisation node, which has no output frame to measure.
+- `artifact_in_lineage`: the node or an ancestor is a Model Scoring or Apply
+  Optimisation node, which the reason names. Both load a trained artifact, from
+  an MLflow run or registered model that may be remote and is reached with the
+  project's credentials, and scoring dominates a check's cost; a data check
+  never reaches the network and never uses credentials.
+- `input_not_prepared`: the lineage reads an input whose data is not current
+  locally, which the reason names, with the remedy to preview that input in the
+  editor first, as a dry-run gives for an input it cannot scan.
+- `submodel`: a submodel occurrence or port, which assistant plans cannot
+  write. A submodel in a checked node's lineage runs flattened, as in a preview.
+- `node_cap`: the node comes after the first 8 checkable nodes.
+
+Code-mode nodes, nodes with free-code steps and nodes downstream of a submodel
+are checkable. Only the active source scenario is checked: the dry-run proves
+the schema of every scenario a Source Switch routes, while the data check
+measures the one a preview runs.
+
+A check that cannot run returns `not_run` with exactly one reason, never an
+error: `not_schema_tier` (a structural plan has nothing executable to measure),
+`no_checkable_nodes` (each changed node reports why), `admission_refused` (with
+the admission's reason, as a preview reports it), `deadline` (30 seconds
+passed; the worker is stopped and no partial result returns), `memory_limited`
+(the worker exceeded the preview memory budget), `superseded` (a newer check in
+the session replaced it), `cancelled` (the turn stopped), `source_changed`, or
+`internal_error` (a defect in the check itself, logged with its detail and
+reported with the sanitized internal detail). No check is attempted, and the
+dry-run result carries none, when `allow_aggregate_statistics` is false or the
+policy's ceiling is `public`; the turn context's policy line already says so.
+
+**The permission.** The check runs only when
+`[assistant.egress].allow_aggregate_statistics` is true and `max_sensitivity`
+is `internal` or `restricted`; [Egress and project knowledge](#egress-and-project-knowledge)
+gives the flag's rules and the turn-context line. Graph-plan authority never
+authorises a check.
+
+- **Non-goals.** No assistant execution tool: the check runs automatically and
+  the model cannot invoke, widen or target it, so the system prompt's statement
+  that no execution tool is available stays true and running or materialising a
+  pipeline stays unavailable. No blocking finding (ASSIST-44), no check of the
+  saved graph (ASSIST-42) and no evaluation scoring (ASSIST-43). A data check
+  never replaces the evaluation's independent execution goldens. No check of an
+  inactive scenario, of a lineage through Model Scoring or Apply Optimisation,
+  or of a join inside code or a step list, and no configurable bound, deadline,
+  cap or threshold.
+- **Failure and compatibility semantics.** A `haute.toml` whose
+  `[assistant.egress]` lacks `allow_aggregate_statistics` fails with a
+  configuration error naming the key; there is no default and no migration. A
+  check that cannot run, an ineligible node and a failing node are reasons and
+  statuses in the result, never dry-run errors, and the dry-run's plan is the
+  same whatever the check reports. Findings are never shown for a graph whose
+  digest differs from theirs.
+- **Acceptance evidence.** Seeded candidate graphs report `banding_all_default`,
+  an advisory `rating_misses` at a 0.6 miss share, `rows_emptied` for a filter
+  and `join_validation_failed` for an `m:1` join on duplicate keys; a partial
+  join reports an informational `join_partial`; a payload test finds no data or
+  configuration value in a check result; a frame above 1,000,000 rows reports
+  `truncated`; deadline expiry, admission refusal and a stopped turn each report
+  their reason with the dry-run unchanged; with the flag false no check is
+  attempted; a change card never shows findings for another graph digest; and
+  latency is recorded on 100,000, 1,000,000 and 5,000,000 rows.
+- **Roadmap package.** [ASSIST-41](../roadmap/assistant.md#assist-41--advisory-data-findings-after-dry-run).
 
 ## Provider qualification
 

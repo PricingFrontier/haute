@@ -331,6 +331,7 @@ def test_adversarial_cases_reject_before_writes_and_keep_data_inert(tmp_path: Pa
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     view = build_project_knowledge(destination, "pipeline.py", policy=policy)
     query = by_kind["project_knowledge"]["input"]["query"]

@@ -61,7 +61,8 @@ def configured(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         '[assistant]\nprovider = "anthropic"\nmodel = "claude-opus-5-5"\n'
         '[assistant.egress]\ntrust = "external"\nmax_sensitivity = "public"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -677,6 +678,7 @@ class TestProviderFactory:
             allow_project_knowledge=False,
             allow_executable_source=False,
             allow_row_samples=False,
+            allow_aggregate_statistics=False,
         )
         anthropic_config = AssistantConfig(
             provider="anthropic",
@@ -1001,6 +1003,7 @@ def _egress_toml(*, max_sensitivity: str, allow_row_samples: bool) -> str:
         f'max_sensitivity = "{max_sensitivity}"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
         f"allow_row_samples = {'true' if allow_row_samples else 'false'}\n"
+        "allow_aggregate_statistics = false\n"
     )
 
 

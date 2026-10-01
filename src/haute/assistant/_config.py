@@ -51,6 +51,7 @@ ASSISTANT_EGRESS_TOML_KEYS = frozenset(
         "allow_project_knowledge",
         "allow_executable_source",
         "allow_row_samples",
+        "allow_aggregate_statistics",
     }
 )
 _ASSISTANT_TABLE_KEYS = ASSISTANT_TOML_KEYS
@@ -72,10 +73,14 @@ class EgressPolicy:
     allow_project_knowledge: bool
     allow_executable_source: bool
     allow_row_samples: bool
+    #: Whether a data check may execute the changed nodes' lineage over project
+    #: data and send the model value-free counts and shares derived from it.
+    allow_aggregate_statistics: bool
 
     @property
     def policy_hash(self) -> str:
         payload = {
+            "allow_aggregate_statistics": self.allow_aggregate_statistics,
             "allow_executable_source": self.allow_executable_source,
             "allow_project_knowledge": self.allow_project_knowledge,
             "allow_row_samples": self.allow_row_samples,
@@ -369,6 +374,7 @@ def _validate_egress(
         "allow_project_knowledge",
         "allow_executable_source",
         "allow_row_samples",
+        "allow_aggregate_statistics",
     ):
         if not isinstance(raw[key], bool):
             raise ConfigError(f"[assistant].egress.{key} must be a boolean")
@@ -382,11 +388,14 @@ def _validate_egress(
     if trust in {"organization", "external"} and endpoint.scheme != "https":
         raise ConfigError(f"[assistant].egress.trust {trust} requires an HTTPS endpoint")
     if trust == "external" and (
-        sensitivity != "public" or raw["allow_executable_source"] or raw["allow_row_samples"]
+        sensitivity != "public"
+        or raw["allow_executable_source"]
+        or raw["allow_row_samples"]
+        or raw["allow_aggregate_statistics"]
     ):
         raise ConfigError(
-            "[assistant].egress external is public-only and forbids executable source "
-            "and row samples"
+            "[assistant].egress external is public-only and forbids executable source, "
+            "row samples and aggregate statistics"
         )
     return EgressPolicy(
         trust=cast(ProviderTrust, trust),
@@ -394,6 +403,7 @@ def _validate_egress(
         allow_project_knowledge=raw["allow_project_knowledge"],
         allow_executable_source=raw["allow_executable_source"],
         allow_row_samples=raw["allow_row_samples"],
+        allow_aggregate_statistics=raw["allow_aggregate_statistics"],
     )
 
 

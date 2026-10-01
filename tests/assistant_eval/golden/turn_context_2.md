@@ -8,6 +8,7 @@ Haute wrote this block for the current turn from the saved project; it describes
 - Project knowledge: permitted
 - Executable source: permitted
 - Column value profiles: permitted
+- Aggregate data statistics: permitted (value-free counts and shares, never row values)
 When your code compares a column to a literal value, first call `inspect_node` with parts ["profile"] for that frame and use the levels it reports. If the column's values are withheld, do not guess a comparison: begin the response with `NEEDS_INPUT:` and ask which values you should match.
 
 ### Build plan

@@ -48,15 +48,17 @@ HASHES_FILE = "hashes.json"
 
 GOLDEN_SOURCE_FILE = "motor_pricing.py"
 # A fixed policy, never the repository's haute.toml, so the snapshot does not
-# follow local configuration. Row samples are off in the first turn, so it shows
-# the context that asks the analyst for literal values; the second turn permits
-# them, as a policy changed mid-session would.
+# follow local configuration. Row samples and aggregate statistics are off in
+# the first turn, so it shows the context that asks the analyst for literal
+# values and says no data check runs; the second turn permits both, as a policy
+# changed mid-session would.
 GOLDEN_EGRESS_POLICY = EgressPolicy(
     trust="organization",
     max_sensitivity="restricted",
     allow_project_knowledge=True,
     allow_executable_source=True,
     allow_row_samples=False,
+    allow_aggregate_statistics=False,
 )
 _POLICY_COLUMNS = ("policy_id", "driver_age", "vehicle_group", "region", "exposure")
 _FEATURE_COLUMNS = (*_POLICY_COLUMNS, "young_driver")
@@ -146,6 +148,7 @@ GOLDEN_TURNS = (
             allow_project_knowledge=True,
             allow_executable_source=True,
             allow_row_samples=True,
+            allow_aggregate_statistics=True,
         ),
         GraphBrief(
             pipeline_name="motor_pricing",

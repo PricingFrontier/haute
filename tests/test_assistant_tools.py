@@ -91,7 +91,8 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         'base_url = "https://api.openai.com/v1"\n'
         '[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "restricted"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
         encoding="utf-8",
     )
     return tmp_path
@@ -284,6 +285,7 @@ def profile_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path
             allow_project_knowledge=True,
             allow_executable_source=True,
             allow_row_samples=True,
+            allow_aggregate_statistics=False,
         )
 
     monkeypatch.setattr(tools_module, "resolve_egress_policy", allowing)
@@ -324,6 +326,7 @@ def dtype_matrix_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) ->
             allow_project_knowledge=True,
             allow_executable_source=True,
             allow_row_samples=True,
+            allow_aggregate_statistics=False,
         ),
     )
     return project_root
@@ -405,6 +408,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
                 allow_project_knowledge=True,
                 allow_executable_source=True,
                 allow_row_samples=True,
+                allow_aggregate_statistics=False,
             ),
         )
 
@@ -676,6 +680,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
                 allow_project_knowledge=True,
                 allow_executable_source=True,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         )
 
@@ -736,6 +741,7 @@ class TestInspectNode:
                 allow_project_knowledge=False,
                 allow_executable_source=False,
                 allow_row_samples=row_samples,
+                allow_aggregate_statistics=False,
             ),
         )
         read: list[str] = []
@@ -774,6 +780,7 @@ class TestInspectNode:
                 allow_project_knowledge=False,
                 allow_executable_source=False,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         )
         monkeypatch.setattr(
@@ -861,6 +868,7 @@ class TestExecutableSourcePolicy:
                 allow_project_knowledge=True,
                 allow_executable_source=allowed,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         )
 
@@ -1355,6 +1363,7 @@ class TestReadTools:
                 allow_project_knowledge=False,
                 allow_executable_source=False,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         )
         monkeypatch.setattr(
@@ -1383,6 +1392,7 @@ class TestReadTools:
                 allow_project_knowledge=False,
                 allow_executable_source=False,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         )
         monkeypatch.setattr(
@@ -1717,6 +1727,7 @@ class TestToolExecutorDispatch:
                 allow_project_knowledge=True,
                 allow_executable_source=False,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         )
         monkeypatch.setattr(
@@ -2802,7 +2813,8 @@ def _egress_toml(root: Path, *, max_sensitivity: str) -> None:
         'base_url = "https://api.openai.com/v1"\n'
         f'[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "{max_sensitivity}"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
         encoding="utf-8",
     )
 
@@ -4022,6 +4034,7 @@ def _egress_policy(
             allow_project_knowledge=False,
             allow_executable_source=executable_source,
             allow_row_samples=row_samples,
+            allow_aggregate_statistics=False,
         ),
     )
 
@@ -4196,6 +4209,7 @@ def _allow_row_samples(monkeypatch: pytest.MonkeyPatch) -> None:
             allow_project_knowledge=False,
             allow_executable_source=False,
             allow_row_samples=True,
+            allow_aggregate_statistics=False,
         ),
     )
 
@@ -4340,6 +4354,7 @@ class TestPreambleFailureEgress:
                 allow_project_knowledge=False,
                 allow_executable_source=False,
                 allow_row_samples=True,
+                allow_aggregate_statistics=False,
             ),
         )
 
@@ -4380,6 +4395,7 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
             allow_project_knowledge=False,
             allow_executable_source=False,
             allow_row_samples=False,
+            allow_aggregate_statistics=False,
         ),
     )
 
@@ -4404,6 +4420,7 @@ def _policy(*, max_sensitivity: str, executable: bool):
         allow_project_knowledge=False,
         allow_executable_source=executable,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
 
 
@@ -4764,6 +4781,7 @@ def _turn_policy(*, max_sensitivity: str = "internal", allow_row_samples: bool =
         allow_project_knowledge=False,
         allow_executable_source=False,
         allow_row_samples=allow_row_samples,
+        allow_aggregate_statistics=False,
     )
 
 

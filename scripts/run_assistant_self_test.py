@@ -1137,6 +1137,7 @@ def _append_assistant_config(project_root: Path, config: AssistantConfig) -> Non
             f"allow_project_knowledge = {str(config.egress.allow_project_knowledge).lower()}",
             f"allow_executable_source = {str(config.egress.allow_executable_source).lower()}",
             f"allow_row_samples = {str(config.egress.allow_row_samples).lower()}",
+            f"allow_aggregate_statistics = {str(config.egress.allow_aggregate_statistics).lower()}",
         ]
     )
     existing = path.read_text(encoding="utf-8").rstrip()
@@ -1228,10 +1229,10 @@ def egress_policy(profile: SelfTestEgress, *, trust: ProviderTrust) -> EgressPol
     """The egress policy a case runs under: its named *profile* at the provider's *trust*.
 
     ``project`` is the policy a configured project holds: saved node
-    configuration (``restricted``), project knowledge and executable source,
-    and no row samples. ``metadata_only`` sends internal pipeline metadata
-    alone, withholding saved configuration, project knowledge, executable
-    source and row samples.
+    configuration (``restricted``), project knowledge, executable source and
+    aggregate statistics, and no row samples. ``metadata_only`` sends internal
+    pipeline metadata alone, withholding saved configuration, project
+    knowledge, executable source, row samples and aggregate statistics.
     """
 
     if profile == "project":
@@ -1241,6 +1242,7 @@ def egress_policy(profile: SelfTestEgress, *, trust: ProviderTrust) -> EgressPol
             allow_project_knowledge=True,
             allow_executable_source=True,
             allow_row_samples=False,
+            allow_aggregate_statistics=True,
         )
     if profile == "metadata_only":
         return EgressPolicy(
@@ -1249,6 +1251,7 @@ def egress_policy(profile: SelfTestEgress, *, trust: ProviderTrust) -> EgressPol
             allow_project_knowledge=False,
             allow_executable_source=False,
             allow_row_samples=False,
+            allow_aggregate_statistics=False,
         )
     raise ValueError(f"unknown evaluation egress profile: {profile}")
 

@@ -932,6 +932,7 @@ _PERMISSIVE_EGRESS = EgressPolicy(
     allow_project_knowledge=True,
     allow_executable_source=True,
     allow_row_samples=True,
+    allow_aggregate_statistics=True,
 )
 
 
@@ -954,6 +955,7 @@ def _banding_replay(_config: AssistantConfig) -> TrajectoryProvider:
                 allow_project_knowledge=True,
                 allow_executable_source=True,
                 allow_row_samples=False,
+                allow_aggregate_statistics=True,
             ),
         ),
         (
@@ -964,6 +966,7 @@ def _banding_replay(_config: AssistantConfig) -> TrajectoryProvider:
                 allow_project_knowledge=False,
                 allow_executable_source=False,
                 allow_row_samples=False,
+                allow_aggregate_statistics=False,
             ),
         ),
     ],
@@ -1131,6 +1134,7 @@ async def test_an_external_provider_is_refused_before_the_case_runs(tmp_path: Pa
         allow_project_knowledge=False,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
 
     def unexpected_provider(_config: AssistantConfig) -> TrajectoryProvider:

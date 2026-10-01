@@ -67,6 +67,7 @@ def _config(provider: str, base_url: str | None = None) -> AssistantConfig:
             allow_project_knowledge=False,
             allow_executable_source=False,
             allow_row_samples=False,
+            allow_aggregate_statistics=False,
         ),
         endpoint_host="api.example.test",
     )

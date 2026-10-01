@@ -107,7 +107,8 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         'base_url = "https://api.openai.com/v1"\n'
         '[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "internal"\n'
         "allow_project_knowledge = false\nallow_executable_source = false\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
         encoding="utf-8",
     )
     return tmp_path
