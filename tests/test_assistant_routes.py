@@ -353,6 +353,8 @@ class TestSessionResume:
         assert AssistantChangeRecord.model_validate(body["history"][3]["change"]) == (
             AssistantChangeRecord.model_validate(_CHANGE)
         )
+        # A record saved before data checks resumes with the key the panel requires, empty.
+        assert body["history"][3]["change"]["data_check"] is None
         # The stored outcome closes the resumed turn, as the live completed event did.
         assert body["history"][4]["outcome"] == {
             "kind": "applied",

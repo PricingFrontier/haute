@@ -2667,8 +2667,9 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
   transcript rehydration (a stored turn outcome closes its turn as an `outcome` entry,
-  a stored apply's change record follows its tool entry as a `change` entry, and tool
-  entries carry their finished titles),
+  a stored apply's change record follows its tool entry as a `change` entry, one saved
+  before data checks with its `data_check` key present and null, and tool entries carry
+  their finished titles),
   adapter construction, atomic concurrent-send reservation, and
   lock release on pre-stream failure, disconnect, and mid-stream send failure. The list
   endpoint pins the requested pipeline's conversations with their titles and counts, an
