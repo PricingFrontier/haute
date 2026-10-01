@@ -30,6 +30,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. Resolver rejection, malformed output, or graph replacement leaves state untouched. |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion; palette and edge-join nodes resolve identities before any graph/history mutation, with downstream join mappings finalized only from the server result. The hook also owns selection/preview, edge deletion, context menus, and drag/drop. |
 | `frontend/src/components/InitialViewFit.tsx` | Renderless child of the editor's `<ReactFlow>` that fits the graph into view (padding 0.15) once per canvas mount, the first time every node is measured. |
+| `frontend/src/components/BoxSelectionReset.tsx` | Renderless child of the editor's `<ReactFlow>` that ends React Flow's box-selection group (`nodesSelectionActive`) once the selected node ids differ from those the box selected. |
 | `frontend/src/components/TraceViewFit.tsx` | Renderless child of the editor's `<ReactFlow>` that fits the canvas to a trace's lineage steps (padding 0.2) once per trace result and centres the node `useUIStore.traceCentreRequest` names at the current zoom, once per request; runtime trace ids resolve to the canvas nodes showing them through `useTracing`'s `resolveTraceNodeId`. |
 | `frontend/src/hooks/useActiveNodeReveal.ts` | Keeps the inspector's active node visible in the canvas area its inspector and preview pane leave: arms on each active-node change or node-search centre request, re-checks when React Flow's canvas size or the armed node's measured size changes, glides only the first placement, and disarms on a user pan/zoom gesture. Returns `handleMoveStart` for React Flow's `onMoveStart` and `centreNode` for node search. |
 | `frontend/src/utils/nodeReveal.ts` | Pure `nodeRevealViewport` geometry: the zoom-preserving least pan that places a node `NODE_REVEAL_MARGIN_PX` inside the canvas (centring on an axis it cannot fit), or a centred placement at a requested zoom; `null` when a nearest placement needs no move. |
@@ -1009,6 +1010,18 @@ reconciliation rather than dropping them or committing a second mutation.
     mouse, or touch gesture); programmatic moves — the hook's own glides,
     `fitView`, auto-pan — report none and leave it armed. A null active id
     disarms.
+26. **Box selection reset (`BoxSelectionReset`).** Rendered inside the
+    editor's `<ReactFlow>`, it subscribes to the React Flow store through a
+    selector that is `null` while `nodesSelectionActive` is false and
+    otherwise the sorted, JSON-encoded ids of the selected nodes. A layout
+    effect records the first key of each group — the box's own selection —
+    and sets `nodesSelectionActive: false` as soon as the key differs, before
+    the browser paints the group's rectangle over the new selection. React
+    Flow's own gestures already end the group whenever they change the
+    selection (pane, node, and edge clicks, Delete, the start of the next
+    box), so the reset acts only on selections the editor sets through the
+    controlled `nodes` prop; position, dragging, and dimension updates leave
+    the key, and the group, unchanged.
 
 ## Edge cases and invariants
 
@@ -1795,6 +1808,16 @@ again through the editor and save paths.
   on later initialisation flips. `frontend/e2e/canvas-assurance.spec.ts` proves every node of
   the loaded pipeline ends inside the canvas in a real browser; React Flow's `fitView` prop
   left that fixture at zoom 2 on its first node.
+- **Box selection reset.** `frontend/src/components/__tests__/BoxSelectionReset.test.tsx`
+  drives the component against a vanilla store shaped like React Flow's: the
+  group kept while its nodes move, are re-measured, or reorder; ended when a
+  just-created node is selected exclusively, when select-all widens the
+  selection, and when undo or a reload clears it; and a later box selection
+  tracked afresh. `frontend/e2e/box-selection.spec.ts` proves it in a real
+  browser: after a box selection, a node dropped from the palette follows its
+  first drag and opens its own context menu on the first right-click; without
+  the reset, React Flow 12.10's rectangle left the node doing neither until
+  the canvas was clicked.
 - **Initial-load document fingerprint.** `tests/test_server.py` pins that both load
   routes name `pipeline_document_fingerprint` of the returned document and that a first
   resync carrying the loaded header produces no frame. `frontend/src/api/__tests__/client.test.ts`

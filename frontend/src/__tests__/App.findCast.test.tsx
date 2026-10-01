@@ -52,6 +52,9 @@ vi.mock("../hooks/useActiveNodeReveal", () => {
   return { useActiveNodeReveal: () => reveal }
 })
 
+// The box-selection reset subscribes to the React Flow store, which this mock does not provide.
+vi.mock("../components/BoxSelectionReset", () => ({ default: () => null }))
+
 // Mock stateful hooks
 let mockNodes: Array<{ id: string; position: { x: number; y: number }; data: Record<string, unknown> }> = []
 let mockEdges: Array<{ id: string; source: string; target: string }> = []

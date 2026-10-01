@@ -27,6 +27,9 @@ vi.mock("../hooks/useActiveNodeReveal", () => {
   return { useActiveNodeReveal: () => reveal }
 })
 
+// The box-selection reset subscribes to the React Flow store, which this mock does not provide.
+vi.mock("../components/BoxSelectionReset", () => ({ default: () => null }))
+
 vi.mock("../hooks/useGraphCanvasState", () => ({
   default: () => ({
     nodes: [],
