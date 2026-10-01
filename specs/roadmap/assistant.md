@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-30 | Planned | P1 | No regex over the user's words steers a turn. |
 | ASSIST-31 | Planned | P1 | After every apply the analyst sees a change card built from what was saved. |
 | ASSIST-32 | Planned | P1 | A multi-stage build can finish in one turn, with a change card per stage. |
 | ASSIST-33 | Planned | P2 | The analyst can undo or compare the latest assistant change in one click. |
@@ -97,29 +96,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-30 — A structural controller
-**Why:** Completion, routing and clarification are driven by regular
-expressions over the user's words, which misroute ordinary phrasing and turn
-delegated choices ("pick any four features") into questions.
-
-**Plan:** Remove the lexical completion check, the recipe and
-material-clarification hints and the continuation text. Keep the
-`NEEDS_INPUT:` and `BLOCKED:` prefixes, mapped to the typed outcome. One
-end-of-turn nudge fires only on tracked state (a validated plan never applied,
-or a failed dry-run with no later success). The prompt tells the model to make
-delegated choices and state them. Remove the lexical sections from the
-specification.
-
-**Acceptance:** "Pick any four features" proceeds and states its choices;
-explanation questions end answered; a validated but unapplied plan triggers
-one nudge.
-
-**Dependencies:** `ASSIST-09`, `ASSIST-13`, `ASSIST-23`.
-
-**Evidence:** `src/haute/assistant/_loop.py::effective_authoring_request`;
-`src/haute/assistant/_loop.py::_request_routed_guidance`;
-`src/haute/assistant/_recipes.py::route_recipe_request`.
 
 ### ASSIST-31 — A change card built from what was saved
 **Why:** A turn that edits the graph ends with a fixed sentence and a row of

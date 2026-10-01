@@ -777,7 +777,7 @@ class TestTurnReservation:
             "prior_messages": expected_history,
         }
 
-    async def test_needs_input_follow_up_routes_provider_guidance_without_executor_prose(
+    async def test_a_reply_to_a_question_sends_only_the_rendered_turn_context(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import haute.routes.assistant as assistant_routes
@@ -835,10 +835,14 @@ class TestTurnReservation:
         assert any("completed" in chunk for chunk in chunks)
         assert set(captured) == {"source_file", "session_id", "prior_messages"}
         assert len(provider.calls) == 1
-        assert "Suggested recipe" not in provider.calls[0]["system"]
         context = provider.calls[0]["messages"][-1]
         assert context["role"] == "context"
-        assert "Suggested recipe: `categorical_banding`" in context["content"]
+        assert context["content"].startswith("## Turn context")
+        # Nothing is derived from the words of this or the earlier request.
+        for call in provider.calls:
+            for text in (call["system"], context["content"]):
+                assert "Suggested recipe" not in text
+                assert "Current-request" not in text
         dataset_tool = next(
             tool for tool in provider.calls[0]["tools"] if tool["name"] == "list_datasets"
         )

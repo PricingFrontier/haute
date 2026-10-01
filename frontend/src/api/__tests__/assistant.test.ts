@@ -172,6 +172,14 @@ describe("createAssistantSession", () => {
           is_error: false,
           outcome: { kind: "needs_input", detail: "Which column?" },
         },
+        {
+          kind: "outcome",
+          text: "",
+          name: "",
+          summary: "",
+          is_error: false,
+          outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied." },
+        },
       ],
     }))
 
@@ -179,6 +187,10 @@ describe("createAssistantSession", () => {
     expect(history).toEqual([
       { kind: "user", text: "go", name: "", summary: "", is_error: false },
       { kind: "outcome", outcome: { kind: "needs_input", detail: "Which column?" } },
+      {
+        kind: "outcome",
+        outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied." },
+      },
     ])
   })
 
@@ -331,6 +343,7 @@ describe("streamAssistantMessage", () => {
     ["completed answered with a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: "x" } }],
     ["completed question without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "needs_input", detail: null } }],
     ["completed blocker with a blank detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: " " } }],
+    ["completed incomplete without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "incomplete", detail: null } }],
     ["failed", { type: "failed", message: null }],
     ["cancelled discriminator", { type: 1 }],
   ])("rejects malformed %s before invoking the callback", async (_label, event) => {

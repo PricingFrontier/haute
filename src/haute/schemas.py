@@ -171,17 +171,21 @@ class AssistantSessionRequest(BaseModel):
 
 
 AssistantTurnOutcomeKind = Literal[
-    "applied", "answered", "needs_input", "blocked", "committed_unverified"
+    "applied", "answered", "needs_input", "blocked", "committed_unverified", "incomplete"
 ]
-_OUTCOME_KINDS_WITH_DETAIL = frozenset({"needs_input", "blocked", "committed_unverified"})
+_OUTCOME_KINDS_WITH_DETAIL = frozenset(
+    {"needs_input", "blocked", "committed_unverified", "incomplete"}
+)
 
 
 class AssistantTurnOutcome(BaseModel):
     """How a completed assistant turn ended.
 
     ``detail`` is the model's question (``needs_input``), the sanitized blocker
-    (``blocked``) or the verification error of a save that committed
-    (``committed_unverified``); ``applied`` and ``answered`` carry none.
+    (``blocked``), the verification error of a save that committed
+    (``committed_unverified``) or the controller's reason the model stopped
+    with a dry-run unfinished (``incomplete``); ``applied`` and ``answered``
+    carry none.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

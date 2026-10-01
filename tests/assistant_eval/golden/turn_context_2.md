@@ -29,7 +29,3 @@ Each node: id, palette name, label and authoring state; then each step's id and 
 - `premium` (Quote Response) "Premium"
   - input `add_features` from `add_features`: ["policy_id", "driver_age", "vehicle_group", "region", "exposure", "young_driver"]
   - output: ["policy_id", "premium"]
-
-### Current-request advisory recipe suggestion
-- Suggested recipe: `categorical_banding`
-- Consider `plan_recipe` with this recipe id. The explicit structured recipe_id in the tool call remains authoritative. Supply `output_name` and `output_columns` together when an explicitly mapped response output is requested, then pass only the returned `recipe_plan_hash` to `dry_run_recipe_plan`. Do not substitute a generic node. Preserve any explicit primary node name exactly, including an `add NAME:` form. This route supplies no other recipe arguments; clarify any missing material choice.

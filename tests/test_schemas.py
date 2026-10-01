@@ -333,6 +333,7 @@ class TestAssistantTurnOutcome:
             {"kind": "needs_input", "detail": "Which column?"},
             {"kind": "blocked", "detail": "The file is missing."},
             {"kind": "committed_unverified", "detail": "Verification failed."},
+            {"kind": "incomplete", "detail": "A dry-run validated a plan that was never applied."},
         ],
     )
     def test_valid_outcomes(self, payload):
@@ -347,6 +348,7 @@ class TestAssistantTurnOutcome:
             {"kind": "needs_input", "detail": None},
             {"kind": "blocked", "detail": "  "},
             {"kind": "committed_unverified"},
+            {"kind": "incomplete", "detail": None},
             {"kind": "finished", "detail": None},
         ],
     )

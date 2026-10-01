@@ -254,7 +254,6 @@ async def _event_stream(
     execute_tool: _loop.ToolExecutor,
     system_prompt: str,
     reservation: _loop.TurnReservation,
-    authoring_request: str,
     turn_context: str,
 ) -> AsyncIterator[str]:
     """Frame loop events as server-sent events."""
@@ -270,7 +269,6 @@ async def _event_stream(
         turn_timeout=None,
         max_tool_calls=None,
         reservation=reservation,
-        authoring_request=authoring_request,
         turn_context=turn_context,
     )
     try:
@@ -394,7 +392,6 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         except Exception as exc:
             detail = _http_error_detail(exc, "turn_context")
             raise HTTPException(status_code=500, detail=detail) from None
-        authoring_request = _loop.effective_authoring_request(session, body.message)
         execute_tool = build_tool_executor(
             session.source_file,
             session_id=session.id,
@@ -413,7 +410,6 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             execute_tool=execute_tool,
             system_prompt=system_prompt,
             reservation=reservation,
-            authoring_request=authoring_request,
             turn_context=turn_context,
         ),
         media_type="text/event-stream",

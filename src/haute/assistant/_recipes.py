@@ -252,77 +252,6 @@ _RECIPES = tuple(
     )
 )
 _BY_ID: dict[str, Mapping[str, object]] = {str(item["id"]): item for item in _RECIPES}
-_BANDING_ROUTE_TERMS = frozenset(
-    {"band", "bands", "banded", "banding", "bucket", "bucketed", "bucketing"}
-)
-_JOIN_ROUTE_TERMS = frozenset({"join", "joins", "joined", "joining"})
-_DISCRETE_ROUTE_CUES = frozenset({"categorical", "categories", "category", "discrete"})
-_MATERIAL_RATING_INTENT = re.compile(r"\brating\b.{0,80}\bfactors?\b", re.IGNORECASE)
-_EXPLICITLY_WITHHELD_RATING_MATERIAL = re.compile(
-    r"(?:\b(?:do\s+not|don['’]t|not)\s+(?:supply|provide|specify)\b.{0,120}"
-    r"\b(?:factor\s+values?|missing[- ]factor\s+policy|default)\b"
-    r"|\bwithout\b.{0,120}\b(?:factor\s+values?|missing[- ]factor\s+policy|default)\b)",
-    re.IGNORECASE,
-)
-_EXPLANATION_ONLY_REQUEST = re.compile(
-    r"^\s*(?:please\s+)?(?:explain\b|describe\b|show\s+me\s+how\b|how\b|what\b)",
-    re.IGNORECASE,
-)
-_SEQUENCED_AUTHORING_REQUEST = re.compile(
-    r"(?:[,;]\s*(?:and\s+)?(?:then\s+)?|\b(?:and\s+then|then|also|afterwards)\s+)"
-    r"(?:please\s+)?"
-    r"(?:build|add|change|update|connect|remove|delete|create|rename|configure|edit|author|make)\b",
-    re.IGNORECASE,
-)
-
-
-def is_explanation_only_request(request: str) -> bool:
-    """Return whether the request opens as an explanation, not an instruction."""
-
-    return bool(
-        _EXPLANATION_ONLY_REQUEST.match(request)
-        and _SEQUENCED_AUTHORING_REQUEST.search(request) is None
-    )
-
-
-def request_requires_material_clarification(request: str) -> bool:
-    """Identify an explicit refusal to supply required rating decisions."""
-
-    if is_explanation_only_request(request):
-        return False
-    return bool(
-        _MATERIAL_RATING_INTENT.search(request)
-        and _EXPLICITLY_WITHHELD_RATING_MATERIAL.search(request)
-    )
-
-
-def route_recipe_request(request: str) -> str | None:
-    """Suggest one conservative recipe for prompt guidance, never as authority."""
-
-    if is_explanation_only_request(request):
-        return None
-    tokens = [token.casefold() for token in re.findall("[A-Za-z]+", request)]
-    token_set = set(tokens)
-    matches: list[str] = []
-    has_banding_term = bool(token_set.intersection(_BANDING_ROUTE_TERMS))
-    has_discrete_cue = bool(token_set.intersection(_DISCRETE_ROUTE_CUES))
-    # Only categorical banding has a recipe; a numeric (range, bucket, or
-    # breakpoint) banding request suggests none.
-    routes_categorical_banding = has_banding_term and has_discrete_cue
-    if routes_categorical_banding:
-        matches.append("categorical_banding")
-    if token_set.intersection(_JOIN_ROUTE_TERMS):
-        matches.append("reference_join")
-    if any(left == "rating" and right == "step" for left, right in zip(tokens, tokens[1:])):
-        matches.append("rating_step")
-    has_response_output = any(
-        left == "response" and right == "output" for left, right in zip(tokens, tokens[1:])
-    )
-    if has_response_output and not matches:
-        matches.append("response_output")
-    if has_banding_term and not routes_categorical_banding and matches:
-        return None
-    return matches[0] if len(matches) == 1 else None
 
 
 def recipe_manifest() -> tuple[Mapping[str, object], ...]:
@@ -805,10 +734,7 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
 
 __all__ = [
     "RecipeError",
-    "is_explanation_only_request",
     "plan_recipe",
     "recipe_descriptor",
     "recipe_manifest",
-    "request_requires_material_clarification",
-    "route_recipe_request",
 ]

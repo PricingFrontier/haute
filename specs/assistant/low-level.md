@@ -24,10 +24,10 @@
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. `build_turn_context` gathers the turn context's facts (revision, brief nodes resolved schema-only and cached per revision, validated selection, policy-reduced preview error) on the same schema helpers as `get_node_schema`. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn; both pass through `_observe_project_source_evidence`, where a successful `list_datasets` or `get_dataset_schema` first drops schema evidence whose file no longer exists. `apply_graph_plan` is the only tool that writes; the mutation path is `plan_recipe`/dry_run_recipe_plan or `dry_run_graph_edits` followed by `apply_graph_plan` with the exact returned plan hash, and operations cannot be resent at apply time. Tool code does not own revision, save, or verification policy. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, each turn's typed outcome (`AssistantTurn.outcome`, none for a failed or cancelled turn; a persisted turn requires the `outcome` key and its detail is redacted like assistant text), per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. A neutral `context` message becomes a mid-conversation `system` message for the Anthropic models in `MID_CONVERSATION_SYSTEM_MODELS` and otherwise the leading text of the preceding user message. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
-| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe guidance, builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the context message joins the route's rendered context with the routed guidance and is never stored), forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
+| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: builds the session-stable system prompt, assembles prompt/history/turn-context/tool inputs (the context message is the route's rendered turn context and is never stored), forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when the dry-run budget is spent or a failed dry-run makes no progress, sends one end-of-turn reminder when the model stops with a validated plan unapplied or a failed dry-run uncorrected and completes the turn `incomplete` on a second such stop, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (the saved conversations bound to the requested `source_file`, for the panel's chat list), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Every one of the last three carries the canvas document's `source_file`, resolved by one route helper (`contained_path` inside the project root, then membership of `discover_pipelines()`, then the POSIX project-relative spelling the editor document uses); there is no default-pipeline guess. Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. It imports only Polars and the stdlib-only JSON-safe encoder, so the assistant reaches it without importing the routes layer. |
-| `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request (with its optional closed `context`: `selected_node_ids`, unique, at most 20, and an optional `preview_error_node_id`), usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked or committed_unverified, and a non-empty detail exactly for the last three), and the text-delta, tool-started, tool-finished, graph-updated, completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
+| `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request (with its optional closed `context`: `selected_node_ids`, unique, at most 20, and an optional `preview_error_node_id`), usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked, committed_unverified or incomplete, and a non-empty detail exactly for the last four), and the text-delta, tool-started, tool-finished, graph-updated, completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies document-update fingerprint/wire-path helpers used by mutation publishing. |
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
 | `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
@@ -338,8 +338,8 @@ refused with `tool_removed` and a message naming `get_capability_manifest` and
 
 **Recipe planning**: `plan_recipe` has a canonical flat discriminated union derived from the
 closed recipe argument schemas. Every request receives the same complete provider-facing
-union together with `dry_run_recipe_plan`; lexical recipe recognition changes neither tool
-availability nor schema shape. Argument descriptions distinguish a requested graph-node name
+union together with `dry_run_recipe_plan`; nothing in the request's wording changes tool
+availability or schema shape. Argument descriptions distinguish a requested graph-node name
 from its output-column name. Transform, join, and rating recipes also accept optional non-empty
 `output_name` and `output_columns` fields, which must be present together. The latter is a
 non-empty unique array of simple JSON-field column names. When present, the deterministic
@@ -379,28 +379,18 @@ handle and invokes the ordinary graph dry-run with exactly the stored canonical 
 material. It rejects every additional property. A pending recipe makes primitive
 `dry_run_graph_edits` return `recipe_plan_requires_handle`; an unknown or replaced handle returns
 `recipe_plan_not_found`. The live handle clears only after a successful dedicated
-dry-run. Neither tool writes. A conservative current-request recognizer suggests a recipe id only
-when exactly one explicit domain pattern matches: categorical/discrete banding maps to
-`categorical_banding`; join maps to `reference_join`;
-and the phrase rating step maps to `rating_step`. If the assistant returns
-`NEEDS_INPUT:`, route resolution scans backward only across consecutive turns whose final
-assistant text also begins `NEEDS_INPUT:` and reuses the first directly routed user request.
-Any other final response ends continuation, so an unrelated bare path cannot revive stale
-guidance. A standalone response-output request suggests `response_output`; a specialist recipe
-that also requests a response output keeps its specialist suggestion and owns that downstream
-output. The loop may append that suggestion to the current turn's system contract, but the
-suggestion is never executor authority. Every request receives the same full `plan_recipe`
+dry-run. Neither tool writes. Every request receives the same full `plan_recipe`
 discriminated union, `dry_run_recipe_plan`, `dry_run_graph_edits`, and `apply_graph_plan`
-descriptors. Zero, one, or multiple lexical matches therefore cannot remove a valid structured
-path. The recognizer never populates recipe arguments, changes an input schema, rewrites a tool
-call, or rejects a primitive plan or another valid recipe id. The source-bound executor API has
-no natural-language request parameter, so this separation is structural rather than a
-convention inside its dispatcher.
+descriptors, and no code reads the request's words to suggest, populate, rewrite, or reject
+a recipe or primitive plan. The source-bound executor API has no natural-language request
+parameter, so this separation is structural rather than a convention inside its
+dispatcher.
 
-A material-input recognizer may add focused prompt guidance when rating choices appear to be
-withheld, but it does not omit tools or create an executor verdict. The provider must not invent
-missing choices; if it submits a complete structured call, that call is judged only by the
-canonical recipe/operation schema and graph validators. The lexical-only error codes
+Material choices a recipe or node needs, such as rating factor values and the value for a
+missing factor, are node-card guidance: the `ratingStep` card's field meanings say they
+come from the analyst, are never invented, and are asked for with `NEEDS_INPUT:` unless
+the analyst delegated them. If the provider submits a complete structured call, that call
+is judged only by the canonical recipe/operation schema and graph validators. The lexical-only error codes
 `recipe_route_required`, `recipe_route_mismatch`, `recipe_name_mismatch`, and
 `material_input_required` are not part of the operation descriptors. A pending canonical
 recipe receipt remains different: `recipe_plan_requires_handle` prevents a provider from
@@ -740,9 +730,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
      a failure is rendered by `_execution_error_message` at a `_FailureSite` for the node
      (text only under `allow_row_samples`; otherwise type, step or line and disclosable
      column names), and a clean resolution says the schema resolves and that a failure
-     seen only while rows are collected is not reproduced;
-   - the routed recipe suggestion or material-clarification hint for the effective
-     request (see below).
+     seen only while rows are collected is not reproduced.
+   The block holds nothing derived from the analyst's words: no recipe suggestion and no
+   clarification hint.
    Under `max_sensitivity = "public"` the block holds only the policy and says the graph
    is withheld; the pipeline is not read, so the ids are not checked. Under any other
    policy a selected id that is not a top-level node of the saved pipeline, or a
@@ -782,10 +772,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    connect, remove, delete, and make as mutation intent rather than an invitation to
    inspect and stop. When an installed deterministic recipe matches the requested
    operation, the model should call `plan_recipe`, then pass its `recipe_plan_hash` to
-   `dry_run_recipe_plan`; it never copies the returned operations. A unique explicit
-   current-request recipe suggestion may be repeated in the turn context, but
-   every request receives the same complete mutation tool schemas and the executor never
-   treats lexical classification as authority. A failed dry run may be corrected while
+   `dry_run_recipe_plan`; it never copies the returned operations. When the analyst
+   delegates a choice ("pick any", "you choose"), the prompt tells the model to make a
+   reasonable choice, state it, and proceed, and to ask only for choices that change the
+   result materially and that the analyst has not delegated. Every request receives the
+   same complete mutation tool schemas. A failed dry run may be corrected while
    the corrections make progress. The loop keeps **one bounded budget of four failed
    calls** across both dry-run tools and both failure classes, a domain rejection (the
    plan was built and judged) and a closed-input-schema rejection
@@ -836,10 +827,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
    `tool_started`; execute; append the result to the pending provider messages before
    emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
-   re-invoke the provider with the accumulated results. Completion becomes required only
-   when the model calls `dry_run_graph_edits`, `dry_run_recipe_plan`, or `apply_graph_plan`
-   in the turn; neither the request's wording nor a recipe route sets it, so a read-only
-   question that ends without such a call completes normally. The loop also tracks whether
+   re-invoke the provider with the accumulated results. The loop tracks one **open state**,
+   read only from tool results and never from the request's wording: the latest
+   `dry_run_graph_edits` or `dry_run_recipe_plan` result decides it, a *validated plan* when
+   that dry-run succeeded and a *failed dry-run* when it failed, and only a saving apply,
+   which ends the turn, clears it. A dry-run refused by the spent budget never runs and does
+   not change it. The loop also tracks whether
    `apply_graph_plan` has succeeded. A successful apply is terminal after the current stream
    reaches its stop event: any later tool-call events in that same provider round are ignored,
    the loop records the successful apply and its result, emits the deterministic assistant
@@ -851,19 +844,23 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    assistant text `Graph changes were saved, but post-save verification failed.` and emits
    `completed` with the `committed_unverified` outcome, whose detail is the tool row's
    summary of that error. This check precedes the dry-run budget check, so the budget's
-   "no graph changes were applied" blocker can never follow a committed save. Otherwise,
-   when completion is required, `TurnStop("end")` is
-   accepted only when the stripped assistant text begins `NEEDS_INPUT:` or `BLOCKED:` and
-   contains non-whitespace detail after the marker. The first unqualified end appends a
-   transcript-hidden `controller` message instructing the model to continue; when dry-run
-   succeeded, it explicitly requires an immediate `apply_graph_plan` tool call with the
-   exact returned hash rather than prose. The loop re-invokes the provider, and adapters
-   encode that internal role as a user instruction. A second unqualified end emits `failed`
-   with the incomplete-mutation reason. An accepted `TurnStop("end")` emits `completed` with
-   usage and finishes. Its outcome comes from the final round's text: `needs_input` or
-   `blocked` when the stripped text begins `NEEDS_INPUT:` or `BLOCKED:` with detail after
-   the marker (whether or not a mutation was attempted), the detail being that text after
-   the marker, stripped; otherwise `answered`. The outcome of every completed turn is
+   "no graph changes were applied" blocker can never follow a committed save. Otherwise a
+   `TurnStop("end")` whose stripped final-round text begins `NEEDS_INPUT:` or `BLOCKED:`
+   with non-whitespace detail after the marker completes with the `needs_input` or
+   `blocked` outcome, whatever the open state, the detail being that text after the
+   marker, stripped. An unqualified end (no marker, or a marker with no detail) with no
+   open state completes with `answered`. The first unqualified end with an open state
+   appends one transcript-hidden `controller` reminder naming it: for a validated plan,
+   apply it now with `apply_graph_plan` and the exact plan hash the latest successful
+   dry-run returned (dry-running again first if an apply refused it), or begin with
+   `NEEDS_INPUT:` or `BLOCKED:` and say why it should not be applied; for a failed
+   dry-run, correct the plan as its error says and dry-run it again, or begin with
+   `BLOCKED:` and state the blocker. The loop re-invokes the provider, and adapters encode
+   that internal role as a user instruction. A turn sends at most one reminder: a second
+   unqualified end with an open state completes with the `incomplete` outcome, whose
+   detail is the controller's fixed, value-free reason (`A dry-run validated a plan that
+   was never applied.` or `The last dry-run failed and no later dry-run succeeded.`), and
+   the loop adds no text of its own. The outcome of every completed turn is
    stored on its history record; failed and cancelled turns store none.
    If the response closes while suspended at
    `tool_started`, the round commit filters the unmatched call; closing at either later
@@ -1117,7 +1114,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   identically declared across branches within the remaining budget, merges different arrays
   of closed object items by the same union/intersection rule, reduces other conflicting
   property schemas to a common portable type, intersects required fields, and remains closed.
-  The bound preserves the complete merged recipe selection contract without using lexical
+  The bound preserves the complete merged recipe selection contract without any
   request-dependent narrowing. A composition that does not fit remains a generic typed
   container. Patterns, ranges, and other unsupported validation vocabulary are omitted.
   `_tools` independently validates
@@ -1782,21 +1779,25 @@ fixture for route tests). The implemented coverage is:
   diagnostic after its operation changed does not, four failures that each change the
   plan spend the budget whatever their class, three independent errors converge to an
   applied turn, and repeated malformed calls block with their own wording; read-only
-  questions and authoring wording without a dry-run attempt end completed with no
-  controller continuation; an end after an attempted but unapplied mutation receives one
-  internal controller continuation, successful apply terminates with deterministic text and no later
-  provider/tool round, explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally, and a
-  second unqualified end fails rather than completes. The turn context follows the user
-  message in every round, joins the routed guidance, is absent when there is neither, and
-  is never stored; the system prompt takes only the source file and holds no policy or
-  pipeline facts, and the rendered context states the policy and the column-value rule.
-  Every completed turn carries and
-  stores its typed outcome: `answered` for a reply without a mutation attempt,
+  questions, explanation requests after a read, and authoring wording without a dry-run end
+  `answered` with no controller reminder; a validated plan left unapplied receives exactly
+  one reminder naming the plan hash and then ends `incomplete` with its reason; a failed
+  dry-run left uncorrected receives the failed-dry-run reminder and ends `incomplete`
+  with its reason; a marker answer after the reminder is accepted; an empty marker does
+  not bypass the reminder; a delegated-choice request ("pick any four features") that
+  dry-runs and applies ends `applied` with no reminder and no clarification in its context
+  message; successful apply terminates with deterministic text and no later
+  provider/tool round, and explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally.
+  The turn context follows the user message in every round as the route rendered it, is
+  absent when the route sends none, and is never stored; the system prompt takes only the
+  source file and holds no policy or pipeline facts, states the delegation rule, and the
+  rendered context states the policy and the column-value rule. Every completed turn
+  carries and stores its typed outcome: `answered` for a reply with no open dry-run state,
   `needs_input` for a question with or without one, `blocked` from the model or from an
   stopped dry-run budget (its detail being the streamed text after the marker),
-  `applied`, and `committed_unverified` for an apply whose save committed but failed
-  verification, which ends the turn at once with no later tool or provider round; a
-  failed turn stores none. The system prompt states the
+  `applied`, `committed_unverified` for an apply whose save committed but failed
+  verification, which ends the turn at once with no later tool or provider round, and
+  `incomplete` after the one reminder; a failed turn stores none. The system prompt states the
   steps-first rule with both `new_logic` forms, names every stepped surface by its
   palette name, and no longer teaches `df` as a code-only output variable.
 - **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,

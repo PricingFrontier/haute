@@ -87,7 +87,9 @@ renders a blocked card with the reason, in place of the raw `BLOCKED:` text, sta
 nothing was saved. `committed_unverified` renders a card stating that the changes were
 saved but the post-save check failed, with the check's error and a prompt to review the
 pipeline or return to the previous save in the Git panel; it never says that nothing
-changed.
+changed. `incomplete` renders a card titled "Stopped before finishing" that tells the
+analyst to ask it to continue, states that nothing was saved, and shows the reason the
+controller gave.
 
 **Graph authoring applies without a second permission prompt.** The user's
 message authorizes graph authoring. A validated plan may therefore apply

@@ -341,6 +341,22 @@ describe("transcript order and turn outcomes", () => {
     ])
   })
 
+  it("keeps the model's text beside a stopped-before-finishing outcome", async () => {
+    const outcome: AssistantTurnOutcome = {
+      kind: "incomplete",
+      detail: "The last dry-run failed and no later dry-run succeeded.",
+    }
+    const entries = await liveEntries([
+      { type: "text_delta", text: "I will look again." },
+      completed(outcome),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "I will look again.", streaming: false },
+      { kind: "outcome", outcome },
+    ])
+  })
+
   it("interrupts a turn whose outcome does not match its reply", async () => {
     const entries = await liveEntries([
       { type: "text_delta", text: "Here is the answer." },

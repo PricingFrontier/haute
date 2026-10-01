@@ -349,7 +349,9 @@ class TestMutationCompletionController:
             execute_tool=execute_tool,
         )
 
-        assert _assert_single_terminal(events).type == "completed"
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "completed"
+        assert terminal.outcome.kind == "answered"
         assert len(provider.calls) == 2
         assert all(
             message["role"] != "controller"
@@ -375,7 +377,10 @@ class TestMutationCompletionController:
         assert _assert_single_terminal(events).type == "completed"
         assert len(provider.calls) == 1
 
-    async def test_successful_dry_run_end_gets_one_apply_continuation(self, store, session_id):
+    async def test_a_validated_plan_left_unapplied_gets_one_reminder(self, store, session_id):
+        """The reminder comes from tracked state, so even explanation wording gets it
+        once a dry-run validated a plan the model did not apply."""
+
         provider = ScriptedProvider(
             [
                 [
@@ -402,12 +407,108 @@ class TestMutationCompletionController:
             execute_tool=execute_tool,
         )
 
-        assert _assert_single_terminal(events).type == "completed"
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {
+            "kind": "blocked",
+            "detail": "no valid plan was produced.",
+        }
         assert len(provider.calls) == 3
         controller = provider.calls[2]["messages"][-1]
         assert controller["role"] == "controller"
-        assert "apply_graph_plan" in controller["content"]
-        assert "exact returned plan hash" in controller["content"]
+        assert "validated a plan that was never applied" in controller["content"]
+        assert "`apply_graph_plan`" in controller["content"]
+        assert "exact plan hash" in controller["content"]
+
+    async def test_a_validated_plan_still_unapplied_after_the_reminder_ends_incomplete(
+        self, store, session_id
+    ):
+        """The latest dry-run decides the open state: a failure corrected by a
+        later success leaves a validated plan, and one reminder is all it gets."""
+
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest("dry-1", "dry_run_graph_edits", {"ops": [1]}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [
+                    ToolCallRequest("dry-2", "dry_run_graph_edits", {"ops": [2]}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [TextDelta("The plan is ready."), TurnStop("end", _usage())],
+                [TextDelta("It is ready to go."), TurnStop("end", _usage())],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if arguments["ops"] == [1]:
+                return {"error": {"code": "invalid_ops", "message": "wrong"}}
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store, session_id, "Add a feature", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "completed"
+        assert terminal.outcome.model_dump() == {
+            "kind": "incomplete",
+            "detail": "A dry-run validated a plan that was never applied.",
+        }
+        assert len(provider.calls) == 4
+        reminders = [
+            message for message in provider.calls[3]["messages"] if message["role"] == "controller"
+        ]
+        assert len(reminders) == 1
+        assert "validated a plan" in reminders[0]["content"]
+        assert [event.text for event in events if event.type == "text_delta"] == [
+            "The plan is ready.",
+            "It is ready to go.",
+        ]
+        assert _stored_outcome(store, session_id) == terminal.outcome
+
+    async def test_a_delegated_choice_proceeds_without_a_question(self, store, session_id):
+        """A request to "pick any four features" delegates the choice: the turn
+        states its choice, dry-runs and applies, and the controller never asks."""
+
+        request = "Add a Transform after quotes that keeps any four rating features - pick any."
+        provider = ScriptedProvider(
+            [
+                [
+                    TextDelta("I chose driver_age, region, vehicle_group and exposure."),
+                    ToolCallRequest("dry-1", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ],
+                [
+                    ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
+                    TurnStop("tool_use", _usage()),
+                ],
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "apply_graph_plan":
+                return {"graph_fingerprint": "b" * 64}
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store,
+            session_id,
+            request,
+            provider=provider,
+            execute_tool=execute_tool,
+            turn_context="## Turn context",
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.model_dump() == {"kind": "applied", "detail": None}
+        messages = [message for call in provider.calls for message in call["messages"]]
+        assert all(message["role"] != "controller" for message in messages)
+        assert {message["content"] for message in messages if message["role"] == "context"} == {
+            "## Turn context"
+        }
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert "NEEDS_INPUT:" not in text
 
     async def test_an_identical_resend_stops_after_two_attempts(self, store, session_id):
         provider = ScriptedProvider(
@@ -792,14 +893,16 @@ class TestMutationCompletionController:
             execute_tool=execute_tool,
         )
 
-        assert _assert_single_terminal(events).type == "completed"
+        assert _assert_single_terminal(events).outcome.kind == "blocked"
         assert len(provider.calls) == 3
-        assert provider.calls[2]["messages"][-1]["role"] == "controller"
+        controller = provider.calls[2]["messages"][-1]
+        assert controller["role"] == "controller"
+        assert "last dry-run failed" in controller["content"]
         session = store.lookup(session_id)
         assert session is not None
         assert "controller" in [message.role for message in session.history[0].messages]
 
-    async def test_second_unqualified_end_fails_instead_of_claiming_completion(
+    async def test_a_failed_dry_run_still_uncorrected_after_the_reminder_ends_incomplete(
         self, store, session_id
     ):
         provider = ScriptedProvider(
@@ -825,9 +928,13 @@ class TestMutationCompletionController:
         )
 
         terminal = _assert_single_terminal(events)
-        assert terminal.type == "failed"
-        assert "mutation" in terminal.message.lower()
+        assert terminal.type == "completed"
+        assert terminal.outcome.model_dump() == {
+            "kind": "incomplete",
+            "detail": "The last dry-run failed and no later dry-run succeeded.",
+        }
         assert len(provider.calls) == 3
+        assert _stored_outcome(store, session_id) == terminal.outcome
 
     async def test_needs_input_is_an_explicit_terminal_outcome(self, store, session_id):
         provider = ScriptedProvider(
@@ -1543,46 +1650,17 @@ class TestSystemPrompt:
             assert name in prompt
         assert "main.py" in prompt
 
-    def test_current_request_recipe_route_is_explicit_and_conservative(self):
-        from haute.assistant._loop import _request_routed_guidance
+    def test_the_prompt_tells_the_model_to_make_delegated_choices(self):
+        from haute.assistant._loop import build_system_prompt
 
-        routed = _request_routed_guidance("Please band region into discrete region groups.")
-        assert routed is not None
-        assert "Suggested recipe: `categorical_banding`" in routed
-        assert "Consider `plan_recipe`" in routed
-        assert "output_name` and `output_columns` together" in routed
-        assert "Preserve any explicit primary node name exactly" in routed
+        prompt = build_system_prompt(source_file="main.py")
+
         assert (
-            _request_routed_guidance("Build a pipeline with the parquets and use many node types.")
-            is None
-        )
-        # Numeric banding has no recipe, so a range request gets no suggestion.
-        assert (
-            _request_routed_guidance("Please continuously band driver_age into driver_age_band.")
-            is None
-        )
-        assert _request_routed_guidance("Join the lookup and band the result.") is None
-
-    def test_explicitly_withheld_rating_material_adds_guidance_without_changing_tools(self):
-        from haute.assistant._loop import (
-            _provider_tools,
-            _request_routed_guidance,
-        )
-        from haute.assistant._tools import TOOL_DEFINITIONS
-
-        request = "Add rating factors, but do not supply missing-factor policy or factor values."
-        prompt = _request_routed_guidance(request)
-        assert prompt is not None
-        names = {tool["name"] for tool in _provider_tools(TOOL_DEFINITIONS)}
-
-        assert "NEEDS_INPUT:" in prompt
-        assert "factor values" in prompt
-        assert {
-            "plan_recipe",
-            "dry_run_recipe_plan",
-            "dry_run_graph_edits",
-            "apply_graph_plan",
-        } <= names
+            'When the analyst delegates a choice ("pick any", "you choose"), make a '
+            "reasonable choice, state it, and proceed; ask only for choices that change "
+            "the result materially and that the analyst has not delegated."
+        ) in prompt
+        assert "natural-language hints" not in prompt
 
     def test_provider_tool_contract_has_no_request_text_input(self):
         import inspect
@@ -1765,43 +1843,6 @@ class TestSystemPrompt:
         assert schema["properties"]["recursive"] == {"type": "boolean"}
         assert "required" not in schema
         assert schema["additionalProperties"] is False
-
-    def test_needs_input_chain_retains_recipe_route_but_normal_completion_does_not(
-        self, store, session_id
-    ):
-        from haute.assistant._loop import effective_authoring_request
-        from haute.assistant._recipes import route_recipe_request
-
-        session = store.lookup(session_id)
-        assert session is not None
-        original = "Band region into discrete region groups."
-        store.append(
-            session,
-            [
-                {"role": "user", "content": original},
-                {"role": "assistant", "content": "NEEDS_INPUT: which regions go together?"},
-            ],
-        )
-        store.append(
-            session,
-            [
-                {"role": "user", "content": "north and south are core"},
-                {"role": "assistant", "content": "NEEDS_INPUT: what is the default group?"},
-            ],
-        )
-
-        continued = effective_authoring_request(session, "other")
-        assert route_recipe_request(continued) == "categorical_banding"
-        assert original in continued
-        assert "other" in continued
-
-        session.history[-1] = type(session.history[-1]).from_messages(
-            [
-                {"role": "user", "content": "north and south are core"},
-                {"role": "assistant", "content": "No changes were made."},
-            ]
-        )
-        assert effective_authoring_request(session, "other") == "other"
 
 
 # ---------------------------------------------------------------------------
@@ -2296,29 +2337,33 @@ class TestTurnContextMessage:
         stored = {message.role for turn in session.history for message in turn.messages}
         assert "context" not in stored
 
-    async def test_routed_guidance_joins_the_context_and_not_the_system_prompt(
-        self, store, session_id
+    @pytest.mark.parametrize(
+        "request_text",
+        [
+            "Please band region into discrete region groups.",
+            "Add rating factors, but do not supply missing-factor policy or factor values.",
+        ],
+    )
+    async def test_the_context_is_the_rendered_turn_context_whatever_the_request_says(
+        self, store, session_id, request_text: str
     ):
+        """No recipe suggestion or clarification hint is derived from the words."""
+
         provider = ScriptedProvider([[TextDelta("ok"), TurnStop("end", _usage())]])
 
         await _run(
             store,
             session_id,
-            "Please band region into discrete region groups.",
+            request_text,
             provider=provider,
             turn_context="## Turn context",
         )
 
         (call,) = provider.calls
         assert call["system"] == "system prompt under test"
-        context = call["messages"][-1]
-        assert context["role"] == "context"
-        assert context["content"].startswith("## Turn context\n\n### Current-request advisory")
-        assert "Suggested recipe: `categorical_banding`" in context["content"]
+        assert call["messages"][-1] == {"role": "context", "content": "## Turn context"}
 
-    async def test_a_turn_without_context_or_guidance_sends_no_context_message(
-        self, store, session_id
-    ):
+    async def test_a_turn_without_context_sends_no_context_message(self, store, session_id):
         provider = ScriptedProvider([[TextDelta("ok"), TurnStop("end", _usage())]])
 
         await _run(store, session_id, "hi", provider=provider)

@@ -1,7 +1,16 @@
 import { memo, type ReactNode } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { AlertCircle, AlertTriangle, CheckCircle2, Circle, HelpCircle, Loader2, OctagonX } from "lucide-react"
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  Circle,
+  CirclePause,
+  HelpCircle,
+  Loader2,
+  OctagonX,
+} from "lucide-react"
 
 import { CHOOSE_FOR_ME_REPLY, type TranscriptEntry } from "../../stores/useAssistantStore"
 
@@ -231,6 +240,18 @@ function OutcomeEntry({
             Your changes were saved, but the check after saving failed. Review the pipeline, or
             return to the previous save in the Git panel, before continuing.
           </p>
+          <p className="break-words" style={{ color: "var(--text-muted)" }}>{outcome.detail}</p>
+        </OutcomeCard>
+      )
+    case "incomplete":
+      return (
+        <OutcomeCard
+          testId="assistant-outcome-incomplete"
+          icon={CirclePause}
+          tone="warning"
+          title="Stopped before finishing"
+        >
+          <p style={{ color: "var(--text-primary)" }}>Ask it to continue. Nothing was saved.</p>
           <p className="break-words" style={{ color: "var(--text-muted)" }}>{outcome.detail}</p>
         </OutcomeCard>
       )

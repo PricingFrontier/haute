@@ -92,42 +92,36 @@ _REGION_BANDS = BriefNode(
     None,
 )
 GOLDEN_TURNS = (
-    (
-        "Make young_driver true below 21 instead of 25.",
-        TurnContext(
-            GOLDEN_EGRESS_POLICY,
-            GraphBrief(
-                pipeline_name="motor_pricing",
-                revision="<revision-1>",
-                nodes=(_ADD_FEATURES, _POLICIES, _PREMIUM),
-                selected_node_ids=("add_features",),
-                preview_error=PreviewError(
-                    "add_features",
-                    "ColumnNotFoundError in step 2 ('logic') of node 'add_features'; it "
-                    "names column(s) 'driver_age'. Its text is withheld because "
-                    "[assistant.egress].allow_row_samples is false and the text can quote "
-                    "row values.",
-                ),
+    TurnContext(
+        GOLDEN_EGRESS_POLICY,
+        GraphBrief(
+            pipeline_name="motor_pricing",
+            revision="<revision-1>",
+            nodes=(_ADD_FEATURES, _POLICIES, _PREMIUM),
+            selected_node_ids=("add_features",),
+            preview_error=PreviewError(
+                "add_features",
+                "ColumnNotFoundError in step 2 ('logic') of node 'add_features'; it "
+                "names column(s) 'driver_age'. Its text is withheld because "
+                "[assistant.egress].allow_row_samples is false and the text can quote "
+                "row values.",
             ),
         ),
     ),
-    (
-        "Please band region into discrete region groups.",
-        TurnContext(
-            EgressPolicy(
-                trust="organization",
-                max_sensitivity="restricted",
-                allow_project_knowledge=True,
-                allow_executable_source=True,
-                allow_row_samples=True,
-            ),
-            GraphBrief(
-                pipeline_name="motor_pricing",
-                revision="<revision-2>",
-                nodes=(_POLICIES, _ADD_FEATURES, _REGION_BANDS, _PREMIUM),
-                selected_node_ids=(),
-                preview_error=None,
-            ),
+    TurnContext(
+        EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=True,
+        ),
+        GraphBrief(
+            pipeline_name="motor_pricing",
+            revision="<revision-2>",
+            nodes=(_POLICIES, _ADD_FEATURES, _REGION_BANDS, _PREMIUM),
+            selected_node_ids=(),
+            preview_error=None,
         ),
     ),
 )
@@ -150,7 +144,7 @@ def render_golden() -> dict[str, str]:
     """Render every golden file, keyed by its name under ``GOLDEN_ROOT``."""
 
     from haute.assistant._catalog import capability_manifest
-    from haute.assistant._loop import build_system_prompt, turn_context_text
+    from haute.assistant._loop import build_system_prompt
     from haute.assistant._providers import _openai_tools, _portable_tools
     from haute.assistant._render import render_turn_context
     from haute.assistant._tools import TOOL_DEFINITIONS
@@ -174,9 +168,8 @@ def render_golden() -> dict[str, str]:
     files = {
         "system_prompt.md": prompt + "\n",
         **{
-            f"turn_context_{number}.md": turn_context_text(render_turn_context(context), request)
-            + "\n"
-            for number, (request, context) in enumerate(GOLDEN_TURNS, start=1)
+            f"turn_context_{number}.md": render_turn_context(context) + "\n"
+            for number, context in enumerate(GOLDEN_TURNS, start=1)
         },
         "tools_canonical.json": _json_text(TOOL_DEFINITIONS),
         "tools_anthropic.json": _json_text(portable),

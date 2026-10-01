@@ -103,4 +103,23 @@ describe("turn outcomes", () => {
     expect(card).toHaveTextContent("The plan was committed, but structural verification failed.")
     expect(card.textContent).not.toMatch(/nothing (was saved|changed)/i)
   })
+
+  it("says a turn that stopped before finishing saved nothing and can be continued", () => {
+    render(
+      <TranscriptEntryView
+        entry={{
+          kind: "outcome",
+          outcome: {
+            kind: "incomplete",
+            detail: "A dry-run validated a plan that was never applied.",
+          },
+        }}
+      />,
+    )
+
+    const card = screen.getByTestId("assistant-outcome-incomplete")
+    expect(card).toHaveTextContent("Stopped before finishing")
+    expect(card).toHaveTextContent("Ask it to continue. Nothing was saved.")
+    expect(card).toHaveTextContent("A dry-run validated a plan that was never applied.")
+  })
 })

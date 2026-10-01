@@ -22,11 +22,12 @@ export interface AssistantUsage {
 
 /**
  * How a completed turn ended. The detail is the model's question, the blocker,
- * or the verification error of a save that committed.
+ * the verification error of a save that committed, or the controller's reason
+ * the model stopped before finishing.
  */
 export type AssistantTurnOutcome =
   | { kind: "applied" | "answered"; detail: null }
-  | { kind: "needs_input" | "blocked" | "committed_unverified"; detail: string }
+  | { kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"; detail: string }
 
 export type AssistantStreamEvent =
   | { type: "text_delta"; text: string }
@@ -122,7 +123,8 @@ function parseTurnOutcome(value: unknown, path: string): AssistantTurnOutcome {
       return { kind, detail: null }
     case "needs_input":
     case "blocked":
-    case "committed_unverified": {
+    case "committed_unverified":
+    case "incomplete": {
       const detail = requireString(payload.detail, `${path}.detail`)
       if (!detail.trim()) invalidAssistantPayload(`${path}.detail`, "a non-empty string")
       return { kind, detail }

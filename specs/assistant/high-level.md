@@ -163,8 +163,10 @@ places after the analyst's message and never stores in the session history:
 - on request, the error one node raises when its schema resolves, reduced by policy: its
   text only when `allow_row_samples` permits, otherwise its type, the step or line that
   raised it and the column names the policy already discloses. A failure that appears
-  only while rows are collected is not reproduced: the block says the schema resolved;
-- the advisory recipe suggestion or material-clarification hint for the current request.
+  only while rows are collected is not reproduced: the block says the schema resolved.
+
+The turn context holds no guidance derived from the analyst's words: no recipe
+suggestion and no clarification hint.
 
 With that block a single-node edit can dry-run without first reading the graph. The
 message request carries the selection and the preview-error node as a typed `context`
@@ -180,9 +182,11 @@ result summary), a graph-updated notification after each successful mutation (ca
 new graph fingerprint), and exactly one terminal event — completed (with token usage and
 a typed turn outcome), failed (with a sanitized message), or cancelled. The outcome says
 how the turn ended: `applied` (a plan was saved and verified), `answered` (the model
-replied without attempting a mutation), `needs_input` with the model's question,
-`blocked` with the sanitized blocker (nothing was saved), or `committed_unverified` with
-the verification error when a save committed but its post-save verification failed. The
+replied and left no dry-run unfinished), `needs_input` with the model's question,
+`blocked` with the sanitized blocker (nothing was saved), `committed_unverified` with
+the verification error when a save committed but its post-save verification failed, or
+`incomplete` with the controller's reason when the model stopped, after one reminder,
+with a validated plan unapplied or a failed dry-run uncorrected (nothing was saved). The
 outcome is stored with the turn, so a resumed chat shows the same outcome the live turn
 ended with. One turn may be in flight per session; a second
 send while one is running is rejected with 409, not queued. A turn ends when the model stops
@@ -198,16 +202,30 @@ raises, so a failed cleanup cannot turn into a permanent 409 for that session.
 When the user's request authorizes a mutation and the required intent is known, the
 system prompt tells the model not to end after merely announcing a future tool call: it
 completes the dry-run/apply sequence, asks one focused question prefixed `NEEDS_INPUT:` when
-material intent is ambiguous, or reports a concrete tool blocker prefixed `BLOCKED:`.
-The controller enforces this only once the model has attempted a mutation: after any
-dry-run or apply attempt, a provider `end` without a successful apply or one of those
-explicit outcomes is not accepted as completion. Before such an attempt, a provider `end`
-completes the turn, whatever words the request contains, so a question such as “Can you
-explain the rating step?” or “Why does the join produce nulls?” ends as an answered
-turn. The controller records one internal, non-transcript continuation instruction which says
-that a successful dry-run must be followed immediately by an `apply_graph_plan` tool call
-using the exact returned hash, then requests one more provider round; a second unqualified
-end fails the turn as incomplete instead of falsely completing it. A successful
+material intent is ambiguous, or reports a concrete tool blocker prefixed `BLOCKED:`. When
+the analyst delegates a choice ("pick any", "you choose"), the prompt tells the model to
+make a reasonable choice, state it, and proceed; it asks only for choices that change the
+result materially and that the analyst has not delegated.
+
+The controller is structural: nothing it does depends on the words of the request. It
+tracks one fact across the turn's dry-runs, the state the latest one left: a **validated
+plan** (the latest dry-run succeeded) or a **failed dry-run** (the latest dry-run failed);
+only an apply that saves clears it, and that apply ends the turn. When the model ends a
+round with text that does not begin `NEEDS_INPUT:` or `BLOCKED:` while that state is
+open, the controller sends one internal, non-transcript reminder naming it (apply the
+validated plan with its exact hash, or correct and dry-run the failed plan, or report a
+question or blocker) and requests one more provider round. A second such end completes
+the turn with the `incomplete` outcome, whose detail names the open state, so the
+analyst sees that the assistant stopped before finishing rather than a failure or a
+false success. A turn with no open state ends `answered`, so a question such as “Can you
+explain the rating step?” or “Why does the join produce nulls?” ends as an answered turn.
+This replaces a controller that, once the model attempted any dry-run or apply, required
+a successful apply or an explicit marker and failed the turn on a second unqualified
+end, and that also retained a recipe route across a chain of `NEEDS_INPUT:` turns by
+matching the analyst's words with regular expressions. Its rationale was that a turn
+must never claim completion falsely; the typed `incomplete` outcome keeps that
+guarantee, while the word matching misrouted ordinary phrasing and turned delegated
+choices into questions, and a failed turn hid a resumable state behind an error. A successful
 `apply_graph_plan` is itself the terminal mutation outcome: after consuming that provider
 round, the controller emits a concise deterministic success confirmation and completes
 without exposing another tool round in which the model could repeat or extend the mutation.
@@ -625,7 +643,10 @@ Training node for a tree family (loss and params) and a Poisson GLM with an expo
 offset under a log link, Model Scoring from a training run, an Expander with its
 `stepCount`, an online and a ratebook Optimisation (the ratebook with a Banding source),
 online and ratebook Apply Optimisation, and Data Input, Data Output, Constant, Edge Join
-and Explore configurations. A card for Submodel or Port states that the assistant
+and Explore configurations. A field meaning also carries a material choice its node
+needs: the Rating Step card says its factor values, relativities and missing-factor
+value come from the analyst, are never invented, and are asked for with `NEEDS_INPUT:`
+unless the analyst delegated them. A card for Submodel or Port states that the assistant
 cannot author it, in the words of the operation layer's refusal. Cards are library
 content, never project data. A card file also carries a synthetic fixture (tiny rows,
 files, surrounding operations) that is test evidence and never reaches the model: CI
@@ -796,27 +817,18 @@ a recipe handle is pending, and the handle clears only after its successful dedi
 dry-run. A model therefore cannot discover the specialist contract and then silently
 substitute a generic node.
 
-For each turn, a conservative deterministic recognizer may suggest one recipe in the
-turn context when a single unambiguous explicit pattern is present: a
-band/banding term plus categorical or discrete for categorical banding; join for a
-reference join; or the phrase rating step. When a routed turn ends with
-`NEEDS_INPUT:`, immediately following clarification turns retain that route while each
-intervening turn also ends with `NEEDS_INPUT:`. A normal answer, completed mutation, or
-unqualified assistant response closes the chain, so stale request guidance is never revived.
-A standalone `response output` request suggests `response_output`; when a specialist recipe
-request also asks for a response output, that specialist suggestion owns the downstream
-output instead. A
-unique match is appended only as advisory provider guidance. No lexical result changes the
-provider-visible tools or schemas, populates an argument, rewrites a tool call, makes
-completion of the turn required, or authorizes or rejects an executor operation. The source-bound executor constructor receives no user
-request text at all. Consequently equivalent phrasing, another locale, or a
-composed request remains free to submit any valid structured recipe or primitive plan.
+No recognizer reads the analyst's words: the model selects a recipe or primitive
+operations from the recipe index, the node cards and the descriptors. Every request
+receives the same provider-visible tools and schemas, and the source-bound executor
+constructor receives no user request text at all, so equivalent phrasing, another
+locale, or a composed request remains free to submit any valid structured recipe or
+primitive plan.
 
 The fail-closed authority is the provider operation descriptor, the wire model's closed
 discriminated union, recipe argument validation, graph-semantic replay, exact plan hash,
 stale-snapshot check, and single-use receipt. Explicit names and apparently missing material
-choices remain prompt guidance: the model must not invent them, while a complete structured
-call is accepted regardless of whether a regular expression found the same words. Invalid or
+choices remain prompt and node-card guidance: the model must not invent them, while a
+complete structured call is accepted on its own terms. Invalid or
 incomplete calls fail the canonical schema or recipe validator. The lexical-only
 `recipe_route_required`, `recipe_route_mismatch`, `recipe_name_mismatch`, and
 `material_input_required` executor verdicts do not exist.
