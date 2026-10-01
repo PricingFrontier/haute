@@ -116,12 +116,20 @@ and a null claim is exactly a defaulted row:
       the once-resolved input schema before treating empty entries as a
       documented no-op.
    b. Return unchanged for an empty `entries` list only after that factor
-      validation; return unchanged if `"value"` or any factor is missing from entry keys.
+      validation; return unchanged if no entry has a `"value"` key, or no
+      entry has some factor's key. This union of entry keys is the only
+      passthrough check on keys.
    c. Parse `defaultValue`: tolerate non-numeric/non-finite strings (treated as
       "no usable default", noted in the eventual miss error rather than silently ignored).
    d. Resolve and validate each originating input dtype (`_validate_supported_factor_dtypes`).
-   e. Build a `pl.DataFrame(entries)` (return unchanged if `"value"` is absent); reject (raise `ValueError`) any NaN/Infinity or null `value` entries.
-   f. Select only `[*factors, "value"]` from entries (drops extra keys); return unchanged if any factor is absent from entries' columns.
+   e. Build `pl.DataFrame(entries, infer_schema_length=None)`, which reads every
+      entry rather than the first hundred Polars infers from by default, so every
+      key step b found is a column wherever its first entry sits. An entry without
+      `value` therefore holds a null value. Reject (raise `ConfigSettingError`,
+      setting `tables`) any NaN/Infinity or null `value` entries, naming the count.
+   f. Select only `[*factors, "value"]` from entries (drops extra keys). Parse a
+      Duration factor's String keys in Python with `_duration_key_series` (see
+      Edge cases), before any expression runs.
    g. Coerce lookup-entry columns to originating input dtypes, then evaluate `_rating_key_expr`
       into a collision-free temporary key column on both lookup and input sides.
    h. Deduplicate the lookup on the temporary canonical keys with
@@ -193,6 +201,24 @@ and a null claim is exactly a defaulted row:
   (`2024-1-31`, `2024-01- 31`); any spelling it rejects — another separator or
   field order, a time part, whitespace before a separator, or an impossible date
   — fails loudly on both the engine lookup and the trace scalar path.
+- **Duration keys are exact ISO-8601 durations, parsed in Python:** a Duration
+  entry string is the ISO-8601 form Polars displays (`PT1.5S`, `PT30M`,
+  `-P1DT2H`; days, hours, minutes and decimal seconds). `_duration_key_to_physical`
+  reads it with exact rational arithmetic into the factor's time unit, and
+  `_duration_key_series` turns a String column of them into the factor's Duration
+  dtype. The engine lookup (`rating_table_lookup`) and the trace scalar path
+  (`normalise_rating_key`) both call it before any Polars expression runs, never
+  from inside a Polars callback: Polars rebuilds a callback's exception from its
+  message alone, which a `ConfigSettingError` (keyword-only `setting`) cannot
+  survive. A key that is not that form or names no component, is finer than the
+  time unit (however many digits it spells; nothing is rounded), or lies outside
+  the Int64 range of the time unit raises the same `ConfigSettingError` on both
+  paths: setting `tables`, the key as its quoted value, and a fix.
+- **No Polars callback raises a `ConfigSettingError`:** of the callbacks in
+  `_rating.py` that raise, the `_rating_extrema_expr` guard's
+  `RatingExtremaUndefinedError` subclass keeps its fields through Polars'
+  positional rebuild, and the miss guard's `RatingTableMissError` takes only its
+  message. `_banding_config.py` and `_rating_step_config.py` run no callbacks.
 - **Ratebook dtype metadata is mandatory:** `factor_dtypes` is part of every
   newly saved ratebook artifact. `_apply_ratebook` validates ordered factor
   names and exact descriptors before calling `_apply_rating_table`; it neither
@@ -229,7 +255,8 @@ and a null claim is exactly a defaulted row:
 | Non-numeric/non-finite banding rule value or breakpoint boundary | `ValueError` | `_banding_condition`, `_breakpoints_to_rules` | Eagerly, during `_apply_banding` — before any frame materialisation |
 | >1 open-ended breakpoint, or a sole open-ended breakpoint with no bounded anchor, or a duplicate breakpoint boundary | `ValueError` | `_breakpoints_to_rules` | Eagerly |
 | Rating table entries contain NaN/Infinity `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |
-| Rating table entries contain a null `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |
+| Rating table entries contain a null `value`, including an entry with no `value` key when another entry has one, wherever it sits | `ConfigSettingError` (`ValueError`) naming the count | `rating_table_lookup`, from `_apply_rating_table` | Eagerly, before the join |
+| A Duration factor's entry key is not an ISO-8601 duration, is finer than the factor's time unit, or lies outside its range | `ConfigSettingError` (`ValueError`), setting `tables`, the key quoted, with a fix | `_duration_key_to_physical`, from `rating_table_lookup` and `normalise_rating_key` | Eagerly, before the join and on the trace path alike |
 | Rating factor has an unsupported nested/binary/object/unknown dtype | `ValueError` naming the table/factor/dtype, supported scalar families, and upstream-cast remediation | rating dtype validation in `_apply_rating_table` | Eagerly, before the join |
 | Saved ratebook lacks factor dtype metadata or apply dtype differs | `RatingFactorDtypeContractError` (`SchemaMismatchError`) | `_apply_ratebook` | Eagerly, before lookup construction; public contract adapters map it to HTTP 422/background `contract_error` |
 | Unsupported `onMissing` value | `ValueError` | `_normalise_on_missing` | Eagerly |
@@ -260,7 +287,7 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   first threshold, a null falling to the default band, a table miss resolved as neutral, and a
   multiplicative combine over a base value, with the trace's rating detail naming the matched
   entries and agreeing with the preview premium row by row.
-- **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
+- **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, an entry without `value` counted past the first hundred entries, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
 - **`tests/test_banding.py`** — breakpoints/categorical `_apply_banding`, date and date-and-time breakpoints on Date and time-zoned Datetime columns (calendar-day inclusion, wall-clock time, both closures), unreadable and mixed boundaries, and every mismatched kind/column pairing, the rejection of any other or missing type (including the removed `continuous`), `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
 - **`tests/test_banding_stats.py`** — `POST /api/banding/stats` through a cached point: the bin
   edges with the last closed, a constant column, values no bin can hold, a column with no finite
@@ -286,7 +313,11 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   `normalise_rating_key(value, dtype)` and `_rating_key_expr` across every
   supported primitive/categorical/decimal/temporal dtype, runtime lookup,
   trace enrichment, ratebook persistence/apply, null/non-finite values,
-  malformed metadata, and exact dtype mismatch.
+  malformed metadata, and exact dtype mismatch. Date and Duration entry
+  strings are checked on both the engine lookup and the scalar path: a
+  Duration key that is not ISO-8601, is finer than the time unit (including
+  past 28 significant digits) or is out of range raises the same
+  `ConfigSettingError` on both.
 - **`tests/test_rating_key_agreement.py`** — focused historical and
   adversarial key regressions, including typed alias deduplication and source
   factor-column preservation.

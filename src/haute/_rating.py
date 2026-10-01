@@ -14,7 +14,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
@@ -705,11 +705,19 @@ _DURATION_KEY_RE = re.compile(
 )
 _DURATION_UNITS_PER_SECOND = MappingProxyType(
     {
-        "ms": Decimal(1_000),
-        "us": Decimal(1_000_000),
-        "ns": Decimal(1_000_000_000),
+        "ms": 1_000,
+        "us": 1_000_000,
+        "ns": 1_000_000_000,
     }
 )
+_DURATION_UNIT_NAMES = MappingProxyType(
+    {
+        "ms": "milliseconds",
+        "us": "microseconds",
+        "ns": "nanoseconds",
+    }
+)
+_DURATION_KEY_FIX = "A Duration factor's key is an ISO-8601 duration like PT1.5S, PT30M or P1DT2H."
 _RATING_PRIMITIVE_DESCRIPTOR_KINDS = frozenset(
     {
         "Int8",
@@ -830,36 +838,59 @@ def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
 
 
 def _duration_key_to_physical(value: str, time_unit: str) -> int:
-    """Parse Polars' ISO-8601 duration display into an exact physical value."""
+    """Parse Polars' ISO-8601 duration display into an exact physical value.
+
+    The arithmetic is exact, so a key finer than *time_unit* is refused
+    however many digits it spells, never rounded onto a neighbouring key.
+    """
     match = _DURATION_KEY_RE.fullmatch(value)
     if match is None or not any(
         match.group(name) is not None for name in ("days", "hours", "minutes", "seconds")
     ):
         raise ConfigSettingError(
-            f"invalid ISO-8601 duration rating key {value!r}", setting="tables", values=(value,)
-        )
-    try:
-        seconds = (
-            Decimal(match.group("days") or 0) * 86_400
-            + Decimal(match.group("hours") or 0) * 3_600
-            + Decimal(match.group("minutes") or 0) * 60
-            + Decimal(match.group("seconds") or 0)
-        )
-        physical = seconds * _DURATION_UNITS_PER_SECOND[time_unit]
-    except (InvalidOperation, KeyError) as exc:
-        raise ConfigSettingError(
-            f"invalid {time_unit!r} duration rating key {value!r}",
+            f"invalid ISO-8601 duration rating key {value!r}",
             setting="tables",
+            fix=_DURATION_KEY_FIX,
             values=(value,),
-        ) from exc
-    if physical != physical.to_integral_value():
+        )
+    whole_seconds = (
+        int(match.group("days") or 0) * 86_400
+        + int(match.group("hours") or 0) * 3_600
+        + int(match.group("minutes") or 0) * 60
+    )
+    seconds = whole_seconds + Fraction(match.group("seconds") or 0)
+    physical = seconds * _DURATION_UNITS_PER_SECOND[time_unit]
+    unit_name = _DURATION_UNIT_NAMES[time_unit]
+    if physical.denominator != 1:
         raise ConfigSettingError(
             f"duration rating key {value!r} is not exactly representable as {time_unit}",
             setting="tables",
+            fix=f"Round the key to whole {unit_name}.",
             values=(value,),
         )
-    result = int(physical)
-    return -result if match.group("sign") else result
+    result = -physical.numerator if match.group("sign") else physical.numerator
+    if not _INT64_MIN <= result < _INT64_MAX_EXCL:
+        raise ConfigSettingError(
+            f"duration rating key {value!r} is out of range for {time_unit}",
+            setting="tables",
+            fix=f"A Duration({time_unit}) column holds between -2**63 and 2**63 - 1 {unit_name}.",
+            values=(value,),
+        )
+    return result
+
+
+def _duration_key_series(name: str, keys: pl.Series, dtype: pl.Duration) -> pl.Series:
+    """Parse String duration *keys* into *dtype* in Python, before any expression runs.
+
+    A key that names no exact duration of *dtype* is refused here as a
+    ``ConfigSettingError``. Raised inside a Polars callback, the error would be
+    recreated from its message alone and surface as a ``TypeError`` instead.
+    """
+    physical = [
+        None if key is None else _duration_key_to_physical(key, dtype.time_unit)
+        for key in keys.to_list()
+    ]
+    return pl.Series(name, physical, dtype=pl.Int64).cast(dtype)
 
 
 # Date entry strings are ISO calendar dates; surrounding whitespace is
@@ -873,7 +904,11 @@ def _coerce_rating_lookup_expr(
     source_dtype: pl.DataType,
     target_dtype: pl.DataType,
 ) -> pl.Expr:
-    """Strictly coerce a sidecar factor column through its input-frame dtype."""
+    """Strictly coerce a sidecar factor column through its input-frame dtype.
+
+    A Duration factor's String keys arrive already parsed by
+    :func:`_duration_key_series`, so this expression only ever casts them.
+    """
     rating_dtype_descriptor(target_dtype)
     col = pl.col(name)
     if target_dtype == pl.Null:
@@ -893,16 +928,6 @@ def _coerce_rating_lookup_expr(
             time_zone=target_dtype.time_zone,
             strict=True,
         ).alias(name)
-    if isinstance(target_dtype, pl.Duration) and source_dtype == pl.String:
-        time_unit = target_dtype.time_unit
-        return (
-            col.map_elements(
-                lambda value: _duration_key_to_physical(value, time_unit),
-                return_dtype=pl.Int64,
-            )
-            .cast(target_dtype)
-            .alias(name)
-        )
     return col.cast(target_dtype, strict=True).alias(name)
 
 
@@ -938,10 +963,7 @@ def normalise_rating_key(
             strict=True,
         )
     elif isinstance(dtype, pl.Duration) and source_dtype == pl.String:
-        typed = raw.map_elements(
-            lambda item: _duration_key_to_physical(item, dtype.time_unit),
-            return_dtype=pl.Int64,
-        ).cast(dtype)
+        typed = _duration_key_series(raw.name, raw, dtype)
     else:
         typed = raw.cast(dtype, strict=True)
 
@@ -1195,8 +1217,9 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     Raises exactly what :func:`_apply_rating_table` raises for the table: a
     malformed table, an absent factor, an unsupported factor dtype, or an
     entry its factor dtype refuses. ``None`` is a table execution passes
-    through (no factors, output column or entries, or entries without a
-    ``value`` or a factor key).
+    through (no factors, output column or entries, or no entry at all with a
+    ``value`` or with some factor's key). Once any entry has a key, every
+    entry is read for it: an entry without a ``value`` is a null value.
     """
     raw_factors = table.get("factors")
     raw_entries = table.get("entries")
@@ -1271,10 +1294,10 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
 
     # Build the lookup eagerly: rating tables are small configuration data,
     # and strict factor/value conversion should fail before the lazy input
-    # plan is returned to a caller.
-    lookup = pl.DataFrame(entries)
-    if "value" not in lookup.columns:
-        return None
+    # plan is returned to a caller.  The frame reads every entry, so each key
+    # the check above found in any entry is a column: an entry without a value
+    # is a null value, refused below, wherever it sits in the table.
+    lookup = pl.DataFrame(entries, infer_schema_length=None)
     lookup = lookup.with_columns(pl.col("value").cast(pl.Float64, strict=True))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
@@ -1299,11 +1322,16 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
 
     # B15: Select only factor columns + "value" to avoid polluting the main
     # frame with extra keys that may be present in the entries dicts.
-    # Guard: if any factor column is missing from entries, config is invalid.
-    missing = [f for f in factors if f not in lookup.columns]
-    if missing:
-        return None
     lookup = lookup.select([*factors, "value"])
+    # A Duration factor's ISO-8601 string keys are parsed in Python, so a key
+    # naming no exact duration is refused here as configuration.
+    lookup = lookup.with_columns(
+        [
+            _duration_key_series(factor, lookup.get_column(factor), dtype)
+            for factor, dtype in original_dtypes.items()
+            if isinstance(dtype, pl.Duration) and lookup.schema[factor] == pl.String
+        ]
+    )
 
     occupied = existing_cols | entry_cols | {output_col}
     key_columns = [
