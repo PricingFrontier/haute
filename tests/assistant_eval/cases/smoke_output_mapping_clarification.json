@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "id": "smoke_output_mapping_clarification",
   "fixture_version": "1",
   "project_fixture": "ordinary_pricing",
@@ -23,7 +23,8 @@
         "modified_nodes": [],
         "node_configs": {},
         "execution": [],
-        "efficiency": null
+        "efficiency": null,
+        "data_findings": null
       }
     }
   ]

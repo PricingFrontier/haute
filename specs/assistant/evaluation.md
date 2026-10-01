@@ -5,7 +5,8 @@
 The evaluation judges every assistant change against the tasks analysts ask
 for, area by area. This document owns the fixture projects, the egress profiles
 cases run under, the case format, the reference trajectories, the two
-evaluation tiers, the scoring layers and efficiency metrics, the boundary
+evaluation tiers, the scoring layers, the data findings layer and its
+recovered-within-budget rate, the efficiency metrics, the boundary
 between the assistant and execution, the live runner's commands and variants,
 and how evidence is reported. The assistant
 itself is specified in [the assistant specification](high-level.md) and its
@@ -44,6 +45,14 @@ generated code included. All data is synthetic.
   left `m:1` Edge Join (`quote_claims`) and divides `total_incurred` by
   `premium` in a stepped `loss_ratio` Transform. Three quotes' policies have no
   claims row, so their `total_incurred` is null from the join on.
+- `data_recovery` holds one Parquet Data Input, `quotes`: six motor quotes with
+  `region` in lower case (`north`, `south`, `east`), `cover_type`, a
+  `vehicle_group` code, a Boolean `has_prior_claim` and a `premium`. Its `data/`
+  also holds two files no node reads yet, each a trap a natural plan falls into:
+  `region_loadings` has one loading per region and cover type, so `region` alone
+  repeats, and `vehicle_factors` keys its factors by `group_code` while its own
+  `vehicle_group` describes the group. The seeded recovery cases (see Case
+  format) run on it.
 - `ordinary_pricing`, `join_parquets`, `showcase_parquets`, `stepped_pricing`
   and `polars_corpus` are small projects for focused cases; `polars_corpus`'s
   data files are the Polars step corpus's normal synthetic inputs from
@@ -96,7 +105,7 @@ the case.
 ## Case format
 
 Each case is one JSON file in `tests/assistant_eval/cases/`, in the closed case
-shape version 4: `schema_version`, `id`, `fixture_version`, `project_fixture`,
+shape version 5: `schema_version`, `id`, `fixture_version`, `project_fixture`,
 `area`, `split`, `egress`, `inapplicable_variants` and `turns`. An unknown or
 missing key at any level fails loading, and so does a required or forbidden
 node-type name that is not a node type.
@@ -144,6 +153,21 @@ Each turn's expectations are closed and every key is required:
   asks for before primitive operations, the dry-run and the apply, and four
   provider round trips, the last being the closing reply that follows an
   apply.
+- `data_findings`: `null` for a turn whose saved graph's data must be clean,
+  or the closed `{reported, kept}` for a turn whose data checks must report an
+  advisory finding, each a list of `{kind, node}` findings whose
+  kind the data check can raise as advisory (`execution_failed`,
+  `rows_emptied`, `banding_all_default`, `rating_misses`, `join_unmatched`,
+  `join_validation_failed`, `join_fan_out` or `column_all_null`; informational
+  findings need no action, so none is declared). `reported` names the findings,
+  such as a recovery case's seeded bug, that the data checks the model receives
+  in the turn must report, and is never empty. `kept` names the reported
+  findings the saved graph keeps because correcting them would contradict a
+  value the analyst stated, as the system prompt's rule on stated values
+  requires; every other advisory finding must be gone from the saved graph. A
+  finding named twice, a `kept` finding not `reported`, or a kept finding on a
+  turn that saves nothing fails loading. The layer is scored as Scoring layers
+  describes.
 
 A turn that saves nothing declares no node configurations and no goldens.
 
@@ -154,6 +178,7 @@ on numbers, dates and categories, multi-table rating, joins with exact port
 roles, quote responses and batch outputs, Model Training and Model Scoring
 setup, optimiser setup, adjacent edits around a submodel occurrence, a new
 scenario on the Source Switch, Explore pivots, recovery of a seeded broken node,
+recovery from a seeded data finding (below),
 read-only questions (among them two answered from one `inspect_node` data call:
 `claims_null_diagnosis`, why a column is null for some rows, and
 `broken_bands_diagnosis`, why a node has no data when the node it reads fails),
@@ -169,7 +194,28 @@ region_loadings"), so an expectation never depends on a name the analyst did
 not give. Likewise a `node_configs` subset holds only what the request states,
 never a value the engine supplies when the key is absent: `motor_online_optimiser`
 expects no `step_column` on its expander, whose blank step column runs as
-`scenario_index`.
+`scenario_index`. A case's own values never conflict with its fixture's data by
+accident: `smoke_rating_step` rates the driver ages its project holds (25 and
+42), so its reference plan misses no row.
+
+**Seeded recovery cases.** Five `recovery` cases on `data_recovery` measure
+recovery from a pipeline that runs but is wrong. In each, the request leads to a
+natural plan whose data check reports the seeded bug as an advisory finding,
+and each declares that finding in `data_findings`:
+
+| Case | Split | Request | Seeded bug, as the check reports it | Expected recovery |
+|---|---|---|---|---|
+| `recovery_boolean_banding` | development | Band `has_prior_claim` into `claims_group`: claimant with a prior claim, clean without. | Categorical rules written `True` and `False` on a Boolean column, whose text is `true` and `false`: `banding_all_default` on `claims_band`. | Rules on `true` and `false`. |
+| `recovery_emptied_filter` | development | A Transform keeping only the quotes in the north and south regions. | Both regions required of one row: `rows_emptied` on `north_south_quotes`. | A filter keeping either region. |
+| `recovery_mistyped_join_key` | holdout | Left join the vehicle factors onto quotes by vehicle group, many-to-one. | A join on the same-named `vehicle_group`, which describes the group on the factors' side: `join_unmatched` on `vehicle_rated_quotes`. | The quotes' `vehicle_group` joined to the factors' `group_code`. |
+| `recovery_rating_casing` | development | A rating table on region: North 1.2, South 0.95, East 1.05, default 1.0. | The stated keys miss the data's lower-case regions: `rating_misses` on `region_rating`. | The stated keys kept, the finding kept and shown on the change card, and the analyst told. |
+| `recovery_duplicate_join_keys` | holdout | A left, many-to-one join of the region loadings, each quote taking its one loading. | A join on `region` alone, which repeats once per cover type: `join_validation_failed` on `loaded_quotes`. | A join on `region` and `cover_type`. |
+
+The model corrects the plan within its turn and dry-runs again before it
+applies, except where the correction would change a value the analyst stated:
+there, as the system prompt's rule says, the value stays and the model tells
+the analyst what the check found. The configuration layer then asserts the
+stated rating keys, and the execution golden reproduces their misses.
 
 ## Reference trajectories
 
@@ -196,9 +242,9 @@ A case runs with the same session-stable system prompt and turn context the
 message route builds, with no selection, so a trajectory that adds or edits one
 primitive node makes its first dry-run without reading the graph first: the
 graph brief already names each node's inputs and columns, and each step's id.
-There are two exceptions. A recovery trajectory inspects the failing node
-before it plans the fix, and then reads its config for the step code it
-rewrites. And because `update_node` replaces each key it writes whole, a
+There are two exceptions. The failing-node recovery trajectory
+(`broken_vehicle_age_fix`) inspects the failing node before it plans the fix,
+and then reads its config for the step code it rewrites. And because `update_node` replaces each key it writes whole, a
 trajectory that restates a saved non-empty list or map (rating factors, rating
 tables, output mappings, a scenario map) first reads that node's config with
 `inspect_node`'s config part, in the same turn, as a model must: an earlier
@@ -210,6 +256,14 @@ The `smoke_step_edit` trajectory inserts its step with `edit_steps` after the
 saved free-code step without reading it, which the replay's execution golden
 proves kept. Recipe and clarification trajectories keep the reads their
 protocol names.
+
+Each seeded recovery trajectory reads the descriptors of the node types it
+adds, dry-runs the natural plan carrying the seeded bug, then, saying what the
+check found, dry-runs the corrected plan and applies it. `recovery_rating_casing`
+applies its one plan as the analyst stated it and closes by telling the
+analyst that no quote's region matches the stated entries. Thread-mode replay
+proves the tools accept both plans; the process-mode replay (see Tiers) proves
+the check reports each bug.
 
 `TrajectoryProvider` replays a trajectory through the real loop. Before each
 round it compares the results the loop returned with the recorded statuses and
@@ -255,7 +309,13 @@ that their one `inspect_node` data call measured what their answers state: the
 join where `total_incurred` first goes null and how many quotes it matches, and
 one error at `rating_features`' failing step with `vehicle_bands`
 `upstream_failed`. Their `efficiency` limits allow one tool call and two
-provider round trips. Replay proves the tools, validators and
+provider round trips. The five seeded recovery trajectories replay in process
+mode too, and each passes every layer, its data findings layer measured: its
+first dry-run's check reports the seeded bug, and the harness's check of the
+saved graph finds it gone, or, for `recovery_rating_casing`, kept and shown on
+the change card. In thread mode every check reports `worker_mode_unsupported`,
+so the data findings layer of every replay is not measured and fails nothing.
+Replay proves the tools, validators and
 contracts; it cannot show that a prompt change helps a model.
 
 **Tier 1: live runs, on demand.** `scripts/run_assistant_self_test.py` is the
@@ -281,9 +341,12 @@ repository, with three commands:
   is recorded as that case's crash too. A crashed case has no turns, fails every
   layer and keeps its transcript, and the next case runs in a fresh process.
 - `compare` reads two reports of the same evidence kind and reports, per area,
-  each report's case, pass, crash and not-applicable counts; every case run in both
+  each report's case, pass, crash and not-applicable counts with its data
+  findings counts and recovered-within-budget rate; every case run in both
   that flipped between pass and fail, with the first failing layer on its
-  failing side; the cases each report lists as not applicable, which are never
+  failing side; every case run in both whose data findings flipped between
+  passed and failed (a layer not measured in one report has not flipped); both
+  runs' recovered-within-budget rates and their difference; the cases each report lists as not applicable, which are never
   a flip, a pass or a failure; the cases only one report holds, run or not
   applicable; and per area the median of each efficiency metric in both reports
   and their difference.
@@ -331,10 +394,12 @@ provider and model match the run, or none when the configuration is not listed.
 
 ## Scoring layers
 
-Correctness decides pass or fail. Each turn is scored in six layers, each
-failure reason is reported as `<layer>: <reason>` under its turn, and a case
-passes only when every layer of every turn passes. The case's first failing
-layer is the first failing layer of its first failing turn.
+Correctness decides pass or fail. Each turn is scored in six correctness
+layers, each failure reason is reported as `<layer>: <reason>` under its turn,
+and a case passes only when every layer of every turn passes and, for a case in
+the `recovery` area, every turn's data findings layer (below) does not fail.
+The case's first failing layer is the first failing layer of its first
+failing turn, `data_findings` when that turn fails only there.
 
 1. **Protocol.** The turn completes; its typed outcome kind is the expected one,
    so an `incomplete` turn (the model stopped with a dry-run unfinished) or a
@@ -381,6 +446,71 @@ the first validated plan and end-to-end latency, summed over its turns, and the
 report gives each metric's median per area. A turn runs under the product's
 tool-call budget, never a case's.
 
+### Data findings
+
+The data findings layer is scored beside the correctness layers, never as one
+of them, and never in place of the execution goldens: the goldens judge what
+the saved pipeline computes, while this layer measures what the model was told
+about its data and what the saved graph's data still shows. Per turn it
+records, value-free:
+
+- `received`: each data check the model received, in call order, from a
+  dry-run's `data_check` and from `inspect_node`'s data part: the tool, the
+  check's outcome (`checked`, `not_run` with its reason, or `omitted` when the
+  result carried only the note that the check did not fit) and the kind and
+  node of each advisory finding the model saw.
+- `final`: the harness's own check of the saved graph after the turn (see
+  Execution boundary) over the nodes the turn changed: each node that is new or
+  retyped, whose configuration digest changed, or that is the target of an
+  added or removed edge, less the nodes with no output frame (Quote Response,
+  Data Output, Explore, Model Training and Optimisation) and submodel
+  occurrences and ports. It records each such node's status (measured as
+  `checked`, `failed` or `upstream_failed`, or not measured, with its
+  `not_checked` or `not_run` reason) and the advisory findings on those nodes;
+  it is null when the turn changed no such node.
+- `cards`: for each change the turn saved, its change card's check outcome and
+  the nodes of the advisory findings the card showed the analyst.
+
+A turn that declares no data findings passes the layer when the saved graph's
+check reports no advisory finding on the nodes the turn changed, and fails it
+otherwise. A turn that declares them is judged in three parts, each only when a
+check it reads ran: some received check that ran reported every `reported`
+finding; the saved graph's advisory findings on the changed nodes are exactly
+the `kept` ones, so every other one is gone and no stated value was changed to
+remove a kept one; and some change card showed the analyst each kept finding.
+A layer for which no check ran is `not_measured`, which neither passes nor
+fails: thread-mode replay, where every check reports
+`worker_mode_unsupported`, measures no layer, and a live check that could not
+run (a busy worker, a node behind a model that is not cached locally) leaves
+its part unmeasured. A case's layer is `failed` when any turn's failed,
+`passed` when some turn's passed and none failed, and `not_measured` otherwise.
+
+The layer fails a case only in the `recovery` area, where recovering is the
+case's point: there a failed layer fails the turn and the case, with reasons
+prefixed `data_findings:`. In every other area its result is reported and never
+counted against the case. One ordinary case declares a finding:
+`smoke_corpus_high_premium_quotes` keeps the corpus filter's stated threshold of
+1500, which no quote in the corpus's inputs exceeds, so its `rows_emptied` is
+kept rather than read as a failure to recover.
+
+**Recovered-within-budget rate.** A turn enters the metric when its
+expectations say it saves and at least one data check it received reported an
+advisory finding. Such a turn recovered within budget when it completed with
+its expected outcome kind, saved at least one change, and the saved graph's
+check reports no advisory finding on the nodes it changed other than the
+findings its case declares kept, each of which a change card showed the
+analyst. It did not recover when it ended with another outcome or saved
+nothing: a turn whose four failed dry-runs per plan, or whose tool-call budget,
+are spent ends `blocked` or failed, so reaching the expected outcome is what
+"within budget" means. A turn that saved but whose saved graph's check measured
+none of its changed nodes leaves the metric. A case is in the metric when one of
+its turns is, and recovered when every one of its turns in the metric
+recovered. The rate is the share of cases in the metric that recovered, over a
+report's cases (one run, so one model) and over each area's; it is null when no
+case is in the metric. A kept finding counts as told because the change card
+shows the analyst every advisory finding of the plan it saved; the model's own
+words are not scored.
+
 ## Execution boundary
 
 Independent execution-golden evaluation happens in the harness, never in the
@@ -395,8 +525,21 @@ preview workers inside its project copy, as the server does, so its checks run;
 a transcript records each dry-run's `data_check` and each data part with the
 rest of the tool result. Replay runs in thread mode, where a check reports
 `worker_mode_unsupported`, which changes no recorded status; the two
-data-question trajectories are also replayed in process mode (see Tiers).
-It then parses the saved pipeline, flattens its submodel occurrences as a
+data-question trajectories and the five seeded recovery trajectories are also
+replayed in process mode (see Tiers).
+
+After each turn the harness also checks the saved graph itself, for the data
+findings layer: each node the turn changed is checked as `inspect_node`'s data
+part checks one node, through the product's check (`run_node_data_check`) in a
+preview worker, under a session of the harness's own so that it supersedes no
+check of the turn. That check is the harness's evidence, beside the goldens and
+never in their place, and its result never reaches the model. It runs under
+every egress profile, `metadata_only` included, because no part of it is sent
+to the provider: the permission that gates the product's check governs what
+the model may receive, and the report holds only finding kinds, node names,
+statuses and reasons.
+
+To execute goldens, the harness then parses the saved pipeline, flattens its submodel occurrences as a
 preview does, and runs each golden node through the production preview engine
 up to that node only, under the golden's scenario,
 so no sink is built and no output is written. The engine refuses, without a
@@ -434,17 +577,24 @@ different kinds, so replay and live results are never combined or compared as
 one score. A data check the assistant runs never replaces the harness's
 independent execution goldens.
 
-The report (shape version 5) records the run (its id, start time, variant,
+The report (shape version 6) records the run (its id, start time, variant,
 provider, model, matched configuration and Haute version), whether every case
-it ran passed, per area the counts of cases run, cases passed, cases crashed and
-cases not applicable and the median of each efficiency metric over the cases
-run that did not crash, and per
+it ran passed, the recovered-within-budget rate for the run's model (`cases`
+in the metric, `recovered` and `rate`), per area the counts of cases run, cases
+passed, cases crashed and cases not applicable, the counts of cases whose data
+findings layer passed, failed and was not measured, the area's
+recovered-within-budget rate and the median of each efficiency metric over the
+cases run that did not crash, and per
 case run its identity, fixture version, area, split, egress profile, provider,
-model, pass or fail per layer, first failing layer, the turn-and-layer-prefixed
-reasons, its crash (the traceback, or null), the summed metrics, and per turn its outcome kind, saved-change count,
+model, pass or fail per correctness layer, first failing layer, the turn-and-layer-prefixed
+reasons, its crash (the traceback, or null), its data findings layer (status,
+whether it gates the case, and its place in the recovery metric), the summed metrics, and per turn its outcome kind, saved-change count,
 terminal, the node types and edges of the saved graph, ordered tool names with
-value-free status, error code, validation path and validation reason, and the
-turn's metrics. Its `not_applicable` list names, apart from the cases run, each
+value-free status, error code, validation path and validation reason, the
+turn's metrics, and its data findings layer: status, whether it gates, its
+reasons, the checks the model received, the saved graph's check, the change
+cards' checks and its place in the recovery metric, each by finding kind, node
+name, status and reason. Its `not_applicable` list names, apart from the cases run, each
 selected case inapplicable to the run's variant with its fixture version, area
 and split; such a case has no result, so nothing reading the report counts it
 as passed or failed, and no case is both run and not applicable. Prompts, model prose, tool arguments and results, credentials,

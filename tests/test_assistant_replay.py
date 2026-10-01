@@ -238,6 +238,115 @@ async def test_a_data_question_is_answered_from_one_check_in_the_preview_worker(
     expect(data)
 
 
+#: Each seeded recovery case's bug, as the data check reports it: (kind, node).
+SEEDED_BUGS = {
+    "recovery_boolean_banding": ("banding_all_default", "claims_band"),
+    "recovery_emptied_filter": ("rows_emptied", "north_south_quotes"),
+    "recovery_mistyped_join_key": ("join_unmatched", "vehicle_rated_quotes"),
+    "recovery_rating_casing": ("rating_misses", "region_rating"),
+    "recovery_duplicate_join_keys": ("join_validation_failed", "loaded_quotes"),
+}
+
+
+#: The one ordinary case whose stated value leaves an advisory finding: the corpus
+#: filter keeps quotes above 1500, and no quote in the corpus inputs is.
+STATED_EMPTY_FILTER = ("rows_emptied", "high_premium_quotes")
+
+
+def test_the_cases_declare_their_seeded_bugs_and_stated_value_findings() -> None:
+    """The seeded recovery cases each declare their bug; the corpus filter whose
+    stated threshold keeps no quote declares that finding kept, as do the rating
+    keys the analyst stated. Every other case expects a clean saved graph."""
+
+    declared = {
+        case.id: turn.expectations.data_findings
+        for case in CASES.values()
+        for turn in case.turns
+        if turn.expectations.data_findings is not None
+    }
+
+    assert {case_id: findings.reported for case_id, findings in declared.items()} == {
+        **{case_id: (bug,) for case_id, bug in SEEDED_BUGS.items()},
+        "smoke_corpus_high_premium_quotes": (STATED_EMPTY_FILTER,),
+    }
+    assert {case_id: findings.kept for case_id, findings in declared.items() if findings.kept} == {
+        "recovery_rating_casing": (SEEDED_BUGS["recovery_rating_casing"],),
+        "smoke_corpus_high_premium_quotes": (STATED_EMPTY_FILTER,),
+    }
+    assert set(SEEDED_BUGS) <= {case.id for case in CASES.values() if case.area == "recovery"}
+
+
+async def test_thread_mode_replay_leaves_the_data_findings_layer_unmeasured(
+    work_dir: Path,
+) -> None:
+    """In thread mode every check reports `worker_mode_unsupported`, the model's and
+    the harness's alike, so a declared layer is not measured and fails nothing."""
+
+    trajectory = next(item for item in TRAJECTORIES if item.id == "recovery_rating_casing")
+
+    result = await replay_self_test_case(
+        CASES[trajectory.case], trajectory, projects_root=PROJECTS_ROOT, work_dir=work_dir
+    )
+
+    assert result.reasons == ()
+    (turn,) = result.turns
+    findings = turn.data_findings
+    assert (findings.status, findings.gates, findings.recovery) == ("not_measured", True, None)
+    assert [(check.outcome, check.reason) for check in findings.received] == [
+        ("not_run", "worker_mode_unsupported")
+    ]
+    assert findings.final is not None
+    assert findings.final.nodes == (("region_rating", "not_run", "worker_mode_unsupported"),)
+    assert result.data_findings == "not_measured"
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(TURN_TIMEOUT)
+@pytest.mark.parametrize("trajectory_id", sorted(SEEDED_BUGS))
+async def test_each_seeded_bug_is_reported_and_recovered_in_the_preview_worker(
+    trajectory_id: str,
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In process mode, as the server runs, the first dry-run's data check reports
+    the seeded bug, and the harness's check of the saved graph finds it gone, or
+    kept and shown on the change card where the analyst stated the value."""
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    # This exercises the worker route, not native memory-cap availability.
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    trajectory = next(item for item in TRAJECTORIES if item.id == trajectory_id)
+    provider = TrajectoryProvider(trajectory)
+    case = CASES[trajectory.case]
+    (expected,) = case.turns
+    assert expected.expectations.data_findings is not None
+    kept = expected.expectations.data_findings.kept
+
+    result = await run_self_test_case(
+        case,
+        projects_root=PROJECTS_ROOT,
+        config=replay_config(trajectory),
+        work_dir=work_dir,
+        provider_factory=lambda _config: provider,
+        evidence="replay",
+    )
+    provider.verify(result.tool_diagnostics)
+
+    assert result.reasons == ()
+    (turn,) = result.turns
+    findings = turn.data_findings
+    first, last = findings.received[0], findings.received[-1]
+    assert (first.tool, first.outcome) == ("dry_run_graph_edits", "checked")
+    assert SEEDED_BUGS[trajectory_id] in first.advisory
+    assert last.advisory == kept
+    assert findings.final is not None and findings.final.measured
+    assert findings.final.advisory == kept
+    assert [card.advisory_nodes for card in findings.cards] == [tuple(node for _kind, node in kept)]
+    assert (findings.status, findings.gates, findings.recovery) == ("passed", True, "recovered")
+    assert (result.data_findings, result.recovery) == ("passed", "recovered")
+
+
 async def test_a_tool_result_with_another_status_names_the_turn_and_round(
     tmp_path: Path,
 ) -> None:

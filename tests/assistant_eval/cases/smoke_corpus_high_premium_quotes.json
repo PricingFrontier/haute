@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "id": "smoke_corpus_high_premium_quotes",
   "fixture_version": "1",
   "project_fixture": "polars_corpus",
@@ -36,7 +36,21 @@
             "order_free": false
           }
         ],
-        "efficiency": null
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "rows_emptied",
+              "node": "high_premium_quotes"
+            }
+          ],
+          "kept": [
+            {
+              "kind": "rows_emptied",
+              "node": "high_premium_quotes"
+            }
+          ]
+        }
       }
     }
   ]

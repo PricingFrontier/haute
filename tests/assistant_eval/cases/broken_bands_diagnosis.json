@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "id": "broken_bands_diagnosis",
   "fixture_version": "1",
   "project_fixture": "broken_pricing",
@@ -26,7 +26,8 @@
           "max_tool_calls": 1,
           "max_failed_tool_calls": 0,
           "max_duplicate_static_reads": 0
-        }
+        },
+        "data_findings": null
       }
     }
   ]

@@ -46,13 +46,14 @@ from haute._mlflow_utils import allow_file_store_if_local
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import bound_project_root
-from haute._types import NodeType
+from haute._types import SINK_ONLY_NODE_TYPES, NodeType
 from haute.assistant._config import (
     AssistantConfig,
     EgressPolicy,
     ProviderTrust,
     resolve_assistant_config,
 )
+from haute.assistant._data_check import Finding, NodeDataCheckRequest, run_node_data_check
 from haute.assistant._loop import build_system_prompt, run_turn
 from haute.assistant._providers import (
     AssistantProvider,
@@ -77,11 +78,15 @@ from haute.deploy._config import _load_env
 from haute.executor import execute_graph
 from haute.graph_utils import flatten_graph
 from haute.routes._helpers import parse_pipeline_to_graph, pipeline_dir
-from haute.schemas import AssistantTurnOutcomeKind
+from haute.schemas import AssistantChangeDataCheck, AssistantTurnOutcomeKind
 from scripts.assistant_eval_report import (
+    DATA_FINDINGS_LAYER,
     METRICS,
     SELF_TEST_LAYERS,
+    DataFindingsStatus,
+    Recovery,
     RunIdentity,
+    ScoredLayer,
     SelfTestLayer,
     compare_report_files,
     configuration_for,
@@ -131,7 +136,7 @@ EGRESS_PROFILES: tuple[SelfTestEgress, ...] = get_args(SelfTestEgress)
 #: case may be inapplicable to it.
 _PRODUCT_VARIANT: SelfTestVariant = "multi_apply"
 _OUTCOMES: tuple[SelfTestOutcome, ...] = get_args(SelfTestOutcome)
-_CASE_SCHEMA_VERSION = 4
+_CASE_SCHEMA_VERSION = 5
 _CASE_KEYS = {
     "schema_version",
     "id",
@@ -156,7 +161,10 @@ _EXPECTATION_KEYS = {
     "node_configs",
     "execution",
     "efficiency",
+    "data_findings",
 }
+_DATA_FINDINGS_KEYS = {"reported", "kept"}
+_FINDING_REF_KEYS = {"kind", "node"}
 _EFFICIENCY_KEYS = {
     "max_provider_round_trips",
     "max_tool_calls",
@@ -173,6 +181,27 @@ _STATIC_READ_TOOLS = frozenset({"find_data", "read_reference"})
 #: The run id a fixture's Model Scoring node holds until its model is logged.
 FIXTURE_MODEL_RUN_PLACEHOLDER = "0" * 32
 _NO_USAGE = ProviderUsage(input_tokens=0, output_tokens=0)
+#: Node types the harness's check of the saved graph never inspects: they have no
+#: output frame to measure, or they are a submodel's boundary.
+_UNMEASURED_NODE_TYPES = SINK_ONLY_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+#: A node status in the harness's check that measured the node.
+_MEASURED_STATUSES = frozenset({"checked", "failed", "upstream_failed"})
+
+
+def _advisory_kinds() -> frozenset[str]:
+    """The finding kinds the data check can raise as advisory, read from its closed shapes."""
+
+    union, _discriminator = get_args(Finding)
+    kinds: set[str] = set()
+    for model in get_args(union):
+        if "advisory" in get_args(model.model_fields["severity"].annotation):
+            (kind,) = get_args(model.model_fields["kind"].annotation)
+            kinds.add(kind)
+    return frozenset(kinds)
+
+
+#: The kinds a case may declare as reported or kept: informational findings need no action.
+ADVISORY_KINDS = _advisory_kinds()
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +224,26 @@ class SelfTestEfficiency:
     max_duplicate_static_reads: int
 
 
+#: An advisory data-check finding by its kind and node: what a finding says
+#: without its counts.
+FindingRef = tuple[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestDataFindingsExpectation:
+    """The advisory findings a case expects a turn's data checks to report.
+
+    *reported* are the advisory findings the data checks the model receives in
+    the turn must report, such as a recovery case's seeded bug. *kept* are the
+    reported findings the saved graph keeps because correcting them would
+    contradict a value the analyst stated; every other advisory finding must be
+    gone from it. A turn that declares nothing expects a clean saved graph.
+    """
+
+    reported: tuple[FindingRef, ...]
+    kept: tuple[FindingRef, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class SelfTestExpectations:
     outcome: SelfTestOutcome
@@ -208,6 +257,8 @@ class SelfTestExpectations:
     node_configs: Mapping[str, Mapping[str, Any]]
     execution: tuple[SelfTestGolden, ...]
     efficiency: SelfTestEfficiency | None
+    #: Declared where the turn's checks must report an advisory finding.
+    data_findings: SelfTestDataFindingsExpectation | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,18 +320,90 @@ class SelfTestToolDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class SelfTestReceivedCheck:
+    """A data check as the model received it, from a dry-run or `inspect_node`'s data part.
+
+    ``outcome`` is ``omitted`` when the result carried only the note that the
+    check did not fit; ``advisory`` are the advisory findings the model saw.
+    """
+
+    tool: str
+    outcome: Literal["checked", "not_run", "omitted"]
+    reason: str | None
+    advisory: tuple[FindingRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestFinalCheck:
+    """The harness's check of the saved graph over the nodes the turn changed.
+
+    Each node is checked as `inspect_node`'s data part checks it, through the
+    product's check in a preview worker. ``nodes`` holds each checked node's
+    status and the reason it was not measured (``not_checked`` or ``not_run``);
+    ``advisory`` the advisory findings on those nodes.
+    """
+
+    nodes: tuple[tuple[str, str, str | None], ...]
+    advisory: tuple[FindingRef, ...]
+
+    @property
+    def measured(self) -> bool:
+        return any(status in _MEASURED_STATUSES for _node, status, _reason in self.nodes)
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestCard:
+    """The data check a saved change's card showed the analyst: its outcome, or
+    ``None`` when the card carries none, and the nodes of its advisory findings."""
+
+    outcome: Literal["checked", "not_run"] | None
+    advisory_nodes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestDataFindings:
+    """One turn's data findings layer, scored beside the correctness layers.
+
+    ``status`` is ``not_measured`` when no check the layer reads ran (thread
+    mode, where every check reports ``worker_mode_unsupported``). ``gates`` is
+    true for a case in the ``recovery`` area, where recovering from data
+    findings is the point, so a failure fails the case. ``recovery`` places the
+    turn in the recovered-within-budget metric: ``None`` when the turn is
+    outside it.
+    """
+
+    status: DataFindingsStatus
+    gates: bool
+    reasons: tuple[str, ...]
+    received: tuple[SelfTestReceivedCheck, ...]
+    final: SelfTestFinalCheck | None
+    cards: tuple[SelfTestCard, ...]
+    recovery: Recovery | None
+
+
+@dataclass(frozen=True, slots=True)
 class SelfTestTurnResult:
-    #: Each reason is prefixed with the layer it fails, as ``"<layer>: <reason>"``.
+    #: Each reason is prefixed with the layer it fails, as ``"<layer>: <reason>"``;
+    #: a gating data findings failure is among them.
     reasons: tuple[str, ...]
     failed_layers: tuple[SelfTestLayer, ...]
     telemetry: SelfTestTelemetry
     tool_diagnostics: tuple[SelfTestToolDiagnostic, ...]
     node_types: tuple[str, ...]
     edges: tuple[tuple[str, str, str | None], ...]
+    data_findings: SelfTestDataFindings
 
     @property
     def passed(self) -> bool:
         return not self.reasons
+
+    @property
+    def first_failing_layer(self) -> ScoredLayer | None:
+        if self.failed_layers:
+            return self.failed_layers[0]
+        if self.data_findings.gates and self.data_findings.status == "failed":
+            return DATA_FINDINGS_LAYER
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,12 +451,42 @@ class SelfTestResult:
         return tuple(layer for layer in SELF_TEST_LAYERS if layer in failed)
 
     @property
-    def first_failing_layer(self) -> SelfTestLayer | None:
-        """The first failing layer of the first failing turn; a crash fails them all."""
+    def first_failing_layer(self) -> ScoredLayer | None:
+        """The first failing layer of the first failing turn; a crash fails them all.
+
+        A turn whose only failure is its gating data findings layer fails there.
+        """
 
         if self.crash is not None:
             return SELF_TEST_LAYERS[0]
-        return next((turn.failed_layers[0] for turn in self.turns if turn.failed_layers), None)
+        return next(
+            (layer for turn in self.turns if (layer := turn.first_failing_layer) is not None),
+            None,
+        )
+
+    @property
+    def data_findings(self) -> DataFindingsStatus:
+        """``failed`` when a turn's data findings failed, ``passed`` when some passed
+        and none failed, and ``not_measured`` otherwise."""
+
+        statuses = {turn.data_findings.status for turn in self.turns}
+        if "failed" in statuses:
+            return "failed"
+        return "passed" if "passed" in statuses else "not_measured"
+
+    @property
+    def data_findings_gate(self) -> bool:
+        return any(turn.data_findings.gates for turn in self.turns)
+
+    @property
+    def recovery(self) -> Recovery | None:
+        """The case in the recovered-within-budget metric: ``None`` outside it,
+        ``recovered`` when each of its turns in the metric recovered."""
+
+        turns = [turn.data_findings.recovery for turn in self.turns]
+        if all(recovery is None for recovery in turns):
+            return None
+        return "not_recovered" if "not_recovered" in turns else "recovered"
 
     @property
     def tool_diagnostics(self) -> tuple[SelfTestToolDiagnostic, ...]:
@@ -444,6 +597,39 @@ def _efficiency(value: object, path: str) -> SelfTestEfficiency | None:
     )
 
 
+def _finding_refs(value: object, path: str) -> tuple[FindingRef, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{path} must be an array")
+    refs: list[FindingRef] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != _FINDING_REF_KEYS:
+            raise ValueError(f"{path}[{index}] is not a closed {{kind, node}} finding")
+        kind = _text(item["kind"], f"{path}[{index}].kind")
+        if kind not in ADVISORY_KINDS:
+            raise ValueError(
+                f"{path}[{index}].kind {kind!r} is not an advisory finding kind: one of "
+                + ", ".join(sorted(ADVISORY_KINDS))
+            )
+        refs.append((kind, _text(item["node"], f"{path}[{index}].node")))
+    if len(set(refs)) != len(refs):
+        raise ValueError(f"{path} names a finding twice")
+    return tuple(refs)
+
+
+def _data_findings(value: object, path: str) -> SelfTestDataFindingsExpectation | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != _DATA_FINDINGS_KEYS:
+        raise ValueError(f"{path} must be null or the closed {{reported, kept}} data findings")
+    reported = _finding_refs(value["reported"], f"{path}.reported")
+    kept = _finding_refs(value["kept"], f"{path}.kept")
+    if not reported:
+        raise ValueError(f"{path}.reported must name a finding the turn's checks report")
+    if not set(kept) <= set(reported):
+        raise ValueError(f"{path}.kept may hold only findings the turn's checks reported")
+    return SelfTestDataFindingsExpectation(reported=reported, kept=kept)
+
+
 def _expectations(value: object, where: str) -> SelfTestExpectations:
     if not isinstance(value, dict) or set(value) != _EXPECTATION_KEYS:
         raise ValueError(f"{where} expectations are not the closed v{_CASE_SCHEMA_VERSION} shape")
@@ -475,6 +661,9 @@ def _expectations(value: object, where: str) -> SelfTestExpectations:
     execution = _goldens(value["execution"], f"{where} execution")
     if not saves and (node_configs or execution):
         raise ValueError(f"{where} saves nothing, so it cannot expect node configs or execution")
+    data_findings = _data_findings(value["data_findings"], f"{where} data_findings")
+    if not saves and data_findings is not None and data_findings.kept:
+        raise ValueError(f"{where} saves nothing, so it cannot keep a data finding")
     return SelfTestExpectations(
         outcome=cast(SelfTestOutcome, outcome),
         saves=saves,
@@ -493,6 +682,7 @@ def _expectations(value: object, where: str) -> SelfTestExpectations:
         node_configs=node_configs,
         execution=execution,
         efficiency=_efficiency(value["efficiency"], f"{where} efficiency"),
+        data_findings=data_findings,
     )
 
 
@@ -851,6 +1041,134 @@ def _editor_reasons(before: SelfTestGraph, after: SelfTestGraph) -> list[str]:
     return reasons
 
 
+def _ref_words(ref: FindingRef) -> str:
+    kind, node = ref
+    return f"{kind} on {node}"
+
+
+def _declared_findings_reasons(
+    declared: SelfTestDataFindingsExpectation,
+    received: Sequence[SelfTestReceivedCheck],
+    final: SelfTestFinalCheck | None,
+    cards: Sequence[SelfTestCard],
+) -> tuple[list[str], bool]:
+    """A declaring turn's reasons, and whether any part of the declaration was measured.
+
+    Each part is judged only when a check it reads ran: the received checks for
+    the declared findings, the harness's check of the saved graph for what remains,
+    and the change cards for the kept findings the analyst was shown.
+    """
+
+    reasons: list[str] = []
+    measured = False
+    if any(check.outcome == "checked" for check in received):
+        measured = True
+        seen = {ref for check in received for ref in check.advisory}
+        reasons.extend(
+            f"no data check the model received reported {_ref_words(ref)}"
+            for ref in declared.reported
+            if ref not in seen
+        )
+    kept = set(declared.kept)
+    if final is not None and final.measured:
+        measured = True
+        remaining = set(final.advisory)
+        reasons.extend(
+            f"the saved graph's check still reports {_ref_words(ref)}"
+            for ref in sorted(remaining - kept)
+        )
+        reasons.extend(
+            f"the saved graph's check no longer reports {_ref_words(ref)}, which a value "
+            "the analyst stated causes"
+            for ref in sorted(kept - remaining)
+        )
+    if kept and any(card.outcome == "checked" for card in cards):
+        measured = True
+        shown = {node for card in cards for node in card.advisory_nodes}
+        reasons.extend(
+            f"no change card showed the analyst {_ref_words(ref)}"
+            for ref in declared.kept
+            if ref[1] not in shown
+        )
+    return reasons, measured
+
+
+def _recovery(
+    expected: SelfTestExpectations,
+    telemetry: SelfTestTelemetry,
+    received: Sequence[SelfTestReceivedCheck],
+    final: SelfTestFinalCheck | None,
+    cards: Sequence[SelfTestCard],
+) -> Recovery | None:
+    """Whether a turn that received an advisory finding recovered within its budget.
+
+    The metric holds a turn whose expectations save and that received at least
+    one advisory finding. It recovered when it completed with its expected
+    outcome (a spent dry-run or tool-call budget ends a turn otherwise), saved,
+    and the saved graph's check reports no advisory finding on the nodes it
+    changed beyond the kept findings its case declares, each shown on a change
+    card. A turn that saved and whose saved graph could not be checked is left
+    out (``None``).
+    """
+
+    if not expected.saves or not any(check.advisory for check in received):
+        return None
+    if (
+        telemetry.terminal != "completed"
+        or telemetry.outcome != expected.outcome
+        or telemetry.saved_changes == 0
+    ):
+        return "not_recovered"
+    if final is None or not final.measured:
+        return None
+    kept = set() if expected.data_findings is None else set(expected.data_findings.kept)
+    shown = {node for card in cards for node in card.advisory_nodes}
+    recovered = set(final.advisory) <= kept and all(node in shown for _kind, node in kept)
+    return "recovered" if recovered else "not_recovered"
+
+
+def score_data_findings(
+    expected: SelfTestExpectations,
+    telemetry: SelfTestTelemetry,
+    *,
+    received: Sequence[SelfTestReceivedCheck],
+    final: SelfTestFinalCheck | None,
+    cards: Sequence[SelfTestCard],
+    gates: bool,
+) -> SelfTestDataFindings:
+    """Score the data findings layer, which sits beside the correctness layers.
+
+    A turn that declares its findings passes when its checks reported each
+    declared finding, the saved graph keeps exactly the declared kept findings
+    among its advisory ones, and a change card showed the analyst each kept
+    finding. A turn that declares none passes when the saved graph's check
+    reports no advisory finding on the nodes the turn changed. A layer no check
+    ran for is ``not_measured``. The layer fails the case only when it *gates*,
+    in the ``recovery`` area.
+    """
+
+    declared = expected.data_findings
+    if declared is not None:
+        reasons, measured = _declared_findings_reasons(declared, received, final, cards)
+    else:
+        measured = final is not None and final.measured
+        reasons = (
+            [f"the saved graph's check reports {_ref_words(ref)}" for ref in sorted(final.advisory)]
+            if final is not None and measured
+            else []
+        )
+    status: DataFindingsStatus = "failed" if reasons else "passed" if measured else "not_measured"
+    return SelfTestDataFindings(
+        status=status,
+        gates=gates,
+        reasons=tuple(reasons),
+        received=tuple(received),
+        final=final,
+        cards=tuple(cards),
+        recovery=_recovery(expected, telemetry, received, final, cards),
+    )
+
+
 def score_turn(
     expected: SelfTestExpectations,
     *,
@@ -859,11 +1177,19 @@ def score_turn(
     telemetry: SelfTestTelemetry,
     tool_diagnostics: Sequence[SelfTestToolDiagnostic] = (),
     execution_reasons: Sequence[str] = (),
+    received_checks: Sequence[SelfTestReceivedCheck] = (),
+    final_check: SelfTestFinalCheck | None = None,
+    cards: Sequence[SelfTestCard] = (),
+    data_findings_gate: bool = False,
 ) -> SelfTestTurnResult:
     """Score one turn by layer without retaining provider-visible content.
 
     *execution_reasons* come from the harness executing the turn's golden
-    nodes (``execute_goldens``); every other layer is scored here.
+    nodes (``execute_goldens``), and *final_check* from its check of the saved
+    graph (``final_data_check``); *received_checks* and *cards* are the data
+    checks the model received and the change cards the turn streamed. Every
+    layer is scored here; when *data_findings_gate* holds (a ``recovery``
+    case), a data findings failure joins the reasons.
     """
 
     by_layer: dict[SelfTestLayer, Sequence[str]] = {
@@ -874,15 +1200,26 @@ def score_turn(
         "editor": _editor_reasons(before, after),
         "execution": execution_reasons,
     }
+    data_findings = score_data_findings(
+        expected,
+        telemetry,
+        received=received_checks,
+        final=final_check,
+        cards=cards,
+        gates=data_findings_gate,
+    )
+    gating = data_findings.reasons if data_findings.gates else ()
     return SelfTestTurnResult(
         reasons=tuple(
             f"{layer}: {reason}" for layer in SELF_TEST_LAYERS for reason in by_layer[layer]
-        ),
+        )
+        + tuple(f"{DATA_FINDINGS_LAYER}: {reason}" for reason in gating),
         failed_layers=tuple(layer for layer in SELF_TEST_LAYERS if by_layer[layer]),
         telemetry=telemetry,
         tool_diagnostics=tuple(tool_diagnostics),
         node_types=tuple(sorted(set(after.node_types.values()))),
         edges=tuple(sorted(after.edges, key=lambda edge: (edge[0], edge[1], edge[2] or ""))),
+        data_findings=data_findings,
     )
 
 
@@ -1033,6 +1370,61 @@ class _ObservedProvider:
             yield event
 
 
+#: Where a successful tool result carries a data check, and its omission note.
+_CHECK_KEYS = {
+    "dry_run_graph_edits": ("data_check", "data_check_omitted"),
+    "inspect_node": ("data", "data_omitted"),
+}
+
+
+def received_check(tool: str, result: Mapping[str, object]) -> SelfTestReceivedCheck | None:
+    """The data check a successful *tool* result carried to the model, or ``None``."""
+
+    keys = _CHECK_KEYS.get(tool)
+    if keys is None:
+        return None
+    key, omitted = keys
+    check = result.get(key)
+    if check is None:
+        return (
+            SelfTestReceivedCheck(tool=tool, outcome="omitted", reason=None, advisory=())
+            if omitted in result
+            else None
+        )
+    if not isinstance(check, Mapping):
+        raise TypeError(f"{tool} returned a malformed {key}")
+    outcome = check["outcome"]
+    if outcome not in ("checked", "not_run"):
+        raise TypeError(f"{tool} returned a {key} with an unknown outcome")
+    findings = check.get("findings", ())
+    if not isinstance(findings, Sequence):
+        raise TypeError(f"{tool} returned malformed {key} findings")
+    reason = check.get("reason")
+    return SelfTestReceivedCheck(
+        tool=tool,
+        outcome=outcome,
+        reason=reason if isinstance(reason, str) else None,
+        advisory=tuple(
+            (str(finding["kind"]), str(finding["node"]))
+            for finding in findings
+            if finding["severity"] == "advisory"
+        ),
+    )
+
+
+def change_card(check: AssistantChangeDataCheck | None) -> SelfTestCard:
+    """What a saved change's card showed the analyst of its data check."""
+
+    if check is None:
+        return SelfTestCard(outcome=None, advisory_nodes=())
+    return SelfTestCard(
+        outcome=check.outcome,
+        advisory_nodes=tuple(
+            finding.node for finding in check.findings if finding.severity == "advisory"
+        ),
+    )
+
+
 class _ObservedToolExecutor:
     def __init__(
         self,
@@ -1049,6 +1441,7 @@ class _ObservedToolExecutor:
         self.validated_plan_ms: float | None = None
         self._static_calls: set[tuple[str, str]] = set()
         self.diagnostics: list[SelfTestToolDiagnostic] = []
+        self.received: list[SelfTestReceivedCheck] = []
 
     async def __call__(self, name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         self.calls += 1
@@ -1088,6 +1481,10 @@ class _ObservedToolExecutor:
         )
         if failed:
             self.failed_calls += 1
+        else:
+            received = received_check(name, result)
+            if received is not None:
+                self.received.append(received)
         if name == "dry_run_graph_edits" and not failed and self.validated_plan_ms is None:
             self.validated_plan_ms = (time.monotonic() - self.started_at) * 1000
         return result
@@ -1108,6 +1505,80 @@ def _read_graph(source_file: str) -> SelfTestGraph:
         edges=edges,
         configs=MappingProxyType(configs),
     )
+
+
+def changed_nodes(before: SelfTestGraph, after: SelfTestGraph) -> tuple[str, ...]:
+    """The saved nodes a turn changed, as a dry-run's check takes a plan's changed nodes.
+
+    A node is changed when it is new or retyped, when its configuration digest
+    changed, or when it is the target of an added or removed edge. Nodes with
+    no output frame to measure, and submodel occurrences and ports, are left
+    out. Sorted by id.
+    """
+
+    changed = {
+        node
+        for node, node_type in after.node_types.items()
+        if before.node_types.get(node) != node_type
+        or config_digest(before.configs[node]) != config_digest(after.configs[node])
+    }
+    changed.update(
+        target
+        for _source, target, _handle in set(before.edges) ^ set(after.edges)
+        if target in after.node_types
+    )
+    return tuple(
+        sorted(
+            node
+            for node in changed
+            if NodeType(after.node_types[node]) not in _UNMEASURED_NODE_TYPES
+        )
+    )
+
+
+async def final_data_check(
+    source_file: str,
+    nodes: Sequence[str],
+    *,
+    policy: EgressPolicy,
+    session_id: str,
+) -> SelfTestFinalCheck | None:
+    """Check the saved graph's *nodes* as `inspect_node`'s data part checks one node.
+
+    The harness's own evidence, beside its execution goldens: each node runs
+    through the product's check (`run_node_data_check`) in a preview worker,
+    under *session_id*, never the case session's, so it supersedes no check
+    of the turn. In thread mode every node reports ``worker_mode_unsupported``.
+    Returns ``None`` when there is no node to check.
+    """
+
+    if not nodes:
+        return None
+    graph = parse_pipeline_to_graph(Path(source_file))
+    targets = set(nodes)
+    statuses: list[tuple[str, str, str | None]] = []
+    advisory: set[FindingRef] = set()
+    for node in nodes:
+        result = await run_node_data_check(
+            NodeDataCheckRequest(graph, node, None, policy), session_id=session_id
+        )
+        check = result.check
+        records = {str(record["node"]): record for record in check["nodes"]}
+        record = records.get(node)
+        if record is not None and record["status"] == "not_checked":
+            statuses.append((node, "not_checked", str(record["reason"])))
+        elif check["outcome"] == "not_run":
+            statuses.append((node, "not_run", str(check["reason"])))
+        else:
+            if record is None:
+                raise RuntimeError(f"the check of {node!r} carries no record of {node!r}")
+            statuses.append((node, str(record["status"]), None))
+        advisory.update(
+            (str(finding["kind"]), str(finding["node"]))
+            for finding in check.get("findings", ())
+            if finding["severity"] == "advisory" and finding["node"] in targets
+        )
+    return SelfTestFinalCheck(nodes=tuple(statuses), advisory=tuple(sorted(advisory)))
 
 
 def _graph_structure(
@@ -1389,6 +1860,7 @@ async def _run_turn(
     system_prompt: str,
     variant: SelfTestVariant,
     transcript: list[dict[str, object]] | None,
+    data_findings_gate: bool,
 ) -> SelfTestTurnResult:
     before = _read_graph(source_file)
     session = store.lookup(session_id)
@@ -1421,7 +1893,7 @@ async def _run_turn(
     saved_changes: int | None = None
     input_tokens = 0
     output_tokens = 0
-    change_cards = 0
+    cards: list[SelfTestCard] = []
     async for event in run_turn(
         store,
         session_id,
@@ -1443,7 +1915,7 @@ async def _run_turn(
                 else:
                     events.append({"text": event.text})
         elif event.type == "change_applied":
-            change_cards += 1
+            cards.append(change_card(event.change.data_check))
         elif event.type == "build_plan_updated":
             if events is not None:
                 events.append({"build_plan": event.build_plan.model_dump(mode="json")})
@@ -1462,14 +1934,20 @@ async def _run_turn(
     end_to_end_ms = (time.monotonic() - started_at) * 1000
     after = _read_graph(source_file)
     execution_reasons = execute_goldens(turn.expectations.execution, Path(source_file))
+    final_check = await final_data_check(
+        source_file,
+        changed_nodes(before, after),
+        policy=config.egress,
+        session_id=f"{session_id}:harness",
+    )
     assistant_text = "".join(text_parts)
     telemetry = SelfTestTelemetry(
         terminal=terminal,
         outcome=outcome,
         # A turn that did not complete has no outcome; the saves its card stream
         # announced are what it saved.
-        saved_changes=change_cards if saved_changes is None else saved_changes,
-        change_cards=change_cards,
+        saved_changes=len(cards) if saved_changes is None else saved_changes,
+        change_cards=len(cards),
         provider_round_trips=observed_provider.round_trips,
         tool_calls=observed_tools.calls,
         failed_tool_calls=observed_tools.failed_calls,
@@ -1490,6 +1968,10 @@ async def _run_turn(
         telemetry=telemetry,
         tool_diagnostics=observed_tools.diagnostics,
         execution_reasons=execution_reasons,
+        received_checks=observed_tools.received,
+        final_check=final_check,
+        cards=cards,
+        data_findings_gate=data_findings_gate,
     )
 
 
@@ -1574,6 +2056,8 @@ async def run_self_test_case(
                 system_prompt=system_prompt,
                 variant=variant,
                 transcript=transcript,
+                # Recovering from data findings is the point of a recovery case.
+                data_findings_gate=case.area == "recovery",
             )
             for turn in case.turns
         ]
@@ -2153,6 +2637,7 @@ def _record(args: argparse.Namespace) -> int:
             {
                 "report": str(output.resolve()),
                 "passed": payload["passed"],
+                "recovery": payload["recovery"],
                 "areas": {
                     area: {
                         "cases": summary["cases"],

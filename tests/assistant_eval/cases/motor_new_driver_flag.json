@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "id": "motor_new_driver_flag",
   "fixture_version": "2",
   "project_fixture": "motor_pricing",
@@ -43,7 +43,8 @@
           "max_tool_calls": 3,
           "max_failed_tool_calls": 0,
           "max_duplicate_static_reads": 0
-        }
+        },
+        "data_findings": null
       }
     }
   ]

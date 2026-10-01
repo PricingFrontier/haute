@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-43 | Planned | P2 | Evaluation scores data findings as an extra layer and measures recovery from them. |
 | ASSIST-44 | Deferred | P3 | Near-certain data bugs block apply unless explicitly accepted. |
 | ASSIST-50 | Deferred | P3 | The model can write structured steps with formula text. |
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
@@ -84,22 +83,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-43 — Data findings in evaluation
-**Why:** Recovery from pipelines that run but are wrong is the loop analysts
-need most, and nothing measures it.
-
-**Plan:** Add data findings as an extra scoring layer beside the independent
-execution goldens, and seed recovery cases (a boolean banding rule, an emptied
-filter, a mistyped join key, rating casing drift, a many-to-one join on
-duplicate keys).
-
-**Acceptance:** Each seeded bug is reported in replay; the live baseline
-reports the recovered-within-budget rate per model.
-
-**Dependencies:** `ASSIST-36`, `ASSIST-41`.
-
-**Evidence:** `scripts/run_assistant_self_test.py::run_self_test_case`.
 
 ### ASSIST-44 — Blocking findings with explicit acceptance
 **Why:** Advisory findings can be ignored. The package is deferred because

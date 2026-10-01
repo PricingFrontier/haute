@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "id": "broken_vehicle_age_fix",
   "fixture_version": "1",
   "project_fixture": "broken_pricing",
@@ -33,7 +33,8 @@
             "order_free": false
           }
         ],
-        "efficiency": null
+        "efficiency": null,
+        "data_findings": null
       }
     }
   ]

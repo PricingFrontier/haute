@@ -42,13 +42,13 @@
                           "entries": [
                             {
                               "factor_values": [
-                                20
+                                25
                               ],
                               "value": 1.3
                             },
                             {
                               "factor_values": [
-                                40
+                                42
                               ],
                               "value": 1.0
                             }

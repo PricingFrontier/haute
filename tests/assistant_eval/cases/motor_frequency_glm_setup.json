@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "id": "motor_frequency_glm_setup",
   "fixture_version": "2",
   "project_fixture": "motor_pricing",
@@ -60,7 +60,8 @@
           }
         },
         "execution": [],
-        "efficiency": null
+        "efficiency": null,
+        "data_findings": null
       }
     }
   ]

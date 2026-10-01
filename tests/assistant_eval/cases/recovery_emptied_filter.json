@@ -1,0 +1,52 @@
+{
+  "schema_version": 5,
+  "id": "recovery_emptied_filter",
+  "fixture_version": "1",
+  "project_fixture": "data_recovery",
+  "area": "recovery",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add a Transform called north_south_quotes after quotes that keeps only the quotes in the north and south regions.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "north_south_quotes",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "north_south_quotes",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\ndf = quotes.filter(pl.col('region').is_in(['north', 'south']))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "rows_emptied",
+              "node": "north_south_quotes"
+            }
+          ],
+          "kept": []
+        }
+      }
+    }
+  ]
+}

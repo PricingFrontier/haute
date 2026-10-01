@@ -1855,9 +1855,11 @@ check runs automatically and the model cannot invoke, widen or target it, and
 nothing more, so the system prompt's statement that no execution tool is
 available stays true and running or materialising a pipeline stays unavailable.
 It contains project or model-authored Python no more than a preview does. No
-finding blocks an apply, a saved node is checked only when the model asks for its
-data part, the evaluation does not score findings, and a
-data check never replaces the evaluation's independent execution goldens. It
+finding blocks an apply, and the assistant checks a saved node only when the
+model asks for its data part. The evaluation scores findings in a layer of its
+own beside its independent execution goldens, never in their place: what the
+checks told the model, and what the harness's own check of the saved graph
+still finds ([the assistant evaluation](evaluation.md#data-findings)). It
 checks no inactive scenario, no lineage through an opaque Load File or a
 non-local model or optimiser artifact, and no join inside code or a step list,
 and it has no configurable bound, deadline, cap or threshold. The thresholds
@@ -1941,7 +1943,8 @@ result is not stored, has no plan hash and reaches no change card.
 ## Provider qualification
 
 No provider or model is qualified by a gate. Live evaluation reports, attributed
-to a configuration of the support matrix, measure each configuration per area;
+to a configuration of the support matrix, measure each configuration per area,
+with its recovered-within-budget rate for data findings;
 see [the assistant evaluation](evaluation.md#tiers).
 
 ## Interactions

@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "id": "recovery_duplicate_join_keys",
+  "case": "recovery_duplicate_join_keys",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "descriptor",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:dataInput",
+                  "node:edgeJoin"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "seeded",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Join each quote's region loading onto quotes in loaded_quotes.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "region_loadings",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/region_loadings.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "edgeJoin",
+                    "name": "loaded_quotes",
+                    "config": {
+                      "how": "left",
+                      "on": [
+                        "region"
+                      ],
+                      "validate": "m:1"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "loaded_quotes",
+                    "target_handle": "base"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "region_loadings",
+                    "target": "loaded_quotes",
+                    "target_handle": "join"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "The data check says the many-to-one validation fails: each region repeats in the loadings, once per cover type, so the join keys on both.",
+          "calls": [
+            {
+              "id": "corrected",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Join each quote's region loading onto quotes in loaded_quotes.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "region_loadings",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/region_loadings.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "edgeJoin",
+                    "name": "loaded_quotes",
+                    "config": {
+                      "how": "left",
+                      "on": [
+                        "region",
+                        "cover_type"
+                      ],
+                      "validate": "m:1"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "loaded_quotes",
+                    "target_handle": "base"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "region_loadings",
+                    "target": "loaded_quotes",
+                    "target_handle": "join"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "corrected.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved loaded_quotes, joining each quote's loading by region and cover type.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

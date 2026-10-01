@@ -65,7 +65,7 @@
           ]
         },
         {
-          "text": "Saved the change.",
+          "text": "Saved high_premium_quotes, which keeps the quotes whose premium is above 1500 as you asked. The data check found that no quote's premium is above 1500, so the node keeps no rows.",
           "calls": []
         }
       ]

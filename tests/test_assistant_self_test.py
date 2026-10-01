@@ -34,10 +34,14 @@ from scripts.run_assistant_self_test import (
     AREAS,
     FIXTURE_MODEL_RUN_PLACEHOLDER,
     SPLITS,
+    SelfTestCard,
     SelfTestCase,
+    SelfTestDataFindingsExpectation,
     SelfTestEfficiency,
     SelfTestExpectations,
+    SelfTestFinalCheck,
     SelfTestGraph,
+    SelfTestReceivedCheck,
     SelfTestResult,
     SelfTestTelemetry,
     SelfTestToolDiagnostic,
@@ -46,6 +50,7 @@ from scripts.run_assistant_self_test import (
     _golden_frame,
     _run_case_in_this_process,
     canonical_tools_provider,
+    changed_nodes,
     crashed_result,
     load_self_test_cases,
     load_trajectory,
@@ -127,6 +132,7 @@ def _expectations(**overrides: object) -> SelfTestExpectations:
         "node_configs": {},
         "execution": (),
         "efficiency": None,
+        "data_findings": None,
     }
     values.update(overrides)
     return SelfTestExpectations(**values)  # type: ignore[arg-type]
@@ -179,10 +185,11 @@ def _case_payload(**overrides: object) -> dict[str, object]:
         "node_configs": {},
         "execution": [],
         "efficiency": None,
+        "data_findings": None,
     }
     expectations.update(overrides.pop("expectations", {}))  # type: ignore[arg-type]
     payload: dict[str, object] = {
-        "schema_version": 4,
+        "schema_version": 5,
         "id": "case",
         "fixture_version": "1",
         "project_fixture": "fixture",
@@ -359,7 +366,7 @@ class TestCaseLoading:
     def test_unknown_case_key_fails_closed(self, tmp_path: Path) -> None:
         cases, projects = _write_case(tmp_path, _case_payload(unexpected=True))
 
-        with pytest.raises(ValueError, match="closed case v4 shape"):
+        with pytest.raises(ValueError, match="closed case v5 shape"):
             load_self_test_cases(cases, projects_root=projects)
 
     @pytest.mark.parametrize("key", ["egress", "inapplicable_variants"])
@@ -370,7 +377,7 @@ class TestCaseLoading:
         del payload[key]
         cases, projects = _write_case(tmp_path, payload)
 
-        with pytest.raises(ValueError, match="closed case v4 shape"):
+        with pytest.raises(ValueError, match="closed case v5 shape"):
             load_self_test_cases(cases, projects_root=projects)
 
     @pytest.mark.parametrize(
@@ -420,6 +427,72 @@ class TestCaseLoading:
         cases, projects = _write_case(tmp_path, _case_payload(expectations=expectations))
 
         with pytest.raises(ValueError, match=message):
+            load_self_test_cases(cases, projects_root=projects)
+
+    @pytest.mark.parametrize(
+        ("data_findings", "message"),
+        [
+            ({"reported": []}, "must be null or the closed {reported, kept} data findings"),
+            ({"reported": [], "kept": []}, "reported must name a finding"),
+            (
+                {"reported": [{"kind": "join_partial", "node": "j"}], "kept": []},
+                "kind 'join_partial' is not an advisory finding kind",
+            ),
+            (
+                {"reported": [{"kind": "rows_emptied"}], "kept": []},
+                "reported[0] is not a closed {kind, node} finding",
+            ),
+            (
+                {"reported": [{"kind": "rows_emptied", "node": "f"}] * 2, "kept": []},
+                "reported names a finding twice",
+            ),
+            (
+                {
+                    "reported": [{"kind": "rows_emptied", "node": "f"}],
+                    "kept": [{"kind": "rating_misses", "node": "r"}],
+                },
+                "kept may hold only findings the turn's checks reported",
+            ),
+        ],
+    )
+    def test_declared_data_findings_are_closed_advisory_and_keep_only_what_was_reported(
+        self, tmp_path: Path, data_findings: dict[str, object], message: str
+    ) -> None:
+        cases, projects = _write_case(
+            tmp_path, _case_payload(expectations={"data_findings": data_findings})
+        )
+
+        with pytest.raises(ValueError, match=re.escape(message)):
+            load_self_test_cases(cases, projects_root=projects)
+
+    def test_a_turn_that_saves_nothing_keeps_no_data_finding(self, tmp_path: Path) -> None:
+        refs = [{"kind": "execution_failed", "node": "rating_features"}]
+        answered = {"outcome": "answered", "saves": False}
+
+        reported_only = _case_payload(
+            expectations={**answered, "data_findings": {"reported": refs, "kept": []}}
+        )
+        kept = _case_payload(
+            expectations={**answered, "data_findings": {"reported": refs, "kept": refs}}
+        )
+        cases, projects = _write_case(tmp_path, reported_only)
+        ((turn,),) = [case.turns for case in load_self_test_cases(cases, projects_root=projects)]
+        declared = turn.expectations.data_findings
+        assert declared is not None
+        assert declared.reported == (("execution_failed", "rating_features"),)
+        (tmp_path / "cases" / "case.json").write_text(json.dumps(kept), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="saves nothing, so it cannot keep a data finding"):
+            load_self_test_cases(cases, projects_root=projects)
+
+    def test_a_turn_without_its_data_findings_key_fails_closed(self, tmp_path: Path) -> None:
+        payload = _case_payload()
+        turns = payload["turns"]
+        assert isinstance(turns, list)
+        del turns[0]["expectations"]["data_findings"]
+        cases, projects = _write_case(tmp_path, payload)
+
+        with pytest.raises(ValueError, match="expectations are not the closed v5 shape"):
             load_self_test_cases(cases, projects_root=projects)
 
     def test_an_unknown_area_or_split_fails_case_loading(self, tmp_path: Path) -> None:
@@ -918,6 +991,220 @@ class TestLayers:
         )
 
 
+_JOIN = "quote_with_competitor"
+_UNMATCHED = ("join_unmatched", _JOIN)
+
+
+def _received(
+    *advisory: tuple[str, str], outcome: str = "checked", tool: str = "dry_run_graph_edits"
+) -> SelfTestReceivedCheck:
+    return SelfTestReceivedCheck(
+        tool=tool,
+        outcome=outcome,  # type: ignore[arg-type]
+        reason=None if outcome == "checked" else "worker_mode_unsupported",
+        advisory=advisory,
+    )
+
+
+def _final(*advisory: tuple[str, str], status: str = "checked") -> SelfTestFinalCheck:
+    reason = None if status == "checked" else "worker_mode_unsupported"
+    return SelfTestFinalCheck(nodes=((_JOIN, status, reason),), advisory=advisory)
+
+
+def _declared(*, kept: tuple[tuple[str, str], ...] = ()) -> SelfTestDataFindingsExpectation:
+    return SelfTestDataFindingsExpectation(reported=(_UNMATCHED,), kept=kept)
+
+
+def _findings_turn(
+    *,
+    declared: SelfTestDataFindingsExpectation | None = None,
+    received: tuple[SelfTestReceivedCheck, ...] = (),
+    final: SelfTestFinalCheck | None = None,
+    cards: tuple[SelfTestCard, ...] = (SelfTestCard(outcome="checked", advisory_nodes=()),),
+    gates: bool = False,
+    **telemetry: object,
+) -> SelfTestTurnResult:
+    return score_turn(
+        _expectations(data_findings=declared),
+        before=_JOIN_BEFORE,
+        after=_JOIN_AFTER,
+        telemetry=_telemetry(**telemetry),
+        received_checks=received,
+        final_check=final,
+        cards=cards,
+        data_findings_gate=gates,
+    )
+
+
+class TestDataFindings:
+    """The data findings layer, scored beside the correctness layers: it fails a
+    case only in the recovery area, where recovering from data findings is the
+    point, and is not measured where no check ran."""
+
+    def test_an_undeclared_turn_expects_a_clean_saved_graph_and_reports_one_that_is_not(
+        self,
+    ) -> None:
+        flagged = _findings_turn(final=_final(_UNMATCHED))
+        clean = _findings_turn(final=_final())
+        unchecked = _findings_turn(final=_final(status="not_run"))
+        unsaved = _findings_turn(final=None)
+        recovery_case = _findings_turn(final=_final(_UNMATCHED), gates=True)
+
+        assert flagged.reasons == ()
+        assert flagged.data_findings.status == "failed"
+        assert flagged.data_findings.gates is False
+        assert flagged.data_findings.reasons == (
+            "the saved graph's check reports join_unmatched on quote_with_competitor",
+        )
+        assert flagged.first_failing_layer is None
+        assert (clean.data_findings.status, unchecked.data_findings.status) == (
+            "passed",
+            "not_measured",
+        )
+        assert unsaved.data_findings.status == "not_measured"
+        assert recovery_case.reasons == (
+            "data_findings: the saved graph's check reports join_unmatched on "
+            "quote_with_competitor",
+        )
+
+    def test_a_recovery_turn_fails_its_case_on_its_declared_finding_and_what_remains(
+        self,
+    ) -> None:
+        recovered = _findings_turn(
+            declared=_declared(),
+            received=(_received(_UNMATCHED), _received()),
+            final=_final(),
+            gates=True,
+        )
+        unreported = _findings_turn(
+            declared=_declared(), received=(_received(),), final=_final(), gates=True
+        )
+        unrecovered = _findings_turn(
+            declared=_declared(),
+            received=(_received(_UNMATCHED),),
+            final=_final(_UNMATCHED),
+            gates=True,
+        )
+        ordinary = _findings_turn(declared=_declared(), received=(_received(),), final=_final())
+
+        assert (recovered.passed, recovered.data_findings.status) == (True, "passed")
+        assert recovered.data_findings.gates is True
+        assert unreported.reasons == (
+            "data_findings: no data check the model received reported join_unmatched on "
+            "quote_with_competitor",
+        )
+        assert unreported.failed_layers == ()
+        assert unreported.first_failing_layer == "data_findings"
+        result = _result(recovered, unreported)
+        assert (result.passed, result.first_failing_layer) == (False, "data_findings")
+        assert result.reasons == (
+            "turn 2 data_findings: no data check the model received reported join_unmatched "
+            "on quote_with_competitor",
+        )
+        assert unrecovered.reasons == (
+            "data_findings: the saved graph's check still reports join_unmatched on "
+            "quote_with_competitor",
+        )
+        # Outside the recovery area the same declaration is reported, never counted.
+        assert (ordinary.passed, ordinary.data_findings.status) == (True, "failed")
+
+    def test_a_kept_finding_stays_in_the_saved_graph_and_on_a_change_card(self) -> None:
+        declared = _declared(kept=(_UNMATCHED,))
+        shown = (SelfTestCard(outcome="checked", advisory_nodes=(_JOIN,)),)
+        received = (_received(_UNMATCHED),)
+
+        kept = _findings_turn(
+            declared=declared, received=received, final=_final(_UNMATCHED), cards=shown, gates=True
+        )
+        corrected = _findings_turn(
+            declared=declared, received=received, final=_final(), cards=shown, gates=True
+        )
+        unshown = _findings_turn(
+            declared=declared, received=received, final=_final(_UNMATCHED), gates=True
+        )
+
+        assert (kept.passed, kept.data_findings.recovery) == (True, "recovered")
+        assert corrected.reasons == (
+            "data_findings: the saved graph's check no longer reports join_unmatched on "
+            "quote_with_competitor, which a value the analyst stated causes",
+        )
+        assert unshown.reasons == (
+            "data_findings: no change card showed the analyst join_unmatched on "
+            "quote_with_competitor",
+        )
+        assert unshown.data_findings.recovery == "not_recovered"
+
+    def test_a_declared_turn_no_check_ran_for_is_not_measured_and_passes(self) -> None:
+        turn = _findings_turn(
+            declared=_declared(kept=(_UNMATCHED,)),
+            received=(_received(outcome="not_run"),),
+            final=_final(status="not_run"),
+            cards=(SelfTestCard(outcome="not_run", advisory_nodes=()),),
+            gates=True,
+        )
+
+        assert (turn.passed, turn.data_findings.status) == (True, "not_measured")
+        assert _result(turn).data_findings == "not_measured"
+
+    @pytest.mark.parametrize(
+        ("received", "final", "telemetry", "recovery"),
+        [
+            pytest.param((_received(_UNMATCHED),), _final(), {}, "recovered", id="corrected"),
+            pytest.param(
+                (_received(_UNMATCHED),), _final(_UNMATCHED), {}, "not_recovered", id="kept-wrong"
+            ),
+            pytest.param(
+                (_received(_UNMATCHED),),
+                None,
+                {"outcome": "blocked", "saved_changes": 0, "change_cards": 0},
+                "not_recovered",
+                id="budget-spent",
+            ),
+            pytest.param(
+                (_received(_UNMATCHED),), _final(status="not_run"), {}, None, id="unmeasured"
+            ),
+            pytest.param((_received(),), _final(), {}, None, id="nothing-received"),
+        ],
+    )
+    def test_the_recovery_metric_counts_turns_that_received_an_advisory_finding(
+        self,
+        received: tuple[SelfTestReceivedCheck, ...],
+        final: SelfTestFinalCheck | None,
+        telemetry: dict[str, object],
+        recovery: str | None,
+    ) -> None:
+        turn = _findings_turn(received=received, final=final, **telemetry)
+
+        assert turn.data_findings.recovery == recovery
+        assert _result(turn).recovery == recovery
+
+    def test_the_changed_nodes_are_new_rewritten_or_rewired_and_measurable(self) -> None:
+        before = _graph(
+            node_types={"quotes": "dataInput", "bands": "banding", "kept": "polars"},
+            edges=(("quotes", "bands", None),),
+            configs={"quotes": {}, "bands": {"factors": []}, "kept": {"steps": []}},
+        )
+        after = _graph(
+            node_types={
+                "quotes": "dataInput",
+                "bands": "banding",
+                "kept": "polars",
+                "rated": "ratingStep",
+                "response": "output",
+            },
+            edges=(("quotes", "kept", None), ("kept", "rated", None), ("rated", "response", None)),
+            configs={
+                "quotes": {},
+                "bands": {"factors": [{"column": "region"}]},
+                "kept": {"steps": []},
+                "rated": {},
+                "response": {},
+            },
+        )
+
+        assert changed_nodes(before, after) == ("bands", "kept", "rated")
+
+
 def _scripted_config(egress: EgressPolicy) -> AssistantConfig:
     return AssistantConfig(
         provider="openai",
@@ -1329,7 +1616,7 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
     raw = path.read_text(encoding="utf-8")
     payload = json.loads(raw)
 
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     # A crashed case fails every layer, keeps its traceback, and is left out of
     # its area's metric medians.
     crash = payload["cases"][2]
@@ -1368,6 +1655,8 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
             "passed": 1,
             "crashed": 1,
             "not_applicable": 0,
+            "data_findings": {"passed": 0, "failed": 0, "not_measured": 3},
+            "recovery": {"cases": 0, "recovered": 0, "rate": None},
             "metrics": {
                 "provider_round_trips": 3.0,
                 "tool_calls": 4.0,
@@ -1386,6 +1675,8 @@ def test_report_is_redacted_and_aggregates_each_area(tmp_path: Path) -> None:
             "passed": 0,
             "crashed": 0,
             "not_applicable": 1,
+            "data_findings": {"passed": 0, "failed": 0, "not_measured": 0},
+            "recovery": {"cases": 0, "recovered": 0, "rate": None},
             "metrics": dict.fromkeys(
                 (
                     "provider_round_trips",
@@ -1482,8 +1773,25 @@ def test_compare_reports_area_counts_flips_and_metric_differences(tmp_path: Path
     }
     assert (comparison["only_before"], comparison["only_after"]) == (["dropped"], ["added"])
     joins = comparison["areas"]["joins"]
-    assert joins["before"] == {"cases": 2, "passed": 1, "crashed": 0, "not_applicable": 0}
-    assert joins["after"] == {"cases": 1, "passed": 0, "crashed": 0, "not_applicable": 0}
+    unmeasured = {
+        "data_findings": {"passed": 0, "failed": 0, "not_measured": 2},
+        "recovery": {"cases": 0, "recovered": 0, "rate": None},
+    }
+    assert joins["before"] == {
+        "cases": 2,
+        "passed": 1,
+        "crashed": 0,
+        "not_applicable": 0,
+        **unmeasured,
+    }
+    assert joins["after"] == {
+        "cases": 1,
+        "passed": 0,
+        "crashed": 0,
+        "not_applicable": 0,
+        **unmeasured,
+        "data_findings": {"passed": 0, "failed": 0, "not_measured": 1},
+    }
     assert joins["metrics"]["tool_calls"] == {"before": 2.0, "after": 6.0, "difference": 4.0}
     assert comparison["areas"]["banding"]["before"] is None
     assert comparison["areas"]["multi_stage"]["after"] == {
@@ -1491,8 +1799,86 @@ def test_compare_reports_area_counts_flips_and_metric_differences(tmp_path: Path
         "passed": 0,
         "crashed": 0,
         "not_applicable": 1,
+        "data_findings": {"passed": 0, "failed": 0, "not_measured": 0},
+        "recovery": {"cases": 0, "recovered": 0, "rate": None},
     }
     assert comparison["areas"]["multi_stage"]["metrics"]["tool_calls"]["difference"] is None
+
+
+def test_the_report_scores_data_findings_apart_and_rates_recovery(tmp_path: Path) -> None:
+    """The layer is reported per turn, case and area apart from the correctness
+    layers, with the recovered-within-budget rate per area and for the model;
+    `compare` shows both and each case whose layer flipped."""
+
+    recovered = _result(
+        _findings_turn(
+            declared=_declared(),
+            received=(_received(_UNMATCHED), _received()),
+            final=_final(),
+            gates=True,
+        ),
+        case_id="seeded",
+        area="recovery",
+    )
+    flagged = _result(
+        _findings_turn(received=(_received(_UNMATCHED),), final=_final(_UNMATCHED)),
+        case_id="ordinary",
+    )
+    clean = _result(_findings_turn(final=_final()), case_id="ordinary")
+    before = write_report(tmp_path / "before.json", (recovered, clean), _RUN)
+    after = write_report(tmp_path / "after.json", (recovered, flagged), _RUN)
+
+    payload = json.loads(after.read_text(encoding="utf-8"))
+
+    seeded, ordinary = payload["cases"]
+    assert seeded["data_findings"] == {"status": "passed", "gates": True, "recovery": "recovered"}
+    assert (ordinary["passed"], ordinary["data_findings"]) == (
+        True,
+        {"status": "failed", "gates": False, "recovery": "not_recovered"},
+    )
+    assert ordinary["turns"][0]["data_findings"] == {
+        "status": "failed",
+        "gates": False,
+        "reasons": ["the saved graph's check reports join_unmatched on quote_with_competitor"],
+        "received": [
+            {
+                "tool": "dry_run_graph_edits",
+                "outcome": "checked",
+                "reason": None,
+                "advisory": [{"kind": "join_unmatched", "node": _JOIN}],
+            }
+        ],
+        "final": {
+            "nodes": [{"node": _JOIN, "status": "checked", "reason": None}],
+            "advisory": [{"kind": "join_unmatched", "node": _JOIN}],
+        },
+        "cards": [{"outcome": "checked", "advisory_nodes": []}],
+        "recovery": "not_recovered",
+    }
+    assert payload["areas"]["recovery"]["data_findings"] == {
+        "passed": 1,
+        "failed": 0,
+        "not_measured": 0,
+    }
+    assert payload["areas"]["joins"]["recovery"] == {"cases": 1, "recovered": 0, "rate": 0.0}
+    assert payload["recovery"] == {"cases": 2, "recovered": 1, "rate": 0.5}
+
+    comparison = compare_report_files(before, after)
+
+    assert comparison["flips"] == []
+    assert comparison["data_findings_flips"] == [
+        {"id": "ordinary", "area": "joins", "before": "passed", "after": "failed"}
+    ]
+    assert comparison["recovery"] == {
+        "before": {"cases": 1, "recovered": 1, "rate": 1.0},
+        "after": {"cases": 2, "recovered": 1, "rate": 0.5},
+        "rate_difference": -0.5,
+    }
+    assert comparison["areas"]["joins"]["after"]["data_findings"] == {
+        "passed": 0,
+        "failed": 1,
+        "not_measured": 0,
+    }
 
 
 def test_list_prints_the_selected_cases_without_a_provider(

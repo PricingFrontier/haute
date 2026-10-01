@@ -25,8 +25,15 @@ if TYPE_CHECKING:
 SelfTestLayer = Literal[
     "protocol", "structure", "configuration", "collateral", "editor", "execution"
 ]
+#: A case's first failing layer: a correctness layer, or the data findings layer
+#: of a turn whose declared findings gate the case.
+ScoredLayer = Literal[
+    "protocol", "structure", "configuration", "collateral", "editor", "execution", "data_findings"
+]
+DataFindingsStatus = Literal["passed", "failed", "not_measured"]
+Recovery = Literal["recovered", "not_recovered"]
 
-#: The scoring layers, in report order.
+#: The correctness layers, in report order.
 SELF_TEST_LAYERS: tuple[SelfTestLayer, ...] = (
     "protocol",
     "structure",
@@ -35,6 +42,9 @@ SELF_TEST_LAYERS: tuple[SelfTestLayer, ...] = (
     "editor",
     "execution",
 )
+#: The layer scored beside the correctness layers, never one of them.
+DATA_FINDINGS_LAYER: Literal["data_findings"] = "data_findings"
+DATA_FINDINGS_STATUSES: tuple[DataFindingsStatus, ...] = ("passed", "failed", "not_measured")
 #: The efficiency metrics every case reports, summed over its turns.
 METRICS: tuple[str, ...] = (
     "provider_round_trips",
@@ -47,7 +57,7 @@ METRICS: tuple[str, ...] = (
     "time_to_validated_plan_ms",
     "end_to_end_ms",
 )
-REPORT_SCHEMA_VERSION = 5
+REPORT_SCHEMA_VERSION = 6
 _SUPPORT_MATRIX_VERSION = 2
 
 
@@ -115,6 +125,46 @@ def _median(values: Sequence[float]) -> float | None:
     return float(statistics.median(values)) if values else None
 
 
+def _refs(refs: Sequence[tuple[str, str]]) -> list[dict[str, str]]:
+    return [{"kind": kind, "node": node} for kind, node in refs]
+
+
+def _data_findings_payload(findings: Any) -> dict[str, object]:
+    """A turn's data findings layer: value-free kinds, node names, outcomes and reasons."""
+
+    final = findings.final
+    return {
+        "status": findings.status,
+        "gates": findings.gates,
+        "reasons": list(findings.reasons),
+        "received": [
+            {
+                "tool": check.tool,
+                "outcome": check.outcome,
+                "reason": check.reason,
+                "advisory": _refs(check.advisory),
+            }
+            for check in findings.received
+        ],
+        "final": (
+            None
+            if final is None
+            else {
+                "nodes": [
+                    {"node": node, "status": status, "reason": reason}
+                    for node, status, reason in final.nodes
+                ],
+                "advisory": _refs(final.advisory),
+            }
+        ),
+        "cards": [
+            {"outcome": card.outcome, "advisory_nodes": list(card.advisory_nodes)}
+            for card in findings.cards
+        ],
+        "recovery": findings.recovery,
+    }
+
+
 def _turn_payload(turn: Any) -> dict[str, object]:
     telemetry = turn.telemetry
     return {
@@ -140,6 +190,19 @@ def _turn_payload(turn: Any) -> dict[str, object]:
         ],
         "metrics": {name: getattr(telemetry, name) for name in METRICS},
         "leaked_forbidden_text": telemetry.leaked_forbidden_text,
+        "data_findings": _data_findings_payload(turn.data_findings),
+    }
+
+
+def _recovery_payload(results: Sequence[SelfTestResult]) -> dict[str, object]:
+    """The recovered-within-budget rate over the cases in its metric (``rate`` null when none)."""
+
+    measured = [result.recovery for result in results if result.recovery is not None]
+    recovered = sum(recovery == "recovered" for recovery in measured)
+    return {
+        "cases": len(measured),
+        "recovered": recovered,
+        "rate": recovered / len(measured) if measured else None,
     }
 
 
@@ -149,7 +212,7 @@ def report_payload(
     *,
     not_applicable: Sequence[SelfTestCase] = (),
 ) -> dict[str, object]:
-    """Build the closed content-redacted report v5.
+    """Build the closed content-redacted report v6.
 
     One report holds one kind of evidence: replay results prove the tools and
     contracts, live results measure a model, and the two are never combined.
@@ -157,7 +220,10 @@ def report_payload(
     were not run, are listed apart from the results: they neither pass nor
     fail, and an area counts its cases and passes over the cases it ran. A
     crashed case fails, keeps its traceback and is counted apart, and its
-    area's metric medians are taken over the cases that did not crash.
+    area's metric medians are taken over the cases that did not crash. The
+    data findings layer is reported apart from the correctness layers, per
+    turn, per case and per area, with the recovered-within-budget rate per
+    area and for the run's model.
     """
 
     evidence = {result.evidence for result in results}
@@ -179,6 +245,11 @@ def report_payload(
             "first_failing_layer": result.first_failing_layer,
             "reasons": list(result.reasons),
             "crash": result.crash,
+            "data_findings": {
+                "status": result.data_findings,
+                "gates": result.data_findings_gate,
+                "recovery": result.recovery,
+            },
             "metrics": dict(result.metrics),
             "turns": [_turn_payload(turn) for turn in result.turns],
         }
@@ -194,6 +265,11 @@ def report_payload(
             "passed": sum(result.passed for result in members),
             "crashed": len(members) - len(completed),
             "not_applicable": sum(case.area == area for case in not_applicable),
+            "data_findings": {
+                status: sum(result.data_findings == status for result in members)
+                for status in DATA_FINDINGS_STATUSES
+            },
+            "recovery": _recovery_payload(members),
             "metrics": {
                 name: _median([result.metrics[name] for result in completed]) for name in METRICS
             },
@@ -211,6 +287,7 @@ def report_payload(
             "haute_version": run.haute_version,
         },
         "passed": all(result.passed for result in results),
+        "recovery": _recovery_payload(results),
         "areas": areas,
         "cases": cases,
         "not_applicable": [
@@ -259,8 +336,11 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
     """Compare two reports of one evidence kind per area.
 
     Returns each area's case, pass, crash and not-applicable counts in both reports,
-    every case run in both that flipped between pass and fail with the first
-    failing layer on its failing side, the cases each report lists as not
+    with its data findings counts and recovered-within-budget rate, every case
+    run in both that flipped between pass and fail with the first failing layer
+    on its failing side, every case run in both whose data findings flipped
+    between passed and failed, the recovered-within-budget rate of both runs
+    and its difference, the cases each report lists as not
     applicable to its variant (never a flip, a pass or a failure), the cases
     only one report holds, run or not applicable, and per area the median of
     each efficiency metric in both reports and their difference.
@@ -289,6 +369,22 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
         for case_id in sorted(set(before_cases) & set(after_cases))
         if before_cases[case_id]["passed"] != after_cases[case_id]["passed"]
     ]
+    data_findings_flips: list[dict[str, object]] = []
+    for case_id in sorted(set(before_cases) & set(after_cases)):
+        old_status = before_cases[case_id]["data_findings"]["status"]
+        new_status = after_cases[case_id]["data_findings"]["status"]
+        # A layer that was not measured on one side has not flipped.
+        if {old_status, new_status} == {"passed", "failed"}:
+            data_findings_flips.append(
+                {
+                    "id": case_id,
+                    "area": after_cases[case_id]["area"],
+                    "before": old_status,
+                    "after": new_status,
+                }
+            )
+    old_rate = before["recovery"]["rate"]
+    new_rate = after["recovery"]["rate"]
     areas: dict[str, dict[str, object]] = {}
     for area in sorted(set(before["areas"]) | set(after["areas"])):
         old = before["areas"].get(area)
@@ -315,6 +411,14 @@ def compare_reports(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict
         "after": after["run"],
         "areas": areas,
         "flips": flips,
+        "data_findings_flips": data_findings_flips,
+        "recovery": {
+            "before": before["recovery"],
+            "after": after["recovery"],
+            "rate_difference": (
+                None if old_rate is None or new_rate is None else new_rate - old_rate
+            ),
+        },
         "not_applicable": {
             "before": sorted(case["id"] for case in before["not_applicable"]),
             "after": sorted(case["id"] for case in after["not_applicable"]),
@@ -332,6 +436,8 @@ def _area_counts(area: Mapping[str, Any] | None) -> dict[str, object] | None:
         "passed": area["passed"],
         "crashed": area["crashed"],
         "not_applicable": area["not_applicable"],
+        "data_findings": area["data_findings"],
+        "recovery": area["recovery"],
     }
 
 
