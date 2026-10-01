@@ -1,0 +1,44 @@
+{
+  "schema_version": 3,
+  "id": "motor_frequency_explore",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "explore",
+  "split": "holdout",
+  "turns": [
+    {
+      "request": "Add an Explore node called frequency_explore on claim_frequency's output so I can look at the scored frequencies, with every overview card on.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "explore"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "claim_frequency",
+            "target": "frequency_explore",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "frequency_explore": {
+            "overview": {
+              "dataset_snapshot": true,
+              "data_quality": true,
+              "numeric_summary": true,
+              "categorical_summary": true,
+              "schema": true
+            }
+          }
+        },
+        "execution": [],
+        "efficiency": null
+      }
+    }
+  ]
+}

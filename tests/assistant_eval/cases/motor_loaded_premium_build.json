@@ -1,0 +1,60 @@
+{
+  "schema_version": 3,
+  "id": "motor_loaded_premium_build",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "multi_stage",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Load the premium by region: left-join data/region_loadings.parquet onto base_premium as loaded_quotes (region_code matches the file's code, one loading per code), then work out loaded_premium as premium times region_loading rounded to pence, treating a missing loading as 1, in a Polars node called loaded_premium, and send loaded_premium to the priced_batch output instead of base_premium.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "edgeJoin",
+          "polars",
+          "dataOutput"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "base_premium",
+            "target": "loaded_quotes",
+            "target_handle": "base"
+          },
+          {
+            "source": "region_loadings",
+            "target": "loaded_quotes",
+            "target_handle": "join"
+          },
+          {
+            "source": "loaded_quotes",
+            "target": "loaded_premium",
+            "target_handle": null
+          },
+          {
+            "source": "loaded_premium",
+            "target": "priced_batch",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "priced_batch"
+        ],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "loaded_premium",
+            "scenario": "nb_batch",
+            "golden": "df = pl.scan_parquet('data/batch_quotes.parquet').with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)\nfrom catboost import CatBoostRegressor\nmodel = CatBoostRegressor()\nmodel.load_model('models/claim_frequency.cbm')\nfeatures = df.collect()\nscores = model.predict(features.select('vehicle_value', 'vehicle_group', 'driver_age').to_pandas())\ndf = features.with_columns(expected_frequency=pl.Series(scores, dtype=pl.Float64))\ndf = df.with_columns(\n    age_band=pl.when(pl.col('driver_age') <= 24).then(pl.lit('17-24')).when(pl.col('driver_age') <= 59).then(pl.lit('25-59')).when(pl.col('driver_age').is_not_null()).then(pl.lit('60+')).otherwise(pl.lit('unknown')),\n    inception_year=pl.when(pl.col('inception_date') <= pl.date(2024, 12, 31)).then(pl.lit('2024')).when(pl.col('inception_date').is_not_null()).then(pl.lit('2025+')).otherwise(pl.lit('unknown')),\n    region=pl.col('region_code').replace_strict({'NE': 'North', 'NW': 'North', 'SE': 'South', 'LON': 'London'}, default=pl.lit('Other')),\n)\ndf = df.with_columns(\n    age_relativity=pl.col('age_band').replace_strict({'17-24': 1.8, '25-59': 1.0, '60+': 1.2}, default=1.0, return_dtype=pl.Float64),\n    region_vehicle_relativity=pl.concat_str(['region', 'vehicle_group'], separator='|').replace_strict({'North|A': 0.9, 'North|B': 1.0, 'North|C': 1.2, 'South|A': 1.0, 'South|B': 1.1, 'South|C': 1.3, 'London|A': 1.3, 'London|B': 1.45, 'London|C': 1.7}, default=1.0, return_dtype=pl.Float64),\n)\ndf = df.with_columns(premium=(320.0 * pl.col('age_relativity') * pl.col('region_vehicle_relativity')).round(2))\nloadings = pl.scan_parquet('data/region_loadings.parquet')\ndf = df.lazy().join(loadings, left_on='region_code', right_on='code', how='left')\ndf = df.with_columns(loaded_premium=(pl.col('premium') * pl.col('region_loading').fill_null(1.0)).round(2))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

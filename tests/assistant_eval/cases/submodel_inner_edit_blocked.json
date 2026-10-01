@@ -1,0 +1,26 @@
+{
+  "schema_version": 3,
+  "id": "submodel_inner_edit_blocked",
+  "fixture_version": "1",
+  "project_fixture": "submodel_pricing",
+  "area": "submodels",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Change the vehicle age threshold inside the vehicle_factors submodel from 10 to 8 years.",
+      "expectations": {
+        "outcome": "blocked",
+        "saves": false,
+        "required_node_types": [],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [],
+        "efficiency": null
+      }
+    }
+  ]
+}

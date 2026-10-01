@@ -1,0 +1,48 @@
+{
+  "schema_version": 3,
+  "id": "smoke_step_edit",
+  "fixture_version": "1",
+  "project_fixture": "stepped_pricing",
+  "area": "steps",
+  "split": "development",
+  "turns": [
+    {
+      "request": "In risk_features, also add a boolean column young_driver, true when driver_age is below 21. Keep its existing step as it is.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "risk_features",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "risk_features"
+        ],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "risk_features",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_csv('data/quotes.csv')\ndf = quotes.with_columns((pl.col('driver_age') >= 25).alias('experienced_driver')).with_columns((pl.col('driver_age') < 21).alias('young_driver'))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": {
+          "max_provider_round_trips": 3,
+          "max_tool_calls": 2,
+          "max_failed_tool_calls": 0,
+          "max_duplicate_static_reads": 0
+        }
+      }
+    }
+  ]
+}

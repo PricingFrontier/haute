@@ -76,7 +76,6 @@ to the build journeys the evaluation targets first.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ASSIST-36 | Planned | P1 | Realistic builds, edits and recoveries are measured per area on real models. |
 | ASSIST-37 | Planned | P2 | Context stays short on mid-tier models; strong models get caching and thinking. |
 | ASSIST-38 | Planned | P3 | Each provider gets the tool-schema shape it handles best. |
 | ASSIST-39 | Planned | P3 | A multi-stage build shows a checklist of its stages. |
@@ -91,31 +90,6 @@ to the build journeys the evaluation targets first.
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
 
 ## Planned improvements
-
-### ASSIST-36 — Evaluation on realistic pipelines and live models
-**Why:** Evaluation fixtures are two three-row tables copied under many
-names, every case is one turn on an empty or one-node project, and nothing
-covers building from data, modelling, the optimiser, editing an existing
-pipeline or recovering from errors.
-
-**Plan:** Build save-canonical fixtures (a motor-pricing pipeline with a
-Source Switch, stepped features, banding on numbers, dates and categories,
-multi-table rating, model scoring, a nested API response and Explore, and a
-submodel project) with goldens computed in plain Polars; write about forty
-cases across authoring areas, read-only questions, delegation, multi-turn
-work, recovery and safety, split into development and holdout; add a live
-runner with record, compare and variant commands. Fold the qualification
-script and held-out format into this one harness.
-
-**Acceptance:** Every case replays in CI; compare reports per-area results and
-flips; the first live baseline on the configured model is recorded once the
-endpoint answers, with the comparison of one apply per turn against several
-applies per turn that `ASSIST-32` left for live evidence.
-
-**Dependencies:** `ASSIST-20`, `ASSIST-35`.
-
-**Evidence:** `scripts/run_assistant_evaluation.py`;
-`tests/assistant_eval/support_matrix.json`.
 
 ### ASSIST-37 — History compaction, prompt caching and thinking
 **Why:** A message-count window discards context without regard to tokens,

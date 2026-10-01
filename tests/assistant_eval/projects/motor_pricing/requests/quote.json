@@ -1,0 +1,30 @@
+[
+  {
+    "quote_id": "L1",
+    "inception_date": "2025-03-01",
+    "region_code": "SE",
+    "exposure": 1.0,
+    "driver": {
+      "date_of_birth": "1990-05-10",
+      "licence_years": 10
+    },
+    "vehicle": {
+      "value": 12000.0,
+      "group": "B"
+    }
+  },
+  {
+    "quote_id": "L2",
+    "inception_date": "2025-05-20",
+    "region_code": "NE",
+    "exposure": 1.0,
+    "driver": {
+      "date_of_birth": "2004-09-01",
+      "licence_years": 1
+    },
+    "vehicle": {
+      "value": 5200.0,
+      "group": "A"
+    }
+  }
+]

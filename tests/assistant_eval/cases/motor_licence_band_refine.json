@@ -1,0 +1,234 @@
+{
+  "schema_version": 3,
+  "id": "motor_licence_band_refine",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "multi_turn",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Add a licence_band factor to rating_bands on licence_years: up to 2 years is 'new', up to 9 is 'established' and above that 'experienced', with 'unknown' when missing.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "rating_bands"
+        ],
+        "node_configs": {
+          "rating_bands": {
+            "factors": [
+              {
+                "banding": "breakpoints",
+                "column": "driver_age",
+                "outputColumn": "age_band",
+                "rules": [
+                  {
+                    "boundary": "24",
+                    "label": "17-24"
+                  },
+                  {
+                    "boundary": "59",
+                    "label": "25-59"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "60+"
+                  }
+                ],
+                "default": "unknown"
+              },
+              {
+                "banding": "breakpoints",
+                "column": "inception_date",
+                "outputColumn": "inception_year",
+                "rules": [
+                  {
+                    "boundary": "2024-12-31",
+                    "label": "2024"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "2025+"
+                  }
+                ],
+                "default": "unknown"
+              },
+              {
+                "banding": "categorical",
+                "column": "region_code",
+                "outputColumn": "region",
+                "rules": [
+                  {
+                    "value": "NE",
+                    "assignment": "North"
+                  },
+                  {
+                    "value": "NW",
+                    "assignment": "North"
+                  },
+                  {
+                    "value": "SE",
+                    "assignment": "South"
+                  },
+                  {
+                    "value": "LON",
+                    "assignment": "London"
+                  }
+                ],
+                "default": "Other"
+              },
+              {
+                "banding": "breakpoints",
+                "column": "licence_years",
+                "outputColumn": "licence_band",
+                "rules": [
+                  {
+                    "boundary": "2",
+                    "label": "new"
+                  },
+                  {
+                    "boundary": "9",
+                    "label": "established"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "experienced"
+                  }
+                ],
+                "default": "unknown"
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "rating_bands",
+            "scenario": "nb_batch",
+            "golden": "df = pl.scan_parquet('data/batch_quotes.parquet').with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)\nfrom catboost import CatBoostRegressor\nmodel = CatBoostRegressor()\nmodel.load_model('models/claim_frequency.cbm')\nfeatures = df.collect()\nscores = model.predict(features.select('vehicle_value', 'vehicle_group', 'driver_age').to_pandas())\ndf = features.with_columns(expected_frequency=pl.Series(scores, dtype=pl.Float64))\ndf = df.with_columns(\n    age_band=pl.when(pl.col('driver_age') <= 24).then(pl.lit('17-24')).when(pl.col('driver_age') <= 59).then(pl.lit('25-59')).when(pl.col('driver_age').is_not_null()).then(pl.lit('60+')).otherwise(pl.lit('unknown')),\n    inception_year=pl.when(pl.col('inception_date') <= pl.date(2024, 12, 31)).then(pl.lit('2024')).when(pl.col('inception_date').is_not_null()).then(pl.lit('2025+')).otherwise(pl.lit('unknown')),\n    region=pl.col('region_code').replace_strict({'NE': 'North', 'NW': 'North', 'SE': 'South', 'LON': 'London'}, default=pl.lit('Other')),\n    licence_band=pl.when(pl.col('licence_years') <= 2).then(pl.lit('new')).when(pl.col('licence_years') <= 9).then(pl.lit('established')).when(pl.col('licence_years').is_not_null()).then(pl.lit('experienced')).otherwise(pl.lit('unknown')),\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    },
+    {
+      "request": "Actually make 'new' cover up to 3 years. Keep everything else.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "rating_bands"
+        ],
+        "node_configs": {
+          "rating_bands": {
+            "factors": [
+              {
+                "banding": "breakpoints",
+                "column": "driver_age",
+                "outputColumn": "age_band",
+                "rules": [
+                  {
+                    "boundary": "24",
+                    "label": "17-24"
+                  },
+                  {
+                    "boundary": "59",
+                    "label": "25-59"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "60+"
+                  }
+                ],
+                "default": "unknown"
+              },
+              {
+                "banding": "breakpoints",
+                "column": "inception_date",
+                "outputColumn": "inception_year",
+                "rules": [
+                  {
+                    "boundary": "2024-12-31",
+                    "label": "2024"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "2025+"
+                  }
+                ],
+                "default": "unknown"
+              },
+              {
+                "banding": "categorical",
+                "column": "region_code",
+                "outputColumn": "region",
+                "rules": [
+                  {
+                    "value": "NE",
+                    "assignment": "North"
+                  },
+                  {
+                    "value": "NW",
+                    "assignment": "North"
+                  },
+                  {
+                    "value": "SE",
+                    "assignment": "South"
+                  },
+                  {
+                    "value": "LON",
+                    "assignment": "London"
+                  }
+                ],
+                "default": "Other"
+              },
+              {
+                "banding": "breakpoints",
+                "column": "licence_years",
+                "outputColumn": "licence_band",
+                "rules": [
+                  {
+                    "boundary": "3",
+                    "label": "new"
+                  },
+                  {
+                    "boundary": "9",
+                    "label": "established"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "experienced"
+                  }
+                ],
+                "default": "unknown"
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "rating_bands",
+            "scenario": "nb_batch",
+            "golden": "df = pl.scan_parquet('data/batch_quotes.parquet').with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)\nfrom catboost import CatBoostRegressor\nmodel = CatBoostRegressor()\nmodel.load_model('models/claim_frequency.cbm')\nfeatures = df.collect()\nscores = model.predict(features.select('vehicle_value', 'vehicle_group', 'driver_age').to_pandas())\ndf = features.with_columns(expected_frequency=pl.Series(scores, dtype=pl.Float64))\ndf = df.with_columns(\n    age_band=pl.when(pl.col('driver_age') <= 24).then(pl.lit('17-24')).when(pl.col('driver_age') <= 59).then(pl.lit('25-59')).when(pl.col('driver_age').is_not_null()).then(pl.lit('60+')).otherwise(pl.lit('unknown')),\n    inception_year=pl.when(pl.col('inception_date') <= pl.date(2024, 12, 31)).then(pl.lit('2024')).when(pl.col('inception_date').is_not_null()).then(pl.lit('2025+')).otherwise(pl.lit('unknown')),\n    region=pl.col('region_code').replace_strict({'NE': 'North', 'NW': 'North', 'SE': 'South', 'LON': 'London'}, default=pl.lit('Other')),\n    licence_band=pl.when(pl.col('licence_years') <= 3).then(pl.lit('new')).when(pl.col('licence_years') <= 9).then(pl.lit('established')).when(pl.col('licence_years').is_not_null()).then(pl.lit('experienced')).otherwise(pl.lit('unknown')),\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

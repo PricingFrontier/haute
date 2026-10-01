@@ -1,0 +1,58 @@
+{
+  "schema_version": 3,
+  "id": "smoke_mapped_response_output",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "area": "outputs",
+  "split": "development",
+  "turns": [
+    {
+      "request": "After quotes, add a response output named quote_response mapping exactly quote_id, driver_age, and region to same-named JSON fields.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "output"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "quote_response",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "quote_response": {
+            "outputMapping": [
+              {
+                "source_port": "quotes",
+                "source_column": "quote_id",
+                "output_path": "$[:].quote_id",
+                "enabled": true
+              },
+              {
+                "source_port": "quotes",
+                "source_column": "driver_age",
+                "output_path": "$[:].driver_age",
+                "enabled": true
+              },
+              {
+                "source_port": "quotes",
+                "source_column": "region",
+                "output_path": "$[:].region",
+                "enabled": true
+              }
+            ],
+            "outputFormat": "json"
+          }
+        },
+        "execution": [],
+        "efficiency": null
+      }
+    }
+  ]
+}

@@ -1,19 +1,19 @@
 """Tier 0 of the assistant evaluation: reference trajectories replayed through the real tools.
 
-Every self-test case has a checked-in reference trajectory under
-``tests/assistant_eval/trajectories/``; the step-corpus cases have one in the
-taught ``[source, free_code]`` form and one as the corpus's structured
-translation. Each replay runs the real loop, tools, dry-run, apply, parser and
-Git mutation gate in a copy of the case's project under ``tmp_path``, then the
-harness scores every layer, including execution of the case's golden nodes
-against plain-Polars goldens. Replay proves the tools and contracts, not that a
-model would choose the same calls.
+Every evaluation case, of both splits, has a checked-in reference trajectory
+under ``tests/assistant_eval/trajectories/`` with one recorded turn per case
+turn; the step-corpus cases have one in the taught ``[source, free_code]`` form
+and one as the corpus's structured translation. Each replay runs the real loop,
+tools, dry-run, apply, parser and Git mutation gate in a copy of the case's
+project under a short temporary directory, then the harness scores every layer
+of every turn, including execution of each turn's golden nodes against
+plain-Polars goldens. Replay proves the tools and contracts, not that a model
+would choose the same calls.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,6 +22,7 @@ import pytest
 
 from haute._sandbox import _get_project_root
 from scripts.run_assistant_self_test import (
+    FIXTURE_MODEL_RUN_PLACEHOLDER,
     SelfTestGolden,
     TrajectoryDivergedError,
     TrajectoryProvider,
@@ -40,13 +41,20 @@ PROJECTS_ROOT = EVAL_ROOT / "projects"
 TRAJECTORIES_ROOT = EVAL_ROOT / "trajectories"
 CORPUS_ROOT = Path(__file__).parent / "fixtures" / "polars_steps_corpus"
 CASES = {
-    case.id: case
-    for case in load_self_test_cases(EVAL_ROOT / "self_test", projects_root=PROJECTS_ROOT)
+    case.id: case for case in load_self_test_cases(EVAL_ROOT / "cases", projects_root=PROJECTS_ROOT)
 }
 TRAJECTORIES = load_trajectories(TRAJECTORIES_ROOT)
 CORPUS_ITEMS = ("attach_regional_rates", "high_premium_quotes", "underwriting_decision")
-#: Seconds one replay may take before it counts as hung.
-CASE_TIMEOUT = 120
+#: Seconds one replayed turn may take before the replay counts as hung.
+TURN_TIMEOUT = 120
+
+
+@pytest.fixture
+def work_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A short empty directory: model and snapshot caches nest deep under a case's copy,
+    and a parametrised test's own directory name would exceed Windows' path limit."""
+
+    return tmp_path_factory.mktemp("r")
 
 
 @pytest.fixture(autouse=True)
@@ -97,7 +105,8 @@ def test_corpus_trajectories_author_the_corpus_and_its_goldens(
 
     assert _transform_steps(f"{case.id}_structured") == translations[item]["steps"]
     assert [step["kind"] for step in _transform_steps(case.id)] == ["source", "free_code"]
-    (golden,) = case.expectations.execution
+    (turn,) = case.turns
+    (golden,) = turn.expectations.execution
     assert golden.node == item
     assert golden.golden.endswith(corpus[item]["code"] + "\n")
 
@@ -111,17 +120,26 @@ def test_corpus_trajectories_author_the_corpus_and_its_goldens(
     assert equal, why
 
 
-@pytest.mark.timeout(CASE_TIMEOUT)
-@pytest.mark.parametrize("trajectory", TRAJECTORIES, ids=lambda trajectory: trajectory.id)
-async def test_replay(trajectory, tmp_path: Path) -> None:
-    """Each trajectory replays without divergence and passes every scoring layer,
-    and leaves the sandbox project root where it found it."""
+@pytest.mark.parametrize(
+    "trajectory",
+    [
+        pytest.param(
+            trajectory,
+            id=trajectory.id,
+            marks=pytest.mark.timeout(TURN_TIMEOUT * len(trajectory.turns)),
+        )
+        for trajectory in TRAJECTORIES
+    ],
+)
+async def test_replay(trajectory, work_dir: Path) -> None:
+    """Each trajectory replays without divergence and passes every scoring layer of
+    every turn, and leaves the sandbox project root where it found it."""
 
     root_before = _get_project_root()
     cwd_before = Path.cwd()
 
     result = await replay_self_test_case(
-        CASES[trajectory.case], trajectory, projects_root=PROJECTS_ROOT, work_dir=tmp_path
+        CASES[trajectory.case], trajectory, projects_root=PROJECTS_ROOT, work_dir=work_dir
     )
 
     assert result.reasons == ()
@@ -176,10 +194,15 @@ def _first_dry_run(trajectory) -> tuple[list[str], dict[str, object] | None]:
 
 
 def _single_node_trajectories() -> list:
-    """Trajectories whose first dry-run adds, updates or edits the steps of one node."""
+    """Trajectories whose first dry-run adds, updates or edits the steps of one node.
+
+    A recovery case is not among them: diagnosing a failing node reads it first.
+    """
 
     single = []
     for trajectory in TRAJECTORIES:
+        if CASES[trajectory.case].area == "recovery":
+            continue
         _before, arguments = _first_dry_run(trajectory)
         if arguments is None:
             continue
@@ -196,7 +219,12 @@ def test_single_node_edits_dry_run_without_an_orientation_read() -> None:
     step ids an `edit_steps` names included."""
 
     single = {trajectory.id: trajectory for trajectory in _single_node_trajectories()}
-    assert {"smoke_polars_feature_transform", "smoke_step_edit"} <= set(single)
+    assert {
+        "smoke_polars_feature_transform",
+        "smoke_step_edit",
+        "motor_new_driver_flag",
+        "submodel_high_risk_flag",
+    } <= set(single)
     for trajectory in single.values():
         before, _arguments = _first_dry_run(trajectory)
         assert not set(before) & _READ_TOOLS, (trajectory.id, before)
@@ -262,7 +290,8 @@ async def test_a_staged_build_saves_each_stage_in_one_turn_with_a_card_each(
     provider.verify(result.tool_diagnostics)
 
     assert result.reasons == ()
-    assert (result.telemetry.applied_plans, result.telemetry.change_cards) == (4, 4)
+    (turn,) = result.turns
+    assert (turn.telemetry.saved_changes, turn.telemetry.change_cards) == (4, 4)
     calls = [
         call.tool for trajectory_round in trajectory.turns[0] for call in trajectory_round.calls
     ]
@@ -295,10 +324,14 @@ async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_la
     case = CASES["smoke_corpus_high_premium_quotes"]
     wrong = SelfTestGolden(
         node="high_premium_quotes",
+        scenario="live",
         golden="df = pl.scan_parquet('data/quotes.parquet').filter(pl.col('premium') > 500)\n",
         order_free=False,
     )
-    case = replace(case, expectations=replace(case.expectations, execution=(wrong,)))
+    (turn,) = case.turns
+    case = replace(
+        case, turns=(replace(turn, expectations=replace(turn.expectations, execution=(wrong,))),)
+    )
     trajectory = next(item for item in TRAJECTORIES if item.id == case.id)
 
     result = await replay_self_test_case(
@@ -306,8 +339,9 @@ async def test_a_golden_the_saved_node_does_not_reproduce_fails_the_execution_la
     )
 
     assert result.failed_layers == ("execution",)
+    assert result.first_failing_layer == "execution"
     assert result.reasons[0].startswith(
-        "execution: node high_premium_quotes does not match its golden: row counts differ"
+        "turn 1 execution: node high_premium_quotes does not match its golden: row counts differ"
     )
 
 
@@ -325,18 +359,18 @@ def test_trajectory_references_must_name_an_earlier_call(tmp_path: Path) -> None
 
 
 def test_the_fixture_projects_are_not_modified_by_replay() -> None:
-    """Replays copy the fixtures; nothing under the checked-in projects is written."""
+    """Replays prepare and edit copies: no Git repository, snapshot cache, MLflow run or
+    model cache appears under the checked-in projects, and the fixture model's node keeps
+    its placeholder run id."""
 
-    # The one sidecar a fixture holds on purpose: its Transform authored as steps.
-    stepped = PROJECTS_ROOT / "stepped_pricing" / "config" / "polars" / "risk_features.json"
-    written = [
+    runtime = {".git", ".haute_cache", "mlruns", ".cache"}
+    created = [
         path
         for path in source_files(PROJECTS_ROOT, suffix=None)
-        if path.parent.name in {"polars", "banding", "rating_step"} and path != stepped
+        if runtime & set(path.relative_to(PROJECTS_ROOT).parts)
     ]
-    assert written == []
-    steps = json.loads(stepped.read_text(encoding="utf-8"))["steps"]
-    assert [step["id"] for step in steps] == ["start", "logic"]
-    assert not any(
-        name.startswith(".git") for name in os.listdir(PROJECTS_ROOT / "ordinary_pricing")
+    assert created == []
+    sidecar = PROJECTS_ROOT / "motor_pricing" / "config" / "model_scoring" / "claim_frequency.json"
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["run_id"] == (
+        FIXTURE_MODEL_RUN_PLACEHOLDER
     )

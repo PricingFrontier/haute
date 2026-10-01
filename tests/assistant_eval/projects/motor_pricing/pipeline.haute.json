@@ -1,0 +1,44 @@
+{
+  "positions": {
+    "base_premium": {
+      "x": 1400.0,
+      "y": 0.0
+    },
+    "batch_quotes": {
+      "x": 0.0,
+      "y": 120.0
+    },
+    "claim_frequency": {
+      "x": 840.0,
+      "y": 0.0
+    },
+    "policies": {
+      "x": 280.0,
+      "y": 0.0
+    },
+    "premium_explore": {
+      "x": 1680.0,
+      "y": 120.0
+    },
+    "priced_batch": {
+      "x": 1680.0,
+      "y": 240.0
+    },
+    "quote_request": {
+      "x": 0.0,
+      "y": 0.0
+    },
+    "quote_response": {
+      "x": 1680.0,
+      "y": 0.0
+    },
+    "rating_bands": {
+      "x": 1120.0,
+      "y": 0.0
+    },
+    "rating_features": {
+      "x": 560.0,
+      "y": 0.0
+    }
+  }
+}

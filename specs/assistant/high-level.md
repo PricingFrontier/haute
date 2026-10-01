@@ -1041,15 +1041,15 @@ guarantee row order must impose an explicit stable order in its production
 pipeline before asserting those arrays; packaging checks never sort observed
 results to make a nondeterministic fixture pass.
 Teaching bundles are indexed by the system prompt and
-`read_reference`; held-out evaluation fixtures live outside assistant package
+`read_reference`; evaluation fixtures and cases live outside assistant package
 resources and cannot be enumerated through those surfaces. Installed
 distribution smoke checks enumerate and validate every bundle and execute the
 declared fast subset.
 
 The assistant is evaluated offline by replaying reference trajectories through the
-real tools in CI, live against a configured provider on demand, and by repeated
-qualification trials; the cases, tiers, scoring layers and execution boundary are
-specified in [the assistant evaluation](evaluation.md).
+real tools in CI and live against a configured provider on demand, with results
+reported per authoring area; the fixtures, cases, tiers, scoring layers, execution
+boundary and live runner are specified in [the assistant evaluation](evaluation.md).
 
 
 ## Egress and project knowledge
@@ -1110,11 +1110,11 @@ revisions, decisions, graph-update evidence, and value-free validation path/reas
 metadata; it does not copy raw row, source, document, configuration payloads, or
 deterministic payload digests into restartable history.
 
-## Provider qualification gate
+## Provider qualification
 
-A provider and model are qualified only by attributable live trials that meet
-every threshold of the closed support matrix; the lane and its scoring are
-specified in [the assistant evaluation](evaluation.md#tiers).
+No provider or model is qualified by a gate. Live evaluation reports, attributed
+to a configuration of the support matrix, measure each configuration per area;
+see [the assistant evaluation](evaluation.md#tiers).
 
 ## Interactions
 

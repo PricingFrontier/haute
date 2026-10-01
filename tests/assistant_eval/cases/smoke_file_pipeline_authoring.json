@@ -1,0 +1,59 @@
+{
+  "schema_version": 3,
+  "id": "smoke_file_pipeline_authoring",
+  "fixture_version": "2",
+  "project_fixture": "showcase_parquets",
+  "area": "outputs",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Author and save this graph only; do not run it or perform the write. Add a file data input named nb_batch that scans data/nb_batch.parquet as Parquet. Add a Transform named valid_quotes after it that keeps only the rows whose exposure is above 0. Add a file data output named curated_quotes after valid_quotes, configured to write Parquet to data/curated_quotes.parquet.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataInput",
+          "polars",
+          "dataOutput"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "nb_batch",
+            "target": "valid_quotes",
+            "target_handle": null
+          },
+          {
+            "source": "valid_quotes",
+            "target": "curated_quotes",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "nb_batch": {
+            "inputType": "file",
+            "format": "parquet",
+            "path": "data/nb_batch.parquet"
+          },
+          "curated_quotes": {
+            "outputType": "file",
+            "format": "parquet",
+            "path": "data/curated_quotes.parquet"
+          }
+        },
+        "execution": [
+          {
+            "node": "valid_quotes",
+            "scenario": "live",
+            "golden": "nb_batch = pl.scan_parquet('data/nb_batch.parquet')\ndf = nb_batch.filter(pl.col('exposure') > 0)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

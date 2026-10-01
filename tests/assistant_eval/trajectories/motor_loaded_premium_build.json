@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "id": "motor_loaded_premium_build",
+  "case": "motor_loaded_premium_build",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "join_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Left-join the region loadings onto the rated quotes as loaded_quotes.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "region_loadings",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/region_loadings.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "edgeJoin",
+                    "name": "loaded_quotes",
+                    "config": {
+                      "how": "left",
+                      "leftOn": [
+                        "region_code"
+                      ],
+                      "rightOn": [
+                        "code"
+                      ],
+                      "validate": "m:1"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "base_premium",
+                    "target": "loaded_quotes",
+                    "target_handle": "base"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "region_loadings",
+                    "target": "loaded_quotes",
+                    "target_handle": "join"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "join_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "join_dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "load_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Work out loaded_premium from the premium and its region loading.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "loaded_premium",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "loaded_quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Apply the region loading, treating a region without one as unloaded\ndf = df.with_columns(loaded_premium=(pl.col('premium') * pl.col('region_loading').fill_null(1.0)).round(2))"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "loaded_quotes",
+                    "target": "loaded_premium"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "load_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "load_dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "out_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Send loaded_premium to priced_batch instead of base_premium.",
+                "ops": [
+                  {
+                    "op": "delete_edge",
+                    "source": "base_premium",
+                    "target": "priced_batch"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "loaded_premium",
+                    "target": "priced_batch"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "out_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "out_dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the join, the loaded premium and the rewired batch output.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

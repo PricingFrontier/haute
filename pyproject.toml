@@ -172,6 +172,8 @@ extend-exclude = [
     "modules/",
     "examples/",
     "outputs/",
+    # Evaluation fixtures are exactly what Haute's save path writes.
+    "tests/assistant_eval/projects/",
 ]
 
 [tool.ruff.lint]

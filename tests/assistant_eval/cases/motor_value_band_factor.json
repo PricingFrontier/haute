@@ -1,0 +1,122 @@
+{
+  "schema_version": 3,
+  "id": "motor_value_band_factor",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "banding",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Add a vehicle value band to rating_bands: band vehicle_value_k into value_band with 'up to 5k' up to 5, '5k-15k' up to 15 and 'over 15k' above that, and 'unknown' when it is missing. Keep the existing bands.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "rating_bands"
+        ],
+        "node_configs": {
+          "rating_bands": {
+            "factors": [
+              {
+                "banding": "breakpoints",
+                "column": "driver_age",
+                "outputColumn": "age_band",
+                "rules": [
+                  {
+                    "boundary": "24",
+                    "label": "17-24"
+                  },
+                  {
+                    "boundary": "59",
+                    "label": "25-59"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "60+"
+                  }
+                ],
+                "default": "unknown"
+              },
+              {
+                "banding": "breakpoints",
+                "column": "inception_date",
+                "outputColumn": "inception_year",
+                "rules": [
+                  {
+                    "boundary": "2024-12-31",
+                    "label": "2024"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "2025+"
+                  }
+                ],
+                "default": "unknown"
+              },
+              {
+                "banding": "categorical",
+                "column": "region_code",
+                "outputColumn": "region",
+                "rules": [
+                  {
+                    "value": "NE",
+                    "assignment": "North"
+                  },
+                  {
+                    "value": "NW",
+                    "assignment": "North"
+                  },
+                  {
+                    "value": "SE",
+                    "assignment": "South"
+                  },
+                  {
+                    "value": "LON",
+                    "assignment": "London"
+                  }
+                ],
+                "default": "Other"
+              },
+              {
+                "banding": "breakpoints",
+                "column": "vehicle_value_k",
+                "outputColumn": "value_band",
+                "rules": [
+                  {
+                    "boundary": "5",
+                    "label": "up to 5k"
+                  },
+                  {
+                    "boundary": "15",
+                    "label": "5k-15k"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "over 15k"
+                  }
+                ],
+                "default": "unknown"
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "rating_bands",
+            "scenario": "nb_batch",
+            "golden": "df = pl.scan_parquet('data/batch_quotes.parquet').with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)\nfrom catboost import CatBoostRegressor\nmodel = CatBoostRegressor()\nmodel.load_model('models/claim_frequency.cbm')\nfeatures = df.collect()\nscores = model.predict(features.select('vehicle_value', 'vehicle_group', 'driver_age').to_pandas())\ndf = features.with_columns(expected_frequency=pl.Series(scores, dtype=pl.Float64))\ndf = df.with_columns(\n    age_band=pl.when(pl.col('driver_age') <= 24).then(pl.lit('17-24')).when(pl.col('driver_age') <= 59).then(pl.lit('25-59')).when(pl.col('driver_age').is_not_null()).then(pl.lit('60+')).otherwise(pl.lit('unknown')),\n    inception_year=pl.when(pl.col('inception_date') <= pl.date(2024, 12, 31)).then(pl.lit('2024')).when(pl.col('inception_date').is_not_null()).then(pl.lit('2025+')).otherwise(pl.lit('unknown')),\n    region=pl.col('region_code').replace_strict({'NE': 'North', 'NW': 'North', 'SE': 'South', 'LON': 'London'}, default=pl.lit('Other')),\n    value_band=pl.when(pl.col('vehicle_value_k') <= 5).then(pl.lit('up to 5k')).when(pl.col('vehicle_value_k') <= 15).then(pl.lit('5k-15k')).when(pl.col('vehicle_value_k').is_not_null()).then(pl.lit('over 15k')).otherwise(pl.lit('unknown')),\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

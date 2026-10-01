@@ -283,14 +283,13 @@ Out of scope:
   fallback. Semantic rules remain handwritten where JSON Schema would obscure
   the product invariant or produce unstable user-facing failures.
 
-## Assistant provider qualification
+## Assistant evaluation
 
-Supported assistant provider/model configurations are gated by a separate
-credentialed evaluation lane. Version-controlled held-out semantic and
-adversarial scenarios run repeatedly in isolated temporary projects and are
-scored against a closed support matrix. Deterministic CI validates the harness,
-fixture separation, aggregation, attribution, and zero-tolerance safety rules;
-it does not substitute a scripted provider result for live qualification.
+The assistant's evaluation is owned by the
+[assistant evaluation](../assistant/evaluation.md). Deterministic CI replays
+every case's reference trajectory through the real tools; live runs against a
+configured provider are on demand and never substitute for, or are substituted
+by, a scripted result.
 
 ## Interactions
 

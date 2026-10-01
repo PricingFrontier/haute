@@ -1,0 +1,37 @@
+{
+  "schema_version": 3,
+  "id": "motor_frequency_cap",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "model_score",
+  "split": "development",
+  "turns": [
+    {
+      "request": "After claim_frequency scores, cap expected_frequency at 0.25 so one quote cannot carry an extreme frequency.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "modelScore"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "claim_frequency"
+        ],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "claim_frequency",
+            "scenario": "nb_batch",
+            "golden": "df = pl.scan_parquet('data/batch_quotes.parquet').with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)\nfrom catboost import CatBoostRegressor\nmodel = CatBoostRegressor()\nmodel.load_model('models/claim_frequency.cbm')\nfeatures = df.collect()\nscores = model.predict(features.select('vehicle_value', 'vehicle_group', 'driver_age').to_pandas())\ndf = features.with_columns(expected_frequency=pl.Series(scores, dtype=pl.Float64)).with_columns(pl.col('expected_frequency').clip(upper_bound=0.25))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

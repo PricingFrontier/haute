@@ -1,0 +1,63 @@
+{
+  "schema_version": 3,
+  "id": "motor_online_optimiser",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "optimiser",
+  "split": "holdout",
+  "turns": [
+    {
+      "request": "Set up an online price optimisation after base_premium. Expand each quote into 5 price scenarios as price_factor from 0.9 to 1.1, and in each scenario estimate volume as 1.5 minus price_factor and expected_income as premium times price_factor times volume. Then optimise expected_income keeping total volume at least 95% of its baseline, with 50 iterations and a tolerance of 1e-6.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "scenarioExpander",
+          "optimiser"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "base_premium",
+            "target": "price_scenarios",
+            "target_handle": null
+          },
+          {
+            "source": "price_scenarios",
+            "target": "price_optimiser",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "price_scenarios": {
+            "stepCount": 5,
+            "step_column": "scenario_index",
+            "column_name": "price_factor",
+            "min_value": 0.9,
+            "max_value": 1.1,
+            "quote_id": "quote_id"
+          },
+          "price_optimiser": {
+            "mode": "online",
+            "objective": "expected_income",
+            "constraints": {
+              "volume": {
+                "min_pct": 0.95
+              }
+            },
+            "quote_id": "quote_id",
+            "scenario_index": "scenario_index",
+            "scenario_value": "price_factor",
+            "max_iter": 50,
+            "tolerance": 1e-06
+          }
+        },
+        "execution": [],
+        "efficiency": null
+      }
+    }
+  ]
+}

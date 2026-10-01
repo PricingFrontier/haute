@@ -1,0 +1,57 @@
+{
+  "schema_version": 3,
+  "id": "motor_renewal_scenario",
+  "fixture_version": "1",
+  "project_fixture": "motor_pricing",
+  "area": "source_switch",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Add the renewal batch in data/renewal_quotes.parquet as a third source on the policies switch, selected by the renewal_batch scenario.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataInput",
+          "liveSwitch"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "renewal_quotes",
+            "target": "policies",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "policies"
+        ],
+        "node_configs": {
+          "policies": {
+            "input_scenario_map": {
+              "quotes": "live",
+              "batch_quotes": "nb_batch",
+              "renewal_quotes": "renewal_batch"
+            },
+            "inputs": [
+              "quotes",
+              "batch_quotes",
+              "renewal_quotes"
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "rating_features",
+            "scenario": "renewal_batch",
+            "golden": "df = pl.scan_parquet('data/renewal_quotes.parquet').with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

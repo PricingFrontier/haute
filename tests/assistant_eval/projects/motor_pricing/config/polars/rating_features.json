@@ -1,0 +1,14 @@
+{
+  "steps": [
+    {
+      "id": "start",
+      "kind": "source",
+      "input": "policies"
+    },
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Derive the driver's age at inception and the vehicle value in thousands\ndf = df.with_columns(\n    driver_age=((pl.col('inception_date') - pl.col('date_of_birth')).dt.total_days() // 365).cast(pl.Int64),\n    vehicle_value_k=(pl.col('vehicle_value') / 1000).round(1),\n)"
+    }
+  ]
+}

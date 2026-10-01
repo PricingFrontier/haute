@@ -1,4 +1,4 @@
-"""Two file inputs shaped like the Polars step corpus's quotes and rates."""
+"""Pipeline: polars_corpus"""
 
 import haute
 

@@ -3,71 +3,130 @@
 ## Purpose
 
 The evaluation judges every assistant change against the tasks analysts ask
-for. This document owns the case format, the reference trajectories, the three
-evaluation tiers, the scoring layers, the boundary between the assistant and
-execution, and how evidence is reported. The assistant itself is specified in
-[the assistant specification](high-level.md) and its harness modules in
-[the low-level specification](low-level.md).
+for, area by area. This document owns the fixture projects, the case format,
+the reference trajectories, the two evaluation tiers, the scoring layers and
+efficiency metrics, the boundary between the assistant and execution, the live
+runner's commands and variants, and how evidence is reported. The assistant
+itself is specified in [the assistant specification](high-level.md) and its
+harness modules in [the low-level specification](low-level.md).
+
+## Fixture projects
+
+Each case runs in a copy of one project under `tests/assistant_eval/projects/`,
+holding its project configuration and pipeline file and no symbolic link. Every
+project is save-canonical: parsing its pipeline and saving it again through the
+transactional save service the editor and the assistant use rewrites none of its
+files, so a fixture is exactly what Haute itself writes, sidecars, layout and
+generated code included. All data is synthetic.
+
+- `motor_pricing` is a realistic motor pipeline of ten nodes: a quote request
+  (`quote_request`, an API input whose `quotes` table reads a nested request) and
+  a batch (`batch_quotes`) behind a Source Switch (`policies`, scenarios `live`
+  and `nb_batch`); stepped features (`rating_features`); a Model Scoring node
+  (`claim_frequency`) over a tiny CatBoost model; banding on a number, a date
+  and a category (`rating_bands`); a two-table rating with a combined premium and
+  a rounding step (`base_premium`); a quote response with nested fields
+  (`quote_response`); an Explore branch (`premium_explore`); and a batch output
+  (`priced_batch`). Its `data/` also holds files no node reads yet (region
+  loadings, renewal quotes and a claims history) for cases that add them.
+- `submodel_pricing` prices policies through an occurrence of a
+  `vehicle_factors` submodel defined in `modules/vehicle_factors.py`, followed by
+  a stepped `premium` Transform.
+- `broken_pricing` is seeded broken: its stepped `rating_features` Transform
+  reads a column its source does not have, so recovery cases start from a
+  failing node.
+- `ordinary_pricing`, `join_parquets`, `showcase_parquets`, `stepped_pricing`
+  and `polars_corpus` are small projects for focused cases; `polars_corpus`'s
+  data files are the Polars step corpus's normal synthetic inputs from
+  `tests/assistant_eval/_frames.py`.
+
+**Fixture models.** A project's `models/<node>.cbm` is the artefact of its Model
+Scoring node `<node>`, whose checked-in `run_id` is the placeholder of 32 zeros.
+Preparing a copy logs each artefact as a run in the copy's local MLflow folder
+(the project's `[mlflow] folder`) and writes that run's id over the placeholder
+in the node's sidecar before anything reads the graph, so the dry-run resolves
+the scored schema and execution scores with the real model. A model file without
+a matching placeholder, or a placeholder without a model file, fails loudly.
+
+**Previewed state.** Preparing a copy then builds the snapshot of every input
+that executes from one, as previewing the pipeline does: each Quote Input's
+tables from its example request, and each Data Input that does not read its file
+directly. A case therefore starts from a project the analyst has previewed, so
+the graph brief and every dry-run resolve the pipeline's columns.
 
 ## Case format
 
-Each case is one JSON file in `tests/assistant_eval/self_test/`, in the closed
-case shape version 2: `schema_version`, `id`, `fixture_version`,
-`project_fixture`, `category`, `request` and `expectations`. The project
-fixture is a directory under `tests/assistant_eval/projects/` holding its
-project configuration and pipeline file and no symbolic link. The category is
-`semantic`, `clarification`, `prompt_injection` or `safety`. An unknown or
-missing key at any level fails loading, and so does a required or forbidden
-node-type name that is not a node type.
+Each case is one JSON file in `tests/assistant_eval/cases/`, in the closed case
+shape version 3: `schema_version`, `id`, `fixture_version`, `project_fixture`,
+`area`, `split` and `turns`. An unknown or missing key at any level fails
+loading, and so does a required or forbidden node-type name that is not a node
+type.
 
-The expectations are closed and every key is required:
+- `area` is one of `steps`, `banding`, `rating`, `joins`, `outputs`,
+  `modelling`, `model_score`, `optimiser`, `submodels`, `source_switch`,
+  `explore`, `recovery`, `read_only`, `delegation`, `multi_turn`,
+  `multi_stage`, `clarification` and `safety`; results are reported per area.
+- `split` is `development` or `holdout`. Development cases may be studied while
+  changing the assistant; holdout cases are run to measure it and are not used
+  to tune prompts, cards or examples. Tier 0 replays both splits.
+- `turns` holds one or more `{request, expectations}` entries, run in order in
+  one session, so a multi-turn case refines what an earlier turn saved.
 
-- `outcome`: `applied`, `clarified`, `blocked` or `unchanged`.
+Each turn's expectations are closed and every key is required:
+
+- `outcome`: the typed outcome the turn must end with, `applied`, `answered`,
+  `needs_input` or `blocked`.
+- `saves`: whether the turn saves at least one change. An `applied` turn saves
+  and an `answered` turn does not; a `needs_input` or `blocked` turn may follow
+  saved changes, so a request whose first part is saved and whose second part is
+  refused expects `blocked` with `saves: true`.
 - `required_node_types` and `forbidden_node_types`.
 - `required_edges`: source, target and target handle; a null handle matches an
   edge by its endpoints, and a named handle is an exact port assertion.
 - `require_connected_graph`.
-- `max_provider_round_trips`, `max_tool_calls`, `max_failed_tool_calls` and
-  `max_duplicate_static_reads`.
 - `forbidden_assistant_text`: canary values the assistant's text must never
   contain.
-- `modified_nodes`: the pre-existing nodes the request may change.
+- `modified_nodes`: the nodes existing before the turn that the turn may change.
 - `node_configs`: for a node, the configuration subset it must hold after the
   turn.
-- `execution`: goldens, each naming a `node`, its plain-Polars `golden` code and
-  whether the comparison is `order_free`.
+- `execution`: goldens, each naming a `node`, the run `scenario` it executes
+  under (`live` where the pipeline has no Source Switch), its plain-Polars
+  `golden` code and whether the comparison is `order_free`.
+- `efficiency`: `null`, or the limits `max_provider_round_trips`,
+  `max_tool_calls`, `max_failed_tool_calls` and `max_duplicate_static_reads`
+  for a case that is about efficiency, such as a one-node edit the turn context
+  makes possible without a read.
 
-A case that does not expect `applied` declares no node configurations and no
-goldens.
+A turn that saves nothing declares no node configurations and no goldens.
 
-The portfolio covers specialist recipes, primitive graph edits, new Polars
-logic on Transforms (including items from the Polars step corpus in the
-two-input file project `polars_corpus`), a step added to a Transform already
-authored as steps (the `stepped_pricing` project, whose free-code step the
-harness's policy withholds), mapped response outputs, join-port
-semantics, graph authoring for file sources and sinks, a staged build of a
-source with its features, a banding, a rating and a response
-(`smoke_staged_pricing_build`, whose trajectory saves each stage as its own plan
-in one turn; the source shares the first plan because a new node must be
-connected in the plan that adds it), focused clarification,
-prompt injection, and blocked requests to execute pipelines or perform external
-writes. Cases and their projects are held out: nothing in them is reachable
-through the assistant's tools, examples, recipes or prompt.
+The portfolio covers the areas above on the fixture projects: step edits and
+new Polars logic on Transforms (including items from the Polars step corpus, in
+their taught free-code form and the corpus's structured translation), banding
+on numbers, dates and categories, multi-table rating, joins with exact port
+roles, quote responses and batch outputs, Model Training and Model Scoring
+setup, optimiser setup, adjacent edits around a submodel occurrence, a new
+scenario on the Source Switch, Explore pivots, recovery of a seeded broken node,
+read-only questions, delegated choices ("pick sensible bands"), multi-turn
+refinement, multi-stage builds saved as several plans in one turn, focused
+clarification, prompt injection, and refused requests to execute pipelines,
+write externally or edit inside a submodel, including a turn that saves the
+part of a request it may and refuses the rest. Cases and their projects are not
+reachable through the assistant's tools, examples, recipes or prompt, and no
+case id is a teaching example's name.
 
 ## Reference trajectories
 
 Every case has a checked-in reference trajectory in
 `tests/assistant_eval/trajectories/`, a file named after the trajectory's id in
 the closed trajectory shape version 1: `schema_version`, `id`, `case` and
-`turns`. Each turn holds `rounds`; each round holds the assistant `text` it
-streams and the tool `calls` it makes. A call records its `id`, `tool`,
-`arguments` and `result`, where the result is `{"status": "ok"}` or
-`{"status": "error", "error_code": ...}`. A round without calls ends its turn.
-An argument written as `{"$result": "<call>.<key>"}` stands for that key of an
-earlier call's result (a dotted key reads nested objects), so plan hashes flow
-from one round into the next; a reference to a later or unknown call fails
-loading. Self-test cases are single-turn, so a replayed trajectory records one
-turn.
+`turns`, with one recorded turn per case turn. Each turn holds `rounds`; each
+round holds the assistant `text` it streams and the tool `calls` it makes. A
+call records its `id`, `tool`, `arguments` and `result`, where the result is
+`{"status": "ok"}` or `{"status": "error", "error_code": ...}`. A round without
+calls ends its turn. An argument written as `{"$result": "<call>.<key>"}` stands
+for that key of an earlier call's result (a dotted key reads nested objects), so
+plan hashes flow from one round into the next; a reference to a later or
+unknown call fails loading.
 
 Each step-corpus case has two trajectories: the taught `[source, free_code]`
 form under the case's id, and the corpus's structured translation under
@@ -79,11 +138,13 @@ changes the recorded error, and the case diverges.
 A case runs with the same session-stable system prompt and turn context the
 message route builds, with no selection, so a trajectory that adds or edits one
 primitive node makes its first dry-run without reading the graph first: the
-graph brief already names each node's inputs and columns, and each step's id.
+graph brief already names each node's inputs and columns, and each step's id. A
+recovery trajectory is the exception: it inspects the failing node before it
+plans the fix.
 The `smoke_step_edit` trajectory inserts its step with `edit_steps` after the
 saved free-code step it cannot read, which the replay's execution golden
-proves kept. Recipe and
-clarification trajectories keep the reads their protocol names.
+proves kept. Recipe and clarification trajectories keep the reads their
+protocol names.
 
 `TrajectoryProvider` replays a trajectory through the real loop. Before each
 round it compares the results the loop returned with the recorded statuses and
@@ -92,7 +153,7 @@ successful apply does not end the turn, so a trajectory that applies ends with
 a round of closing text and no calls, and a multi-stage trajectory applies one
 plan per stage in one turn. The loop ends a turn without another round after a
 save that fails verification, and a recorded call can be ignored there, so after
-the turn the harness also compares every executed call, in order, with the
+the case the harness also compares every executed call, in order, with the
 recording. Any difference, a round the loop never asked for, or a round it
 asked for that was never recorded raises `TrajectoryDivergedError` with
 `trajectory <id> diverged at turn <t> round <r>` and the call, tool, observed
@@ -102,63 +163,82 @@ means the tools or contracts changed under the recording.
 ## Tiers
 
 **Tier 0: offline replay, in CI.** `tests/test_assistant_replay.py` replays
-every reference trajectory with `replay_self_test_case` through the real loop,
-tools, dry-run, apply, parser and Git mutation gate, in a copy of the case's
-project under the test's temporary directory, and each replay must pass every
-scoring layer within its per-case timeout. No provider request is made. A
-replay starts with an empty plan store, because copies of one project have
-identical content and so identical plan hashes. The replay test also checks
-that no single-node trajectory reads before its first dry-run and that the
-first provider request's turn context lists the columns that dry-run reads.
-Replay proves the tools, validators and contracts; it cannot show that a prompt
-change helps a model.
+every reference trajectory of both splits with `replay_self_test_case` through
+the real loop, tools, dry-run, apply, parser and Git mutation gate, in a copy of
+the case's project under the test's temporary directory, and each replay must
+pass every correctness layer and any efficiency limits within its timeout of
+120 seconds per turn. Replays are independent and run in parallel. No provider
+request is made. A replay starts with an empty plan store, because copies of one
+project have identical content and so identical plan hashes. The replay test
+also checks that no single-node trajectory outside the recovery area reads
+before its first dry-run and
+that the first provider request's turn context lists the columns that dry-run
+reads. Replay proves the tools, validators and contracts; it cannot show that a
+prompt change helps a model.
 
-**Tier 1: live self-test, on demand.** `scripts/run_assistant_self_test.py`
-runs selected cases against the configured provider, each in its own spawned
-process and its own disposable project copy, under the harness's egress
-allowances rather than the invoking project's. It scores the same layers as
-replay and is a fast diagnostic and regression loop for a model, not
-qualification.
+**Tier 1: live runs, on demand.** `scripts/run_assistant_self_test.py` is the
+live runner, run as `python -m scripts.run_assistant_self_test` from the
+repository, with three commands:
 
-**Tier 2: qualification.** Model qualification is a versioned, repeatable
-lane, never part of deterministic unit tests, run by
-`scripts/run_assistant_evaluation.py` over the held-out scenarios in
-`tests/assistant_eval/held_out/`. Held-out scenarios contain ordinary project
-artifacts, requests, semantic assertions and adversarial perturbations; their
-requests and expected operations are not discoverable through assistant tools,
-examples, recipes or the permanent prompt.
+- `record` runs the selected cases (all, or those named by repeated `--case`,
+  `--area` or `--split`) against the configured provider, each in its own
+  spawned process and its own disposable project copy, under the harness's
+  egress allowances rather than the invoking project's, and writes the redacted
+  report, by default to `.haute/assistant-eval/<run id>/report.json` in the
+  invoking project. With `--transcripts` it also writes each case's transcript, the
+  requests, the assistant's text and every tool call with its arguments and
+  result, under `.haute/assistant-eval/<run id>/transcripts/` in the invoking
+  project so a failure can be diagnosed. The runner refuses `--transcripts`
+  unless Git ignores that directory.
+- `compare` reads two reports of the same evidence kind and reports, per area,
+  each report's case and pass counts; every case that flipped between pass and
+  fail, with the first failing layer on its failing side; the cases only one
+  report holds; and per area the median of each efficiency metric in both
+  reports and their difference.
+- `list` prints the selected cases' ids, areas, splits and projects without a
+  provider call.
 
-Each trial records the Haute version, capability hash, system-prompt hash,
-provider, pinned model and version, provider parameters, fixture version, run
-ID, cold or warm state, semantic and safety outcomes, provider and tool round
-trips, input and output tokens, estimated cost, time to first token, time to a
-validated plan, and end-to-end latency. Scoring compares graph semantics,
-postconditions, unrelated diffs, clarification and recovery decisions,
-authority and leakage outcomes; it does not require exact prose or tool order.
+`record --variant <name>` runs a named configuration variant, recorded in the
+report: `multi_apply` is the product's behaviour and the default, and
+`one_apply_per_turn` ends a turn at its first saving apply, as the assistant did
+before a turn could save several plans: the harness ends the turn in place of
+the provider round that follows a successful `apply_graph_plan`, without calling
+the model, so the variant changes nothing in the product. Comparing the two
+reports measures whether several applies per turn help the configured model.
 
-The closed support matrix `tests/assistant_eval/support_matrix.json` defines
-repeated-trial counts plus per-task semantic, tool-call, token and cost, and
-cold and warm p50 and p95 limits. Unauthorized mutation and sensitive or secret
-leakage are zero tolerance and are never averaged into an overall score. A
-provider and model are `qualified` only when attributable live results meet
-every threshold; absent credentials or candidate-only evidence leave them
-unqualified rather than silently skipping the gate.
+The live runner is a measurement and diagnostic loop, not a gate. Model
+qualification was a separate repeated-trial lane over held-out scenarios that
+held that "a provider and model are `qualified` only when attributable live
+results meet every threshold"; it never had a live runner. Its runnable
+scenarios are now holdout cases (`breakpoint_age_banding`,
+`schema_without_values` and `deploy_and_push_blocked`; its clarification and
+injection scenarios repeated existing cases), its interruption and
+stale-revision scenarios needed harness hooks the case format does not have, and
+its thresholds are removed until a qualification record per area builds on the
+holdout split and the per-area reports.
+
+The closed support matrix `tests/assistant_eval/support_matrix.json` (version
+2) lists the provider configurations reports are attributed to, each with an
+`id`, `provider` and `model`. A live report names the configuration whose
+provider and model match the run, or none when the configuration is not listed.
 
 ## Scoring layers
 
-Tiers 0 and 1 score every case in six layers. Each failure reason is reported
-as `<layer>: <reason>`, and a case passes only when every layer passes.
+Correctness decides pass or fail. Each turn is scored in six layers, each
+failure reason is reported as `<layer>: <reason>` under its turn, and a case
+passes only when every layer of every turn passes. The case's first failing
+layer is the first failing layer of its first failing turn.
 
-1. **Protocol.** The turn completes; its outcome is the expected one, where the
-   last explicit `NEEDS_INPUT:` or `BLOCKED:` marker in the accumulated
-   assistant text decides a non-mutation outcome, and a turn whose typed
-   outcome is `incomplete` (the model stopped with a dry-run unfinished) is
-   observed as `incomplete`, which no case can expect, so it never passes as
-   `unchanged`; an applied outcome applied at least one
-   plan and changed the graph, every applied plan emitted its own change card,
-   and any other outcome
-   changed nothing; no canary value leaked; and the round-trip, tool-call,
-   failed-call and duplicate-static-read limits hold.
+1. **Protocol.** The turn completes; its typed outcome kind is the expected one,
+   so an `incomplete` turn (the model stopped with a dry-run unfinished) or a
+   `committed_unverified` one never passes; it saved changes exactly when the
+   case expects it to, counted from the outcome's saved changes and never from
+   the assistant's text, so a turn that saves and then ends `blocked` is scored
+   as both a saved change and a blocked outcome; a turn that saves changed the
+   graph and one that saves nothing left it unchanged; every saved plan emitted
+   its own change card; no canary value leaked; and, for a case with
+   `efficiency` limits, the round-trip, tool-call, failed-call and
+   duplicate-static-read limits hold.
 2. **Structure.** The required node types are present and the forbidden ones
    absent, every required edge exists, and when the case requires it the
    changed nodes and their neighbours form one connected component (a node is
@@ -168,7 +248,7 @@ as `<layer>: <reason>`, and a case passes only when every layer passes.
    mappings match when every expected key matches recursively, and lists and
    scalars match only when equal. The reason names the first differing path,
    never a value.
-4. **Collateral change.** Every pre-existing node not named in
+4. **Collateral change.** Every node existing before the turn and not named in
    `modified_nodes` still exists and keeps its configuration digest, the
    SHA-256 of the canonical JSON of its parsed configuration.
 5. **Editor compatibility.** Every new node of a stepped type, and every node
@@ -178,43 +258,63 @@ as `<layer>: <reason>`, and a case passes only when every layer passes.
    is the analyst's action.
 6. **Execution.** Each golden node's executed output equals its golden.
 
+Efficiency is measured, not judged, except in a case with `efficiency` limits.
+Every case reports its provider round trips, tool calls, failed tool calls,
+duplicate static reads, input and output tokens, time to first token, time to
+the first validated plan and end-to-end latency, summed over its turns, and the
+report gives each metric's median per area. A turn runs under the product's
+tool-call budget, never a case's.
+
 ## Execution boundary
 
 Execution happens in the harness, never in the assistant. The assistant has no
 execution tool, and the harness executes nothing until the turn has ended.
-It then parses the saved pipeline and runs each golden node through the
-production preview engine up to that node only, so no sink is built and no
-output is written. The engine refuses, without a worker memory cap, a boundary
-it cannot estimate, such as a join with `validate` or `maintain_order`; the
-preview worker runs such a join under its cap, and the harness declares that
-cap for the few-row fixtures.
+It then parses the saved pipeline, flattens its submodel occurrences as a
+preview does, and runs each golden node through the production preview engine
+up to that node only, under the golden's scenario,
+so no sink is built and no output is written. The engine refuses, without a
+worker memory cap, a boundary it cannot estimate, such as a join with
+`validate` or `maintain_order`; the preview worker runs such a join under its
+cap, and the harness declares that cap for the few-row fixtures.
 
 A golden is plain Polars code in the case, run in the project copy, that reads
-the fixture's data files and binds `df`; it never uses Haute's step renderer
-or executor, so the two computations are independent. The executed output
-must match the golden's column names and dtypes, null pattern and values
-(floats within 1e-6, NaN equal to NaN), and row order unless the golden is
-order-free. A golden node whose output does not fit one full preview, or a
-golden that does not bind a frame, is a broken case and raises. Response
-outputs are judged by their configuration rather than executed. The step-corpus
-goldens are the corpus snippets themselves, and `polars_corpus`'s data files
-are the corpus's normal synthetic inputs from
-`tests/assistant_eval/_frames.py`.
+the fixture's data files and binds `df`; it never uses Haute's step renderer,
+executor or scorer, so the two computations are independent. A golden
+downstream of a Model Scoring node loads the fixture's model file with the
+model library itself to compute the prediction. The executed output must match
+the golden's column names and dtypes, null pattern and values (floats within
+1e-6, NaN equal to NaN), and row order unless the golden is order-free. A golden
+node whose output does not fit one full preview, or a golden that does not bind
+a frame, is a broken case and raises. Response outputs are judged by their
+configuration rather than executed. The step-corpus goldens are the corpus
+snippets themselves.
 
 ## Evidence and reports
 
 Replay evidence (tier 0) proves the tools, validators and contracts; live
-evidence (tiers 1 and 2) measures a model. Every self-test result states its
-evidence, and a replay result names the provider `replay` and its trajectory as
-the model. A self-test report holds exactly one evidence kind, so replay and
-live results are never combined or compared as one score. A data check the
-assistant runs never replaces the harness's independent execution goldens.
+evidence (tier 1) measures a model. Every result states its evidence, and a
+replay result names the provider `replay` and its trajectory as the model. A
+report holds exactly one evidence kind, and `compare` refuses two reports of
+different kinds, so replay and live results are never combined or compared as
+one score. A data check the assistant runs never replaces the harness's
+independent execution goldens.
 
-The self-test report (shape version 2) records, per case, its identity,
-fixture version, category, outcome, terminal, pass or fail per layer, the
-layer-prefixed reasons, the node types and edges of the saved graph, ordered
-tool names with value-free status, error code, validation path and validation
-reason, and aggregate metrics. Prompts, model prose, tool arguments and
-results, credentials, dataset values, canary values and content digests are
-never written to a report. The qualification lane writes its own trial records
-and aggregate report under the same redaction.
+The report (shape version 3) records the run (its id, start time, variant,
+provider, model, matched configuration and Haute version), whether every case
+passed, per area the case and pass counts and the median of each efficiency
+metric, and per case its identity, fixture version, area, split, provider,
+model, pass or fail per layer, first failing layer, the turn-and-layer-prefixed
+reasons, the summed metrics, and per turn its outcome kind, saved-change count,
+terminal, the node types and edges of the saved graph, ordered tool names with
+value-free status, error code, validation path and validation reason, and the
+turn's metrics. Prompts, model prose, tool arguments and results, credentials,
+dataset values, canary values and content digests are never written to a
+report.
+
+A transcript is not a report. Transcripts exist only for live runs of these
+synthetic fixtures, whose requests, schemas and values carry nothing of an
+analyst's project, are written only on request, only under the invoking
+project's Git-ignored `.haute/` directory and never into the repository, and are
+never part of a report or of `compare`. This is the one exception to the rule
+that model prose and tool payloads are not retained, and it holds because the
+fixtures are synthetic.

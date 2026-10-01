@@ -1,0 +1,15 @@
+{
+  "factors": [
+    {
+      "banding": "breakpoints",
+      "column": "vehicle_age",
+      "outputColumn": "vehicle_age_band",
+      "rules": {
+        "3": "new",
+        "10": "mid",
+        "": "old"
+      },
+      "default": "unknown"
+    }
+  ]
+}

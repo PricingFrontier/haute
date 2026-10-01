@@ -1,0 +1,62 @@
+{
+  "schema_version": 3,
+  "id": "breakpoint_age_banding",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "area": "banding",
+  "split": "holdout",
+  "turns": [
+    {
+      "request": "After quotes, add age_band: band driver_age into driver_age_band with a breakpoint at 25, so ages up to and including 25 are young and older ages are experienced, with unknown as the default.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "age_band",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "age_band": {
+            "factors": [
+              {
+                "banding": "breakpoints",
+                "column": "driver_age",
+                "outputColumn": "driver_age_band",
+                "rules": [
+                  {
+                    "boundary": "25",
+                    "label": "young"
+                  },
+                  {
+                    "boundary": "",
+                    "label": "experienced"
+                  }
+                ],
+                "default": "unknown"
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "age_band",
+            "scenario": "live",
+            "golden": "df = pl.scan_csv('data/quotes.csv').with_columns(\n    driver_age_band=pl.when(pl.col('driver_age') <= 25).then(pl.lit('young')).when(pl.col('driver_age').is_not_null()).then(pl.lit('experienced')).otherwise(pl.lit('unknown')),\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

@@ -856,19 +856,26 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
 
     flat = flatten_graph(graph)
     flat_ids = frozenset(node.id for node in flat.nodes)
-    resolved: dict[str, tuple[object | None, Exception | None]] = {}
+    outputs: Mapping[str, object] = {}
     try:
         outputs = _resolve_schema_outputs(flat, graph, target=None, preserve=flat_ids)
-        resolved = {node_id: (outputs[node_id], None) for node_id in flat_ids if node_id in outputs}
     except Exception as exc:  # noqa: BLE001 - each node then resolves on its own
         logger.info("assistant_turn_context_graph_unresolved", error=type(exc).__name__)
+    resolved: dict[str, tuple[object | None, Exception | None]] = {}
 
     def output_of(node_id: str) -> tuple[object | None, Exception | None]:
         if node_id not in resolved:
             try:
-                output = _resolve_schema_outputs(
-                    flat, graph, target=node_id, preserve=frozenset({node_id})
-                )[node_id]
+                output = (
+                    outputs[node_id]
+                    if node_id in outputs
+                    else _resolve_schema_outputs(
+                        flat, graph, target=node_id, preserve=frozenset({node_id})
+                    )[node_id]
+                )
+                # A lazy frame raises a column its plan reads but its input lacks
+                # only when its schema is read, after resolution has returned.
+                _brief_frames(output)
                 resolved[node_id] = (output, None)
             except Exception as exc:  # noqa: BLE001 - an unresolved node is reported as such
                 logger.info(

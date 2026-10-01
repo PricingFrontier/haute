@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import textwrap
 import threading
 import time
 from collections.abc import Mapping
@@ -3897,6 +3898,59 @@ class TestTurnContext:
         text = render_turn_context(context)
         assert _row_values_in(text) == []
         assert "Error" not in text
+
+    def test_a_column_its_input_lacks_leaves_the_node_unresolved_not_the_brief_failing(
+        self, project_root: Path
+    ):
+        """Polars raises a missing column only when the lazy schema is read, after
+        resolution returned: the node and what reads it are unresolved, the rest
+        of the brief resolves, and the turn context still builds."""
+
+        from haute.assistant._render import render_turn_context
+        from haute.assistant._tools import build_turn_context
+
+        (project_root / "main.py").write_text(
+            textwrap.dedent(
+                """\
+                import polars as pl
+
+                import haute
+
+                pipeline = haute.Pipeline("main", description="missing column")
+
+
+                @pipeline.polars
+                def quotes() -> pl.LazyFrame:
+                    return pl.scan_parquet("data/quotes.parquet")
+
+
+                @pipeline.polars
+                def aged(quotes: pl.LazyFrame) -> pl.LazyFrame:
+                    return quotes.with_columns(vehicle_age=2025 - pl.col("vehicle_yr"))
+
+
+                @pipeline.polars
+                def banded(aged: pl.LazyFrame) -> pl.LazyFrame:
+                    return aged
+
+
+                pipeline.connect("quotes", "aged")
+                pipeline.connect("aged", "banded")
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        context = build_turn_context("main.py", _turn_policy(max_sensitivity="restricted"))
+
+        assert context.graph is not None
+        nodes = {node.id: node for node in context.graph.nodes}
+        assert nodes["quotes"].outputs is not None
+        assert nodes["aged"].inputs[0].columns == ("quote_id", "vehicle_year", "notes")
+        assert nodes["aged"].outputs is None
+        assert nodes["banded"].inputs[0].columns is None
+        assert nodes["banded"].outputs is None
+        assert "vehicle_yr" not in render_turn_context(context)
 
     def test_the_preview_error_is_reduced_unless_row_samples_are_permitted(
         self, egress_project: Path

@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "id": "motor_region_loading_join",
+  "case": "motor_region_loading_join",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "find",
+              "tool": "find_data",
+              "arguments": {
+                "directory": "data",
+                "path": "data/region_loadings.parquet"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Left-join the region loadings onto the rated quotes as loaded_quotes.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "region_loadings",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/region_loadings.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "edgeJoin",
+                    "name": "loaded_quotes",
+                    "config": {
+                      "how": "left",
+                      "leftOn": [
+                        "region_code"
+                      ],
+                      "rightOn": [
+                        "code"
+                      ],
+                      "validate": "m:1"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "base_premium",
+                    "target": "loaded_quotes",
+                    "target_handle": "base"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "region_loadings",
+                    "target": "loaded_quotes",
+                    "target_handle": "join"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

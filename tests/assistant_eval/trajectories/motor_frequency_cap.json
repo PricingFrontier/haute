@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "motor_frequency_cap",
+  "case": "motor_frequency_cap",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Cap the scored expected_frequency at 0.25 in claim_frequency.",
+                "ops": [
+                  {
+                    "op": "edit_steps",
+                    "node": "claim_frequency",
+                    "edits": [
+                      {
+                        "insert_after": null,
+                        "step": {
+                          "kind": "free_code",
+                          "code": "# Cap the expected frequency\ndf = df.with_columns(pl.col('expected_frequency').clip(upper_bound=0.25))"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

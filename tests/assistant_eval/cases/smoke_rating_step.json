@@ -1,0 +1,98 @@
+{
+  "schema_version": 3,
+  "id": "smoke_rating_step",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "area": "rating",
+  "split": "development",
+  "turns": [
+    {
+      "request": "After quotes, add a rating step named age_rating. Use one table with factor driver_age, output age_factor, rows 20 -> 1.3 and 40 -> 1.0, and default 1.0. Add combined output technical_premium using multiply with base value 100. Then add a response output named age_price_response containing quote_id, age_factor, and technical_premium.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "ratingStep",
+          "output"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "age_rating",
+            "target_handle": null
+          },
+          {
+            "source": "age_rating",
+            "target": "age_price_response",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "age_rating": {
+            "tables": [
+              {
+                "factors": [
+                  "driver_age"
+                ],
+                "outputColumn": "age_factor",
+                "entries": [
+                  {
+                    "driver_age": 20,
+                    "value": 1.3
+                  },
+                  {
+                    "driver_age": 40,
+                    "value": 1.0
+                  }
+                ],
+                "defaultValue": 1.0
+              }
+            ],
+            "combinedOutputs": [
+              {
+                "outputColumn": "technical_premium",
+                "operation": "multiply",
+                "baseValue": 100.0
+              }
+            ]
+          },
+          "age_price_response": {
+            "outputMapping": [
+              {
+                "source_port": "age_rating",
+                "source_column": "quote_id",
+                "output_path": "$[:].quote_id",
+                "enabled": true
+              },
+              {
+                "source_port": "age_rating",
+                "source_column": "age_factor",
+                "output_path": "$[:].age_factor",
+                "enabled": true
+              },
+              {
+                "source_port": "age_rating",
+                "source_column": "technical_premium",
+                "output_path": "$[:].technical_premium",
+                "enabled": true
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "age_rating",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_csv('data/quotes.csv')\ndf = quotes.with_columns(\n    pl.when(pl.col('driver_age') == 20).then(pl.lit(1.3))\n    .when(pl.col('driver_age') == 40).then(pl.lit(1.0))\n    .otherwise(pl.lit(1.0))\n    .alias('age_factor')\n).with_columns((pl.lit(100.0) * pl.col('age_factor')).alias('technical_premium'))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

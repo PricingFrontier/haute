@@ -1,0 +1,142 @@
+{
+  "schema_version": 3,
+  "id": "smoke_staged_pricing_build",
+  "fixture_version": "1",
+  "project_fixture": "showcase_parquets",
+  "area": "multi_stage",
+  "split": "development",
+  "turns": [
+    {
+      "request": "Author and save this pricing pipeline only; do not run it. Build it in stages and save each stage before starting the next. First, a file data input named nb_batch that scans data/nb_batch.parquet as Parquet, with a Transform named quote_features after it that adds vehicle_value_k, the vehicle_value divided by 1000. Second, a categorical banding node named region_band after quote_features that bands column region into region_group: north is core, south is outer, and anything else is other. Third, a rating step named region_rating after region_band with one table on factor region_group, output region_factor, core -> 1.1 and outer -> 0.9 with default 1.0, and a combined output technical_premium using multiply with base value 500. Fourth, a response output named quote_response after region_rating containing quote_id, region_factor and technical_premium.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataInput",
+          "polars",
+          "banding",
+          "ratingStep",
+          "output"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "nb_batch",
+            "target": "quote_features",
+            "target_handle": null
+          },
+          {
+            "source": "quote_features",
+            "target": "region_band",
+            "target_handle": null
+          },
+          {
+            "source": "region_band",
+            "target": "region_rating",
+            "target_handle": null
+          },
+          {
+            "source": "region_rating",
+            "target": "quote_response",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "nb_batch": {
+            "inputType": "file",
+            "format": "parquet",
+            "path": "data/nb_batch.parquet"
+          },
+          "region_band": {
+            "factors": [
+              {
+                "banding": "categorical",
+                "column": "region",
+                "outputColumn": "region_group",
+                "rules": [
+                  {
+                    "value": "north",
+                    "assignment": "core"
+                  },
+                  {
+                    "value": "south",
+                    "assignment": "outer"
+                  }
+                ],
+                "default": "other"
+              }
+            ]
+          },
+          "region_rating": {
+            "tables": [
+              {
+                "factors": [
+                  "region_group"
+                ],
+                "outputColumn": "region_factor",
+                "entries": [
+                  {
+                    "region_group": "core",
+                    "value": 1.1
+                  },
+                  {
+                    "region_group": "outer",
+                    "value": 0.9
+                  }
+                ],
+                "defaultValue": 1.0
+              }
+            ],
+            "combinedOutputs": [
+              {
+                "outputColumn": "technical_premium",
+                "operation": "multiply",
+                "baseValue": 500.0
+              }
+            ]
+          },
+          "quote_response": {
+            "outputMapping": [
+              {
+                "source_port": "region_rating",
+                "source_column": "quote_id",
+                "output_path": "$[:].quote_id",
+                "enabled": true
+              },
+              {
+                "source_port": "region_rating",
+                "source_column": "region_factor",
+                "output_path": "$[:].region_factor",
+                "enabled": true
+              },
+              {
+                "source_port": "region_rating",
+                "source_column": "technical_premium",
+                "output_path": "$[:].technical_premium",
+                "enabled": true
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "quote_features",
+            "scenario": "live",
+            "golden": "nb_batch = pl.scan_parquet('data/nb_batch.parquet')\ndf = nb_batch.with_columns((pl.col('vehicle_value') / 1000).alias('vehicle_value_k'))\n",
+            "order_free": false
+          },
+          {
+            "node": "region_rating",
+            "scenario": "live",
+            "golden": "nb_batch = pl.scan_parquet('data/nb_batch.parquet')\ndf = (\n    nb_batch.with_columns((pl.col('vehicle_value') / 1000).alias('vehicle_value_k'))\n    .with_columns(\n        pl.when(pl.col('region') == 'north').then(pl.lit('core'))\n        .when(pl.col('region') == 'south').then(pl.lit('outer'))\n        .otherwise(pl.lit('other'))\n        .alias('region_group')\n    )\n    .with_columns(\n        pl.when(pl.col('region_group') == 'core').then(pl.lit(1.1))\n        .when(pl.col('region_group') == 'outer').then(pl.lit(0.9))\n        .otherwise(pl.lit(1.0))\n        .alias('region_factor')\n    )\n    .with_columns((pl.lit(500.0) * pl.col('region_factor')).alias('technical_premium'))\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null
+      }
+    }
+  ]
+}

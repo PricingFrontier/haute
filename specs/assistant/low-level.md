@@ -12,8 +12,8 @@
 | `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `example_index()` lists only bundles whose manifest sets `teaching: true`, and `load_example(name)` refuses any other name as an unknown example; for a teaching bundle it materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view, its node configurations rendered with their values, with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
 | `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and the deterministic `expand_recipe_operations`, which expands each recipe operation of a dry-run batch in place through `expand_recipe`. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Each expansion is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code with the index of the `recipe` operation. |
 | `src/haute/assistant/_project_knowledge.py` | Source-linked project-knowledge extraction, bounded query selection, and disposable content-addressed index. Derives a saved-graph fact, a value-free `haute.toml` digest fact, and allowlisted UTF-8 documentation evidence; labels unmarked document sensitivity as restricted; records source digest/extraction version/evidence class; filters by `EgressPolicy`; and atomically refreshes metadata-only cache state under `.haute/assistant/knowledge/`. An allowlisted document that is not valid UTF-8 fails the read with a typed, project-relative error instead of silently disappearing. Dataset schemas remain a separate schema-only tool result. |
-| `scripts/run_assistant_evaluation.py` | The development-only qualification harness and its command (it is not part of the installed package): closed evaluation scenario/support-matrix loaders, semantic/safety scorer, repeated-trial attribution, percentile aggregation, and release-gate evaluator. The runner is injected so deterministic tests use fakes and the live-provider lane uses real provider adapters in isolated projects. It never imports or exposes held-out fixtures through production tools. |
-| `scripts/run_assistant_self_test.py` | Developer-facing evaluation harness, outside the installed package, for tiers 0 and 1 of [the assistant evaluation](evaluation.md), and its explicit credentialed command. It loads the closed case format (`load_self_test_cases`) and reference trajectories (`load_trajectories`), copies each case's project fixture into a caller-supplied empty work directory, binds the sandbox project root to that copy for the case and restores it afterwards, writes the harness's pinned egress allowances (not the invoking project's) into the copy, initializes the real Git mutation gate, and runs the provider-neutral loop with the real tool executor (`run_self_test_case`). `TrajectoryProvider` and `replay_self_test_case` replay a trajectory with `$result` substitution and raise `TrajectoryDivergedError` when a tool result's status or error code differs from the recording. After the turn the harness executes the case's golden nodes (`execute_goldens`) and `score_self_test` scores the protocol, structure, configuration, collateral, editor and execution layers; `frames_equal` is the one frame comparison and `config_digest` the per-node configuration digest. The command runs each selected case live in its own spawned process. Reports hold one evidence kind and may retain ordered tool names plus value-free status/error code/validation path/validation reason diagnostics so failed model strategies are actionable. They otherwise record only redacted identities, outcomes, per-layer results, reasons, graph structure, and aggregate metrics; prompts, model prose, tool arguments/results, credentials, dataset values, canary values, and content digests are not written to reports. |
+| `scripts/run_assistant_self_test.py` | Developer-facing evaluation harness, outside the installed package, for both tiers of [the assistant evaluation](evaluation.md), and its live runner. It loads the closed case format v3 (`load_self_test_cases`: area, split and one or more turns, each with its expectations) and reference trajectories (`load_trajectories`), copies each case's project fixture into a caller-supplied empty work directory, logs the fixture's model artefacts into the copy's local MLflow folder and writes their run ids over the Model Scoring placeholders (`prepare_fixture_models`), writes the harness's pinned egress allowances (not the invoking project's) into the copy, binds the sandbox project root to that copy for the case and restores it afterwards, builds every snapshot-backed input's snapshot as a preview does (`prepare_fixture_snapshots`), initializes the real Git mutation gate, and runs every turn of the case in one session through the provider-neutral loop with the real tool executor (`run_self_test_case`). `TrajectoryProvider` and `replay_self_test_case` replay a trajectory with `$result` substitution and raise `TrajectoryDivergedError` when a tool result's status or error code differs from the recording. After each turn the harness executes that turn's golden nodes of the flattened saved graph under their scenarios (`execute_goldens`) and `score_turn` scores the protocol (from the completed event's typed outcome and its saved changes), structure, configuration, collateral, editor and execution layers and any efficiency limits; `frames_equal` is the one frame comparison and `config_digest` the per-node configuration digest. `VARIANTS` names the configuration variants; the one-apply-per-turn variant is applied by the observed provider, which ends the turn in place of the round after a saving apply. The command (`python -m scripts.run_assistant_self_test`) has `record`, which runs each selected case live in its own spawned process inside a directory the parent removes once that process has exited, and writes the report and, on request, transcripts; `compare` and `list` make no provider call. |
+| `scripts/assistant_eval_report.py` | The evaluation's report and comparison, outside the installed package: `report_payload` builds the closed content-redacted report v3 (run identity, per-area case and pass counts with the median of each efficiency metric, per-case layers, first failing layer, reasons and metrics, per-turn outcome, saved-change count, graph structure and value-free tool diagnostics) from results of one evidence kind, `write_report` writes it atomically, `compare_reports` compares two reports of one evidence kind per area (counts, flips with their first failing layer, cases only one report holds, metric medians and their differences), `write_transcript` writes one live case's local-only transcript, and `load_support_matrix` reads the closed support matrix v2 that attributes a live report to a configuration. |
 | `src/haute/assistant/assets/examples/<id>/manifest.json` | Closed executable-bundle manifest (`schema_version=1`, stable id/version, summary, source, `fast`/`ordinary`/`negative` assertion tier, required `engineering`/`pricing` review class, required boolean `teaching`, and a closed-role resource inventory). `teaching: false` marks a test fixture that is validated and materialised but never offered to the model: `deployment_safety` and `invalid_adversarial` are the test fixtures, every other bundle teaches. Review class records the required discipline rather than asserting approval; model-validation and optimisation fixtures use `pricing`, while purely mechanical fixtures use `engineering`. Every bundle includes its project configuration, source, synthetic input, graph/schema expectations, golden request/output, boundary cases, paired prompts, and semantic assertions. Assertion files have only `target`, non-empty `required_columns`, optional `row_count`, and a non-empty closed `checks` list. Golden arrays retain production row order, so order-unstable operators are followed by an explicit stable pipeline sort rather than normalized by the verifier. Every declared resource resolves inside its bundle, exists, and matches its recorded SHA-256 digest. |
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes written with vectorised Polars expressions, the per-surface `df` rule the system prompt states, what `haute init` scaffolds (a blank pipeline), naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
 | `src/haute/assistant/assets/examples/<id>/pipeline.py` | Every example is a bundle; there is no other example format. The bundle source is parsed as data by `_assets.py`, never imported, and rendered in the same compact graph shape as the get-pipeline tool, each node's configuration carried with its values; its module docstring supplies the narrative and the index summary. `linear_pricing` teaches implicit wiring through a source, one Polars enrichment and an output; `branched_features` teaches parallel feature branches joined before the response with explicit connections. `model_lifecycle` ends its training branch at Model Training and feeds the response from Model Score; `online_scenario_optimisation` ends at the Optimisation node and feeds the response from the scored scenario frame; `ratebook_optimisation_apply` bands the raw rating column through a Banding node that is both the optimiser's `banding_source` and Apply Optimisation's ratebook input; `reusable_submodel` names its occurrence `enrichment`, apart from the `enriched` node inside its definition. A request for the removed `joined_reference` example is refused with `example_removed`, naming `reference_join`, which teaches the same edge join. |
@@ -807,7 +807,9 @@ the turn that follows.
      its output columns (per port for a multi-frame node). Schemas resolve schema-only in
      one `execute_lazy_graph` call preserving every node; when that call raises, each node
      resolves on its own and an input's source resolves separately, so one broken node
-     marks only itself `unresolved` (never with its error text). A submodel node has no
+     marks only itself `unresolved` (never with its error text). A node counts as
+     resolved only once its output's schema has been read, because a lazy frame raises a
+     column its plan reads but its input lacks only then. A submodel node has no
      columns. A node lists at most 40 columns per frame, then how many more. The resolved
      facts are cached per project revision (a small LRU); the revision covers the pipeline
      file, `haute.toml` and the capability hash, not data files, so a data file whose
@@ -1765,7 +1767,9 @@ fixture for route tests). The implemented coverage is:
   fields.
 - **`tests/test_assistant_tools.py`** — the turn context: the brief names each node's
   inputs with their columns and its authoring state (a palette-default Transform is
-  `incomplete`, a hook `stepped`, a failing node `code` with no output and no error text)
+  `incomplete`, a hook `stepped`, a failing node `code` with no output and no error text,
+  and a node reading a column its input lacks, which Polars raises only when the lazy
+  schema is read, unresolved together with what reads it while the rest resolves)
   with the selection first and the revision `get_pipeline` reports; a `public` policy
   withholds the graph without reading it; an unknown selected or preview-error node is
   refused; the brief resolves once per revision and keeps only the latest revisions; a
@@ -1932,46 +1936,53 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_project_knowledge.py`** — source attribution,
   sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
   policy, symlink containment, and metadata-only durable cache state.
-- **`tests/test_assistant_evaluation.py`** — held-out/teaching separation,
-  closed support matrices, semantic and zero-tolerance safety scoring,
-  repeated-trial attribution, aggregation, redacted reports, and fail-closed
-  qualification decisions.
-- **`tests/test_assistant_self_test.py`** — closed case-format v2 loading and
-  selection over the checked-in portfolio (categorical banding, exact join roles, positional
-  rating steps, Polars transforms, explicit mapped response outputs, file input/output graph
-  authoring, material clarification for joins/rating/output mappings, prompt injection,
-  and blocked pipeline execution/external writes, and a build saved in four stages). Scoring
-  requires a successful terminal outcome, one change card for every applied plan,
-  with bounded failed tool attempts and duplicate static reads, connectivity of the
-  changed nodes and their neighbours (nodes added or retyped, and the endpoints of added or
-  removed edges, together with every node adjacent to them, form one connected component; the
-  report names the nodes outside its largest component, and an untouched node elsewhere in the
-  fixture never fails the check), and exact edge-join base/join port assertions; each reason
-  carries its layer. The configuration layer matches subsets recursively and names the first
-  differing path, the collateral layer reports a changed or removed pre-existing node unless the
-  case allows it, and the editor layer reports a new stepped-type node not authored as steps or
-  carrying `_steps_error`, while a pre-existing code-mode node is not judged. Case loading
-  refuses a required or forbidden node-type name that is not a `NodeType` value. A null
+- **`tests/test_assistant_self_test.py`** — closed case-format v3 loading and
+  selection (by id, area and split) over the checked-in portfolio, which covers every area in
+  both splits; no case id is a teaching example's name, and no fixture path names an assistant
+  context artifact. Every fixture project is save-canonical: a copy parsed and saved again
+  through the transactional save service rewrites none of its checked-in files. Preparing a copy
+  logs each fixture model and writes its run id over the Model Scoring placeholder, and a model
+  file without a placeholder fails loudly. Case loading refuses an unknown key, a node-type name
+  that is not a `NodeType` value, an `applied` turn that does not save or an `answered` turn that
+  does, and node configurations or goldens on a turn that saves nothing. Scoring reads the
+  completed event's typed outcome: a turn that saved a change and then ended `blocked` scores as
+  a saved, blocked turn, never as `applied`; an `incomplete` turn matches no expected outcome;
+  and the count of saved changes, never the assistant's text, decides `saves`. Scoring also
+  requires one change card for every saved plan, connectivity of the changed nodes and their
+  neighbours (nodes added or retyped, and the endpoints of added or removed edges, together with
+  every node adjacent to them, form one connected component; the report names the nodes outside
+  its largest component, and an untouched node elsewhere in the fixture never fails the check),
+  and exact edge-join base/join port assertions; each reason carries its turn and layer.
+  Efficiency limits fail only a case that declares them; every other case reports its metrics
+  and passes on correctness alone. The configuration layer matches subsets recursively and names
+  the first differing path, the collateral layer reports a changed or removed pre-existing node
+  unless the turn allows it, and the editor layer reports a new stepped-type node not authored as
+  steps or carrying `_steps_error`, while a pre-existing code-mode node is not judged. A null
   expected target handle matches an edge by source/target endpoints for ordinary single-input
   nodes; non-null handles remain exact port assertions. `_graph_structure` is pinned directly
   against the compact renderer's own output, because reading a handle under a name the renderer
   does not emit yields `None` without raising and turns every port assertion into a silent
-  pass-through failure. For multi-round text, scoring uses the last explicit `NEEDS_INPUT:` or
-  `BLOCKED:` marker, so earlier preparatory prose cannot hide the final qualified outcome,
-  and a turn whose typed outcome is `incomplete` scores as `incomplete`, failing a case that
-  expects `unchanged`. Coverage also pins the redacted report shape with its evidence kind and per-layer results, a
-  report refusing to mix replay and live evidence, a scripted-provider run under the harness's
-  own egress allowances, and one scripted case through the command's per-case process runner.
+  pass-through failure. Coverage also pins the redacted report shape with its evidence kind,
+  per-area counts and medians, per-layer results and first failing layer; a report refusing to
+  mix replay and live evidence; `compare` reporting per-area counts, flips with the first failing
+  layer, one-sided cases and metric differences, and refusing reports of different evidence
+  kinds; the one-apply-per-turn variant ending a scripted multi-stage turn at its first saving
+  apply without another provider request; a transcript written only under a Git-ignored
+  directory and refused elsewhere; the support matrix attributing a run to its configuration; a
+  scripted-provider run under the harness's own egress allowances; and one scripted case through
+  `record`'s per-case process runner.
 - **`tests/test_assistant_replay.py`** — tier 0 of the evaluation: every checked-in reference
-  trajectory (`tests/assistant_eval/trajectories/`) replays through the real loop, tools,
-  dry-run, apply, parser and disposable Git mutation gate in a copy under `tmp_path`, within a
-  per-case timeout and with a fresh plan store, passes every scoring layer, is labelled replay
-  evidence, and leaves the sandbox project root and working directory where it found them. Every
-  case has a trajectory and each step-corpus case has both its free-code and its structured
-  form; the structured trajectories write the corpus translations, the corpus goldens are the
-  corpus snippets, and `polars_corpus`'s data files equal the corpus's normal synthetic inputs.
-  No single-node trajectory reads before its first dry-run, and the feature transform's first
-  provider request carries a turn context listing `quotes` and its `driver_age` column.
+  trajectory (`tests/assistant_eval/trajectories/`), of both splits and every turn, replays
+  through the real loop, tools, dry-run, apply, parser and disposable Git mutation gate in a copy
+  under `tmp_path`, within a timeout per turn and with a fresh plan store, passes every scoring
+  layer, is labelled replay evidence, and leaves the sandbox project root and working directory
+  where it found them. Every case has a trajectory with one recorded turn per case turn, and each
+  step-corpus case has both its free-code and its structured form; the structured trajectories
+  write the corpus translations, the corpus goldens are the corpus snippets, and
+  `polars_corpus`'s data files equal the corpus's normal synthetic inputs. No single-node
+  trajectory outside the recovery area reads before its first dry-run, and the feature
+  transform's first provider request
+  carries a turn context listing `quotes` and its `driver_age` column.
   The staged build (`smoke_staged_pricing_build`) saves a source with its features, a
   banding, a rating and a response as four plans in one turn and streams four change cards
   (the source shares the first plan, because a new node must be connected in the plan that
@@ -2126,9 +2137,10 @@ fixture for route tests). The implemented coverage is:
   markers and content survive on disk), independent of which layer supplies the blocks.
 No automated test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provider
 wire behaviour is exercised with scripted SDK streams. `scripts/run_assistant_self_test.py`
-is also the explicit credentialed developer lane (tier 1 of [the assistant evaluation](evaluation.md)): it loads the same project `.env` and
-`[assistant]` configuration as the app, accepts repeated `--case` selection (plus `--list`),
-runs each selected prompt once in an isolated fixture, each case in its own spawned process.
+is also the explicit credentialed live runner (tier 1 of [the assistant evaluation](evaluation.md)): its `record` command loads the same project `.env` and
+`[assistant]` configuration as the app, selects cases by repeated `--case`, `--area` and `--split`,
+runs each selected case once in an isolated fixture, each case in its own spawned process, under the
+variant `--variant` names.
 Entering and leaving a fixture clears the process-cached active pipeline directory and binds,
 then restores, the sandbox project root, so one project or the invoking repository cannot
 escape into another fixture's application service. The invoking project supplies the provider,
@@ -2136,13 +2148,13 @@ model, credentials and provider trust (trust describes the endpoint); the egress
 the harness's own, never the invoking project's: `max_sensitivity = "internal"` with project
 knowledge, executable source and row samples all withheld. An `external` trust is refused
 before any case runs, because external trust is public-only and a public ceiling denies the
-project metadata tools every case needs. The lane exits non-zero on any failed case and
-optionally writes the redacted report described above. Cases may expose only synthetic schemas,
+project metadata tools every case needs. `record` exits non-zero on any failed case, writes
+the redacted report described above, and with `--transcripts` writes local-only transcripts under
+the invoking project's Git-ignored `.haute/assistant-eval/`. Cases may expose only synthetic schemas,
 the synthetic request, and ordinary assistant tool context to the configured endpoint. After
 each turn the harness, not the assistant, executes only the case's golden nodes, each up to that
 node, so it never materialises a configured output sink. It is a fast
-diagnostic and regression loop, not release qualification; repeated support-matrix trials remain
-the authority for model qualification. The package is covered by the repository's global branch
+measurement and regression loop per area, not a qualification gate. The package is covered by the repository's global branch
 gate, while exemplar
 `.py` assets are omitted from coverage because they are parsed package data rather than
 importable modules (they remain parser- and lint-checked).

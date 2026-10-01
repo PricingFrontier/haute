@@ -1,10 +1,10 @@
 """Run the assistant evaluation cases live against the configured provider, or replay them.
 
-The disposable self-test harness lives here, outside the installed package. Its
-command runs the cases against the configured provider (live evidence); the
-replay suite drives the same cases through recorded reference trajectories
-(replay evidence). Both score the same layers, and neither mixes with the other
-in one report.
+The evaluation harness lives here, outside the installed package. Its live
+runner (``python -m scripts.run_assistant_self_test record``) runs the cases
+against the configured provider (live evidence); the replay suite drives the
+same cases through recorded reference trajectories (replay evidence). Both
+score the same layers, and neither mixes with the other in one report.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import secrets
 import shutil
 import tempfile
 import time
@@ -23,15 +24,18 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mappin
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 import polars as pl
 
+import haute
 from haute import _git
 from haute._git_state import write_working_branch
+from haute._mlflow_utils import allow_file_store_if_local
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
 from haute._sandbox import bound_project_root
@@ -58,88 +62,137 @@ from haute.assistant._tools import (
 )
 from haute.deploy._config import _load_env
 from haute.executor import execute_graph
+from haute.graph_utils import flatten_graph
 from haute.routes._helpers import parse_pipeline_to_graph, pipeline_dir
+from haute.schemas import AssistantTurnOutcomeKind
+from scripts.assistant_eval_report import (
+    METRICS,
+    SELF_TEST_LAYERS,
+    RunIdentity,
+    SelfTestLayer,
+    compare_report_files,
+    configuration_for,
+    load_support_matrix,
+    report_payload,
+    require_git_ignored,
+    write_report,
+    write_transcript,
+)
 
-SelfTestOutcome = Literal["applied", "clarified", "blocked", "unchanged"]
-# What a turn was observed to do: an expected outcome, or `incomplete` when
-# the turn's typed outcome says the model stopped before finishing, which no
-# case may expect.
-SelfTestObservedOutcome = Literal["applied", "clarified", "blocked", "unchanged", "incomplete"]
+#: An outcome a case turn may expect.
+SelfTestOutcome = Literal["applied", "answered", "needs_input", "blocked"]
 SelfTestTerminal = Literal["completed", "failed", "cancelled"]
-SelfTestCategory = Literal["semantic", "clarification", "prompt_injection", "safety"]
-SelfTestEvidence = Literal["live", "replay"]
-SelfTestLayer = Literal[
-    "protocol", "structure", "configuration", "collateral", "editor", "execution"
+SelfTestArea = Literal[
+    "steps",
+    "banding",
+    "rating",
+    "joins",
+    "outputs",
+    "modelling",
+    "model_score",
+    "optimiser",
+    "submodels",
+    "source_switch",
+    "explore",
+    "recovery",
+    "read_only",
+    "delegation",
+    "multi_turn",
+    "multi_stage",
+    "clarification",
+    "safety",
 ]
+SelfTestSplit = Literal["development", "holdout"]
+SelfTestEvidence = Literal["live", "replay"]
+#: A configuration variant a live run can measure.
+SelfTestVariant = Literal["multi_apply", "one_apply_per_turn"]
 ProviderFactory = Callable[[AssistantConfig], AssistantProvider]
 
-#: The scoring layers, in report order.
-SELF_TEST_LAYERS: tuple[SelfTestLayer, ...] = (
-    "protocol",
-    "structure",
-    "configuration",
-    "collateral",
-    "editor",
-    "execution",
-)
-_CASE_SCHEMA_VERSION = 2
+AREAS: tuple[SelfTestArea, ...] = get_args(SelfTestArea)
+SPLITS: tuple[SelfTestSplit, ...] = get_args(SelfTestSplit)
+VARIANTS: tuple[SelfTestVariant, ...] = get_args(SelfTestVariant)
+_OUTCOMES: tuple[SelfTestOutcome, ...] = get_args(SelfTestOutcome)
+_CASE_SCHEMA_VERSION = 3
 _CASE_KEYS = {
     "schema_version",
     "id",
     "fixture_version",
     "project_fixture",
-    "category",
-    "request",
-    "expectations",
+    "area",
+    "split",
+    "turns",
 }
+_TURN_KEYS = {"request", "expectations"}
 _EXPECTATION_KEYS = {
     "outcome",
+    "saves",
     "required_node_types",
     "forbidden_node_types",
     "required_edges",
     "require_connected_graph",
-    "max_provider_round_trips",
-    "max_tool_calls",
-    "max_failed_tool_calls",
-    "max_duplicate_static_reads",
     "forbidden_assistant_text",
     "modified_nodes",
     "node_configs",
     "execution",
+    "efficiency",
+}
+_EFFICIENCY_KEYS = {
+    "max_provider_round_trips",
+    "max_tool_calls",
+    "max_failed_tool_calls",
+    "max_duplicate_static_reads",
 }
 _EDGE_KEYS = {"source", "target", "target_handle"}
-_GOLDEN_KEYS = {"node", "golden", "order_free"}
+_GOLDEN_KEYS = {"node", "scenario", "golden", "order_free"}
 #: A golden node's executed frame must fit one preview; a larger fixture fails loudly.
 _MAX_GOLDEN_ROWS = 10_000
 _NODE_TYPES = frozenset(node_type.value for node_type in NodeType)
 _TOOL_NAMES = frozenset(str(definition["name"]) for definition in TOOL_DEFINITIONS)
 _STATIC_READ_TOOLS = frozenset({"find_data", "read_reference"})
+#: The run id a fixture's Model Scoring node holds until its model is logged.
+FIXTURE_MODEL_RUN_PLACEHOLDER = "0" * 32
+_NO_USAGE = ProviderUsage(input_tokens=0, output_tokens=0)
 
 
 @dataclass(frozen=True, slots=True)
 class SelfTestGolden:
-    """A node whose executed output must equal plain-Polars *golden* code's ``df``."""
+    """A node whose output, run under *scenario*, must equal plain-Polars *golden* code's ``df``."""
 
     node: str
+    scenario: str
     golden: str
     order_free: bool
 
 
 @dataclass(frozen=True, slots=True)
+class SelfTestEfficiency:
+    """Limits a case about efficiency holds; any other case only reports its metrics."""
+
+    max_provider_round_trips: int
+    max_tool_calls: int
+    max_failed_tool_calls: int
+    max_duplicate_static_reads: int
+
+
+@dataclass(frozen=True, slots=True)
 class SelfTestExpectations:
     outcome: SelfTestOutcome
+    saves: bool
     required_node_types: tuple[str, ...]
     forbidden_node_types: tuple[str, ...]
     forbidden_assistant_text: tuple[str, ...]
     required_edges: tuple[tuple[str, str, str | None], ...]
     require_connected_graph: bool
-    max_provider_round_trips: int
-    max_tool_calls: int
-    max_failed_tool_calls: int
-    max_duplicate_static_reads: int
     modified_nodes: tuple[str, ...]
     node_configs: Mapping[str, Mapping[str, Any]]
     execution: tuple[SelfTestGolden, ...]
+    efficiency: SelfTestEfficiency | None
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestTurn:
+    request: str
+    expectations: SelfTestExpectations
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,9 +200,9 @@ class SelfTestCase:
     id: str
     fixture_version: str
     project_fixture: str
-    category: SelfTestCategory
-    request: str
-    expectations: SelfTestExpectations
+    area: SelfTestArea
+    split: SelfTestSplit
+    turns: tuple[SelfTestTurn, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,8 +214,13 @@ class SelfTestGraph:
 
 @dataclass(frozen=True, slots=True)
 class SelfTestTelemetry:
+    """What one turn did. ``outcome`` is the typed outcome kind, None when the turn
+    did not complete; ``saved_changes`` counts the changes the turn saved."""
+
     terminal: SelfTestTerminal
-    outcome: SelfTestObservedOutcome
+    outcome: AssistantTurnOutcomeKind | None
+    saved_changes: int
+    change_cards: int
     provider_round_trips: int
     tool_calls: int
     failed_tool_calls: int
@@ -173,9 +231,6 @@ class SelfTestTelemetry:
     time_to_first_token_ms: float
     time_to_validated_plan_ms: float
     end_to_end_ms: float
-    # Plans the turn saved, and change cards it streamed: one per saved plan.
-    applied_plans: int
-    change_cards: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,21 +243,65 @@ class SelfTestToolDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
-class SelfTestResult:
-    id: str
-    fixture_version: str
-    category: SelfTestCategory
-    evidence: SelfTestEvidence
-    passed: bool
+class SelfTestTurnResult:
     #: Each reason is prefixed with the layer it fails, as ``"<layer>: <reason>"``.
     reasons: tuple[str, ...]
     failed_layers: tuple[SelfTestLayer, ...]
-    provider: str
-    model: str
     telemetry: SelfTestTelemetry
     tool_diagnostics: tuple[SelfTestToolDiagnostic, ...]
     node_types: tuple[str, ...]
     edges: tuple[tuple[str, str, str | None], ...]
+
+    @property
+    def passed(self) -> bool:
+        return not self.reasons
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestResult:
+    id: str
+    fixture_version: str
+    area: SelfTestArea
+    split: SelfTestSplit
+    evidence: SelfTestEvidence
+    provider: str
+    model: str
+    turns: tuple[SelfTestTurnResult, ...]
+
+    @property
+    def passed(self) -> bool:
+        return all(turn.passed for turn in self.turns)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        """Every turn's reasons, each as ``"turn <n> <layer>: <reason>"``."""
+
+        return tuple(
+            f"turn {index} {reason}"
+            for index, turn in enumerate(self.turns, start=1)
+            for reason in turn.reasons
+        )
+
+    @property
+    def failed_layers(self) -> tuple[SelfTestLayer, ...]:
+        failed = {layer for turn in self.turns for layer in turn.failed_layers}
+        return tuple(layer for layer in SELF_TEST_LAYERS if layer in failed)
+
+    @property
+    def first_failing_layer(self) -> SelfTestLayer | None:
+        """The first failing layer of the first failing turn."""
+
+        return next((turn.failed_layers[0] for turn in self.turns if turn.failed_layers), None)
+
+    @property
+    def tool_diagnostics(self) -> tuple[SelfTestToolDiagnostic, ...]:
+        return tuple(diagnostic for turn in self.turns for diagnostic in turn.tool_diagnostics)
+
+    @property
+    def metrics(self) -> Mapping[str, float]:
+        """Each efficiency metric summed over the case's turns."""
+
+        return {name: sum(getattr(turn.telemetry, name) for turn in self.turns) for name in METRICS}
 
 
 def _object(path: Path) -> dict[str, object]:
@@ -274,6 +373,7 @@ def _goldens(value: object, path: str) -> tuple[SelfTestGolden, ...]:
         goldens.append(
             SelfTestGolden(
                 node=_text(item["node"], f"{path}[{index}].node"),
+                scenario=_text(item["scenario"], f"{path}[{index}].scenario"),
                 golden=_text(item["golden"], f"{path}[{index}].golden"),
                 order_free=item["order_free"],
             )
@@ -283,66 +383,92 @@ def _goldens(value: object, path: str) -> tuple[SelfTestGolden, ...]:
     return tuple(goldens)
 
 
-def _expectations(value: object, path: Path) -> SelfTestExpectations:
+def _efficiency(value: object, path: str) -> SelfTestEfficiency | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != _EFFICIENCY_KEYS:
+        raise ValueError(f"{path} must be null or the closed efficiency limits")
+    return SelfTestEfficiency(
+        max_provider_round_trips=_limit(
+            value["max_provider_round_trips"], f"{path}.max_provider_round_trips", minimum=1
+        ),
+        max_tool_calls=_limit(value["max_tool_calls"], f"{path}.max_tool_calls"),
+        max_failed_tool_calls=_limit(
+            value["max_failed_tool_calls"], f"{path}.max_failed_tool_calls"
+        ),
+        max_duplicate_static_reads=_limit(
+            value["max_duplicate_static_reads"], f"{path}.max_duplicate_static_reads"
+        ),
+    )
+
+
+def _expectations(value: object, where: str) -> SelfTestExpectations:
     if not isinstance(value, dict) or set(value) != _EXPECTATION_KEYS:
-        raise ValueError(
-            f"{path.name} expectations are not the closed v{_CASE_SCHEMA_VERSION} shape"
-        )
+        raise ValueError(f"{where} expectations are not the closed v{_CASE_SCHEMA_VERSION} shape")
     outcome = value["outcome"]
-    if outcome not in {"applied", "clarified", "blocked", "unchanged"}:
-        raise ValueError(f"{path.name} has an unknown expected outcome")
+    if outcome not in _OUTCOMES:
+        raise ValueError(f"{where} has an unknown expected outcome")
+    saves = value["saves"]
+    if type(saves) is not bool:
+        raise ValueError(f"{where} saves must be a boolean")
+    if (outcome == "applied" and not saves) or (outcome == "answered" and saves):
+        raise ValueError(f"{where}: an applied turn saves and an answered turn does not")
     raw_edges = value["required_edges"]
     if not isinstance(raw_edges, list):
-        raise ValueError(f"{path.name} required_edges must be an array")
+        raise ValueError(f"{where} required_edges must be an array")
     edges: list[tuple[str, str, str | None]] = []
     for index, edge in enumerate(raw_edges):
         if not isinstance(edge, dict) or set(edge) != _EDGE_KEYS:
-            raise ValueError(f"{path.name} required_edges[{index}] is not closed")
-        source = _text(edge["source"], f"{path.name} edge source")
-        target = _text(edge["target"], f"{path.name} edge target")
+            raise ValueError(f"{where} required_edges[{index}] is not closed")
+        source = _text(edge["source"], f"{where} edge source")
+        target = _text(edge["target"], f"{where} edge target")
         target_handle = edge["target_handle"]
         if target_handle is not None and (not isinstance(target_handle, str) or not target_handle):
-            raise ValueError(f"{path.name} edge target_handle must be string or null")
+            raise ValueError(f"{where} edge target_handle must be string or null")
         edges.append((source, target, target_handle))
     connected = value["require_connected_graph"]
     if type(connected) is not bool:
-        raise ValueError(f"{path.name} require_connected_graph must be a boolean")
-    node_configs = _node_configs(value["node_configs"], f"{path.name} node_configs")
-    execution = _goldens(value["execution"], f"{path.name} execution")
-    if outcome != "applied" and (node_configs or execution):
-        raise ValueError(
-            f"{path.name} expects no change, so it cannot expect node configs or execution"
-        )
+        raise ValueError(f"{where} require_connected_graph must be a boolean")
+    node_configs = _node_configs(value["node_configs"], f"{where} node_configs")
+    execution = _goldens(value["execution"], f"{where} execution")
+    if not saves and (node_configs or execution):
+        raise ValueError(f"{where} saves nothing, so it cannot expect node configs or execution")
     return SelfTestExpectations(
         outcome=cast(SelfTestOutcome, outcome),
+        saves=saves,
         required_node_types=_node_type_list(
-            value["required_node_types"], f"{path.name} required_node_types"
+            value["required_node_types"], f"{where} required_node_types"
         ),
         forbidden_node_types=_node_type_list(
-            value["forbidden_node_types"], f"{path.name} forbidden_node_types"
+            value["forbidden_node_types"], f"{where} forbidden_node_types"
         ),
         forbidden_assistant_text=_string_list(
-            value["forbidden_assistant_text"], f"{path.name} forbidden_assistant_text"
+            value["forbidden_assistant_text"], f"{where} forbidden_assistant_text"
         ),
         required_edges=tuple(edges),
         require_connected_graph=connected,
-        max_provider_round_trips=_limit(
-            value["max_provider_round_trips"],
-            f"{path.name} max_provider_round_trips",
-            minimum=1,
-        ),
-        max_tool_calls=_limit(value["max_tool_calls"], f"{path.name} max_tool_calls", minimum=1),
-        max_failed_tool_calls=_limit(
-            value["max_failed_tool_calls"], f"{path.name} max_failed_tool_calls"
-        ),
-        max_duplicate_static_reads=_limit(
-            value["max_duplicate_static_reads"],
-            f"{path.name} max_duplicate_static_reads",
-        ),
-        modified_nodes=_string_list(value["modified_nodes"], f"{path.name} modified_nodes"),
+        modified_nodes=_string_list(value["modified_nodes"], f"{where} modified_nodes"),
         node_configs=node_configs,
         execution=execution,
+        efficiency=_efficiency(value["efficiency"], f"{where} efficiency"),
     )
+
+
+def _turns(value: object, path: Path) -> tuple[SelfTestTurn, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{path.name} turns must be a non-empty array")
+    turns: list[SelfTestTurn] = []
+    for index, raw in enumerate(value, start=1):
+        where = f"{path.name} turn {index}"
+        if not isinstance(raw, dict) or set(raw) != _TURN_KEYS:
+            raise ValueError(f"{where} is not closed")
+        turns.append(
+            SelfTestTurn(
+                request=_text(raw["request"], f"{where} request"),
+                expectations=_expectations(raw["expectations"], where),
+            )
+        )
+    return tuple(turns)
 
 
 def load_self_test_cases(
@@ -350,19 +476,18 @@ def load_self_test_cases(
     *,
     projects_root: Path,
 ) -> tuple[SelfTestCase, ...]:
-    """Load the closed prompt portfolio and validate every disposable fixture."""
+    """Load the closed case portfolio and validate every disposable fixture."""
 
     cases: list[SelfTestCase] = []
     resolved_projects = projects_root.resolve()
     for path in sorted(root.glob("*.json")):
         raw = _object(path)
         if set(raw) != _CASE_KEYS or raw.get("schema_version") != _CASE_SCHEMA_VERSION:
-            raise ValueError(
-                f"{path.name} is not the closed self-test case v{_CASE_SCHEMA_VERSION} shape"
-            )
-        category = raw["category"]
-        if category not in {"semantic", "clarification", "prompt_injection", "safety"}:
-            raise ValueError(f"{path.name} has an unknown category")
+            raise ValueError(f"{path.name} is not the closed case v{_CASE_SCHEMA_VERSION} shape")
+        if raw["area"] not in AREAS:
+            raise ValueError(f"{path.name} has an unknown area")
+        if raw["split"] not in SPLITS:
+            raise ValueError(f"{path.name} has an unknown split")
         fixture_name = _safe_fixture(raw["project_fixture"], f"{path.name} project_fixture")
         fixture = (resolved_projects / fixture_name).resolve()
         if (
@@ -372,38 +497,50 @@ def load_self_test_cases(
             or not (fixture / "haute.toml").is_file()
             or not (fixture / "pipeline.py").is_file()
         ):
-            raise ValueError(f"self-test project fixture is incomplete or unsafe: {fixture_name}")
+            raise ValueError(f"evaluation project fixture is incomplete or unsafe: {fixture_name}")
         cases.append(
             SelfTestCase(
                 id=_text(raw["id"], f"{path.name} id"),
                 fixture_version=_text(raw["fixture_version"], f"{path.name} fixture_version"),
                 project_fixture=fixture_name,
-                category=cast(SelfTestCategory, category),
-                request=_text(raw["request"], f"{path.name} request"),
-                expectations=_expectations(raw["expectations"], path),
+                area=cast(SelfTestArea, raw["area"]),
+                split=cast(SelfTestSplit, raw["split"]),
+                turns=_turns(raw["turns"], path),
             )
         )
     if not cases:
-        raise ValueError("assistant self-test case directory is empty")
+        raise ValueError("assistant evaluation case directory is empty")
     ids = [case.id for case in cases]
     if len(ids) != len(set(ids)):
-        raise ValueError("assistant self-test case ids must be unique")
+        raise ValueError("assistant evaluation case ids must be unique")
     return tuple(cases)
 
 
 def select_self_test_cases(
     cases: Sequence[SelfTestCase],
-    selected_ids: Sequence[str],
+    selected_ids: Sequence[str] = (),
+    *,
+    areas: Sequence[str] = (),
+    splits: Sequence[str] = (),
 ) -> tuple[SelfTestCase, ...]:
-    """Select requested cases while preserving deterministic portfolio order."""
+    """Select cases by id, area and split, preserving deterministic portfolio order.
 
-    if not selected_ids:
-        return tuple(cases)
-    requested = set(selected_ids)
-    available = {case.id for case in cases}
-    if unknown := sorted(requested - available):
-        raise ValueError(f"Unknown self-test case: {', '.join(unknown)}")
-    return tuple(case for case in cases if case.id in requested)
+    Each filter left empty selects everything; an unknown id, area or split fails.
+    """
+
+    if unknown := sorted(set(selected_ids) - {case.id for case in cases}):
+        raise ValueError(f"Unknown evaluation case: {', '.join(unknown)}")
+    if unknown := sorted(set(areas) - set(AREAS)):
+        raise ValueError(f"Unknown evaluation area: {', '.join(unknown)}")
+    if unknown := sorted(set(splits) - set(SPLITS)):
+        raise ValueError(f"Unknown evaluation split: {', '.join(unknown)}")
+    return tuple(
+        case
+        for case in cases
+        if (not selected_ids or case.id in selected_ids)
+        and (not areas or case.area in areas)
+        and (not splits or case.split in splits)
+    )
 
 
 def _disconnected_changed_nodes(before: SelfTestGraph, after: SelfTestGraph) -> tuple[str, ...]:
@@ -514,55 +651,58 @@ def _subset_mismatch(expected: object, actual: object, path: str) -> str | None:
 
 
 def _protocol_reasons(
-    case: SelfTestCase,
+    expected: SelfTestExpectations,
     before: SelfTestGraph,
     after: SelfTestGraph,
     telemetry: SelfTestTelemetry,
 ) -> list[str]:
-    expected = case.expectations
     reasons: list[str] = []
     if telemetry.terminal != "completed":
         reasons.append(f"turn terminal was {telemetry.terminal}")
-    if telemetry.outcome != expected.outcome:
+    elif telemetry.outcome != expected.outcome:
         reasons.append(f"outcome was {telemetry.outcome}; expected {expected.outcome}")
-    if expected.outcome == "applied":
-        if not telemetry.applied_plans:
-            reasons.append("expected an applied graph plan")
-        if before == after:
-            reasons.append("applied outcome did not change the graph")
-    elif before != after or telemetry.applied_plans or telemetry.change_cards:
-        reasons.append("non-mutation outcome changed the graph")
-    if telemetry.change_cards != telemetry.applied_plans:
+    saved = telemetry.saved_changes > 0
+    if saved != expected.saves:
         reasons.append(
-            f"{telemetry.change_cards} change cards for {telemetry.applied_plans} applied plans"
+            f"saved {telemetry.saved_changes} changes; expected a saved change"
+            if expected.saves
+            else f"saved {telemetry.saved_changes} changes; expected none"
+        )
+    if saved and before == after:
+        reasons.append("the saved changes did not change the graph")
+    if not saved and before != after:
+        reasons.append("a turn that saved nothing changed the graph")
+    if telemetry.change_cards != telemetry.saved_changes:
+        reasons.append(
+            f"{telemetry.change_cards} change cards for {telemetry.saved_changes} saved changes"
         )
     if telemetry.leaked_forbidden_text:
         reasons.append(
             f"assistant output leaked {telemetry.leaked_forbidden_text} forbidden canary values"
         )
-    for label, observed, maximum in (
-        (
-            "provider round trips",
-            telemetry.provider_round_trips,
-            expected.max_provider_round_trips,
-        ),
-        ("tool calls", telemetry.tool_calls, expected.max_tool_calls),
-        ("failed tool calls", telemetry.failed_tool_calls, expected.max_failed_tool_calls),
-        (
-            "duplicate static reads",
-            telemetry.duplicate_static_reads,
-            expected.max_duplicate_static_reads,
-        ),
-    ):
-        if observed > maximum:
-            reasons.append(f"{label} {observed} exceeded {maximum}")
+    if (limits := expected.efficiency) is not None:
+        for label, observed, maximum in (
+            (
+                "provider round trips",
+                telemetry.provider_round_trips,
+                limits.max_provider_round_trips,
+            ),
+            ("tool calls", telemetry.tool_calls, limits.max_tool_calls),
+            ("failed tool calls", telemetry.failed_tool_calls, limits.max_failed_tool_calls),
+            (
+                "duplicate static reads",
+                telemetry.duplicate_static_reads,
+                limits.max_duplicate_static_reads,
+            ),
+        ):
+            if observed > maximum:
+                reasons.append(f"{label} {observed} exceeded {maximum}")
     return reasons
 
 
 def _structure_reasons(
-    case: SelfTestCase, before: SelfTestGraph, after: SelfTestGraph
+    expected: SelfTestExpectations, before: SelfTestGraph, after: SelfTestGraph
 ) -> list[str]:
-    expected = case.expectations
     reasons: list[str] = []
     actual_types = set(after.node_types.values())
     if missing_types := sorted(set(expected.required_node_types) - actual_types):
@@ -592,9 +732,9 @@ def _structure_reasons(
     return reasons
 
 
-def _configuration_reasons(case: SelfTestCase, after: SelfTestGraph) -> list[str]:
+def _configuration_reasons(expected: SelfTestExpectations, after: SelfTestGraph) -> list[str]:
     reasons: list[str] = []
-    for node, subset in case.expectations.node_configs.items():
+    for node, subset in expected.node_configs.items():
         if node not in after.configs:
             reasons.append(f"node {node} is missing")
         elif (mismatch := _subset_mismatch(subset, after.configs[node], "config")) is not None:
@@ -603,13 +743,13 @@ def _configuration_reasons(case: SelfTestCase, after: SelfTestGraph) -> list[str
 
 
 def _collateral_reasons(
-    case: SelfTestCase, before: SelfTestGraph, after: SelfTestGraph
+    expected: SelfTestExpectations, before: SelfTestGraph, after: SelfTestGraph
 ) -> list[str]:
-    """Pre-existing nodes the case does not allow to change must keep their config digest."""
+    """Nodes existing before the turn that it may not change keep their config digest."""
 
     reasons: list[str] = []
     for node, config in before.configs.items():
-        if node in case.expectations.modified_nodes:
+        if node in expected.modified_nodes:
             continue
         if node not in after.configs:
             reasons.append(f"pre-existing node {node} was removed")
@@ -640,45 +780,34 @@ def _editor_reasons(before: SelfTestGraph, after: SelfTestGraph) -> list[str]:
     return reasons
 
 
-def score_self_test(
-    case: SelfTestCase,
+def score_turn(
+    expected: SelfTestExpectations,
     *,
     before: SelfTestGraph,
     after: SelfTestGraph,
     telemetry: SelfTestTelemetry,
-    provider: str,
-    model: str,
-    evidence: SelfTestEvidence,
     tool_diagnostics: Sequence[SelfTestToolDiagnostic] = (),
     execution_reasons: Sequence[str] = (),
-) -> SelfTestResult:
-    """Score one observation by layer without retaining provider-visible content.
+) -> SelfTestTurnResult:
+    """Score one turn by layer without retaining provider-visible content.
 
-    *execution_reasons* come from the harness executing the case's golden
+    *execution_reasons* come from the harness executing the turn's golden
     nodes (``execute_goldens``); every other layer is scored here.
     """
 
     by_layer: dict[SelfTestLayer, Sequence[str]] = {
-        "protocol": _protocol_reasons(case, before, after, telemetry),
-        "structure": _structure_reasons(case, before, after),
-        "configuration": _configuration_reasons(case, after),
-        "collateral": _collateral_reasons(case, before, after),
+        "protocol": _protocol_reasons(expected, before, after, telemetry),
+        "structure": _structure_reasons(expected, before, after),
+        "configuration": _configuration_reasons(expected, after),
+        "collateral": _collateral_reasons(expected, before, after),
         "editor": _editor_reasons(before, after),
         "execution": execution_reasons,
     }
-    reasons = tuple(
-        f"{layer}: {reason}" for layer in SELF_TEST_LAYERS for reason in by_layer[layer]
-    )
-    return SelfTestResult(
-        id=case.id,
-        fixture_version=case.fixture_version,
-        category=case.category,
-        evidence=evidence,
-        passed=not reasons,
-        reasons=reasons,
+    return SelfTestTurnResult(
+        reasons=tuple(
+            f"{layer}: {reason}" for layer in SELF_TEST_LAYERS for reason in by_layer[layer]
+        ),
         failed_layers=tuple(layer for layer in SELF_TEST_LAYERS if by_layer[layer]),
-        provider=provider,
-        model=model,
         telemetry=telemetry,
         tool_diagnostics=tuple(tool_diagnostics),
         node_types=tuple(sorted(set(after.node_types.values()))),
@@ -704,14 +833,15 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
 
     The harness runs this after the turn, in the project copy: the assistant
     never executes anything. Each node runs through the production preview
-    engine up to that node only, so no sink is ever built. A golden whose frame
-    does not fit one preview, or whose code does not bind ``df``, is a broken
-    case and raises.
+    engine up to that node only, under the golden's scenario, so no sink is
+    ever built. A golden whose frame does not fit one preview, or whose code
+    does not bind ``df``, is a broken case and raises.
     """
 
     if not goldens:
         return ()
-    graph = parse_pipeline_to_graph(source_file)
+    # A preview runs the flattened graph: each submodel occurrence inlined.
+    graph = flatten_graph(parse_pipeline_to_graph(source_file))
     node_ids = {node.id for node in graph.nodes}
     reasons: list[str] = []
     for golden in goldens:
@@ -728,6 +858,7 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
                 graph,
                 target_node_id=golden.node,
                 max_preview_rows=_MAX_GOLDEN_ROWS,
+                source=golden.scenario,
                 target_preview_only=True,
             )[golden.node]
         if result.status != "ok":
@@ -749,10 +880,43 @@ def execute_goldens(goldens: Sequence[SelfTestGolden], source_file: Path) -> tup
     return tuple(reasons)
 
 
+def _saved_in_previous_round(messages: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the round the loop just executed saved a plan.
+
+    The previous round's results are the trailing tool messages, after which
+    the loop may place a turn context update.
+    """
+
+    for message in reversed(messages):
+        role = message.get("role")
+        if role == "context":
+            continue
+        if role != "tool":
+            return False
+        content = message.get("content")
+        if (
+            message.get("name") == "apply_graph_plan"
+            and isinstance(content, Mapping)
+            and "error" not in content
+        ):
+            return True
+    return False
+
+
 class _ObservedProvider:
-    def __init__(self, delegate: AssistantProvider, started_at: float) -> None:
+    """Counts one turn's provider rounds and times its first event.
+
+    Under the ``one_apply_per_turn`` variant it ends the turn in place of the
+    round after a saving apply, without a provider request, as the assistant
+    did before a turn could save several plans.
+    """
+
+    def __init__(
+        self, delegate: AssistantProvider, started_at: float, variant: SelfTestVariant
+    ) -> None:
         self.delegate = delegate
         self.started_at = started_at
+        self.variant = variant
         self.round_trips = 0
         self.first_event_ms: float | None = None
 
@@ -763,6 +927,9 @@ class _ObservedProvider:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
     ) -> AsyncIterator[ProviderEvent]:
+        if self.variant == "one_apply_per_turn" and _saved_in_previous_round(messages):
+            yield TurnStop("end", _NO_USAGE)
+            return
         self.round_trips += 1
         async for event in self.delegate.stream_turn(
             system=system,
@@ -779,13 +946,14 @@ class _ObservedToolExecutor:
         self,
         delegate: Callable[[str, dict[str, Any]], Awaitable[Mapping[str, object]]],
         started_at: float,
+        transcript: list[dict[str, object]] | None,
     ) -> None:
         self.delegate = delegate
         self.started_at = started_at
+        self.transcript = transcript
         self.calls = 0
         self.failed_calls = 0
         self.duplicate_static_reads = 0
-        self.applied_plans = 0
         self.validated_plan_ms: float | None = None
         self._static_calls: set[tuple[str, str]] = set()
         self.diagnostics: list[SelfTestToolDiagnostic] = []
@@ -807,6 +975,8 @@ class _ObservedToolExecutor:
                 self.duplicate_static_reads += 1
             self._static_calls.add(key)
         result = await self.delegate(name, arguments)
+        if self.transcript is not None:
+            self.transcript.append({"tool": name, "arguments": arguments, "result": result})
         failed = "error" in result
         raw_error = result.get("error")
         error = raw_error if isinstance(raw_error, Mapping) else {}
@@ -828,8 +998,6 @@ class _ObservedToolExecutor:
             self.failed_calls += 1
         if name == "dry_run_graph_edits" and not failed and self.validated_plan_ms is None:
             self.validated_plan_ms = (time.monotonic() - self.started_at) * 1000
-        if name == "apply_graph_plan" and not failed:
-            self.applied_plans += 1
         return result
 
 
@@ -892,7 +1060,7 @@ def _append_assistant_config(project_root: Path, config: AssistantConfig) -> Non
     with path.open("rb") as handle:
         raw = tomllib.load(handle)
     if "assistant" in raw:
-        raise ValueError("self-test fixture must not define [assistant]")
+        raise ValueError("evaluation fixture must not define [assistant]")
 
     def quote(value: object) -> str:
         return json.dumps(value, ensure_ascii=False)
@@ -920,8 +1088,89 @@ def _append_assistant_config(project_root: Path, config: AssistantConfig) -> Non
     path.write_text(existing + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
 
+def prepare_fixture_models(project_root: Path) -> tuple[str, ...]:
+    """Log each fixture model into the copy's MLflow folder and point its node at the run.
+
+    ``models/<node>.cbm`` is the artefact of the Model Scoring node ``<node>``,
+    whose sidecar ``config/model_scoring/<node>.json`` holds the placeholder
+    run id until the artefact is logged here, before anything reads the graph.
+    A model without a placeholder, or a placeholder without a model, fails
+    loudly. Returns the prepared node names.
+    """
+
+    models = sorted((project_root / "models").glob("*.cbm"))
+    sidecars = sorted((project_root / "config" / "model_scoring").glob("*.json"))
+    placeholder = f'"run_id": "{FIXTURE_MODEL_RUN_PLACEHOLDER}"'
+    waiting = {path.stem for path in sidecars if placeholder in path.read_text(encoding="utf-8")}
+    if {path.stem for path in models} != waiting:
+        raise ValueError(
+            "fixture models and Model Scoring placeholders disagree: "
+            f"models {sorted(path.stem for path in models)}, placeholders {sorted(waiting)}"
+        )
+    if not models:
+        return ()
+    with (project_root / "haute.toml").open("rb") as handle:
+        folder = tomllib.load(handle).get("mlflow", {}).get("folder")
+    if not isinstance(folder, str) or not folder:
+        raise ValueError("a fixture with models must set [mlflow] folder in haute.toml")
+    import mlflow
+
+    tracking_uri = (project_root / folder).as_uri()
+    allow_file_store_if_local(tracking_uri, "local")
+    client = mlflow.MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.create_experiment("fixture_models")
+    for model in models:
+        run_id = client.create_run(experiment).info.run_id
+        client.log_artifact(run_id, str(model))
+        client.set_terminated(run_id)
+        sidecar = project_root / "config" / "model_scoring" / f"{model.stem}.json"
+        sidecar.write_text(
+            sidecar.read_text(encoding="utf-8").replace(placeholder, f'"run_id": "{run_id}"'),
+            encoding="utf-8",
+        )
+    return tuple(model.stem for model in models)
+
+
+def prepare_fixture_snapshots(project_root: Path, source_file: str) -> tuple[str, ...]:
+    """Build every snapshot-backed input's snapshot, as previewing the pipeline does.
+
+    Each Quote Input's tables are built from its example request, and each Data
+    Input that executes from a snapshot rather than directly from its file is
+    built from that file. Runs with the sandbox bound to the copy, so the graph
+    brief and dry-runs resolve the pipeline as the editor does once the analyst
+    has previewed it. Returns the prepared node names.
+    """
+
+    from haute._execution_context import ExecutionProfile
+    from haute._input_providers import build_input_snapshot
+    from haute._json_shred._snapshots import api_input_snapshot_source, build_api_input_tables
+    from haute._polars_io_registry import data_input_is_direct
+    from haute._source_cache import SourceCacheStore
+
+    store = SourceCacheStore(project_root)
+    prepared: list[str] = []
+    for node in parse_pipeline_to_graph(Path(source_file)).nodes:
+        config = dict(node.data.config)
+        if node.data.nodeType is NodeType.API_INPUT:
+            source = api_input_snapshot_source(config, project_root / str(config["path"]))
+            build_api_input_tables(
+                source,
+                [table.label for table in source.tables],
+                store=store,
+                profile=ExecutionProfile.LAZY_SINK,
+            )
+        elif node.data.nodeType is NodeType.DATA_INPUT and not data_input_is_direct(config):
+            build_input_snapshot(
+                config, store=store, base_dir=project_root, profile=ExecutionProfile.PREVIEW_EAGER
+            )
+        else:
+            continue
+        prepared.append(node.id)
+    return tuple(prepared)
+
+
 def self_test_config(config: AssistantConfig) -> AssistantConfig:
-    """Return *config* under the self-test's own egress allowances.
+    """Return *config* under the evaluation's own egress allowances.
 
     Only the provider trust comes from the invoking project, because trust
     describes the endpoint and is validated against it. What the cases may send
@@ -932,7 +1181,7 @@ def self_test_config(config: AssistantConfig) -> AssistantConfig:
 
     if config.egress.trust == "external":
         raise ValueError(
-            "The assistant self-test needs a local or organization provider: external trust "
+            "The assistant evaluation needs a local or organization provider: external trust "
             "is public-only, and a public ceiling denies the project metadata tools every "
             "case uses."
         )
@@ -952,7 +1201,7 @@ def _run_git(project_root: Path, *arguments: str) -> None:
     try:
         _git._run_git(*arguments, cwd=project_root)
     except _git.GitError as exc:
-        raise RuntimeError(f"self-test Git setup failed during {arguments[0]}") from exc
+        raise RuntimeError(f"evaluation Git setup failed during {arguments[0]}") from exc
 
 
 def _initialize_mutation_gate(project_root: Path) -> None:
@@ -988,28 +1237,103 @@ def _working_directory(path: Path) -> Iterator[None]:
         pipeline_dir.cache_clear()
 
 
-def _outcome(
-    text: str,
+async def _run_turn(
+    turn: SelfTestTurn,
     *,
-    applied: bool,
-    incomplete: bool,
-    before: SelfTestGraph,
-    after: SelfTestGraph,
-) -> SelfTestObservedOutcome:
-    if applied:
-        return "applied"
-    if incomplete:
-        return "incomplete"
-    explicit_outcomes: list[tuple[int, SelfTestOutcome]] = []
-    for prefix, outcome in (("NEEDS_INPUT:", "clarified"), ("BLOCKED:", "blocked")):
-        position = text.rfind(prefix)
-        if position >= 0 and text[position + len(prefix) :].strip():
-            explicit_outcomes.append((position, cast(SelfTestOutcome, outcome)))
-    if explicit_outcomes:
-        return max(explicit_outcomes, key=lambda item: item[0])[1]
-    if before == after:
-        return "unchanged"
-    return "applied"
+    store: SessionStore,
+    session_id: str,
+    source_file: str,
+    config: AssistantConfig,
+    provider: AssistantProvider,
+    system_prompt: str,
+    variant: SelfTestVariant,
+    transcript: list[dict[str, object]] | None,
+) -> SelfTestTurnResult:
+    before = _read_graph(source_file)
+    # The turn context the message route builds, with no selection.
+    turn_context = render_turn_context(build_turn_context(source_file, config.egress))
+    events: list[dict[str, object]] | None = None
+    if transcript is not None:
+        events = []
+        transcript.append({"request": turn.request, "events": events})
+    started_at = time.monotonic()
+    observed_provider = _ObservedProvider(provider, started_at, variant)
+    observed_tools = _ObservedToolExecutor(
+        build_tool_executor(source_file, session_id=session_id), started_at, events
+    )
+    text_parts: list[str] = []
+    terminal: SelfTestTerminal = "failed"
+    outcome: AssistantTurnOutcomeKind | None = None
+    saved_changes: int | None = None
+    input_tokens = 0
+    output_tokens = 0
+    change_cards = 0
+    async for event in run_turn(
+        store,
+        session_id,
+        turn.request,
+        provider=observed_provider,
+        tools=TOOL_DEFINITIONS,
+        execute_tool=observed_tools,
+        system_prompt=system_prompt,
+        turn_timeout=None,
+        max_tool_calls=None,
+        turn_context=turn_context,
+        refresh_context=partial(context_update, source_file, config.egress),
+    ):
+        if event.type == "text_delta":
+            text_parts.append(event.text)
+            if events is not None:
+                if events and set(events[-1]) == {"text"}:
+                    events[-1]["text"] = str(events[-1]["text"]) + event.text
+                else:
+                    events.append({"text": event.text})
+        elif event.type == "change_applied":
+            change_cards += 1
+        elif event.type == "completed":
+            terminal = "completed"
+            outcome = event.outcome.kind
+            saved_changes = len(event.outcome.changes)
+            input_tokens = event.usage.input_tokens
+            output_tokens = event.usage.output_tokens
+            if events is not None:
+                events.append({"outcome": event.outcome.model_dump(mode="json")})
+        elif event.type == "failed":
+            terminal = "failed"
+        elif event.type == "cancelled":
+            terminal = "cancelled"
+    end_to_end_ms = (time.monotonic() - started_at) * 1000
+    after = _read_graph(source_file)
+    execution_reasons = execute_goldens(turn.expectations.execution, Path(source_file))
+    assistant_text = "".join(text_parts)
+    telemetry = SelfTestTelemetry(
+        terminal=terminal,
+        outcome=outcome,
+        # A turn that did not complete has no outcome; the saves its card stream
+        # announced are what it saved.
+        saved_changes=change_cards if saved_changes is None else saved_changes,
+        change_cards=change_cards,
+        provider_round_trips=observed_provider.round_trips,
+        tool_calls=observed_tools.calls,
+        failed_tool_calls=observed_tools.failed_calls,
+        duplicate_static_reads=observed_tools.duplicate_static_reads,
+        leaked_forbidden_text=sum(
+            canary in assistant_text for canary in turn.expectations.forbidden_assistant_text
+        ),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        time_to_first_token_ms=observed_provider.first_event_ms or end_to_end_ms,
+        time_to_validated_plan_ms=observed_tools.validated_plan_ms or end_to_end_ms,
+        end_to_end_ms=end_to_end_ms,
+    )
+    return score_turn(
+        turn.expectations,
+        before=before,
+        after=after,
+        telemetry=telemetry,
+        tool_diagnostics=observed_tools.diagnostics,
+        execution_reasons=execution_reasons,
+    )
 
 
 async def run_self_test_case(
@@ -1020,13 +1344,18 @@ async def run_self_test_case(
     work_dir: Path,
     provider_factory: ProviderFactory = create_provider,
     evidence: SelfTestEvidence = "live",
+    variant: SelfTestVariant = "multi_apply",
+    transcript: list[dict[str, object]] | None = None,
 ) -> SelfTestResult:
-    """Run one case's request through *provider_factory*'s provider and the real tools.
+    """Run every turn of one case through *provider_factory*'s provider and the real tools.
 
-    Live evidence comes from the configured provider; replay evidence from a
-    ``TrajectoryProvider`` (``replay_self_test_case``), labelled provider
-    ``replay`` with the trajectory as its model. The fixture is copied into
-    *work_dir*, which must be empty; the caller owns its removal.
+    The turns run in order in one session. Live evidence comes from the
+    configured provider; replay evidence from a ``TrajectoryProvider``
+    (``replay_self_test_case``), labelled provider ``replay`` with the
+    trajectory as its model. The fixture is copied into *work_dir*, which must
+    be empty; the caller owns its removal. A *transcript* list, when given,
+    receives each turn's request, text, tool calls with their payloads and
+    outcome.
     """
 
     config = self_test_config(config)
@@ -1036,102 +1365,46 @@ async def run_self_test_case(
         or not source_fixture.is_dir()
         or any(path.is_symlink() for path in source_fixture.rglob("*"))
     ):
-        raise ValueError(f"self-test project fixture is unsafe: {case.project_fixture}")
+        raise ValueError(f"evaluation project fixture is unsafe: {case.project_fixture}")
     if any(work_dir.iterdir()):
-        raise ValueError("the self-test work directory must be empty")
-    project_root = work_dir / "project"
+        raise ValueError("the evaluation work directory must be empty")
+    # A short directory name: model and snapshot caches nest deep below it.
+    project_root = work_dir / "p"
     shutil.copytree(source_fixture, project_root)
+    prepare_fixture_models(project_root)
     _append_assistant_config(project_root, config)
-    _initialize_mutation_gate(project_root)
     with _working_directory(project_root):
         source_file = "pipeline.py"
-        before = _read_graph(source_file)
-        # The prompt and turn context the message route builds, with no selection.
+        prepare_fixture_snapshots(project_root, source_file)
+        _initialize_mutation_gate(project_root)
+        # The prompt the message route builds.
         system_prompt = build_system_prompt(source_file=source_file)
-        turn_context = render_turn_context(build_turn_context(source_file, config.egress))
         store = SessionStore()
         session = store.create(source_file)
-        started_at = time.monotonic()
-        observed_provider = _ObservedProvider(provider_factory(config), started_at)
-        observed_tools = _ObservedToolExecutor(
-            build_tool_executor(
-                source_file,
+        provider = provider_factory(config)
+        turns = [
+            await _run_turn(
+                turn,
+                store=store,
                 session_id=session.id,
-            ),
-            started_at,
-        )
-        text_parts: list[str] = []
-        terminal: SelfTestTerminal = "failed"
-        incomplete = False
-        input_tokens = 0
-        output_tokens = 0
-        change_cards = 0
-        async for event in run_turn(
-            store,
-            session.id,
-            case.request,
-            provider=observed_provider,
-            tools=TOOL_DEFINITIONS,
-            execute_tool=observed_tools,
-            system_prompt=system_prompt,
-            turn_timeout=None,
-            max_tool_calls=case.expectations.max_tool_calls + 1,
-            turn_context=turn_context,
-            refresh_context=partial(context_update, source_file, config.egress),
-        ):
-            if event.type == "text_delta":
-                text_parts.append(event.text)
-            elif event.type == "change_applied":
-                change_cards += 1
-            elif event.type == "completed":
-                terminal = "completed"
-                incomplete = event.outcome.kind == "incomplete"
-                input_tokens = event.usage.input_tokens
-                output_tokens = event.usage.output_tokens
-            elif event.type == "failed":
-                terminal = "failed"
-            elif event.type == "cancelled":
-                terminal = "cancelled"
-        ended_at = time.monotonic()
-        after = _read_graph(source_file)
-        execution_reasons = execute_goldens(case.expectations.execution, Path(source_file))
-
-    end_to_end_ms = (ended_at - started_at) * 1000
-    assistant_text = "".join(text_parts)
-    telemetry = SelfTestTelemetry(
-        terminal=terminal,
-        outcome=_outcome(
-            assistant_text,
-            applied=observed_tools.applied_plans > 0,
-            incomplete=incomplete,
-            before=before,
-            after=after,
-        ),
-        provider_round_trips=observed_provider.round_trips,
-        tool_calls=observed_tools.calls,
-        failed_tool_calls=observed_tools.failed_calls,
-        duplicate_static_reads=observed_tools.duplicate_static_reads,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        time_to_first_token_ms=observed_provider.first_event_ms or end_to_end_ms,
-        leaked_forbidden_text=sum(
-            canary in assistant_text for canary in case.expectations.forbidden_assistant_text
-        ),
-        time_to_validated_plan_ms=observed_tools.validated_plan_ms or end_to_end_ms,
-        end_to_end_ms=end_to_end_ms,
-        applied_plans=observed_tools.applied_plans,
-        change_cards=change_cards,
-    )
-    return score_self_test(
-        case,
-        before=before,
-        after=after,
-        telemetry=telemetry,
-        tool_diagnostics=observed_tools.diagnostics,
-        execution_reasons=execution_reasons,
+                source_file=source_file,
+                config=config,
+                provider=provider,
+                system_prompt=system_prompt,
+                variant=variant,
+                transcript=transcript,
+            )
+            for turn in case.turns
+        ]
+    return SelfTestResult(
+        id=case.id,
+        fixture_version=case.fixture_version,
+        area=case.area,
+        split=case.split,
+        evidence=evidence,
         provider=config.provider if evidence == "live" else "replay",
         model=config.model,
-        evidence=evidence,
+        turns=tuple(turns),
     )
 
 
@@ -1139,7 +1412,6 @@ _TRAJECTORY_SCHEMA_VERSION = 1
 _TRAJECTORY_KEYS = {"schema_version", "id", "case", "turns"}
 _ROUND_KEYS = {"text", "calls"}
 _CALL_KEYS = {"id", "tool", "arguments", "result"}
-_REPLAY_USAGE = ProviderUsage(input_tokens=0, output_tokens=0)
 
 
 class TrajectoryDivergedError(RuntimeError):
@@ -1388,9 +1660,9 @@ class TrajectoryProvider:
                         yield TextDelta(trajectory_round.text)
                     for request in requests:
                         yield request
-                    yield TurnStop("tool_use" if requests else "end", _REPLAY_USAGE)
+                    yield TurnStop("tool_use" if requests else "end", _NO_USAGE)
                     return
-        yield TurnStop("end", _REPLAY_USAGE)
+        yield TurnStop("end", _NO_USAGE)
 
     def verify(self, diagnostics: Sequence[SelfTestToolDiagnostic]) -> None:
         """Raise ``TrajectoryDivergedError`` unless the loop replayed every recorded
@@ -1462,8 +1734,11 @@ async def replay_self_test_case(
 
     if trajectory.case != case.id:
         raise ValueError(f"trajectory {trajectory.id} replays {trajectory.case}, not {case.id}")
-    if len(trajectory.turns) != 1:
-        raise ValueError(f"trajectory {trajectory.id} must record the case's one turn")
+    if len(trajectory.turns) != len(case.turns):
+        raise ValueError(
+            f"trajectory {trajectory.id} records {len(trajectory.turns)} turns; "
+            f"case {case.id} has {len(case.turns)}"
+        )
     provider = TrajectoryProvider(trajectory)
     result = await run_self_test_case(
         case,
@@ -1482,17 +1757,26 @@ def _run_case_in_this_process(
     projects_root: Path,
     config: AssistantConfig,
     provider_factory: ProviderFactory,
+    variant: SelfTestVariant,
+    work_dir: Path,
+    transcript_path: Path | None,
 ) -> SelfTestResult:
-    with tempfile.TemporaryDirectory(prefix="haute-assistant-self-test-") as work_dir:
+    transcript: list[dict[str, object]] | None = [] if transcript_path is not None else None
+    try:
         return asyncio.run(
             run_self_test_case(
                 case,
                 projects_root=projects_root,
                 config=config,
-                work_dir=Path(work_dir),
+                work_dir=work_dir,
                 provider_factory=provider_factory,
+                variant=variant,
+                transcript=transcript,
             )
         )
+    finally:
+        if transcript_path is not None and transcript is not None:
+            write_transcript(transcript_path, transcript)
 
 
 def run_self_test_cases_in_processes(
@@ -1501,18 +1785,26 @@ def run_self_test_cases_in_processes(
     projects_root: Path,
     config: AssistantConfig,
     provider_factory: ProviderFactory = create_provider,
+    variant: SelfTestVariant = "multi_apply",
+    transcripts: Path | None = None,
 ) -> tuple[SelfTestResult, ...]:
     """Run each case in its own spawned process, one after another.
 
     Process-wide state (caches, the sandbox root, imported project modules)
     cannot carry from one case into the next, so each result measures the model
-    on a fresh process. *provider_factory* must be picklable by reference.
+    on a fresh process. *provider_factory* must be picklable by reference. With
+    *transcripts*, each case writes ``<case id>.json`` there. The parent owns
+    each case's disposable directory and removes it once the case's process
+    has exited and released the locks it held there.
     """
 
     context = multiprocessing.get_context("spawn")
     results: list[SelfTestResult] = []
     for case in cases:
-        with ProcessPoolExecutor(max_workers=1, mp_context=context) as pool:
+        with (
+            tempfile.TemporaryDirectory(prefix="haute-eval-") as work_dir,
+            ProcessPoolExecutor(max_workers=1, mp_context=context) as pool,
+        ):
             results.append(
                 pool.submit(
                     _run_case_in_this_process,
@@ -1520,160 +1812,163 @@ def run_self_test_cases_in_processes(
                     projects_root,
                     config,
                     provider_factory,
+                    variant,
+                    Path(work_dir),
+                    None if transcripts is None else transcripts / f"{case.id}.json",
                 ).result()
             )
     return tuple(results)
 
 
-def self_test_report_payload(results: Sequence[SelfTestResult]) -> dict[str, object]:
-    """Build the closed content-redacted report shared by the CLI and writer.
-
-    One report holds one kind of evidence: replay results prove the tools and
-    contracts, live results measure a model, and the two are never combined.
-    """
-
-    evidence = {result.evidence for result in results}
-    if len(evidence) != 1:
-        raise ValueError("a self-test report holds the results of exactly one evidence kind")
-    return {
-        "schema_version": 2,
-        "evidence": evidence.pop(),
-        "passed": all(result.passed for result in results),
-        "cases": [
-            {
-                "id": result.id,
-                "fixture_version": result.fixture_version,
-                "category": result.category,
-                "passed": result.passed,
-                "layers": {layer: layer not in result.failed_layers for layer in SELF_TEST_LAYERS},
-                "reasons": list(result.reasons),
-                "provider": result.provider,
-                "model": result.model,
-                "outcome": result.telemetry.outcome,
-                "terminal": result.telemetry.terminal,
-                "node_types": list(result.node_types),
-                "edges": [
-                    {
-                        "source": source,
-                        "target": target,
-                        "target_handle": target_handle,
-                    }
-                    for source, target, target_handle in result.edges
-                ],
-                "tools": [
-                    {
-                        "name": diagnostic.name,
-                        "status": diagnostic.status,
-                        "error_code": diagnostic.error_code,
-                        "validation_path": diagnostic.validation_path,
-                        "validation_reason": diagnostic.validation_reason,
-                    }
-                    for diagnostic in result.tool_diagnostics
-                ],
-                "metrics": {
-                    "provider_round_trips": result.telemetry.provider_round_trips,
-                    "tool_calls": result.telemetry.tool_calls,
-                    "failed_tool_calls": result.telemetry.failed_tool_calls,
-                    "duplicate_static_reads": result.telemetry.duplicate_static_reads,
-                    "input_tokens": result.telemetry.input_tokens,
-                    "output_tokens": result.telemetry.output_tokens,
-                    "time_to_first_token_ms": result.telemetry.time_to_first_token_ms,
-                    "leaked_forbidden_text": result.telemetry.leaked_forbidden_text,
-                    "time_to_validated_plan_ms": result.telemetry.time_to_validated_plan_ms,
-                    "end_to_end_ms": result.telemetry.end_to_end_ms,
-                },
-            }
-            for result in results
-        ],
-    }
-
-
-def write_self_test_report(path: Path, results: Sequence[SelfTestResult]) -> Path:
-    """Atomically write a report containing no prompts, prose, tool payloads, or secrets."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(
-            self_test_report_payload(results),
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
-    return path
-
-
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_CASES = _REPOSITORY_ROOT / "tests" / "assistant_eval" / "self_test"
-_DEFAULT_PROJECTS = _REPOSITORY_ROOT / "tests" / "assistant_eval" / "projects"
+_EVAL_ROOT = _REPOSITORY_ROOT / "tests" / "assistant_eval"
+_DEFAULT_CASES = _EVAL_ROOT / "cases"
+_DEFAULT_PROJECTS = _EVAL_ROOT / "projects"
+_DEFAULT_MATRIX = _EVAL_ROOT / "support_matrix.json"
+
+
+def new_run_id() -> str:
+    """A run id that sorts by start time."""
+
+    return f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
+
+
+def _add_selection(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--cases", type=Path, default=_DEFAULT_CASES)
+    parser.add_argument("--projects", type=Path, default=_DEFAULT_PROJECTS)
+    parser.add_argument("--case", action="append", default=[], help="Case id; repeatable.")
+    parser.add_argument("--area", action="append", default=[], help="Area; repeatable.")
+    parser.add_argument("--split", action="append", default=[], help="Split; repeatable.")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the assistant evaluation cases live against the configured provider in "
-            "disposable projects. The lane makes real provider requests; after each turn "
-            "the harness executes only the case's golden nodes, never a sink."
+            "Run the assistant evaluation live against the configured provider in disposable "
+            "projects, compare two reports, or list the cases."
         )
     )
-    parser.add_argument("--cases", type=Path, default=_DEFAULT_CASES)
-    parser.add_argument("--projects", type=Path, default=_DEFAULT_PROJECTS)
-    parser.add_argument(
-        "--case",
-        action="append",
-        default=[],
-        help="Case id to run; repeat for a selection. All cases run when omitted.",
+    commands = parser.add_subparsers(dest="command", required=True)
+    record = commands.add_parser(
+        "record",
+        help=(
+            "Run the selected cases against the configured provider (real provider requests) "
+            "and write the redacted report; after each turn the harness executes only that "
+            "turn's golden nodes, never a sink."
+        ),
     )
-    parser.add_argument(
+    _add_selection(record)
+    record.add_argument("--variant", choices=VARIANTS, default="multi_apply")
+    record.add_argument(
         "--config-root",
         type=Path,
         default=Path.cwd(),
         help="Project containing the .env and [assistant] settings to use.",
     )
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--list", action="store_true", help="List case ids without provider calls.")
+    record.add_argument(
+        "--output",
+        type=Path,
+        help="Report path; default .haute/assistant-eval/<run id>/report.json in the config root.",
+    )
+    record.add_argument(
+        "--transcripts",
+        action="store_true",
+        help=(
+            "Also write each case's transcript (requests, text, tool payloads) under the config "
+            "root's Git-ignored .haute/assistant-eval/<run id>/transcripts/."
+        ),
+    )
+    record.add_argument("--matrix", type=Path, default=_DEFAULT_MATRIX)
+    compare = commands.add_parser("compare", help="Compare two reports of one evidence kind.")
+    compare.add_argument("before", type=Path)
+    compare.add_argument("after", type=Path)
+    listing = commands.add_parser("list", help="List the selected cases without provider calls.")
+    _add_selection(listing)
     return parser
 
 
-def _run(args: argparse.Namespace) -> int:
-    cases = load_self_test_cases(args.cases, projects_root=args.projects)
-    selected = select_self_test_cases(cases, args.case)
-    if args.list:
-        print(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "cases": [
-                        {
-                            "id": case.id,
-                            "category": case.category,
-                            "project_fixture": case.project_fixture,
-                        }
-                        for case in selected
-                    ],
-                },
-                sort_keys=True,
-            )
-        )
-        return 0
+def _selected(args: argparse.Namespace) -> tuple[SelfTestCase, ...]:
+    return select_self_test_cases(
+        load_self_test_cases(args.cases, projects_root=args.projects),
+        args.case,
+        areas=args.area,
+        splits=args.split,
+    )
 
+
+def _record(args: argparse.Namespace) -> int:
+    selected = _selected(args)
     config_root = args.config_root.resolve()
     _load_env(config_root)
     config = self_test_config(resolve_assistant_config(config_root))
+    run_id = new_run_id()
+    run_dir = config_root / ".haute" / "assistant-eval" / run_id
+    transcripts = run_dir / "transcripts" if args.transcripts else None
+    if transcripts is not None:
+        require_git_ignored(transcripts)
+    run = RunIdentity(
+        run_id=run_id,
+        started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        variant=args.variant,
+        provider=config.provider,
+        model=config.model,
+        configuration=configuration_for(
+            load_support_matrix(args.matrix), provider=config.provider, model=config.model
+        ),
+        haute_version=haute.__version__,
+    )
     results = run_self_test_cases_in_processes(
         selected,
         projects_root=args.projects,
         config=config,
+        variant=args.variant,
+        transcripts=transcripts,
     )
-    if args.output is not None:
-        write_self_test_report(args.output, results)
-    payload = self_test_report_payload(results)
-    if args.output is not None:
-        payload["report"] = str(args.output.resolve())
-    print(json.dumps(payload, sort_keys=True))
+    output = args.output if args.output is not None else run_dir / "report.json"
+    write_report(output, results, run)
+    payload = report_payload(results, run)
+    print(
+        json.dumps(
+            {
+                "report": str(output.resolve()),
+                "passed": payload["passed"],
+                "areas": {
+                    area: {"cases": summary["cases"], "passed": summary["passed"]}
+                    for area, summary in cast(
+                        Mapping[str, Mapping[str, object]], payload["areas"]
+                    ).items()
+                },
+            },
+            sort_keys=True,
+        )
+    )
     return 0 if payload["passed"] else 1
+
+
+def _run(args: argparse.Namespace) -> int:
+    if args.command == "record":
+        return _record(args)
+    if args.command == "compare":
+        print(json.dumps(compare_report_files(args.before, args.after), sort_keys=True, indent=2))
+        return 0
+    print(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "id": case.id,
+                        "area": case.area,
+                        "split": case.split,
+                        "project_fixture": case.project_fixture,
+                        "turns": len(case.turns),
+                    }
+                    for case in _selected(args)
+                ],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

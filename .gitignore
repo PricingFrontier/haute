@@ -224,6 +224,7 @@ mlflow.db
 catboost_info/
 *.cbm
 !tests/fixtures/**/*.cbm
+!tests/assistant_eval/projects/**/*.cbm
 
 # Databricks local parquet cache
 .haute_cache/
