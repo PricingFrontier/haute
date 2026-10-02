@@ -12,7 +12,12 @@ import {
   ResponsiveChart,
   ValueColorBar,
 } from "../modelling/ChartScaffold"
-import { VALUE_NEUTRAL_COLOR, valuePositionColor } from "../modelling/beeswarm"
+import {
+  VALUE_HIGH_COLOR,
+  VALUE_LOW_COLOR,
+  VALUE_NEUTRAL_COLOR,
+  valuePositionColor,
+} from "../modelling/beeswarm"
 import {
   factorRateSpread,
   formatRate,
@@ -387,7 +392,10 @@ function BeeswarmSvg({
         top={MARGIN_TOP - 14}
         bottom={height - MARGIN_BOTTOM + 14}
         title="Factor value"
+        lowColor={VALUE_LOW_COLOR}
+        highColor={VALUE_HIGH_COLOR}
         captionColor={MUTED_COLOR}
+        fontSize={10}
         testId="ratebook-impact-colour-bar"
       />
     </ChartSvg>

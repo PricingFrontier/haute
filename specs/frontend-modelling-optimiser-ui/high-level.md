@@ -37,10 +37,12 @@ results are supplied by API and result-store layers.
   then Loss and SHAP (mean absolute SHAP) when the result has them, then SHAP beeswarm when
   it has beeswarm rows (CatBoost, XGBoost, LightGBM). The beeswarm draws one row per feature,
   in mean-absolute-SHAP order, and one dot per sampled row (up to 2,000) placed by its SHAP
-  value on the link scale around a zero line; a numeric feature's dots run from the low to
-  the high colour by the value's rank, and a categorical feature's dots are neutral, with a
-  legend entry saying they have no value order. The dots are painted on a canvas layer under
-  the chart's labels so thousands of them stay responsive. It replaces the search and
+  value on the link scale around a zero line; a numeric feature's dots run from the low (blue)
+  to the high (red) colour by the value's rank, and a categorical feature's or a missing
+  value's dots are grey, which no low-to-high mix resembles, with a legend entry saying they
+  have no value order. It draws on the panel surface with the other modelling charts' axis
+  text, grid lines and label colours, not a plot of its own. The dots are painted on a canvas
+  layer under the chart's labels so thousands of them stay responsive. It replaces the search and
   Features shown controls with one line saying it shows the top 20 of N features by mean
   |SHAP| over the sampled rows. Dots stack within their row so dense regions show as height,
   scaled so the densest stack fits the row. Pointing at a dot names its feature, value (the

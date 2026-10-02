@@ -1,12 +1,19 @@
 /** Value colours and dot stacking shared by the SHAP and ratebook beeswarms. */
 
-/** A value's low and high colours, as a SHAP-style beeswarm colours its dots. */
+/** The ratebook beeswarm's low and high value colours, on its white plot. */
 export const VALUE_LOW_COLOR = "var(--chart-impact-value-low)"
 export const VALUE_HIGH_COLOR = "var(--chart-impact-value-high)"
-/** The colour of a dot whose value has no position, such as a categorical level. */
+/** The ratebook's colour for a level whose value has no position. */
 export const VALUE_NEUTRAL_COLOR = "var(--chart-impact-value-neutral)"
 
-/** The colour for a value at `position`, 0 (low) to 1 (high); null is the neutral colour. */
+/** The SHAP beeswarm's value colours, on the panel surface like the other modelling charts. */
+export const SHAP_VALUE_COLORS = {
+  low: "var(--chart-value-low)",
+  high: "var(--chart-value-high)",
+  none: "var(--chart-value-none)",
+} as const
+
+/** The ratebook's colour for a value at `position`, 0 (low) to 1 (high); null is neutral. */
 export function valuePositionColor(position: number | null): string {
   if (position == null) return VALUE_NEUTRAL_COLOR
 
@@ -15,11 +22,11 @@ export function valuePositionColor(position: number | null): string {
   return `color-mix(in srgb, ${VALUE_LOW_COLOR} ${lowPct}%, ${VALUE_HIGH_COLOR} ${highPct}%)`
 }
 
-/** The CSS custom properties behind the value colours, for painting them on a canvas. */
-export const VALUE_COLOR_TOKENS = {
-  low: "--chart-impact-value-low",
-  high: "--chart-impact-value-high",
-  neutral: "--chart-impact-value-neutral",
+/** The custom properties behind `SHAP_VALUE_COLORS`, for painting them on a canvas. */
+export const SHAP_VALUE_TOKENS = {
+  low: "--chart-value-low",
+  high: "--chart-value-high",
+  none: "--chart-value-none",
 } as const
 
 export type Rgb = readonly [number, number, number]

@@ -7,7 +7,6 @@ import {
   type SVGProps,
 } from "react"
 import { formatChartNumber, formatChartTicks } from "../../utils/chartHelpers"
-import { VALUE_HIGH_COLOR, VALUE_LOW_COLOR } from "./beeswarm"
 
 export const MODELLING_CHART_GRID_COLOR = "var(--border)"
 export const MODELLING_CHART_AXIS_TEXT_COLOR = "var(--text-muted)"
@@ -273,8 +272,8 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
 const VALUE_COLOR_BAR_WIDTH = 8
 
 /**
- * A vertical low-to-high colour bar at `x` from `top` to `bottom`, captioned
- * High and Low, with `title` rotated beside it.
+ * A vertical colour bar from `lowColor` to `highColor` at `x` from `top` to
+ * `bottom`, captioned High and Low, with `title` rotated beside it.
  */
 export function ValueColorBar({
   gradientId,
@@ -282,7 +281,10 @@ export function ValueColorBar({
   top,
   bottom,
   title,
+  lowColor,
+  highColor,
   captionColor,
+  fontSize,
   testId,
 }: {
   gradientId: string
@@ -290,7 +292,10 @@ export function ValueColorBar({
   top: number
   bottom: number
   title: string
+  lowColor: string
+  highColor: string
   captionColor: string
+  fontSize: number
   testId?: string
 }) {
   const captionX = x + VALUE_COLOR_BAR_WIDTH + 8
@@ -300,8 +305,8 @@ export function ValueColorBar({
     <g>
       <defs>
         <linearGradient id={gradientId} x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0%" stopColor={VALUE_LOW_COLOR} />
-          <stop offset="100%" stopColor={VALUE_HIGH_COLOR} />
+          <stop offset="0%" stopColor={lowColor} />
+          <stop offset="100%" stopColor={highColor} />
         </linearGradient>
       </defs>
       <rect
@@ -312,16 +317,16 @@ export function ValueColorBar({
         height={bottom - top}
         fill={`url(#${gradientId})`}
       />
-      <text x={captionX} y={top + 6} fontSize={10} fill={captionColor}>
+      <text x={captionX} y={top + 6} fontSize={fontSize} fill={captionColor}>
         High
       </text>
-      <text x={captionX} y={bottom + 4} fontSize={10} fill={captionColor}>
+      <text x={captionX} y={bottom + 4} fontSize={fontSize} fill={captionColor}>
         Low
       </text>
       <text
         x={titleX}
         y={titleY}
-        fontSize={10}
+        fontSize={fontSize}
         fill={captionColor}
         textAnchor="middle"
         transform={`rotate(90 ${titleX} ${titleY})`}

@@ -3,6 +3,11 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import type { TrainShapBeeswarmFeature } from "../../../api/types"
 import { BEESWARM_TOKENS, stubBeeswarmCanvas, type PaintedDot } from "../../../test-utils/beeswarmCanvas"
 import { formatChartNumber } from "../../../utils/chartHelpers"
+import {
+  MODELLING_CHART_AXIS_FONT_SIZE,
+  MODELLING_CHART_AXIS_TEXT_COLOR,
+  MODELLING_CHART_GRID_COLOR,
+} from "../ChartScaffold"
 import ShapBeeswarm from "../ShapBeeswarm"
 import { beeswarmOffsets, parseHexColor, valuePositionRgb } from "../beeswarm"
 import { SHAP_BEESWARM_GEOMETRY, layoutShapBeeswarm, nearestDot } from "../shapBeeswarmLayout"
@@ -26,7 +31,7 @@ const REGION: TrainShapBeeswarmFeature = {
 const WIDTH = 640
 const LOW = parseHexColor(BEESWARM_TOKENS.low)
 const HIGH = parseHexColor(BEESWARM_TOKENS.high)
-const NEUTRAL = `rgb(${parseHexColor(BEESWARM_TOKENS.neutral).join(", ")})`
+const NEUTRAL = `rgb(${parseHexColor(BEESWARM_TOKENS.none).join(", ")})`
 
 let painting: { dots: PaintedDot[] }
 
@@ -85,6 +90,19 @@ describe("ShapBeeswarm", () => {
     expect(screen.getByTestId("shap-beeswarm-colour-bar")).toBeInTheDocument()
   })
 
+  it("draws on the panel surface in the modelling charts' text and grid tokens", () => {
+    render(<ShapBeeswarm features={[AGE, REGION]} width={WIDTH} />)
+
+    const chart = screen.getByRole("img", { name: "SHAP beeswarm of 2 features" })
+    expect(chart.style.background).toBe("")
+    expect(chart.innerHTML).not.toMatch(/chart-impact|#[0-9a-f]{3,6}\b|rgba?\(/i)
+    const axisTitle = within(chart).getByText("SHAP value (link scale)")
+    expect(axisTitle).toHaveAttribute("fill", MODELLING_CHART_AXIS_TEXT_COLOR)
+    expect(axisTitle).toHaveAttribute("font-size", String(MODELLING_CHART_AXIS_FONT_SIZE))
+    expect(chart.querySelector(`line[stroke="${MODELLING_CHART_GRID_COLOR}"]`)).not.toBeNull()
+    expect(screen.getByTestId("shap-beeswarm-colour-bar").getAttribute("fill")).toMatch(/^url\(#/)
+  })
+
   it("leaves the legend note out when every dot has a value rank", () => {
     render(
       <ShapBeeswarm
@@ -99,7 +117,7 @@ describe("ShapBeeswarm", () => {
   it("refuses a value colour token that is not a hex colour", () => {
     expect(parseHexColor(" #abc ")).toEqual([170, 187, 204])
     expect(() => parseHexColor("var(--other)")).toThrow(/hex colour/)
-    document.documentElement.style.setProperty("--chart-impact-value-low", "")
+    document.documentElement.style.setProperty("--chart-value-low", "")
     expect(() => render(<ShapBeeswarm features={[AGE]} width={WIDTH} />)).toThrow(/hex colour/)
   })
 

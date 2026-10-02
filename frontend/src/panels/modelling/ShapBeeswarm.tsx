@@ -8,8 +8,17 @@
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 import type { TrainShapBeeswarmFeature } from "../../api/types"
 import { formatChartNumber, formatChartTicks } from "../../utils/chartHelpers"
-import { ChartLegend, ChartSvg, ChartValuesTable, ResponsiveChart, ValueColorBar } from "./ChartScaffold"
-import { VALUE_COLOR_TOKENS, VALUE_NEUTRAL_COLOR, parseHexColor, valuePositionRgb } from "./beeswarm"
+import {
+  ChartLegend,
+  ChartSvg,
+  ChartValuesTable,
+  MODELLING_CHART_AXIS_FONT_SIZE as FONT,
+  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT,
+  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+  ResponsiveChart,
+  ValueColorBar,
+} from "./ChartScaffold"
+import { SHAP_VALUE_COLORS, SHAP_VALUE_TOKENS, parseHexColor, valuePositionRgb } from "./beeswarm"
 import {
   SHAP_BEESWARM_GEOMETRY as G,
   layoutShapBeeswarm,
@@ -26,16 +35,17 @@ interface ShapBeeswarmProps {
 
 type Active = { kind: "dot"; feature: number; row: number } | { kind: "feature"; feature: number } | null
 
-const DOT_OPACITY = 0.6
+/** Dense enough to keep the low-to-high mixes legible on the dark panel. */
+const DOT_OPACITY = 0.8
 /** The approximate advance of a 12px feature label character. */
 const LABEL_CHAR_WIDTH = 7
 
-// ── Theme tokens (the ratebook beeswarm's palette) ───────────────
-const PLOT_BG = "var(--chart-impact-plot-bg)"
-const LABEL_COLOR = "var(--chart-impact-label)"
-const MUTED_COLOR = "var(--chart-impact-muted)"
-const GRID_COLOR = "var(--chart-impact-grid)"
-const AXIS_COLOR = "var(--chart-impact-axis)"
+// ── Theme tokens: the modelling charts' text, grid and surface ───
+const LABEL_COLOR = "var(--text-secondary)"
+const ACTIVE_LABEL_COLOR = "var(--text-primary)"
+const ZERO_LINE_COLOR = "var(--text-secondary)"
+const ACTIVE_ROW_FILL = "var(--bg-hover)"
+const POINTED_RING_COLOR = "var(--text-primary)"
 const VALUE_GRADIENT_ID = "shap-beeswarm-value-gradient"
 
 const NO_ORDER_NOTE = "No value order (categorical level or missing value)"
@@ -95,9 +105,9 @@ function paintDots(
   if (!context) throw new Error("A 2D canvas context is unavailable for the SHAP beeswarm.")
 
   const tokens = getComputedStyle(document.documentElement)
-  const low = parseHexColor(tokens.getPropertyValue(VALUE_COLOR_TOKENS.low))
-  const high = parseHexColor(tokens.getPropertyValue(VALUE_COLOR_TOKENS.high))
-  const neutral = parseHexColor(tokens.getPropertyValue(VALUE_COLOR_TOKENS.neutral))
+  const low = parseHexColor(tokens.getPropertyValue(SHAP_VALUE_TOKENS.low))
+  const high = parseHexColor(tokens.getPropertyValue(SHAP_VALUE_TOKENS.high))
+  const neutral = parseHexColor(tokens.getPropertyValue(SHAP_VALUE_TOKENS.none))
   // Colours 0..100 are the whole-percent rank mixes; 101 is the neutral colour.
   const colours = [
     ...Array.from({ length: 101 }, (_, percent) => valuePositionRgb(percent / 100, low, high)),
@@ -140,7 +150,7 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
       </ResponsiveChart>
 
       {hasUnordered && (
-        <ChartLegend compact items={[{ label: NO_ORDER_NOTE, color: VALUE_NEUTRAL_COLOR, swatch: "bar" }]} />
+        <ChartLegend compact items={[{ label: NO_ORDER_NOTE, color: SHAP_VALUE_COLORS.none, swatch: "bar" }]} />
       )}
 
       <div className="validation-bin-detail" role="status" aria-live="polite">
@@ -225,7 +235,6 @@ function BeeswarmChart({
         width={width}
         height={height}
         ariaLabel={`SHAP beeswarm of ${features.length} features`}
-        style={{ background: PLOT_BG, borderRadius: 4, border: "1px solid var(--border)" }}
       >
         {ticks.map((tick, index) => (
           <g key={tick}>
@@ -235,14 +244,13 @@ function BeeswarmChart({
               x2={xScale(tick)}
               y2={height - G.marginBottom}
               stroke={GRID_COLOR}
-              strokeDasharray="1,5"
             />
             <text
               x={xScale(tick)}
-              y={height - G.marginBottom + 16}
+              y={height - G.marginBottom + 18}
               textAnchor="middle"
-              fontSize={11}
-              fill={MUTED_COLOR}
+              fontSize={FONT}
+              fill={AXIS_TEXT}
             >
               {tickLabels[index]}
             </text>
@@ -253,8 +261,7 @@ function BeeswarmChart({
           y1={G.marginTop - 4}
           x2={zeroX}
           y2={height - G.marginBottom + 4}
-          stroke={AXIS_COLOR}
-          strokeWidth={1.5}
+          stroke={ZERO_LINE_COLOR}
         />
 
         {features.map((feature, index) => {
@@ -283,17 +290,24 @@ function BeeswarmChart({
                 y={lineY - G.rowGap / 2}
                 width={plotRight}
                 height={G.rowGap}
-                fill={isActive ? GRID_COLOR : "transparent"}
-                opacity={isActive ? 0.45 : 1}
+                rx={4}
+                fill={isActive ? ACTIVE_ROW_FILL : "transparent"}
               />
-              <line x1={marginLeft} y1={lineY} x2={plotRight} y2={lineY} stroke={GRID_COLOR} />
+              <line
+                x1={marginLeft}
+                y1={lineY}
+                x2={plotRight}
+                y2={lineY}
+                stroke={GRID_COLOR}
+                strokeDasharray="2,4"
+              />
               <text
                 x={marginLeft - G.labelGap}
                 y={lineY + 4}
                 textAnchor="end"
-                fontSize={12}
-                fontWeight={600}
-                fill={LABEL_COLOR}
+                fontSize={FONT}
+                fontWeight={500}
+                fill={isActive ? ACTIVE_LABEL_COLOR : LABEL_COLOR}
                 style={{ cursor: "pointer" }}
                 onClick={activate}
               >
@@ -308,8 +322,8 @@ function BeeswarmChart({
           x={(marginLeft + plotRight) / 2}
           y={height - 8}
           textAnchor="middle"
-          fontSize={12}
-          fill={MUTED_COLOR}
+          fontSize={FONT}
+          fill={AXIS_TEXT}
         >
           SHAP value (link scale)
         </text>
@@ -320,7 +334,10 @@ function BeeswarmChart({
           top={G.marginTop}
           bottom={height - G.marginBottom}
           title="Feature value"
-          captionColor={MUTED_COLOR}
+          lowColor={SHAP_VALUE_COLORS.low}
+          highColor={SHAP_VALUE_COLORS.high}
+          captionColor={AXIS_TEXT}
+          fontSize={FONT}
           testId="shap-beeswarm-colour-bar"
         />
       </ChartSvg>
@@ -345,7 +362,7 @@ function BeeswarmChart({
             cy={layout.y[pointedIndex]}
             r={G.dotRadius + 2.5}
             fill="none"
-            stroke={LABEL_COLOR}
+            stroke={POINTED_RING_COLOR}
             strokeWidth={1.5}
           />
         </svg>

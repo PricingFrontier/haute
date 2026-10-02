@@ -1,10 +1,10 @@
 import { vi } from "vitest"
-import { VALUE_COLOR_TOKENS } from "../panels/modelling/beeswarm"
+import { SHAP_VALUE_TOKENS } from "../panels/modelling/beeswarm"
 
 export type PaintedDot = { x: number; y: number; fill: string }
 
-/** The value colour tokens as index.css defines them. */
-export const BEESWARM_TOKENS = { low: "#008bfb", high: "#ff0051", neutral: "#7c3aed" } as const
+/** The SHAP value colour tokens as index.css resolves them. */
+export const BEESWARM_TOKENS = { low: "#008bfb", high: "#ff0051", none: "#828899" } as const
 
 /**
  * Stub the 2D canvas context jsdom lacks, recording each painted dot with the
@@ -32,8 +32,8 @@ export function stubBeeswarmCanvas(): { dots: PaintedDot[] } {
     context as unknown as CanvasRenderingContext2D,
   )
   const root = document.documentElement.style
-  root.setProperty(VALUE_COLOR_TOKENS.low, BEESWARM_TOKENS.low)
-  root.setProperty(VALUE_COLOR_TOKENS.high, BEESWARM_TOKENS.high)
-  root.setProperty(VALUE_COLOR_TOKENS.neutral, BEESWARM_TOKENS.neutral)
+  root.setProperty(SHAP_VALUE_TOKENS.low, BEESWARM_TOKENS.low)
+  root.setProperty(SHAP_VALUE_TOKENS.high, BEESWARM_TOKENS.high)
+  root.setProperty(SHAP_VALUE_TOKENS.none, BEESWARM_TOKENS.none)
   return painting
 }

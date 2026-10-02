@@ -19,7 +19,7 @@ export const SHAP_BEESWARM_GEOMETRY = {
   minLabelArea: 88,
   maxLabelArea: 160,
   marginRight: 64,
-  colorBarInset: 48,
+  colorBarInset: 52,
   dotRadius: 2,
 } as const
 
