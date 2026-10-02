@@ -1049,13 +1049,24 @@ def _normalise_databricks_tool_arguments(
     return dict(_decode_databricks_value(arguments, schema, ""))
 
 
+def _sdk_import_failure(provider: str, sdk: str, exc: ImportError) -> AssistantProviderError:
+    """Name what is missing when *sdk* cannot be imported, the SDK or one of its dependencies."""
+
+    if isinstance(exc, ModuleNotFoundError) and exc.name not in (None, sdk):
+        detail = (
+            f"the {sdk} SDK cannot be imported because its dependency {exc.name!r} is "
+            "missing; reinstall haute to repair the environment"
+        )
+    else:
+        detail = f"the {sdk} SDK is not installed; reinstall haute to repair the environment"
+    return _provider_error(provider, "dependency", detail)
+
+
 def _load_anthropic_client(config: AssistantConfig) -> Any:
     try:
         import anthropic
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise _provider_error(
-            "anthropic", "dependency", "the anthropic SDK is not installed"
-        ) from exc
+    except ImportError as exc:
+        raise _sdk_import_failure("anthropic", "anthropic", exc) from exc
     try:
         return anthropic.AsyncAnthropic(api_key=config.api_key)
     except Exception as exc:
@@ -1064,16 +1075,16 @@ def _load_anthropic_client(config: AssistantConfig) -> Any:
 
 def _load_openai_client(config: AssistantConfig, provider: str = "openai") -> Any:
     try:
-        import httpx  # the openai SDK's own transport dependency
         import openai
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise _provider_error(provider, "dependency", "the openai SDK is not installed") from exc
+    except ImportError as exc:
+        raise _sdk_import_failure(provider, "openai", exc) from exc
     # The read bound follows the turn timeout so a stalled stream cannot
-    # outlive the turn that owns it.
+    # outlive the turn that owns it. The SDK's own Timeout, never its transport
+    # package's: that package is the SDK's dependency, not haute's.
     read_timeout = float(int_env(TURN_TIMEOUT_ENV, DEFAULT_TURN_TIMEOUT))
     kwargs: dict[str, Any] = {
         "api_key": config.api_key,
-        "timeout": httpx.Timeout(read_timeout, connect=_PROVIDER_CONNECT_TIMEOUT_SECONDS),
+        "timeout": openai.Timeout(read_timeout, connect=_PROVIDER_CONNECT_TIMEOUT_SECONDS),
     }
     if config.base_url is not None:
         kwargs["base_url"] = config.base_url

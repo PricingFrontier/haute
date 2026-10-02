@@ -2592,7 +2592,7 @@ class TestLazyClientLoaders:
         monkeypatch.setitem(
             sys.modules,
             "openai",
-            SimpleNamespace(AsyncOpenAI=fake_client),
+            SimpleNamespace(AsyncOpenAI=fake_client, Timeout=httpx.Timeout),
         )
         config = _config(
             "databricks",
@@ -2627,7 +2627,9 @@ class TestLazyClientLoaders:
             captured.update(kwargs)
             return object()
 
-        monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=fake_client))
+        monkeypatch.setitem(
+            sys.modules, "openai", SimpleNamespace(AsyncOpenAI=fake_client, Timeout=httpx.Timeout)
+        )
         monkeypatch.setenv("HAUTE_ASSISTANT_TURN_TIMEOUT", "120")
         provider_cls(_config(provider, base_url="https://workspace.example/serving"))
 
@@ -2636,6 +2638,45 @@ class TestLazyClientLoaders:
         assert timeout.connect == 30.0
         assert timeout.read == 120.0
         assert ("max_retries" in captured) is (provider == "databricks")
+
+    def test_the_openai_client_never_imports_httpx_itself(self, monkeypatch: pytest.MonkeyPatch):
+        """openai 3 moved its transport to httpx2, so an environment with it has no
+        httpx: the adapter builds its timeouts through the SDK's own Timeout."""
+
+        import sys
+
+        import openai
+
+        captured: dict[str, object] = {}
+
+        def fake_client(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setitem(sys.modules, "httpx", None)
+        monkeypatch.setitem(
+            sys.modules, "openai", SimpleNamespace(AsyncOpenAI=fake_client, Timeout=openai.Timeout)
+        )
+        DatabricksProvider(_config("databricks", base_url="https://workspace.example/serving"))
+
+        assert isinstance(captured["timeout"], openai.Timeout)
+
+    def test_a_missing_sdk_dependency_is_named(self, monkeypatch: pytest.MonkeyPatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "openai":
+                raise ModuleNotFoundError("No module named 'httpx2'", name="httpx2")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        with pytest.raises(AssistantProviderError) as excinfo:
+            OpenAIProvider(_config("openai"))
+        assert excinfo.value.failure_class == "dependency"
+        assert "httpx2" in str(excinfo.value)
+        assert "reinstall" in str(excinfo.value)
 
     def test_installed_sdks_construct_real_clients(self):
         anthropic_provider = AnthropicProvider(_config("anthropic"))

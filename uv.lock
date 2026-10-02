@@ -1272,7 +1272,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.40" },
+    { name = "anthropic", specifier = ">=0.40,<1" },
     { name = "catboost", specifier = ">=1.2.10,<2" },
     { name = "click", specifier = ">=8.4.2,<9" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.88.0,<0.89" },
@@ -1285,7 +1285,7 @@ requires-dist = [
     { name = "mlflow", specifier = ">=3.11.0,<4" },
     { name = "msgspec", specifier = ">=0.21.1,<0.22" },
     { name = "numpy", specifier = ">=2.0,<3" },
-    { name = "openai", specifier = ">=1.55" },
+    { name = "openai", specifier = ">=1.55,<3" },
     { name = "optuna", specifier = ">=4.9.0,<4.10" },
     { name = "orjson", specifier = ">=3.11.7,<4" },
     { name = "packaging", specifier = ">=25.0,<26" },

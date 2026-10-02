@@ -776,7 +776,9 @@ model; the error names the nodes the plan adds, by id and ref.
   extra, because a feature the product leads with must not require a second
   install step. The SDKs are still imported lazily at the adapter seam, so importing Haute
   never triggers provider-side behaviour, and a broken installation surfaces as a named
-  readiness reason rather than an import crash. A Databricks serving endpoint speaks the
+  readiness reason rather than an import crash. Both are capped at the major versions the
+  adapters are tested on (`anthropic<1`, `openai<3`), and a failed SDK import names the
+  missing module, the SDK or one of its dependencies. A Databricks serving endpoint speaks the
   OpenAI protocol, so the public `DatabricksProvider` reuses that wire implementation while
   retaining a truthful provider identity, Databricks-specific error attribution, and the
   standard Databricks `.env` contract. Each provider lane receives the tool-schema

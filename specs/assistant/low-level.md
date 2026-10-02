@@ -1571,7 +1571,8 @@ the turn that follows.
   `DatabricksProvider` uses the URL derived by `_config`, attributes errors as
   `databricks`, and otherwise reuses this exact stream path; adapter tests assert the
   emitted request for both shapes. Every OpenAI-compatible client is constructed with an
-  explicit `httpx.Timeout`: a thirty-second connect timeout (the SDK default of five seconds
+  explicit `openai.Timeout` (the SDK's own type: its transport package is the SDK's
+  dependency, not Haute's, and openai 3 moved it to `httpx2`): a thirty-second connect timeout (the SDK default of five seconds
   failed live against a Databricks serving endpoint before any stream existed) and a read
   timeout equal to `HAUTE_ASSISTANT_TURN_TIMEOUT`. Databricks client construction disables
   the OpenAI SDK's internal retries. `DatabricksProvider` retries only a pre-stream SDK
