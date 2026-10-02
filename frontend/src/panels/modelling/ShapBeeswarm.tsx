@@ -39,7 +39,7 @@ const LABEL_AREA_SHARE = 0.22
 const MIN_LABEL_AREA = 88
 const MAX_LABEL_AREA = 160
 const MARGIN_RIGHT = 64
-const COLOR_BAR_INSET = 36
+const COLOR_BAR_INSET = 48
 /** The approximate advance of a 12px feature label character. */
 const LABEL_CHAR_WIDTH = 7
 

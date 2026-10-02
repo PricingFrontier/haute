@@ -40,7 +40,7 @@ export function FeaturesTab({ result }: FeaturesTabProps) {
     ],
     [result.feature_importance_loss, result.shap_summary, result.shap_beeswarm],
   )
-  const beeswarm = importanceType === "beeswarm"
+  const beeswarm = importanceType === "beeswarm" && result.shap_beeswarm.length > 0
 
   const allItems = useMemo(() => {
     if (importanceType === "shap" || importanceType === "beeswarm") {
