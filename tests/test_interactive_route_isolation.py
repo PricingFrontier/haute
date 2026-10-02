@@ -119,6 +119,87 @@ def test_rejected_node_config_is_a_422_through_the_spawn_worker(
     }
 
 
+def test_a_free_code_step_that_never_finishes_is_stopped_with_its_worker(
+    monkeypatch,
+) -> None:
+    """Free code runs on every debounced edit, so a snippet that never ends
+    must not pin a server thread: at the deadline its worker is killed and
+    replaced, the request answers with the timeout note, and the next
+    resolution runs on the replacement."""
+    import time
+
+    import haute.routes.pipeline as pipeline_module
+    from haute._interactive_workers import (
+        interactive_worker_pool,
+        shutdown_interactive_worker_pool,
+    )
+    from haute.server import app
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setattr(pipeline_module, "FREE_CODE_COLUMNS_TIMEOUT_SECONDS", 0.5)
+    shutdown_interactive_worker_pool()
+
+    def body(code: str) -> dict[str, object]:
+        return {
+            "node_id": "rated",
+            "steps": [
+                {"id": "s", "kind": "source", "input": "quotes"},
+                {"id": "c", "kind": "free_code", "code": code},
+            ],
+            "input_names": ["quotes"],
+            "start": "input",
+            "input_columns": {"quotes": [{"name": "premium", "dtype": "Float64"}]},
+            "frame_columns": [],
+        }
+
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            pool = interactive_worker_pool()
+            pool.start()
+            hung_worker = pool._slots[0].process
+            began = time.monotonic()
+            hung = client.post(
+                "/api/pipeline/polars-steps/free-code-columns",
+                json=body("while True:\n    pass"),
+            )
+            elapsed = time.monotonic() - began
+            replacement = pool._slots[0].process
+            ordinary = client.post(
+                "/api/pipeline/polars-steps/free-code-columns",
+                json=body("df = df.with_columns(gross=pl.col('premium') * 1.2)"),
+            )
+    finally:
+        shutdown_interactive_worker_pool()
+
+    assert hung.status_code == 200, hung.text
+    assert hung.json() == {
+        "free_code_columns": [
+            {
+                "step_index": 1,
+                "columns": None,
+                "message": "The code did not finish within 0.5 seconds.",
+            }
+        ]
+    }
+    # The deadline plus starting the replacement worker, never the snippet's runtime.
+    assert elapsed < 30
+    assert not hung_worker.is_alive()
+    assert replacement is not hung_worker
+    assert ordinary.status_code == 200, ordinary.text
+    assert ordinary.json()["free_code_columns"] == [
+        {
+            "step_index": 1,
+            "columns": [
+                {"name": "premium", "dtype": "Float64"},
+                {"name": "gross", "dtype": "Float64"},
+            ],
+            "message": "",
+        }
+    ]
+
+
 def _remote_error(
     *,
     remote_module: str,

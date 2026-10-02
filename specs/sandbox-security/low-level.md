@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), the one path-containment check (`contained_path`) and its project-root form (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
-| `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
+| `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation, which `user_code_line` reads back for error reporting. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
@@ -59,7 +59,10 @@
   [caching](../caching/low-level.md)).
 - **`_PROJECT_ROOT: Path | None`** (module-level, `_sandbox.py`) — lazily set to
   `Path.cwd().resolve()` on first use by `_get_project_root()`; overridable via
-  `set_project_root()` (used by tests and the CLI).
+  `set_project_root()` (used by tests and the CLI). `bound_project_root(root)` is
+  the scoped form: it binds `root` for the duration of a `with` block and restores
+  the previous root on exit, even when the block raises, so a caller that works in
+  several projects in one process never leaves the root on a project it has left.
 - **`_BOOT_SESSION_TOKEN`** (`_local_security.py`) — a `secrets.token_urlsafe(32)`
   generated once at module import, used as the fallback session token when
   `HAUTE_LOCAL_SESSION_TOKEN` is unset.
@@ -86,8 +89,13 @@
    their named bindings and `df` is the output the code must assign. The name
    `df` is therefore reserved and rejected as a polars input, while a preamble
    binding named `df` is hidden from node code. Callers whose code box operates
-   on one implicit frame named `df` — external files, explore, and post-code
-   hooks — opt in explicitly with `alias_first_input_as_df=True`.
+   on one implicit frame named `df` — external files, explore, post-code
+   hooks, and `_polars_steps.resolve_free_code_columns` for a frame-mode
+   surface — opt in explicitly with `alias_first_input_as_df=True`. The
+   free-code columns route runs `resolve_free_code_columns` in the interactive
+   preview worker under a `PREVIEW_EAGER` admission and
+   `FREE_CODE_COLUMNS_TIMEOUT_SECONDS`, so a snippet that never finishes is
+   stopped with its worker rather than pinning a server thread.
 2. Call `validate_user_code(code)`. On `UnsafeCodeError` whose `__cause__` is a
    `SyntaxError`, re-raise the bare `SyntaxError` instead — this normalizes the error
    type callers see for a plain typo versus a guard rejection.

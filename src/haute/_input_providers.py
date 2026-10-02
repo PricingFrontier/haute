@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import threading
 import weakref
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,8 @@ from haute._polars_io_registry import (
     read_polars_input,
     read_polars_input_for_snapshot,
     resolve_input_mode,
+    scan_polars_input_for_schema,
+    scanner_rejected_arguments,
     snapshot_input_plan,
     validate_data_input_config,
 )
@@ -42,6 +46,72 @@ from haute._source_cache import (
     SourceCacheIdentity,
     SourceCacheStore,
 )
+
+
+class InputSnapshotMissingError(PolarsIoConfigError):
+    """A snapshot-backed input has no published generation to read."""
+
+
+@dataclass(frozen=True, slots=True)
+class InferredInputSchema:
+    """How a Data Input's schema was inferred from its file for lack of a snapshot.
+
+    ``inference_rows`` is the ``infer_schema_length`` the scanner received, or
+    ``None`` when no type inference ran (file metadata or a declared schema).
+    """
+
+    format: str
+    inference_rows: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredTableSchema:
+    """An API Input table resolved from its declared contract for lack of a snapshot.
+
+    ``column_count`` is the table's declared selected columns, whatever a
+    consumer demanded.
+    """
+
+    column_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedSchemaTiers:
+    """The inputs a schema-only resolution resolved below the snapshot tier.
+
+    ``inferred`` is keyed by Data Input node id; ``declared`` by API Input node
+    id and table label.
+    """
+
+    inferred: dict[str, InferredInputSchema] = field(default_factory=dict)
+    declared: dict[tuple[str, str], DeclaredTableSchema] = field(default_factory=dict)
+
+
+_SCHEMA_TIERS: ContextVar[RecordedSchemaTiers | None] = ContextVar(
+    "haute_schema_tiers", default=None
+)
+
+_PREVIEW_REMEDY = "Preview this input first, which builds its snapshot."
+
+
+@contextmanager
+def recording_schema_tiers() -> Iterator[RecordedSchemaTiers]:
+    """Admit the inferred and declared schema tiers and collect what they resolved.
+
+    Only a schema-only caller that reports the tiers opens this: without it a
+    missing snapshot keeps its ``input_snapshot_missing`` rejection.
+    """
+    recorded = RecordedSchemaTiers()
+    token = _SCHEMA_TIERS.set(recorded)
+    try:
+        yield recorded
+    finally:
+        _SCHEMA_TIERS.reset(token)
+
+
+def schema_tier_recorder(schema_only: bool) -> RecordedSchemaTiers | None:
+    """The active recorder for a schema-only resolution, else ``None``."""
+    return _SCHEMA_TIERS.get() if schema_only else None
 
 
 def _base_path(base_dir: str | Path | None) -> Path:
@@ -125,23 +195,44 @@ def source_cache_identity(
     return SourceCacheIdentity(provider=provider, descriptor=descriptor)
 
 
-def source_signature(
-    config: Mapping[str, Any],
-    *,
-    base_dir: str | Path | None = None,
-) -> str | None:
-    """Return a verified local-file signature when the provider has one."""
+def _local_source_path(config: Mapping[str, Any], base_dir: str | Path | None) -> Path | None:
+    """The local file a ``file`` provider reads, or ``None`` for any other provider."""
     validated = validate_data_input_config(config)
     # Lakehouse locators are tables/directories whose freshness needs a
     # provider version token. Treating a directory as a missing file made an
     # unchanged string falsely report "fresh" forever.
     if validated["inputType"] != "file":
         return None
-    anchored = _resolved_config_path(validated, base_dir)
-    path = Path(str(anchored["path"]))
+    return Path(str(_resolved_config_path(validated, base_dir)["path"]))
+
+
+def source_signature(
+    config: Mapping[str, Any],
+    *,
+    base_dir: str | Path | None = None,
+) -> str | None:
+    """Return a verified local-file signature when the provider has one."""
+    path = _local_source_path(config, base_dir)
+    if path is None:
+        return None
     if not path.is_file():
         return "missing"
     return file_signature(path).source_signature
+
+
+def signed_source_file(
+    config: Mapping[str, Any],
+    *,
+    base_dir: str | Path | None = None,
+) -> Path | None:
+    """The file whose content :func:`source_signature` signs, or ``None`` when it signs none.
+
+    A provider without a local signature, and a source file that is gone
+    (signed as ``"missing"``), have none. Configuration and one existence
+    check: the file's content is never read.
+    """
+    path = _local_source_path(config, base_dir)
+    return path if path is not None and path.is_file() else None
 
 
 @dataclass(slots=True)
@@ -288,23 +379,67 @@ def resolve_data_input(
     store: SourceCacheStore | None = None,
     base_dir: str | Path | None = None,
     profile: ExecutionProfile | str | None = None,
+    schema_tier_node: str | None = None,
 ) -> pl.LazyFrame:
-    """Resolve canonical direct Parquet or an already-published snapshot."""
+    """Resolve canonical direct Parquet or an already-published snapshot.
+
+    A schema-only resolution (*schema_tier_node*, the node it records under)
+    inside :func:`recording_schema_tiers` whose snapshot is missing resolves at
+    the inferred schema tier instead, recorded under that node.
+    """
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = _resolved_config_path(validated, base_dir)
         return read_polars_input(anchored, profile=profile)
 
     cache_store = store or SourceCacheStore(_cache_root())
-    return lease_input_generation(
-        cache_store,
-        source_cache_identity(validated, base_dir=base_dir),
-        missing_message=(
-            "input_snapshot_missing: This Data Input runs from a snapshot "
-            "that has not been built yet. Build the snapshot (or run a "
-            "preview, which builds it automatically) and try again."
-        ),
+    try:
+        return lease_input_generation(
+            cache_store,
+            source_cache_identity(validated, base_dir=base_dir),
+            missing_message=(
+                "input_snapshot_missing: This Data Input runs from a snapshot "
+                "that has not been built yet. Build the snapshot (or run a "
+                "preview, which builds it automatically) and try again."
+            ),
+        )
+    except InputSnapshotMissingError:
+        recorder = schema_tier_recorder(schema_tier_node is not None)
+        if recorder is None or schema_tier_node is None:
+            raise
+    frame, inferred = _infer_input_schema(validated, base_dir=base_dir)
+    recorder.inferred[schema_tier_node] = inferred
+    return frame
+
+
+def _not_inferable(reason: str) -> InputSnapshotMissingError:
+    return InputSnapshotMissingError(
+        "input_snapshot_missing: This Data Input has no snapshot yet, and its schema "
+        f"cannot be inferred from its file because {reason}. {_PREVIEW_REMEDY}"
     )
+
+
+def _infer_input_schema(
+    config: dict[str, Any],
+    *,
+    base_dir: str | Path | None,
+) -> tuple[pl.LazyFrame, InferredInputSchema]:
+    """Scan a local file input's schema without a snapshot, or refuse with the remedy."""
+    provider = str(config["inputType"])
+    if provider != "file":
+        article = "an" if provider[0] in "aeiou" else "a"
+        raise _not_inferable(f"{article} {provider} input has no local file to scan")
+    anchored = _resolved_config_path(config, base_dir)
+    fmt = format_for_config(anchored)
+    if fmt.scanner is None:
+        raise _not_inferable(f"format {fmt.name!r} reads only eagerly")
+    rejected = scanner_rejected_arguments(fmt, anchored)
+    if rejected:
+        raise _not_inferable(f"only the eager reader accepts its argument(s) {rejected}")
+    if not Path(str(anchored["path"])).is_file():
+        raise PolarsIoConfigError(f"Data Input file {config['path']!r} does not exist.")
+    frame, inference_rows = scan_polars_input_for_schema(anchored)
+    return frame, InferredInputSchema(format=fmt.name, inference_rows=inference_rows)
 
 
 def lease_input_generation(
@@ -317,13 +452,13 @@ def lease_input_generation(
 
     Inside an execution context the lease is released by the context's
     cleanup, after collection; outside one, the returned plan owns it. A
-    missing generation raises ``PolarsIoConfigError`` with *missing_message*.
+    missing generation raises ``InputSnapshotMissingError`` with *missing_message*.
     """
     lease = store.lease(identity)
     try:
         generation = lease.__enter__()
     except FileNotFoundError:
-        raise PolarsIoConfigError(missing_message) from None
+        raise InputSnapshotMissingError(missing_message) from None
     release_lock = threading.Lock()
     released = False
 

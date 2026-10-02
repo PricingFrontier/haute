@@ -61,7 +61,7 @@ from haute._polars_steps import (
     render_polars_steps,
     step_input_names,
 )
-from haute._rating import _normalise_combined_outputs
+from haute._rating import normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import CodegenFn
 from haute._registry import (
@@ -419,7 +419,7 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> NodeSource:
     # Codegen runs at save: a malformed table or combined-output shape fails
     # here as it would at execution, though neither is rendered into the code.
     normalise_rating_tables(node.data.config)
-    _normalise_combined_outputs(node.data.config)
+    normalise_combined_outputs(node.data.config)
     return _config_backed(node, source_names)
 
 

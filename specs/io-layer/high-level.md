@@ -96,7 +96,23 @@ cannot install the cap reuses a ready-but-stale generation with warning code
 `cap_unavailable_stale_reused`; only a missing generation is refused typed
 (`cap_unavailable`). A
 schema-only execution, or one without an admitted execution context, never builds;
-resolution then reports the typed `input_snapshot_missing` rejection as before. Before a
+resolution then reports the typed `input_snapshot_missing` rejection as before. The
+exception is the inferred schema tier, open only to a schema-only caller that records
+it (the assistant's plan verification): a local file input whose format has a lazy
+scanner, and whose configuration that scanner accepts by argument name and value,
+resolves its schema through the scanner with the node's own settings. CSV and NDJSON
+infer types from a bounded number of rows (never the whole file), Parquet and Arrow IPC
+read their file metadata, nothing is collected, and no snapshot is written; the first
+preview still builds the snapshot. Eager-only formats, database, Databricks, lakehouse and
+inline inputs, and configurations only the eager reader accepts keep the
+`input_snapshot_missing` rejection, which then names the reason and the remedy "preview
+this input first". The same caller resolves a structured Quote Input (API Input) table
+with no snapshot at the declared schema tier: the table's schema is the node's own
+request contract, the declared type of each selected column, so the request file is not
+read, nothing is collected, no snapshot is written, and each such table is recorded with
+the tier `declared`. A contract that does not validate (a selected column without a
+declared type, for example) is refused by the contract validator, as a preview would
+refuse it. Before a
 build the engine
 emits a structured warning naming the input, its identity digest, the build class, and the
 reserved limit; afterwards every execution's terminal diagnostics list each input's

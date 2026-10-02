@@ -1,0 +1,114 @@
+{
+  "node_type": "liveSwitch",
+  "authorable": true,
+  "fields": {
+    "input_scenario_map": "Maps each input, by its name, to the run scenario that selects it: \"live\" for the quote request, and a batch scenario name such as \"nb_batch\" for a data source. A run passes through the one input mapped to its scenario and fails when none is.",
+    "inputs": "The incoming edge names in order, the same names the map uses.",
+    "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port. add_edge's target_handle does not name it, so a new source is mapped and listed under the name its edge gives.",
+    "wiring": "One edge per scenario input; the inputs must carry the same columns so downstream nodes work under every scenario. At most one Source Switch per pipeline."
+  },
+  "inputs": [
+    {
+      "edge": "quote",
+      "source_handle": "quote",
+      "columns": {
+        "quote_id": "String",
+        "driver_age": "Int64"
+      }
+    },
+    {
+      "edge": "new_business",
+      "columns": {
+        "quote_id": "String",
+        "driver_age": "Int64"
+      }
+    },
+    {
+      "edge": "renewals",
+      "columns": {
+        "quote_id": "String",
+        "driver_age": "Int64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Use the live quote request when live and a new-business batch file otherwise.",
+      "inputs": [
+        {
+          "edge": "quote",
+          "source_handle": "quote",
+          "columns": {
+            "quote_id": "String",
+            "driver_age": "Int64"
+          }
+        },
+        {
+          "edge": "new_business",
+          "columns": {
+            "quote_id": "String",
+            "driver_age": "Int64"
+          }
+        }
+      ],
+      "config": {
+        "input_scenario_map": {"quote": "live", "new_business": "nb_batch"},
+        "inputs": ["quote", "new_business"]
+      },
+      "produces": ["quote_id", "driver_age"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Route the live request, a new-business batch and a renewal batch by scenario.",
+      "config": {
+        "input_scenario_map": {"quote": "live", "new_business": "nb_batch", "renewals": "renewal_batch"},
+        "inputs": ["quote", "new_business", "renewals"]
+      },
+      "produces": ["quote_id", "driver_age"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "new_business": {
+        "rows": [{"quote_id": "nb1", "driver_age": 30}]
+      },
+      "renewals": {
+        "rows": [{"quote_id": "rn1", "driver_age": 55}]
+      }
+    },
+    "files": {
+      "requests/quote.json": [{"quote_id": "q1", "driver_age": 42}]
+    },
+    "upstream": [
+      {
+        "op": "add_node",
+        "node_type": "apiInput",
+        "name": "quote",
+        "config": {
+          "path": "requests/quote.json",
+          "tables": [
+            {
+              "path": "$[:]",
+              "label": "quote",
+              "emit": true,
+              "row_id_column": "quote_id",
+              "columns": [
+                {"name": "quote_id", "path": "$[:].quote_id", "type": "str", "status": "Confirmed", "selected": true, "levels": null},
+                {"name": "driver_age", "path": "$[:].driver_age", "type": "int", "status": "Confirmed", "selected": true, "levels": null}
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "downstream": [
+      {"op": "add_node", "node_type": "explore", "name": "inspect", "config": {}},
+      {"op": "add_edge", "source": "card", "target": "inspect"}
+    ],
+    "expect": {
+      "minimal": [{"quote_id": "q1", "driver_age": 42}],
+      "realistic": [{"quote_id": "q1", "driver_age": 42}]
+    }
+  }
+}

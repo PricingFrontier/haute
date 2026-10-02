@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "id": "motor_online_optimiser",
+  "case": "motor_online_optimiser",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "refs",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:scenarioExpander",
+                  "node:optimiser"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Expand quotes into price scenarios and optimise expected income online.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "scenarioExpander",
+                    "name": "price_scenarios",
+                    "config": {
+                      "stepCount": 5,
+                      "step_column": "scenario_index",
+                      "column_name": "price_factor",
+                      "min_value": 0.9,
+                      "max_value": 1.1,
+                      "quote_id": "quote_id",
+                      "steps": [
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Price each scenario and estimate its take-up\ndf = df.with_columns(\n    volume=1.5 - pl.col('price_factor'),\n    expected_income=pl.col('premium') * pl.col('price_factor') * (1.5 - pl.col('price_factor')),\n)"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "base_premium",
+                    "target": "price_scenarios"
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "optimiser",
+                    "name": "price_optimiser",
+                    "config": {
+                      "mode": "online",
+                      "objective": "expected_income",
+                      "constraints": {
+                        "volume": {
+                          "min_pct": 0.95
+                        }
+                      },
+                      "quote_id": "quote_id",
+                      "scenario_index": "scenario_index",
+                      "scenario_value": "price_factor",
+                      "max_iter": 50,
+                      "tolerance": 1e-06
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "price_scenarios",
+                    "target": "price_optimiser"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

@@ -84,6 +84,7 @@ from haute.schemas import (
     OptimiserSegmentsResponse,
     OptimiserSolveResponse,
     OptimiserStatusResponse,
+    PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
     RatingLevelsResponse,
     SaveModelResponse,
@@ -193,6 +194,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
     "editor": (
         EditorIdentitiesResponse,
         PolarsStepsRenderResponse,
+        PolarsFreeCodeColumnsResponse,
         ExecutionSettings,
     ),
     "optimiser": (

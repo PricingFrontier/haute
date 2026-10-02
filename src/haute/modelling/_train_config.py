@@ -21,7 +21,7 @@ from types import MappingProxyType
 from typing import Any
 
 from haute.errors import HauteValidationError
-from haute.modelling._descriptors import algorithm_descriptor
+from haute.modelling._descriptors import DESCRIPTORS, algorithm_descriptor
 from haute.modelling._evaluation import EvaluationConfig
 from haute.modelling._glm_terms import (
     glm_model_columns,
@@ -513,6 +513,48 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     return None
 
 
+MISSING_TARGET_MESSAGE = (
+    "Modelling config has no target column. Open the config panel and choose a target column."
+)
+
+
+def validate_modelling_config_values(config: Mapping[str, Any]) -> None:
+    """Raise ``TrainingConfigError`` when a configured value can never train.
+
+    Malformed, not incomplete: an absent value is the objective gate's concern
+    (:func:`training_objective_issue`), so the editor's unfinished ``{}`` passes.
+    The check is pure, so save validation, the train route and the training
+    builder run the same one. The algorithm must be a descriptor key exactly
+    (``"GLM"`` is not ``glm``); then a GLM's values, or another family's loss
+    for its task; and the target must not also be an explicit feature.
+    """
+    algorithm = config.get("algorithm", "catboost")
+    if not isinstance(algorithm, str) or algorithm not in DESCRIPTORS:
+        raise TrainingConfigError(
+            f"Unknown algorithm '{algorithm}'. Available algorithms: {', '.join(DESCRIPTORS)}."
+        )
+    if algorithm == "glm":
+        validate_glm_params(build_train_params(config))
+    else:
+        loss_function = config.get("loss_function")
+        if loss_function:
+            try:
+                DESCRIPTORS[algorithm].native_loss(
+                    str(config.get("task", "regression")), str(loss_function)
+                )
+            except TrainingConfigError:
+                raise
+            except HauteValidationError as exc:
+                raise TrainingConfigError(str(exc)) from exc
+    target = config.get("target")
+    features = config.get("feature_columns")
+    if isinstance(target, str) and target and isinstance(features, list) and target in features:
+        raise TrainingConfigError(
+            f"Target column '{target}' is also listed in feature_columns. A model cannot "
+            "use its target as a feature; remove it from the features."
+        )
+
+
 def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
     """Build the algorithm ``params`` dict from a modelling-node config.
 
@@ -575,10 +617,7 @@ def build_training_job_kwargs(
     """
     target = config.get("target")
     if not isinstance(target, str) or not target:
-        raise TrainingConfigError(
-            "Modelling config has no target column. "
-            "Open the config panel and choose a target column."
-        )
+        raise TrainingConfigError(MISSING_TARGET_MESSAGE)
 
     params = build_train_params(config)
     algorithm = str(config.get("algorithm", "catboost")).lower()
@@ -592,9 +631,8 @@ def build_training_job_kwargs(
         )
     device = validate_training_device(config)
     # A wrong value beats an incomplete one, matching the train route.
-    if glm:
-        validate_glm_params(params)
-    else:
+    validate_modelling_config_values(config)
+    if not glm:
         descriptor.validate_params(params)
         for control in ("monotone_constraints", "feature_weights"):
             if config.get(control) and control not in descriptor.feature_controls:
@@ -603,13 +641,6 @@ def build_training_job_kwargs(
                     "remove them from the Features pane."
                 )
         loss_function = config.get("loss_function")
-        if loss_function:
-            try:
-                descriptor.native_loss(task, str(loss_function))
-            except TrainingConfigError:
-                raise
-            except HauteValidationError as exc:
-                raise TrainingConfigError(str(exc)) from exc
         config_issue = descriptor.config_issue(
             params,
             str(loss_function) if loss_function else None,

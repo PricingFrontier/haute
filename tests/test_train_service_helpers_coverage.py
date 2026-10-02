@@ -12,7 +12,6 @@ import pytest
 
 from haute.modelling._evaluation import EvaluationConfig, generate_evaluation_plan
 from haute.routes._train_service import (
-    _build_training_feature_selection,
     _check_gpu_vram,
     _evaluation_preview_payload,
     _job_elapsed_seconds,
@@ -21,6 +20,7 @@ from haute.routes._train_service import (
     _training_required_columns_by_node,
     _training_required_metadata_columns,
     _VramCheck,
+    build_training_feature_selection,
 )
 
 
@@ -296,13 +296,13 @@ class TestTrainingFeatureSelection:
     )
     def test_invalid_schema_metadata_fails_before_selection(self, schema, message) -> None:
         with pytest.raises(ValueError, match=message):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {"algorithm": "catboost", "target": "target"},
                 schema,
             )
 
     def test_explicit_features_preserve_config_order_and_explain_every_other_column(self) -> None:
-        diagnostic = _build_training_feature_selection(
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "catboost",
                 "target": "target",
@@ -328,7 +328,7 @@ class TestTrainingFeatureSelection:
         ]
 
     def test_all_except_features_preserve_schema_order(self) -> None:
-        diagnostic = _build_training_feature_selection(
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "catboost",
                 "target": "target",
@@ -367,7 +367,7 @@ class TestTrainingFeatureSelection:
             "feature_a": "Float64",
             "unused": "Float64",
         }
-        diagnostic = _build_training_feature_selection(
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
@@ -380,7 +380,7 @@ class TestTrainingFeatureSelection:
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.excluded_columns.items[-1].reason == "not_in_formula"
 
-        stale_exclude = _build_training_feature_selection(
+        stale_exclude = build_training_feature_selection(
             {
                 "algorithm": "glm",
                 "target": "target",
@@ -396,7 +396,7 @@ class TestTrainingFeatureSelection:
         ]
 
         with pytest.raises(ValueError, match="Configured feature column.*missing"):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {
                     "algorithm": "catboost",
                     "target": "target",
@@ -406,7 +406,7 @@ class TestTrainingFeatureSelection:
             )
 
         with pytest.raises(ValueError, match="GLM terms reference columns.*missing"):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {
                     "algorithm": "glm",
                     "target": "target",
@@ -416,7 +416,7 @@ class TestTrainingFeatureSelection:
             )
 
         with pytest.raises(ValueError, match="cannot use role columns: 'target' \\(target\\)"):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {
                     "algorithm": "glm",
                     "target": "target",
@@ -427,12 +427,12 @@ class TestTrainingFeatureSelection:
 
     def test_empty_feature_set_fails_and_high_cardinality_detail_is_bounded(self) -> None:
         with pytest.raises(ValueError, match="No feature columns remaining"):
-            _build_training_feature_selection(
+            build_training_feature_selection(
                 {"algorithm": "catboost", "target": "target"},
                 ["target"],
             )
 
-        diagnostic = _build_training_feature_selection(
+        diagnostic = build_training_feature_selection(
             {
                 "algorithm": "catboost",
                 "target": "target",

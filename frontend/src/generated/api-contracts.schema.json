@@ -608,6 +608,24 @@
       "title": "ChartValueEncoding",
       "type": "object"
     },
+    "ColumnInfo": {
+      "properties": {
+        "dtype": {
+          "title": "Dtype",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "dtype"
+      ],
+      "title": "ColumnInfo",
+      "type": "object"
+    },
     "DispersionEstimateResponse": {
       "properties": {
         "job_id": {
@@ -5215,6 +5233,40 @@
         "device"
       ],
       "title": "FitEvidencePayload",
+      "type": "object"
+    },
+    "FreeCodeColumns": {
+      "description": "The columns of ``df`` after one free-code step, or why they are unknown.",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ColumnInfo"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Columns"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "step_index": {
+          "title": "Step Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "step_index",
+        "columns",
+        "message"
+      ],
+      "title": "FreeCodeColumns",
       "type": "object"
     },
     "GitArchiveResponse": {
@@ -10959,6 +11011,23 @@
       "title": "OptimiserStatusResponse",
       "type": "object"
     },
+    "PolarsFreeCodeColumnsResponse": {
+      "description": "One entry per free-code step, in step order.",
+      "properties": {
+        "free_code_columns": {
+          "items": {
+            "$ref": "#/$defs/FreeCodeColumns"
+          },
+          "title": "Free Code Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "free_code_columns"
+      ],
+      "title": "PolarsFreeCodeColumnsResponse",
+      "type": "object"
+    },
     "PolarsStepsRenderResponse": {
       "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request.",
       "properties": {
@@ -13131,6 +13200,9 @@
     "OptimiserStatusResponse": {
       "$ref": "#/$defs/OptimiserStatusResponse"
     },
+    "PolarsFreeCodeColumnsResponse": {
+      "$ref": "#/$defs/PolarsFreeCodeColumnsResponse"
+    },
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
@@ -13243,6 +13315,7 @@
     "BrowseFilesResponse",
     "EditorIdentitiesResponse",
     "PolarsStepsRenderResponse",
+    "PolarsFreeCodeColumnsResponse",
     "ExecutionSettings",
     "OptimiserSolveResponse",
     "OptimiserEstimateResponse",
@@ -13269,6 +13342,7 @@
     "editor": [
       "EditorIdentitiesResponse",
       "PolarsStepsRenderResponse",
+      "PolarsFreeCodeColumnsResponse",
       "ExecutionSettings"
     ],
     "explore": [

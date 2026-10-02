@@ -1,0 +1,34 @@
+{
+  "schema_version": 5,
+  "id": "claims_null_diagnosis",
+  "fixture_version": "1",
+  "project_fixture": "claims_join",
+  "area": "read_only",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Why is total_incurred null for some quotes in loss_ratio? Don't change anything.",
+      "expectations": {
+        "outcome": "answered",
+        "saves": false,
+        "required_node_types": [],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [],
+        "efficiency": {
+          "max_provider_round_trips": 2,
+          "max_tool_calls": 1,
+          "max_failed_tool_calls": 0,
+          "max_duplicate_static_reads": 0
+        },
+        "data_findings": null
+      }
+    }
+  ]
+}

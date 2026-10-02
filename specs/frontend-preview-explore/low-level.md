@@ -20,7 +20,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. |
+| `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. Its error state renders the optional `errorAction` under the error message (the app shell's "Ask the assistant to fix" button). |
 | `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/previewRunContext.ts`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip with optional visible/assistive per-tab indicators. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |

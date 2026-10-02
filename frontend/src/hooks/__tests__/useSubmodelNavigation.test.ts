@@ -619,7 +619,6 @@ describe("useSubmodelNavigation", () => {
   it("leaves navigation untouched when drilled-view identity resolution fails", async () => {
     const params = makeParams({
       sourceFileRef: { current: "pipelines/main.py" },
-      setCurrentSourceFile: vi.fn(),
       resolveGraphIdentities: vi.fn(async () => {
         throw new Error("identity service unavailable")
       }),
@@ -632,7 +631,6 @@ describe("useSubmodelNavigation", () => {
 
     expect(params.parentGraphRef.current).toBeNull()
     expect(params.sourceFileRef.current).toBe("pipelines/main.py")
-    expect(params.setCurrentSourceFile).not.toHaveBeenCalled()
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setActiveSubmodelIdentity).not.toHaveBeenCalled()
@@ -1186,7 +1184,6 @@ describe("useSubmodelNavigation", () => {
     mockLayout.mockRejectedValueOnce(new Error("Layout failed"))
     const params = makeParams({
       sourceFileRef: { current: "pipelines/main.py" },
-      setCurrentSourceFile: vi.fn(),
     })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
@@ -1196,7 +1193,6 @@ describe("useSubmodelNavigation", () => {
 
     expect(params.parentGraphRef.current).toBeNull()
     expect(params.sourceFileRef.current).toBe("pipelines/main.py")
-    expect(params.setCurrentSourceFile).not.toHaveBeenCalled()
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(result.current.viewStack).toHaveLength(1)
     expect(useToastStore.getState().toasts.at(-1)).toMatchObject({

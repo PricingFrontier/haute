@@ -309,7 +309,27 @@ become diagnostic-unavailable rather than a fabricated success.
 and its input names and returns either the rendered code with each step's line range or
 the failing step index and message. Both outcomes are ordinary responses, so a half-built
 step list shows as an editor message rather than a network error; only a malformed
-request is a transport error. The endpoint reads and writes no project state.
+request is a transport error. The endpoint reads and writes no project state and runs no
+authored code, so the code text never waits on a snippet.
+
+**Free-code columns.** `POST /api/pipeline/polars-steps/free-code-columns` takes the same
+step list with the node id and the columns the editor knows for each input (and for a
+frame-mode surface's `df`), and returns, for each Free code step, the columns of `df`
+after it: the rendered steps up to that one run as node code over empty frames of those
+columns and only the resulting schema is read, or the entry says in one line why it could
+not be resolved. The editor asks for them after a successful render of a list that has a
+Free code step. Because this runs authored code, it runs where previews do: in the
+isolated interactive preview worker under the preview memory budget, with a short
+deadline (`FREE_CODE_COLUMNS_TIMEOUT_SECONDS`, 5 seconds, since the frames are empty) and
+one running request per node, a newer one stopping an older one. A snippet that never
+finishes has its worker stopped and replaced at the deadline, and every Free code step of
+that request reports that the code did not finish in time; a worker that runs out of
+memory or stops otherwise is reported the same way, never as an error. One request
+resolves every Free code step of the list, so one snippet that does not finish leaves the
+earlier ones unresolved for that request too. In the thread execution mode (a development
+fallback) the deadline bounds the response but cannot stop the snippet's thread. The
+steps themselves read no rows; Free code that reads a file itself does so on each
+resolution, as it does in a preview.
 
 ## Design rationale
 
@@ -397,7 +417,13 @@ ledger capture.
 entry point used by both `save(...)` and assistant dry-run. It performs the
 same singleton, data-I/O, declared-config-key, Edge Join role/key/topology,
 sanitized-name, load-error, API-input and path validation that can be decided without staging
-files. Edge Join validation uses the canonical backend join validators, not a
+files. A Quote Input table labelled like another node is refused there, naming the table, the
+Quote Input and the node, because a parameter of that name would read both and the saved
+file would not reload. It rejects any edge out of a node type that has no output
+(`haute._types.SINK_ONLY_NODE_TYPES`: Quote Response, Data Output, Explore, Model
+Training and Optimisation), and it runs codegen's own function-name collision
+check (`haute.codegen.check_function_name_collisions`), so a submodel occurrence
+named like a node inside its definition fails here rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
 save- or assistant-specific approximation. Save invokes it before any write,
 so the validation paths cannot drift.
 
@@ -444,7 +470,8 @@ describes. Stale, changed or already-applied plans fail before
   app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
   tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish
   `pipeline.document.update` on the shared event bus so assistant edits broadcast over
-  `/ws/sync` exactly like external edits.
+  `/ws/sync` exactly like external edits, tagged with an assistant `origin`; its undo
+  route saves an earlier commit forward through the same service.
 - **[codegen](../codegen/high-level.md)** — `SavePipelineService._write_code` calls
   `graph_to_code` / `graph_to_code_multi` and therefore depends on the shared registry
   between codegen and the executor.

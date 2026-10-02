@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "motor_explore_then_run_blocked",
+  "case": "motor_explore_then_run_blocked",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Explore rating_features's output in feature_explore.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "explore",
+                    "name": "feature_explore",
+                    "config": {
+                      "overview": {
+                        "dataset_snapshot": true,
+                        "data_quality": true,
+                        "numeric_summary": true,
+                        "categorical_summary": true,
+                        "schema": true
+                      },
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "rating_features",
+                    "target": "feature_explore"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "BLOCKED: I saved feature_explore, but I author pipelines and never run them or write their results; run the batch from the editor to write the priced file.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

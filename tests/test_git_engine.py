@@ -29,6 +29,7 @@ from haute._git import (
     check_invariants,
     commit_context,
     commit_milestone,
+    commit_parent,
     commit_save,
     create_working_branch,
     delete_working_pair,
@@ -228,6 +229,22 @@ class TestCommitSave:
 
     def test_empty_path_list_is_noop(self, repo: Path) -> None:
         assert commit_save([], WORKING, cwd=repo) is None
+
+    def test_commit_parent_names_a_save_parent_and_none_for_a_root(self, repo: Path) -> None:
+        sha = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert sha is not None
+        assert commit_parent(sha, cwd=repo) == _parents(repo, sha)[0]
+        root = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+        assert commit_parent(root, cwd=repo) is None
+        with pytest.raises(GitDomainError):
+            commit_parent("HEAD~1", cwd=repo)
+
+    def test_default_message_names_the_first_changed_path_in_full(self, repo: Path) -> None:
+        # Porcelain reports a modified tracked file as " M rating.py"; the
+        # leading space is part of the fixed-width status prefix.
+        sha = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert sha is not None
+        assert _git(repo, "log", "-1", "--format=%s", sha) == "Updated rating"
 
 
 class TestMilestoneMerge:

@@ -8,6 +8,7 @@ import { useState } from "react"
 
 vi.mock("../../../../api/client", () => ({
   renderPolarsSteps: vi.fn(),
+  resolveFreeCodeColumns: vi.fn(),
 }))
 
 vi.mock("../../CodeEditor", () => ({
@@ -16,7 +17,7 @@ vi.mock("../../CodeEditor", () => ({
   ),
 }))
 
-import { renderPolarsSteps } from "../../../../api/client"
+import { renderPolarsSteps, resolveFreeCodeColumns } from "../../../../api/client"
 import GeneratedCodePanel, { PENDING_FADE_MS } from "../GeneratedCodePanel"
 import PolarsStepsEditor from "../PolarsStepsEditor"
 import useKeyboardShortcuts from "../../../../hooks/useKeyboardShortcuts"
@@ -29,6 +30,13 @@ import useGraphStore, { resetGraphStoreForTests } from "../../../../stores/useGr
 import { makeNode } from "../../../../test-utils/factories"
 
 const mockRender = vi.mocked(renderPolarsSteps)
+const mockResolve = vi.mocked(resolveFreeCodeColumns)
+
+// Every case answers the free-code columns request with nothing unless it says otherwise.
+beforeEach(() => {
+  mockResolve.mockReset()
+  mockResolve.mockResolvedValue({ free_code_columns: [] })
+})
 
 const quotes: InputSource = { sourceNodeId: "q", name: "quotes", sourceLabel: "Quotes", edgeId: "e1" }
 const rates: InputSource = { sourceNodeId: "r", name: "rates", sourceLabel: "Rates", edgeId: "e2" }
@@ -81,6 +89,7 @@ function Harness({
   const [config, setConfig] = useState(initial)
   return (
     <PolarsStepsEditor
+      nodeId="rated"
       start={start}
       inputNames={inputNames}
       config={config}
@@ -110,6 +119,7 @@ function Harness({
 function HistoryHarness() {
   const node = useGraphStore((state) => state.nodes[0])
   return <PolarsStepsEditor
+    nodeId={node.id}
     start="input"
     config={node.data.config as Record<string, unknown>}
     inputSources={[quotes]}
@@ -754,6 +764,33 @@ describe("PolarsStepsEditor notes and linked code", () => {
     expect(cardOf("Step 3: Filter rows")).not.toHaveTextContent("Not in the data")
     fireEvent.click(screen.getByRole("button", { name: "Move Step 3: Filter rows up" }))
     await waitFor(() => expect(cardOf("Step 2: Filter rows")).toHaveTextContent("Not in the data at this step: gross"), { timeout: 5000 })
+  })
+
+  it("offers the cards after free code the columns resolved for it, and says why when they could not be", async () => {
+    const band: Step = { id: "code", kind: "free_code", code: "df = df.with_columns(band=pl.lit(1))" }
+    const typo: Step = { id: "t", kind: "filter", match: "all", conditions: [{ column: "bnad", operator: "is_null" }] }
+    const fresh: Step = { id: "f2", kind: "filter", match: "all", conditions: [{ column: "", operator: "is_null" }] }
+    mockResolve.mockResolvedValue({
+      free_code_columns: [{ step_index: 1, columns: [...COLUMNS, { name: "band", dtype: "Int32" }], message: "" }],
+    })
+    render(<Harness initial={{ steps: [source, band, typo, fresh] }} inputSources={[quotesTyped]} />)
+    await waitFor(() => expect(cardOf("Step 1: Free code")).toHaveTextContent("+band"), { timeout: 5000 })
+    expect(mockResolve.mock.calls[0][0]).toMatchObject({ nodeId: "rated", inputColumns: { quotes: COLUMNS }, frameColumns: [] })
+    expect(cardOf("Step 2: Filter rows")).toHaveTextContent("Not in the data at this step: bnad")
+    fireEvent.click(screen.getByRole("button", { name: "Step 3: Filter rows" }))
+    fireEvent.focus(screen.getByRole("combobox", { name: "Filter condition 1 column" }))
+    expect(screen.getByRole("option", { name: /band/ })).toBeInTheDocument()
+
+    cleanup()
+    mockResolve.mockResolvedValue({
+      free_code_columns: [{ step_index: 1, columns: null, message: "NameError: name 'helper' is not defined" }],
+    })
+    render(<Harness initial={{ steps: [source, { ...band, code: "df = helper(df)" }, typo] }} inputSources={[quotesTyped]} />)
+    await waitFor(
+      () => expect(cardOf("Step 1: Free code")).toHaveTextContent("Columns after this code are not known: NameError: name 'helper' is not defined"),
+      { timeout: 5000 },
+    )
+    expect(cardOf("Step 2: Filter rows")).not.toHaveTextContent("Not in the data")
   })
 
   it("summarises collapsed cards in parts, with the change each step makes to the columns", () => {

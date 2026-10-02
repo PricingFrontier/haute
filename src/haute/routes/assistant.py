@@ -4,29 +4,41 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from functools import partial
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from haute._git import GitHistoryReadError
 from haute._logging import get_logger
+from haute._sandbox import contained_path
 from haute.assistant import _loop, assistant_readiness
+from haute.assistant._catalog import tool_title
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
+from haute.assistant._ops import AssistantOperationError
 from haute.assistant._providers import AssistantProvider, create_provider
+from haute.assistant._render import render_turn_context
 from haute.assistant._session import AssistantSession, SessionStore
-from haute.assistant._tools import TOOL_DEFINITIONS, build_tool_executor
-from haute.errors import ConfigError, HauteError
-from haute.graph_utils import PipelineGraph
+from haute.assistant._tools import (
+    TOOL_DEFINITIONS,
+    TurnContextError,
+    application_service,
+    build_tool_executor,
+    build_turn_context,
+    context_update,
+)
+from haute.errors import ConfigError, HauteError, InvalidPathError, PathOutsideProjectError
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
-    lookup_pipeline_by_name,
-    parse_pipeline_to_graph,
-    raise_pipeline_not_found,
+    save_lock,
 )
+from haute.routes._save_pipeline import StaleDocumentRevisionError
 from haute.schemas import (
     AssistantCancelledEvent,
+    AssistantChangeRecord,
     AssistantMessageRequest,
     AssistantSessionListResponse,
     AssistantSessionRequest,
@@ -34,6 +46,8 @@ from haute.schemas import (
     AssistantSessionSummary,
     AssistantStatusResponse,
     AssistantTranscriptEntry,
+    AssistantUndoRequest,
+    AssistantUndoResponse,
 )
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -63,54 +77,43 @@ def _provider_factory(config: AssistantConfig) -> AssistantProvider:
     return create_provider(config)
 
 
-def _relative_source_file(path: Path) -> str:
-    """Return the source spelling used by the existing pipeline route."""
+def _canonical_source_file(source_file: str) -> str:
+    """Resolve the canvas document's source file to the session binding.
 
-    cwd = Path.cwd().resolve()
-    resolved = path.resolve()
-    try:
-        return str(resolved.relative_to(cwd))
-    except ValueError:
-        return str(path)
+    The path must stay inside the project root and name a discovered pipeline;
+    the binding is its POSIX project-relative spelling, the same spelling the
+    editor document's ``source_file`` carries. There is no default pipeline:
+    the assistant edits exactly the file the canvas shows.
+    """
 
-
-def _find_default_pipeline() -> tuple[Path, PipelineGraph] | None:
-    """Find the first non-empty pipeline using GET /api/pipeline's ordering."""
-
-    cwd = Path.cwd()
-    best: tuple[Path, PipelineGraph] | None = None
+    root = Path.cwd().resolve()
+    target = contained_path(root, source_file)
     for path in discover_pipelines():
-        try:
-            graph = parse_pipeline_to_graph(path)
-            graph.source_file = str(path.relative_to(cwd))
-            if graph.nodes:
-                return path, graph
-            if best is None:
-                best = path, graph
-        except Exception as exc:
-            logger.warning(
-                "assistant_pipeline_parse_failed",
-                file=path.name,
-                error=type(exc).__name__,
-            )
-    return best
+        resolved = path.resolve()
+        if resolved == target:
+            return resolved.relative_to(root).as_posix()
+    raise HTTPException(
+        status_code=404,
+        detail=f"No pipeline file '{source_file}' was found in this project",
+    )
 
 
-def _resolve_pipeline(name: str | None) -> tuple[Path, PipelineGraph]:
-    """Resolve an explicit named pipeline or the default active pipeline."""
+async def _bound_source_file(source_file: str) -> str:
+    """Resolve a request's source file, translating failures at the HTTP edge.
 
-    if name is not None:
-        path = lookup_pipeline_by_name(name)
-        if path is None:
-            raise_pipeline_not_found(name)
-        graph = parse_pipeline_to_graph(path)
-        graph.source_file = _relative_source_file(path)
-        return path, graph
+    Path containment errors propagate to the shared path-error handlers (403
+    for a path outside the project, 400 for an unusable one).
+    """
 
-    resolved = _find_default_pipeline()
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="No pipeline was found")
-    return resolved
+    try:
+        return await asyncio.to_thread(_canonical_source_file, source_file)
+    except (HTTPException, PathOutsideProjectError, InvalidPathError):
+        raise
+    except HauteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        detail = _http_error_detail(exc, "session_source_resolution")
+        raise HTTPException(status_code=500, detail=detail) from None
 
 
 def _http_error_detail(exc: Exception, operation: str) -> str:
@@ -159,8 +162,12 @@ def get_assistant_status() -> AssistantStatusResponse:
 def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEntry]:
     """Map a session's stored neutral history to rehydratable transcript entries.
 
-    Tool entries reuse the same compact result summary the live stream shows;
-    the persisted message's explicit ``is_error`` flag is authoritative.
+    Tool entries reuse the finished title and summary the live stream computes,
+    read from the stored result; the persisted message's explicit ``is_error`` flag is
+    authoritative. A successful apply's stored change record follows its tool
+    entry as a ``change`` entry, as the live ``change_applied`` event did. A
+    turn stored with an outcome ends with one ``outcome`` entry carrying it,
+    the value its live ``completed`` event carried.
     """
 
     entries: list[AssistantTranscriptEntry] = []
@@ -177,50 +184,45 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
             if message.role == "tool":
                 content = message.content if isinstance(message.content, dict) else {}
                 is_error = message.is_error
+                name = message.name or ""
                 entries.append(
                     AssistantTranscriptEntry(
                         kind="tool",
-                        name=message.name or "",
-                        summary=_loop._result_summary(content, is_error),
+                        name=name,
+                        title=tool_title(name, {}, content),
+                        summary=_loop._result_summary(name, content, is_error),
                         is_error=is_error,
                     )
                 )
-                if not is_error and "graph_fingerprint" in content:
-                    graph_fingerprint = content["graph_fingerprint"]
-                    if not isinstance(graph_fingerprint, str):
-                        raise TypeError("tool graph_fingerprint must be a string")
+                if "change" in content:
                     entries.append(
                         AssistantTranscriptEntry(
-                            kind="tool",
-                            name="graph_updated",
-                            summary="Canvas updated",
-                            is_error=False,
+                            kind="change",
+                            change=AssistantChangeRecord.model_validate(content["change"]),
                         )
                     )
+        if turn.outcome is not None:
+            entries.append(AssistantTranscriptEntry(kind="outcome", outcome=turn.outcome))
+        entries.extend(
+            AssistantTranscriptEntry(kind="undo", change=change) for change in turn.undone
+        )
     return entries
 
 
 @router.get("/sessions", response_model=AssistantSessionListResponse)
-async def list_assistant_sessions(pipeline: str | None = None) -> AssistantSessionListResponse:
-    """List this pipeline's saved conversations, most recently used first.
+async def list_assistant_sessions(
+    source_file: str = Query(min_length=1),
+) -> AssistantSessionListResponse:
+    """List the canvas pipeline's saved conversations, most recently used first.
 
-    The panel opens on this list, so it resolves the pipeline the same way
-    session creation does: a conversation belongs to the source file it was
-    bound to, and another pipeline's chats are never offered here.
+    A conversation belongs to the source file it was bound to, and another
+    pipeline's chats are never offered here.
     """
 
-    try:
-        path, _graph = await asyncio.to_thread(_resolve_pipeline, pipeline)
-    except HTTPException:
-        raise
-    except HauteError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except Exception as exc:
-        detail = _http_error_detail(exc, "session_pipeline_resolution")
-        raise HTTPException(status_code=500, detail=detail) from None
-
-    summaries = session_store.list_sessions(_relative_source_file(path))
+    bound_source = await _bound_source_file(source_file)
+    summaries = session_store.list_sessions(bound_source)
     return AssistantSessionListResponse(
+        source_file=bound_source,
         sessions=[
             AssistantSessionSummary(
                 session_id=summary.session_id,
@@ -230,40 +232,36 @@ async def list_assistant_sessions(pipeline: str | None = None) -> AssistantSessi
                 message_count=summary.message_count,
             )
             for summary in summaries
-        ]
+        ],
     )
 
 
 @router.post("/session", response_model=AssistantSessionResponse)
 async def create_assistant_session(body: AssistantSessionRequest) -> AssistantSessionResponse:
-    """Create a session bound to an existing pipeline source file.
+    """Create a session bound to the canvas pipeline's source file.
 
     A prior `session_id` is a resume offer: when it revives (memory or disk)
-    and is bound to the same resolved pipeline, the same session returns with
+    and is bound to the same source file, the same session returns with
     its transcript; any other case creates a fresh session.
     """
 
-    try:
-        path, _graph = await asyncio.to_thread(_resolve_pipeline, body.pipeline)
-    except HTTPException:
-        raise
-    except HauteError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except Exception as exc:
-        detail = _http_error_detail(exc, "session_pipeline_resolution")
-        raise HTTPException(status_code=500, detail=detail) from None
-
-    source_file = _relative_source_file(path)
+    source_file = await _bound_source_file(body.source_file)
     if body.session_id is not None:
         existing = session_store.resume(body.session_id, source_file)
         if existing is not None:
             return AssistantSessionResponse(
                 session_id=existing.id,
+                source_file=existing.source_file,
                 history=_transcript_entries(existing),
+                build_plan=existing.build_plan.current,
             )
 
     session = session_store.create(source_file)
-    return AssistantSessionResponse(session_id=session.id)
+    return AssistantSessionResponse(
+        session_id=session.id,
+        source_file=session.source_file,
+        build_plan=session.build_plan.current,
+    )
 
 
 async def _event_stream(
@@ -273,7 +271,8 @@ async def _event_stream(
     execute_tool: _loop.ToolExecutor,
     system_prompt: str,
     reservation: _loop.TurnReservation,
-    authoring_request: str,
+    turn_context: str,
+    refresh_context: _loop.ContextRefresher,
 ) -> AsyncIterator[str]:
     """Frame loop events as server-sent events."""
 
@@ -288,7 +287,8 @@ async def _event_stream(
         turn_timeout=None,
         max_tool_calls=None,
         reservation=reservation,
-        authoring_request=authoring_request,
+        turn_context=turn_context,
+        refresh_context=refresh_context,
     )
     try:
         async for event in turn:
@@ -346,6 +346,9 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         raise HTTPException(
             status_code=400, detail=readiness.reason or "Assistant is not configured"
         )
+    # The source file needs no session, so it resolves before the reservation;
+    # comparing it with the session's binding waits until the session is held.
+    source_file = await _bound_source_file(body.source_file)
 
     # Reserve the one-turn lock atomically BEFORE any awaited pre-work: a
     # bare `lock.locked()` check here would let two simultaneous sends both
@@ -362,6 +365,16 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
     session = reservation.session
 
     try:
+        if source_file != session.source_file:
+            # The canvas shows another pipeline: running the turn would edit
+            # a file the analyst is not looking at.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This chat belongs to pipeline '{session.source_file}'. "
+                    "Open that pipeline to continue it, or start a new chat."
+                ),
+            )
         try:
             config = resolve_assistant_config()
             provider = _provider_factory(config)
@@ -373,24 +386,40 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             detail = _http_error_detail(exc, "provider_factory")
             raise HTTPException(status_code=502, detail=detail) from None
 
+        request_context = body.context
+        # The changes the analyst undid since the model's last turn.
+        undone = session.history[-1].undone if session.history else ()
         try:
-            graph = await asyncio.to_thread(parse_pipeline_to_graph, Path(session.source_file))
-            pipeline_name = graph.pipeline_name or Path(session.source_file).stem
-            system_prompt = _loop.build_system_prompt(
-                pipeline_name=pipeline_name,
-                source_file=session.source_file,
-                node_summary=_loop.summarise_graph_nodes(graph),
-            )
+            system_prompt = _loop.build_system_prompt(source_file=session.source_file)
+            async with save_lock:
+                gathered = await asyncio.to_thread(
+                    build_turn_context,
+                    session.source_file,
+                    config.egress,
+                    selected_node_ids=(
+                        () if request_context is None else request_context.selected_node_ids
+                    ),
+                    preview_error_node_id=(
+                        None if request_context is None else request_context.preview_error_node_id
+                    ),
+                    undone=undone,
+                    build_plan=session.build_plan.current,
+                )
+            turn_context = render_turn_context(gathered)
+        except TurnContextError as exc:
+            # The canvas that sent this context shows a graph the saved file no
+            # longer has.
+            raise HTTPException(status_code=409, detail=str(exc)) from None
         except HauteError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from None
         except Exception as exc:
-            detail = _http_error_detail(exc, "system_prompt")
+            detail = _http_error_detail(exc, "turn_context")
             raise HTTPException(status_code=500, detail=detail) from None
-        authoring_request = _loop.effective_authoring_request(session, body.message)
         execute_tool = build_tool_executor(
             session.source_file,
             session_id=session.id,
-            prior_messages=session_store.history_window(session),
+            evidence=session.evidence,
+            plan=session.build_plan,
         )
     except BaseException:
         # Pre-stream failure after the reservation: the turn will never run,
@@ -405,10 +434,67 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             execute_tool=execute_tool,
             system_prompt=system_prompt,
             reservation=reservation,
-            authoring_request=authoring_request,
+            turn_context=turn_context,
+            refresh_context=partial(context_update, session.source_file, config.egress),
         ),
         media_type="text/event-stream",
         reservation=reservation,
+    )
+
+
+def _latest_change(session: AssistantSession, change_id: str) -> AssistantChangeRecord:
+    """The latest stored record of *change_id*: one plan can be saved again after an undo."""
+
+    for turn in reversed(session.history):
+        for message in reversed(turn.messages):
+            content = message.content
+            if message.role != "tool" or not isinstance(content, dict):
+                continue
+            change = content.get("change")
+            if isinstance(change, dict) and change.get("id") == change_id:
+                return AssistantChangeRecord.model_validate(change)
+    raise HTTPException(status_code=404, detail="This chat has no change with that id")
+
+
+@router.post("/changes/undo", response_model=AssistantUndoResponse)
+async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResponse:
+    """Undo one change card: save the version before it, then note it in the chat
+    and the build plan.
+
+    The session is reserved like a turn, so an undo never interleaves with one.
+    """
+
+    source_file = await _bound_source_file(body.source_file)
+    try:
+        reservation = await _loop.reserve_turn(session_store, body.session_id)
+    except _loop.UnknownSessionError:
+        raise HTTPException(status_code=404, detail="Unknown assistant session") from None
+    except _loop.ConcurrentTurnError:
+        raise HTTPException(
+            status_code=409, detail="An assistant turn is running; undo after it ends"
+        ) from None
+    session = reservation.session
+    try:
+        if source_file != session.source_file:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This chat belongs to pipeline '{session.source_file}'. "
+                    "Open that pipeline to undo its changes."
+                ),
+            )
+        change = _latest_change(session, body.change_id)
+        try:
+            result = await application_service(session_id=session.id).undo(
+                session.source_file, change
+            )
+        except (AssistantOperationError, GitHistoryReadError, StaleDocumentRevisionError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        session_store.record_undo(session, change)
+    finally:
+        reservation.release()
+    return AssistantUndoResponse(
+        change_id=change.id, git_sha=result.git_sha, build_plan=session.build_plan.current
     )
 
 

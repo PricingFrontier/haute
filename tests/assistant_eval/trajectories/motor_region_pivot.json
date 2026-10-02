@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "id": "motor_region_pivot",
+  "case": "motor_region_pivot",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "refs",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:explore"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Add a Premium by region pivot to premium_explore.",
+                "ops": [
+                  {
+                    "op": "update_node",
+                    "node": "premium_explore",
+                    "config": {
+                      "pivots": [
+                        {
+                          "version": 1,
+                          "id": "pivot_1",
+                          "name": "Premium by region",
+                          "enabled": true,
+                          "filters": [],
+                          "columns": [],
+                          "rows": [
+                            {
+                              "id": "row_1",
+                              "field": "region",
+                              "sort": "ascending",
+                              "number_format": "general",
+                              "decimal_places": null,
+                              "use_grouping": true
+                            }
+                          ],
+                          "values": [
+                            {
+                              "id": "value_1",
+                              "field": "premium",
+                              "aggregation": "sum",
+                              "reference": "premium_sum",
+                              "display_name": "Total premium",
+                              "sort_rows": "none",
+                              "color_scale": "none",
+                              "color_scale_split_by": null,
+                              "number_format": "currency_gbp",
+                              "decimal_places": 0,
+                              "use_grouping": true
+                            },
+                            {
+                              "id": "value_2",
+                              "field": "quote_id",
+                              "aggregation": "count",
+                              "reference": "quote_id_count",
+                              "display_name": "Quotes",
+                              "sort_rows": "none",
+                              "color_scale": "none",
+                              "color_scale_split_by": null,
+                              "number_format": "general",
+                              "decimal_places": 0,
+                              "use_grouping": true
+                            }
+                          ],
+                          "formulas": [],
+                          "value_order": [
+                            "value_1",
+                            "value_2"
+                          ],
+                          "options": {
+                            "row_grand_totals": true,
+                            "column_grand_totals": false,
+                            "sort_by": null
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

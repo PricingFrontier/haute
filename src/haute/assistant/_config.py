@@ -29,6 +29,9 @@ ProviderTrust = Literal["local", "organization", "external"]
 Sensitivity = Literal["public", "internal", "restricted"]
 
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
+#: Wall-clock bound on one assistant turn, overridable by ``TURN_TIMEOUT_ENV``.
+DEFAULT_TURN_TIMEOUT = 600
+TURN_TIMEOUT_ENV = "HAUTE_ASSISTANT_TURN_TIMEOUT"
 _MAX_OUTPUT_TOKENS_ENV = "HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS"
 _PROVIDER_SDKS: dict[AssistantProvider, str] = {
     "anthropic": "anthropic",
@@ -48,11 +51,16 @@ ASSISTANT_EGRESS_TOML_KEYS = frozenset(
         "allow_project_knowledge",
         "allow_executable_source",
         "allow_row_samples",
+        "allow_aggregate_statistics",
     }
 )
 _ASSISTANT_TABLE_KEYS = ASSISTANT_TOML_KEYS
 _EGRESS_TABLE_KEYS = ASSISTANT_EGRESS_TOML_KEYS
 _TRUST_VALUES = frozenset({"local", "organization", "external"})
+_PUBLIC_POLICY_REASON = (
+    '[assistant.egress].max_sensitivity is "public" (external trust requires it), which '
+    "denies the assistant every project read and edit."
+)
 _SENSITIVITY_VALUES = frozenset({"public", "internal", "restricted"})
 
 
@@ -65,10 +73,19 @@ class EgressPolicy:
     allow_project_knowledge: bool
     allow_executable_source: bool
     allow_row_samples: bool
+    #: Whether a data check may execute the changed nodes' lineage over project
+    #: data and send the model value-free counts and shares derived from it.
+    allow_aggregate_statistics: bool
+
+    @property
+    def permits_data_checks(self) -> bool:
+        """Whether a dry-run runs a data check: the flag, under a ceiling above ``public``."""
+        return self.allow_aggregate_statistics and self.max_sensitivity != "public"
 
     @property
     def policy_hash(self) -> str:
         payload = {
+            "allow_aggregate_statistics": self.allow_aggregate_statistics,
             "allow_executable_source": self.allow_executable_source,
             "allow_project_knowledge": self.allow_project_knowledge,
             "allow_row_samples": self.allow_row_samples,
@@ -136,6 +153,11 @@ def _mutation_readiness(
         )
     if status.state == "invalid":
         return False, "; ".join(status.errors)
+    if status.state == "git-unavailable":
+        return (
+            False,
+            "Git is not available on this host; assistant edits need Git to record each change.",
+        )
     raise ValueError(f"Unknown working-branch state: {status.state!r}")
 
 
@@ -357,6 +379,7 @@ def _validate_egress(
         "allow_project_knowledge",
         "allow_executable_source",
         "allow_row_samples",
+        "allow_aggregate_statistics",
     ):
         if not isinstance(raw[key], bool):
             raise ConfigError(f"[assistant].egress.{key} must be a boolean")
@@ -370,11 +393,14 @@ def _validate_egress(
     if trust in {"organization", "external"} and endpoint.scheme != "https":
         raise ConfigError(f"[assistant].egress.trust {trust} requires an HTTPS endpoint")
     if trust == "external" and (
-        sensitivity != "public" or raw["allow_executable_source"] or raw["allow_row_samples"]
+        sensitivity != "public"
+        or raw["allow_executable_source"]
+        or raw["allow_row_samples"]
+        or raw["allow_aggregate_statistics"]
     ):
         raise ConfigError(
-            "[assistant].egress external is public-only and forbids executable source "
-            "and row samples"
+            "[assistant].egress external is public-only and forbids executable source, "
+            "row samples and aggregate statistics"
         )
     return EgressPolicy(
         trust=cast(ProviderTrust, trust),
@@ -382,6 +408,7 @@ def _validate_egress(
         allow_project_knowledge=raw["allow_project_knowledge"],
         allow_executable_source=raw["allow_executable_source"],
         allow_row_samples=raw["allow_row_samples"],
+        allow_aggregate_statistics=raw["allow_aggregate_statistics"],
     )
 
 
@@ -432,6 +459,38 @@ def _resolve_base_url(table: dict[str, object], provider: AssistantProvider) -> 
             )
         return _databricks_base_url(raw_host)
     return _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
+
+
+#: Claude models that take adaptive thinking (`{"type": "adaptive"}`) and an
+#: effort level, the only Claude models the Anthropic adapter runs.
+ADAPTIVE_THINKING_MODELS = frozenset(
+    {
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-5",
+        "claude-sonnet-5-5",
+    }
+)
+
+
+def unsupported_anthropic_model(model: str) -> str | None:
+    """Why the Anthropic adapter cannot run *model*, or None when it can."""
+
+    if model in ADAPTIVE_THINKING_MODELS:
+        return None
+    return (
+        f"Anthropic model {model!r} is not one Haute runs: the assistant uses adaptive "
+        "thinking, which these Claude models support: "
+        f"{', '.join(sorted(ADAPTIVE_THINKING_MODELS))}."
+    )
 
 
 def _resolve_config(
@@ -495,6 +554,9 @@ def _resolve_config(
     if not api_key:
         return f"Missing API key environment variable: {key_name}.", provider, model
 
+    if provider == "anthropic" and (unsupported := unsupported_anthropic_model(model)):
+        return unsupported, provider, model
+
     return AssistantConfig(
         provider=provider,
         model=model,
@@ -513,8 +575,8 @@ def assistant_readiness(
 
     The result is always safe to expose through the status endpoint: it never
     contains the API key.  A valid provider configuration sets ``configured``
-    to ``True``; the independent mutation gate reports whether the shared Git
-    working-branch state permits edits.
+    to ``True``; the independent mutation gate reports whether the egress
+    policy and the shared Git working-branch state permit edits.
     """
 
     root = _normalise_project_root(project_root)
@@ -546,7 +608,14 @@ def assistant_readiness(
             reason, provider, model = resolved
             configured = False
 
-    mutations_enabled, mutations_reason = mutations_readiness(root)
+    mutations_enabled: bool
+    mutations_reason: str | None
+    if max_sensitivity == "public":
+        # The tool boundary refuses every project read at this ceiling, and an
+        # edit starts with one, so no Git state could make edits possible.
+        mutations_enabled, mutations_reason = False, _PUBLIC_POLICY_REASON
+    else:
+        mutations_enabled, mutations_reason = mutations_readiness(root)
     return AssistantReadiness(
         configured=configured,
         reason=reason,
@@ -599,14 +668,18 @@ def resolve_egress_policy(project_root: Path | None = None) -> EgressPolicy:
 
 
 __all__ = [
+    "ADAPTIVE_THINKING_MODELS",
     "AssistantConfig",
     "EgressPolicy",
     "AssistantProvider",
     "AssistantReadiness",
+    "DEFAULT_TURN_TIMEOUT",
     "ProviderTrust",
     "Sensitivity",
+    "TURN_TIMEOUT_ENV",
     "assistant_readiness",
     "mutations_readiness",
     "resolve_assistant_config",
     "resolve_egress_policy",
+    "unsupported_anthropic_model",
 ]

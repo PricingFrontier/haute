@@ -7,7 +7,7 @@ import type { Operand, Step } from "../types"
 
 const col = (name: string) => ({ kind: "column" as const, name })
 /** A frame-mode source over columns a and b. */
-const AB: ColumnSource = { inputs: {}, frame: [{ name: "a", dtype: "Int64" }, { name: "b", dtype: "Int64" }] }
+const AB: ColumnSource = { inputs: {}, frame: [{ name: "a", dtype: "Int64" }, { name: "b", dtype: "Int64" }], freeCode: new Map() }
 const namesBefore = (steps: Step[], index: number) => columnNames(columnsBeforeStep(AB, steps, index))
 
 describe("stepProblem", () => {
@@ -189,7 +189,7 @@ describe("stepProblem", () => {
   ])("rejects %s without throwing anywhere downstream", (_label, step, pattern) => {
     expect(stepProblem(step)).toMatch(pattern)
     const steps = [{ id: "s", kind: "source", input: "quotes" } as Step, step as Step, { id: "l", kind: "limit", n: 1 } as Step]
-    expect(() => columnsBeforeStep({ inputs: { quotes: [{ name: "a", dtype: "Int64" }] }, frame: [] }, steps, 3)).not.toThrow()
+    expect(() => columnsBeforeStep({ inputs: { quotes: [{ name: "a", dtype: "Int64" }] }, frame: [], freeCode: new Map() }, steps, 3)).not.toThrow()
     expect(() => variablesBefore(steps, 3)).not.toThrow()
     expect(() => summarizeStep(steps[2])).not.toThrow()
   })

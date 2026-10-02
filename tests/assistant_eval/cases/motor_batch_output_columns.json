@@ -1,0 +1,42 @@
+{
+  "schema_version": 5,
+  "id": "motor_batch_output_columns",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "outputs",
+  "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "The batch output priced_batch should write only quote_id, premium and expected_frequency, in that order.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataOutput"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "priced_batch"
+        ],
+        "node_configs": {
+          "priced_batch": {
+            "selected_columns": [
+              "quote_id",
+              "premium",
+              "expected_frequency"
+            ],
+            "path": "outputs/priced_batch.parquet"
+          }
+        },
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

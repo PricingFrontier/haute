@@ -1,0 +1,29 @@
+{
+  "schema_version": 5,
+  "id": "smoke_material_clarification",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "area": "clarification",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add rating factors, but do not supply missing-factor policy or factor values.",
+      "expectations": {
+        "outcome": "needs_input",
+        "saves": false,
+        "required_node_types": [],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

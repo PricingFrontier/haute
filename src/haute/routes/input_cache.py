@@ -13,7 +13,8 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
@@ -37,6 +38,7 @@ from haute._input_preparation import (
     InputPreparationOutcome,
     InputPreparationRequest,
     build_input_snapshot_worker,
+    input_preparation_running,
 )
 from haute._input_providers import (
     build_input_snapshot,
@@ -51,6 +53,7 @@ from haute._project import _toml_configured_pipeline
 from haute._source_cache import (
     BuildClass,
     SourceCacheBuildError,
+    SourceCacheCorruptError,
     SourceCacheGeneration,
     SourceCacheIdentity,
     SourceCacheStatus,
@@ -372,15 +375,76 @@ def input_snapshot_build_running(identity_digest: str) -> bool:
     return active_job is not None and active_job.get("status") == "running"
 
 
+InputSnapshotReadState = Literal["building", "ready", "missing", "corrupt"]
+
+
+@dataclass(frozen=True, slots=True)
+class InputSnapshotReadStatus:
+    """What reading one input snapshot would find now (:func:`input_snapshot_read_status`)."""
+
+    state: InputSnapshotReadState
+    generation_id: str | None = None
+    cache_status: SourceCacheStatus | None = None
+    """The verified form's store status: the generation's metadata and its freshness."""
+
+
+def input_snapshot_read_status(
+    identity: SourceCacheIdentity,
+    *,
+    build_digest: str | None = None,
+    verified_signature: Callable[[], str | None] | None = None,
+) -> InputSnapshotReadStatus:
+    """The read-only state of one input snapshot, active builds first.
+
+    A running input-cache build, or this process's preparation of the
+    snapshot, keyed by *build_digest* (the identity's own digest unless a
+    structured API Input builds its tables as one group), makes it
+    ``building`` without touching the store, so a refresh is reported while
+    the previous generation is still readable. Otherwise the published
+    generation is read in one of two forms. With *verified_signature* it is
+    the store's verified status (the input-cache panel's: the generation is
+    opened and verified, and its freshness judged against the signature the
+    callable computes). Without it only the current pointer and the
+    generation's metadata file are probed (the data check's server-side
+    read): an absent pointer or generation is ``missing``, an unreadable
+    pointer ``corrupt``, and a published generation ``ready``, unverified.
+    """
+    digest = build_digest if build_digest is not None else identity.digest
+    if input_snapshot_build_running(digest) or input_preparation_running(digest):
+        return InputSnapshotReadStatus("building")
+    store = _cache_store()
+    if verified_signature is not None:
+        cache_status = store.status(identity, source_signature=verified_signature())
+        generation = cache_status.generation
+        return InputSnapshotReadStatus(
+            cast(InputSnapshotReadState, cache_status.state),
+            None if generation is None else generation.generation_id,
+            cache_status,
+        )
+    try:
+        return InputSnapshotReadStatus("ready", store.published_generation_id(identity))
+    except FileNotFoundError:
+        return InputSnapshotReadStatus("missing")
+    except SourceCacheCorruptError:
+        return InputSnapshotReadStatus("corrupt")
+
+
 def _status_for_config(
     config: dict[str, Any],
     identity: SourceCacheIdentity,
 ) -> InputCacheSnapshotStatusResponse:
-    signature = source_signature(config, base_dir=_pipeline_base_dir())
-    cache_status = _cache_store().status(identity, source_signature=signature)
-    if input_snapshot_build_running(identity.digest):
-        return _snapshot_payload(identity, cache_status, state="building")
-    return _snapshot_payload(identity, cache_status)
+    read = input_snapshot_read_status(
+        identity,
+        verified_signature=lambda: source_signature(config, base_dir=_pipeline_base_dir()),
+    )
+    if read.cache_status is None:
+        return InputCacheSnapshotStatusResponse(
+            identity_digest=identity.digest,
+            state=read.state,
+            freshness="unknown",
+            generation=None,
+        )
+    return _snapshot_payload(identity, read.cache_status)
 
 
 def _progress_payload(job: Mapping[str, Any]) -> InputCacheProgress:

@@ -54,6 +54,21 @@ class TestAuthoringGuide:
         assert "specs/README.md" not in guide
         assert "node catalog" in guide.lower()
 
+    def test_guide_teaches_the_products_current_contracts(self):
+        guide = authoring_guide()
+        # Plain arithmetic is a vectorised expression, never a Python lambda.
+        assert "map_elements" not in guide
+        assert '2026 - pl.col("vehicle_year")' in guide
+        # `haute init` scaffolds a blank pipeline; the examples carry sidecars.
+        assert "raw_rows.json" not in guide
+        assert "blank pipeline" in guide
+        assert "without inventing project sidecar files" not in guide
+        # The per-surface `df` rule, matching the system prompt.
+        assert "never pre-bound" not in guide
+        assert "sees only `df`" in guide
+        assert "`obj`" in guide
+        assert "inputMapping" not in guide
+
 
 class TestExemplars:
     def test_index_is_non_empty_with_docstring_summaries(self):
@@ -83,7 +98,7 @@ class TestExemplars:
             assert node_types & {"apiInput", "dataInput"}, name
             assert "output" in node_types, name
             output_nodes = [node for node in graph["nodes"] if node["type"] == "output"]
-            assert all("outputMapping" in node["config"]["keys"] for node in output_nodes), name
+            assert all(node["config"]["outputMapping"] for node in output_nodes), name
 
         for manifest in _assets.example_bundle_manifests():
             bundle = _assets._bundle_root(str(manifest["id"]))
@@ -124,6 +139,16 @@ class TestExemplars:
         node = result["graph"]["nodes"][0]
         assert set(node.keys()) == {"id", "type", "label", "config"}
 
+    def test_an_example_shows_each_node_configuration_with_its_values(self):
+        """An example teaches values, not key names: its banding rules are readable."""
+
+        nodes = {node["id"]: node for node in load_example("discrete_banding")["graph"]["nodes"]}
+
+        factor = nodes["banded"]["config"]["factors"][0]
+        assert factor["banding"] == "categorical"
+        assert {"value": "detached", "assignment": "house"} in factor["rules"]
+        assert nodes["response"]["config"]["outputMapping"][0]["output_path"].startswith("$[:].")
+
     def test_summary_is_first_docstring_line(self):
         for name, summary in example_index():
             narrative = load_example(name)["narrative"]
@@ -135,6 +160,57 @@ class TestExemplars:
         assert error["code"] == "unknown_example"
         for name, _summary in example_index():
             assert name in error["message"]
+
+    def test_only_teaching_bundles_are_offered_to_the_model(self):
+        manifests = _assets.example_bundle_manifests()
+        teaching = {str(manifest["id"]) for manifest in manifests if manifest["teaching"]}
+        fixtures = {str(manifest["id"]) for manifest in manifests if not manifest["teaching"]}
+
+        assert fixtures == {"deployment_safety", "invalid_adversarial"}
+        assert {name for name, _summary in example_index()} == teaching
+        for name in fixtures:
+            error = load_example(name)["error"]
+            assert error["code"] == "unknown_example"
+            assert name not in error["valid_names"]
+
+
+@pytest.mark.parametrize(
+    "bundle_id",
+    [str(manifest["id"]) for manifest in _assets.example_bundle_manifests()],
+)
+def test_every_bundle_regenerates_and_accepts_a_no_op_edit(tmp_path: Path, bundle_id: str):
+    """Every bundle is a project the editor accepts, not only one the parser reads."""
+
+    from haute.assistant._application import PipelineApplicationService
+    from haute.codegen import graph_to_code_multi
+    from haute.routes._helpers import parse_pipeline_to_graph
+
+    destination = tmp_path / "b"
+    manifest = _assets.materialize_example_bundle(bundle_id, destination)
+    source_file = str(manifest["source"])
+    graph = parse_pipeline_to_graph(destination / source_file)
+    files = graph_to_code_multi(
+        graph,
+        pipeline_name=graph.pipeline_name or "",
+        description=graph.pipeline_description or "",
+        preamble=graph.preamble or "",
+        source_file=source_file,
+        preserved_blocks=graph.preserved_blocks or None,
+    )
+    assert source_file in files
+
+    before = (destination / source_file).read_bytes()
+    service = PipelineApplicationService(
+        project_root=destination,
+        pipeline_root=destination,
+        mutations_readiness=lambda _root: (True, None),
+        publish_document_update=lambda _source, _change: "f" * 64,
+    )
+    plan = service.dry_run(
+        source_file, [{"op": "update_preamble", "preamble": graph.preamble}], summary="Test plan."
+    ).plan
+    assert (destination / source_file).read_bytes() == before
+    assert not any(plan.diff.complete_counts.values())
 
 
 class TestExecutableBundles:
@@ -191,9 +267,11 @@ class TestExecutableBundles:
                 "source",
                 "assertion_tier",
                 "review_class",
+                "teaching",
                 "resources",
             }
             assert manifest["schema_version"] == 1
+            assert isinstance(manifest["teaching"], bool)
             assert manifest["assertion_tier"] in {"fast", "ordinary", "negative"}
             assert manifest["review_class"] in {"engineering", "pricing"}
             assert manifest["resources"]
@@ -269,6 +347,7 @@ class TestExecutableBundles:
                     "source": "pipeline.py",
                     "assertion_tier": "fast",
                     "review_class": "engineering",
+                    "teaching": True,
                     "resources": [
                         {"path": "pipeline.py", "role": "pipeline_source", "sha256": "a" * 64},
                         {"path": "other", "role": "invented_role", "sha256": "b" * 64},

@@ -1,0 +1,68 @@
+{
+  "schema_version": 5,
+  "id": "motor_frequency_glm_setup",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "modelling",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Set up a claim frequency model on data/claims_history.parquet, read in a data input called claims_history: a Poisson GLM with a log link named frequency_glm, predicting claim_count with exposure as the offset, driver_age as a linear term and vehicle_group and region as categorical terms. Hold out a random 20% for validation with seed 42.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataInput",
+          "modelling"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "claims_history",
+            "target": "frequency_glm",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "frequency_glm": {
+            "name": "frequency_glm",
+            "target": "claim_count",
+            "algorithm": "glm",
+            "task": "regression",
+            "family": "poisson",
+            "link": "log",
+            "offset": "exposure",
+            "terms": {
+              "driver_age": {
+                "type": "linear"
+              },
+              "vehicle_group": {
+                "type": "categorical"
+              },
+              "region": {
+                "type": "categorical"
+              }
+            },
+            "evaluation": {
+              "schema_version": 1,
+              "strategy": "random",
+              "seed": 42,
+              "validation": {
+                "method": "single",
+                "size": 0.2
+              }
+            }
+          }
+        },
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

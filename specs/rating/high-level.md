@@ -54,7 +54,7 @@ Out of scope (owned by neighbouring components):
 
 ## Behaviour
 
-**Banding** (`apply_banding_from_config` / `_apply_banding_factors`):
+**Banding** (`apply_banding_from_config` / `apply_banding_factors`):
 
 - Each banding "factor" reads one input column and writes one output column,
   and its `banding` is `breakpoints` or `categorical`. Any other value, or none,
@@ -113,7 +113,9 @@ Out of scope (owned by neighbouring components):
   range collapse to their integer digit string (`25.0` → `"25"`); other floats
   use the originating width's own Polars string form; and exact, categorical,
   string, decimal, and temporal values use Polars' cast for their declared
-  dtype. Null stays null and therefore never matches. Supported factor dtypes
+  dtype. A Duration entry string is the ISO-8601 duration Polars displays
+  (`PT1.5S`, `-P1DT2H`), read exactly into the column's time unit and never
+  rounded. Null stays null and therefore never matches. Supported factor dtypes
   are Float32/64, signed and unsigned integers, Boolean, String,
   Categorical/Enum, Decimal, Date, Datetime, Time, Duration, and Null.
 - Lookup keys are materialised into collision-free temporary columns for the
@@ -205,7 +207,7 @@ Out of scope (owned by neighbouring components):
 
 - **[execution-engine](../execution-engine/high-level.md)** — `_builders.py`
   registers `BANDING` and `RATING_STEP` node builders that call
-  `_apply_banding_factors` and `_apply_rating_step_outputs` directly, and
+  `apply_banding_factors` and `_apply_rating_step_outputs` directly, and
   `_apply_ratebook` (optimiser scoring) reuses `_apply_rating_table` and
   `_combine_rating_columns` to apply a saved ratebook as a rating lookup.
 - **[pipeline-config](../pipeline-config/high-level.md)** — `_config_io.py`
@@ -248,7 +250,9 @@ Out of scope (owned by neighbouring components):
   The output stays null for those rows (multiply/add fold it to the operation's
   neutral element downstream).
 - **Malformed table entries** (non-finite banding rule value/boundary, NaN/Infinity
-  or null rating entry `value`, more than one open-ended breakpoint, an
+  or null rating entry `value` — an entry without `value` when another entry
+  has one counts as null, wherever it sits in the table — a Duration entry key
+  that names no exact duration of the column's time unit, more than one open-ended breakpoint, an
   open-ended breakpoint with no bounded anchor, a duplicate breakpoint
   boundary, an unsupported combine operation, a non-finite/missing
   `combinedOutputs[].baseValue`, or a duplicate table/combined output column):

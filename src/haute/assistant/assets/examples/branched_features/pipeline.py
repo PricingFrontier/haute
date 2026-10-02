@@ -24,7 +24,7 @@ def quote():
 def vehicle_features(quote: pl.LazyFrame) -> pl.LazyFrame:
     """Derive vehicle features from the live quote."""
 
-    return quote.with_columns(vehicle_age=pl.col("vehicle_year"))
+    return quote.with_columns(vehicle_age=2026 - pl.col("vehicle_year"))
 
 
 @pipeline.polars

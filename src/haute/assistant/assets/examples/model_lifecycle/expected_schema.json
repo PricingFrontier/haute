@@ -1,1 +1,1 @@
-{"target":"response","required_columns":["target"]}
+{"target":"response","required_columns":["prediction"]}

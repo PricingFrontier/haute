@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "id": "motor_renewal_scenario",
+  "case": "motor_renewal_scenario",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "policies",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Add the renewal batch as the policies switch's renewal_batch source.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "renewal_quotes",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/renewal_quotes.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "renewal_quotes",
+                    "target": "policies"
+                  },
+                  {
+                    "op": "update_node",
+                    "node": "policies",
+                    "config": {
+                      "input_scenario_map": {
+                        "quotes": "live",
+                        "batch_quotes": "nb_batch",
+                        "renewal_quotes": "renewal_batch"
+                      },
+                      "inputs": [
+                        "quotes",
+                        "batch_quotes",
+                        "renewal_quotes"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

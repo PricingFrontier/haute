@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "id": "motor_batch_output_columns",
+  "case": "motor_batch_output_columns",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Write only quote_id, premium and expected_frequency to priced_batch.",
+                "ops": [
+                  {
+                    "op": "update_node",
+                    "node": "priced_batch",
+                    "config": {
+                      "selected_columns": [
+                        "quote_id",
+                        "premium",
+                        "expected_frequency"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

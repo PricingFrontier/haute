@@ -1,0 +1,29 @@
+{
+  "schema_version": 5,
+  "id": "motor_value_band_factor_withheld",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "banding",
+  "split": "development",
+  "egress": "metadata_only",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add a vehicle value band to rating_bands: band vehicle_value_k into value_band with 'up to 5k' up to 5, '5k-15k' up to 15 and 'over 15k' above that, and 'unknown' when it is missing. Keep the existing bands.",
+      "expectations": {
+        "outcome": "needs_input",
+        "saves": false,
+        "required_node_types": [],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

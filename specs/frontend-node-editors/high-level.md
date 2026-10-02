@@ -510,9 +510,22 @@ the shared Python code editor, starts empty, and has no explanatory text below
 the editor. The editor starts at a compact 120px height, can be resized vertically,
 and fills the available height as its box grows. It can
 be edited, reordered and deleted like any other step, and can be followed by
-low-code steps. Column completion uses the columns known before the snippet;
-after arbitrary code the editor does not infer its output schema, so later
-column fields accept names typed by the user. Collapsed cards show the first
+low-code steps. Column completion uses the columns known before the snippet.
+After the snippet, later cards use the columns the free-code columns endpoint
+resolved for it, which the editor asks for after each successful render of a
+list with a snippet, so the code panel never waits on it: the endpoint runs the
+steps up to and including the snippet over empty frames of the input columns
+the editor knows, in the preview worker with a short deadline, and reads the
+resulting schema. In
+a Transform those columns are the whole list, so a later card flags a name
+outside them and the snippet's collapsed card notes the columns it adds or
+removes; on a frame-mode surface they only seed suggestions, as the frame's own
+columns do. While a snippet's columns cannot be resolved (an input whose columns
+are not known yet, code that needs the preamble, code that fails on an empty
+frame, or code that does not finish within the deadline) its collapsed card says why in a muted note and later column fields
+accept names typed by the user. Resolved columns stay in use while the steps up
+to the snippet are unchanged, even while a later card is pending or unfinished,
+so suggestions do not flicker or vanish while a card is being built. Collapsed cards show the first
 nonblank line of code or a prompt to write code. The render response's inclusive
 line ranges map runtime errors to cards, including steps after multiline
 snippets, and the generated-code panel highlights the runtime error's exact

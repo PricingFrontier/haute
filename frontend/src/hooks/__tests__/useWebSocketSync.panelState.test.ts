@@ -45,6 +45,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setShortcutsOpen: vi.fn(),
     submodelDialog: null as null | { nodeIds: string[] },
     setSubmodelDialog: vi.fn((d: null | { nodeIds: string[] }) => { store.submodelDialog = d }),
+    setChangeFocus: vi.fn(),
     renameDialog: null as null | { nodeId: string; currentLabel: string },
     setRenameDialog: vi.fn((d: null | { nodeId: string; currentLabel: string }) => { store.renameDialog = d }),
   }

@@ -296,6 +296,16 @@ def _acquire_single_flight(digest: str) -> _SingleFlightEntry | None:
         return None
 
 
+def input_preparation_running(digest: str) -> bool:
+    """Whether this process is preparing the snapshot keyed by *digest* right now.
+
+    A read-only probe of the preparation single-flight (an input's identity
+    digest, or a structured API Input's group digest); it never waits.
+    """
+    with _SINGLE_FLIGHT_LOCK:
+        return digest in _SINGLE_FLIGHT
+
+
 def _release_single_flight(digest: str, error: BaseException | None = None) -> None:
     with _SINGLE_FLIGHT_LOCK:
         entry = _SINGLE_FLIGHT.pop(digest, None)

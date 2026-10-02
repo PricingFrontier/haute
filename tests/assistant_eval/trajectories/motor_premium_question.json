@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "motor_premium_question",
+  "case": "motor_premium_question",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "base_premium",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "base_premium rates the banded quotes with two tables and one combined output. age_relativity looks up age_band: 1.8 for 17-24, 1.0 for 25-59 and 1.2 for 60+, and 1.0 for anything else. region_vehicle_relativity looks up region and vehicle_group: North 0.9, 1.0 and 1.2, South 1.0, 1.1 and 1.3, and London 1.3, 1.45 and 1.7 for groups A, B and C, and 1.0 for anything else. premium is 320 times both relativities, and a free-code step then rounds it to pence. I changed nothing.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

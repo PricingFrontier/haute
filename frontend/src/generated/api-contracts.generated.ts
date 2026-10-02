@@ -241,6 +241,24 @@ export interface PolarsStepsRenderResponse {
   step_lines: number[][];
 }
 /**
+ * One entry per free-code step, in step order.
+ */
+export interface PolarsFreeCodeColumnsResponse {
+  free_code_columns: FreeCodeColumns[];
+}
+/**
+ * The columns of ``df`` after one free-code step, or why they are unknown.
+ */
+export interface FreeCodeColumns {
+  columns: ColumnInfo[] | null;
+  message: string;
+  step_index: number;
+}
+export interface ColumnInfo {
+  dtype: string;
+  name: string;
+}
+/**
  * The editor's execution settings: one value for the server process.
  */
 export interface ExecutionSettings {

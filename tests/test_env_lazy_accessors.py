@@ -91,7 +91,7 @@ class TestEnvHelpers:
 # change the accessor's result — that is exactly the frozen-constant regression.
 _ACCESSOR_CASES = [
     ("haute.routes.pipeline", "_trace_timeout", "HAUTE_TRACE_TIMEOUT", "5", 5.0, 120.0),
-    ("haute.routes.pipeline", "_preview_timeout", "HAUTE_PREVIEW_TIMEOUT", "5", 5.0, 120.0),
+    ("haute.routes.pipeline", "preview_timeout", "HAUTE_PREVIEW_TIMEOUT", "5", 5.0, 120.0),
     ("haute.routes.pipeline", "_sink_timeout", "HAUTE_SINK_TIMEOUT", "5", 5.0, 300.0),
     (
         "haute.routes.output_assemble",

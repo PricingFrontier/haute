@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "smoke_corpus_high_premium_quotes",
+  "case": "smoke_corpus_high_premium_quotes",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Add high_premium_quotes, keeping the quotes with a premium above 1500.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "high_premium_quotes",
+                    "ref": "transform",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Keep high-premium quotes\ndf = df.filter(pl.col('premium') > 1500)\n"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "$transform"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved high_premium_quotes, which keeps the quotes whose premium is above 1500 as you asked. The data check found that no quote's premium is above 1500, so the node keeps no rows.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

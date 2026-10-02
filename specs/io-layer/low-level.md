@@ -14,7 +14,7 @@
 | `src/haute/_node_snapshots.py` | Node-output snapshots in the shared store: slot and signature identity, class mappings, slot index, column sets and dependencies, cross-process publication and lease locks, lease markers, retention, clear, and pin; also the per-owner inventory (`inventory`, `CacheInventory`, `CacheOwnerUsage`) the cache endpoints serve. |
 | `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
-| `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). |
+| `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
 | `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
@@ -77,6 +77,11 @@ relationship is recorded in `specs/ownership.toml`.
   one, otherwise a stat trusted only for a file modified at least two seconds earlier,
   because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
   that window would otherwise keep a stale signature (git's racy-index rule).
+  `signed_source_file` names the file `source_signature` hashes: a `file` provider's
+  anchored path while it exists, otherwise `None` (another provider, or a source that is
+  gone and signs as `missing`), from configuration and one existence check, never the
+  content. The assistant's data check records that file's freshness token
+  ([assistant](../assistant/low-level.md)).
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 
@@ -162,7 +167,9 @@ an in-place or non-atomic fallback.
    published: the preview frame's Import (a forced `POST /api/input-cache/build`) is the one
    action that re-reads it.
 3. `schema_only=True` records nothing and never builds; the node builder's
-   `input_snapshot_missing` rejection remains the outcome for a missing generation.
+   `input_snapshot_missing` rejection remains the outcome for a missing generation,
+   except at the inferred and declared schema tiers described under snapshot resolution
+   below.
 4. The cap gate: preparation runs only under an admitted `ExecutionContext` (its
    `admission` is present); without one it does nothing and resolution keeps its
    `input_snapshot_missing` rejection. With `current_native_memory_backend()` set the
@@ -493,8 +500,57 @@ Snapshot-mode execution contacts the configured provider only through automatic
 preparation, which is the explicit build path scheduled before planning under a hard cap.
 Resolution itself never builds: if no current snapshot exists when a node is resolved (a
 schema-only execution, or a caller outside an admitted execution context), it raises
-`PolarsIoConfigError` with the stable `input_snapshot_missing:` prefix and an instruction
-to build the snapshot or run the pipeline under an admitted execution, which prepares it.
+`InputSnapshotMissingError` (a `PolarsIoConfigError`) with the stable
+`input_snapshot_missing:` prefix and an instruction to build the snapshot or run the
+pipeline under an admitted execution, which prepares it.
+
+**Schema tier recorder.** `recording_schema_tiers()` is a context manager yielding a
+`RecordedSchemaTiers` it fills: `inferred`, a `{node_id: InferredInputSchema}` mapping,
+and `declared`, a `{(node_id, table_label): DeclaredTableSchema}` mapping. Resolvers
+reach it only through `schema_tier_recorder(schema_only)`, which returns the active
+recorder for a schema-only resolution and `None` otherwise, so the weaker tiers are open
+only to a schema-only caller that reports them. A resolver states a schema-only read by
+naming the node it records under, `schema_tier_node=<node id>` (`None`, the default, is a
+full read), so a schema-only read without a node to record under cannot be expressed.
+
+**Inferred schema tier.** `resolve_data_input(..., schema_tier_node=<node id>)` called
+while `recording_schema_tiers()` is active does not raise for a missing generation
+when the input can be scanned. Eligibility is `inputType == "file"`, a format with a
+scanner, and an empty `scanner_rejected_arguments(fmt, config)`: the registry's one check
+of which configured arguments the scanner does not accept by name
+(`allowed_arguments` of the scanner) or by value (`_SCANNER_VALUE_DOMAINS`, for example a
+CSV `encoding` other than `utf8`/`utf8-lossy`), whatever the configured mode;
+`snapshot_input_plan` uses the same check to prefer the scanner for a configured eager
+read. An eligible input's file must exist; it is then opened by
+`scan_polars_input_for_schema(config)`, which invokes the scanner with the validated
+configured arguments. A scanner that infers types (`infer_schema_length` in its argument
+surface: CSV, NDJSON) and has no declared `schema` or `infer_schema: false` receives
+`infer_schema_length` equal to the configured value capped at `INFERRED_SCHEMA_ROWS`
+(10,000), or the cap when the configuration sets none or `None`; that value is the
+recorded `inference_rows`. A declared schema is a non-null `schema` mapping, which Polars
+uses as the whole schema: `schema: null` declares none, and `schema_overrides` still leaves
+the other columns to inference, so both are bounded. Parquet and IPC read file
+metadata and a declared schema needs no inference, so they record `inference_rows=None`.
+The same non-null test decides whether a direct bounded read has the declared CSV schema
+it requires and whether a snapshot build must infer from the whole file. The scan is returned uncollected, and
+the source cache is not written. Anything ineligible raises `InputSnapshotMissingError`
+naming the reason (`a <provider> input has no local file to scan`, `format '<name>' reads
+only eagerly`, or the reader-only argument names) and the remedy "Preview this input
+first, which builds its snapshot." Without an active collector, or without a
+`schema_tier_node`, a missing generation keeps the plain rejection.
+
+**Declared schema tier.** A structured API Input table read from the store
+(`load_v2_api_source(..., read_snapshots=True, schema_tier_node=<node id>)`, see
+[JSON shredding](../json-shredding/low-level.md)) whose generation is missing while the
+recorder is active resolves as an empty `LazyFrame` under the table's declared frame
+schema (`_declared_frame_schema` of its demanded columns), recorded as
+`declared[(node_id, label)] = DeclaredTableSchema(column_count=...)`, where
+`column_count` is the table's declared selected columns, whatever the demand. The
+contract has already passed `validate_v2_schema`, so every selected column declares one
+of `int|float|str|bool|date`; an untyped column is refused there with
+`ApiInputSchemaError` naming the table and column, the same refusal a preview meets. The
+request file is not opened (it need not exist), nothing is collected, and no generation
+is written. A table whose generation exists is leased as usual, so a node can mix both.
 
 Direct mode is not a general compatibility path. It is valid only for a file-backed
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
@@ -727,7 +783,7 @@ failure sections above are the maintained answers.
 - `tests/test_external_file_nested_relative_path.py` verifies project-root relative external-file loading, absolute passthrough, and project-escape rejection.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
-- `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
+- `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
 - `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
 - `tests/test_data_output_seeding.py` drives writes through the write-output route with the sink worker in process: a second write seeds the producer the first captured and builds nothing; a write after a batch training run seeds that run's capture; an in-process `write_data_output` seeds and captures too; no `haute_sink_` directory is written; a worker stopped, timed out, or killed at its cap leaves no capture staging and publishes nothing; the worker stages under the parent's token; the response metrics keep the parent's input preparation; a superseded capture is read from the run's own staging through the write, with the plan held until the write completes under the process chunk size; preparation that ends past the sink timeout — returning or failing — is a 504 that starts no worker, and otherwise the worker gets the remainder; a request cancelled during preparation stops it, and one cancelled while preparation still succeeds starts no worker; and a parent plan-opening failure (contract, corrupt cache, admission) starts no worker.
 
@@ -742,7 +798,11 @@ failure sections above are the maintained answers.
   generation startup, and transient OS failures.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
-  typed conversion failures, and missing database rejection.
+  typed conversion failures, missing database rejection, and the inferred schema tier:
+  a CSV's separator and schema override reach the inferred schema with a bounded
+  inference count and no generation written, Parquet records no bound, and Excel, a
+  database without a snapshot, and a CSV encoding only the eager reader decodes are
+  refused with the preview remedy.
 - `tests/test_polars_io_registry.py`, `tests/test_polars_io_interface_contracts.py`, and
   `tests/test_bounded_sink_contract.py` cover registry/schema drift, validation, engine
   gates, and partitioned sink publication.

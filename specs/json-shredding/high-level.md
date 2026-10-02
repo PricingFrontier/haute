@@ -363,7 +363,10 @@ strict build and raises a specific, column-named error instead.
   selected columns, raises `RuntimeError` with a message telling the user to tick
   `emit` or select a column. Canvas execution of a table with no published
   generation raises `input_snapshot_missing` (automatic preparation normally
-  builds it first); it never falls back to shredding the source. In generated
+  builds it first); it never falls back to shredding the source. The assistant's
+  plan verification is the one exception: it resolves such a table at the IO
+  layer's declared schema tier, from the table's declared column types, without
+  reading the source. In generated
   standalone code, raw-file decode, missing-file, and declared-type failures stay
   loud and specific.
 - A source that disappears after its tables were published keeps serving them,

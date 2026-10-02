@@ -16,7 +16,8 @@ def _project(root: Path) -> None:
         'base_url = "https://api.example/v1"\n'
         '[assistant.egress]\ntrust = "organization"\nmax_sensitivity = "internal"\n'
         "allow_project_knowledge = true\nallow_executable_source = false\n"
-        "allow_row_samples = false\n",
+        "allow_row_samples = false\n"
+        "allow_aggregate_statistics = false\n",
         encoding="utf-8",
     )
     (root / "main.py").write_text(
@@ -46,6 +47,7 @@ def test_items_are_source_linked_label_unknown_restricted_and_filter_by_policy(t
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     view = build_project_knowledge(tmp_path, "main.py", policy=policy)
 
@@ -71,6 +73,7 @@ def test_undecodable_document_fails_with_the_project_relative_source(tmp_path: P
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     with pytest.raises(ProjectKnowledgeError, match=r"docs/broken\.md"):
         build_project_knowledge(tmp_path, "main.py", policy=policy)
@@ -87,6 +90,7 @@ def test_changed_and_removed_sources_invalidate_metadata_cache(tmp_path: Path):
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     first = build_project_knowledge(tmp_path, "main.py", policy=policy)
     cache_path = tmp_path / ".haute" / "assistant" / "knowledge" / "index-v1.json"
@@ -116,6 +120,7 @@ def test_deleting_cache_only_changes_warmup_and_rebuild_is_source_equivalent(tmp
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     first = build_project_knowledge(tmp_path, "main.py", policy=policy)
     cache_path = tmp_path / ".haute" / "assistant" / "knowledge" / "index-v1.json"
@@ -143,6 +148,7 @@ def test_query_is_bounded_attributed_and_never_names_excluded_sources(tmp_path: 
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
     view = build_project_knowledge(tmp_path, "main.py", policy=policy)
     results = query_project_knowledge(view, "rating territory", limit=2)
@@ -191,6 +197,7 @@ def test_document_symlink_cannot_read_outside_project(tmp_path: Path):
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
 
     with pytest.raises(ValueError, match="inside the project root"):
@@ -215,6 +222,7 @@ def test_cache_symlink_cannot_write_outside_project(tmp_path: Path):
         allow_project_knowledge=True,
         allow_executable_source=False,
         allow_row_samples=False,
+        allow_aggregate_statistics=False,
     )
 
     with pytest.raises(ValueError, match="cache must stay inside"):

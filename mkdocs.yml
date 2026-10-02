@@ -98,6 +98,7 @@ nav:
     - Setting Up Your Environment: getting-started/environment.md
     - Installing Haute: getting-started/installing-haute.md
     - UI Overview: getting-started/ui-overview.md
+    - Setting Up the Assistant: getting-started/assistant.md
     - Polars: getting-started/polars.md
   - Building Models:
     - building-models/index.md

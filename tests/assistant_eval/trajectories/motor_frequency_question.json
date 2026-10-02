@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "motor_frequency_question",
+  "case": "motor_frequency_question",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "claim_frequency adds expected_frequency to the rating features, and rating_bands reads its output next.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

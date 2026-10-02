@@ -20,7 +20,18 @@ import pytest
 
 from haute._graph_utils import _sanitize_func_name
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
-from haute.assistant._ops import OpValidationError, apply_ops, parse_ops
+from haute.assistant._ops import (
+    AssistantOperationError,
+    ConfigVisibility,
+    OpValidationError,
+    PlanReceipt,
+    _apply_ops_with_refs,
+    apply_ops,
+    parse_ops,
+)
+
+#: The receipt every plan these tests store carries.
+_RECEIPT = PlanReceipt("Test plan.")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,17 +113,84 @@ class TestAddNode:
             [
                 {
                     "op": "add_node",
-                    "node_type": "polars",
+                    "node_type": "edgeJoin",
                     "name": "My Step",
-                    "config": {"code": "df"},
+                    "config": {"suffix": "_lookup"},
                 },
             ],
         )
         expected_id = _sanitize_func_name("My Step")
         node = _get(out, expected_id)
         assert node.data.label == "My_Step"
-        assert node.data.nodeType == "polars"
-        assert node.data.config == {"code": "df"}
+        assert node.data.nodeType == "edgeJoin"
+        assert node.data.config == {"how": "left", "suffix": "_lookup"}
+
+    def test_a_data_input_starts_from_the_palette_config(self):
+        out = _apply(
+            _graph([]),
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "claims",
+                    "config": {"path": "claims.parquet"},
+                }
+            ],
+        )
+
+        assert _get(out, "claims").data.config == {
+            "inputType": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "path": "claims.parquet",
+            "arguments": {},
+            "steps": [],
+            "code": "",
+        }
+
+    @pytest.mark.parametrize(
+        ("node_type", "config", "absent"),
+        [
+            (
+                "dataInput",
+                {"inputType": "database", "connection": "warehouse", "query": "select 1"},
+                {"format", "mode", "path"},
+            ),
+            (
+                "modelScore",
+                {"sourceType": "run", "run_id": "abc123", "artifact_path": "model.cbm"},
+                {"registered_model", "version", "task", "output_column"},
+            ),
+        ],
+    )
+    def test_a_config_on_another_branch_keeps_only_the_palette_steps(
+        self, node_type: str, config: dict, absent: set[str]
+    ):
+        out = _apply(
+            _graph([]),
+            [{"op": "add_node", "node_type": node_type, "name": "n", "config": config}],
+        )
+
+        saved = _get(out, "n").data.config
+        assert saved["steps"] == []
+        assert not absent & set(saved)
+        assert {key: saved[key] for key in config} == config
+
+    def test_an_instance_takes_no_palette_config(self):
+        base = _graph([_node("original", steps=[{"id": "start", "kind": "source", "input": "a"}])])
+        out = _apply(
+            base,
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "copy",
+                    "config": {"instanceOf": "original"},
+                }
+            ],
+        )
+
+        assert _get(out, "copy").data.config == {"instanceOf": "original"}
 
     def test_submodel_types_rejected(self):
         for bad in ("submodel", "submodelPort"):
@@ -175,25 +253,130 @@ class TestRefs:
                 ],
             )
 
+    def test_ref_without_its_dollar_names_the_ref_and_the_id(self):
+        """The live join shape: the model declared ref 'join_node' and wired it bare."""
+        base = _graph([_node("quotes", "dataInput"), _node("rates", "dataInput")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "attach_regional_rates_join",
+                        "ref": "join_node",
+                    },
+                    {"op": "add_edge", "source": "quotes", "target": "join_node"},
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 1}
+        assert str(exc).startswith("Unknown edge target node 'join_node'")
+        assert exc.fix == (
+            "Write '$join_node', the ref add_node declared at operation 0, or the "
+            "node's id 'attach_regional_rates_join'."
+        )
+
+    @pytest.mark.parametrize("target", ["enriched_quotes", "$out", "out"])
+    def test_a_node_added_later_in_the_batch_names_the_move(self, target: str):
+        """The live output shape: the edge to the output preceded its add_node."""
+        base = _graph([_node("quote_with_competitor")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {"op": "add_edge", "source": "quote_with_competitor", "target": target},
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "enriched_quotes",
+                        "ref": "out",
+                    },
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 0}
+        assert "comes after this operation" in str(exc)
+        assert exc.fix == "Move add_node 'enriched_quotes' (operation 1) before operation 0."
+
+    def test_an_undeclared_ref_lists_the_refs_declared_so_far(self):
+        base = _graph([_node("src")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {"op": "add_node", "node_type": "polars", "name": "derive", "ref": "d"},
+                    {"op": "add_edge", "source": "src", "target": "$ghost"},
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 1}
+        assert str(exc) == (
+            "Unknown batch reference '$ghost': no add_node before this operation declared "
+            "ref 'ghost'. Refs declared so far: '$d' (id 'derive')."
+        )
+        assert exc.fix == (
+            "Declare ref 'ghost' on an add_node before this operation, or use a declared "
+            "ref or a node id get_pipeline lists."
+        )
+
+    def test_a_node_no_operation_adds_says_a_dry_run_is_a_whole_plan(self):
+        """The live retry shape: after a failed dry-run the model resent only the
+        edge to the output it had proposed, so no operation added it."""
+        base = _graph([_node("nb_batch", "dataInput")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(
+                base,
+                [
+                    {"op": "add_node", "node_type": "polars", "name": "joined", "ref": "q"},
+                    {"op": "add_edge", "source": "nb_batch", "target": "$q"},
+                    {"op": "add_edge", "source": "$q", "target": "enriched_quotes"},
+                ],
+            )
+        exc = excinfo.value
+        assert exc.where == {"op_index": 2}
+        assert str(exc) == (
+            "Unknown edge target node 'enriched_quotes': no node has this id and no "
+            "operation of this plan adds it. Nodes this plan adds so far: 'joined' ($q)."
+        )
+        assert exc.fix == (
+            "Add 'enriched_quotes' with add_node before operation 2: each dry run is a "
+            "whole plan, and a node a failed dry run proposed was never kept. Otherwise "
+            "use a node id get_pipeline lists."
+        )
+        assert exc.did_you_mean == ()
+
+    def test_a_misspelt_node_id_suggests_the_close_id(self):
+        base = _graph([_node("quote_with_competitor")])
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(base, [{"op": "update_node", "node": "quote_with_competitr", "config": {}}])
+        exc = excinfo.value
+        assert exc.did_you_mean == ("quote_with_competitor",)
+        assert "This plan adds no node before it." in str(exc)
+        assert exc.fix is not None and exc.fix.startswith(
+            "Use 'quote_with_competitor' if that is the node you meant; otherwise add "
+            "'quote_with_competitr' with add_node before operation 0"
+        )
+
     def test_ref_shadowing_existing_id_disambiguated_by_prefix(self):
         """``$x`` targets the batch-created node; bare ``x`` the existing one."""
-        base = _graph([_node("x", "polars", code="old")])
+        base = _graph([_node("x", "edgeJoin", suffix="_old")])
         out = _apply(
             base,
             [
                 {
                     "op": "add_node",
-                    "node_type": "polars",
+                    "node_type": "edgeJoin",
                     "name": "fresh",
                     "ref": "x",
-                    "config": {"code": "new"},
+                    "config": {"suffix": "_new"},
                 },
-                {"op": "update_node", "node": "$x", "config": {"code": "via_ref"}},
-                {"op": "update_node", "node": "x", "config": {"code": "via_id"}},
+                {"op": "update_node", "node": "$x", "config": {"suffix": "_via_ref"}},
+                {"op": "update_node", "node": "x", "config": {"suffix": "_via_id"}},
             ],
         )
-        assert _get(out, "fresh").data.config["code"] == "via_ref"
-        assert _get(out, "x").data.config["code"] == "via_id"
+        assert _get(out, "fresh").data.config["suffix"] == "_via_ref"
+        assert _get(out, "x").data.config["suffix"] == "_via_id"
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +422,674 @@ class TestUpdateNode:
             _apply(_graph([]), [{"op": "update_node", "node": "ghost", "config": {}}])
 
 
+_AGE = {
+    "banding": "breakpoints",
+    "column": "driver_age",
+    "outputColumn": "age_band",
+    "rules": [{"boundary": "24", "label": "17-24"}, {"boundary": "", "label": "25+"}],
+}
+_REGION = {
+    "banding": "categorical",
+    "column": "region_code",
+    "outputColumn": "region",
+    "rules": [{"value": "NW", "assignment": "North"}],
+    "default": "Other",
+}
+_LICENCE = {
+    "banding": "breakpoints",
+    "column": "licence_years",
+    "outputColumn": "licence_band",
+    "rules": [{"boundary": "2", "label": "new"}, {"boundary": "", "label": "settled"}],
+}
+
+
+def _withheld(graph: PipelineGraph, raw_ops: list[dict]) -> PipelineGraph:
+    """Apply *raw_ops* as a dry-run does when the policy withholds saved node configuration."""
+
+    return _apply_ops_with_refs(
+        graph, parse_ops(raw_ops), config_visibility=ConfigVisibility(withheld=True)
+    ).graph
+
+
+def _readable(graph: PipelineGraph, raw_ops: list[dict], *, read: set[str]) -> PipelineGraph:
+    """Apply *raw_ops* as a dry-run does under a readable policy, after this turn read *read*."""
+
+    visibility = ConfigVisibility(withheld=False, read=frozenset(read))
+    return _apply_ops_with_refs(graph, parse_ops(raw_ops), config_visibility=visibility).graph
+
+
+def test_an_output_row_ref_to_a_node_the_plan_deleted_is_an_unknown_reference():
+    row = {
+        "source_port": "$gone",
+        "source_column": "x",
+        "output_path": "$[:].x",
+        "enabled": True,
+    }
+    with pytest.raises(OpValidationError, match="'\\$gone'"):
+        _apply(
+            _graph([]),
+            [
+                {"op": "add_node", "node_type": "polars", "name": "gone", "ref": "gone"},
+                {"op": "delete_node", "node": "$gone"},
+                {
+                    "op": "add_node",
+                    "node_type": "output",
+                    "name": "response",
+                    "config": {"outputMapping": [row]},
+                },
+            ],
+        )
+
+
+class TestBlindRewriteGuard:
+    """An update that would retype a saved list or map the model has not seen is refused."""
+
+    def _bands(self) -> PipelineGraph:
+        return _graph(
+            [
+                _node("bands", "banding", factors=[_AGE, _REGION]),
+                _node(
+                    "policies",
+                    "liveSwitch",
+                    input_scenario_map={"quotes": "live", "batch_quotes": "nb_batch"},
+                    inputs=["quotes", "batch_quotes"],
+                ),
+                _node("shaped", "polars", steps=_LOGIC, contract={"region_code": "01"}),
+            ]
+        )
+
+    def test_changing_a_saved_entry_names_the_node_key_and_entry_never_its_rules(self):
+        changed = {**_REGION, "rules": [{"value": "NW", "assignment": "North West"}]}
+        with pytest.raises(AssistantOperationError) as caught:
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "bands", "config": {"factors": [_AGE, changed]}}],
+            )
+
+        error = caught.value
+        assert error.code == "config_withheld"
+        assert error.where == {"op_index": 0, "node": "bands", "field": "factors"}
+        assert "'region'" in str(error) and "'age_band'" not in str(error)
+        assert "egress policy" in str(error)
+        assert "North" not in str(error) and "NW" not in str(error)
+        assert error.fix is not None and "NEEDS_INPUT:" in error.fix
+
+    def test_a_retyped_list_that_drops_entries_names_each_one(self):
+        with pytest.raises(AssistantOperationError, match="'age_band', 'region'"):
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
+            )
+
+    def test_removing_a_saved_list_is_refused(self):
+        with pytest.raises(AssistantOperationError, match="'age_band', 'region'"):
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "bands", "config": {"factors": None}}],
+            )
+
+    def test_keeping_every_saved_entry_unchanged_passes(self):
+        out = _withheld(
+            self._bands(),
+            [
+                {
+                    "op": "update_node",
+                    "node": "bands",
+                    "config": {"factors": [_AGE, _REGION, _LICENCE]},
+                }
+            ],
+        )
+        assert _get(out, "bands").data.config["factors"] == [_AGE, _REGION, _LICENCE]
+
+    def test_a_map_keyed_by_input_names_names_the_changed_input(self):
+        with pytest.raises(AssistantOperationError, match="'batch_quotes'") as caught:
+            _withheld(
+                self._bands(),
+                [
+                    {
+                        "op": "update_node",
+                        "node": "policies",
+                        "config": {
+                            "input_scenario_map": {"quotes": "live", "batch_quotes": "batch_quotes"}
+                        },
+                    }
+                ],
+            )
+        assert "nb_batch" not in str(caught.value)
+
+    def test_a_map_keyed_by_values_is_counted_never_named(self):
+        with pytest.raises(AssistantOperationError, match="1 of its 1 keys") as caught:
+            _withheld(
+                self._bands(),
+                [{"op": "update_node", "node": "shaped", "config": {"contract": {}}}],
+            )
+        assert "region_code" not in str(caught.value)
+
+    def test_a_retyped_step_list_points_at_edit_steps(self):
+        with pytest.raises(AssistantOperationError, match="'logic'") as caught:
+            _withheld(
+                self._bands(),
+                [
+                    {
+                        "op": "update_node",
+                        "node": "shaped",
+                        "config": {
+                            "steps": [
+                                {"id": "logic", "kind": "free_code", "code": "df = df.head(3)"}
+                            ]
+                        },
+                    }
+                ],
+            )
+        assert caught.value.fix is not None and "edit_steps" in caught.value.fix
+
+    def test_a_node_the_plan_adds_and_a_node_read_this_turn_are_not_guarded(self):
+        added = _withheld(
+            self._bands(),
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "banding",
+                    "name": "more",
+                    "config": {"factors": [_AGE]},
+                },
+                {"op": "update_node", "node": "more", "config": {"factors": [_LICENCE]}},
+            ],
+        )
+        assert _get(added, "more").data.config["factors"] == [_LICENCE]
+        read = _readable(
+            self._bands(),
+            [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
+            read={"bands"},
+        )
+        assert _get(read, "bands").data.config["factors"] == [_LICENCE]
+
+    def test_a_read_follows_its_node_through_a_rename_and_ends_at_its_deletion(self):
+        """A node renamed onto the id of a read node the batch deleted is unread,
+        while the read node stays read under its new id."""
+
+        graph = _graph(
+            [
+                _node("bands", "banding", factors=[_AGE, _REGION]),
+                _node("other", "banding", factors=[_LICENCE]),
+            ]
+        )
+        with pytest.raises(AssistantOperationError) as caught:
+            _readable(
+                graph,
+                [
+                    {"op": "delete_node", "node": "bands"},
+                    {"op": "rename_node", "node": "other", "new_name": "bands"},
+                    {"op": "update_node", "node": "bands", "config": {"factors": [_AGE]}},
+                ],
+                read={"bands"},
+            )
+        error = caught.value
+        assert error.code == "config_unread"
+        assert error.where == {"op_index": 2, "node": "bands", "field": "factors"}
+        assert "'licence_band'" in str(error)
+
+        renamed = _readable(
+            graph,
+            [
+                {"op": "rename_node", "node": "bands", "new_name": "age_bands"},
+                {"op": "update_node", "node": "age_bands", "config": {"factors": [_LICENCE]}},
+            ],
+            read={"bands"},
+        )
+        assert _get(renamed, "age_bands").data.config["factors"] == [_LICENCE]
+
+    def test_a_readable_rewrite_of_a_node_this_turn_did_not_read_is_refused(self):
+        """Readable configuration the model did not read this turn is as unseen as
+        withheld configuration: the dropped rows are named by their output paths
+        and the fix says to read the node first, retryably."""
+
+        saved = [
+            {
+                "enabled": True,
+                "output_path": f"$[:].{name}",
+                "source_column": name,
+                "source_port": "priced",
+            }
+            for name in ("quote_id", "expected_frequency", "region")
+        ]
+        response = _graph([_node("quote_response", "output", outputMapping=saved)])
+        rows = [saved[0], {**saved[0], "output_path": "$[:].premium", "source_column": "premium"}]
+
+        with pytest.raises(AssistantOperationError) as caught:
+            _readable(
+                response,
+                [
+                    {
+                        "op": "update_node",
+                        "node": "quote_response",
+                        "config": {"outputMapping": rows},
+                    }
+                ],
+                read={"other"},
+            )
+
+        error = caught.value
+        assert error.code == "config_unread"
+        assert error.where == {"op_index": 0, "node": "quote_response", "field": "outputMapping"}
+        assert "'$[:].expected_frequency', '$[:].region'" in str(error)
+        assert "'$[:].quote_id'" not in str(error)
+        assert error.fix is not None
+        assert 'inspect_node with parts ["config"]' in error.fix
+        assert "existing entries" in error.fix
+        kept = _readable(
+            response,
+            [
+                {
+                    "op": "update_node",
+                    "node": "quote_response",
+                    "config": {"outputMapping": [*saved, rows[1]]},
+                }
+            ],
+            read=set(),
+        )
+        assert _get(kept, "quote_response").data.config["outputMapping"] == [*saved, rows[1]]
+
+    def test_without_a_visibility_nothing_is_guarded(self):
+        """An apply replays a plan its dry-run already judged."""
+
+        replayed = _apply(
+            self._bands(),
+            [{"op": "update_node", "node": "bands", "config": {"factors": [_LICENCE]}}],
+        )
+        assert _get(replayed, "bands").data.config["factors"] == [_LICENCE]
+
+
+# ---------------------------------------------------------------------------
+# Stepped-node write contract
+# ---------------------------------------------------------------------------
+
+_TRANSFORM_FORM = (
+    '[{"id": "start", "kind": "source", "input": "<edge name>"}, '
+    '{"id": "logic", "kind": "free_code", "code": "..."}]'
+)
+_FRAME_FORM = '[{"id": "logic", "kind": "free_code", "code": "..."}]'
+_LOGIC = [{"id": "logic", "kind": "free_code", "code": "df = df.head(2)"}]
+
+
+def _stepped_graph() -> PipelineGraph:
+    """``stepped`` and ``rated`` hold steps; ``coded`` is a code-mode Transform with code;
+    ``bare`` is a Rating Step with neither steps nor code."""
+
+    return _graph(
+        [
+            _node("src"),
+            _node(
+                "stepped",
+                steps=[{"id": "start", "kind": "source", "input": "src"}, *_LOGIC],
+            ),
+            _node("rated", "ratingStep", steps=_LOGIC),
+            _node("coded", code="df = src"),
+            _node("bare", "ratingStep"),
+        ],
+        [_edge("src", "stepped"), _edge("src", "rated"), _edge("src", "coded")],
+    )
+
+
+class TestSteppedWrites:
+    @pytest.mark.parametrize(
+        ("node", "config", "form"),
+        [
+            ("stepped", {"code": "df = src"}, _TRANSFORM_FORM),
+            ("stepped", {"steps": None, "code": "df = src"}, _TRANSFORM_FORM),
+            ("stepped", {"steps": None}, _TRANSFORM_FORM),
+            ("stepped", {"code": None}, _TRANSFORM_FORM),
+            ("rated", {"code": "df = df.head(1)"}, _FRAME_FORM),
+            ("rated", {"steps": None, "code": "df = df.head(1)"}, _FRAME_FORM),
+        ],
+    )
+    def test_a_write_that_would_leave_the_step_builder_is_refused(
+        self, node: str, config: dict, form: str
+    ):
+        graph = _stepped_graph()
+
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(graph, [{"op": "update_node", "node": node, "config": config}])
+
+        assert form in str(excinfo.value)
+        assert _get(graph, node).data.config["steps"]
+
+    def test_steps_are_refused_on_a_code_mode_node_with_code(self):
+        with pytest.raises(OpValidationError, match="discard its code"):
+            _apply(
+                _stepped_graph(),
+                [{"op": "update_node", "node": "coded", "config": {"steps": _LOGIC}}],
+            )
+
+    def test_code_mode_nodes_keep_code_editing_and_code_less_nodes_accept_steps(self):
+        out = _apply(
+            _stepped_graph(),
+            [
+                {"op": "update_node", "node": "coded", "config": {"code": "df = src.head(1)"}},
+                {"op": "update_node", "node": "bare", "config": {"steps": _LOGIC}},
+            ],
+        )
+
+        assert _get(out, "coded").data.config["code"] == "df = src.head(1)"
+        assert _get(out, "bare").data.config["steps"] == _LOGIC
+
+    @pytest.mark.parametrize(
+        ("ops", "form"),
+        [
+            (
+                [{"op": "add_node", "node_type": "polars", "name": "t", "config": {"code": "x"}}],
+                _TRANSFORM_FORM,
+            ),
+            (
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "ratingStep",
+                        "name": "r",
+                        "config": {"steps": None},
+                    }
+                ],
+                _FRAME_FORM,
+            ),
+            # A node added earlier in the batch is already stepped.
+            (
+                [
+                    {"op": "add_node", "node_type": "explore", "name": "e", "ref": "e"},
+                    {"op": "update_node", "node": "$e", "config": {"code": "df = df"}},
+                ],
+                _FRAME_FORM,
+            ),
+        ],
+    )
+    def test_add_node_of_a_stepped_type_is_authored_as_steps(self, ops: list[dict], form: str):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_graph([]), ops)
+
+        assert form in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "op",
+        [
+            {
+                "op": "add_node",
+                "node_type": "ratingStep",
+                "name": "r",
+                "config": {"steps": [{"id": "keep", "kind": "filter"}]},
+            },
+            {
+                "op": "update_node",
+                "node": "rated",
+                "config": {"steps": [{"id": "keep", "kind": "filter"}]},
+            },
+        ],
+    )
+    def test_a_steps_write_that_cannot_render_is_not_applied(self, op: dict):
+        """An incomplete step of a kind the surface holds is named with its problem
+        and completed where it stands, never redirected to free code."""
+
+        from haute.assistant._ops import AssistantOperationError
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(_stepped_graph(), [op])
+
+        assert excinfo.value.code == "op_not_applied"
+        assert "its filter step 'keep' cannot be rendered (Step 1: Missing field(s)" in str(
+            excinfo.value
+        )
+        assert excinfo.value.fix is not None
+        assert excinfo.value.fix.startswith("Complete the filter step 'keep': Missing field(s)")
+        assert "free_code" not in str(excinfo.value) + excinfo.value.fix
+        assert excinfo.value.where["step"] == "keep"
+
+    @pytest.mark.parametrize(
+        "step",
+        [
+            {"id": "start", "kind": "source", "input": "src"},
+            {"id": "start", "kind": "pivot_table"},
+        ],
+    )
+    def test_a_step_the_surface_cannot_hold_points_at_the_free_code_form(self, step: dict):
+        from haute.assistant._ops import AssistantOperationError
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(
+                _stepped_graph(),
+                [{"op": "update_node", "node": "rated", "config": {"steps": [step]}}],
+            )
+
+        assert excinfo.value.code == "op_not_applied"
+        assert "its steps cannot be rendered (Step 1: " in str(excinfo.value)
+        assert excinfo.value.fix == f"Write the steps as {_FRAME_FORM}."
+        assert excinfo.value.where["step"] == "start"
+
+
+def _edit_steps(node: str, *edits: dict) -> list[dict]:
+    return [{"op": "edit_steps", "node": node, "edits": list(edits)}]
+
+
+class TestEditSteps:
+    def test_edits_apply_in_order_and_new_steps_get_deterministic_ids(self):
+        out = _apply(
+            _stepped_graph(),
+            _edit_steps(
+                "stepped",
+                {"insert_after": "start", "step": {"kind": "limit", "n": 5}},
+                {"insert_after": "limit_1", "step": {"kind": "limit", "n": 3}},
+                {"replace": "logic", "step": {"kind": "free_code", "code": "df = df.head(1)"}},
+                {"remove": "limit_1"},
+                {"insert_after": "limit_2", "step": {"kind": "limit", "n": 9}},
+            ),
+        )
+
+        # limit_1 was free again when the last insertion was made.
+        assert _get(out, "stepped").data.config["steps"] == [
+            {"id": "start", "kind": "source", "input": "src"},
+            {"id": "limit_2", "kind": "limit", "n": 3},
+            {"id": "limit_1", "kind": "limit", "n": 9},
+            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+        ]
+
+    def test_an_insert_at_the_start_of_a_frame_surface(self):
+        out = _apply(
+            _stepped_graph(),
+            _edit_steps(
+                "rated", {"insert_after": None, "step": {"id": "few", "kind": "limit", "n": 2}}
+            ),
+        )
+
+        assert _get(out, "rated").data.config["steps"] == [
+            {"id": "few", "kind": "limit", "n": 2},
+            *_LOGIC,
+        ]
+
+    @pytest.mark.parametrize(
+        ("node", "edit", "step"),
+        [
+            ("stepped", {"replace": "ghost", "step": {"kind": "limit", "n": 1}}, "ghost"),
+            ("stepped", {"remove": "ghost"}, "ghost"),
+            ("stepped", {"insert_after": "ghost", "step": {"kind": "limit", "n": 1}}, "ghost"),
+            (
+                "stepped",
+                {"insert_after": "start", "step": {"id": "logic", "kind": "limit", "n": 1}},
+                "logic",
+            ),
+            (
+                "stepped",
+                {"replace": "start", "step": {"id": "logic", "kind": "limit", "n": 1}},
+                "logic",
+            ),
+        ],
+    )
+    def test_an_unknown_or_duplicate_step_id_is_refused_naming_it(
+        self, node: str, edit: dict, step: str
+    ):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_stepped_graph(), _edit_steps(node, edit))
+
+        assert excinfo.value.where == {
+            "op_index": 0,
+            "node": node,
+            "field": "steps",
+            "step": step,
+        }
+        assert repr(step) in str(excinfo.value)
+
+    def test_a_code_mode_node_is_refused_pointing_at_its_code(self):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_stepped_graph(), _edit_steps("coded", {"remove": "logic"}))
+
+        assert "code mode" in str(excinfo.value)
+        assert excinfo.value.where == {"op_index": 0, "node": "coded", "field": "code"}
+        assert excinfo.value.fix is not None and "update_node" in excinfo.value.fix
+
+    def test_a_node_without_steps_or_code_is_refused_with_its_free_code_form(self):
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(_stepped_graph(), _edit_steps("bare", {"remove": "logic"}))
+
+        assert excinfo.value.fix is not None and _FRAME_FORM in excinfo.value.fix
+
+    @pytest.mark.parametrize(
+        ("ops", "field"),
+        [
+            (_edit_steps("copy", {"remove": "logic"}), "steps"),
+            (
+                [
+                    {
+                        "op": "update_node",
+                        "node": "copy",
+                        "config": {"steps": [{"id": "start", "kind": "source", "input": "src"}]},
+                    }
+                ],
+                "steps",
+            ),
+            ([{"op": "update_node", "node": "copy", "config": {"code": "df = src"}}], "code"),
+            (
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "twin",
+                        "config": {"instanceOf": "stepped", "code": "df = src"},
+                    }
+                ],
+                "code",
+            ),
+        ],
+    )
+    def test_an_instance_is_refused_pointing_at_its_original(self, ops: list[dict], field: str):
+        """An instance runs its original's configuration; its own would never be read."""
+
+        base = _stepped_graph()
+        graph = _graph([*base.nodes, _node("copy", instanceOf="stepped")], list(base.edges))
+
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(graph, ops)
+
+        assert "instance of 'stepped'" in str(excinfo.value)
+        assert excinfo.value.where["field"] == field
+        assert excinfo.value.fix is not None
+        assert "'stepped'" in excinfo.value.fix and "update_node {steps" not in excinfo.value.fix
+
+    def test_detaching_an_instance_writes_its_own_steps(self):
+        base = _stepped_graph()
+        graph = _graph([*base.nodes, _node("copy", instanceOf="stepped")], list(base.edges))
+        steps = [{"id": "start", "kind": "source", "input": "src"}]
+
+        out = _apply(
+            graph,
+            [
+                {
+                    "op": "update_node",
+                    "node": "copy",
+                    "config": {"instanceOf": None, "steps": steps},
+                }
+            ],
+        )
+
+        config = _get(out, "copy").data.config
+        assert "instanceOf" not in config and config["steps"] == steps
+
+    def test_a_node_type_without_steps_is_refused(self):
+        graph = _graph([_node("out", "output", fields=["x"])])
+
+        with pytest.raises(OpValidationError, match="does not author steps"):
+            _apply(graph, _edit_steps("out", {"remove": "logic"}))
+
+    def test_an_edit_that_cannot_render_is_not_applied_naming_the_step(self):
+        from haute.assistant._ops import AssistantOperationError
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(
+                _stepped_graph(),
+                _edit_steps("rated", {"replace": "logic", "step": {"kind": "filter"}}),
+            )
+
+        assert excinfo.value.code == "op_not_applied"
+        assert excinfo.value.where == {
+            "op_index": 0,
+            "node": "rated",
+            "field": "steps",
+            "step": "logic",
+        }
+
+    def test_a_pivot_step_on_an_explore_points_at_its_pivots_config(self):
+        """Seen live: asked for a pivot table on an Explore, the model wrote a
+        pivot step without pivot columns, and the redirect to free code took it
+        further from the `pivots` entry the analyst meant."""
+
+        from haute.assistant._ops import AssistantOperationError
+
+        graph = _graph(
+            [_node("src"), _node("premium_explore", "explore", steps=[])],
+            [_edge("src", "premium_explore")],
+        )
+        pivot = {
+            "id": "pivot_premium_by_region",
+            "kind": "pivot",
+            "index": ["region"],
+            "on": "region",
+            "values": "premium",
+            "agg": "sum",
+            "columns": [],
+        }
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            _apply(graph, _edit_steps("premium_explore", {"insert_after": None, "step": pivot}))
+
+        assert excinfo.value.code == "op_not_applied"
+        assert str(excinfo.value).endswith(
+            "edit_steps on node 'premium_explore' did not land: its pivot step "
+            "'pivot_premium_by_region' cannot be rendered (Step 1: Add at least one pivot column.)."
+        )
+        assert excinfo.value.where["step"] == "pivot_premium_by_region"
+        fix = excinfo.value.fix
+        assert fix is not None
+        assert "pivots entry" in fix and '"node:explore"' in fix and "update_node" in fix
+        assert "free_code" not in str(excinfo.value) + fix
+
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            {"replace": "logic", "remove": "logic"},
+            {"insert_after": "logic"},
+            {"replace": "logic", "step": {"kind": "limit", "n": 1}, "extra": 1},
+        ],
+    )
+    def test_an_edit_in_no_single_shape_does_not_parse(self, edit: dict):
+        with pytest.raises(OpValidationError):
+            parse_ops(_edit_steps("stepped", edit))
+
+    def test_an_empty_edit_list_does_not_parse(self):
+        with pytest.raises(OpValidationError):
+            parse_ops([{"op": "edit_steps", "node": "stepped", "edits": []}])
+
+
 # ---------------------------------------------------------------------------
 # rename_node
 # ---------------------------------------------------------------------------
+
+
+_JOIN = {"how": "left", "leftOn": ["k"], "rightOn": ["k"], "suffix": "_right"}
 
 
 class TestRenameNode:
@@ -270,6 +1118,276 @@ class TestRenameNode:
             )
 
         assert _ids(graph) == {"first", "Existing_Name"}
+
+    @pytest.mark.parametrize(
+        ("consumer", "key", "expected"),
+        [
+            (
+                _node("sink", code="df = frame", inputMapping={"frame": "src"}),
+                "inputMapping",
+                {"frame": "renamed"},
+            ),
+            (
+                _node(
+                    "sink",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "src"},
+                        {"id": "j", "kind": "join", "input": "src", **_JOIN},
+                    ],
+                ),
+                "steps",
+                [
+                    {"id": "s", "kind": "source", "input": "renamed"},
+                    {"id": "j", "kind": "join", "input": "renamed", **_JOIN},
+                ],
+            ),
+            (
+                _node(
+                    "sink",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "other"},
+                        {"id": "c", "kind": "concat", "inputs": ["src"], "how": "vertical"},
+                    ],
+                ),
+                "steps",
+                [
+                    {"id": "s", "kind": "source", "input": "other"},
+                    {"id": "c", "kind": "concat", "inputs": ["renamed"], "how": "vertical"},
+                ],
+            ),
+            (
+                _node("sink", "liveSwitch", input_scenario_map={"other": "batch", "src": "live"}),
+                "input_scenario_map",
+                {"other": "batch", "renamed": "live"},
+            ),
+            (_node("sink", "optimiser", data_input="src"), "data_input", "renamed"),
+            (_node("sink", "optimiser", banding_source="src"), "banding_source", "renamed"),
+            (_node("sink", "optimiser", analysis_input="src"), "analysis_input", "renamed"),
+            (_node("sink", "optimiserApply", ratebook_input="src"), "ratebook_input", "renamed"),
+            (
+                _node(
+                    "sink",
+                    "output",
+                    outputMapping=[
+                        {
+                            "source_port": "src",
+                            "source_column": "x",
+                            "output_path": "$.x",
+                            "enabled": True,
+                        }
+                    ],
+                ),
+                "outputMapping",
+                [
+                    {
+                        "source_port": "renamed",
+                        "source_column": "x",
+                        "output_path": "$.x",
+                        "enabled": True,
+                    }
+                ],
+            ),
+        ],
+    )
+    def test_rename_rewrites_a_structured_consumer_field(
+        self, consumer: GraphNode, key: str, expected: object
+    ):
+        graph = _graph(
+            [_node("src", "dataInput"), _node("other", "dataInput"), consumer],
+            [_edge("src", "sink"), _edge("other", "sink")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert _get(out, "sink").data.config[key] == expected
+        assert consumer.data.config[key] != expected
+
+    def test_rename_rewrites_the_input_keys_of_the_targets_instances(self):
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+                _node("copy", instanceOf="sink", inputMapping={"src": "other"}),
+                _node("other", "dataInput"),
+            ],
+            [_edge("src", "sink"), _edge("other", "copy")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert _get(out, "copy").data.config["inputMapping"] == {"renamed": "other"}
+
+    def test_rename_with_stepped_mapped_and_free_code_consumers_lists_only_the_code(self):
+        from haute.assistant._ops import RenameConsumersError
+
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("stepped", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+                _node("mapped", code="df = frame", inputMapping={"frame": "src"}),
+                _node(
+                    "free",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "src"},
+                        {"id": "c", "kind": "free_code", "code": "df = df.join(src, on='k')"},
+                    ],
+                ),
+            ],
+            [_edge("src", "stepped"), _edge("src", "mapped"), _edge("src", "free")],
+        )
+
+        with pytest.raises(RenameConsumersError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert excinfo.value.consumers == (("free", "steps[2].code"),)
+
+    @pytest.mark.parametrize(
+        "consumer",
+        [
+            _node("sink", "liveSwitch", input_scenario_map={"src": "live", "renamed": "batch"}),
+            _node("sink", code="df = frame", inputMapping={"frame": "src", "alt": "renamed"}),
+        ],
+    )
+    def test_rename_refuses_a_rewrite_that_collides_in_a_mapping(self, consumer: GraphNode):
+        graph = _graph(
+            [_node("src", "dataInput"), consumer],
+            [_edge("src", "sink")],
+        )
+
+        with pytest.raises(OpValidationError, match="'sink' already has an input named 'renamed'"):
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+    def test_rename_refuses_a_target_left_with_two_inputs_of_one_name(self):
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("api", "apiInput"),
+                _node("sink", steps=[{"id": "s", "kind": "source", "input": "src"}]),
+            ],
+            [_edge("src", "sink"), _edge("api", "sink", sh="renamed")],
+        )
+
+        with pytest.raises(OpValidationError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert "'sink'" in str(excinfo.value) and "'renamed'" in str(excinfo.value)
+        assert excinfo.value.where["node"] == "sink"
+
+    def test_rename_reconciliation_covers_every_field_the_editor_reconciles(self):
+        """The editor's rename plan and this operation rewrite the same fields.
+
+        ``outputMapping`` is reconciled here only: the editor's Quote Response
+        panel owns its mapping rows.
+        """
+        import re
+
+        from haute.assistant._ops import RENAME_RECONCILED_FIELDS
+
+        source = (
+            Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "nodeUpdatePlan.ts"
+        ).read_text(encoding="utf-8")
+        union = re.search(r"field:\s*((?:\"\w+\"\s*\|\s*)*\"\w+\")", source)
+        loop = re.search(r"for \(const field of \[([^\]]*)\] as const\)", source)
+        assert union and loop, "nodeUpdatePlan.ts no longer declares its reconciled fields"
+        editor_fields = set(re.findall(r"\"(\w+)\"", union.group(1) + loop.group(1)))
+        assert "renameStepInputs(config.steps" in source
+        editor_fields.add("steps")
+
+        assert editor_fields <= set(RENAME_RECONCILED_FIELDS)
+        assert set(RENAME_RECONCILED_FIELDS) - editor_fields == {"outputMapping"}
+
+    @pytest.mark.parametrize(
+        ("consumer", "field"),
+        [
+            (_node("sink", code="df = src.filter(pl.col('x') > 0)"), "code"),
+            (_node("sink", code="df = ("), "code"),
+            (
+                _node(
+                    "sink",
+                    steps=[
+                        {"id": "s", "kind": "source", "input": "other"},
+                        {"id": "c", "kind": "free_code", "code": "df = df.join(src, on='k')"},
+                    ],
+                ),
+                "steps[2].code",
+            ),
+        ],
+    )
+    def test_rename_refuses_a_consumer_whose_code_reads_the_input(
+        self, consumer: GraphNode, field: str
+    ):
+        from haute.assistant._ops import RenameConsumersError
+
+        graph = _graph(
+            [_node("src", "dataInput"), _node("other", "dataInput"), consumer],
+            [_edge("src", "sink"), _edge("other", "sink")],
+        )
+
+        with pytest.raises(RenameConsumersError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert excinfo.value.code == "rename_has_consumers"
+        assert excinfo.value.consumers == (("sink", field),)
+        assert "'sink'" in str(excinfo.value) and field in str(excinfo.value)
+
+    def test_rename_refuses_code_and_instances_that_name_the_node(self):
+        from haute.assistant._ops import RenameConsumersError
+
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                _node("sink", code="df = src"),
+                _node("copy", instanceOf="sink", inputMapping={"src": "src"}),
+                _node("twin", instanceOf="src"),
+            ],
+            [_edge("src", "sink"), _edge("src", "copy")],
+        )
+
+        with pytest.raises(RenameConsumersError) as excinfo:
+            _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert set(excinfo.value.consumers) == {("sink", "code"), ("twin", "instanceOf")}
+
+    def test_rename_with_only_edge_consumers_applies(self):
+        graph = _graph(
+            [
+                _node("src", "dataInput"),
+                # The column 'src' and a keyword named src are not the input.
+                _node("sink", code="df = pl.DataFrame({'src': [1]}).with_columns(src=pl.lit(1))"),
+                _node("join", "edgeJoin"),
+            ],
+            [_edge("src", "sink"), _edge("src", "join", th="base")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "src", "new_name": "renamed"}])
+
+        assert "renamed" in _ids(out)
+
+    def test_rename_of_an_api_input_keeps_its_frame_names(self):
+        graph = _graph(
+            [_node("api", "apiInput"), _node("sink", code="df = quotes")],
+            [_edge("api", "sink", sh="quotes")],
+        )
+
+        out = _apply(graph, [{"op": "rename_node", "node": "api", "new_name": "requests"}])
+
+        assert "requests" in _ids(out)
+
+    def test_rename_applies_after_an_earlier_op_rewrites_the_consumer(self):
+        graph = _graph(
+            [_node("src", "dataInput"), _node("sink", code="df = src")],
+            [_edge("src", "sink")],
+        )
+
+        out = _apply(
+            graph,
+            [
+                {"op": "update_node", "node": "sink", "config": {"code": "df = renamed"}},
+                {"op": "rename_node", "node": "src", "new_name": "renamed"},
+            ],
+        )
+
+        assert _get(out, "sink").data.config["code"] == "df = renamed"
 
 
 # ---------------------------------------------------------------------------
@@ -371,18 +1489,53 @@ class TestSubmodelBoundary:
 
     def test_op_targeting_submodel_internal_node_rejected(self):
         base = self._graph_with_submodel()
-        with pytest.raises(OpValidationError):
+        with pytest.raises(AssistantOperationError) as caught:
             _apply(
                 base,
                 [
                     {"op": "update_node", "node": "inner_child", "config": {"code": "df"}},
                 ],
             )
+        assert caught.value.code == "submodel_boundary"
+        assert "cannot be read or edited by the assistant" in str(caught.value)
+        assert caught.value.fix is not None and "BLOCKED:" in caught.value.fix
 
     def test_delete_submodel_placeholder_rejected(self):
         base = self._graph_with_submodel()
-        with pytest.raises(OpValidationError):
+        with pytest.raises(AssistantOperationError, match="submodel") as caught:
             _apply(base, [{"op": "delete_node", "node": "submodel__sm1"}])
+        assert caught.value.code == "submodel_boundary"
+
+    def test_an_output_row_naming_an_occurrence_is_told_its_port_name(self):
+        """An edge from a submodel output is named by its port, never by the
+        occurrence, so the fix names the port rather than a plain add_edge."""
+
+        from haute.assistant._catalog import INPUT_NAMING_RULE
+        from haute.assistant._ops import _validate_output_rows_read_inputs
+
+        row = {
+            "source_port": "vehicle_factors",
+            "source_column": "policy_id",
+            "output_path": "$[:].policy_id",
+            "enabled": True,
+        }
+        graph = _graph(
+            [
+                _node("vehicle_factors", "submodel"),
+                _node("response", "output", outputMapping=[row]),
+            ],
+            [_edge("vehicle_factors", "response", sh="out__factored")],
+        )
+        nodes = {node.id: node for node in graph.nodes}
+
+        with pytest.raises(OpValidationError) as caught:
+            _validate_output_rows_read_inputs(graph, nodes["response"], nodes)
+
+        assert caught.value.fix == (
+            "The edges into 'response' provide the input 'factored'; set row 1's source_port "
+            "to 'factored'. " + INPUT_NAMING_RULE
+        )
+        assert caught.value.did_you_mean == ("factored",)
 
 
 # ---------------------------------------------------------------------------
@@ -641,14 +1794,19 @@ class TestSemanticPlans:
                 {
                     "op": "update_node",
                     "node": "$fresh",
-                    "config": {"code": "return frame"},
+                    "config": {
+                        "steps": [
+                            {"id": "start", "kind": "source", "input": "source"},
+                            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+                        ]
+                    },
                 },
                 {"op": "add_edge", "source": "source", "target": "$fresh"},
             ],
         )
 
         assert plan.diff.nodes_updated == ("Fresh_Node",)
-        assert plan.diff.config_changes == ("Fresh_Node:code",)
+        assert plan.diff.config_changes == ("Fresh_Node:steps",)
         assert "$fresh" not in json.dumps(plan.diff.as_dict())
 
     def test_plan_rejects_a_new_disconnected_node(self, tmp_path: Path):
@@ -669,7 +1827,7 @@ class TestSemanticPlans:
         with pytest.raises(AssistantOperationError) as exc:
             build_graph_edit_plan(
                 snapshot,
-                [{"op": "add_node", "node_type": "polars", "name": "orphan"}],
+                [{"op": "add_node", "node_type": "explore", "name": "orphan"}],
             )
 
         assert exc.value.code == "invalid_plan"
@@ -694,13 +1852,56 @@ class TestSemanticPlans:
             build_graph_edit_plan(
                 snapshot,
                 [
-                    {"op": "add_node", "node_type": "polars", "name": "fresh", "ref": "fresh"},
+                    {"op": "add_node", "node_type": "explore", "name": "fresh", "ref": "fresh"},
                     {"op": "rename_node", "node": "$fresh", "new_name": "renamed"},
                 ],
             )
 
         assert exc.value.code == "invalid_plan"
         assert "renamed" in str(exc.value)
+
+    def test_a_rename_lists_each_reconciled_consumer_field_in_the_diff(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        # An analyst's free-code step the assistant's authoring rules would refuse
+        # (its result is discarded) is not re-judged by a rename that only
+        # rewrites the step list's input references.
+        stepped = _node(
+            "stepped",
+            steps=[
+                {"id": "s", "kind": "source", "input": "source"},
+                {"id": "c", "kind": "free_code", "code": "df.head(1)"},
+            ],
+        )
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph(
+                [
+                    _node("source", "dataInput"),
+                    stepped,
+                    _node("switch", "liveSwitch", input_scenario_map={"source": "live"}),
+                ],
+                [_edge("source", "stepped"), _edge("source", "switch")],
+            ),
+        )
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+
+        assert plan.diff.nodes_renamed == (("source", "renamed"),)
+        assert plan.diff.nodes_updated == ("stepped", "switch")
+        assert plan.diff.config_changes == (
+            "stepped:steps[s].input",
+            "switch:input_scenario_map.renamed",
+        )
+        assert {"node_config", "stepped"} <= {
+            value for condition in plan.postconditions for value in condition.values()
+        }
 
     def test_existing_disconnected_node_does_not_block_an_unrelated_plan(self, tmp_path: Path):
         from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
@@ -920,6 +2121,252 @@ class TestSemanticPlans:
                 ],
             )
 
+    @staticmethod
+    def _stepped_plan(
+        tmp_path: Path,
+        node: str,
+        steps: list[dict],
+        preamble: str | None = None,
+        *,
+        edits: list[dict] | None = None,
+    ):
+        """Plan setting *node*'s steps in quotes -> prepared -> {t, rated}.
+
+        With *edits*, *node* already holds *steps* and the plan edits them.
+        """
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        rating_tables = [
+            {
+                "factors": ["region"],
+                "outputColumn": "rate_factor",
+                "defaultValue": "1.0",
+                "entries": [{"region": "north", "value": "1.25"}],
+            }
+        ]
+        graph = _graph(
+            [
+                _node("quotes", "dataInput", path="quotes.parquet"),
+                _node("prepared", code="df = quotes"),
+                _node("t"),
+                _node("rated", "ratingStep", tables=rating_tables, combinedOutputs=[]),
+            ],
+            [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
+        )
+        graph.preamble = preamble
+        if edits is not None:
+            index = next(i for i, item in enumerate(graph.nodes) if item.id == node)
+            graph.nodes[index] = graph.nodes[index].with_config(
+                {**graph.nodes[index].data.config, "steps": steps}
+            )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = (
+            [{"op": "update_node", "node": node, "config": {"steps": steps}}]
+            if edits is None
+            else [{"op": "edit_steps", "node": node, "edits": edits}]
+        )
+        return build_graph_edit_plan(snapshot, ops)
+
+    def test_edit_steps_records_each_step_it_changes(self, tmp_path: Path):
+        steps = [
+            {"id": "keep", "kind": "limit", "n": 2},
+            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+        ]
+        plan = self._stepped_plan(
+            tmp_path,
+            "rated",
+            steps,
+            edits=[
+                {"remove": "keep"},
+                {"insert_after": "logic", "step": {"kind": "limit", "n": 1}},
+            ],
+        )
+
+        assert plan.diff.nodes_updated == ("rated",)
+        assert plan.diff.config_changes == ("rated:steps[keep]", "rated:steps[limit_1]")
+        assert plan.diff.sidecar_changes == ("config/rating_step/rated",)
+
+    def test_an_edited_free_code_step_is_checked_naming_its_step(self, tmp_path: Path):
+        steps = [
+            {"id": "keep", "kind": "limit", "n": 2},
+            {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
+        ]
+        with pytest.raises(OpValidationError) as excinfo:
+            self._stepped_plan(
+                tmp_path,
+                "rated",
+                steps,
+                edits=[
+                    {
+                        "replace": "logic",
+                        "step": {"kind": "free_code", "code": "df.drop('x')"},
+                    }
+                ],
+            )
+
+        assert "step 2 ('logic')" in str(excinfo.value)
+        assert excinfo.value.where["step"] == "logic"
+
+    @pytest.mark.parametrize(
+        ("node", "steps"),
+        [
+            # The rendered `df = prepared` line retains a frame, but not this step's.
+            (
+                "t",
+                [
+                    {"id": "start", "kind": "source", "input": "prepared"},
+                    {"id": "logic", "kind": "free_code", "code": "df.filter(pl.col('x') > 1)"},
+                ],
+            ),
+            (
+                "rated",
+                [
+                    {"id": "keep", "kind": "limit", "n": 2},
+                    {"id": "logic", "kind": "free_code", "code": "# tidy\ndf.drop('x')"},
+                ],
+            ),
+        ],
+    )
+    def test_a_free_code_step_whose_frame_result_is_discarded_is_refused(
+        self, tmp_path: Path, node: str, steps: list[dict]
+    ):
+        with pytest.raises(OpValidationError) as excinfo:
+            self._stepped_plan(tmp_path, node, steps)
+        message = str(excinfo.value)
+        assert "step 2 ('logic')" in message
+        assert "discarded" in message
+
+    @pytest.mark.parametrize(
+        ("code", "name"),
+        [
+            ("df = prepared.head(2)", "prepared"),
+            ("df = df.join(quotes, on='region')", "quotes"),
+        ],
+    )
+    def test_a_rating_step_step_reading_an_input_by_name_is_refused(
+        self, tmp_path: Path, code: str, name: str
+    ):
+        steps = [{"id": "logic", "kind": "free_code", "code": code}]
+        with pytest.raises(OpValidationError) as excinfo:
+            self._stepped_plan(tmp_path, "rated", steps)
+        message = str(excinfo.value)
+        assert f"Rating Step code sees only df; {name} is not in scope" in message
+        assert "step 1 ('logic')" in message
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "# Keep two rows\ndf = keep_two(df)",
+            "def keep(frame):\n    return frame.head(2)\n\ndf = keep(df)",
+            "prepared = df.head(2)\ndf = prepared.with_columns(pl.lit(len('ab')).alias('n'))",
+        ],
+    )
+    def test_a_rating_step_step_using_helpers_and_its_own_names_is_accepted(
+        self, tmp_path: Path, code: str
+    ):
+        steps = [{"id": "logic", "kind": "free_code", "code": code}]
+        preamble = "def keep_two(frame):\n    return frame.head(2)\n"
+        plan = self._stepped_plan(tmp_path, "rated", steps, preamble=preamble)
+        assert plan.diff.config_changes == ("rated:steps",)
+
+    @pytest.mark.parametrize(
+        ("node", "steps", "fix"),
+        [
+            (
+                "t",
+                [
+                    {"id": "start", "kind": "source", "input": "prepared"},
+                    {"id": "logic", "kind": "free_code", "code": "df = df['prepared'].head(2)"},
+                ],
+                "df is already the 'prepared' frame the source step chose; transform df "
+                "directly (df = df.filter(...)).",
+            ),
+            (
+                "rated",
+                [{"id": "logic", "kind": "free_code", "code": "df = df['prepared']"}],
+                "df is this node's own frame; transform df directly (df = df.filter(...)).",
+            ),
+        ],
+    )
+    def test_a_step_indexing_df_by_an_input_name_names_the_operation_that_wrote_it(
+        self, tmp_path: Path, node: str, steps: list[dict], fix: str
+    ):
+        """The check runs on the planned graph after the whole batch, and its
+        failure still names the operation that wrote the node."""
+
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph(
+            [
+                _node("quotes", "dataInput", path="quotes.parquet"),
+                _node("prepared", code="df = quotes"),
+                _node("t"),
+                _node(
+                    "rated",
+                    "ratingStep",
+                    tables=[
+                        {
+                            "factors": ["region"],
+                            "outputColumn": "rate_factor",
+                            "defaultValue": "1.0",
+                            "entries": [{"region": "north", "value": "1.25"}],
+                        }
+                    ],
+                    combinedOutputs=[],
+                ),
+            ],
+            [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            {"op": "update_node", "node": "prepared", "config": {"code": "df = quotes.head(5)"}},
+            {"op": "update_node", "node": node, "config": {"steps": steps}},
+        ]
+
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(snapshot, ops)
+
+        error = excinfo.value
+        assert "indexes df by the input name 'prepared'" in str(error)
+        assert error.where == {"op_index": 1, "node": node, "field": "steps", "step": "logic"}
+        assert error.fix == fix
+        assert error.graph is not None
+
+    def test_a_column_named_like_an_input_is_not_mistaken_for_indexing(self, tmp_path: Path):
+        steps = [
+            {"id": "start", "kind": "source", "input": "prepared"},
+            {"id": "logic", "kind": "free_code", "code": "df = df.filter(pl.col('prepared') > 0)"},
+        ]
+        plan = self._stepped_plan(tmp_path, "t", steps)
+        assert plan.diff.config_changes == ("t:steps",)
+
+    def test_a_failing_operation_is_located_by_its_index(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("a")], []))
+
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(
+                snapshot,
+                [
+                    {"op": "update_node", "node": "a", "config": {"code": "df = pl.LazyFrame()"}},
+                    {"op": "update_node", "node": "b", "config": {}},
+                ],
+            )
+
+        assert excinfo.value.where == {"op_index": 1}
+        assert excinfo.value.fix == (
+            "Add 'b' with add_node before operation 1: each dry run is a whole plan, and "
+            "a node a failed dry run proposed was never kept. Otherwise use a node id "
+            "get_pipeline lists."
+        )
+
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
         from haute.assistant._ops import semantic_diff
 
@@ -966,6 +2413,97 @@ class TestSemanticPlans:
         assert plan.diff.truncated is True
         assert plan.diff.complete_counts["nodes_updated"] == 51
         assert plan.affected_capabilities == ("polars", "ratingStep")
+
+    def test_config_postconditions_cover_every_written_node_beyond_the_diff_limit(
+        self, tmp_path: Path
+    ):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+            verify_postconditions,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        coded = [_node(f"coded_{index:02d}", code="df = src") for index in range(50)]
+        coded.append(_node("zz_coded", code="df = src"))
+        graph = _graph([_node("src"), *coded], [_edge("src", node.id) for node in coded])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            {"op": "update_node", "node": node.id, "config": {"code": "df = src.head(3)\n"}}
+            for node in coded
+        ]
+
+        plan = build_graph_edit_plan(snapshot, ops)
+
+        assert plan.diff.truncated is True
+        config_nodes = [
+            condition["node"]
+            for condition in plan.postconditions
+            if condition["kind"] == "node_config"
+        ]
+        assert config_nodes == [node.id for node in coded]
+        saved = _apply(graph, ops)
+        last = _get(saved, "zz_coded")
+        saved.nodes[saved.nodes.index(last)] = last.with_config({"code": "df = src"})
+        with pytest.raises(AssistantOperationError) as excinfo:
+            verify_postconditions(saved, plan.postconditions)
+        assert excinfo.value.code == "postcondition_failed"
+
+    def test_a_plan_at_the_operation_cap_seals_and_replays_every_config_postcondition(
+        self, tmp_path: Path
+    ):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+        from haute.assistant._wire_ops import MAX_PLAN_OPERATIONS
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        coded = [
+            _node(f"coded_{index:03d}", code="df = src") for index in range(MAX_PLAN_OPERATIONS)
+        ]
+        graph = _graph([_node("src"), *coded], [_edge("src", node.id) for node in coded])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            {"op": "update_node", "node": node.id, "config": {"code": "df = src.head(3)\n"}}
+            for node in coded
+        ]
+        declared = [{"kind": "node_exists", "node": node.id} for node in coded]
+
+        plan = build_graph_edit_plan(snapshot, ops, postconditions=declared)
+
+        assert len(plan.postconditions) == 2 * MAX_PLAN_OPERATIONS
+        replayed = build_graph_edit_plan(
+            snapshot, ops, postconditions=[dict(item) for item in plan.as_dict()["postconditions"]]
+        )
+        assert replayed.plan_hash == plan.plan_hash
+
+    def test_a_free_code_step_beyond_the_diff_limit_is_still_refused(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        filler = [_node(f"coded_{index:02d}", code="df = src") for index in range(50)]
+        graph = _graph(
+            [_node("src"), *filler, _node("zz_rated", "ratingStep")],
+            [_edge("src", node.id) for node in [*filler, _node("zz_rated")]],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [
+            *(
+                {"op": "update_node", "node": node.id, "config": {"code": "df = src.head(3)\n"}}
+                for node in filler
+            ),
+            {
+                "op": "update_node",
+                "node": "zz_rated",
+                "config": {"steps": [{"id": "logic", "kind": "free_code", "code": "df = src"}]},
+            },
+        ]
+
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(snapshot, ops)
+        assert "Rating Step code sees only df; src is not in scope" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         "ops",
@@ -1096,6 +2634,56 @@ class TestSemanticPlans:
                 postconditions=postconditions,
             )
 
+    @pytest.mark.parametrize(
+        "supplied",
+        [[], [{"kind": "node_exists", "node": "rated"}]],
+    )
+    def test_updated_code_carrying_nodes_carry_a_config_postcondition(
+        self, tmp_path: Path, supplied: list[dict]
+    ):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+            verify_postconditions,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _stepped_graph()
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        steps = [{"id": "logic", "kind": "free_code", "code": "df = df.head(3)"}]
+        ops = [
+            {"op": "update_node", "node": "rated", "config": {"steps": steps}},
+            {"op": "update_node", "node": "coded", "config": {"code": "df = src.head(3)\n"}},
+        ]
+        plan = build_graph_edit_plan(snapshot, ops, postconditions=supplied)
+
+        config_nodes = [
+            condition["node"]
+            for condition in plan.postconditions
+            if condition["kind"] == "node_config"
+        ]
+        assert config_nodes == ["coded", "rated"]
+        # Replaying the sealed plan's own postconditions reproduces it exactly.
+        replayed = build_graph_edit_plan(
+            snapshot, ops, postconditions=[dict(item) for item in plan.as_dict()["postconditions"]]
+        )
+        assert replayed.postconditions == plan.postconditions
+
+        saved = _apply(graph, ops)
+        # Reparse returns code-mode code normalised; the digest compares it so.
+        coded = _get(saved, "coded")
+        saved.nodes[saved.nodes.index(coded)] = coded.with_config({"code": "df = src.head(3)"})
+        verify_postconditions(saved, plan.postconditions)
+
+        rated = _get(saved, "rated")
+        discarded = rated.with_config({"code": "df = df.head(3)", "_steps_discarded": "x"})
+        saved.nodes[saved.nodes.index(rated)] = discarded
+        with pytest.raises(AssistantOperationError) as excinfo:
+            verify_postconditions(saved, plan.postconditions)
+        assert excinfo.value.code == "postcondition_failed"
+
 
 class TestPlanStore:
     def test_applying_plan_survives_ttl_until_terminal_result(
@@ -1120,7 +2708,7 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
         )
         store = PlanStore(ttl_seconds=1)
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         store.begin_apply(plan.plan_hash)
 
         now = 2.0
@@ -1155,13 +2743,13 @@ class TestPlanStore:
             for name in ("leased", "older", "newer", "newest")
         )
         store = PlanStore(max_size=2)
-        store.put(leased)
+        store.put(leased, _RECEIPT)
         store.begin_apply(leased.plan_hash)
-        store.put(older)
-        store.put(newer)
+        store.put(older, _RECEIPT)
+        store.put(newer, _RECEIPT)
         assert len(store) == 3, "the lease sits outside the two plans awaiting use"
 
-        store.put(newest)  # the least recently used plan awaiting use goes
+        store.put(newest, _RECEIPT)  # the least recently used plan awaiting use goes
         with pytest.raises(AssistantOperationError) as exc:
             store.get(older.plan_hash)
         assert exc.value.code == "plan_not_found"
@@ -1202,11 +2790,11 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "second"}],
         )
         store = PlanStore(max_size=1)
-        store.put(first)
+        store.put(first, _RECEIPT)
         store.begin_apply(first.plan_hash)
 
         with pytest.raises(AssistantOperationError) as exc:
-            store.put(second)
+            store.put(second, _RECEIPT)
         assert exc.value.code == "plan_store_busy"
 
         store.complete_apply(first.plan_hash, {"result_revision": "a" * 64})
@@ -1230,14 +2818,71 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
         )
         store = PlanStore()
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         assert store.begin_apply(plan.plan_hash) == plan
         store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
-        store.put(plan)
 
         with pytest.raises(AssistantOperationError) as exc:
             store.begin_apply(plan.plan_hash)
         assert exc.value.code == "plan_already_applied"
+
+    def test_a_fresh_dry_run_of_an_applied_plan_issues_it_again(self, tmp_path: Path):
+        """The hash covers the base revision, so a fresh dry-run producing an applied
+        plan's hash means an undo restored that revision: the plan applies once more."""
+
+        from haute.assistant._ops import (
+            PlanReceipt,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+        store = PlanStore()
+        store.put(plan, _RECEIPT)
+        store.begin_apply(plan.plan_hash)
+        store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
+
+        store.put(plan, PlanReceipt("Rename it again."))
+
+        assert store.begin_apply(plan.plan_hash) == plan
+        assert store.receipt(plan.plan_hash).summary == "Rename it again."
+
+    @pytest.mark.parametrize("text", ["Rename\x1ethe node.", "Rename\x00it."])
+    def test_a_receipt_refuses_control_characters(self, text: str):
+        from haute.assistant._ops import AssistantOperationError, PlanReceipt
+
+        with pytest.raises(AssistantOperationError) as exc:
+            PlanReceipt(text)
+        assert exc.value.code == "invalid_request"
+        with pytest.raises(AssistantOperationError):
+            PlanReceipt("Rename the node.", (text,))
+        # Whitespace, including a line break, is ordinary text.
+        assert PlanReceipt("Rename\nthe node.\t").summary == "Rename\nthe node.\t"
+
+    def test_a_receipt_holds_a_two_sentence_summary_and_refuses_one_past_the_bound(self):
+        """A live run's summaries ran past 160 characters; the bound fits two sentences."""
+        from haute.assistant._ops import AssistantOperationError, PlanReceipt
+        from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT
+
+        assert ASSISTANT_RECEIPT_TEXT_LIMIT == 400
+        summary = (
+            "Join the competitor insight onto the new-business batch by quote id, keeping "
+            "every quote in the batch. Write the enriched quotes to a new output node so "
+            "the analyst can review the competitor premium beside our own."
+        )
+        assert 160 < len(summary) <= ASSISTANT_RECEIPT_TEXT_LIMIT
+        assert PlanReceipt(summary, (summary,)).summary == summary
+        with pytest.raises(AssistantOperationError) as exc:
+            PlanReceipt("x" * (ASSISTANT_RECEIPT_TEXT_LIMIT + 1))
+        assert exc.value.code == "invalid_request"
+        assert "400 characters" in str(exc.value)
 
     def test_aborted_plan_requires_a_fresh_identical_put_before_retry(self, tmp_path: Path):
         from haute.assistant._ops import (
@@ -1254,7 +2899,7 @@ class TestPlanStore:
             [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
         )
         store = PlanStore()
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         store.begin_apply(plan.plan_hash)
         store.abort_apply(plan.plan_hash)
 
@@ -1263,7 +2908,7 @@ class TestPlanStore:
         assert exc.value.code == "plan_aborted"
         assert "dry-run" in str(exc.value)
 
-        store.put(plan)
+        store.put(plan, _RECEIPT)
         assert store.begin_apply(plan.plan_hash) == plan
 
     def test_destructive_plan_enters_applying_without_session_consent(self, tmp_path: Path):
@@ -1281,6 +2926,42 @@ class TestPlanStore:
             [{"op": "delete_node", "node": "source"}],
         )
         store = PlanStore()
-        store.put(plan)
+        store.put(plan, _RECEIPT)
 
         assert store.begin_apply(plan.plan_hash) == plan
+
+
+class TestChangeHeadline:
+    """The Git commit subject a summary yields: one line, cut at a word boundary."""
+
+    def test_a_short_summary_is_its_headline_on_one_line(self):
+        from haute.assistant._change_record import change_headline
+
+        assert change_headline("  Add an age band\nafter\tquotes.  ") == (
+            "Add an age band after quotes."
+        )
+
+    def test_a_long_summary_is_cut_at_a_word_boundary_with_an_ellipsis(self):
+        from haute.assistant._change_record import CHANGE_HEADLINE_LIMIT, change_headline
+
+        assert CHANGE_HEADLINE_LIMIT == 100
+        summary = (
+            "Join the competitor insight onto the new-business batch by quote id, keeping "
+            "every quote in the batch.\nWrite the enriched quotes to a new output node."
+        )
+        headline = change_headline(summary)
+        assert headline == (
+            "Join the competitor insight onto the new-business batch by quote id, keeping "
+            "every quote in the…"
+        )
+        assert len(headline) <= CHANGE_HEADLINE_LIMIT
+        # Exactly at the limit, nothing is cut.
+        exact = "word " * 19 + "abcde"
+        assert len(exact) == CHANGE_HEADLINE_LIMIT
+        assert change_headline(exact) == exact
+
+    def test_a_single_word_past_the_limit_is_cut_inside_it(self):
+        from haute.assistant._change_record import CHANGE_HEADLINE_LIMIT, change_headline
+
+        headline = change_headline("x" * 150)
+        assert headline == "x" * (CHANGE_HEADLINE_LIMIT - 1) + "…"

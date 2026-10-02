@@ -19,7 +19,7 @@ const QUOTES: ColumnInfo[] = [
   { name: "region", dtype: "String" },
   { name: "k", dtype: "Int64" },
 ]
-const SOURCE: ColumnSource = { inputs: { quotes: QUOTES }, frame: [] }
+const SOURCE: ColumnSource = { inputs: { quotes: QUOTES }, frame: [], freeCode: new Map() }
 const names = (source: ColumnSource, list: Step[], index: number) => columnNames(columnsBeforeStep(source, list, index))
 const typeOf = (source: ColumnSource, list: Step[], index: number, name: string) =>
   columnsBeforeStep(source, list, index).columns.find((c) => c.name === name)?.dtype
@@ -73,8 +73,34 @@ describe("columnsBeforeStep", () => {
     expect(columnsBeforeStep(SOURCE, withFreeCode, 4).complete).toBe(false)
   })
 
+  it("offers the columns a free-code step creates once the render has resolved them", () => {
+    const addColumn: Step = { id: "w", kind: "with_column", name: "", expr: { type: "operand", operand: { kind: "column", name: "" } } }
+    const list: Step[] = [source("quotes"), { id: "code", kind: "free_code", code: "df = df.with_columns(band=pl.col('k') // 10)" }, addColumn]
+    const resolved: ColumnSource = {
+      ...SOURCE,
+      freeCode: new Map([["code", { columns: [...QUOTES, { name: "band", dtype: "Int64" }], complete: true }]]),
+    }
+    const before = columnsBeforeStep(resolved, list, 2)
+    expect(columnNames(before)).toEqual(["premium", "region", "k", "band"])
+    expect(before).toMatchObject({ complete: true, exact: true })
+    expect(before.columns.find((c) => c.name === "band")).toEqual({ name: "band", dtype: "Int64", made: true })
+    expect(before.columns.find((c) => c.name === "k")?.made).toBe(false)
+    const [, s1, s2] = columnsAtEachStep(resolved, list)
+    expect(columnChange(list[1], s1, s2)).toBe("+band")
+    const filter: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "bnad", operator: "is_null" }] }
+    expect(unknownColumnsOf(filter, columnsBeforeStep(resolved, [...list.slice(0, 2), filter], 2), resolved)).toEqual(["bnad"])
+  })
+
+  it("only seeds suggestions from free code on a frame surface, and uses nothing resolved for another step", () => {
+    const code: Step = { id: "code", kind: "free_code", code: "df = df" }
+    const frame: ColumnSource = { inputs: {}, frame: QUOTES, freeCode: new Map([["code", { columns: QUOTES, complete: false }]]) }
+    expect(columnsBeforeStep(frame, [code], 1)).toMatchObject({ complete: false, exact: false })
+    expect(names(frame, [code], 1)).toEqual(["premium", "region", "k"])
+    expect(names(frame, [{ ...code, id: "other" }], 1)).toEqual([])
+  })
+
   it("suggests only the start input's columns, not every connected input's", () => {
-    const both: ColumnSource = { inputs: { quotes: QUOTES, claims: [{ name: "amount_paid", dtype: "Float64" }] }, frame: [] }
+    const both: ColumnSource = { inputs: { quotes: QUOTES, claims: [{ name: "amount_paid", dtype: "Float64" }] }, frame: [], freeCode: new Map() }
     expect(names(both, [source("quotes"), { id: "l", kind: "limit", n: 1 }], 1)).toEqual(["premium", "region", "k"])
     expect(names(both, [source("claims"), { id: "l", kind: "limit", n: 1 }], 1)).toEqual(["amount_paid"])
   })
@@ -84,6 +110,7 @@ describe("column types", () => {
   const twoInputs: ColumnSource = {
     inputs: { quotes: [{ name: "premium", dtype: "Float64" }], claims: [{ name: "premium", dtype: "String" }] },
     frame: [],
+    freeCode: new Map(),
   }
 
   it("come from the start input, so another input with the same name cannot disagree, and follow a change of start", () => {
@@ -110,11 +137,11 @@ describe("completeness", () => {
 
   it("is complete after the start input's columns load, and incomplete while they have not", () => {
     expect(columnsBeforeStep(SOURCE, [source("quotes")], 1).complete).toBe(true)
-    expect(columnsBeforeStep({ inputs: {}, frame: [] }, [source("quotes")], 1).complete).toBe(false)
+    expect(columnsBeforeStep({ inputs: {}, frame: [], freeCode: new Map() }, [source("quotes")], 1).complete).toBe(false)
   })
 
   it("is never complete in frame mode, where the surface builds its own frame", () => {
-    const frame: ColumnSource = { inputs: {}, frame: QUOTES }
+    const frame: ColumnSource = { inputs: {}, frame: QUOTES, freeCode: new Map() }
     expect(columnsBeforeStep(frame, [{ id: "l", kind: "limit", n: 1 }], 0)).toMatchObject({ complete: false })
     expect(columnNames(columnsBeforeStep(frame, [], 0))).toEqual(["premium", "region", "k"])
   })
@@ -146,7 +173,7 @@ describe("join output columns", () => {
   })
 
   it("follow the joined input's columns through the step list, complete once both inputs are known", () => {
-    const inputs: ColumnSource = { inputs: { quotes: joinOutputs.left, claims: joinOutputs.right }, frame: [] }
+    const inputs: ColumnSource = { inputs: { quotes: joinOutputs.left, claims: joinOutputs.right }, frame: [], freeCode: new Map() }
     for (const c of joinOutputs.cases) {
       const list: Step[] = [source("quotes"), { id: "j", kind: "join", input: "claims", how: c.how as JoinHow, leftOn: c.leftOn, rightOn: c.rightOn, suffix: joinOutputs.suffix }]
       const after = columnsBeforeStep(inputs, list, 2)
@@ -187,7 +214,7 @@ describe("unknown columns", () => {
   })
 
   it("checks a join's right keys against the joined input", () => {
-    const inputs: ColumnSource = { inputs: { quotes: QUOTES, claims: [{ name: "claim_region", dtype: "String" }] }, frame: [] }
+    const inputs: ColumnSource = { inputs: { quotes: QUOTES, claims: [{ name: "claim_region", dtype: "String" }] }, frame: [], freeCode: new Map() }
     const join: Step = { id: "j", kind: "join", input: "claims", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_right" }
     expect(unknownColumnsOf(join, columnsBeforeStep(inputs, [source("quotes"), join], 1), inputs)).toEqual(["region"])
   })

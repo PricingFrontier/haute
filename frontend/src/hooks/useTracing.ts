@@ -47,6 +47,8 @@ interface TracingParams {
   hoveredNodeId: string | null
   /** The node a trace card or derivation row points at, ringed while a trace shows. */
   traceFocusNodeId?: string | null
+  /** The nodes the latest assistant change or undo touched, ringed while set. */
+  changeFocusNodeIds?: readonly string[] | null
   refreshPreview?: (node: Node) => void
   /** The `seed_plan` of the preview shown for the selected node. */
   previewSeedPlan?: PreviewSeedPlanEntry[]
@@ -234,6 +236,7 @@ export default function useTracing({
   nodeStatuses,
   hoveredNodeId,
   traceFocusNodeId = null,
+  changeFocusNodeIds = null,
   refreshPreview,
   previewSeedPlan,
 }: TracingParams): TracingReturn {
@@ -649,6 +652,7 @@ export default function useTracing({
     traceDimmed: boolean
     hoverDimmed: boolean
     traceFocused: boolean
+    changeFocused: boolean
     traceValue: unknown
     traceMotionLite: boolean
     projected: Node
@@ -658,6 +662,7 @@ export default function useTracing({
   const nodesWithStatus = useMemo(() => {
     const hasTrace = traceResult !== null
     const focusedId = traceFocusNodeId === null ? null : resolveTraceId(traceFocusNodeId)
+    const changeFocusedIds = new Set(changeFocusNodeIds ?? [])
     const seenIds = new Set<string>()
     const next: Node[] = new Array(nodes.length)
 
@@ -671,6 +676,7 @@ export default function useTracing({
       // Hover dim: when hovering a node and no trace is active, dim unconnected nodes
       const hoverDimmed = !hasTrace && hoverConnectedIds !== null && !hoverConnectedIds.has(n.id)
       const traceFocused = hasTrace && n.id === focusedId
+      const changeFocused = changeFocusedIds.has(n.id)
       const traceValue = traceValueMap.get(n.id)
 
       const cached = projectionCache.get(n.id)
@@ -682,6 +688,7 @@ export default function useTracing({
         cached.traceDimmed === traceDimmed &&
         cached.hoverDimmed === hoverDimmed &&
         cached.traceFocused === traceFocused &&
+        cached.changeFocused === changeFocused &&
         cached.traceValue === traceValue &&
         cached.traceMotionLite === traceMotionLite
       ) {
@@ -698,6 +705,7 @@ export default function useTracing({
           _traceDimmed: traceDimmed,
           _hoverDimmed: hoverDimmed,
           _traceFocused: traceFocused,
+          _changeFocused: changeFocused,
           _traceValue: traceValue,
           _traceMotionDisabled: traceMotionLite,
         },
@@ -714,6 +722,7 @@ export default function useTracing({
         traceDimmed,
         hoverDimmed,
         traceFocused,
+        changeFocused,
         traceValue,
         traceMotionLite,
         projected,
@@ -730,7 +739,7 @@ export default function useTracing({
     }
 
     return next
-  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, traceFocusNodeId, resolveTraceId, projectionCache, traceMotionLite])
+  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, traceFocusNodeId, changeFocusNodeIds, resolveTraceId, projectionCache, traceMotionLite])
 
   const edgesWithTrace = useMemo(() => {
     // Trace styling takes priority over hover styling

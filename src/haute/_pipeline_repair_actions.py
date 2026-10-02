@@ -10,7 +10,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Literal
 
-from haute._config_io import _prepare_config_for_sidecar, config_path_for_node, node_emits_sidecar
+from haute._config_io import (
+    _prepare_config_for_sidecar,
+    config_path_for_node,
+    node_emits_sidecar,
+    palette_default_config,
+)
 from haute._config_validation import reject_unrecognized_config_keys
 from haute._pipeline_recovery import _recovery_artifacts, load_pipeline_editor_document
 from haute._pipeline_repair import (
@@ -229,11 +234,8 @@ def _reset_node(
         )
     if len(set(source_names)) != len(source_names):
         raise _unsupported("Incoming node names are ambiguous.")
-    defaults = json.loads(
-        Path(__file__).with_name("node_defaults.json").read_text(encoding="utf-8")
-    )
     config: dict[str, Any] = (
-        defaults[node_type.value] if replacement_config is None else replacement_config
+        palette_default_config(node_type) if replacement_config is None else replacement_config
     )
     node = GraphNode(
         id=target.authored_id,

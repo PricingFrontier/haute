@@ -174,7 +174,7 @@ The component specs cover maintained behaviour, not just the importable runtime:
 
 - Every behavioural source under `src/haute/` is named in a backend component's low-level module
   map. Generated `src/haute/static/` assets are covered as a build output rather than one component
-  per hashed file; `src/haute/py.typed` is a distribution marker; and the packaged assistant example bundles under `src/haute/assistant/assets/examples/` form an explicitly classified grouped corpus whose individual resource files are covered as a manifested tree rather than separate module-map entries.
+  per hashed file; `src/haute/py.typed` is a distribution marker; and the packaged assistant example bundles under `src/haute/assistant/assets/examples/` form an explicitly classified grouped corpus whose individual resource files are covered as a manifested tree rather than separate module-map entries, as do the node cards under `src/haute/assistant/assets/node_cards/`, one per node type, covered by the assistant module map's `<nodeType>.json` row.
 - Every production `.ts`, `.tsx`, and `.css` source under `frontend/src/` is named in a frontend
   component's low-level module map. Test-only directories and the vitest setup files
   (`setupTests.ts`, `setupStorageCanary.ts`) belong to the verification system rather than the

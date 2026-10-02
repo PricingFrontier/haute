@@ -1225,6 +1225,7 @@ function SchemaWarningBanner({
 }
 
 type NodeEditorBodyProps = {
+  nodeId: string
   documentReadOnly: boolean
   readOnly: boolean
   config: Record<string, unknown>
@@ -1248,6 +1249,7 @@ type NodeEditorBodyProps = {
 }
 
 function NodeEditorBody({
+  nodeId,
   documentReadOnly,
   readOnly,
   config,
@@ -1289,6 +1291,7 @@ function NodeEditorBody({
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}
         start={surface.start}
+        nodeId={nodeId}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
       />
     )
@@ -1730,6 +1733,7 @@ function NodePanelContent({
       )}
 
       <NodeEditorBody
+        nodeId={node.id}
         documentReadOnly={documentReadOnly}
         readOnly={effectiveReadOnly}
         config={config}

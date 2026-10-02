@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "smoke_join_clarification",
+  "case": "smoke_join_clarification",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "NEEDS_INPUT: Which join type and which key columns should join competitor_insight to nb_batch?",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

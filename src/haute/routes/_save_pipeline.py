@@ -38,7 +38,8 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute.errors import ConfigError, PathOutsideProjectError
+from haute._types import SINK_ONLY_NODE_TYPES
+from haute.errors import ConfigError, ParseError, PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -333,6 +334,8 @@ class SavePipelineService:
     def save(
         self,
         body: SavePipelineRequest,
+        *,
+        commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
@@ -342,6 +345,9 @@ class SavePipelineService:
         Save is transactional: if any write step fails, all files we
         already touched are restored (or deleted for new files) before
         the exception propagates.  No partial save is ever left on disk.
+
+        *commit_message* is the ledger commit's message; without one the
+        commit names the changed files.
         """
         graph = body.graph
 
@@ -452,7 +458,9 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
-        git_sha, identity_required = self._capture_save_in_ledger(touched, removed, warnings)
+        git_sha, identity_required = self._capture_save_in_ledger(
+            touched, removed, warnings, commit_message
+        )
 
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
@@ -468,6 +476,7 @@ class SavePipelineService:
         touched: list[_TouchedFile],
         removed: list[Path],
         warnings: list[str],
+        message: str | None,
     ) -> tuple[str | None, bool]:
         """Commit this save to the clone's ledger branch, when configured.
 
@@ -514,7 +523,7 @@ class SavePipelineService:
             return None, True
 
         try:
-            sha = _git.commit_save(rel_paths, working, cwd=self._root)
+            sha = _git.commit_save(rel_paths, working, cwd=self._root, message=message)
             if sha is not None:
                 # Publish to durable storage when bound; no-op otherwise.
                 from haute import _project_storage
@@ -539,6 +548,7 @@ class SavePipelineService:
         preamble: str | None,
         source_file: str,
         base_revision: str | None,
+        commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
@@ -562,6 +572,7 @@ class SavePipelineService:
                 preserved_blocks=graph.preserved_blocks,
                 base_revision=base_revision,
             ),
+            commit_message=commit_message,
         )
 
     # ------------------------------------------------------------------
@@ -578,11 +589,14 @@ class SavePipelineService:
 
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
+        self._validate_nothing_leaves_a_sink(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
         self._validate_unique_sanitized_names(graph)
+        self._validate_quote_input_tables_do_not_shadow_nodes(graph)
+        self._validate_codegen_function_names(graph)
         self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
@@ -806,6 +820,40 @@ class SavePipelineService:
                 )
 
     @staticmethod
+    def _validate_nothing_leaves_a_sink(flattened: PipelineGraph) -> None:
+        """Refuse an edge out of a node type that has no output."""
+        # An edge naming an unknown node is refused by codegen's strict topology.
+        nodes = flattened.node_map
+        for edge in flattened.edges:
+            source = nodes.get(edge.source)
+            if source is None or source.data.nodeType not in SINK_ONLY_NODE_TYPES:
+                continue
+            target = nodes.get(edge.target)
+            target_label = target.data.label if target is not None else edge.target
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Node {source.data.label!r} ({source.data.nodeType.value}) has no "
+                    f"output, so it cannot feed {target_label!r}. "
+                    "Remove that edge. Nothing was saved."
+                ),
+            )
+
+    @staticmethod
+    def _validate_codegen_function_names(graph: PipelineGraph) -> None:
+        """Run codegen's own function-name collision check before generating.
+
+        This covers what the scoped check above cannot: a submodel occurrence
+        alias that matches a node inside its definition.
+        """
+        from haute.codegen import check_function_name_collisions
+
+        try:
+            check_function_name_collisions(graph)
+        except ParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    @staticmethod
     def _validate_strict_node_configs(graph: PipelineGraph) -> None:
         """Reject invalid discriminated configs before generating or writing."""
         from haute._config_validation import validate_node_config
@@ -816,6 +864,7 @@ class SavePipelineService:
             NodeType.DATA_OUTPUT,
             NodeType.BANDING,
             NodeType.SCENARIO_EXPANDER,
+            NodeType.MODELLING,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
@@ -828,7 +877,7 @@ class SavePipelineService:
                     validate_node_config(
                         node.data.nodeType, node.data.config, require_complete=False
                     )
-                except ValueError as exc:
+                except (ValueError, ConfigError) as exc:
                     raise HTTPException(
                         status_code=400,
                         detail=(
@@ -936,6 +985,54 @@ class SavePipelineService:
                     "node name may be used in only one module:\n" + "\n".join(parts)
                 ),
             )
+
+    @staticmethod
+    def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:
+        """Refuse a Quote Input table labelled like another node's function name.
+
+        A table's label is its frame handle, the input name a consumer's
+        parameter carries. The parser also infers an edge from any parameter
+        named like a node, so a consumer of frame ``quotes`` beside a node
+        ``quotes`` would be bound to both and the saved file would not reload.
+        Names are global across the pipeline and its submodels (see
+        :meth:`_validate_unique_sanitized_names`); the Quote Input's own name
+        is exempt, since its explicit connection already covers that edge.
+        """
+        scoped = [
+            graph,
+            *(g for _, g in SavePipelineService._iter_named_embedded_submodel_graphs(graph)),
+        ]
+        structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
+        labels_by_name = {
+            _sanitize_func_name(node.data.label): node.data.label
+            for scoped_graph in scoped
+            for node in scoped_graph.nodes
+            if node.data.nodeType not in structural_types
+        }
+        for scoped_graph in scoped:
+            for node in scoped_graph.nodes:
+                if node.data.nodeType != NodeType.API_INPUT:
+                    continue
+                tables = node.data.config.get("tables")
+                if not isinstance(tables, list):
+                    continue
+                own_name = _sanitize_func_name(node.data.label)
+                for table in tables:
+                    label = table.get("label") if isinstance(table, dict) else None
+                    if not isinstance(label, str) or label == own_name:
+                        continue
+                    clashing = labels_by_name.get(label)
+                    if clashing is None:
+                        continue
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Quote Input {node.data.label!r} has a table {label!r} named "
+                            f"like the node {clashing!r}. A step or parameter reading "
+                            f"{label!r} would read both, so the pipeline could not be "
+                            "reloaded. Rename the table or the node. Nothing was saved."
+                        ),
+                    )
 
     @staticmethod
     def _iter_named_embedded_submodel_graphs(
@@ -1445,17 +1542,12 @@ class SavePipelineService:
         """
         from haute._builders import resolve_instance_node, stepped_code_problem
         from haute._graph_utils import edge_input_name
-        from haute._polars_steps import is_stepped_config, step_input_names
+        from haute._polars_steps import (
+            STEPPED_SURFACE_LABELS,
+            is_stepped_config,
+            step_input_names,
+        )
 
-        stepped_labels = {
-            NodeType.POLARS: "Transform",
-            NodeType.DATA_INPUT: "Data Input",
-            NodeType.EXTERNAL_FILE: "External File",
-            NodeType.RATING_STEP: "Rating Step",
-            NodeType.MODEL_SCORE: "Model Score",
-            NodeType.SCENARIO_EXPANDER: "Scenario Expander",
-            NodeType.EXPLORE: "Explore",
-        }
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
             node_map = {node.id: node for node in scoped_graph.nodes}
@@ -1481,7 +1573,7 @@ class SavePipelineService:
                     if problem is not None:
                         label = node.data.label or node.id
                         warnings.append(
-                            f"{stepped_labels[node_type]} node {label!r} has an incomplete "
+                            f"{STEPPED_SURFACE_LABELS[node_type]} node {label!r} has an incomplete "
                             f"step list ({problem}). It will save, but running the pipeline "
                             "will fail until the step is completed."
                         )

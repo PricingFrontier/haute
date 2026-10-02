@@ -56,7 +56,6 @@ interface PipelineAPIParams {
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[]) => void
   setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
-  setCurrentSourceFile?: (sourceFile: string | null) => void
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
@@ -400,7 +399,7 @@ function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
 export default function usePipelineAPI({
   selectedNode,
   graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-  setNodesRaw, setCurrentSourceFile,
+  setNodesRaw,
   preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
@@ -532,16 +531,13 @@ export default function usePipelineAPI({
     useDocumentStatusStore.getState().setGraphSynchronized(true)
     if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
     if (data.pipeline_description != null) descriptionRef.current = data.pipeline_description
-    if (data.source_file) {
-      sourceFileRef.current = data.source_file
-      setCurrentSourceFile?.(data.source_file)
-    }
+    if (data.source_file) sourceFileRef.current = data.source_file
     if (data.source_selection_trusted) {
       useSettingsStore.getState().setSources(data.sources)
       if (data.active_source) useSettingsStore.getState().setActiveSource(data.active_source)
     }
     nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
+  }, [preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
 
   // Initial pipeline load
   useEffect(() => {

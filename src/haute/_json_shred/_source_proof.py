@@ -26,7 +26,7 @@ import time
 from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from haute._file_ops import atomic_write_bytes
 from haute._hashing import HASH_ALGO, content_hash
@@ -284,6 +284,29 @@ def observe_freshness(path: Path) -> Freshness:
         ),
         reusable=time.time() - observed.st_mtime >= SETTLE_SECONDS,
     )
+
+
+def freshness_record(path: Path) -> dict[str, object]:
+    """The freshness token :func:`observe_freshness` reads for *path*, as JSON values.
+
+    A native file revision or a stat, never the file's content, so recording
+    and later re-observing it costs no hash. Raises like
+    :func:`observe_freshness`.
+    """
+    token = observe_freshness(path).token
+    if isinstance(token, _StrongFileRevision):
+        return _revision_record(token)
+    _kind, device, inode, size, mtime_ns, ctime_ns = cast(
+        tuple[str, int, int, int, int, int], token
+    )
+    return {
+        "kind": "stat",
+        "device": device,
+        "inode": inode,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "ctime_ns": ctime_ns,
+    }
 
 
 _UNAVAILABLE_WARNINGS: LRUCache[str, bool] = LRUCache(max_size=_UNAVAILABLE_WARNINGS_MAX_ENTRIES)

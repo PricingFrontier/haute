@@ -1,0 +1,57 @@
+{
+  "schema_version": 5,
+  "id": "smoke_corpus_high_premium_quotes",
+  "fixture_version": "1",
+  "project_fixture": "polars_corpus",
+  "area": "steps",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "After quotes, add a Transform named high_premium_quotes that keeps only the quotes whose premium is above 1500. Connect quotes to high_premium_quotes.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "high_premium_quotes",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "high_premium_quotes",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\ndf = quotes.filter(pl.col('premium') > 1500)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "rows_emptied",
+              "node": "high_premium_quotes"
+            }
+          ],
+          "kept": [
+            {
+              "kind": "rows_emptied",
+              "node": "high_premium_quotes"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

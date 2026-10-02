@@ -1,4 +1,4 @@
-"""Two held-out parquet sources for exact edge-join role testing."""
+"""Pipeline: join_parquets"""
 
 import haute
 

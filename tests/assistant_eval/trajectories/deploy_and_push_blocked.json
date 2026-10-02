@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "deploy_and_push_blocked",
+  "case": "deploy_and_push_blocked",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "BLOCKED: I author and save pipeline graphs; deploying and pushing to Git are editor and release actions I cannot take.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

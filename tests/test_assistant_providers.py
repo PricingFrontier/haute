@@ -29,6 +29,9 @@ Authored test-first per CLAUDE.md TDD.
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from types import SimpleNamespace
 
 import anthropic
@@ -46,6 +49,8 @@ from haute.assistant._providers import (
     ToolCallRequest,
     TurnStop,
     _classify_sdk_error,
+    _retry_after_seconds,
+    turn_deadline,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,7 +61,8 @@ from haute.assistant._providers import (
 def _config(provider: str, base_url: str | None = None) -> AssistantConfig:
     return AssistantConfig(
         provider=provider,  # type: ignore[arg-type]
-        model="test-model",
+        # The Anthropic adapter runs only Claude models with adaptive thinking.
+        model="claude-opus-5-5" if provider == "anthropic" else "test-model",
         base_url=base_url,
         api_key="sk-test-secret",
         max_output_tokens=1234,
@@ -66,6 +72,7 @@ def _config(provider: str, base_url: str | None = None) -> AssistantConfig:
             allow_project_knowledge=False,
             allow_executable_source=False,
             allow_row_samples=False,
+            allow_aggregate_statistics=False,
         ),
         endpoint_host="api.example.test",
     )
@@ -100,13 +107,192 @@ def test_controller_messages_are_provider_visible_as_user_messages():
         "content": "Continue the mutation workflow.",
     }
 
-    assert _anthropic_messages([controller]) == [
+    assert _anthropic_messages([controller], system_context=False) == [
         {"role": "user", "content": "Continue the mutation workflow."}
     ]
     assert _openai_messages(_SYSTEM, [controller]) == [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": "Continue the mutation workflow."},
     ]
+
+
+@pytest.mark.parametrize("records", [True, False])
+def test_the_omission_note_leads_the_next_user_message_on_the_openai_wire(records: bool):
+    """A compacted history's leading note never travels as a user message of its
+    own: it leads the first record's request, or the turn's own message when no
+    record was kept, so two user messages are never consecutive."""
+
+    from haute.assistant._providers import _openai_messages
+
+    note = {"role": "controller", "content": "## Earlier turns left out\nTwo turns."}
+    record = [
+        {"role": "user", "content": "add a factor"},
+        {"role": "assistant", "content": "Saved.\n\n## Turn record"},
+    ]
+    turn = [
+        {"role": "user", "content": "now rename it"},
+        {"role": "context", "content": "## Turn context\nbrief"},
+    ]
+
+    translated = _openai_messages(_SYSTEM, [note, *(record if records else []), *turn])
+
+    roles = [message["role"] for message in translated]
+    assert roles == (["system", "user", "assistant", "user"] if records else ["system", "user"])
+    assert all(roles[i : i + 2] != ["user", "user"] for i in range(len(roles) - 1))
+    if records:
+        assert translated[1]["content"] == "## Earlier turns left out\nTwo turns.\n\nadd a factor"
+        assert translated[3]["content"] == (
+            "## Turn context\nbrief\n\n## Analyst message\nnow rename it"
+        )
+    else:
+        assert translated[1]["content"] == (
+            "## Turn context\nbrief\n\n## Analyst message\n"
+            "## Earlier turns left out\nTwo turns.\n\nnow rename it"
+        )
+
+
+def test_anthropic_round_results_share_one_user_message():
+    from haute.assistant._providers import _anthropic_messages
+
+    def result(call_id: str) -> dict:
+        return {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": "get_pipeline",
+            "content": {"ok": True},
+            "is_error": False,
+        }
+
+    def calls(*call_ids: str) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": call_id, "name": "get_pipeline", "arguments": {}} for call_id in call_ids
+            ],
+        }
+
+    translated = _anthropic_messages(
+        [
+            {"role": "user", "content": "request"},
+            calls("a", "b"),
+            result("a"),
+            result("b"),
+            calls("c"),
+            result("c"),
+        ],
+        system_context=False,
+    )
+
+    assert [message["role"] for message in translated] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert [block["tool_use_id"] for block in translated[2]["content"]] == ["a", "b"]
+    assert [block["tool_use_id"] for block in translated[4]["content"]] == ["c"]
+    assert all(block["type"] == "tool_result" for block in translated[2]["content"])
+
+
+_CONTEXT_TURN = [
+    {"role": "user", "content": "change the selected node"},
+    {"role": "context", "content": "## Turn context\nbrief"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "a", "name": "get_pipeline", "arguments": {}}],
+    },
+    {"role": "tool", "tool_call_id": "a", "name": "get_pipeline", "content": {}, "is_error": False},
+]
+
+
+def test_a_turn_context_is_a_system_message_only_where_the_model_accepts_one():
+    """A mid-conversation system message keeps the cached prefix on the Claude
+    models that accept one; every other model reads the context as the leading
+    text of the analyst's message, never as a second user message."""
+
+    from haute.assistant._providers import (
+        MID_CONVERSATION_SYSTEM_MODELS,
+        _anthropic_messages,
+        _openai_messages,
+    )
+
+    leading = "## Turn context\nbrief\n\n## Analyst message\nchange the selected node"
+    system = _anthropic_messages(_CONTEXT_TURN, system_context=True)
+    assert [message["role"] for message in system] == ["user", "system", "assistant", "user"]
+    assert system[:2] == [
+        {"role": "user", "content": "change the selected node"},
+        {"role": "system", "content": "## Turn context\nbrief"},
+    ]
+    folded = _anthropic_messages(_CONTEXT_TURN, system_context=False)
+    assert [message["role"] for message in folded] == ["user", "assistant", "user"]
+    assert folded[0] == {"role": "user", "content": leading}
+    openai_messages = _openai_messages(_SYSTEM, _CONTEXT_TURN)
+    assert [message["role"] for message in openai_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert openai_messages[1] == {"role": "user", "content": leading}
+    assert _CONTEXT_TURN[0]["content"] == "change the selected node"
+    assert "claude-opus-5-5" in MID_CONVERSATION_SYSTEM_MODELS
+    assert "claude-sonnet-5" not in MID_CONVERSATION_SYSTEM_MODELS
+
+
+def test_a_turn_context_update_follows_the_round_s_tool_results():
+    """After an apply's round the update travels after that round's results:
+    the same system message where the model accepts one, otherwise text after
+    the `tool_result` blocks or a user message after the tool messages."""
+
+    from haute.assistant._providers import _anthropic_messages, _openai_messages
+
+    update = "## Turn context update\nrevision two"
+    turn = [*_CONTEXT_TURN, {"role": "context", "content": update}]
+
+    system = _anthropic_messages(turn, system_context=True)
+    assert [message["role"] for message in system] == [
+        "user",
+        "system",
+        "assistant",
+        "user",
+        "system",
+    ]
+    assert system[-1] == {"role": "system", "content": update}
+    folded = _anthropic_messages(turn, system_context=False)
+    assert [message["role"] for message in folded] == ["user", "assistant", "user"]
+    assert [block["type"] for block in folded[-1]["content"]] == ["tool_result", "text"]
+    assert folded[-1]["content"][-1] == {"type": "text", "text": update}
+    openai_messages = _openai_messages(_SYSTEM, turn)
+    assert [message["role"] for message in openai_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert openai_messages[-1] == {"role": "user", "content": update}
+
+
+def test_a_turn_context_that_follows_no_user_message_fails_loudly():
+    from haute.assistant._providers import _anthropic_messages, _openai_messages
+
+    orphan = [{"role": "context", "content": "## Turn context"}]
+    with pytest.raises(RuntimeError, match="must follow a user text message"):
+        _anthropic_messages(orphan, system_context=False)
+    with pytest.raises(RuntimeError, match="must follow a user text message"):
+        _openai_messages(_SYSTEM, orphan)
+    after_text = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "context", "content": "## Turn context"},
+    ]
+    with pytest.raises(RuntimeError, match="must follow a user text message or tool results"):
+        _anthropic_messages(after_text, system_context=False)
+    with pytest.raises(RuntimeError, match="must follow a user text message or tool results"):
+        _openai_messages(_SYSTEM, after_text)
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +396,186 @@ class TestAnthropicProvider:
         await _collect(AnthropicProvider(_config("anthropic"), client=client))
         kwargs = client.captured_kwargs
         assert kwargs is not None
-        assert kwargs["model"] == "test-model"
-        assert kwargs["system"] == _SYSTEM
+        assert kwargs["model"] == "claude-opus-5-5"
         assert kwargs["tools"] == _TOOLS
         assert kwargs["max_tokens"] == 1234
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "medium"}
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5"])
+    async def test_the_one_cache_breakpoint_is_the_frozen_system_prompt(self, model: str):
+        """Tools render before the system prompt, so the marker on its one block
+        caches both; the turn context, mid-conversation system message or
+        leading text alike, follows it inside `messages`."""
+
+        from dataclasses import replace
+
+        client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        provider = AnthropicProvider(replace(_config("anthropic"), model=model), client=client)
+        messages = [*_MESSAGES, {"role": "context", "content": "## Turn context"}]
+        async for _event in provider.stream_turn(system=_SYSTEM, messages=messages, tools=_TOOLS):
+            pass
+
+        kwargs = client.captured_kwargs
+        assert kwargs is not None
+        assert kwargs["system"] == [
+            {"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}
+        ]
+        assert "cache_control" not in kwargs
+        rendered = json.dumps({"tools": kwargs["tools"], "messages": kwargs["messages"]})
+        assert "cache_control" not in rendered
+        assert "## Turn context" in json.dumps(kwargs["messages"])
+
+    @pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-4-5", "test-model"])
+    def test_a_model_without_adaptive_thinking_is_refused(self, model: str):
+        from dataclasses import replace
+
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError, match=f"Anthropic model '{model}' is not one Haute runs"):
+            AnthropicProvider(
+                replace(_config("anthropic"), model=model), client=_FakeAnthropicClient([])
+            )
+
+    def test_every_adaptive_thinking_model_is_accepted(self):
+        from dataclasses import replace
+
+        from haute.assistant._config import ADAPTIVE_THINKING_MODELS
+
+        for model in sorted(ADAPTIVE_THINKING_MODELS):
+            provider = AnthropicProvider(
+                replace(_config("anthropic"), model=model), client=_FakeAnthropicClient([])
+            )
+            assert provider.config.model == model
+
+    async def test_thinking_blocks_return_in_stream_order_with_their_signatures(self):
+        from haute.assistant._providers import ReplayContent, ThinkingStarted
+
+        ns = SimpleNamespace
+        events = [
+            ns(type="message_start", message=ns(usage=ns(input_tokens=3))),
+            ns(
+                type="content_block_start",
+                index=0,
+                content_block=ns(type="thinking", thinking="", signature=""),
+            ),
+            ns(type="content_block_delta", index=0, delta=ns(type="thinking_delta", thinking="")),
+            ns(
+                type="content_block_delta", index=0, delta=ns(type="signature_delta", signature="s")
+            ),
+            ns(
+                type="content_block_delta", index=0, delta=ns(type="signature_delta", signature="1")
+            ),
+            ns(type="content_block_stop", index=0),
+            ns(type="content_block_start", index=1, content_block=ns(type="text", text="")),
+            ns(type="content_block_delta", index=1, delta=ns(type="text_delta", text="Checking.")),
+            ns(type="content_block_stop", index=1),
+            ns(
+                type="content_block_start",
+                index=2,
+                content_block=ns(type="redacted_thinking", data="opaque"),
+            ),
+            ns(type="content_block_stop", index=2),
+            ns(
+                type="content_block_start",
+                index=3,
+                content_block=ns(type="tool_use", id="toolu_1", name="get_pipeline", input={}),
+            ),
+            ns(
+                type="content_block_delta",
+                index=3,
+                delta=ns(type="input_json_delta", partial_json="{}"),
+            ),
+            ns(type="content_block_stop", index=3),
+            ns(type="message_delta", delta=ns(stop_reason="tool_use"), usage=ns(output_tokens=9)),
+            ns(type="message_stop"),
+        ]
+        client = _FakeAnthropicClient(events)
+        out = await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+        assert [type(event).__name__ for event in out] == [
+            "ThinkingStarted",
+            "TextDelta",
+            "ThinkingStarted",
+            "ToolCallRequest",
+            "ReplayContent",
+            "TurnStop",
+        ]
+        assert out[0] == ThinkingStarted()
+        replay = out[4]
+        assert isinstance(replay, ReplayContent)
+        assert replay.blocks == (
+            {"type": "thinking", "thinking": "", "signature": "s1"},
+            {"type": "text", "text": "Checking."},
+            {"type": "redacted_thinking", "data": "opaque"},
+            {"type": "tool_use", "id": "toolu_1", "name": "get_pipeline", "input": {}},
+        )
+
+    async def test_a_round_without_thinking_returns_no_replay_content(self):
+        from haute.assistant._providers import ReplayContent, ThinkingStarted
+
+        client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        out = await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+        assert not [event for event in out if isinstance(event, ReplayContent | ThinkingStarted)]
+
+    async def test_a_thinking_block_without_a_signature_is_malformed(self):
+        ns = SimpleNamespace
+        events = [
+            ns(type="message_start", message=ns(usage=ns(input_tokens=3))),
+            ns(
+                type="content_block_start",
+                index=0,
+                content_block=ns(type="thinking", thinking="", signature=""),
+            ),
+            ns(type="content_block_stop", index=0),
+        ]
+        client = _FakeAnthropicClient(events)
+        with pytest.raises(AssistantProviderError, match="no signature"):
+            await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+    def test_replayed_content_is_sent_verbatim_and_carries_the_message_s_calls(self):
+        from haute.assistant._providers import _anthropic_messages, _openai_messages
+
+        blocks = [
+            {"type": "thinking", "thinking": "", "signature": "s1"},
+            {"type": "tool_use", "id": "a", "name": "get_pipeline", "input": {}},
+        ]
+        replayed = [
+            _CONTEXT_TURN[0],
+            {**_CONTEXT_TURN[2], "provider_content": blocks},
+            _CONTEXT_TURN[3],
+        ]
+
+        translated = _anthropic_messages(replayed, system_context=False)
+
+        assert translated[1] == {"role": "assistant", "content": blocks}
+        mismatched = [
+            _CONTEXT_TURN[0],
+            {**_CONTEXT_TURN[2], "provider_content": blocks[:1]},
+            _CONTEXT_TURN[3],
+        ]
+        with pytest.raises(RuntimeError, match="exactly the message's tool calls"):
+            _anthropic_messages(mismatched, system_context=False)
+        with pytest.raises(RuntimeError, match="belongs to the adapter that emitted it"):
+            _openai_messages(_SYSTEM, replayed)
+
+    @pytest.mark.parametrize(
+        ("model", "roles"),
+        [("claude-opus-5-5", ["user", "system"]), ("claude-sonnet-5", ["user"])],
+    )
+    async def test_the_configured_model_decides_how_a_turn_context_travels(
+        self, model: str, roles: list[str]
+    ):
+        from dataclasses import replace
+
+        client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        provider = AnthropicProvider(replace(_config("anthropic"), model=model), client=client)
+        messages = [*_MESSAGES, {"role": "context", "content": "## Turn context"}]
+        async for _event in provider.stream_turn(system=_SYSTEM, messages=messages, tools=_TOOLS):
+            pass
+        assert client.captured_kwargs is not None
+        assert [message["role"] for message in client.captured_kwargs["messages"]] == roles
 
     async def test_tool_call_emitted_only_after_block_stop(self):
         """No ToolCallRequest may be emitted while fragments are pending."""
@@ -280,6 +642,132 @@ class TestAnthropicProvider:
         assert "anthropic" in str(excinfo.value).lower()
 
 
+class _ScriptedAnthropicClient:
+    """One scripted event list per request, keeping a frozen copy of every request."""
+
+    def __init__(self, rounds: list[list[object]]):
+        self.requests: list[dict] = []
+        outer = self
+        remaining = list(rounds)
+
+        class _Messages:
+            def stream(self, **kwargs):
+                outer.requests.append(json.loads(json.dumps(kwargs)))
+                return _FakeAnthropicStream(remaining.pop(0))
+
+        self.messages = _Messages()
+
+
+def _thinking_round(signature: str, tool_id: str | None) -> list[object]:
+    """A round that thinks, then calls `get_pipeline` or, without *tool_id*, answers."""
+
+    ns = SimpleNamespace
+    events: list[object] = [
+        ns(type="message_start", message=ns(usage=ns(input_tokens=3))),
+        ns(type="content_block_start", index=0, content_block=ns(type="thinking", thinking="")),
+        ns(
+            type="content_block_delta",
+            index=0,
+            delta=ns(type="signature_delta", signature=signature),
+        ),
+        ns(type="content_block_stop", index=0),
+    ]
+    if tool_id is None:
+        events += [
+            ns(type="content_block_start", index=1, content_block=ns(type="text", text="")),
+            ns(type="content_block_delta", index=1, delta=ns(type="text_delta", text="Done.")),
+            ns(type="content_block_stop", index=1),
+        ]
+    else:
+        events += [
+            ns(
+                type="content_block_start",
+                index=1,
+                content_block=ns(type="tool_use", id=tool_id, name="get_pipeline", input={}),
+            ),
+            ns(type="content_block_stop", index=1),
+        ]
+    reason = "end_turn" if tool_id is None else "tool_use"
+    return [
+        *events,
+        ns(type="message_delta", delta=ns(stop_reason=reason), usage=ns(output_tokens=4)),
+        ns(type="message_stop"),
+    ]
+
+
+class TestAnthropicTurnPrefix:
+    """Within a turn every round's request extends the previous one byte for byte,
+    with each signed thinking block back in its message; compaction leaves no
+    thinking for the next turn."""
+
+    async def test_rounds_extend_one_byte_identical_prefix_and_the_next_turn_has_no_thinking(
+        self,
+    ):
+        from haute.assistant._loop import run_turn
+        from haute.assistant._session import SessionStore
+
+        client = _ScriptedAnthropicClient(
+            [
+                _thinking_round("sig-1", "toolu_1"),
+                _thinking_round("sig-2", "toolu_2"),
+                _thinking_round("sig-3", None),
+                _thinking_round("sig-4", None),
+            ]
+        )
+        provider = AnthropicProvider(_config("anthropic"), client=client)
+        store = SessionStore()
+        session = store.create("main.py")
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            return {"nodes": []}
+
+        for text in ("What reads quotes?", "And after it?"):
+            events = [
+                event
+                async for event in run_turn(
+                    store,
+                    session.id,
+                    text,
+                    provider=provider,
+                    tools=_TOOLS,
+                    execute_tool=execute_tool,
+                    system_prompt=_SYSTEM,
+                    turn_timeout=5.0,
+                    max_tool_calls=4,
+                    turn_context="## Turn context\nbrief",
+                )
+            ]
+            assert events[-1].type == "completed"
+            assert "thinking" in [event.type for event in events]
+
+        first_turn, second_turn = client.requests[:3], client.requests[3]
+        for earlier, later in zip(first_turn, first_turn[1:], strict=False):
+            assert json.dumps(later["system"]) == json.dumps(earlier["system"])
+            assert json.dumps(later["tools"]) == json.dumps(earlier["tools"])
+            shared = later["messages"][: len(earlier["messages"])]
+            assert [json.dumps(m, sort_keys=True) for m in shared] == [
+                json.dumps(m, sort_keys=True) for m in earlier["messages"]
+            ]
+        replayed = [m for m in first_turn[2]["messages"] if m["role"] == "assistant"]
+        assert [message["content"] for message in replayed] == [
+            [
+                {"type": "thinking", "thinking": "", "signature": "sig-1"},
+                {"type": "tool_use", "id": "toolu_1", "name": "get_pipeline", "input": {}},
+            ],
+            [
+                {"type": "thinking", "thinking": "", "signature": "sig-2"},
+                {"type": "tool_use", "id": "toolu_2", "name": "get_pipeline", "input": {}},
+            ],
+        ]
+        assert '"thinking"' not in json.dumps(second_turn["messages"])
+        assert "toolu_1" not in json.dumps(second_turn["messages"])
+        assert second_turn["messages"][0] == {"role": "user", "content": "What reads quotes?"}
+        assert second_turn["messages"][1]["role"] == "assistant"
+        assert second_turn["messages"][1]["content"].startswith("Done.\n\n## Turn record\n")
+        stored = json.dumps(store.lookup(session.id).as_dict())
+        assert "sig-1" not in stored and "provider_content" not in stored
+
+
 # ---------------------------------------------------------------------------
 # OpenAI fakes — the Chat Completions streaming wire protocol
 # ---------------------------------------------------------------------------
@@ -325,9 +813,33 @@ class _SequencedOpenAIClient:
                 outcome = outer.outcomes.pop(0)
                 if isinstance(outcome, Exception):
                     raise outcome
+                if isinstance(outcome, _FailingOpenAIStream):
+                    return outcome
                 return _FakeOpenAIStream(outcome)
 
         self.chat = SimpleNamespace(completions=_Completions())
+
+
+class _FailingOpenAIStream:
+    """A response stream that exists, yields its chunks, then fails mid-stream."""
+
+    def __init__(self, chunks, error: Exception):
+        self._chunks = chunks
+        self._error = error
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        for chunk in self._chunks:
+            yield chunk
+        raise self._error
+
+
+def _sdk_timeout() -> Exception:
+    """The installed OpenAI SDK's own pre-stream timeout, as raised live."""
+
+    return openai.APITimeoutError(request=httpx.Request("POST", "https://workspace.example"))
 
 
 def _openai_text_tool_chunks():
@@ -430,6 +942,30 @@ _NESTED_TOOLS = [
 ]
 
 
+def _schema_nodes(value):
+    """Every mapping in a JSON schema, depth first."""
+
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _schema_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _schema_nodes(child)
+
+
+#: The closed tools that leave the project as it is (the read tools and the build
+#: plan's update), the only ones the Anthropic and OpenAI lanes send strict.
+_STRICT_READ_TOOLS = {
+    "get_pipeline",
+    "inspect_node",
+    "find_data",
+    "read_reference",
+    "get_project_knowledge",
+    "update_build_plan",
+}
+
+
 class TestOpenAIProvider:
     async def test_normalises_text_and_tool_stream(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())
@@ -459,6 +995,47 @@ class TestOpenAIProvider:
         client = _FakeOpenAIClient(chunks)
         events = await _collect(OpenAIProvider(_config("openai"), client=client))
         assert isinstance(events[-1], TurnStop) and events[-1].reason == "end"
+
+    @pytest.mark.parametrize("provider_cls", [OpenAIProvider, DatabricksProvider])
+    async def test_stop_finish_reason_with_accumulated_calls_yields_them(self, provider_cls):
+        """Some OpenAI-compatible gateways finish a tool-calling reply with
+        `stop`; the accumulated calls must still run."""
+
+        chunks = _openai_text_tool_chunks()
+        chunks[3].choices[0].finish_reason = "stop"
+        config = (
+            _config("databricks", "https://example.cloud.databricks.com/serving-endpoints")
+            if provider_cls is DatabricksProvider
+            else _config("openai")
+        )
+        events = await _collect(provider_cls(config, client=_FakeOpenAIClient(chunks)))
+
+        (tool,) = [e for e in events if isinstance(e, ToolCallRequest)]
+        assert (tool.id, tool.name, tool.arguments) == ("call_1", "get_pipeline", {"x": 2})
+        assert isinstance(events[-1], TurnStop) and events[-1].reason == "tool_use"
+
+    @pytest.mark.parametrize(
+        ("finish_reason", "category"),
+        [("length", "truncated"), ("content_filter", "filtered")],
+    )
+    async def test_truncated_or_filtered_reply_dispatches_no_calls(
+        self, finish_reason: str, category: str
+    ):
+        """The loop runs each call as soon as it is yielded, so a reply cut
+        short or filtered must yield none of its calls, even when the
+        accumulated arguments happen to be complete, valid JSON."""
+
+        chunks = _openai_text_tool_chunks()
+        chunks[3].choices[0].finish_reason = finish_reason
+        provider = OpenAIProvider(_config("openai"), client=_FakeOpenAIClient(chunks))
+        events: list[object] = []
+        with pytest.raises(AssistantProviderError) as excinfo:
+            async for event in provider.stream_turn(
+                system=_SYSTEM, messages=_MESSAGES, tools=_TOOLS
+            ):
+                events.append(event)
+        assert excinfo.value.failure_class == category
+        assert not [e for e in events if isinstance(e, ToolCallRequest)]
 
     async def test_budget_param_is_max_completion_tokens_for_api_openai_com(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())
@@ -863,6 +1440,19 @@ class TestOpenAIProvider:
 # ---------------------------------------------------------------------------
 
 
+#: Every pre-stream retry at once, so a test never waits.
+_IMMEDIATE_RETRIES = {"connection": (0.0, 0.0), "rate_limit": (0.0, 0.0)}
+
+
+def _rate_limited(retry_after: str | None = None) -> openai.RateLimitError:
+    """A real SDK rate-limit error, its 429 response carrying *retry_after*."""
+
+    request = httpx.Request("POST", "https://workspace.example/serving")
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    response = httpx.Response(429, request=request, headers=headers)
+    return openai.RateLimitError("REQUEST_LIMIT_EXCEEDED", response=response, body=None)
+
+
 class TestDatabricksProvider:
     async def test_reuses_openai_compatible_request_contract(self):
         client = _FakeOpenAIClient(_openai_text_tool_chunks())
@@ -886,7 +1476,7 @@ class TestDatabricksProvider:
         rate_limit_error = type("RateLimitError", (Exception,), {})
 
         class ImmediateRetryProvider(DatabricksProvider):
-            rate_limit_retry_delays = (0.0, 0.0)
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         client = _SequencedOpenAIClient(
             [
@@ -912,7 +1502,7 @@ class TestDatabricksProvider:
         rate_limit_error = type("RateLimitError", (Exception,), {})
 
         class ImmediateRetryProvider(DatabricksProvider):
-            rate_limit_retry_delays = (0.0,)
+            pre_stream_retry_delays = {"rate_limit": (0.0,)}
 
         client = _SequencedOpenAIClient(
             [rate_limit_error("secret-one"), rate_limit_error("secret-two")]
@@ -927,6 +1517,357 @@ class TestDatabricksProvider:
         assert exc_info.value.failure_class == "rate_limit"
         assert "secret" not in str(exc_info.value)
         assert client.calls == 2
+
+    def test_a_rate_limit_waits_longer_and_more_often_than_a_connection_failure(self):
+        """Live: two evaluations in parallel hit Databricks' workspace input
+        tokens-per-minute limit; one and three seconds were too short to outlast it."""
+
+        assert DatabricksProvider.pre_stream_retry_delays == {
+            "connection": (1.0, 3.0),
+            "rate_limit": (5.0, 15.0, 30.0),
+        }
+        # The direct OpenAI client keeps the SDK's own bounded retries instead,
+        # so no provider nests an adapter retry over an SDK retry.
+        assert OpenAIProvider.pre_stream_retry_delays == {}
+
+    async def test_a_rate_limit_waits_what_its_retry_after_header_asks(self):
+        import structlog.testing
+
+        class SlowScheduleProvider(DatabricksProvider):
+            # The schedule would outlast the test: only the header can be waited.
+            pre_stream_retry_delays = {"rate_limit": (600.0,)}
+
+        client = _SequencedOpenAIClient([_rate_limited("0.01"), _openai_text_tool_chunks()])
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                SlowScheduleProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+
+        assert events[0] == TextDelta(text="Hi")
+        assert client.calls == 2
+        (retry,) = [
+            entry for entry in captured if entry["event"] == "assistant_provider_request_retry"
+        ]
+        assert (retry["failure_class"], retry["delay_seconds"], retry["delay_source"]) == (
+            "rate_limit",
+            0.01,
+            "retry_after",
+        )
+
+    @pytest.mark.parametrize(
+        ("schedule", "retry_after"),
+        [((600.0,), None), ((0.0,), "600")],
+        ids=["schedule", "retry-after"],
+    )
+    async def test_a_wait_past_the_turns_deadline_fails_at_once_as_a_rate_limit(
+        self, schedule: tuple[float, ...], retry_after: str | None
+    ):
+        """A wait the turn cannot outlast is not taken, so the turn fails with the
+        rate-limit failure rather than its time limit."""
+
+        import structlog.testing
+
+        class ScheduledProvider(DatabricksProvider):
+            pre_stream_retry_delays = {"rate_limit": schedule}
+
+        client = _SequencedOpenAIClient([_rate_limited(retry_after), _openai_text_tool_chunks()])
+        started = time.monotonic()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.raises(AssistantProviderError) as exc_info,
+            turn_deadline(time.monotonic() + 60.0),
+        ):
+            await _collect(
+                ScheduledProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+
+        assert time.monotonic() - started < 30.0
+        assert str(exc_info.value) == (
+            "databricks provider rate_limit failure: the provider request could not be completed"
+        )
+        assert client.calls == 1
+        (abandoned,) = [
+            entry
+            for entry in captured
+            if entry["event"] == "assistant_provider_request_retry_past_deadline"
+        ]
+        assert abandoned["delay_seconds"] == 600.0
+
+    @pytest.mark.parametrize(
+        ("header", "seconds"),
+        [
+            ("7", 7.0),
+            ("0.5", 0.5),
+            ("-3", 0.0),
+            (format_datetime(datetime.now(UTC) - timedelta(minutes=1), usegmt=True), 0.0),
+            ("soon", None),
+            (None, None),
+        ],
+        ids=["seconds", "fraction", "negative", "past-date", "unreadable", "absent"],
+    )
+    def test_retry_after_reads_seconds_or_an_http_date(
+        self, header: str | None, seconds: float | None
+    ):
+        assert _retry_after_seconds(_rate_limited(header)) == seconds
+
+    def test_retry_after_reads_a_future_http_date_and_needs_a_response(self):
+        later = format_datetime(datetime.now(UTC) + timedelta(seconds=90), usegmt=True)
+
+        waited = _retry_after_seconds(_rate_limited(later))
+
+        assert waited is not None and 80.0 <= waited <= 90.0
+        assert _retry_after_seconds(type("RateLimitError", (Exception,), {})()) is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            _sdk_timeout(),
+            openai.APIConnectionError(request=httpx.Request("POST", "https://workspace.example")),
+        ],
+        ids=["timeout", "connection"],
+    )
+    async def test_retries_pre_stream_timeout_or_connection_failure(self, error: Exception):
+        """Live: four of sixteen Databricks turns died on `Request timed out.`
+        before any response stream existed. No partial output was produced,
+        so the request is as safe to resend as a rate-limited one."""
+
+        import structlog.testing
+
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
+
+        client = _SequencedOpenAIClient([error, _openai_text_tool_chunks()])
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+
+        assert events[0] == TextDelta(text="Hi")
+        assert isinstance(events[-1], TurnStop)
+        assert client.calls == 2
+        (retry,) = [
+            entry for entry in captured if entry["event"] == "assistant_provider_request_retry"
+        ]
+        assert retry["failure_class"] == "connection"
+        assert retry["error_class"] == type(error).__name__
+        assert retry["retry"] == 1
+
+    async def test_exhausted_pre_stream_timeouts_fail_typed(self):
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
+
+        client = _SequencedOpenAIClient([_sdk_timeout(), _sdk_timeout(), _sdk_timeout()])
+        with pytest.raises(AssistantProviderError) as exc_info:
+            await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+        assert exc_info.value.provider == "databricks"
+        assert exc_info.value.failure_class == "connection"
+        assert "timed out" not in str(exc_info.value)
+        assert client.calls == 3
+
+    async def test_timeout_after_the_stream_exists_is_never_retried(self):
+        """Replaying a started stream could duplicate text or tool calls."""
+
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
+
+        first_chunk = _openai_text_tool_chunks()[:1]
+        client = _SequencedOpenAIClient(
+            [
+                _FailingOpenAIStream(first_chunk, _sdk_timeout()),
+                _openai_text_tool_chunks(),
+            ]
+        )
+        events: list = []
+        with pytest.raises(AssistantProviderError) as exc_info:
+            async for event in ImmediateRetryProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            ).stream_turn(system=_SYSTEM, messages=_MESSAGES, tools=_TOOLS):
+                events.append(event)
+        assert events == [TextDelta(text="Hi")]
+        assert exc_info.value.failure_class == "connection"
+        assert client.calls == 1
+
+    async def test_non_transient_pre_stream_failure_is_not_retried(self):
+        class ImmediateRetryProvider(DatabricksProvider):
+            pre_stream_retry_delays = _IMMEDIATE_RETRIES
+
+        authentication_error = type("AuthenticationError", (Exception,), {})
+        client = _SequencedOpenAIClient(
+            [authentication_error("secret"), _openai_text_tool_chunks()]
+        )
+        with pytest.raises(AssistantProviderError) as exc_info:
+            await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+        assert exc_info.value.failure_class == "authentication"
+        assert client.calls == 1
+
+    @pytest.mark.parametrize("projection", ["compatible", "canonical"])
+    async def test_decodes_recipe_arguments_by_the_selected_recipe_branch(self, projection: str):
+        """Live: `output_columns must be JSON array, but a string was sent` about
+        ten times on the recipe tool. A recipe operation selects its branch by `op`
+        and then `recipe`, so its arguments decode by that recipe's schema, the
+        `arguments` object itself included. Qwen stringifies arrays under either
+        projection, and decoding reads the canonical schema whichever was sent."""
+
+        from haute.assistant._tools import (
+            _OPERATION_INPUT_SCHEMAS,
+            TOOL_DEFINITIONS,
+            _validate_tool_value,
+        )
+
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
+        rules = [
+            {"value": "A", "assignment": "low"},
+            {"value": "3", "assignment": "high"},
+        ]
+        tables = [
+            {
+                "factors": ["region"],
+                "output_column": "region_factor",
+                "entries": [{"factor_values": ["north"], "value": 1.1}],
+                "default_value": 1.0,
+            }
+        ]
+        banding = {
+            "source": "policies",
+            "name": "vehicle_band",
+            "column": "vehicle_group",
+            "output_column": "vehicle_band",
+            "rules": rules,
+            "default": "other",
+            "output_name": "quote",
+            "output_columns": ["vehicle_band"],
+        }
+        rating = {"source": "policies", "name": "region_rating", "tables": tables}
+        sent_ops = [
+            {
+                "op": "recipe",
+                "recipe": "categorical_banding",
+                "arguments": {
+                    **banding,
+                    "rules": json.dumps(rules),
+                    "output_columns": '["vehicle_band"]',
+                },
+            },
+            # The whole arguments object arrives as a JSON string.
+            {"op": "recipe", "recipe": "rating_step", "arguments": json.dumps(rating)},
+            {"op": "add_edge", "source": "$recipe_0", "target": "premium"},
+        ]
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks(
+                "dry_run_graph_edits",
+                {"summary": "Band and rate.", "ops": json.dumps(sent_ops)},
+            )
+        )
+        events = await _collect(
+            DatabricksProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+                tool_projection=projection,  # type: ignore[arg-type]
+            ),
+            tools=[definition],
+        )
+
+        (sent,) = client.captured_kwargs["tools"]
+        operation = sent["function"]["parameters"]["properties"]["ops"]["items"]
+        assert ("oneOf" in operation) is (projection == "canonical")
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments["ops"] == [
+            {"op": "recipe", "recipe": "categorical_banding", "arguments": banding},
+            {"op": "recipe", "recipe": "rating_step", "arguments": rating},
+            sent_ops[2],
+        ]
+        # A rule value is declared a string, so "3" is never decoded to a number.
+        assert tool.arguments["ops"][0]["arguments"]["rules"][1]["value"] == "3"
+        _validate_tool_value(
+            tool.arguments,
+            _OPERATION_INPUT_SCHEMAS["dry_run_graph_edits"],
+            path="dry_run_graph_edits",
+        )
+
+    @pytest.mark.parametrize(
+        ("recipe", "field", "encoded"),
+        [
+            # A Python literal, not JSON: never repaired.
+            ("categorical_banding", "rules", "[{'value': 'A', 'assignment': 'low'}]"),
+            # Valid JSON of the wrong type for the selected branch.
+            ("categorical_banding", "output_columns", '"vehicle_band"'),
+            # No branch is selected, so nothing below the operation is eligible.
+            ("not_a_recipe", "output_columns", '["vehicle_band"]'),
+            # A non-string discriminator never matches a declared string constant.
+            (1, "output_columns", '["vehicle_band"]'),
+        ],
+    )
+    async def test_recipe_argument_invalid_encodings_are_left_for_the_validator(
+        self, recipe: object, field: str, encoded: str
+    ):
+        from haute.assistant._tools import (
+            _OPERATION_INPUT_SCHEMAS,
+            TOOL_DEFINITIONS,
+            _ToolArgumentValidationError,
+            _validate_tool_value,
+        )
+
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
+        arguments = {
+            "source": "policies",
+            "name": "vehicle_band",
+            "column": "vehicle_group",
+            "output_column": "vehicle_band",
+            "rules": [{"value": "A", "assignment": "low"}],
+            "default": "other",
+            "output_name": "quote",
+            "output_columns": ["vehicle_band"],
+            field: encoded,
+        }
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks(
+                "dry_run_graph_edits",
+                {
+                    "summary": "Band vehicles.",
+                    "ops": [{"op": "recipe", "recipe": recipe, "arguments": arguments}],
+                },
+            )
+        )
+        events = await _collect(
+            DatabricksProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            ),
+            tools=[definition],
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments["ops"][0]["arguments"][field] == encoded
+        with pytest.raises(_ToolArgumentValidationError):
+            _validate_tool_value(
+                tool.arguments,
+                _OPERATION_INPUT_SCHEMAS["dry_run_graph_edits"],
+                path="dry_run_graph_edits",
+            )
 
     async def test_decodes_only_schema_declared_top_level_compatible_types(self):
         arguments = {
@@ -998,61 +1939,92 @@ class TestDatabricksProvider:
         (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
         assert tool.arguments == {"ops": [operation]}
 
-    async def test_all_providers_advertise_the_same_portable_production_schema(self):
+    async def test_each_lane_sends_its_projection_of_the_production_tools(self):
+        """Anthropic and OpenAI receive the canonical schemas, strict exactly for the
+        closed tools that leave the project as it is; Databricks receives the
+        compatible projection by default and the canonical one, never strict, when
+        built for the canonical_tools variant. Every lane's wire tools are its
+        projection of the canonical definitions."""
+
         from haute.assistant._loop import _provider_tools
+        from haute.assistant._providers import (
+            _canonical_tools,
+            _compatible_tools,
+            _openai_tools,
+        )
         from haute.assistant._tools import TOOL_DEFINITIONS
 
         routed_tools = _provider_tools(TOOL_DEFINITIONS)
-
-        canonical_definition = next(
-            tool for tool in routed_tools if tool["name"] == "dry_run_graph_edits"
+        canonical = {tool["name"]: tool["input_schema"] for tool in routed_tools}
+        databricks = _config(
+            "databricks", base_url="https://workspace.cloud.databricks.com/serving-endpoints"
         )
-        canonical = canonical_definition["input_schema"]
-
-        anthropic_client = _FakeAnthropicClient(_anthropic_text_tool_events())
-        openai_client = _FakeOpenAIClient(_openai_text_tool_chunks())
-        databricks_client = _FakeOpenAIClient(_openai_text_tool_chunks())
-
-        await _collect(
-            AnthropicProvider(_config("anthropic"), client=anthropic_client),
-            tools=routed_tools,
-        )
-        await _collect(
-            OpenAIProvider(_config("openai"), client=openai_client),
-            tools=routed_tools,
-        )
-        await _collect(
+        clients = {
+            "anthropic": _FakeAnthropicClient(_anthropic_text_tool_events()),
+            "openai": _FakeOpenAIClient(_openai_text_tool_chunks()),
+            "databricks": _FakeOpenAIClient(_openai_text_tool_chunks()),
+            "databricks_canonical": _FakeOpenAIClient(_openai_text_tool_chunks()),
+        }
+        providers = [
+            AnthropicProvider(_config("anthropic"), client=clients["anthropic"]),
+            OpenAIProvider(_config("openai"), client=clients["openai"]),
+            DatabricksProvider(databricks, client=clients["databricks"]),
             DatabricksProvider(
-                _config(
-                    "databricks",
-                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
-                ),
-                client=databricks_client,
+                databricks, client=clients["databricks_canonical"], tool_projection="canonical"
             ),
-            tools=routed_tools,
+        ]
+        for provider in providers:
+            await _collect(provider, tools=routed_tools)
+
+        sent = {lane: client.captured_kwargs["tools"] for lane, client in clients.items()}
+        assert sent == {
+            "anthropic": _canonical_tools(routed_tools, "anthropic"),
+            "openai": _openai_tools(_canonical_tools(routed_tools, "openai")),
+            "databricks": _openai_tools(_compatible_tools(routed_tools)),
+            "databricks_canonical": _openai_tools(_canonical_tools(routed_tools, None)),
+        }
+        assert [tool["name"] for tool in sent["anthropic"]] == list(canonical)
+        assert {tool["name"] for tool in sent["anthropic"] if "strict" in tool} == (
+            _STRICT_READ_TOOLS
+        )
+        assert all(tool["strict"] is True for tool in sent["anthropic"] if "strict" in tool)
+        functions = {
+            lane: {tool["function"]["name"]: tool["function"] for tool in tools}
+            for lane, tools in sent.items()
+            if lane != "anthropic"
+        }
+        assert {name for name, function in functions["openai"].items() if "strict" in function} == (
+            _STRICT_READ_TOOLS
+        )
+        assert all(
+            "strict" not in function
+            for lane in ("databricks", "databricks_canonical")
+            for function in functions[lane].values()
         )
 
-        assert anthropic_client.captured_kwargs is not None
-        assert openai_client.captured_kwargs is not None
-        assert databricks_client.captured_kwargs is not None
-        anthropic_schemas = {
-            tool["name"]: tool["input_schema"] for tool in anthropic_client.captured_kwargs["tools"]
-        }
-        openai_schemas = {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in openai_client.captured_kwargs["tools"]
-        }
-        databricks_schemas = {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in databricks_client.captured_kwargs["tools"]
-        }
+        # The canonical lanes send a tool that is not strict its canonical schema:
+        # the operation union, with each branch's own required fields.
+        anthropic_schemas = {tool["name"]: tool["input_schema"] for tool in sent["anthropic"]}
+        for name in ("dry_run_graph_edits", "apply_graph_plan"):
+            assert anthropic_schemas[name] == canonical[name]
+            assert functions["openai"][name]["parameters"] == canonical[name]
+            assert functions["databricks_canonical"][name]["parameters"] == canonical[name]
+        for name in _STRICT_READ_TOOLS:
+            assert functions["databricks_canonical"][name]["parameters"] == canonical[name]
+        branches = canonical["dry_run_graph_edits"]["properties"]["ops"]["items"]["oneOf"]
+        rename = next(
+            branch
+            for branch in branches
+            if branch["properties"]["op"].get("const") == "rename_node"
+        )
+        assert rename["required"] == ["op", "node", "new_name"]
 
-        assert anthropic_schemas == openai_schemas == databricks_schemas
-        assert set(anthropic_schemas) == {tool["name"] for tool in routed_tools}
-        anthropic_wire = anthropic_schemas["dry_run_graph_edits"]
-        assert anthropic_wire != canonical
-        assert canonical["properties"]["ops"]["items"].get("oneOf")
-        operation_item = anthropic_wire["properties"]["ops"]["items"]
+        # The compatible projection merges the union into one closed object.
+        compatible_schemas = {
+            name: function["parameters"] for name, function in functions["databricks"].items()
+        }
+        compatible_wire = compatible_schemas["dry_run_graph_edits"]
+        operation_item = compatible_wire["properties"]["ops"]["items"]
         assert operation_item["type"] == "object"
         assert operation_item["required"] == ["op"]
         assert operation_item["additionalProperties"] is False
@@ -1063,54 +2035,228 @@ class TestDatabricksProvider:
             "config",
             "ref",
             "node",
+            "edits",
             "new_name",
             "source",
             "target",
             "source_handle",
             "target_handle",
             "preamble",
+            "recipe",
+            "arguments",
         }
         assert operation_item["properties"]["op"] == {
             "enum": [
                 "add_node",
                 "update_node",
+                "edit_steps",
                 "rename_node",
                 "delete_node",
                 "add_edge",
                 "delete_edge",
                 "update_preamble",
+                "recipe",
             ]
         }
-        postcondition_item = anthropic_wire["properties"]["postconditions"]["items"]
+        postcondition_item = compatible_wire["properties"]["postconditions"]["items"]
         assert postcondition_item["type"] == "object"
         assert postcondition_item["additionalProperties"] is False
         assert "kind" in postcondition_item["properties"]
 
-        recipe_wire = anthropic_schemas["plan_recipe"]
-        assert "graph node name" in recipe_wire["properties"]["name"]["description"]
-        rules_wire = recipe_wire["properties"]["rules"]
-        assert rules_wire["type"] == "array"
-        assert "categorical" in rules_wire["description"]
-        assert "assignment" in rules_wire["description"]
-        assert rules_wire["items"]["additionalProperties"] is False
-        assert set(rules_wire["items"]["properties"]) == {"assignment", "value"}
-        assert rules_wire["items"]["required"] == ["value", "assignment"]
-
-        def objects(value):
-            if isinstance(value, dict):
-                yield value
-                for child in value.values():
-                    yield from objects(child)
-            elif isinstance(value, list):
-                for child in value:
-                    yield from objects(child)
+        arguments_wire = operation_item["properties"]["arguments"]
+        assert arguments_wire["type"] == "object"
+        assert "categorical_banding arguments:" in arguments_wire["description"]
+        assert "rules [{value, assignment}]" in arguments_wire["description"]
 
         unsupported = {"oneOf", "anyOf", "allOf", "$ref", "pattern", "prefixItems"}
-        for wire_schema in anthropic_schemas.values():
-            wire_objects = list(objects(wire_schema))
+        for wire_schema in compatible_schemas.values():
+            wire_objects = list(_schema_nodes(wire_schema))
             assert all(unsupported.isdisjoint(value) for value in wire_objects)
             assert all(not isinstance(value.get("type"), list) for value in wire_objects)
             assert sum(len(value.get("properties", {})) for value in wire_objects) <= 40
+
+    def test_the_strict_reduction_keeps_every_property_of_a_closed_read_tool(self):
+        """Strict decoding refuses validation keywords such as `minimum` and
+        `uniqueItems`, so the reduction drops them and keeps every property,
+        description and required field. OpenAI's strict mode requires every
+        property, so there each optional one is required and nullable."""
+
+        from haute.assistant._providers import _strict_tool_schema
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        canonical = {tool["name"]: tool["input_schema"] for tool in TOOL_DEFINITIONS}
+        inspect = canonical["inspect_node"]
+        parts = {
+            "type": "array",
+            "description": inspect["properties"]["parts"]["description"],
+            "items": {"type": "string", "enum": ["schema", "config", "profile", "data"]},
+        }
+        source = {"type": "string", "description": inspect["properties"]["input"]["description"]}
+        column = {"type": "string", "description": inspect["properties"]["column"]["description"]}
+        assert _strict_tool_schema(inspect, "anthropic") == {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string"},
+                "parts": parts,
+                "input": source,
+                "column": column,
+            },
+            "required": ["node"],
+            "additionalProperties": False,
+        }
+        assert _strict_tool_schema(inspect, "openai") == {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string"},
+                "parts": {**parts, "type": ["array", "null"]},
+                "input": {**source, "type": ["string", "null"]},
+                "column": {**column, "type": ["string", "null"]},
+            },
+            "required": ["node", "parts", "input", "column"],
+            "additionalProperties": False,
+        }
+
+        refused = {
+            "minimum",
+            "maximum",
+            "minLength",
+            "maxLength",
+            "minItems",
+            "maxItems",
+            "uniqueItems",
+            "pattern",
+            "title",
+            "default",
+            "oneOf",
+            "anyOf",
+            "allOf",
+            "$ref",
+        }
+        for name in _STRICT_READ_TOOLS:
+            for dialect in ("anthropic", "openai"):
+                reduced = _strict_tool_schema(canonical[name], dialect)
+                assert reduced is not None, (name, dialect)
+                assert set(reduced["properties"]) == set(canonical[name]["properties"])
+                nodes = list(_schema_nodes(reduced))
+                assert all(refused.isdisjoint(node) for node in nodes if "type" in node)
+                assert all(
+                    node.get("additionalProperties") is False
+                    for node in nodes
+                    if isinstance(node.get("properties"), dict)
+                )
+                required = set(canonical[name].get("required", ()))
+                if dialect == "anthropic":
+                    assert set(reduced["required"]) == required
+                else:
+                    assert reduced["required"] == list(canonical[name]["properties"])
+        # The operation union and its open config objects never reduce.
+        assert _strict_tool_schema(canonical["dry_run_graph_edits"], "anthropic") is None
+
+    @pytest.mark.parametrize("dialect", ["anthropic", "openai"])
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            # A union.
+            {
+                "type": "object",
+                "properties": {"op": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
+                "additionalProperties": False,
+            },
+            # An open object, at the top or below it.
+            {"type": "object", "properties": {}},
+            {
+                "type": "object",
+                "properties": {"config": {"type": "object"}},
+                "additionalProperties": False,
+            },
+            # An optional property that is already nullable, so a null would not
+            # say whether it was omitted.
+            {
+                "type": "object",
+                "properties": {"handle": {"type": ["string", "null"]}},
+                "additionalProperties": False,
+            },
+            # A value with no declared type.
+            {"type": "object", "properties": {"value": {}}, "additionalProperties": False},
+        ],
+    )
+    def test_the_strict_reduction_refuses_what_strict_mode_cannot_express(
+        self, schema: dict, dialect: str
+    ):
+        from haute.assistant._providers import _strict_tool_schema
+
+        assert _strict_tool_schema(schema, dialect) is None  # type: ignore[arg-type]
+
+    def test_the_strict_tools_stay_within_anthropic_strict_limits(self):
+        """Anthropic documents at most twenty strict tools per request, and across
+        their schemas twenty-four optional parameters and sixteen union-typed ones."""
+
+        from haute.assistant._providers import _canonical_tools
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        strict = [
+            tool["input_schema"]
+            for tool in _canonical_tools(TOOL_DEFINITIONS, "anthropic")
+            if tool.get("strict")
+        ]
+        nodes = [node for schema in strict for node in _schema_nodes(schema)]
+        optional = sum(
+            len(set(node["properties"]) - set(node.get("required", ())))
+            for node in nodes
+            if isinstance(node.get("properties"), dict)
+        )
+        unions = sum(1 for node in nodes if "anyOf" in node or isinstance(node.get("type"), list))
+
+        assert len(strict) <= 20
+        assert optional <= 24
+        assert unions <= 16
+
+    async def test_a_null_for_an_optional_property_of_a_strict_tool_means_omitted(self):
+        """OpenAI's strict schema makes each optional property nullable, so the
+        model sends `null` for one it leaves out; the adapter omits it before the
+        canonical validator, which declares the property a string."""
+
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks("inspect_node", {"node": "quotes", "parts": None, "input": None})
+        )
+        events = await _collect(
+            OpenAIProvider(_config("openai"), client=client), tools=TOOL_DEFINITIONS
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == {"node": "quotes"}
+
+    @pytest.mark.parametrize(
+        ("provider", "name", "arguments"),
+        [
+            # A required property's null reaches the validator, which refuses it.
+            ("openai", "inspect_node", {"node": None}),
+            # A tool sent without strict is never normalised.
+            ("openai", "dry_run_graph_edits", {"summary": "s", "ops": [], "postconditions": None}),
+            # Neither is any tool on the Databricks lane, which is never strict.
+            ("databricks", "inspect_node", {"node": "quotes", "parts": None}),
+        ],
+    )
+    async def test_every_other_null_reaches_the_validator_unchanged(
+        self, provider: str, name: str, arguments: dict
+    ):
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        client = _FakeOpenAIClient(_openai_tool_chunks(name, arguments))
+        adapter = (
+            OpenAIProvider(_config("openai"), client=client)
+            if provider == "openai"
+            else DatabricksProvider(
+                _config("databricks", base_url="https://workspace.example/serving"),
+                client=client,
+            )
+        )
+        events = await _collect(adapter, tools=TOOL_DEFINITIONS)
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == arguments
 
     async def test_openai_provider_does_not_apply_databricks_compatibility(self):
         arguments = {
@@ -1212,6 +2358,112 @@ class TestDatabricksProvider:
         assert entries[0]["field"] == "ops"
         assert entries[0]["declared_types"] == ["array"]
         assert encoded not in repr(captured), "the rejected value itself is never logged"
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments", "decoded", "event"),
+        [
+            (
+                "dry_run_graph_edits",
+                {"summary": "s", "ops": [], "assumptions": "- Keep the default band."},
+                {"summary": "s", "ops": [], "assumptions": ["- Keep the default band."]},
+                "assistant_databricks_argument_wrapped_in_array",
+            ),
+            (
+                "find_data",
+                {"recursive": "True"},
+                {"recursive": True},
+                "assistant_databricks_argument_python_boolean",
+            ),
+            (
+                "find_data",
+                {"recursive": "False"},
+                {"recursive": False},
+                "assistant_databricks_argument_python_boolean",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("projection", ["compatible", "canonical"])
+    async def test_decodes_a_plain_text_list_and_a_python_boolean_by_the_declared_type(
+        self, tool_name: str, arguments: dict, decoded: dict, event: str, projection: str
+    ):
+        """Qwen sends a declared list of sentences as one plain sentence and a
+        boolean as Python's `True`: each decodes by its declared schema, logged by
+        shape, never by value, under either projection."""
+
+        import structlog.testing
+
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        definition = next(tool for tool in TOOL_DEFINITIONS if tool["name"] == tool_name)
+        client = _FakeOpenAIClient(_openai_tool_chunks(tool_name, arguments))
+
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                DatabricksProvider(
+                    _config(
+                        "databricks",
+                        base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                    ),
+                    client=client,
+                    tool_projection=projection,  # type: ignore[arg-type]
+                ),
+                tools=[definition],
+            )
+
+        (tool,) = [item for item in events if isinstance(item, ToolCallRequest)]
+        assert tool.arguments == decoded
+        (entry,) = [item for item in captured if item.get("event") == event]
+        assert entry["field"] in arguments
+        assert "Keep the default" not in repr(captured)
+
+    @pytest.mark.parametrize("lane", ["compatible", "anthropic", "openai"])
+    def test_the_projections_keep_numeric_bounds_in_the_description(self, lane: str):
+        """The compatible projection and the strict reduction drop `minimum` and
+        `maximum`; their values travel in the description, so the model can see the
+        bound it would otherwise only learn from a rejection."""
+
+        from haute.assistant._providers import _canonical_tools, _compatible_tools
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        wire = (
+            _compatible_tools(TOOL_DEFINITIONS)
+            if lane == "compatible"
+            else _canonical_tools(TOOL_DEFINITIONS, lane)  # type: ignore[arg-type]
+        )
+        (knowledge,) = [tool for tool in wire if tool["name"] == "get_project_knowledge"]
+        limit = knowledge["input_schema"]["properties"]["limit"]
+
+        assert "maximum" not in limit
+        assert limit == {
+            "type": ["integer", "null"] if lane == "openai" else "integer",
+            "description": "At least 1, at most 10.",
+        }
+
+    async def test_a_list_looking_string_is_never_wrapped(self):
+        """A string that opens like a JSON array but does not parse stays a string,
+        for canonical validation to refuse; only plain text is wrapped."""
+
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
+        arguments = {"summary": "s", "ops": [], "assumptions": "['one', 'two']"}
+        client = _FakeOpenAIClient(_openai_tool_chunks("dry_run_graph_edits", arguments))
+
+        events = await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            ),
+            tools=[definition],
+        )
+
+        (tool,) = [item for item in events if isinstance(item, ToolCallRequest)]
+        assert tool.arguments["assumptions"] == "['one', 'two']"
 
     async def test_malformed_stream_retains_databricks_error_identity(self):
         ns = SimpleNamespace
@@ -1340,20 +2592,91 @@ class TestLazyClientLoaders:
         monkeypatch.setitem(
             sys.modules,
             "openai",
-            SimpleNamespace(AsyncOpenAI=fake_client),
+            SimpleNamespace(AsyncOpenAI=fake_client, Timeout=httpx.Timeout),
         )
         config = _config(
             "databricks",
             base_url="https://workspace.cloud.databricks.com/serving-endpoints",
         )
 
+        monkeypatch.delenv("HAUTE_ASSISTANT_TURN_TIMEOUT", raising=False)
         provider = DatabricksProvider(config)
         assert provider.client is client
         assert captured == {
             "api_key": "sk-test-secret",
             "base_url": "https://workspace.cloud.databricks.com/serving-endpoints",
             "max_retries": 0,
+            "timeout": httpx.Timeout(600.0, connect=30.0),
         }
+
+    @pytest.mark.parametrize(
+        ("provider_cls", "provider"),
+        [(OpenAIProvider, "openai"), (DatabricksProvider, "databricks")],
+    )
+    def test_openai_compatible_clients_get_explicit_timeouts(
+        self, monkeypatch: pytest.MonkeyPatch, provider_cls, provider: str
+    ):
+        """The SDK's five-second connect default timed out live against a cold
+        serving endpoint; the read bound follows the turn timeout."""
+
+        import sys
+
+        captured: dict[str, object] = {}
+
+        def fake_client(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setitem(
+            sys.modules, "openai", SimpleNamespace(AsyncOpenAI=fake_client, Timeout=httpx.Timeout)
+        )
+        monkeypatch.setenv("HAUTE_ASSISTANT_TURN_TIMEOUT", "120")
+        provider_cls(_config(provider, base_url="https://workspace.example/serving"))
+
+        timeout = captured["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 30.0
+        assert timeout.read == 120.0
+        assert ("max_retries" in captured) is (provider == "databricks")
+
+    def test_the_openai_client_never_imports_httpx_itself(self, monkeypatch: pytest.MonkeyPatch):
+        """openai 3 moved its transport to httpx2, so an environment with it has no
+        httpx: the adapter builds its timeouts through the SDK's own Timeout."""
+
+        import sys
+
+        import openai
+
+        captured: dict[str, object] = {}
+
+        def fake_client(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setitem(sys.modules, "httpx", None)
+        monkeypatch.setitem(
+            sys.modules, "openai", SimpleNamespace(AsyncOpenAI=fake_client, Timeout=openai.Timeout)
+        )
+        DatabricksProvider(_config("databricks", base_url="https://workspace.example/serving"))
+
+        assert isinstance(captured["timeout"], openai.Timeout)
+
+    def test_a_missing_sdk_dependency_is_named(self, monkeypatch: pytest.MonkeyPatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "openai":
+                raise ModuleNotFoundError("No module named 'httpx2'", name="httpx2")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        with pytest.raises(AssistantProviderError) as excinfo:
+            OpenAIProvider(_config("openai"))
+        assert excinfo.value.failure_class == "dependency"
+        assert "httpx2" in str(excinfo.value)
+        assert "reinstall" in str(excinfo.value)
 
     def test_installed_sdks_construct_real_clients(self):
         anthropic_provider = AnthropicProvider(_config("anthropic"))

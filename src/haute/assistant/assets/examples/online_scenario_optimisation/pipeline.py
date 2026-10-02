@@ -1,4 +1,8 @@
-"""Expand quote scenarios, score each alternative, and optimise the portfolio online."""
+"""Expand quote scenarios, score each alternative, and optimise the portfolio online.
+
+Optimisation has no output, so the optimiser is a terminal branch: it is
+solved from the editor, and the response is fed by the scored scenario frame.
+"""
 
 import polars as pl
 
@@ -33,4 +37,4 @@ def optimise(scored): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(optimise): ...
+def response(scored): ...

@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "id": "motor_frequency_glm_setup",
+  "case": "motor_frequency_glm_setup",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "refs",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:modelling"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Load the claims history and set up a Poisson frequency GLM on it.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "claims_history",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/claims_history.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "modelling",
+                    "name": "frequency_glm",
+                    "config": {
+                      "name": "frequency_glm",
+                      "target": "claim_count",
+                      "algorithm": "glm",
+                      "task": "regression",
+                      "family": "poisson",
+                      "link": "log",
+                      "offset": "exposure",
+                      "terms": {
+                        "driver_age": {
+                          "type": "linear"
+                        },
+                        "vehicle_group": {
+                          "type": "categorical"
+                        },
+                        "region": {
+                          "type": "categorical"
+                        }
+                      },
+                      "evaluation": {
+                        "schema_version": 1,
+                        "strategy": "random",
+                        "seed": 42,
+                        "validation": {
+                          "method": "single",
+                          "size": 0.2
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "claims_history",
+                    "target": "frequency_glm"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

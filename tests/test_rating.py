@@ -891,6 +891,29 @@ class TestAllNullRatingTable:
         with pytest.raises(ValueError, match="null"):
             _apply_rating_table(lf, table)
 
+    def test_entries_without_a_value_are_counted_past_the_first_hundred(self) -> None:
+        """Every entry is read, not only the first hundred a frame infers from.
+
+        A table whose only ``value`` came after its first 100 entries once
+        passed through unrated while the step still combined its output
+        column, so the run failed later on a column that was never written.
+        """
+        from haute.errors import ConfigSettingError
+
+        entries: list[dict[str, Any]] = [{"k": f"level_{index}"} for index in range(100)]
+        entries.append({"k": "a", "value": 2.0})
+        table: dict[str, Any] = {"factors": ["k"], "outputColumn": "out", "entries": entries}
+        premium = {"outputColumn": "premium", "operation": "multiply", "baseValue": 100.0}
+
+        with pytest.raises(ConfigSettingError) as caught:
+            _apply_rating_step_outputs(pl.DataFrame({"k": ["a"]}).lazy(), [table], [premium])
+
+        assert str(caught.value) == (
+            "Rating table for 'out' contains 100 null entry value(s); every entry "
+            "requires a finite numeric value"
+        )
+        assert caught.value.setting == "tables"
+
 
 # ===========================================================================
 # GAP 4: Combined rating with non-numeric columns

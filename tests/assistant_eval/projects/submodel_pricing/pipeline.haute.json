@@ -1,0 +1,16 @@
+{
+  "positions": {
+    "policies": {
+      "x": 0.0,
+      "y": 0.0
+    },
+    "premium": {
+      "x": 300.0,
+      "y": 0.0
+    },
+    "vehicle_factors": {
+      "x": 0.0,
+      "y": 0.0
+    }
+  }
+}

@@ -58,6 +58,22 @@ def set_project_root(root: Path) -> None:
     _PROJECT_ROOT = root.resolve()
 
 
+@contextmanager
+def bound_project_root(root: Path) -> Iterator[Path]:
+    """Bind the project root to *root* for a block, then restore the previous one.
+
+    The root is process-wide and set lazily from the working directory, so a
+    caller that works in several projects in one process binds each one here
+    rather than leaving the root on a project it has already left.
+    """
+    previous = _get_project_root()
+    set_project_root(root)
+    try:
+        yield _get_project_root()
+    finally:
+        set_project_root(previous)
+
+
 _OUTSIDE_PROJECT = "Cannot access paths outside the project root"
 
 

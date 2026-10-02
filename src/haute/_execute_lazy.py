@@ -59,6 +59,7 @@ from haute._types import (
     PipelineGraph,
     _Frame,
 )
+from haute._user_exec import user_code_line
 from haute.chunking import classify_chunk_local_polars_code
 from haute.errors import (
     ConfigError,
@@ -1626,9 +1627,9 @@ def _extract_error_line(exc: Exception) -> int | None:
     """
     if isinstance(exc, SyntaxError) and exc.lineno is not None:
         return exc.lineno
-    user_line: int | None = getattr(exc, "_user_code_line", None)
+    user_line = user_code_line(exc)
     if user_line is not None:
-        return int(user_line)
+        return user_line
     match = re.search(r"\bline (\d+)\b", str(exc))
     if match:
         return int(match.group(1))

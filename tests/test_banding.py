@@ -325,6 +325,43 @@ class TestDateBreakpoints:
             _apply_banding(frame.lazy(), column, "b", "breakpoints", rules).collect()
 
     @pytest.mark.parametrize(
+        ("frame", "column", "rules", "fix"),
+        [
+            (
+                LONDON,
+                "t",
+                {"25": "x"},
+                "A Datetime column's boundaries are dates like 2024-12-31 or dates and "
+                "times like 2024-12-31 18:00.",
+            ),
+            (DATES, "d", {"25": "x"}, "A Date column's boundaries are dates like 2024-12-31."),
+            (
+                pl.DataFrame({"n": [1.0]}),
+                "n",
+                {"2024-01-01": "x"},
+                "A number column's boundaries are numbers like 25.",
+            ),
+            (
+                pl.DataFrame({"s": ["north"]}),
+                "s",
+                {"25": "x"},
+                "Breakpoints band a number, Date or Datetime column; band this column with "
+                "categorical rules.",
+            ),
+        ],
+        ids=["datetime", "date", "number", "string"],
+    )
+    def test_a_wrong_kind_refusal_names_the_boundaries_its_column_takes(
+        self, frame, column, rules, fix
+    ):
+        from haute.errors import ConfigSettingError
+
+        with pytest.raises(ConfigSettingError) as caught:
+            _apply_banding(frame.lazy(), column, "b", "breakpoints", rules).collect()
+
+        assert (caught.value.setting, caught.value.fix) == ("factors", fix)
+
+    @pytest.mark.parametrize(
         ("rules", "message"),
         [
             ({"31/03/2024": "x"}, "unreadable boundary '31/03/2024'"),
@@ -1465,3 +1502,19 @@ def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules) ->
     factor = {"banding": "breakpoints", "column": "x", "outputColumn": "x_band", "rules": rules}
     with pytest.raises(ValueError, match="Banding output 'x_band' has no usable breakpoints rule"):
         validate_banding_config({"factors": [factor]})
+
+
+def test_validate_banding_config_rejects_categorical_rules_that_band_nothing() -> None:
+    factor = {
+        "banding": "categorical",
+        "column": "region",
+        "outputColumn": "region_band",
+        "rules": [{"value": "north", "assignment": ""}, {"value": "", "assignment": "A"}],
+    }
+    from haute.errors import ConfigSettingError
+
+    with pytest.raises(ConfigSettingError) as caught:
+        validate_banding_config({"factors": [factor]})
+
+    assert str(caught.value) == "Banding output 'region_band' has no usable categorical rule"
+    assert caught.value.setting == "factors"

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "submodel_inner_edit_blocked",
+  "case": "submodel_inner_edit_blocked",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "BLOCKED: I can edit the pipeline's top-level nodes but not the nodes inside a submodel; open vehicle_factors in the editor to change its age threshold.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

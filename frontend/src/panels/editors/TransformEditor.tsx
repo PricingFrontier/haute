@@ -15,6 +15,7 @@ export default function TransformEditor({
   errorLine,
   runError,
   upstreamColumns,
+  nodeId,
   nodeColumns,
 }: {
   config: Record<string, unknown>
@@ -26,6 +27,7 @@ export default function TransformEditor({
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
+  nodeId: string
   /** The node's own columns as its last preview recorded them. */
   nodeColumns?: { name: string; dtype: string }[]
 }) {
@@ -49,6 +51,7 @@ export default function TransformEditor({
       upstreamColumns={upstreamColumns}
       nodeColumns={nodeColumns}
       start="input"
+      nodeId={nodeId}
       codeHint={hasInput ? "use input names, assign to df" : "assign to df"}
       starterCode={starterCode}
     />

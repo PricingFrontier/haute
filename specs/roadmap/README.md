@@ -17,6 +17,7 @@ or maintenance issue; `P3` opportunistic work.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
+| [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Bugs](bugs.md) | Defects found outside component work: rating misses in the editor, dead optimiser settings, Load File pickles and picker, editor pickers, labels and controls that disagree with the engine | `BUG-01` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |

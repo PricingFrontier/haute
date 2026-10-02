@@ -9,15 +9,29 @@ inject a client at the adapter seam.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import math
+import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from inspect import isawaitable
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeAlias
 
+from haute._env import int_env
 from haute._logging import get_logger
-from haute.assistant._config import AssistantConfig
+from haute.assistant._catalog import MUTATING_OPERATION_IDS, OPERATION_IDS
+from haute.assistant._config import (
+    DEFAULT_TURN_TIMEOUT,
+    TURN_TIMEOUT_ENV,
+    AssistantConfig,
+    unsupported_anthropic_model,
+)
 from haute.errors import ConfigError, HauteError
 
 logger = get_logger(component="assistant.providers")
@@ -55,7 +69,23 @@ class TurnStop:
     usage: ProviderUsage
 
 
-ProviderEvent: TypeAlias = TextDelta | ToolCallRequest | TurnStop
+@dataclass(frozen=True, slots=True)
+class ThinkingStarted:
+    """The model opened a thinking block. It carries none of the thinking."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayContent:
+    """One round's assistant content as its provider must receive it back.
+
+    The blocks are the provider's own wire content, in stream order; the loop
+    treats them as opaque and sends them back only within the same turn.
+    """
+
+    blocks: tuple[Mapping[str, Any], ...]
+
+
+ProviderEvent: TypeAlias = TextDelta | ToolCallRequest | TurnStop | ThinkingStarted | ReplayContent
 
 
 class AssistantProvider(Protocol):
@@ -93,8 +123,80 @@ def _provider_error(provider: str, failure_class: str, detail: str) -> Assistant
     return AssistantProviderError(provider, failure_class, detail)
 
 
-def _is_rate_limit_error(error: Exception) -> bool:
-    return "rate" in type(error).__name__.lower()
+#: The running turn's deadline, as ``time.monotonic()``: the loop sets it while
+#: each step of a provider stream runs, so an adapter's pre-stream retry never
+#: waits past it. ``None`` outside a turn.
+_TURN_DEADLINE: ContextVar[float | None] = ContextVar("assistant_turn_deadline", default=None)
+
+
+@contextmanager
+def turn_deadline(deadline: float) -> Iterator[None]:
+    """Make *deadline* the turn deadline of the provider stream steps run inside.
+
+    The loop enters it around each ``anext`` of a provider stream and never
+    across a ``yield``, so the variable is set and reset in one context.
+    """
+
+    token = _TURN_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _TURN_DEADLINE.reset(token)
+
+
+def current_turn_deadline() -> float | None:
+    """The running turn's deadline while a provider stream step runs, else ``None``."""
+
+    return _TURN_DEADLINE.get()
+
+
+def _retry_after_seconds(error: Exception) -> float | None:
+    """The wait a failed request's ``Retry-After`` response header asks for, in seconds.
+
+    The OpenAI SDK's status errors carry the HTTP response. The header is
+    delta-seconds or an HTTP date; ``None`` when the error has no response,
+    the response no such header, or the header neither form.
+    """
+
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    raw = None if headers is None else headers.get("retry-after")
+    if not isinstance(raw, str):
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            return None
+        seconds = (when - datetime.now(UTC)).total_seconds()
+    return max(seconds, 0.0) if math.isfinite(seconds) else None
+
+
+#: Connect bound for OpenAI-compatible clients. The SDK default (five seconds)
+#: timed out live against a Databricks serving endpoint's cold connection.
+_PROVIDER_CONNECT_TIMEOUT_SECONDS = 30.0
+
+
+def _failure_category(error: Exception) -> str:
+    """Classify an SDK exception by its class name, without logging."""
+
+    class_name = type(error).__name__.lower()
+    if "auth" in class_name or "permission" in class_name:
+        return "authentication"
+    if "rate" in class_name or "ratelimit" in class_name:
+        return "rate_limit"
+    if any(word in class_name for word in ("connection", "timeout", "network")):
+        return "connection"
+    if "status" in class_name or class_name in {
+        "badrequesterror",
+        "internalservererror",
+        "apierror",
+    }:
+        return "status"
+    return "stream"
 
 
 def _classify_sdk_error(provider: str, error: Exception) -> AssistantProviderError:
@@ -112,22 +214,9 @@ def _classify_sdk_error(provider: str, error: Exception) -> AssistantProviderErr
         error_class=type(error).__name__,
         detail=str(error),
     )
-    class_name = type(error).__name__.lower()
-    if "auth" in class_name or "permission" in class_name:
-        category = "authentication"
-    elif "rate" in class_name or "ratelimit" in class_name:
-        category = "rate_limit"
-    elif any(word in class_name for word in ("connection", "timeout", "network")):
-        category = "connection"
-    elif "status" in class_name or class_name in {
-        "badrequesterror",
-        "internalservererror",
-        "apierror",
-    }:
-        category = "status"
-    else:
-        category = "stream"
-    return _provider_error(provider, category, "the provider request could not be completed")
+    return _provider_error(
+        provider, _failure_category(error), "the provider request could not be completed"
+    )
 
 
 def _usage_value(value: object, provider: str, field: str) -> int:
@@ -139,6 +228,14 @@ def _usage_value(value: object, provider: str, field: str) -> int:
     if result < 0:
         raise _provider_error(provider, "malformed_stream", f"invalid {field} usage")
     return result
+
+
+def _text_value(value: object) -> str:
+    """One text field of a streamed Anthropic content block, or a malformed stream."""
+
+    if not isinstance(value, str):
+        raise _provider_error("anthropic", "malformed_stream", "a content block field is not text")
+    return value
 
 
 def _attr(value: object, name: str, default: object = None) -> object:
@@ -324,8 +421,8 @@ def _matches_declared_json_type(value: object, expected: frozenset[str]) -> bool
     return False
 
 
-def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
-    """Return a provider-portable declared type for one schema fragment."""
+def _compatible_schema_type(schema: Mapping[str, object]) -> str | None:
+    """Return the compatible projection's declared type for one schema fragment."""
 
     raw_type = schema.get("type")
     if isinstance(raw_type, str):
@@ -347,7 +444,7 @@ def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
         for branch in branches:
             if not isinstance(branch, Mapping):
                 return None
-            branch_type = _portable_schema_type(branch)
+            branch_type = _compatible_schema_type(branch)
             if branch_type is None and isinstance(branch.get("properties"), Mapping):
                 branch_type = "object"
             if branch_type is None:
@@ -358,7 +455,7 @@ def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
     return None
 
 
-def _portable_allowed_values(schema: Mapping[str, object]) -> tuple[object, ...] | None:
+def _allowed_values(schema: Mapping[str, object]) -> tuple[object, ...] | None:
     if "const" in schema:
         return (schema["const"],)
     enum = schema.get("enum")
@@ -374,14 +471,14 @@ class _SchemaBudget:
     remaining: int = 40
 
 
-def _portable_property_schema(
+def _compatible_property_schema(
     schemas: Sequence[Mapping[str, object]],
     budget: _SchemaBudget,
 ) -> dict[str, object]:
     if schemas and all(schema == schemas[0] for schema in schemas[1:]):
-        return _portable_tool_schema(schemas[0], budget)
+        return _compatible_tool_schema(schemas[0], budget)
 
-    allowed = [_portable_allowed_values(schema) for schema in schemas]
+    allowed = [_allowed_values(schema) for schema in schemas]
     if allowed and all(values is not None for values in allowed):
         combined: list[object] = []
         for values in allowed:
@@ -391,13 +488,13 @@ def _portable_property_schema(
                     combined.append(value)
         return {"enum": combined}
 
-    types = [_portable_schema_type(schema) for schema in schemas]
+    types = [_compatible_schema_type(schema) for schema in schemas]
     if types and types[0] is not None and all(value == types[0] for value in types):
         projected: dict[str, object] = {"type": types[0]}
         if types[0] == "array":
             item_schemas = [schema.get("items") for schema in schemas]
             if all(isinstance(items, Mapping) for items in item_schemas):
-                projected["items"] = _portable_tool_schema(
+                projected["items"] = _compatible_tool_schema(
                     {"oneOf": item_schemas},
                     budget,
                 )
@@ -414,14 +511,14 @@ def _portable_property_schema(
     return {}
 
 
-def _portable_required_names(schema: Mapping[str, object]) -> tuple[str, ...]:
+def _required_names(schema: Mapping[str, object]) -> tuple[str, ...]:
     required = schema.get("required")
     if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
         return ()
     return tuple(item for item in required if isinstance(item, str))
 
 
-def _portable_composed_object(
+def _compatible_composed_object(
     schema: Mapping[str, object],
     budget: _SchemaBudget,
 ) -> dict[str, object] | None:
@@ -448,7 +545,7 @@ def _portable_composed_object(
     for branch in branches:
         properties = branch.get("properties")
         if (
-            _portable_schema_type(branch) != "object"
+            _compatible_schema_type(branch) != "object"
             or not isinstance(properties, Mapping)
             or branch.get("additionalProperties") is not False
         ):
@@ -471,9 +568,9 @@ def _portable_composed_object(
             property_schema = properties.get(name)
             if isinstance(property_schema, Mapping):
                 property_schemas.append(property_schema)
-        projected_properties[name] = _portable_property_schema(property_schemas, budget)
+        projected_properties[name] = _compatible_property_schema(property_schemas, budget)
 
-    branch_required = [_portable_required_names(branch) for branch in branches]
+    branch_required = [_required_names(branch) for branch in branches]
     required_sets = [set(names) for names in branch_required]
     required = [
         name
@@ -490,7 +587,28 @@ def _portable_composed_object(
     return projected
 
 
-def _portable_tool_schema(
+def _numeric_bounds(schema: Mapping[str, object]) -> str | None:
+    """A number's `minimum` and `maximum` in words, which the wire subsets drop."""
+
+    bounds = [
+        f"{word} {schema[keyword]}"
+        for keyword, word in (("minimum", "at least"), ("maximum", "at most"))
+        if isinstance(schema.get(keyword), int | float) and not isinstance(schema[keyword], bool)
+    ]
+    return f"{', '.join(bounds)}.".capitalize() if bounds else None
+
+
+def _description_with_bounds(schema: Mapping[str, object]) -> str:
+    """A fragment's description followed by its numeric bounds in words, or ``""``."""
+
+    return " ".join(
+        part
+        for part in (schema.get("description"), _numeric_bounds(schema))
+        if isinstance(part, str) and part
+    )
+
+
+def _compatible_tool_schema(
     schema: Mapping[str, object],
     budget: _SchemaBudget | None = None,
 ) -> dict[str, object]:
@@ -498,16 +616,16 @@ def _portable_tool_schema(
 
     if budget is None:
         budget = _SchemaBudget()
-    composed = _portable_composed_object(schema, budget)
+    composed = _compatible_composed_object(schema, budget)
     if composed is not None:
         return composed
     projected: dict[str, object] = {}
-    projected_type = _portable_schema_type(schema)
+    projected_type = _compatible_schema_type(schema)
     if projected_type is not None:
         projected["type"] = projected_type
 
-    description = schema.get("description")
-    if isinstance(description, str):
+    description = _description_with_bounds(schema)
+    if description:
         projected["description"] = description
 
     enum = schema.get("enum")
@@ -523,7 +641,7 @@ def _portable_tool_schema(
             return {"type": projected_type or "object"}
         budget.remaining -= len(property_names)
         projected_properties = {
-            str(name): _portable_tool_schema(value, budget)
+            str(name): _compatible_tool_schema(value, budget)
             for name, value in properties.items()
             if isinstance(value, Mapping)
         }
@@ -538,61 +656,327 @@ def _portable_tool_schema(
 
     items = schema.get("items")
     if isinstance(items, Mapping):
-        projected["items"] = _portable_tool_schema(items, budget)
+        projected["items"] = _compatible_tool_schema(items, budget)
 
     if schema.get("additionalProperties") is False:
         projected["additionalProperties"] = False
     return projected
 
 
-def _portable_tools(
-    tools: Sequence[Mapping[str, Any]],
-) -> list[dict[str, object]]:
-    """Return one common, conservative tool contract for every provider wire API."""
+#: Which projection of the canonical tool schemas a provider lane sends.
+ToolProjection: TypeAlias = Literal["compatible", "canonical"]
+#: Whose strict-mode rules a strict tool's schema follows.
+StrictDialect: TypeAlias = Literal["anthropic", "openai"]
 
-    projected: list[dict[str, object]] = []
+#: The operations a strict tool can be: those that leave the project as it is (the
+#: read tools and the build plan's update).
+_NON_MUTATING_OPERATION_IDS = frozenset(OPERATION_IDS) - MUTATING_OPERATION_IDS
+
+
+def _tool_parts(
+    tools: Sequence[Mapping[str, Any]],
+) -> Iterator[tuple[str, str, Mapping[str, object]]]:
+    """Each canonical tool's name, description and input schema."""
+
     for tool in tools:
         name = tool.get("name")
         schema = tool.get("input_schema")
         if not isinstance(name, str) or not isinstance(schema, Mapping):
             raise TypeError("Tool definitions require a string name and mapping input_schema")
         description = tool.get("description", "")
-        projected.append(
-            {
-                "name": name,
-                "description": description if isinstance(description, str) else "",
-                "input_schema": _portable_tool_schema(schema),
-            }
+        yield name, description if isinstance(description, str) else "", schema
+
+
+def _compatible_tools(
+    tools: Sequence[Mapping[str, Any]],
+) -> list[dict[str, object]]:
+    """The compatible projection: one flat, bounded wire schema per tool.
+
+    The Databricks lane's default, on which its live baselines were measured.
+    """
+
+    return [
+        {"name": name, "description": description, "input_schema": _compatible_tool_schema(schema)}
+        for name, description, schema in _tool_parts(tools)
+    ]
+
+
+class _NotStrictError(Exception):
+    """A canonical schema fragment the strict subset cannot express."""
+
+
+def _json_type_name(value: object) -> str:
+    """The JSON type of one enumerated scalar; strict decoding enumerates no other."""
+
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    raise _NotStrictError
+
+
+def _strict_schema(
+    schema: Mapping[str, object], dialect: StrictDialect, *, nullable: bool
+) -> dict[str, object]:
+    """Reduce one canonical fragment to the keywords strict decoding accepts.
+
+    Types, descriptions, enumerations, properties, required fields, items and
+    closure survive; every other validation keyword, which Anthropic's strict
+    mode refuses with an HTTP 400, is dropped (the canonical validator still
+    enforces it), and a number's bounds are stated in its description. An
+    enumeration without a type declares its one JSON type. Under the OpenAI
+    dialect every property is required and each optional one nullable, since
+    OpenAI's strict mode requires every property. Raises `_NotStrictError` for a
+    composition, an object that is not closed or declares no properties, a
+    nullable or multi-typed value, and a value with neither a type nor an
+    enumeration of one JSON type.
+    """
+
+    if any(keyword in schema for keyword in ("oneOf", "anyOf", "allOf", "$ref", "not")):
+        raise _NotStrictError
+    allowed = _allowed_values(schema)
+    raw_type = schema.get("type")
+    if isinstance(raw_type, str):
+        json_type = raw_type
+    elif raw_type is None and allowed is not None:
+        types = {_json_type_name(value) for value in allowed}
+        if len(types) != 1:
+            raise _NotStrictError
+        (json_type,) = types
+    else:
+        raise _NotStrictError
+    projected: dict[str, object] = {"type": [json_type, "null"] if nullable else json_type}
+    description = _description_with_bounds(schema)
+    if description:
+        projected["description"] = description
+    if allowed is not None:
+        projected["enum"] = [*allowed, None] if nullable else list(allowed)
+    if json_type == "object":
+        properties = schema.get("properties")
+        if schema.get("additionalProperties") is not False or not isinstance(properties, Mapping):
+            raise _NotStrictError
+        required = _required_names(schema)
+        projected_properties: dict[str, object] = {}
+        for name, value in properties.items():
+            if not isinstance(value, Mapping):
+                raise _NotStrictError
+            projected_properties[str(name)] = _strict_schema(
+                value, dialect, nullable=dialect == "openai" and name not in required
+            )
+        projected["properties"] = projected_properties
+        projected["required"] = (
+            list(projected_properties)
+            if dialect == "openai"
+            else [name for name in required if name in projected_properties]
         )
+        projected["additionalProperties"] = False
+    elif json_type == "array":
+        items = schema.get("items")
+        if not isinstance(items, Mapping):
+            raise _NotStrictError
+        projected["items"] = _strict_schema(items, dialect, nullable=False)
     return projected
 
 
-def _normalise_databricks_tool_arguments(
-    arguments: Mapping[str, Any],
-    schema: Mapping[str, object],
-) -> dict[str, Any]:
-    """Decode Databricks' stringified top-level JSON values by schema.
+def _strict_tool_schema(
+    schema: Mapping[str, object], dialect: StrictDialect
+) -> dict[str, object] | None:
+    """A tool's strict input schema, or None when its canonical schema cannot be strict."""
 
-    Databricks-hosted Qwen models have been observed to return a valid outer
-    function-arguments object while encoding container and scalar properties as
-    JSON strings. Only fields whose canonical schema exclusively declares a
-    compatible JSON type are eligible. Strings, nulls, nested values, ambiguous
-    schemas, and non-finite numbers are left untouched. Invalid or wrong-type
-    encodings remain strings so canonical tool validation can reject them as
-    recoverable invalid input.
+    try:
+        return _strict_schema(schema, dialect, nullable=False)
+    except _NotStrictError:
+        return None
+
+
+def _canonical_tools(
+    tools: Sequence[Mapping[str, Any]],
+    strict: StrictDialect | None,
+) -> list[dict[str, object]]:
+    """The canonical projection: each tool's canonical input schema itself.
+
+    Under a *strict* dialect, an operation that leaves the project as it is, whose
+    schema reduces to the strict subset, is sent that reduction with
+    ``"strict": true``; no other tool carries a ``strict`` key.
     """
 
-    properties = schema.get("properties")
-    if not isinstance(properties, Mapping):
-        return dict(arguments)
-    normalised = dict(arguments)
-    for field, value in arguments.items():
-        field_schema = properties.get(field)
-        if not isinstance(value, str) or not isinstance(field_schema, Mapping):
-            continue
-        expected = _declared_compatible_types(field_schema)
+    projected: list[dict[str, object]] = []
+    for name, description, schema in _tool_parts(tools):
+        strict_schema = (
+            _strict_tool_schema(schema, strict)
+            if strict is not None and name in _NON_MUTATING_OPERATION_IDS
+            else None
+        )
+        if strict_schema is None:
+            projected.append(
+                {
+                    "name": name,
+                    "description": description,
+                    # Its own copy: the canonical definitions are the validator's.
+                    "input_schema": copy.deepcopy(dict(schema)),
+                }
+            )
+        else:
+            projected.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "input_schema": strict_schema,
+                    "strict": True,
+                }
+            )
+    return projected
+
+
+def _without_strict_nulls(value: Any, schema: Mapping[str, object]) -> Any:
+    """Omit each `null` an OpenAI strict schema allows only because a property is optional.
+
+    The strict reduction made every optional property required and nullable and
+    refuses a property that was nullable already, so such a `null` says only
+    that the model left the property out. A `null` anywhere else is kept for
+    the canonical validator.
+    """
+
+    if isinstance(value, Mapping):
+        properties = schema.get("properties")
+        if not isinstance(properties, Mapping):
+            return value
+        required = _required_names(schema)
+        kept: dict[str, Any] = {}
+        for key, item in value.items():
+            declared = properties.get(key)
+            if item is None and isinstance(declared, Mapping) and key not in required:
+                continue
+            kept[key] = (
+                _without_strict_nulls(item, declared) if isinstance(declared, Mapping) else item
+            )
+        return kept
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            return [_without_strict_nulls(item, items) for item in value]
+    return value
+
+
+def _same_json_value(left: object, right: object) -> bool:
+    """Compare JSON values exactly, so ``True`` never equals ``1``."""
+
+    return type(left) is type(right) and left == right
+
+
+def _discriminated_branch_properties(
+    schema: Mapping[str, object],
+    value: Mapping[str, Any],
+) -> Mapping[str, object] | None:
+    """Return the properties of the one closed-object branch *value* selects.
+
+    A discriminator is a property every remaining branch declares with
+    ``const``/``enum`` values. While several branches remain, the first
+    discriminator whose values differ between them narrows them by the value's
+    own; once one remains, every discriminator it still declares must admit
+    the value too. An operation therefore selects its branch by ``op``, and a
+    ``recipe`` operation then by ``recipe``. A missing or unmatched
+    discriminator, or branches no discriminator separates, select nothing:
+    there is no declared type to decode against, and the canonical validator
+    names the problem.
+    """
+
+    raw_branches: object = None
+    for keyword in ("oneOf", "anyOf"):
+        if keyword in schema:
+            raw_branches = schema[keyword]
+            break
+    if not isinstance(raw_branches, Sequence) or isinstance(raw_branches, (str, bytes)):
+        return None
+    remaining: list[Mapping[str, object]] = []
+    for branch in raw_branches:
+        properties = branch.get("properties") if isinstance(branch, Mapping) else None
+        if not isinstance(properties, Mapping):
+            return None
+        remaining.append(properties)
+    if not remaining:
+        return None
+
+    def allowed_values(properties: Mapping[str, object], name: str) -> tuple[object, ...] | None:
+        property_schema = properties.get(name)
+        if not isinstance(property_schema, Mapping):
+            return None
+        return _allowed_values(property_schema)
+
+    used: set[str] = set()
+    while True:
+        candidates = [
+            name
+            for name in remaining[0]
+            if name not in used
+            and all(allowed_values(properties, name) is not None for properties in remaining)
+            and (
+                len(remaining) == 1
+                or len({repr(allowed_values(properties, name)) for properties in remaining}) > 1
+            )
+        ]
+        if not candidates:
+            return remaining[0] if len(remaining) == 1 else None
+        name = candidates[0]
+        if name not in value:
+            return None
+        remaining = [
+            properties
+            for properties in remaining
+            if any(
+                _same_json_value(value[name], allowed)
+                for allowed in allowed_values(properties, name) or ()
+            )
+        ]
+        if not remaining:
+            return None
+        used.add(name)
+
+
+def _decode_databricks_value(value: Any, schema: Mapping[str, object], path: str) -> Any:
+    """Decode one value, and what it contains, by the canonical schema at its position.
+
+    A string is decoded only when the schema exclusively declares a compatible
+    JSON type and the decoded value has that type; otherwise it stays a
+    string for the canonical validator. Two spellings decode by the declared
+    type alone, logged: plain text where a list of text is declared becomes a
+    one-item list (text opening like JSON never does), and `True`
+    or `False` where a boolean is declared becomes that boolean. An object's declared properties, an
+    object union's selected branch and an array's declared items are walked
+    the same way, so a recipe operation's ``arguments`` decode by that
+    recipe's argument schema. A schema that declares nothing below a value
+    leaves it as sent.
+    """
+
+    if isinstance(value, str):
+        expected = _declared_compatible_types(schema)
         if not expected:
-            continue
+            return value
+        items = schema.get("items")
+        if (
+            expected == {"array"}
+            and isinstance(items, Mapping)
+            and items.get("type") == "string"
+            and value.lstrip()[:1] not in {"[", "{", '"'}
+        ):
+            # A declared list of text sent as one plain text: the one item it is.
+            # Text that opens like JSON is decoded below, or stays text and fails.
+            logger.warning(
+                "assistant_databricks_argument_wrapped_in_array",
+                field=path,
+                encoded_length=len(value),
+            )
+            return [value]
+        if expected == {"boolean"} and value in {"True", "False"}:
+            # Python's spelling of a JSON boolean, which `json.loads` refuses.
+            logger.warning("assistant_databricks_argument_python_boolean", field=path)
+            return value == "True"
         try:
             decoded = json.loads(value, parse_constant=_reject_json_constant)
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -603,31 +987,86 @@ def _normalise_databricks_tool_arguments(
             # redacted session record cannot tell apart after the fact.
             logger.warning(
                 "assistant_databricks_argument_decode_failed",
-                field=field,
+                field=path,
                 declared_types=sorted(expected),
                 encoded_length=len(value),
                 looks_like_json_container=value.lstrip()[:1] in {"[", "{"},
             )
-            continue
-        if _matches_declared_json_type(decoded, expected):
-            normalised[field] = decoded
-        else:
+            return value
+        if not _matches_declared_json_type(decoded, expected):
             logger.warning(
                 "assistant_databricks_argument_decoded_wrong_type",
-                field=field,
+                field=path,
                 declared_types=sorted(expected),
                 decoded_type=type(decoded).__name__,
             )
-    return normalised
+            return value
+        value = decoded
+    if isinstance(value, Mapping):
+        declared = schema.get("properties")
+        properties = (
+            declared
+            if isinstance(declared, Mapping)
+            else _discriminated_branch_properties(schema, value)
+        )
+        if properties is None:
+            return value
+        decoded_object: dict[str, Any] = {}
+        for key, item in value.items():
+            declared_schema = properties.get(key)
+            decoded_object[key] = (
+                _decode_databricks_value(item, declared_schema, f"{path}.{key}" if path else key)
+                if isinstance(declared_schema, Mapping)
+                else item
+            )
+        return decoded_object
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            return [
+                _decode_databricks_value(item, items, f"{path}[{index}]")
+                for index, item in enumerate(value)
+            ]
+    return value
+
+
+def _normalise_databricks_tool_arguments(
+    arguments: Mapping[str, Any],
+    schema: Mapping[str, object],
+) -> dict[str, Any]:
+    """Decode Databricks' stringified JSON values by the tool's canonical schema.
+
+    Databricks-hosted Qwen models have been observed to return a valid outer
+    function-arguments object while encoding container and scalar properties as
+    JSON strings, at the top level and inside a recipe operation's arguments.
+    Only values whose canonical schema exclusively declares a compatible JSON
+    type are eligible, wherever the schema declares them. Strings, nulls,
+    undeclared values, ambiguous schemas, and non-finite numbers are left
+    untouched. Invalid or wrong-type encodings remain strings so canonical tool
+    validation can reject them as recoverable invalid input.
+    """
+
+    return dict(_decode_databricks_value(arguments, schema, ""))
+
+
+def _sdk_import_failure(provider: str, sdk: str, exc: ImportError) -> AssistantProviderError:
+    """Name what is missing when *sdk* cannot be imported, the SDK or one of its dependencies."""
+
+    if isinstance(exc, ModuleNotFoundError) and exc.name not in (None, sdk):
+        detail = (
+            f"the {sdk} SDK cannot be imported because its dependency {exc.name!r} is "
+            "missing; reinstall haute to repair the environment"
+        )
+    else:
+        detail = f"the {sdk} SDK is not installed; reinstall haute to repair the environment"
+    return _provider_error(provider, "dependency", detail)
 
 
 def _load_anthropic_client(config: AssistantConfig) -> Any:
     try:
         import anthropic
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise _provider_error(
-            "anthropic", "dependency", "the anthropic SDK is not installed"
-        ) from exc
+    except ImportError as exc:
+        raise _sdk_import_failure("anthropic", "anthropic", exc) from exc
     try:
         return anthropic.AsyncAnthropic(api_key=config.api_key)
     except Exception as exc:
@@ -637,9 +1076,16 @@ def _load_anthropic_client(config: AssistantConfig) -> Any:
 def _load_openai_client(config: AssistantConfig, provider: str = "openai") -> Any:
     try:
         import openai
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise _provider_error(provider, "dependency", "the openai SDK is not installed") from exc
-    kwargs: dict[str, Any] = {"api_key": config.api_key}
+    except ImportError as exc:
+        raise _sdk_import_failure(provider, "openai", exc) from exc
+    # The read bound follows the turn timeout so a stalled stream cannot
+    # outlive the turn that owns it. The SDK's own Timeout, never its transport
+    # package's: that package is the SDK's dependency, not haute's.
+    read_timeout = float(int_env(TURN_TIMEOUT_ENV, DEFAULT_TURN_TIMEOUT))
+    kwargs: dict[str, Any] = {
+        "api_key": config.api_key,
+        "timeout": openai.Timeout(read_timeout, connect=_PROVIDER_CONNECT_TIMEOUT_SECONDS),
+    }
     if config.base_url is not None:
         kwargs["base_url"] = config.base_url
     if provider == "databricks":
@@ -656,14 +1102,104 @@ def _json_string(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _anthropic_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Translate neutral history into Anthropic Messages content blocks."""
+#: Anthropic models that accept a `system` message in the middle of the
+#: conversation. Every other model reads a turn context as the leading text of
+#: the user message it follows.
+MID_CONVERSATION_SYSTEM_MODELS = frozenset(
+    {
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+    }
+)
+
+#: The effort every Claude request carries: valid on every model in
+#: `ADAPTIVE_THINKING_MODELS`, and Anthropic's starting point for multistep tool use.
+ANTHROPIC_EFFORT = "medium"
+
+
+def _with_leading_context(previous: dict[str, Any] | None, context: object) -> None:
+    """Prepend a turn context to the user message it follows, in place."""
+
+    if (
+        previous is None
+        or previous.get("role") != "user"
+        or not isinstance(previous.get("content"), str)
+        or not isinstance(context, str)
+    ):
+        raise RuntimeError("a turn context message must follow a user text message or tool results")
+    previous["content"] = f"{context}\n\n## Analyst message\n{previous['content']}"
+
+
+def _is_anthropic_tool_results(message: Mapping[str, Any] | None) -> bool:
+    """Whether *message* is the user message carrying one round's tool results."""
+
+    content = None if message is None else message.get("content")
+    return (
+        message is not None
+        and message.get("role") == "user"
+        and isinstance(content, list)
+        and bool(content)
+        and all(
+            isinstance(block, Mapping) and block.get("type") == "tool_result" for block in content
+        )
+    )
+
+
+def _anthropic_messages(
+    messages: Sequence[Mapping[str, Any]], *, system_context: bool
+) -> list[dict[str, Any]]:
+    """Translate neutral history into Anthropic Messages content blocks.
+
+    With *system_context* a turn context travels as a mid-conversation
+    `system` message; otherwise it leads the user message it follows.
+    """
 
     translated: list[dict[str, Any]] = []
+    previous_role: object = None
     for message in messages:
         role = message.get("role")
         content = message.get("content")
-        if role == "assistant" and message.get("tool_calls"):
+        if role == "context":
+            previous = translated[-1] if translated else None
+            if system_context:
+                translated.append({"role": "system", "content": content})
+            elif previous is not None and _is_anthropic_tool_results(previous):
+                # A turn context update after an apply's round: text after the
+                # round's results, in the same user message.
+                if not isinstance(content, str):
+                    raise RuntimeError("a turn context message must be text")
+                previous["content"].append({"type": "text", "text": content})
+            else:
+                _with_leading_context(previous, content)
+        elif role == "tool":
+            result_block = {
+                "type": "tool_result",
+                "tool_use_id": message["tool_call_id"],
+                "content": _json_string(content),
+                "is_error": bool(message.get("is_error", False)),
+            }
+            # One round's results travel in one user message, as the
+            # Messages API expects for parallel tool calls.
+            if previous_role == "tool":
+                translated[-1]["content"].append(result_block)
+            else:
+                translated.append({"role": "user", "content": [result_block]})
+        elif role == "assistant" and message.get("provider_content") is not None:
+            # Within a turn the message goes back exactly as the model produced
+            # it, thinking blocks and their signatures included.
+            replayed = [dict(block) for block in message["provider_content"]]
+            replayed_ids = [block["id"] for block in replayed if block.get("type") == "tool_use"]
+            call_ids = [call["id"] for call in message.get("tool_calls") or ()]
+            if replayed_ids != call_ids:
+                raise RuntimeError("replayed content must carry exactly the message's tool calls")
+            translated.append({"role": "assistant", "content": replayed})
+        elif role == "assistant" and message.get("tool_calls"):
             blocks: list[dict[str, Any]] = []
             if content not in (None, ""):
                 blocks.append({"type": "text", "text": content})
@@ -677,31 +1213,30 @@ def _anthropic_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str,
                     }
                 )
             translated.append({"role": "assistant", "content": blocks})
-        elif role == "tool":
-            translated.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": message["tool_call_id"],
-                            "content": _json_string(content),
-                            "is_error": bool(message.get("is_error", False)),
-                        }
-                    ],
-                }
-            )
         elif role == "controller":
             translated.append({"role": "user", "content": content})
         else:
             translated.append({"role": role, "content": content})
+        previous_role = role
     return translated
 
 
 class AnthropicProvider:
-    """Normalize the Anthropic Messages streaming API."""
+    """Normalize the Anthropic Messages streaming API.
+
+    Every request marks the tool definitions and the frozen system prompt as
+    one prompt-cache breakpoint and runs adaptive thinking at
+    `ANTHROPIC_EFFORT`, so only the models in `ADAPTIVE_THINKING_MODELS` are
+    accepted. It sends the canonical tool projection, the closed read tools in
+    strict mode. A round whose message holds a thinking block ends with its
+    content blocks in stream order (`ReplayContent`), for the loop to send back
+    verbatim within the turn.
+    """
 
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
+        unsupported = unsupported_anthropic_model(config.model)
+        if unsupported is not None:
+            raise ConfigError(unsupported)
         self.config = config
         self.client = _load_anthropic_client(config) if client is None else client
 
@@ -717,15 +1252,28 @@ class AnthropicProvider:
         stop_reason: Literal["end", "tool_use"] | None = None
         stop_emitted = False
         pending_tools: dict[int, dict[str, Any]] = {}
-        wire_tools = _portable_tools(tools)
+        # Thinking and text blocks still streaming, by index, and every finished
+        # content block by index: the round's replay content when it thinks.
+        pending_thinking: dict[int, dict[str, list[str]]] = {}
+        pending_text: dict[int, list[str]] = {}
+        finished: dict[int, dict[str, Any]] = {}
+        thought = False
+        wire_tools = _canonical_tools(tools, "anthropic")
 
         try:
             stream = self.client.messages.stream(
                 model=self.config.model,
-                system=system,
-                messages=_anthropic_messages(messages),
+                # The one cache breakpoint: tools render before the system
+                # prompt, so it caches both. Everything per-turn is in messages.
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                messages=_anthropic_messages(
+                    messages,
+                    system_context=self.config.model in MID_CONVERSATION_SYSTEM_MODELS,
+                ),
                 tools=wire_tools,
                 max_tokens=self.config.max_output_tokens,
+                thinking={"type": "adaptive"},
+                output_config={"effort": ANTHROPIC_EFFORT},
             )
             async with stream as response:
                 async for event in response:
@@ -738,7 +1286,33 @@ class AnthropicProvider:
                     elif event_type == "content_block_start":
                         index = _attr(event, "index")
                         block = _attr(event, "content_block")
-                        if _attr(block, "type") == "tool_use":
+                        block_type = _attr(block, "type")
+                        if block_type in {"thinking", "redacted_thinking"}:
+                            if not isinstance(index, int):
+                                raise _provider_error(
+                                    "anthropic", "malformed_stream", "thinking block has no index"
+                                )
+                            if index in finished or index in pending_thinking:
+                                raise _provider_error(
+                                    "anthropic",
+                                    "malformed_stream",
+                                    "duplicate thinking block index",
+                                )
+                            thought = True
+                            if block_type == "thinking":
+                                pending_thinking[index] = {
+                                    "thinking": [_text_value(_attr(block, "thinking", ""))],
+                                    "signature": [_text_value(_attr(block, "signature", ""))],
+                                }
+                            else:
+                                finished[index] = {
+                                    "type": "redacted_thinking",
+                                    "data": _text_value(_attr(block, "data")),
+                                }
+                            yield ThinkingStarted()
+                        elif block_type == "text" and isinstance(index, int):
+                            pending_text[index] = [_text_value(_attr(block, "text", ""))]
+                        elif block_type == "tool_use":
                             if not isinstance(index, int):
                                 raise _provider_error(
                                     "anthropic", "malformed_stream", "tool block has no index"
@@ -766,7 +1340,22 @@ class AnthropicProvider:
                                     raise _provider_error(
                                         "anthropic", "malformed_stream", "text delta is not text"
                                     )
+                                if isinstance(index, int):
+                                    pending_text.setdefault(index, []).append(text)
                                 yield TextDelta(text=text)
+                        elif delta_type in {"thinking_delta", "signature_delta"}:
+                            if not isinstance(index, int) or index not in pending_thinking:
+                                raise _provider_error(
+                                    "anthropic",
+                                    "malformed_stream",
+                                    "thinking fragment has no block",
+                                )
+                            field_name = (
+                                "thinking" if delta_type == "thinking_delta" else "signature"
+                            )
+                            pending_thinking[index][field_name].append(
+                                _text_value(_attr(delta, field_name))
+                            )
                         elif delta_type == "input_json_delta":
                             if not isinstance(index, int) or index not in pending_tools:
                                 raise _provider_error(
@@ -784,6 +1373,23 @@ class AnthropicProvider:
                         index = _attr(event, "index")
                         if not isinstance(index, int):
                             continue
+                        thinking = pending_thinking.pop(index, None)
+                        if thinking is not None:
+                            signature = "".join(thinking["signature"])
+                            if not signature:
+                                raise _provider_error(
+                                    "anthropic",
+                                    "malformed_stream",
+                                    "thinking block has no signature",
+                                )
+                            finished[index] = {
+                                "type": "thinking",
+                                "thinking": "".join(thinking["thinking"]),
+                                "signature": signature,
+                            }
+                        text_parts = pending_text.pop(index, None)
+                        if text_parts is not None and "".join(text_parts):
+                            finished[index] = {"type": "text", "text": "".join(text_parts)}
                         tool = pending_tools.pop(index, None)
                         if tool is not None:
                             tool_id = tool["id"]
@@ -799,6 +1405,14 @@ class AnthropicProvider:
                                 "".join(tool["fragments"]),
                                 initial=tool["initial"],
                             )
+                            # Its own copy: the replay must not follow what a
+                            # tool later does to the arguments it was given.
+                            finished[index] = {
+                                "type": "tool_use",
+                                "id": tool_id,
+                                "name": tool_name,
+                                "input": copy.deepcopy(arguments),
+                            }
                             yield ToolCallRequest(tool_id, tool_name, arguments)
                     elif event_type == "message_delta":
                         delta = _attr(event, "delta")
@@ -815,9 +1429,19 @@ class AnthropicProvider:
                             raise _provider_error(
                                 "anthropic", "malformed_stream", "stream ended inside a tool block"
                             )
+                        if pending_thinking:
+                            raise _provider_error(
+                                "anthropic",
+                                "malformed_stream",
+                                "stream ended inside a thinking block",
+                            )
                         if stop_reason is None:
                             raise _provider_error(
                                 "anthropic", "malformed_stream", "message has no stop reason"
+                            )
+                        if thought:
+                            yield ReplayContent(
+                                tuple(finished[index] for index in sorted(finished))
                             )
                         yield TurnStop(
                             stop_reason,
@@ -838,10 +1462,19 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
     """Translate neutral history into OpenAI Chat Completions messages."""
 
     translated: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    previous_role: object = None
     for message in messages:
         role = message.get("role")
         content = message.get("content")
-        if role == "assistant" and message.get("tool_calls"):
+        if message.get("provider_content") is not None:
+            raise RuntimeError("replay content belongs to the adapter that emitted it")
+        if role == "user" and previous_role == "controller":
+            # A compacted history's leading note leads the user message after
+            # it: two consecutive user messages are refused by some gateways.
+            if not isinstance(content, str):
+                raise RuntimeError("a user message after a controller note must be text")
+            translated[-1]["content"] = f"{translated[-1]['content']}\n\n{content}"
+        elif role == "assistant" and message.get("tool_calls"):
             translated.append(
                 {
                     "role": "assistant",
@@ -869,65 +1502,117 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
             )
         elif role == "controller":
             translated.append({"role": "user", "content": content})
+        elif role == "context":
+            if translated[-1].get("role") == "tool":
+                # A turn context update after an apply's round follows its results.
+                if not isinstance(content, str):
+                    raise RuntimeError("a turn context message must be text")
+                translated.append({"role": "user", "content": content})
+            else:
+                _with_leading_context(translated[-1], content)
         else:
             translated.append({"role": role, "content": content})
+        previous_role = role
     return translated
 
 
 def _openai_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool["input_schema"],
-            },
+    """Wire tools as Chat Completions functions, `strict` beside the parameters."""
+
+    functions: list[dict[str, Any]] = []
+    for tool in tools:
+        function: dict[str, Any] = {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool["input_schema"],
         }
-        for tool in tools
-    ]
+        if "strict" in tool:
+            function["strict"] = tool["strict"]
+        functions.append({"type": "function", "function": function})
+    return functions
 
 
 class OpenAIProvider:
-    """Normalize the OpenAI Chat Completions streaming API."""
+    """Normalize the OpenAI Chat Completions streaming API.
+
+    It sends the canonical tool projection, the closed read tools in strict
+    mode, and omits the `null` a strict tool's optional property comes back as.
+    """
 
     provider_name = "openai"
-    rate_limit_retry_delays: tuple[float, ...] = ()
+    #: Adapter-level pre-stream retry delays by failure category: a request
+    #: that failed before any response stream existed produced no partial
+    #: output, so resending it cannot duplicate text or tool calls. Empty here:
+    #: the direct OpenAI client keeps the SDK's own bounded request retries.
+    pre_stream_retry_delays: Mapping[str, tuple[float, ...]] = MappingProxyType({})
+    #: The lane's projection of the tool schemas, and whose strict rules its
+    #: strict tools follow (None: no tool is sent strict).
+    tool_projection: ToolProjection = "canonical"
+    strict_dialect: StrictDialect | None = "openai"
 
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
         self.config = config
         self.client = _load_openai_client(config, self.provider_name) if client is None else client
+
+    def _wire_tools(self, tools: Sequence[Mapping[str, Any]]) -> list[dict[str, object]]:
+        """The tools as this lane sends them."""
+
+        if self.tool_projection == "compatible":
+            return _compatible_tools(tools)
+        return _canonical_tools(tools, self.strict_dialect)
 
     def _normalise_tool_arguments(
         self,
         name: str,
         arguments: dict[str, Any],
         input_schemas: Mapping[str, Mapping[str, object]],
+        strict_tools: frozenset[str],
     ) -> dict[str, Any]:
         """Apply provider-specific wire normalisation before tool validation."""
 
-        return arguments
+        if name not in strict_tools:
+            return arguments
+        return dict(_without_strict_nulls(arguments, input_schemas[name]))
 
     async def _create_stream(self, request: Mapping[str, Any]) -> Any:
-        for retry_index in range(len(self.rate_limit_retry_delays) + 1):
+        """Open the response stream, retrying only failures raised before it exists.
+
+        A category retries at most as many times as its schedule has delays,
+        waiting each delay in turn; a rate limit whose error carries a
+        ``Retry-After`` header waits what the header asks instead. A wait that
+        would end at or after the turn's deadline is not taken: the failure
+        is raised at once, so the turn fails with the provider failure rather
+        than its time limit.
+        """
+
+        retries: dict[str, int] = {}
+        while True:
             try:
                 return await self.client.chat.completions.create(**request)
             except Exception as exc:
-                if retry_index >= len(self.rate_limit_retry_delays) or not _is_rate_limit_error(
-                    exc
-                ):
+                category = _failure_category(exc)
+                delays = self.pre_stream_retry_delays.get(category, ())
+                retry_index = retries.get(category, 0)
+                if retry_index >= len(delays):
                     raise
-                delay = self.rate_limit_retry_delays[retry_index]
-                logger.warning(
-                    "assistant_provider_request_retry",
-                    provider=self.provider_name,
-                    failure_class="rate_limit",
-                    retry=retry_index + 1,
-                    max_retries=len(self.rate_limit_retry_delays),
-                    delay_seconds=delay,
-                )
+                retry_after = _retry_after_seconds(exc) if category == "rate_limit" else None
+                delay = delays[retry_index] if retry_after is None else retry_after
+                details = {
+                    "provider": self.provider_name,
+                    "failure_class": category,
+                    "error_class": type(exc).__name__,
+                    "retry": retry_index + 1,
+                    "max_retries": len(delays),
+                    "delay_seconds": delay,
+                    "delay_source": "schedule" if retry_after is None else "retry_after",
+                }
+                deadline = _TURN_DEADLINE.get()
+                if deadline is not None and time.monotonic() + delay >= deadline:
+                    logger.warning("assistant_provider_request_retry_past_deadline", **details)
+                    raise
+                retries[category] = retry_index + 1
+                logger.warning("assistant_provider_request_retry", **details)
                 await asyncio.sleep(delay)
-        raise AssertionError("unreachable provider retry state")
 
     async def stream_turn(
         self,
@@ -944,7 +1629,8 @@ class OpenAIProvider:
         saw_text = False
         calls: dict[int, dict[str, Any]] = {}
         stream: Any | None = None
-        wire_tools = _portable_tools(tools)
+        wire_tools = self._wire_tools(tools)
+        strict_tools = frozenset(str(tool["name"]) for tool in wire_tools if "strict" in tool)
         input_schemas = _tool_input_schemas(tools)
 
         request: dict[str, Any] = {
@@ -1049,7 +1735,12 @@ class OpenAIProvider:
                                 "multiple finish reasons",
                             )
                         finish_reason = str(choice_reason)
-                        if finish_reason in {"tool_calls", "function_call"} and not emitted_tools:
+                        # Some OpenAI-compatible gateways finish a tool-calling
+                        # reply with `stop`; its accumulated calls still run.
+                        calls_finished = finish_reason in {"tool_calls", "function_call"} or (
+                            finish_reason == "stop" and bool(calls)
+                        )
+                        if calls_finished and not emitted_tools:
                             for call in calls.values():
                                 call_id = call["id"]
                                 name = call["name"]
@@ -1066,10 +1757,15 @@ class OpenAIProvider:
                                     name,
                                     arguments,
                                     input_schemas,
+                                    strict_tools,
                                 )
                                 yield ToolCallRequest(call_id, name, arguments)
                             emitted_tools = True
-                        elif finish_reason not in {"stop", "length", "content_filter"}:
+                        elif not calls_finished and finish_reason not in {
+                            "stop",
+                            "length",
+                            "content_filter",
+                        }:
                             raise _provider_error(
                                 self.provider_name,
                                 "malformed_stream",
@@ -1111,7 +1807,9 @@ class OpenAIProvider:
             # length / content_filter raise typed truncated/filtered failures
             # here rather than masquerading as a natural end.
             yield TurnStop(
-                _map_stop_reason(self.provider_name, finish_reason),
+                "tool_use"
+                if emitted_tools
+                else _map_stop_reason(self.provider_name, finish_reason),
                 ProviderUsage(input_tokens, output_tokens),
             )
         except AssistantProviderError:
@@ -1127,16 +1825,39 @@ class OpenAIProvider:
 
 
 class DatabricksProvider(OpenAIProvider):
-    """Databricks identity over its OpenAI-compatible Chat Completions API."""
+    """Databricks identity over its OpenAI-compatible Chat Completions API.
+
+    The lane sends the compatible tool projection, on which its live baselines
+    were measured, unless built with ``tool_projection="canonical"``, which only
+    the evaluation's `canonical_tools` variant does. It never sends a tool
+    strict, and it decodes arguments by the canonical schema whichever
+    projection it sent.
+    """
 
     provider_name = "databricks"
-    rate_limit_retry_delays = (1.0, 3.0)
+    #: A connection failure retries twice, quickly; a rate limit (a workspace's
+    #: tokens-per-minute limit among them) waits longer, three times.
+    pre_stream_retry_delays = MappingProxyType(
+        {"connection": (1.0, 3.0), "rate_limit": (5.0, 15.0, 30.0)}
+    )
+    strict_dialect = None
+
+    def __init__(
+        self,
+        config: AssistantConfig,
+        client: Any | None = None,
+        *,
+        tool_projection: ToolProjection = "compatible",
+    ) -> None:
+        super().__init__(config, client)
+        self.tool_projection = tool_projection
 
     def _normalise_tool_arguments(
         self,
         name: str,
         arguments: dict[str, Any],
         input_schemas: Mapping[str, Mapping[str, object]],
+        strict_tools: frozenset[str],
     ) -> dict[str, Any]:
         schema = input_schemas.get(name)
         if schema is None:
@@ -1157,15 +1878,20 @@ def create_provider(config: AssistantConfig) -> AssistantProvider:
 
 
 __all__ = [
+    "ANTHROPIC_EFFORT",
     "AnthropicProvider",
     "AssistantProvider",
     "AssistantProviderError",
     "DatabricksProvider",
+    "MID_CONVERSATION_SYSTEM_MODELS",
     "create_provider",
     "OpenAIProvider",
     "ProviderEvent",
     "ProviderUsage",
+    "ReplayContent",
     "TextDelta",
+    "ThinkingStarted",
     "ToolCallRequest",
+    "ToolProjection",
     "TurnStop",
 ]

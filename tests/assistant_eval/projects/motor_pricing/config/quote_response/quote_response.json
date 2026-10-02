@@ -1,0 +1,35 @@
+{
+  "outputMapping": [
+    {
+      "source_port": "base_premium",
+      "source_column": "quote_id",
+      "output_path": "$[:].quote_id",
+      "enabled": true
+    },
+    {
+      "source_port": "base_premium",
+      "source_column": "premium",
+      "output_path": "$[:].pricing.premium",
+      "enabled": true
+    },
+    {
+      "source_port": "base_premium",
+      "source_column": "expected_frequency",
+      "output_path": "$[:].pricing.expected_frequency",
+      "enabled": true
+    },
+    {
+      "source_port": "base_premium",
+      "source_column": "age_band",
+      "output_path": "$[:].pricing.factors.age_band",
+      "enabled": true
+    },
+    {
+      "source_port": "base_premium",
+      "source_column": "region",
+      "output_path": "$[:].pricing.factors.region",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json"
+}

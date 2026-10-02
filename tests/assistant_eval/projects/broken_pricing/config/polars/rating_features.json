@@ -1,0 +1,14 @@
+{
+  "steps": [
+    {
+      "id": "start",
+      "kind": "source",
+      "input": "quotes"
+    },
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Derive the vehicle's age from its year of manufacture\ndf = df.with_columns(vehicle_age=2025 - pl.col('vehicle_year'))"
+    }
+  ]
+}

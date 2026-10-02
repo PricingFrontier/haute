@@ -53,6 +53,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setShortcutsOpen: vi.fn(),
     submodelDialog: null,
     setSubmodelDialog: vi.fn(),
+    setChangeFocus: vi.fn(),
     renameDialog: null,
     setRenameDialog: vi.fn(),
   }

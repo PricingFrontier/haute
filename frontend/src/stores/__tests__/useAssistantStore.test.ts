@@ -21,14 +21,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ApiError } from "../../api/client"
+import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
 import useToastStore from "../useToastStore"
+import useUIStore from "../useUIStore"
 
 vi.mock("../../api/assistant", () => ({
   getAssistantStatus: vi.fn(),
   createAssistantSession: vi.fn(),
   listAssistantSessions: vi.fn(),
   streamAssistantMessage: vi.fn(),
+  undoAssistantChange: vi.fn(),
+  MAX_CONTEXT_SELECTION: 20,
 }))
 
 import {
@@ -36,9 +40,15 @@ import {
   getAssistantStatus,
   listAssistantSessions,
   streamAssistantMessage,
+  undoAssistantChange,
+  type AssistantBuildPlan,
+  type AssistantChangeRecord,
+  type AssistantSessionList,
+  type AssistantSessionResult,
   type AssistantStreamEvent,
+  type AssistantTurnOutcome,
 } from "../../api/assistant"
-import useAssistantStore from "../useAssistantStore"
+import useAssistantStore, { type TranscriptEntry, undoDisabledReason } from "../useAssistantStore"
 
 const READY_STATUS = {
   configured: true,
@@ -59,29 +69,40 @@ function resetStores() {
     sessionId: null,
     pipelineSource: null,
     entries: [],
+    buildPlan: null,
     turnStatus: "idle",
+    thinking: false,
     status: READY_STATUS,
+    statusErrorDetail: null,
     notice: null,
     view: "list",
     sessions: [],
     sessionsStatus: "unknown",
+    // The mounted panel has listed the canvas pipeline's chats.
+    sessionsSource: "main.py",
   })
-  useGraphStore.setState({ dirty: false })
-  vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", history: [] })
+  useGraphStore.setState({ dirty: false, nodes: [] })
+  useUIStore.setState({
+    assistantOpen: true,
+    assistantTurn: null,
+    assistantUnseenOutcome: false,
+    assistantPreviewErrorNodeId: null,
+  })
+  vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", sourceFile: "main.py", history: [], buildPlan: null })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
   // Every completed turn refreshes the list; without a default the shared
   // mock resolves undefined and every unrelated test records a list error.
-  vi.mocked(listAssistantSessions).mockResolvedValue([])
+  vi.mocked(listAssistantSessions).mockResolvedValue({ sourceFile: "main.py", sessions: [] })
 }
 
 function scriptStream(events: AssistantStreamEvent[]) {
-  vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, opts) => {
+  vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
     for (const event of events) opts.onEvent(event)
   })
 }
 
-function completed(): AssistantStreamEvent {
-  return { type: "completed", usage: { input_tokens: 1, output_tokens: 2 } }
+function completed(outcome: AssistantTurnOutcome = { kind: "answered", detail: null, changes: [] }): AssistantStreamEvent {
+  return { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome }
 }
 
 beforeEach(() => {
@@ -100,6 +121,22 @@ describe("refreshStatus", () => {
     vi.mocked(getAssistantStatus).mockRejectedValue(new Error("boom"))
     await useAssistantStore.getState().refreshStatus()
     expect(useAssistantStore.getState().status).toBe("error")
+    expect(useAssistantStore.getState().statusErrorDetail).toBeNull()
+  })
+
+  it("keeps a 400's detail, which names what to fix in haute.toml", async () => {
+    vi.mocked(getAssistantStatus).mockRejectedValue(
+      new ApiError("bad", 400, "haute.toml is malformed and could not be parsed"),
+    )
+    await useAssistantStore.getState().refreshStatus()
+    expect(useAssistantStore.getState().status).toBe("error")
+    expect(useAssistantStore.getState().statusErrorDetail).toBe(
+      "haute.toml is malformed and could not be parsed",
+    )
+
+    vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
+    await useAssistantStore.getState().refreshStatus()
+    expect(useAssistantStore.getState().statusErrorDetail).toBeNull()
   })
 })
 
@@ -119,13 +156,40 @@ describe("sendMessage transcript flow", () => {
     expect(entries[0]).toEqual({ kind: "user", text: "hi" })
     const assistant = entries.find((entry) => entry.kind === "assistant")
     expect(assistant).toMatchObject({ text: "Hello", streaming: false })
-    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "completed" })
+    expect(entries[entries.length - 1]).toEqual({
+      kind: "outcome",
+      outcome: { kind: "answered", detail: null, changes: [] },
+    })
+  })
+
+  it("raises the thinking flag until the next text or tool event, adding no entry", async () => {
+    const seen: boolean[] = []
+    const events: AssistantStreamEvent[] = [
+      { type: "thinking" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "ok" },
+      { type: "thinking" },
+      { type: "text_delta", text: "Done." },
+      { type: "thinking" },
+    ]
+    vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
+      for (const event of events) {
+        opts.onEvent(event)
+        seen.push(useAssistantStore.getState().thinking)
+      }
+    })
+    await useAssistantStore.getState().sendMessage("read", SEND_OPTS)
+
+    expect(seen).toEqual([true, false, false, true, false, true])
+    const { thinking, entries } = useAssistantStore.getState()
+    expect(thinking).toBe(false)
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "assistant", "marker"])
   })
 
   it("settles activity rows from started to ok with the summary", async () => {
     scriptStream([
-      { type: "tool_started", id: "t1", name: "get_pipeline", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "get_pipeline", is_error: false, summary: "3 nodes" },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("read", SEND_OPTS)
@@ -141,10 +205,37 @@ describe("sendMessage transcript flow", () => {
     })
   })
 
+  it("retitles a running row with the stage it reports, until it finishes", async () => {
+    const titles: string[] = []
+    const events: AssistantStreamEvent[] = [
+      { type: "tool_started", id: "t1", name: "dry_run_graph_edits", title: "Checking 2 changes", summary: "{}" },
+      { type: "tool_progress", id: "t1", title: "Checking the data" },
+      { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", title: "Checking 2 changes", is_error: false, summary: "ok" },
+      { type: "tool_progress", id: "t1", title: "Late stage" },
+      completed(),
+    ]
+    vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
+      for (const event of events) {
+        opts.onEvent(event)
+        const row = useAssistantStore.getState().entries.find((entry) => entry.kind === "activity")
+        if (row?.kind === "activity") titles.push(`${row.state}: ${row.title}`)
+      }
+    })
+    await useAssistantStore.getState().sendMessage("band ages", SEND_OPTS)
+
+    expect(titles).toEqual([
+      "running: Checking 2 changes",
+      "running: Checking the data",
+      "ok: Checking 2 changes",
+      "ok: Checking 2 changes",
+      "ok: Checking 2 changes",
+    ])
+  })
+
   it("marks failed tool activity as error state", async () => {
     scriptStream([
-      { type: "tool_started", id: "t1", name: "apply_graph_plan", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "apply_graph_plan", is_error: true, summary: "no" },
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying the plan", is_error: true, summary: "no" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
@@ -168,16 +259,25 @@ describe("sendMessage transcript flow", () => {
     expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(true)
   })
 
-  it("appends a canvas-updated activity row for graph_updated", async () => {
+  it("appends the change card a change_applied event carries, after the apply row", async () => {
     scriptStream([
-      { type: "graph_updated", fingerprint: "fp-1" },
-      completed(),
+      { type: "text_delta", text: "Adding the band." },
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying 2 changes", is_error: false, summary: "ok" },
+      { type: "change_applied", change: CHANGE },
+      completed({ kind: "applied", detail: null, changes: ["plan-1"] }),
     ])
     await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
-    const activity = useAssistantStore
-      .getState()
-      .entries.find((entry) => entry.kind === "activity")
-    expect(activity).toMatchObject({ name: "graph_updated", state: "ok" })
+    const { entries } = useAssistantStore.getState()
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "user",
+      "assistant",
+      "activity",
+      "change",
+      "outcome",
+    ])
+    expect(entries[2]).toMatchObject({ title: "Applying 2 changes", state: "ok" })
+    expect(entries[3]).toEqual({ kind: "change", change: CHANGE })
   })
 
   it("renders a backend cancelled event as a stopped marker without a toast", async () => {
@@ -204,7 +304,7 @@ describe("sendMessage transcript flow", () => {
 
   it("leaves the transcript unchanged for a tool_finished with no matching row", async () => {
     scriptStream([
-      { type: "tool_finished", id: "ghost", name: "get_pipeline", is_error: false, summary: "" },
+      { type: "tool_finished", id: "ghost", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
@@ -230,6 +330,239 @@ describe("sendMessage transcript flow", () => {
   })
 })
 
+const HISTORY_TEXT = { name: "", title: "", summary: "", is_error: false }
+
+const CHANGE: AssistantChangeRecord = {
+  id: "a".repeat(64),
+  summary: "Add an age band after quotes.",
+  assumptions: [],
+  changes: {
+    nodes: [
+      {
+        id: "age_band",
+        type: "Banding",
+        change: "added",
+        renamed_from: null,
+        fields: [],
+        steps: null,
+        steps_changed: 0,
+      },
+    ],
+    edges_added: [{ source: "quotes", target: "age_band" }],
+    edges_removed: [],
+    preamble_changed: false,
+    truncated: false,
+  },
+  warnings: [],
+  git_sha: "c".repeat(40),
+  parent_sha: "d".repeat(40),
+  revision: "e".repeat(64),
+  data_check: null,
+}
+
+async function liveEntries(events: AssistantStreamEvent[]): Promise<TranscriptEntry[]> {
+  scriptStream(events)
+  await useAssistantStore.getState().sendMessage("go", SEND_OPTS)
+  return useAssistantStore.getState().entries
+}
+
+describe("transcript order and turn outcomes", () => {
+  it("keeps text and tool rows in stream order", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Reading the pipeline." },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
+      { type: "text_delta", text: "It has " },
+      { type: "text_delta", text: "three nodes." },
+      completed(),
+    ])
+
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "user", "assistant", "activity", "assistant", "outcome",
+    ])
+    expect(entries[1]).toEqual({ kind: "assistant", text: "Reading the pipeline.", streaming: false })
+    expect(entries[3]).toEqual({ kind: "assistant", text: "It has three nodes.", streaming: false })
+  })
+
+  it("drops the empty placeholder when a tool row comes first", async () => {
+    const entries = await liveEntries([
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "ok" },
+      completed(),
+    ])
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "outcome"])
+  })
+
+  it("replaces the model's NEEDS_INPUT: text with the question outcome", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "I checked the columns. " },
+      { type: "text_delta", text: "NEEDS_INPUT: Which values of status mean active?" },
+      completed({ kind: "needs_input", detail: "Which values of status mean active?", changes: [] }),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "I checked the columns.", streaming: false },
+      {
+        kind: "outcome",
+        outcome: { kind: "needs_input", detail: "Which values of status mean active?", changes: [] },
+      },
+    ])
+  })
+
+  it("removes a marker written inside a line, with its wrapping, and keeps the text before it", async () => {
+    const detail = "Pipeline execution is not available."
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Saved both nodes.\n\nHowever, `BLOCKED:` " },
+      { type: "text_delta", text: detail },
+      completed({ kind: "blocked", detail, changes: [] }),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "Saved both nodes.\n\nHowever,", streaming: false },
+      { kind: "outcome", outcome: { kind: "blocked", detail, changes: [] } },
+    ])
+  })
+
+  it("removes an emphasised marker", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Reading it.\n**NEEDS_INPUT**: Which objective?" },
+      completed({ kind: "needs_input", detail: "Which objective?", changes: [] }),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "Reading it.", streaming: false },
+      { kind: "outcome", outcome: { kind: "needs_input", detail: "Which objective?", changes: [] } },
+    ])
+  })
+
+  it("replaces a blocker that follows a tool row with the blocked outcome", async () => {
+    const detail = "graph validation failed after one corrected retry (x); no graph changes were applied."
+    const entries = await liveEntries([
+      { type: "tool_started", id: "t1", name: "dry_run_graph_edits", title: "Checking the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "dry_run_graph_edits", title: "Checking the plan", is_error: true, summary: "bad" },
+      { type: "text_delta", text: `BLOCKED: ${detail}` },
+      completed({ kind: "blocked", detail, changes: [] }),
+    ])
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "activity", "outcome"])
+    expect(entries[2]).toEqual({ kind: "outcome", outcome: { kind: "blocked", detail, changes: [] } })
+  })
+
+  it("keeps the saved-but-unverified statement beside its outcome", async () => {
+    const outcome: AssistantTurnOutcome = {
+      kind: "committed_unverified",
+      detail: "The plan was committed, but structural verification failed.",
+      changes: [],
+    }
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Graph changes were saved, but post-save verification failed." },
+      completed(outcome),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      {
+        kind: "assistant",
+        text: "Graph changes were saved, but post-save verification failed.",
+        streaming: false,
+      },
+      { kind: "outcome", outcome },
+    ])
+  })
+
+  it("keeps the model's text beside a stopped-before-finishing outcome", async () => {
+    const outcome: AssistantTurnOutcome = {
+      kind: "incomplete",
+      detail: "The last dry-run failed and no later dry-run succeeded.",
+      changes: [],
+    }
+    const entries = await liveEntries([
+      { type: "text_delta", text: "I will look again." },
+      completed(outcome),
+    ])
+
+    expect(entries.slice(1)).toEqual([
+      { kind: "assistant", text: "I will look again.", streaming: false },
+      { kind: "outcome", outcome },
+    ])
+  })
+
+  it("interrupts a turn whose outcome does not match its reply", async () => {
+    const entries = await liveEntries([
+      { type: "text_delta", text: "Here is the answer." },
+      completed({ kind: "needs_input", detail: "Which column?", changes: [] }),
+    ])
+
+    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "interrupted" })
+    expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(true)
+  })
+
+  it("renders a resumed turn exactly as the live turn rendered", async () => {
+    const detail = "Which values of status mean active?"
+    const live = await liveEntries([
+      { type: "text_delta", text: "Reading." },
+      { type: "tool_started", id: "t1", name: "get_pipeline", title: "Reading the pipeline", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "get_pipeline", title: "Reading the pipeline", is_error: false, summary: "3 nodes" },
+      { type: "text_delta", text: "The plan is ready." },
+      { type: "text_delta", text: `NEEDS_INPUT: ${detail}` },
+      completed({ kind: "needs_input", detail, changes: [] }),
+    ])
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [
+        { kind: "user", text: "go", ...HISTORY_TEXT },
+        { kind: "assistant", text: "Reading.", ...HISTORY_TEXT },
+        { kind: "tool", text: "", name: "get_pipeline", title: "Reading the pipeline", summary: "3 nodes", is_error: false },
+        // One stored row per provider round: a controller continuation split these.
+        { kind: "assistant", text: "The plan is ready.", ...HISTORY_TEXT },
+        { kind: "assistant", text: `NEEDS_INPUT: ${detail}`, ...HISTORY_TEXT },
+        { kind: "outcome", outcome: { kind: "needs_input", detail, changes: [] } },
+      ],
+      buildPlan: null,
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+
+    const strip = (entries: TranscriptEntry[]) =>
+      entries.map((entry) => (entry.kind === "activity" ? { ...entry, id: "" } : entry))
+    expect(strip(useAssistantStore.getState().entries)).toEqual(strip(live))
+  })
+
+  it("renders a resumed apply with its titled row and change card as the live turn did", async () => {
+    const live = await liveEntries([
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", title: "Applying the plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", title: "Applying 2 changes", is_error: false, summary: "ok" },
+      { type: "change_applied", change: CHANGE },
+      completed({ kind: "applied", detail: null, changes: ["plan-1"] }),
+    ])
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [
+        { kind: "user", text: "go", ...HISTORY_TEXT },
+        {
+          kind: "tool",
+          text: "",
+          name: "apply_graph_plan",
+          title: "Applying 2 changes",
+          summary: "ok",
+          is_error: false,
+        },
+        { kind: "change", change: CHANGE },
+        { kind: "outcome", outcome: { kind: "applied", detail: null, changes: ["plan-1"] } },
+      ],
+      buildPlan: null,
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+
+    const strip = (entries: TranscriptEntry[]) =>
+      entries.map((entry) => (entry.kind === "activity" ? { ...entry, id: "" } : entry))
+    expect(strip(useAssistantStore.getState().entries)).toEqual(strip(live))
+  })
+})
+
 describe("send gates", () => {
   it.each([
     ["dirty canvas", () => useGraphStore.setState({ dirty: true }), SEND_OPTS],
@@ -249,6 +582,7 @@ describe("send gates", () => {
     ["inside a submodel", () => {}, { ...SEND_OPTS, isInsideSubmodel: true }],
     ["read-only document", () => {}, { ...SEND_OPTS, readOnly: true }],
     ["unknown status", () => useAssistantStore.setState({ status: "unknown" }), SEND_OPTS],
+    ["a canvas without a source file", () => {}, { ...SEND_OPTS, currentSourceFile: null }],
   ])("refuses to send with %s", async (_label, prepare, opts) => {
     prepare()
     await useAssistantStore.getState().sendMessage("hi", opts)
@@ -269,20 +603,24 @@ describe("send gates", () => {
     expect(streamAssistantMessage).not.toHaveBeenCalled()
   })
 
-  it("resets the session when the loaded pipeline changed", async () => {
+  it("refuses to send a chat from another pipeline's canvas and names its pipeline", async () => {
     scriptStream([completed()])
     useAssistantStore.setState({
+      view: "chat",
       sessionId: "old-session",
       pipelineSource: "other.py",
       entries: [{ kind: "user", text: "old" }],
     })
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
 
-    expect(createAssistantSession).toHaveBeenCalledTimes(1)
-    const { sessionId, pipelineSource, entries } = useAssistantStore.getState()
-    expect(sessionId).toBe("session-1")
-    expect(pipelineSource).toBe("main.py")
-    expect(entries.some((entry) => entry.kind === "user" && entry.text === "old")).toBe(false)
+    expect(createAssistantSession).not.toHaveBeenCalled()
+    expect(streamAssistantMessage).not.toHaveBeenCalled()
+    const { sessionId, pipelineSource, entries, notice, turnStatus } = useAssistantStore.getState()
+    expect(notice).toContain("other.py")
+    expect(sessionId).toBe("old-session")
+    expect(pipelineSource).toBe("other.py")
+    expect(entries).toEqual([{ kind: "user", text: "old" }])
+    expect(turnStatus).toBe("idle")
   })
 
   it("reuses the existing session for the same pipeline", async () => {
@@ -290,6 +628,61 @@ describe("send gates", () => {
     useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
     expect(createAssistantSession).not.toHaveBeenCalled()
+    expect(streamAssistantMessage).toHaveBeenCalledWith("session-1", "hi", "main.py", expect.anything())
+  })
+
+  it("carries the canvas selection, at most twenty nodes in canvas order", async () => {
+    scriptStream([completed()])
+    const nodes = Array.from({ length: 23 }, (_, index) => ({
+      id: `n${index}`,
+      position: { x: 0, y: 0 },
+      data: {},
+      selected: index !== 1,
+    }))
+    useGraphStore.setState({ nodes, dirty: false })
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    const options = vi.mocked(streamAssistantMessage).mock.calls[0][3]
+    const expected = nodes.filter((node) => node.selected).slice(0, 20).map((node) => node.id)
+    expect(options.context).toEqual({ selectedNodeIds: expected, previewErrorNodeId: null })
+    expect(options.context.selectedNodeIds).not.toContain("n1")
+  })
+
+  it("carries the fix request's preview-error node once, then clears it", async () => {
+    scriptStream([completed()])
+    useUIStore.setState({ assistantPreviewErrorNodeId: "rating" })
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    await useAssistantStore.getState().sendMessage("fix it", SEND_OPTS)
+
+    expect(vi.mocked(streamAssistantMessage).mock.calls[0][3].context).toEqual({
+      selectedNodeIds: [],
+      previewErrorNodeId: "rating",
+    })
+    expect(useUIStore.getState().assistantPreviewErrorNodeId).toBeNull()
+
+    await useAssistantStore.getState().sendMessage("again", SEND_OPTS)
+    expect(vi.mocked(streamAssistantMessage).mock.calls[1][3].context.previewErrorNodeId).toBeNull()
+  })
+
+  it("binds a new chat to the source file the server echoes", async () => {
+    scriptStream([completed()])
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "nested",
+      sourceFile: "pipelines/motor.py",
+      history: [],
+      buildPlan: null,
+    })
+    useAssistantStore.setState({ sessionsSource: "pipelines/motor.py" })
+    await useAssistantStore.getState().sendMessage("hi", {
+      ...SEND_OPTS,
+      currentSourceFile: "pipelines/motor.py",
+    })
+
+    expect(createAssistantSession).toHaveBeenCalledWith(
+      "pipelines/motor.py", null, expect.any(AbortSignal),
+    )
+    expect(useAssistantStore.getState().pipelineSource).toBe("pipelines/motor.py")
   })
 })
 
@@ -297,14 +690,15 @@ describe("chat list navigation", () => {
   it("opens on the list and never resumes a conversation on send", async () => {
     // The panel used to look empty until a message was sent, then produced an
     // earlier transcript above it, because resume happened inside sendMessage.
-    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", history: [] })
+    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", sourceFile: "main.py", history: [], buildPlan: null })
     scriptStream([completed()])
 
     expect(useAssistantStore.getState().view).toBe("list")
     useAssistantStore.getState().newChat()
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
+    expect(createAssistantSession).toHaveBeenCalledWith("main.py", null, expect.any(AbortSignal))
+    expect(streamAssistantMessage).toHaveBeenCalledWith("fresh-9", "hi", "main.py", expect.anything())
     const { entries, sessionId, view } = useAssistantStore.getState()
     expect(sessionId).toBe("fresh-9")
     expect(view).toBe("chat")
@@ -314,22 +708,25 @@ describe("chat list navigation", () => {
   it("hydrates a chosen conversation when it is opened, not when it is used", async () => {
     vi.mocked(createAssistantSession).mockResolvedValue({
       sessionId: "old-session",
+      sourceFile: "main.py",
       history: [
-        { kind: "user", text: "add nb_batch", name: "", summary: "", is_error: false },
-        { kind: "assistant", text: "Adding it now.", name: "", summary: "", is_error: false },
+        { kind: "user", text: "add nb_batch", name: "", title: "", summary: "", is_error: false },
+        { kind: "assistant", text: "Adding it now.", name: "", title: "", summary: "", is_error: false },
         {
           kind: "tool",
           text: "",
-          name: "get_node_schema",
+          name: "inspect_node",
+          title: "Inspecting a node",
           summary: "No node x",
           is_error: true,
         },
       ],
+      buildPlan: null,
     })
 
     await useAssistantStore.getState().openSession("old-session", "main.py")
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session")
+    expect(createAssistantSession).toHaveBeenCalledWith("main.py", "old-session")
     const { entries, sessionId, view } = useAssistantStore.getState()
     expect(sessionId).toBe("old-session")
     expect(view).toBe("chat")
@@ -337,21 +734,25 @@ describe("chat list navigation", () => {
     expect(entries[1]).toEqual({ kind: "assistant", text: "Adding it now.", streaming: false })
     expect(entries[2]).toMatchObject({
       kind: "activity",
-      name: "get_node_schema",
+      name: "inspect_node",
+      title: "Inspecting a node",
       state: "error",
       summary: "No node x",
     })
   })
 
   it("loads the pipeline's conversations for the list", async () => {
-    vi.mocked(listAssistantSessions).mockResolvedValue([
-      { sessionId: "a", title: "First", createdAt: 1, lastUsed: 2, messageCount: 4 },
-    ])
+    vi.mocked(listAssistantSessions).mockResolvedValue({
+      sourceFile: "main.py",
+      sessions: [{ sessionId: "a", title: "First", createdAt: 1, lastUsed: 2, messageCount: 4 }],
+    })
 
     await useAssistantStore.getState().loadSessions("main.py")
 
-    const { sessions, sessionsStatus } = useAssistantStore.getState()
+    expect(listAssistantSessions).toHaveBeenCalledWith("main.py")
+    const { sessions, sessionsStatus, sessionsSource } = useAssistantStore.getState()
     expect(sessionsStatus).toBe("ready")
+    expect(sessionsSource).toBe("main.py")
     expect(sessions).toHaveLength(1)
     expect(sessions[0].title).toBe("First")
   })
@@ -373,6 +774,31 @@ describe("chat list navigation", () => {
     expect(entries).toEqual([])
   })
 
+  it("refreshes the canvas pipeline's list when a turn ends after a pipeline change", async () => {
+    let finishTurn: () => void = () => {}
+    vi.mocked(streamAssistantMessage).mockImplementation(async (_id, _text, _source, opts) => {
+      await new Promise<void>((resolve) => { finishTurn = resolve })
+      opts.onEvent(completed())
+    })
+    await useAssistantStore.getState().loadSessions("main.py")
+    useAssistantStore.getState().newChat()
+
+    const sending = useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    await vi.waitFor(() => expect(streamAssistantMessage).toHaveBeenCalled())
+    // The canvas switches pipeline mid-turn; the panel lists the new one.
+    await useAssistantStore.getState().loadSessions("other.py")
+    expect(useAssistantStore.getState().sessionId).toBe("session-1")
+    finishTurn()
+    await sending
+
+    await vi.waitFor(() => expect(useAssistantStore.getState().view).toBe("list"))
+    expect(listAssistantSessions).toHaveBeenLastCalledWith("other.py")
+    const { sessionId, pipelineSource, sessionsSource } = useAssistantStore.getState()
+    expect(sessionId).toBeNull()
+    expect(pipelineSource).toBeNull()
+    expect(sessionsSource).toBe("other.py")
+  })
+
   it("reports a list failure without discarding the current chat", async () => {
     useAssistantStore.setState({ view: "chat", sessionId: "live", pipelineSource: "main.py" })
     vi.mocked(listAssistantSessions).mockRejectedValue(new ApiError("HTTP 500", 500, "boom"))
@@ -384,7 +810,6 @@ describe("chat list navigation", () => {
   })
 
   it("returns to the list and refreshes it", async () => {
-    vi.mocked(listAssistantSessions).mockResolvedValue([])
     useAssistantStore.setState({ view: "chat" })
 
     useAssistantStore.getState().showSessionList("main.py")
@@ -407,9 +832,9 @@ describe("chat list navigation", () => {
     // The composer mounts as soon as the chat screen does. Holding the old id
     // across the await would post the next message into the conversation the
     // user just navigated away from, while the panel shows the new one.
-    let resolveSecond: (value: { sessionId: string; history: [] }) => void = () => {}
+    let resolveSecond: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
-      .mockResolvedValueOnce({ sessionId: "first", history: [] })
+      .mockResolvedValueOnce({ sessionId: "first", sourceFile: "main.py", history: [], buildPlan: null })
       .mockImplementationOnce(
         () => new Promise((resolve) => { resolveSecond = resolve }),
       )
@@ -420,24 +845,26 @@ describe("chat list navigation", () => {
     const opening = useAssistantStore.getState().openSession("second", "main.py")
     expect(useAssistantStore.getState().sessionId).toBeNull()
 
-    resolveSecond({ sessionId: "second", history: [] })
+    resolveSecond({ sessionId: "second", sourceFile: "main.py", history: [], buildPlan: null })
     await opening
     expect(useAssistantStore.getState().sessionId).toBe("second")
   })
 
   it("ignores a superseded open, so the chat shown is the one last chosen", async () => {
-    let resolveSlow: (value: { sessionId: string; history: never[] }) => void = () => {}
+    let resolveSlow: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
       .mockResolvedValueOnce({
         sessionId: "quick",
-        history: [{ kind: "user", text: "quick chat", name: "", summary: "", is_error: false }],
+        sourceFile: "main.py",
+        history: [{ kind: "user", text: "quick chat", name: "", title: "", summary: "", is_error: false }],
+        buildPlan: null,
       })
 
     const slow = useAssistantStore.getState().openSession("slow", "main.py")
     await useAssistantStore.getState().openSession("quick", "main.py")
 
-    resolveSlow({ sessionId: "slow", history: [] })
+    resolveSlow({ sessionId: "slow", sourceFile: "main.py", history: [], buildPlan: null })
     await slow
 
     const { sessionId, entries } = useAssistantStore.getState()
@@ -446,15 +873,15 @@ describe("chat list navigation", () => {
   })
 
   it("does not let an in-flight open overwrite a new message", async () => {
-    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    let resolveOpen: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve }))
-      .mockResolvedValueOnce({ sessionId: "fresh", history: [] })
+      .mockResolvedValueOnce({ sessionId: "fresh", sourceFile: "main.py", history: [], buildPlan: null })
     scriptStream([completed()])
 
     const opening = useAssistantStore.getState().openSession("old", "main.py")
     await useAssistantStore.getState().sendMessage("new question", SEND_OPTS)
-    resolveOpen({ sessionId: "old", history: [] })
+    resolveOpen({ sessionId: "old", sourceFile: "main.py", history: [], buildPlan: null })
     await opening
 
     const { sessionId, entries } = useAssistantStore.getState()
@@ -466,14 +893,14 @@ describe("chat list navigation", () => {
     ["New chat", () => useAssistantStore.getState().newChat()],
     ["going back to the list", () => useAssistantStore.getState().showSessionList("main.py")],
   ])("discards an in-flight open once %s supersedes it", async (_label, navigate) => {
-    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    let resolveOpen: (value: AssistantSessionResult) => void = () => {}
     vi.mocked(createAssistantSession).mockImplementationOnce(
       () => new Promise((resolve) => { resolveOpen = resolve }),
     )
 
     const opening = useAssistantStore.getState().openSession("chosen", "main.py")
     navigate()
-    resolveOpen({ sessionId: "chosen", history: [] })
+    resolveOpen({ sessionId: "chosen", sourceFile: "main.py", history: [], buildPlan: null })
     await opening
 
     // Landing here would silently re-attach a conversation the user left.
@@ -481,17 +908,18 @@ describe("chat list navigation", () => {
   })
 
   it("ignores a superseded list load", async () => {
-    let resolveSlow: (value: never[]) => void = () => {}
+    let resolveSlow: (value: AssistantSessionList) => void = () => {}
     vi.mocked(listAssistantSessions)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
-      .mockResolvedValueOnce([
-        { sessionId: "b", title: "Newer", createdAt: 1, lastUsed: 9, messageCount: 2 },
-      ])
+      .mockResolvedValueOnce({
+        sourceFile: "main.py",
+        sessions: [{ sessionId: "b", title: "Newer", createdAt: 1, lastUsed: 9, messageCount: 2 }],
+      })
 
     const slow = useAssistantStore.getState().loadSessions("main.py")
     await useAssistantStore.getState().loadSessions("main.py")
 
-    resolveSlow([])
+    resolveSlow({ sourceFile: "main.py", sessions: [] })
     await slow
 
     const { sessions, sessionsStatus } = useAssistantStore.getState()
@@ -578,7 +1006,7 @@ describe("send failures", () => {
 
 describe("stop and new chat", () => {
   it("locks same-tick sends while session creation is pending", async () => {
-    let resolveSession: ((result: { sessionId: string; history: [] }) => void) | undefined
+    let resolveSession: ((result: AssistantSessionResult) => void) | undefined
     vi.mocked(createAssistantSession).mockImplementation(() => new Promise((resolve) => {
       resolveSession = resolve
     }))
@@ -589,14 +1017,14 @@ describe("stop and new chat", () => {
     expect(createAssistantSession).toHaveBeenCalledTimes(1)
     expect(useAssistantStore.getState().turnStatus).toBe("streaming")
 
-    resolveSession?.({ sessionId: "session-1", history: [] })
+    resolveSession?.({ sessionId: "session-1", sourceFile: "main.py", history: [], buildPlan: null })
     await Promise.all([first, second])
     expect(useAssistantStore.getState().entries).toContainEqual({ kind: "user", text: "first" })
     expect(useAssistantStore.getState().entries).not.toContainEqual({ kind: "user", text: "second" })
   })
 
   it("stop aborts pending session creation without speculative transcript entries", async () => {
-    vi.mocked(createAssistantSession).mockImplementation((_pipeline, _sessionId, signal) =>
+    vi.mocked(createAssistantSession).mockImplementation((_sourceFile, _sessionId, signal) =>
       new Promise((_resolve, reject) => {
         signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
       }),
@@ -614,7 +1042,7 @@ describe("stop and new chat", () => {
 
   it("stop aborts the in-flight turn and marks it stopped without a toast", async () => {
     vi.mocked(streamAssistantMessage).mockImplementation(
-      (_id, _text, opts) =>
+      (_id, _text, _source, opts) =>
         new Promise((_resolve, reject) => {
           opts.signal.addEventListener("abort", () =>
             reject(new DOMException("Aborted", "AbortError")),
@@ -632,6 +1060,47 @@ describe("stop and new chat", () => {
     expect(turnStatus).toBe("idle")
     expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "stopped" })
     expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("mirrors the running turn into the UI store, whose stop stops it", async () => {
+    vi.mocked(streamAssistantMessage).mockImplementation(
+      (_id, _text, _source, opts) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          )
+        }),
+    )
+    const sending = useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useUIStore.getState().assistantTurn).not.toBeNull()
+    await vi.waitFor(() => {
+      expect(streamAssistantMessage).toHaveBeenCalled()
+    })
+    useUIStore.getState().assistantTurn?.stop()
+    await sending
+
+    const { entries } = useAssistantStore.getState()
+    expect(entries[entries.length - 1]).toMatchObject({ kind: "marker", outcome: "stopped" })
+    expect(useUIStore.getState().assistantTurn).toBeNull()
+  })
+
+  it("releases the mirror when session creation fails", async () => {
+    vi.mocked(createAssistantSession).mockRejectedValue(
+      new ApiError("HTTP 404", 404, "No pipeline was found"),
+    )
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useAssistantStore.getState().turnStatus).toBe("idle")
+    expect(useUIStore.getState().assistantTurn).toBeNull()
+  })
+
+  it("leaves an unseen outcome only when the turn ends with the panel closed", async () => {
+    scriptStream([completed()])
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    expect(useUIStore.getState().assistantUnseenOutcome).toBe(false)
+
+    useUIStore.setState({ assistantOpen: false })
+    await useAssistantStore.getState().sendMessage("again", SEND_OPTS)
+    expect(useUIStore.getState().assistantUnseenOutcome).toBe(true)
   })
 
   it("stopTurn while idle is a no-op", () => {
@@ -682,5 +1151,150 @@ describe("send-time 400 handling", () => {
     expect(notice).toContain("ANTHROPIC_API_KEY")
     expect(getAssistantStatus).toHaveBeenCalled()
     expect(useToastStore.getState().toasts).toEqual([])
+  })
+})
+
+describe("undo", () => {
+  function openChat() {
+    useAssistantStore.setState({
+      sessionId: "session-1",
+      pipelineSource: "main.py",
+      view: "chat",
+      entries: [{ kind: "change", change: CHANGE }],
+    })
+    useDocumentStatusStore.setState({ sourceRevision: CHANGE.revision })
+  }
+
+  it("is enabled only while the canvas shows the revision the change produced", () => {
+    const gate = { change: CHANGE, documentRevision: CHANGE.revision, turnStatus: "idle" as const, undoingChangeId: null }
+    expect(undoDisabledReason(gate)).toBeNull()
+    expect(undoDisabledReason({ ...gate, documentRevision: "f".repeat(64) })).toBe(
+      "The pipeline was saved again after this change.",
+    )
+    expect(undoDisabledReason({ ...gate, turnStatus: "streaming" })).toMatch(/finish/)
+    expect(undoDisabledReason({ ...gate, undoingChangeId: CHANGE.id })).toMatch(/already running/)
+    expect(undoDisabledReason({ ...gate, change: { ...CHANGE, parent_sha: null } })).toMatch(/not saved to Git/)
+  })
+
+  it("posts the undo and notes it in the transcript", async () => {
+    openChat()
+    vi.mocked(undoAssistantChange).mockResolvedValue({ changeId: CHANGE.id, gitSha: "f".repeat(40), buildPlan: null })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(undoAssistantChange).toHaveBeenCalledWith("session-1", CHANGE.id, "main.py")
+    const { entries, undoingChangeId, notice } = useAssistantStore.getState()
+    expect(entries[entries.length - 1]).toEqual({ kind: "undo", change: CHANGE })
+    expect(undoingChangeId).toBeNull()
+    expect(notice).toBeNull()
+  })
+
+  it("shows a refusal in the backend's words and leaves the transcript", async () => {
+    openChat()
+    vi.mocked(undoAssistantChange).mockRejectedValue(
+      new ApiError(
+        "HTTP 409",
+        409,
+        "The pipeline was saved again after this change, so it can no longer be undone here.",
+      ),
+    )
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    const { entries, notice, undoingChangeId } = useAssistantStore.getState()
+    expect(entries).toEqual([{ kind: "change", change: CHANGE }])
+    expect(notice).toMatch(/can no longer be undone here/)
+    expect(undoingChangeId).toBeNull()
+  })
+
+  it("posts nothing while disabled", async () => {
+    openChat()
+    useDocumentStatusStore.setState({ sourceRevision: "f".repeat(64) })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(undoAssistantChange).not.toHaveBeenCalled()
+    expect(useAssistantStore.getState().notice).toBe("The pipeline was saved again after this change.")
+  })
+
+  it("hydrates a stored undo after the turn it followed", async () => {
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [
+        { kind: "user", text: "add a band", ...HISTORY_TEXT },
+        { kind: "change", change: CHANGE },
+        { kind: "outcome", outcome: { kind: "applied", detail: null, changes: [CHANGE.id] } },
+        { kind: "undo", change: CHANGE },
+      ],
+      buildPlan: null,
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+
+    const kinds = useAssistantStore.getState().entries.map((entry) => entry.kind)
+    expect(kinds).toEqual(["user", "change", "outcome", "undo"])
+  })
+})
+
+describe("build plan", () => {
+  const PLAN: AssistantBuildPlan = {
+    items: [{ id: "bands", title: "Age bands", complete: false, changes: [] }],
+  }
+  const CLAIMED: AssistantBuildPlan = {
+    items: [
+      { id: "bands", title: "Age bands", complete: true, changes: [{ id: CHANGE.id, undone: false }] },
+    ],
+  }
+
+  it("replaces the plan from each update without adding a transcript entry", async () => {
+    const entries = await liveEntries([
+      { type: "build_plan_updated", build_plan: PLAN },
+      { type: "build_plan_updated", build_plan: CLAIMED },
+      completed(),
+    ])
+
+    expect(useAssistantStore.getState().buildPlan).toEqual(CLAIMED)
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "outcome"])
+  })
+
+  it("takes the plan from an opened chat and clears it on New chat", async () => {
+    vi.mocked(createAssistantSession).mockResolvedValue({
+      sessionId: "session-1",
+      sourceFile: "main.py",
+      history: [],
+      buildPlan: CLAIMED,
+    })
+
+    await useAssistantStore.getState().openSession("session-1", "main.py")
+    expect(useAssistantStore.getState().buildPlan).toEqual(CLAIMED)
+
+    useAssistantStore.getState().newChat()
+    expect(useAssistantStore.getState().buildPlan).toBeNull()
+  })
+
+  it("takes the plan an undo returns, with its change undone and its item reopened", async () => {
+    const reopened: AssistantBuildPlan = {
+      items: [
+        { id: "bands", title: "Age bands", complete: false, changes: [{ id: CHANGE.id, undone: true }] },
+      ],
+    }
+    useAssistantStore.setState({
+      sessionId: "session-1",
+      pipelineSource: "main.py",
+      view: "chat",
+      entries: [{ kind: "change", change: CHANGE }],
+      buildPlan: CLAIMED,
+    })
+    useDocumentStatusStore.setState({ sourceRevision: CHANGE.revision })
+    vi.mocked(undoAssistantChange).mockResolvedValue({
+      changeId: CHANGE.id,
+      gitSha: "f".repeat(40),
+      buildPlan: reopened,
+    })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(useAssistantStore.getState().buildPlan).toEqual(reopened)
   })
 })

@@ -1,0 +1,66 @@
+{
+  "schema_version": 5,
+  "id": "recovery_mistyped_join_key",
+  "fixture_version": "1",
+  "project_fixture": "data_recovery",
+  "area": "recovery",
+  "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add the vehicle factors in data/vehicle_factors.parquet as a data input called vehicle_factors, and left join them onto quotes by vehicle group, many-to-one, in a join called vehicle_rated_quotes.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "dataInput",
+          "edgeJoin"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "vehicle_rated_quotes",
+            "target_handle": "base"
+          },
+          {
+            "source": "vehicle_factors",
+            "target": "vehicle_rated_quotes",
+            "target_handle": "join"
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "vehicle_factors": {
+            "path": "data/vehicle_factors.parquet"
+          },
+          "vehicle_rated_quotes": {
+            "how": "left",
+            "validate": "m:1"
+          }
+        },
+        "execution": [
+          {
+            "node": "vehicle_rated_quotes",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\nfactors = pl.scan_parquet('data/vehicle_factors.parquet')\ndf = quotes.join(\n    factors, left_on='vehicle_group', right_on='group_code', how='left',\n    validate='m:1',\n)\n",
+            "order_free": true
+          }
+        ],
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "join_unmatched",
+              "node": "vehicle_rated_quotes"
+            }
+          ],
+          "kept": []
+        }
+      }
+    }
+  ]
+}

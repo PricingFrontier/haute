@@ -1,0 +1,77 @@
+{
+  "node_type": "edgeJoin",
+  "authorable": true,
+  "fields": {
+    "wiring": "Exactly two incoming edges: one with target_handle \"base\" (the rows to keep) and one with target_handle \"join\" (the lookup frame).",
+    "how": "\"left\" keeps every base row; also \"inner\", \"full\", \"semi\", \"anti\" or \"cross\".",
+    "on": "Key columns present under the same name in both frames.",
+    "leftOn / rightOn": "Key columns when the names differ: leftOn on the base frame, rightOn on the join frame, in matching order. Use these instead of on.",
+    "validate": "Optional key check: \"m:1\" when each base row matches at most one lookup row, \"1:1\", \"1:m\" or \"m:m\".",
+    "suffix": "Appended to a join-frame column whose name clashes with a base column; default \"_right\".",
+    "coalesce": "Optional; true merges the key columns of a full join."
+  },
+  "inputs": [
+    {
+      "edge": "policies",
+      "target_handle": "base",
+      "columns": {
+        "policy_id": "String",
+        "region_code": "String"
+      }
+    },
+    {
+      "edge": "regions",
+      "target_handle": "join",
+      "columns": {
+        "code": "String",
+        "region_relativity": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Attach each policy's region relativity by region code.",
+      "config": {
+        "how": "left",
+        "leftOn": ["region_code"],
+        "rightOn": ["code"]
+      },
+      "produces": ["policy_id", "region_code", "region_relativity"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Attach region relativities, checking each policy matches at most one region.",
+      "config": {
+        "how": "left",
+        "leftOn": ["region_code"],
+        "rightOn": ["code"],
+        "validate": "m:1",
+        "suffix": "_region"
+      },
+      "produces": ["policy_id", "region_code", "region_relativity"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "policies": {
+        "rows": [
+          {"policy_id": "p1", "region_code": "NE"},
+          {"policy_id": "p2", "region_code": "SE"}
+        ]
+      },
+      "regions": {
+        "rows": [
+          {"code": "NE", "region_relativity": 0.95},
+          {"code": "SE", "region_relativity": 1.1}
+        ]
+      }
+    },
+    "expect": {
+      "minimal": [
+        {"policy_id": "p1", "region_relativity": 0.95},
+        {"policy_id": "p2", "region_relativity": 1.1}
+      ]
+    }
+  }
+}

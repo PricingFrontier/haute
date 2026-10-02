@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "id": "recovery_emptied_filter",
+  "case": "recovery_emptied_filter",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "descriptor",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:polars"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "seeded",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Keep the north and south quotes in north_south_quotes.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "north_south_quotes",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Keep the north and south quotes\ndf = df.filter((pl.col('region') == 'north') & (pl.col('region') == 'south'))"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "north_south_quotes"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "The data check says the filter keeps no quote: no row is in both regions, so the filter keeps a quote in either.",
+          "calls": [
+            {
+              "id": "corrected",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Keep the north and south quotes in north_south_quotes.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "north_south_quotes",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "quotes"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Keep the north and south quotes\ndf = df.filter(pl.col('region').is_in(['north', 'south']))"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "north_south_quotes"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "corrected.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved north_south_quotes, which keeps the north and south quotes.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

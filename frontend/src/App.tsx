@@ -69,6 +69,7 @@ import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
 import { PreviewRunContext, type PreviewRun } from "./panels/previewRunContext"
 import InputImportButton from "./components/InputImportButton"
+import AskAssistantButton from "./components/AskAssistantButton"
 import useDocumentStatusStore from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
@@ -90,6 +91,8 @@ import { useActiveNodeReveal } from "./hooks/useActiveNodeReveal"
 import BoxSelectionReset from "./components/BoxSelectionReset"
 import InitialViewFit from "./components/InitialViewFit"
 import TraceViewFit from "./components/TraceViewFit"
+import ChangeFocusFit from "./components/ChangeFocusFit"
+import AssistantWorkingPill from "./components/AssistantWorkingPill"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
@@ -192,6 +195,8 @@ type ActiveNodePreviewProps = {
   onImported: (nodeId: string) => void
   /** Whether the active node's work is running, and what stops it. */
   run: PreviewRun
+  /** Hand a node's run error to the assistant; absent where it cannot author. */
+  onAskAssistantToFix?: (nodeId: string) => void
 }
 
 function ActiveNodePreview({
@@ -211,10 +216,12 @@ function ActiveNodePreview({
   onRefresh,
   onImported,
   run,
+  onAskAssistantToFix,
 }: ActiveNodePreviewProps) {
   return (
     <PreviewRunContext.Provider value={run}>
       <ActiveNodePreviewBody
+        onAskAssistantToFix={onAskAssistantToFix}
         documentCanExecute={documentCanExecute}
         activeNodeId={activeNodeId}
         activeNode={activeNode}
@@ -251,6 +258,7 @@ function ActiveNodePreviewBody({
   previewNodeFrame,
   onRefresh,
   onImported,
+  onAskAssistantToFix,
 }: Omit<ActiveNodePreviewProps, "run">) {
   // A Model Training node whose remembered result the server no longer holds.
   const modellingResultExpired = useNodeResultsStore(
@@ -263,6 +271,14 @@ function ActiveNodePreviewBody({
     && nodeData(activeNode)._loadAvailability !== "unavailable"
     && nodeData(activeNode)._loadAvailability !== "blocked"
   const refreshAction = canRefresh ? onRefresh : undefined
+  // The assistant reproduces the error of a top-level executable node only.
+  const askAssistant = onAskAssistantToFix
+    && activeNodeId !== null
+    && previewData?.status === "error"
+    && activeNodeType !== NODE_TYPES.SUBMODEL
+    && activeNodeType !== NODE_TYPES.SUBMODEL_PORT
+    ? () => onAskAssistantToFix(activeNodeId)
+    : undefined
   if (
     documentCanExecute
     && activeNode
@@ -351,6 +367,7 @@ function ActiveNodePreviewBody({
           <InputImportButton node={activeNode} allNodes={panelNodes} onImported={onImported} />
         ) : undefined
       }
+      errorAction={askAssistant ? <AskAssistantButton onClick={askAssistant} /> : undefined}
     />
   )
 }
@@ -518,7 +535,6 @@ type NodePropertiesPanelProps = {
   onImportAdded: (importLine: string) => void
   onPreambleChange: (value: string) => void
   isInsideSubmodel: boolean
-  currentSourceFile: string | null
   documentReadOnly: boolean
   traceResult: TraceResult | null
   traceState: TraceRequestState
@@ -560,7 +576,6 @@ function NodePropertiesPanel({
   onImportAdded,
   onPreambleChange,
   isInsideSubmodel,
-  currentSourceFile,
   documentReadOnly,
   traceResult,
   traceState,
@@ -618,7 +633,6 @@ function NodePropertiesPanel({
         <Suspense fallback={null}>
           <AssistantPanel
             isInsideSubmodel={isInsideSubmodel}
-            currentSourceFile={currentSourceFile}
             readOnly={documentReadOnly}
           />
         </Suspense>
@@ -724,6 +738,8 @@ function FlowEditor() {
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
+  const assistantTurnRunning = useUIStore((s) => s.assistantTurn !== null)
+  const askAssistantToFix = useUIStore((s) => s.askAssistantToFix)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   // Git working-branch model (P2)
@@ -740,6 +756,8 @@ function FlowEditor() {
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const traceFocusNodeId = useUIStore((s) => s.traceFocusNodeId)
+  const changeFocus = useUIStore((s) => s.changeFocus)
+  const setChangeFocus = useUIStore((s) => s.setChangeFocus)
   const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -823,7 +841,6 @@ function FlowEditor() {
   const sourceFileRef = useRef("")
   const sourceRevisionRef = useRef("")
   const preservedBlocksRef = useRef<string[]>([])
-  const [currentSourceFile, setCurrentSourceFile] = useState<string | null>(null)
   const nodeIdCounter = useRef(0)
 
   // Keep graphRef in sync so callbacks never see stale state. A layout effect
@@ -907,7 +924,7 @@ function FlowEditor() {
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
+    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
   })
@@ -952,6 +969,7 @@ function FlowEditor() {
     nodeStatuses,
     hoveredNodeId,
     traceFocusNodeId,
+    changeFocusNodeIds: changeFocus?.nodeIds ?? null,
     refreshPreview,
     previewSeedPlan:
       previewData !== null && previewData.nodeId === selectedNode?.id
@@ -995,7 +1013,6 @@ function FlowEditor() {
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
-    setCurrentSourceFile,
     preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
     reservedApiInputFrameLabels,
@@ -1045,7 +1062,10 @@ function FlowEditor() {
   const activeSubmodelReadOnly = activeView?.type === "submodel" && activeView.readOnly
   const documentReadOnly = documentCapabilities?.can_mutate !== true || !documentGraphSynchronized
   const documentCanExecute = documentCapabilities?.can_execute === true && documentGraphSynchronized
-  const editingReadOnly = documentReadOnly || Boolean(activeSubmodelReadOnly)
+  // A running assistant turn fences editing too: its saves and the analyst's
+  // edits would both change the pipeline file. The panel's own document fence
+  // (`documentReadOnly`) leaves the turn out.
+  const editingReadOnly = documentReadOnly || Boolean(activeSubmodelReadOnly) || assistantTurnRunning
   // One loadable node stays editable through the node-scoped save while the
   // document-wide fences hold; the server's scoped_editable flag is the gate.
   const selectedNodeData = selectedNode?.data as HauteNodeData | undefined
@@ -1489,6 +1509,17 @@ function FlowEditor() {
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
   }, [centreNode, setGitOpen, setImportsOpen, setUtilityOpen])
 
+  // Point the assistant at a failing node: select it alone, as a click would,
+  // and open the panel with its preview error on the next message.
+  const handleAskAssistantToFix = useCallback((nodeId: string) => {
+    onNodesChange(graphRef.current.nodes.map((node) => ({
+      type: "select" as const,
+      id: node.id,
+      selected: node.id === nodeId,
+    })))
+    askAssistantToFix(nodeId)
+  }, [askAssistantToFix, onNodesChange])
+
   const handleImportAdded = useCallback((importLine: string) => {
     const current = preambleRef.current
     if (current.includes(importLine)) return
@@ -1589,6 +1620,7 @@ function FlowEditor() {
       onRefresh={handlePanelPreviewRefresh}
       onImported={handleImported}
       run={previewRun}
+      onAskAssistantToFix={viewStack.length > 1 ? undefined : handleAskAssistantToFix}
     />
   )
   return (
@@ -1726,6 +1758,7 @@ function FlowEditor() {
               onPointerLeave={clearEdgeJoinCandidate}
             >
               <BreadcrumbBar viewStack={viewStack} onNavigate={handleBreadcrumbNavigate} />
+              <AssistantWorkingPill />
               <EdgeJoinInsertionFeedback candidateEdgeId={presentedEdgeJoinCandidateEdgeId} />
               <ReactFlow
                 className={useLiteGraphEffects ? "graph-effects-lite" : undefined}
@@ -1758,7 +1791,7 @@ function FlowEditor() {
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
-                onPaneClick={() => { setContextMenu(null); closeConnectionDropMenu(); clearTrace(); closePanel() }}
+                onPaneClick={() => { setContextMenu(null); closeConnectionDropMenu(); clearTrace(); setChangeFocus(null); closePanel() }}
                 onDrop={editingReadOnly ? undefined : onDrop}
                 onDragOver={editingReadOnly ? undefined : onDragOver}
                 nodeTypes={nodeTypes}
@@ -1777,6 +1810,7 @@ function FlowEditor() {
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
                 <InitialViewFit />
                 <TraceViewFit traceResult={traceResult} resolveNodeId={resolveTraceNodeId} />
+                <ChangeFocusFit />
                 <BoxSelectionReset />
               </ReactFlow>
               {connectionDropMenu && !editingReadOnly && (
@@ -1811,7 +1845,6 @@ function FlowEditor() {
           onImportAdded={handleImportAdded}
           onPreambleChange={handlePreambleChange}
           isInsideSubmodel={viewStack.length > 1}
-          currentSourceFile={currentSourceFile}
           documentReadOnly={documentReadOnly}
           traceResult={traceResult}
           traceState={traceState}

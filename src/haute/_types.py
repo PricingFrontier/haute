@@ -86,6 +86,19 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
     v: k for k, v in DECORATOR_TO_NODE_TYPE.items() if k != "instance"
 }
 
+#: Node types with no output: nothing may be wired downstream of them. The
+#: editor's ``SINK_ONLY_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is held
+#: equal to this set by test.
+SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
+    {
+        NodeType.OUTPUT,
+        NodeType.DATA_OUTPUT,
+        NodeType.EXPLORE,
+        NodeType.MODELLING,
+        NodeType.OPTIMISER,
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Typed config shapes (documentation + IDE autocomplete, no runtime change)
@@ -948,23 +961,17 @@ class NodeData(BaseModel):
         from haute._polars_steps import (
             STEPPED_NODE_TYPES,
             PolarsStepError,
-            render_polars_steps,
+            render_node_steps,
         )
 
-        surface = STEPPED_NODE_TYPES.get(self.nodeType)
-        if surface is None:
+        if self.nodeType not in STEPPED_NODE_TYPES:
             return self
         steps = self.config["steps"]
         if not isinstance(steps, list):
             raise ValueError("Steps must be a list.")
         config = dict(self.config)
-        # A surface whose code sees only df has no eligible input names, so a
-        # join or concat is refused here already; an `edges` surface's names
-        # are only known to the graph, so its references are checked at build
-        # time against the connected edges.
-        input_names: list[str] | None = [] if surface.inputs == "none" else None
         try:
-            rendered = render_polars_steps(steps, input_names, start=surface.start)
+            rendered = render_node_steps(self.nodeType, steps)
         except PolarsStepError as exc:
             config["code"] = ""
             config["_steps_error"] = str(exc)

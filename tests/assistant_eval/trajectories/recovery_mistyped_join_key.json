@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "id": "recovery_mistyped_join_key",
+  "case": "recovery_mistyped_join_key",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "descriptor",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:dataInput",
+                  "node:edgeJoin"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "seeded",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Join the vehicle factors onto quotes by vehicle group.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "vehicle_factors",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/vehicle_factors.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "edgeJoin",
+                    "name": "vehicle_rated_quotes",
+                    "config": {
+                      "how": "left",
+                      "on": [
+                        "vehicle_group"
+                      ],
+                      "validate": "m:1"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "vehicle_rated_quotes",
+                    "target_handle": "base"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "vehicle_factors",
+                    "target": "vehicle_rated_quotes",
+                    "target_handle": "join"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "The data check says no quote matches a vehicle factor on vehicle_group: the factors' vehicle_group describes the group, and their group_code holds the code the quotes carry, so the join keys on group_code.",
+          "calls": [
+            {
+              "id": "corrected",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Join the vehicle factors onto quotes by vehicle group.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "vehicle_factors",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/vehicle_factors.parquet",
+                      "arguments": {},
+                      "steps": []
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "edgeJoin",
+                    "name": "vehicle_rated_quotes",
+                    "config": {
+                      "how": "left",
+                      "leftOn": [
+                        "vehicle_group"
+                      ],
+                      "rightOn": [
+                        "group_code"
+                      ],
+                      "validate": "m:1"
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "vehicle_rated_quotes",
+                    "target_handle": "base"
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "vehicle_factors",
+                    "target": "vehicle_rated_quotes",
+                    "target_handle": "join"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "corrected.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved vehicle_rated_quotes, joining each quote's vehicle group to the factors' group_code.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

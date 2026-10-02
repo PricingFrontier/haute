@@ -17,6 +17,7 @@ export default function ExploreCodeEditor(props: {
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
+  nodeId: string
   /** The node's own columns as its last preview recorded them. */
   nodeColumns?: { name: string; dtype: string }[]
 }) {

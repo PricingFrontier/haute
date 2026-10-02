@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "submodel_high_risk_flag",
+  "case": "submodel_high_risk_flag",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Flag vehicles whose factor is above 1 in premium.",
+                "ops": [
+                  {
+                    "op": "edit_steps",
+                    "node": "premium",
+                    "edits": [
+                      {
+                        "insert_after": "logic",
+                        "step": {
+                          "kind": "free_code",
+                          "code": "# Flag high-risk vehicles\ndf = df.with_columns(high_risk_vehicle=pl.col('vehicle_factor') > 1)"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

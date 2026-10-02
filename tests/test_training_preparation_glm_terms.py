@@ -8,10 +8,10 @@ import pytest
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute.errors import HauteValidationError
 from haute.routes._training_preparation import (
-    _build_training_feature_selection,
     _glm_training_term_columns,
     _training_required_columns_by_node,
     _training_sink_exclusions,
+    build_training_feature_selection,
     resolve_training_input_schema,
 )
 from tests.conftest import make_edge, make_graph, make_ready_file_input_config
@@ -52,7 +52,7 @@ SCHEMA = {
 
 
 def test_feature_selection_ignores_exclude_and_feature_columns_for_glm():
-    payload = _build_training_feature_selection(
+    payload = build_training_feature_selection(
         {**GLM_CONFIG, "feature_columns": ["unused"]}, SCHEMA
     )
     assert payload.mode == "glm_terms"
@@ -65,14 +65,14 @@ def test_feature_selection_ignores_exclude_and_feature_columns_for_glm():
 
 def test_feature_selection_rejects_expression_keyed_by_a_column():
     with pytest.raises(HauteValidationError, match="names a column"):
-        _build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "age_sq": "Float64"})
+        build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "age_sq": "Float64"})
 
 
 def test_feature_selection_rejects_role_columns_and_unsupported_dtypes():
     with pytest.raises(HauteValidationError, match=r"role columns: 'income' \(weight\)"):
-        _build_training_feature_selection({**GLM_CONFIG, "weight": "income"}, SCHEMA)
+        build_training_feature_selection({**GLM_CONFIG, "weight": "income"}, SCHEMA)
     with pytest.raises(HauteValidationError, match="'region' has dtype Date"):
-        _build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "region": "Date"})
+        build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "region": "Date"})
 
 
 def test_sink_exclusions_are_none_for_glm_and_configured_for_catboost():

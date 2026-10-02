@@ -1265,3 +1265,45 @@ def test_corrupting_a_later_part_is_corruption(
     fresh_store = SourceCacheStore(tmp_path)
     with pytest.raises(SourceCacheCorruptError):
         fresh_store.open_generation(identity)
+
+
+def test_the_published_generation_probe_reads_metadata_and_never_a_part(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _source_cache
+
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/probed.parquet", format="parquet")
+    with pytest.raises(FileNotFoundError):
+        store.published_generation_id(identity)
+
+    generation = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
+        context=_context(),
+    )
+    store._verified_generations.clear()
+    monkeypatch.setattr(
+        _source_cache,
+        "content_hash",
+        lambda _path: pytest.fail("the published-generation probe hashed a part"),
+    )
+    root = tmp_path.resolve()
+    for part in generation.data_paths:
+        # A truncated part: verification would refuse it, the probe never opens it.
+        (root / part.relative_to(root)).write_bytes(b"not parquet")
+
+    assert store.published_generation_id(identity) == generation.generation_id
+
+    pointer = root / store.identity_path(identity).relative_to(root) / "current.json"
+    pointer.write_text("{not json", encoding="utf-8")
+    with pytest.raises(source_cache_module.SourceCacheCorruptError):
+        store.published_generation_id(identity)
+
+    pointer.write_text(
+        json.dumps({"generation_id": str(uuid.uuid4()), "identity_digest": identity.digest}),
+        encoding="utf-8",
+    )
+    with pytest.raises(FileNotFoundError):
+        store.published_generation_id(identity)

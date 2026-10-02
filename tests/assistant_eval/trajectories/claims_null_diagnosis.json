@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "claims_null_diagnosis",
+  "case": "claims_null_diagnosis",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "data",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "loss_ratio",
+                "parts": [
+                  "data"
+                ],
+                "column": "total_incurred"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "total_incurred first goes null at quote_claims: that left join on policy_id matched 7 of the 10 quotes, so the 3 quotes whose policy has no row in claims get a null total_incurred, and loss_ratio carries those same 3 nulls. claims itself has no null total_incurred. I changed nothing.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

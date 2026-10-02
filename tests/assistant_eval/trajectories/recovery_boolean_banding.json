@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "id": "recovery_boolean_banding",
+  "case": "recovery_boolean_banding",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "descriptor",
+              "tool": "read_reference",
+              "arguments": {
+                "ids": [
+                  "node:banding"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "seeded",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band has_prior_claim into claimant and clean in claims_band.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "banding",
+                    "name": "claims_band",
+                    "config": {
+                      "factors": [
+                        {
+                          "banding": "categorical",
+                          "column": "has_prior_claim",
+                          "outputColumn": "claims_group",
+                          "rules": [
+                            {
+                              "value": "True",
+                              "assignment": "claimant"
+                            },
+                            {
+                              "value": "False",
+                              "assignment": "clean"
+                            }
+                          ],
+                          "default": null
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "claims_band"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "The data check puts every quote in claims_band's default band: a Boolean column's text is true or false, so the rules match those values.",
+          "calls": [
+            {
+              "id": "corrected",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band has_prior_claim into claimant and clean in claims_band.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "banding",
+                    "name": "claims_band",
+                    "config": {
+                      "factors": [
+                        {
+                          "banding": "categorical",
+                          "column": "has_prior_claim",
+                          "outputColumn": "claims_group",
+                          "rules": [
+                            {
+                              "value": "true",
+                              "assignment": "claimant"
+                            },
+                            {
+                              "value": "false",
+                              "assignment": "clean"
+                            }
+                          ],
+                          "default": null
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "claims_band"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "corrected.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved claims_band: quotes with a prior claim are claimant and the rest clean.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

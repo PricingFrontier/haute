@@ -6,6 +6,8 @@ import math
 from copy import deepcopy
 from typing import Any
 
+from haute._validation_error import ConfigSettingError
+
 _COMPACT_RULE_TYPES = frozenset({"categorical", "breakpoints"})
 
 
@@ -21,11 +23,17 @@ def _is_json_scalar(value: Any) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def _validate_map_value(value: Any, context: str) -> None:
+def _validate_map_value(value: Any, kind: str, key: str) -> None:
+    """Refuse a compact rule map's empty or non-scalar value; *key* is configuration."""
+
     if value is None or value == "":
-        raise ValueError(f"{context} must map to a non-empty value")
+        raise ConfigSettingError(
+            f"{kind} rule {key!r} must map to a non-empty value", setting="factors", values=(key,)
+        )
     if not _is_json_scalar(value):
-        raise ValueError(f"{context} must map to a JSON scalar value")
+        raise ConfigSettingError(
+            f"{kind} rule {key!r} must map to a JSON scalar value", setting="factors", values=(key,)
+        )
 
 
 def _expand_rule_map(
@@ -37,17 +45,19 @@ def _expand_rule_map(
         for raw_key, value in rules.items():
             key = str(raw_key)
             if key == "":
-                raise ValueError("categorical rule key must not be empty")
-            _validate_map_value(value, f"categorical rule {key!r}")
+                raise ConfigSettingError(
+                    "categorical rule key must not be empty", setting="factors"
+                )
+            _validate_map_value(value, "categorical", key)
             expanded.append({"value": key, "assignment": value})
         return expanded
     if banding_type == "breakpoints":
         for raw_key, value in rules.items():
             key = str(raw_key)
-            _validate_map_value(value, f"breakpoint rule {key!r}")
+            _validate_map_value(value, "breakpoint", key)
             expanded.append({"boundary": key, "label": value})
         return expanded
-    raise ValueError(f"{banding_type} banding rules must be a list")
+    raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
 
 
 def normalise_banding_rules(
@@ -61,7 +71,7 @@ def normalise_banding_rules(
         return _expand_rule_map(str(banding_type or ""), rules)
     if isinstance(rules, list):
         return deepcopy(rules)
-    raise ValueError(f"{banding_type} banding rules must be a list")
+    raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
 
 
 def _expand_banding_factor_from_sidecar(factor: dict[str, Any]) -> dict[str, Any]:
@@ -78,12 +88,14 @@ def expand_banding_config_from_sidecar(config: dict[str, Any]) -> dict[str, Any]
     if factors is None:
         return result
     if not isinstance(factors, list):
-        raise ValueError("banding factors must be a list")
+        raise ConfigSettingError("banding factors must be a list", setting="factors")
 
     expanded: list[dict[str, Any]] = []
     for index, factor in enumerate(factors):
         if not isinstance(factor, dict):
-            raise ValueError(f"banding factors[{index}] must be an object")
+            raise ConfigSettingError(
+                f"banding factors[{index}] must be an object", setting="factors"
+            )
         expanded.append(_expand_banding_factor_from_sidecar(factor))
     result["factors"] = expanded
     return result
@@ -95,7 +107,7 @@ def normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     if factors is None:
         return []
     if not isinstance(factors, list):
-        raise ValueError("banding factors must be a list")
+        raise ConfigSettingError("banding factors must be a list", setting="factors")
 
     expanded_config = expand_banding_config_from_sidecar(config)
     expanded_factors = expanded_config["factors"]
@@ -108,21 +120,27 @@ def _compact_rule_map(rules: dict[Any, Any], banding_type: str) -> dict[str, Any
         for raw_key, value in rules.items():
             key = str(raw_key)
             if key == "":
-                raise ValueError("categorical rule key must not be empty")
-            _validate_map_value(value, f"categorical rule {key!r}")
+                raise ConfigSettingError(
+                    "categorical rule key must not be empty", setting="factors"
+                )
+            _validate_map_value(value, "categorical", key)
             if key in compact:
-                raise ValueError(f"duplicate categorical rule key {key!r}")
+                raise ConfigSettingError(
+                    f"duplicate categorical rule key {key!r}", setting="factors", values=(key,)
+                )
             compact[key] = value
         return compact
     if banding_type == "breakpoints":
         for raw_key, value in rules.items():
             key = str(raw_key)
-            _validate_map_value(value, f"breakpoint rule {key!r}")
+            _validate_map_value(value, "breakpoint", key)
             if key in compact:
-                raise ValueError(f"duplicate breakpoint rule key {key!r}")
+                raise ConfigSettingError(
+                    f"duplicate breakpoint rule key {key!r}", setting="factors", values=(key,)
+                )
             compact[key] = value
         return compact
-    raise ValueError(f"{banding_type} banding rules must be a list")
+    raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
 
 
 def _compact_rule_rows(
@@ -136,24 +154,40 @@ def _compact_rule_rows(
     compact: dict[str, Any] = {}
     for index, rule in enumerate(rules):
         if not isinstance(rule, dict):
-            raise ValueError(f"{duplicate_label} rules[{index}] must be an object")
+            raise ConfigSettingError(
+                f"{duplicate_label} rules[{index}] must be an object", setting="factors"
+            )
 
         raw_key = rule.get(key_field)
         raw_value = rule.get(value_field)
         if raw_key is None:
-            raise ValueError(f"{duplicate_label} rules[{index}] requires {key_field}")
+            raise ConfigSettingError(
+                f"{duplicate_label} rules[{index}] requires {key_field}", setting="factors"
+            )
         if raw_key == "":
             if not allow_empty_key:
-                raise ValueError(f"{duplicate_label} rules[{index}] requires {key_field}")
+                raise ConfigSettingError(
+                    f"{duplicate_label} rules[{index}] requires {key_field}", setting="factors"
+                )
             key = ""
         else:
             key = str(raw_key)
         if raw_value is None or raw_value == "":
-            raise ValueError(f"{duplicate_label} rule {key!r} requires {value_field}")
+            raise ConfigSettingError(
+                f"{duplicate_label} rule {key!r} requires {value_field}",
+                setting="factors",
+                values=(key,),
+            )
         if not _is_json_scalar(raw_value):
-            raise ValueError(f"{duplicate_label} rule {key!r} must map to a JSON scalar value")
+            raise ConfigSettingError(
+                f"{duplicate_label} rule {key!r} must map to a JSON scalar value",
+                setting="factors",
+                values=(key,),
+            )
         if key in compact:
-            raise ValueError(f"duplicate {duplicate_label} rule key {key!r}")
+            raise ConfigSettingError(
+                f"duplicate {duplicate_label} rule key {key!r}", setting="factors", values=(key,)
+            )
         compact[key] = raw_value
     return compact
 
@@ -197,7 +231,7 @@ def _compact_banding_factor_for_sidecar(factor: dict[str, Any]) -> dict[str, Any
                 allow_empty_key=True,
             )
     else:
-        raise ValueError(f"{banding_type} banding rules must be a list")
+        raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
     return result
 
 
@@ -208,12 +242,14 @@ def compact_banding_config_for_sidecar(config: dict[str, Any]) -> dict[str, Any]
     if factors is None:
         return result
     if not isinstance(factors, list):
-        raise ValueError("banding factors must be a list")
+        raise ConfigSettingError("banding factors must be a list", setting="factors")
 
     compacted: list[dict[str, Any]] = []
     for index, factor in enumerate(factors):
         if not isinstance(factor, dict):
-            raise ValueError(f"banding factors[{index}] must be an object")
+            raise ConfigSettingError(
+                f"banding factors[{index}] must be an object", setting="factors"
+            )
         compacted.append(_compact_banding_factor_for_sidecar(factor))
     result["factors"] = compacted
     return result

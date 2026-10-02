@@ -63,6 +63,7 @@ def _refresh_manifest(path: Path, *, write: bool) -> bool:
         path.write_text(
             json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
             encoding="utf-8",
+            newline="\n",
         )
     return changed
 

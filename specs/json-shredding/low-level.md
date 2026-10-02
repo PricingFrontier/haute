@@ -414,7 +414,7 @@ per-column walk reports it. The reader is built from closures over the parsed
 specs; no source text is generated or executed.
 
 **Runtime load** — `load_v2_api_source(data_path, config, *, port_columns=None,
-read_snapshots=False, store=None)`:
+read_snapshots=False, store=None, schema_tier_node=None)`:
 1. Validate the v2 schema at this public boundary, then require at least one
    emit-true table and at least one selected column (the latter two raise
    `RuntimeError` with an actionable configuration message otherwise).
@@ -436,6 +436,11 @@ read_snapshots=False, store=None)`:
    is never read. A table with no generation raises `PolarsIoConfigError`
    (`input_snapshot_missing: ...`): automatic preparation publishes the tables
    before an admitted execution, so this reaches only a run that was not prepared.
+   The one exception is the IO layer's declared schema tier
+   ([IO layer](../io-layer/low-level.md)): with a `schema_tier_node` (a schema-only
+   read, named by the node it records under) while the schema tier recorder is active, a table with no generation resolves as
+   an empty frame under its declared frame schema and is recorded by node id and
+   label, without reading the source.
 4. Otherwise (generated standalone code, which runs without a project store),
    `_iter_records` plus the shared shred walker uses only the requested projected
    specs. The same `_BoundedParquetRowGroupWriter` used by builds owns one aggregate
@@ -739,7 +744,7 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   selected columns on any emitting table".
 - `PolarsIoConfigError` (`input_snapshot_missing: ...`) — raised by
   `load_v2_api_source(read_snapshots=True)` for a demanded table with no published
-  generation.
+  generation, unless the declared schema tier resolves it.
 - `haute._json_shred._snapshots.SourceChangedDuringCacheBuildError` (a `RuntimeError`
   subclass) — raised when the source signature no longer matches after the shred
   and before publication.
@@ -820,7 +825,9 @@ Shred / inference / table snapshots (the `_json_shred/` package):
 - `tests/test_load_v2_api_source.py` — direct coverage of the shared runtime entry
   point: emit checks, `port_columns` projection rules, store-leased table reads
   (a missing table is `input_snapshot_missing`; a built table reads without its
-  source), the standalone in-process shred, scalar/empty arrays, typed raw-data
+  source; under the schema tier recorder a missing table resolves its declared
+  schema without a request file, is recorded with its declared column count, and
+  writes no generation), the standalone in-process shred, scalar/empty arrays, typed raw-data
   failures, and the uniform `{label: LazyFrame}` return shape from one eligible
   frame up. Label invariant B4
   (ASCII-identifier-only labels; hard keywords rejected; valid *Unicode*

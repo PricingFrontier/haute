@@ -216,8 +216,9 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
-  // The node a trace card or derivation row points at gets an accent ring.
-  const focusShadow = nodeData._traceFocused
+  // The node a trace card or derivation row points at, and each node the latest
+  // assistant change touched, gets an accent ring.
+  const focusShadow = nodeData._traceFocused || nodeData._changeFocused
     ? "0 0 0 3px var(--accent), 0 0 18px 4px color-mix(in srgb, var(--accent) 55%, transparent)"
     : null
   const traceValue = nodeData._traceValue
