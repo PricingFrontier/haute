@@ -1415,6 +1415,7 @@ class PipelineGraph(BaseModel):
         "node_map",
         "parents_of",
         "_haute_base_fingerprint",
+        "_haute_global_constant_reads",
     )
 
     def model_copy(
@@ -1476,6 +1477,17 @@ class PipelineGraph(BaseModel):
         from haute._cache import _graph_base_fingerprint
 
         return _graph_base_fingerprint(self)
+
+    @cached_property
+    def _haute_global_constant_reads(self) -> Any:
+        """The global constants this graph's nodes read, memoised like the base fingerprint.
+
+        Returns a set of names or ``EVERY_CONSTANT`` (see
+        :func:`haute._global_constants.graph_constant_reads`).
+        """
+        from haute._global_constants import graph_constant_reads
+
+        return graph_constant_reads(self.nodes, self.node_map)
 
 
 SubmodelDefinition.model_rebuild()

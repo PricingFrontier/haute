@@ -566,7 +566,7 @@ generating and saving them is present behaviour, described under
 [server-api](../server-api/high-level.md). Every record here is unresolved until its roadmap
 package lands. Each package folds its part into the present-tense specification of the
 component that owns it (this one, [execution-engine](../execution-engine/high-level.md),
-[caching](../caching/high-level.md), [deploy](../deploy/high-level.md),
+[deploy](../deploy/high-level.md),
 [frontend-shared](../frontend-shared/high-level.md),
 [frontend-graph-canvas](../frontend-graph-canvas/high-level.md) and
 [frontend-node-editors](../frontend-node-editors/high-level.md)), and the last package to land
@@ -575,13 +575,14 @@ names the seams, shapes and tests.
 
 - **Current limitation.** A pipeline can declare and save global constants, but nothing reads
   them. Node code that names `global_constants.<name>` fails in the editor, whose executor binds
-  no such name, and in a standalone run, where the name is the sentinel. No cache identity signs
-  a constant, no editor surface edits one, and the step editor has no Constant operand.
+  no such name, and in a standalone run, where the name is the sentinel. Cache identities
+  already sign the constants each node reads ([caching](../caching/high-level.md)), but no
+  editor surface edits one, and the step editor has no Constant operand.
 - **Unresolved target.** Every code box and every structured step reads a constant as
   `global_constants.<name>`, without an edge, including inside submodels, and each run reads
-  the value for the source it runs under. Cache identities sign the constants each node reads.
-  The toolbar's Imports button becomes Constants and opens the pane that edits them.
-  [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads)
+  the value for the source it runs under. The toolbar's Imports button becomes Constants and
+  opens the pane that edits them.
+  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source)
   to [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) build
   it.
 - **Non-goals.** The Constant node keeps its behaviour. Config fields outside the step editor
@@ -605,8 +606,7 @@ names the seams, shapes and tests.
   low-level contract names, and one browser test that defines a split constant in the pane and
   previews a Transform and a filter step that read it, under `live` and under `nb_batch`,
   seeing each source's value.
-- **Roadmap package.** [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads),
-  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
+- **Roadmap package.** [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
   [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
   [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor), in that
   order.
@@ -648,11 +648,6 @@ submodels.
 No node, step variable, node code or preamble may bind the name `global_constants`, so nothing
 shadows it. A constant's name is only ever an attribute of that name, so it can never collide
 with an input, a preamble binding or a step variable.
-
-**Caching.** Editing a constant re-runs only the nodes whose code or steps read it, and their
-descendants. Editing one source's value leaves every other source's previews cached. Node
-output snapshots and whole-graph identities sign all of a read constant's values, so they are
-re-signed when any of its values changes.
 
 **The Constants pane.** The toolbar's Imports button becomes Constants, in the same column
 under Utility, and opens the Global Constants pane in the right-hand panel. The preamble editor

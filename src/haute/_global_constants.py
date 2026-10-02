@@ -19,7 +19,7 @@ import textwrap
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Final, TypeAlias
 
-from haute._types import GLOBAL_CONSTANTS_NAME
+from haute._types import GLOBAL_CONSTANTS_NAME, GraphNode
 from haute.errors import GlobalConstantError
 
 
@@ -128,6 +128,29 @@ def node_constant_reads(config: Mapping[str, Any]) -> ConstantReads:
         if isinstance(code_reads, _EveryConstant):
             return EVERY_CONSTANT
         reads |= code_reads
+    return frozenset(reads)
+
+
+def executed_config(node: GraphNode, node_map: Mapping[str, GraphNode]) -> Mapping[str, Any]:
+    """The configuration *node* executes: an instance runs its original's."""
+    config = node.data.config
+    original = config.get("instanceOf")
+    if isinstance(original, str) and original in node_map:
+        return node_map[original].data.config
+    return config
+
+
+def graph_constant_reads(
+    nodes: Iterable[GraphNode],
+    node_map: Mapping[str, GraphNode],
+) -> ConstantReads:
+    """The constants any of *nodes* reads, instances resolved through *node_map*."""
+    reads: set[str] = set()
+    for node in nodes:
+        node_reads = node_constant_reads(executed_config(node, node_map))
+        if isinstance(node_reads, _EveryConstant):
+            return EVERY_CONSTANT
+        reads |= node_reads
     return frozenset(reads)
 
 

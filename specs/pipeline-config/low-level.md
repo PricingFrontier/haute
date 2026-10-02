@@ -689,11 +689,11 @@ described in the sections above and in the codegen, expression-parsing and serve
 specifications. New modules are named in plain text because they do not exist yet. Every
 record is unresolved until its roadmap package lands.
 
-- **Current limitation.** Nothing reads a declared constant: no cache identity signs one, no
+- **Current limitation.** Cache identities sign the constants each node reads, but no
   execution path binds `global_constants` (node code that names it fails), no editor surface
   edits constants, and the step renderer has no Constant operand.
 - **Unresolved target.** The seams below, one paragraph per package, built in the order of
-  [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads)
+  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source)
   to [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 - **Non-goals.** No new HTTP route: constants travel in the graph of the existing load, save,
   execution and step routes. No constant reaches a `utility` module, a pivot formula or a
@@ -703,38 +703,12 @@ record is unresolved until its roadmap package lands.
   `error_code`: it is an ordinary node-local failure, so a preview shows it on the reading node
   instead of aborting the walk (as a public contract error would), and every other run
   propagates it. Save refusals are HTTP 400 with the messages below. No migration or fallback
-  exists; a graph without constants fingerprints exactly as today apart from the contract
-  version bumps GCONST-02 makes.
+  exists.
 - **Acceptance evidence.** The testing scenarios at the end of this section, each extending the
   named module.
-- **Roadmap package.** [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads),
-  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
+- **Roadmap package.** [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
   [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
   [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-
-**Cache identities (GCONST-02).** `src/haute/_cache.py::CacheInputClass` gains
-`GLOBAL_CONSTANTS`, and every consumer contract classifies it:
-
-- `GRAPH_EXECUTION` consumes it through a new `global_constants` field of
-  `src/haute/_cache.py::graph_fingerprint`: the records (name, type, value, by_source) of the
-  constants the graph's nodes read, sorted by name, every constant when any node reads every
-  constant, and the load error when one is set and any node reads a constant. `ALGO_VERSION`
-  becomes 9.
-- `PREVIEW_TRACE` consumes it through a new `global_constants` field of
-  `src/haute/_cache.py::lineage_cache_key`: for the constants the relevant nodes read, the name,
-  the type and the value resolved for the request's `source`, or a missing marker, plus the load
-  error as above. Its contract version becomes 4 and `LINEAGE_CACHE_KEY_VERSION` is incremented.
-- `NODE_SNAPSHOT_SIGNATURE` consumes it through `lineage_fingerprint`, the graph fingerprint of
-  the source lineage, and `DEPLOY_SCHEMA` through `graph_fingerprint`; each contract version is
-  incremented.
-- `GRAPH_STRUCTURE` excludes it ("Constant values are execution inputs; a structured reference
-  to a constant is node config."), `RUNTIME_GRAPH_INPUT` excludes it as requiring the paired
-  structural identity, `MODEL_CONTRACT` as having no graph input, and `INPUT_SNAPSHOT` with its
-  user-code rationale (post-read code changes execution, not external source bytes).
-
-Constant records nested in a payload use a new closed `CacheIdentityRecord` member, version 1.
-Node output snapshots, seed plans and data points sign `graph_fingerprint` of a lineage
-subgraph, so each signs exactly its lineage's reads without a change of its own.
 
 **Execution (GCONST-03).** `src/haute/_global_constants.py` also owns the run-level table, its
 per-node views and the helper that builds node-code globals. A run's table holds the graph's
@@ -878,17 +852,6 @@ and the known columns, and discards a response for a key that is no longer curre
 
 **Testing scenarios.**
 
-- GCONST-02. `tests/test_cache_identity_contract.py`: every consumer classifies the new input
-  class. `tests/test_lineage_preview_cache.py`: a preview key changes when a read constant's
-  value for the request's source changes, does not change for another source's value or for an
-  unread constant, and changes for any constant after a `getattr(global_constants, name)` read;
-  an f-string that names a constant directly, and one that passes `global_constants` to
-  `getattr`, record their reads on Python 3.11 as on later versions.
-  `tests/test_graph_fingerprint_cached.py`, `tests/test_node_snapshot_signature.py`,
-  `tests/test_seed_plans.py` and `tests/test_data_point_resolver.py`: a node output snapshot, a
-  seed plan and a data point whose lineage reads a constant are re-signed when any of its values
-  changes, through the real `upstream_subgraph` and snapshot-graph constructors, and an
-  unrelated lineage is not.
 - GCONST-03. `tests/test_executor.py`: one graph run under `live` and `nb_batch` reads each
   source's value in Transform, Data Input, External File and Model Score code; a missing
   `nb_batch` value fails only the nodes that read it, with the message above; an undefined name

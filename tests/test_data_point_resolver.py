@@ -726,3 +726,35 @@ def test_api_input_table_labels_and_digests_cover_emitting_tables_only(project: 
     invalid_resolver = DataPointResolver(invalid_graph, source="live")
     assert invalid_resolver.api_input_table_labels("bad_api") == ()
     assert invalid_resolver.api_input_table_digests("bad_api") == ()
+
+
+def test_a_data_point_lineage_signs_the_constants_it_reads() -> None:
+    from haute._cache import GraphFingerprintMemo
+    from haute._data_points import _lineage_fingerprint
+    from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+
+    def graph(rate: float) -> PipelineGraph:
+        return PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="reader",
+                    data=NodeData(
+                        label="reader",
+                        nodeType=NodeType.POLARS,
+                        config={"code": "df = pl.LazyFrame({'r': [global_constants.rate]})"},
+                    ),
+                ),
+                GraphNode(
+                    id="point",
+                    data=NodeData(
+                        label="point", nodeType=NodeType.POLARS, config={"code": "df = reader"}
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e", source="reader", target="point")],
+            global_constants=[GlobalConstant(name="rate", type="float", value=rate)],
+        )
+
+    assert _lineage_fingerprint(graph(1.0), "point", GraphFingerprintMemo()) != (
+        _lineage_fingerprint(graph(2.0), "point", GraphFingerprintMemo())
+    )

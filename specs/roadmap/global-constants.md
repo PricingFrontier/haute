@@ -27,44 +27,11 @@ the Utility pane until they exist); and assistant support for constants.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GCONST-02 | Planned | P1 | Cache identities sign the constants each node reads, so editing one re-runs only the nodes that read it. |
 | GCONST-03 | Planned | P2 | Every run reads each constant's value for the source it runs under: in the editor, standalone and deployed. |
 | GCONST-04 | Planned | P2 | The toolbar's Constants button opens a pane that edits the constants, per source where split. |
 | GCONST-05 | Planned | P2 | The step editor offers constants wherever it offers variables, and in typed function arguments. |
 
 ## Planned improvements
-
-### GCONST-02 — Cache identities sign the constants each node reads
-**Why:** A cached result must never outlive a change to a value its code
-reads. Signing constants the way the preamble is signed (whole, into every
-key) would re-run the entire pipeline on every edit, which is exactly what a
-constants pane makes routine.
-
-**Plan:** Add a `GLOBAL_CONSTANTS` input class and classify it in every cache
-consumer contract. Compute each node's constant reads from the configuration it
-executes: the Constant operands in its steps and the `global_constants.<name>`
-reads in its code and free-code steps, or every constant when its code names
-`global_constants` any other way or does not parse. Sign the read constants
-with all their values in the graph fingerprint, so that lineage subgraphs,
-node output snapshots, seed plans and data points sign only their own lineage's
-reads, and sign the read constants' values for the request's source in the
-lineage preview key. Bump the version of every contract whose payload changes.
-
-**Acceptance:** Editing a constant changes the preview key, the node snapshot
-signature, the seed plan and the data point identity of a node that reads it
-and of every descendant, and leaves the keys of a lineage that does not read it
-unchanged; editing only the `nb_batch` value leaves `live` preview keys
-unchanged and changes `nb_batch` ones; a `getattr(global_constants, name)` read
-signs every constant; a read inside an f-string is recorded on Python 3.11 as on
-later versions; and the cache identity contract test classifies the new class
-for every consumer.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_cache.py::CacheInputClass`;
-`src/haute/_cache.py::graph_fingerprint`;
-`src/haute/_cache.py::lineage_cache_key`;
-`src/haute/_node_snapshots.py`.
 
 ### GCONST-03 — Every run reads each constant's value for its source
 **Why:** A split constant's value depends on the source, so every path that
@@ -101,7 +68,7 @@ formula that
 reads a constant shows its value; and deploy validation refuses a missing
 `live` value.
 
-**Dependencies:** GCONST-02.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/executor.py::_compile_preamble`;
 `src/haute/_user_exec.py::_exec_user_code`;
