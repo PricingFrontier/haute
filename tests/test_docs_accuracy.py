@@ -155,6 +155,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "explore-eda",
     "frontend-shared",
+    "global-constants",
     "optimiser-validation",
     "pipeline-config",
     "polars-node-clarity",

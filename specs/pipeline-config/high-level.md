@@ -86,6 +86,13 @@ decorator to act on, so the live API treats it as a plain function and a standal
 its body as written; the static parser rejects that form, so it never appears in a saved
 pipeline file.
 
+> NOTE: A Model Score's code on the canvas and in the deployed scorer also lacks the
+> preamble's names, which its saved function sees in a standalone run, and deployed External
+> File code sees `obj` without the preamble's names it has in the editor.
+> [BUG-14](../roadmap/bugs.md#bug-14--model-score-code-sees-the-preamble-on-the-canvas-and-when-deployed)
+> and [BUG-13](../roadmap/bugs.md#bug-13--deployed-external-file-code-sees-the-preamble-as-in-the-editor)
+> give both the preamble's names.
+
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
 configuration, contract, topology, and submodel failures raise and no regex-recovered graph
@@ -156,6 +163,12 @@ decorator records an internal instance marker, and `run()`/`score()` raise `Exec
 before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
 codegen may resolve an instance into a concrete generated function; the live registry may not
 silently treat an unresolved instance as an ordinary Polars node.
+
+> NOTE: `run()` runs under the scenario `"batch"`, a source no pipeline has unless the analyst
+> adds one, so a Source Switch mapped to the pipeline's own sources fails a bare `run()` with
+> `LiveSwitchScenarioError`.
+> [BUG-15](../roadmap/bugs.md#bug-15--a-bare-pipelinerun-routes-a-source-the-pipeline-has)
+> decides which source a bare `run()` routes.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every surface that binds one pipeline, including `run`, `lint`,
@@ -516,3 +529,191 @@ refused with their own targeted message. Optimiser
 `data_input`/`banding_source` and Optimiser Apply `ratebook_input` persist exact incoming-edge
 names and are never remapped from node ids; an unmatched name fails graph/runtime validation.
 Plural discovery still skips a candidate whose contents cannot be read.
+
+## Approved change contract — global constants
+
+This section specifies global constants before they are built. Every record in it is
+unresolved until its roadmap package lands. Each package folds its part into the
+present-tense specification of the component that owns it (this one,
+[codegen](../codegen/high-level.md), [expression-parsing](../expression-parsing/high-level.md),
+[execution-engine](../execution-engine/high-level.md), [caching](../caching/high-level.md),
+[server-api](../server-api/high-level.md), [deploy](../deploy/high-level.md),
+[frontend-shared](../frontend-shared/high-level.md),
+[frontend-graph-canvas](../frontend-graph-canvas/high-level.md) and
+[frontend-node-editors](../frontend-node-editors/high-level.md)), and the last package to land
+removes this section. The [low-level contract](low-level.md#approved-change-contract--global-constants)
+names the seams, shapes and tests.
+
+- **Current limitation.** A value that several nodes share has three homes today, and none of
+  them can differ by source. The preamble and the project's `utility` modules are ordinary
+  Python, so a value defined there is the same under every source, and any preamble edit
+  changes every node's cache key. The Constant node emits a one-row frame, so a node reads its
+  values only through an edge and a join, and its values are strings coerced to floats where
+  they parse. A pipeline whose batch source must run with a different value from its live
+  source (an as-at date, a rate-change date, a loading under test) has to route the difference
+  through a Source Switch.
+- **Unresolved target.** A pipeline declares named, typed global constants that every code box
+  and every structured step reads as `global_constants.<name>`, without an edge, including
+  inside submodels. Each constant is either the same for every source or split by source, with
+  one value per source, and each run reads the value for the source it runs under. The
+  toolbar's Imports button becomes Constants and opens the pane that edits them.
+  [GCONST-01](../roadmap/global-constants.md#gconst-01--global-constants-in-the-pipeline-model-file-and-code)
+  to [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) build
+  it.
+- **Non-goals.** The Constant node keeps its behaviour. Config fields outside the step editor
+  (banding edges, rating tables, optimiser bounds, file paths) and Explore pivot formulas do
+  not read constants. A
+  constant holds one scalar value: no lists, maps or frames. A `utility` module cannot read
+  constants; its functions take them as arguments. The preamble stays editable, from the
+  Utility pane, until automatic imports replace it. Constants edits are not on the canvas undo
+  stack, as preamble edits are not. The assistant neither reads nor writes constants. `haute run`
+  keeps running the `live` source, and recovery drafts do not cover the constants file.
+- **Failure and compatibility semantics.** A constants file that is missing, unreadable, not
+  valid JSON, or invalid as defined below is a load error naming the file and, where there is
+  one, the entry and field. The pipeline still loads, with a graph warning; every node that
+  reads a constant fails with that error; and no save rewrites or deletes the file. A
+  `global_constants=` constructor keyword naming any other path, any other module-level binding
+  of the name `global_constants`, and a decorated node function of that name are parse errors.
+  Reading an undefined constant, a split constant with no value for the run's source, or any
+  constant while its file failed to load raises a global-constant error in the node that reads
+  it, naming the constant, the source and the fix, and so does a read by a route the reads
+  analysis cannot see, such as `eval` of a string. That error is an ordinary node failure: a
+  preview shows it on the reading node and keeps previewing the rest, and every other run stops
+  with it. Save refuses an invalid constant, a node named `global_constants`, a preamble binding
+  of the name, node code or a step variable that binds it, a code read or step operand naming an
+  undefined constant (unless the file failed to load, when the definitions are unavailable), and
+  a step operand whose constant has a type its slot does not take. A save from a document whose
+  revision predates an edit of the constants file is refused as stale. It
+  saves a split constant that lacks a value for one of the pipeline's
+  sources, with a warning naming both. Haute is prerelease, so nothing migrates, and a pipeline
+  without constants generates exactly the code it generates today.
+- **Acceptance evidence.** Each roadmap package's acceptance tests, extending the modules the
+  low-level contract names, and one browser test that defines a split constant in the pane and
+  previews a Transform and a filter step that read it, under `live` and under `nb_batch`,
+  seeing each source's value.
+- **Roadmap package.** [GCONST-01](../roadmap/global-constants.md#gconst-01--global-constants-in-the-pipeline-model-file-and-code),
+  [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads),
+  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
+  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
+  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor), in that
+  order.
+
+**What a global constant is.** A global constant has a name, a type and a value. The name
+starts with a letter, continues with letters, digits and underscores, is not a Python keyword,
+and is unique within the pipeline (names are case-sensitive, as in Python). The type is one of
+five: `integer` (a whole number, read as a Python `int`), `float` (any finite number, read as
+a `float`), `text` (read as a `str`), `boolean` (read as a `bool`) or `date` (read as a
+`datetime.date`). A constant is either uniform, with one value that every source reads, or
+split by source, with at most one value for each source. A split constant that lacks the run's
+source's value is incomplete, not invalid: saving it warns and reading it under that source
+fails. A constant never holds null. The types are explicit so that a constant's Polars dtype
+never depends on how its value happens to be spelt (`pl.lit(1)` is an integer and `pl.lit(1.0)`
+a float).
+
+**Where constants live.** A pipeline's constants, which its submodels share, live in one file,
+`config/global_constants.json`, relative to the pipeline file's folder like every node config.
+The pipeline constructor names that file,
+`pipeline = haute.Pipeline("<name>", global_constants="config/global_constants.json")`, and the
+statement after the constructor binds the reserved name,
+`global_constants = pipeline.global_constants`. Every submodel definition file the pipeline
+writes binds `global_constants = submodel.global_constants` after its own constructor. Node
+code refers to that module-level name, so a generated file passes `ruff check` and runs
+standalone. A pipeline without constants has no file, no keyword and no binding. The constants
+cannot live in the `.haute.json` sidecar beside the source list: that file is editor state, and
+no run reads it.
+
+The file holds one JSON object with one key, `constants`: a list, in the order the pane shows
+them, of entries with `name`, `type` and exactly one of `value` (uniform) or `by_source` (split:
+an object from source name to value, written in the pipeline's source order). An unknown key at
+either level is rejected by name. A value is written as a JSON integer for `integer`, any JSON
+number for `float` (read as a `float`, so `1` and `1.0` read alike), a JSON string for `text`,
+`true` or `false` for `boolean`, and a `YYYY-MM-DD` string naming a real calendar date for
+`date`. A `by_source` key is an opaque source name; a key the pipeline's sources do not list is
+kept, and the pane reports it.
+
+**Reading a constant.** Code reads a constant as `global_constants.<name>`, an attribute of the
+one reserved name, in the code box and the free-code steps of every stepped node type
+(Transform, Data Input, External File, Rating Step, Model Score, Scenario Expander and Explore).
+A structured step reads one through a Constant operand, offered wherever the step editor offers
+a variable, and in a typed function argument, where the constant's type must fit the argument;
+the step renders as `global_constants.<name>`.
+
+A node reads the constants its code names as `global_constants.<name>` (in an f-string's
+expressions too) and its steps reference.
+Code that uses the name `global_constants` any other way (passing it to a function, `getattr`
+with a computed name) may read every constant. No other route to a constant is tracked, so a
+read by any other route (`eval` of a string, say) fails in that node, naming the constant and
+asking for `global_constants.<name>`. A cached result can therefore never depend on a constant
+its identity does not sign.
+
+Every run binds `global_constants` for the source it executes under, which is the value its
+Source Switches route on:
+
+- previews, traces, free-code column resolution, Explore and training use the toolbar's source,
+  which their requests carry;
+- the optimiser, and a Data Output write started under `live`, use the graph's batch scenario
+  (its Source Switches' one non-live source, or `"batch"`), as they do today;
+- deployed scoring uses `live`;
+- `pipeline.run(source=...)` uses the source it is given (by default `"batch"`, the scenario a
+  standalone run uses today), and `pipeline.score()` and `haute run` use `live`.
+
+A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
+Polars callback that reads a constant during collection reads the run's value on whichever
+thread runs it, and two runs under different sources never see each other's values. A
+standalone run of a pipeline that wires a submodel fails before any node runs
+([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)),
+so the binding in a submodel file serves `ruff check` and imports until standalone runs execute
+submodels.
+
+No node, step variable, node code or preamble may bind the name `global_constants`, so nothing
+shadows it. A constant's name is only ever an attribute of that name, so it can never collide
+with an input, a preamble binding or a step variable.
+
+**Caching.** Editing a constant re-runs only the nodes whose code or steps read it, and their
+descendants. Editing one source's value leaves every other source's previews cached. Node
+output snapshots and whole-graph identities sign all of a read constant's values, so they are
+re-signed when any of its values changes.
+
+**The Constants pane.** The toolbar's Imports button becomes Constants, in the same column
+under Utility, and opens the Global Constants pane in the right-hand panel. The preamble editor
+moves into the Utility pane, as a fixed `Imports` entry at the top of its file list that edits
+the preamble exactly as the Imports pane did.
+
+The pane lists the constants in file order. Each shows its name, its type, a "Split by source"
+switch and its value: one value for a uniform constant, or one labelled value per pipeline
+source, in the toolbar's source order, for a split one. An Add button appends an empty uniform
+`float` constant with a generated free name (`constant_1`, `constant_2`, …), and each constant
+can be deleted. Values are edited with the input that fits the type (number, text, true/false,
+date). The pane validates as the analyst types, and marks each invalid name, duplicate name and
+invalid value with its reason. It marks a split constant's empty source value as missing, and
+the toolbar's Save stays available. Save is refused while any constant is invalid.
+
+- Switching "Split by source" on fills every source's value with the uniform value. Switching it
+  off keeps the `live` value; when another source's value differs, the pane first asks for
+  confirmation, naming the values it discards.
+- Changing the type keeps each value that converts exactly (an integer to a float, a whole
+  float to an integer, any value to text) and empties the rest, which the pane then marks.
+- Each constant lists the nodes that read it, through code or steps. Deleting or renaming a
+  constant that is read first asks for confirmation, naming those nodes. A rename rewrites the
+  Constant operands that name it and leaves code text alone, so save refuses the old name's code
+  reads until they are edited.
+- Adding a source gives each split constant an empty, missing value for it. Removing a source
+  whose values some split constants hold first asks for confirmation, naming them, and then
+  removes those values. A `by_source` key that is not a pipeline source is listed in the pane's
+  warning line, with a button that removes it.
+- When the constants file failed to load, the pane shows the load error and is read-only, and
+  save sends no constants.
+
+**Saving.** Save writes the constants file whenever the graph has constants, and removes it,
+with the constructor keyword and the bindings, when none remain. The editor's document revision
+covers the constants file as it covers node configs, so a save from a document loaded before
+someone else edited the file is refused as stale and leaves the file as it is. While the file on
+disk fails to load, save neither rewrites nor deletes it and keeps the keyword and the bindings;
+it skips the checks that compare code reads and Constant operands with the definitions, which
+are unavailable rather than absent, so an unrelated edit still saves; and a save request that
+carries constants is refused rather than overwriting what could not be read.
+
+**Deployment.** The deployed graph carries the pipeline's constants and reads their `live`
+values. Deploy validation refuses a deployed graph that reads a constant with no `live` value,
+naming it. A constant read only on a branch that deployment prunes away does not need a `live`
+value.

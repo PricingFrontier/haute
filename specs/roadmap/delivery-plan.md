@@ -52,6 +52,8 @@ merges, remove its rounds from the table.
 | F | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
 | F | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
+| G | 19 | Global constants: model and identity | `GCONST-01`, `GCONST-02` | — | L | Requested on 2 October 2026 and independent of phases B to F, so it may start at once on its own branch. Cache identities sign constants before any run reads one, so no cached result can outlive an edit. |
+| G | 20 | Global constants: runs and editor | `GCONST-03`, `GCONST-04`, `GCONST-05` | 19 | L | Runs bind each source's value before the pane and the step editor put constants in front of analysts. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
@@ -63,6 +65,9 @@ round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
+- `GCONST-04` (decided 2 October 2026): the toolbar's **Imports** button
+  becomes **Constants**, and the preamble is edited from a fixed `Imports`
+  entry in the Utility pane.
 
 ## Not scheduled
 

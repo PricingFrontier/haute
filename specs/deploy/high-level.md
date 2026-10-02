@@ -134,6 +134,13 @@ does not carry. `validate_deploy` refuses it, naming the module and the file tha
 it. Imports that resolve from installed packages are for the serving environment to
 provide.
 
+> NOTE: The served preamble's names do not reach a bundled External File's code, which runs
+> with `obj` alone, or a Model Score's code, which runs with `model` alone, although the editor
+> gives External File code those names.
+> [BUG-13](../roadmap/bugs.md#bug-13--deployed-external-file-code-sees-the-preamble-as-in-the-editor)
+> and [BUG-14](../roadmap/bugs.md#bug-14--model-score-code-sees-the-preamble-on-the-canvas-and-when-deployed)
+> pass them through.
+
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
   registers it in Unity Catalog, and creates/updates a Databricks Model Serving endpoint.
