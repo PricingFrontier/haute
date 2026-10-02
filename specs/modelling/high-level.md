@@ -155,8 +155,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   reports the loss count on the next event/end marker, and retains only bounded history.
   The response includes a bounded, versioned diagnostic describing the
   feature choice and why other columns were retained as metadata or excluded.
-  A configuration that leaves no feature columns is rejected with HTTP 422 before a sink
-  or trainer runs.
+  A GLM whose terms leave no feature columns is rejected with HTTP 422 before a sink or
+  trainer runs (a CatBoost node with no selected feature is refused earlier, as HTTP 400),
+  and a target or selected feature the data lacks is a 422 naming the column.
   The training job store has
   one process-wide running slot shared by training and GLM dispersion estimation; a
   second request of either kind is rejected while the first is running.
