@@ -93,6 +93,6 @@ provide is reported as unavailable or `null`; it is never presented as zero.
 
 ## Related guides
 
-- [Polars](nodes/polars.md) for custom transformations and joins.
+- [Transform](nodes/transform.md) for custom transformations and joins.
 - [Edge Join](nodes/edge-join.md) for a visible canvas join.
 - [Model Training](nodes/model-training.md) for training feature selection.

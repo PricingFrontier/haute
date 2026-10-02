@@ -36,7 +36,7 @@ describe("flowElements", () => {
   })
 
   it("uses the node metadata name when generating labels", () => {
-    expect(nodeLabel(NODE_TYPES.POLARS, "polars_2")).toBe("Polars 2")
+    expect(nodeLabel(NODE_TYPES.POLARS, "polars_2")).toBe("Transform 2")
     expect(nodeLabel(NODE_TYPES.EDGE_JOIN, "edgeJoin_10")).toBe("Edge Join 10")
     expect(() => nodeLabel("unknown" as never, "mystery")).toThrow("Unknown node type")
   })

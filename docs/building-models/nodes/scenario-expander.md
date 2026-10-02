@@ -2,7 +2,7 @@
 
 You want to test a range of candidate prices for each quote  - say, 50 price points between 200 and 800  - so the optimiser can pick the best one. The Expander generates those candidates by cross-joining each row with a range of values.
 
-An Expander takes a single input and outputs every input row repeated once per step, with a step index column and, optionally, a column of values spread across a range. The panel has three tabs: **CONFIG**, **POLARS** and **COLUMNS**.
+An Expander takes a single input and outputs every input row repeated once per step, with a step index column and, optionally, a column of values spread across a range. The panel has three tabs: **CONFIG**, **TRANSFORM** and **COLUMNS**.
 
 ## The CONFIG tab
 
@@ -18,9 +18,9 @@ The **INPUT** chip at the top names the node's connection; its × removes the co
 
 A **Min** or **Max** that is not a number is outlined in red and not saved; fix it or clear it. When Min is not below Max, the range shows "Warning: min value should be less than max value".
 
-## The POLARS tab
+## The TRANSFORM tab
 
-See [Polars](polars.md#building-the-node-from-steps).
+See [Transform](transform.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 
@@ -53,7 +53,7 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     The output has `rows × steps` records. 1,000 rows with 50 steps produces 50,000 rows. Large expanded frames are streamed in batches of **Chunk rows** from Pipeline settings, which the optimiser uses too.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/expander/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.scenario_expander(config="config/expander/<node name>.json")`. Steps on the **POLARS** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the expanded data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/expander/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.scenario_expander(config="config/expander/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the expanded data as `df`; after **Switch to code**, the body is your code.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -63,7 +63,7 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     | **VALUE COLUMN** | `column_name` |
     | **Min** | `min_value` (absent means `0.8`) |
     | **Max** | `max_value` (absent means `1.2`) |
-    | **POLARS** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
     | **COLUMNS** tab | `selected_columns` |
 
 **See also:**

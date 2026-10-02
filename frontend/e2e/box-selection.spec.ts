@@ -34,7 +34,7 @@ test.describe("box selection", () => {
     await page.getByTestId("node-palette-item-polars").dragTo(page.locator(".react-flow"), {
       targetPosition: { x: 260, y: 160 },
     })
-    const dropped = page.getByLabel(/Polars node: Polars/i)
+    const dropped = page.getByLabel(/Transform node: Transform/i)
     await expect(dropped).toBeVisible()
     await expect(page.getByTestId("node-panel")).toBeVisible()
     await waitForSettledViewport(page)
@@ -51,6 +51,6 @@ test.describe("box selection", () => {
     expect(end.y - start.y, "the dropped node follows the first drag").toBeGreaterThan(40)
 
     await page.mouse.click(end.x, end.y, { button: "right" })
-    await expect(page.getByTestId("context-menu")).toHaveAttribute("aria-label", /^Actions for Polars \d+$/)
+    await expect(page.getByTestId("context-menu")).toHaveAttribute("aria-label", /^Actions for Transform \d+$/)
   })
 })

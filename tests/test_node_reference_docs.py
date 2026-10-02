@@ -30,7 +30,7 @@ NODE_REFERENCE_PAGES: dict[NodeType, str] = {
     NodeType.DATA_INPUT: "data-input.md",
     NodeType.DATA_OUTPUT: "data-output.md",
     NodeType.CONSTANT: "constant.md",
-    NodeType.POLARS: "polars.md",
+    NodeType.POLARS: "transform.md",
     NodeType.EDGE_JOIN: "edge-join.md",
     NodeType.BANDING: "banding.md",
     NodeType.RATING_STEP: "rating-step.md",

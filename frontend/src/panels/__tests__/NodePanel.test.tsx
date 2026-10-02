@@ -874,10 +874,10 @@ describe("NodePanel", () => {
     })
 
     expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /^polars$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^transform$/i })).toBeInTheDocument()
     expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
 
     expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
     expect(screen.getByTestId("polars-hint")).toHaveTextContent(hint)
@@ -905,7 +905,7 @@ describe("NodePanel", () => {
       },
     })
     const { rerender, props } = renderPanel({ node: scoreNode({ output_column: "prediction" }, true) })
-    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
     expect(steppedCodePaneProps.at(-1)?.nodeColumns).toEqual(scored)
 
     // A code edit clears the stash until the refreshed preview records it again.
@@ -945,7 +945,7 @@ describe("NodePanel", () => {
       runError: "boom",
     })
     expect(screen.queryByTestId("SteppedCodePane")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
 
     expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
     expect(screen.queryByTestId("PolarsCodePanel")).not.toBeInTheDocument()
@@ -965,7 +965,7 @@ describe("NodePanel", () => {
       data: { label: "First input", description: "", nodeType: "dataInput", config: {} },
     })
     const { rerender, props } = renderPanel({ node: first })
-    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^transform$/i }))
     expect(screen.getByTestId("SteppedCodePane")).toBeInTheDocument()
 
     const second = makeNode({
@@ -1414,7 +1414,7 @@ describe("NodePanel", () => {
       edges: [sourceEdge],
     })
 
-    const code = screen.getByRole("tab", { name: "Polars Code" })
+    const code = screen.getByRole("tab", { name: "Transform" })
     const overview = screen.getByRole("tab", { name: "Overview" })
     const pivots = screen.getByRole("tab", { name: "Pivots" })
     const charts = screen.getByRole("tab", { name: "Charts" })
@@ -1424,7 +1424,7 @@ describe("NodePanel", () => {
       within(screen.getByRole("tablist", { name: "Explore panes" }))
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-    ).toEqual(["Polars Code", "Overview", "Pivots", "Charts", "Export"])
+    ).toEqual(["Transform", "Overview", "Pivots", "Charts", "Export"])
     expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
 
     expect(code).toHaveAttribute("aria-selected", "true")
@@ -1670,7 +1670,7 @@ describe("NodePanel", () => {
     })
     renderPanel({ node: exploreNode })
 
-    // Default pane is "Polars Code"; switch to Overview.
+    // Default pane is "Transform"; switch to Overview.
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true")
@@ -1701,7 +1701,7 @@ describe("NodePanel", () => {
       </GraphProvider>,
     )
 
-    expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByRole("tab", { name: "Transform" })).toHaveAttribute("aria-selected", "true")
 
     fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
     expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")

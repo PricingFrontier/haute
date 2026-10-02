@@ -46,7 +46,7 @@ const CHANGE: AssistantChangeRecord = {
     nodes: [
       {
         id: "premium",
-        type: "Polars",
+        type: "Transform",
         change: "renamed",
         renamed_from: "priced",
         fields: [],

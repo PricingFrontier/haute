@@ -8,7 +8,7 @@ You have a set of rating factors  - area, age band, NCD level  - and a table of 
     - Looking up relativities based on one, two, or three dimensions.
     - Use [Banding](banding.md) first if your tables expect banded inputs rather than raw values.
 
-A Rating Step takes a single input and outputs it with one new column per rating table, plus any combined columns. The panel has three tabs: **CONFIG**, **POLARS** and **COLUMNS**.
+A Rating Step takes a single input and outputs it with one new column per rating table, plus any combined columns. The panel has three tabs: **CONFIG**, **TRANSFORM** and **COLUMNS**.
 
 ## The CONFIG tab
 
@@ -58,9 +58,9 @@ Each combined output is a tab, named by its column (with a dot, green when compl
 
 A line under the fields shows the formula, such as `location_age_factor = 1.0 × area_factor × age_factor`. Every table takes part. With no combined output, the individual factor columns are still created but no combined column is produced.
 
-## The POLARS tab
+## The TRANSFORM tab
 
-See [Polars](polars.md#building-the-node-from-steps).
+See [Transform](transform.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 
@@ -102,10 +102,10 @@ With **DEFAULT** cleared, the run fails with a `RatingTableMissError` naming the
 
     On a text column, entries are matched exactly as written, and matching is
     case-sensitive: if your data has `"London"` but your table has `"london"`,
-    it won't match. Use a [Polars](polars.md) node upstream to normalise casing if needed.
+    it won't match. Use a [Transform](transform.md) node upstream to normalise casing if needed.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/rating_step/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.rating_step(config="config/rating_step/<node name>.json")`. Steps on the **POLARS** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the rated data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/rating_step/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.rating_step(config="config/rating_step/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the rated data as `df`; after **Switch to code**, the body is your code.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -118,7 +118,7 @@ With **DEFAULT** cleared, the run fails with a `RatingTableMissError` naming the
     | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
     | **OPERATION** | `combinedOutputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
     | **BASE VALUE** | `combinedOutputs[].baseValue`, a number |
-    | **POLARS** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
     | **COLUMNS** tab | `selected_columns` |
 
     With no editor control:

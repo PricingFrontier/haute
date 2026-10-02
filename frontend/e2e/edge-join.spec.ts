@@ -547,7 +547,7 @@ test.describe("Edge Join insertion workflow", () => {
     )
     await expect(page.getByRole("complementary", { name: /node properties/i })).toContainText(/Trace:/)
     await expect(
-      page.getByTestId("rf__node-enriched").getByLabel(/Polars node:.*trace active/i),
+      page.getByTestId("rf__node-enriched").getByLabel(/Transform node:.*trace active/i),
     ).toBeVisible()
 
     for (const join of [finalFirstJoin, finalSecondJoin]) {

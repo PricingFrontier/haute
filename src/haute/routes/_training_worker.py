@@ -128,7 +128,7 @@ def _friendly_error(
         if "nan" in msg.lower() or "inf" in msg.lower():
             return (
                 f"{operation_noun} failed: the data contains NaN or infinite "
-                "values. Add a polars node upstream to handle missing values "
+                "values. Add a Transform node upstream to handle missing values "
                 "(e.g. .fill_null() or .drop_nulls()) before training."
             )
         if "feature" in msg.lower() and "number" in msg.lower():

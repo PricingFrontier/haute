@@ -2652,12 +2652,14 @@ class TestSystemPrompt:
         assert "never pre-bound" not in prompt
         assert "On a `polars` node, code starts from a named input" not in prompt
         assert "or return a transformed frame" not in prompt
-        assert "Write new Polars logic as steps with a free-code card: on a Polars node" in prompt
+        assert (
+            "Write new Polars logic as steps with a free-code card: on a Transform node" in prompt
+        )
         assert (
             "on a Data Input, Load File, Rating Step, Model Scoring, Expander or Explore node"
             in prompt
         )
-        assert "reads other inputs by their edge names only on a Polars or Load File node" in (
+        assert "reads other inputs by their edge names only on a Transform or Load File node" in (
             prompt
         )
         assert "the loaded object is `obj`" in prompt

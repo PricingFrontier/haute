@@ -106,7 +106,7 @@ const POLARS_TAB_HINTS: Record<string, React.ReactNode> = {
 // Right-panel panes for Explore nodes. Code prepares the analysis dataset;
 // Overview, Pivots, and Charts configure display, while Export remains scaffolding.
 const EXPLORE_PANES = [
-  { key: "code", label: "Polars Code" },
+  { key: "code", label: "Transform" },
   { key: "overview", label: "Overview" },
   { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },
@@ -1150,7 +1150,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = 
                   borderBottom: "2px solid transparent",
                 }}
           >
-            {tab === "polars" ? "Polars" : tab === "config" ? configLabel : tab}
+            {tab === "polars" ? "Transform" : tab === "config" ? configLabel : tab}
           </button>
         )
       })}
@@ -1239,7 +1239,7 @@ type NodeEditorBodyProps = {
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
-  /** The node's own recorded columns, which the Polars tab offers after its input columns. */
+  /** The node's own recorded columns, which the Transform tab offers after its input columns. */
   nodeColumns: { name: string; dtype: string }[] | undefined
   availableColumns: { name: string; dtype: string }[]
   currentColumns: { name: string; dtype: string }[]
@@ -1277,7 +1277,7 @@ function NodeEditorBody({
     // input names (never the chips); `stepInputNames` refuses a type outside
     // the surface table rather than falling back to a plain code box.
     const surface = steppedSurfaceFor(nodeType)
-    if (surface === undefined) throw new Error(`Polars tab on ${nodeType}, which does not author steps.`)
+    if (surface === undefined) throw new Error(`Transform tab on ${nodeType}, which does not author steps.`)
     editor = (
       <SteppedCodePane
         config={config}
@@ -1686,7 +1686,7 @@ function NodePanelContent({
         tabs={editorTabs}
         activeTab={activeTab}
         onSelect={selectTab}
-        configLabel={nodeType === NODE_TYPES.POLARS ? "Polars" : undefined}
+        configLabel={nodeType === NODE_TYPES.POLARS ? "Transform" : undefined}
       />
 
       {showExplorePanes && (

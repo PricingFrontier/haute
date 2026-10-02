@@ -1072,7 +1072,7 @@ class TestTurnContext:
         assert "- Column value profiles: not permitted" in first_context["content"]
         assert "`adults`" not in first_context["content"]
         assert "- Selected on the canvas: none" in second_context["content"]
-        assert "- `adults` (Polars)" in second_context["content"]
+        assert "- `adults` (Transform)" in second_context["content"]
         assert "  - input `quotes` from `quotes`: [" in second_context["content"]
         assert "- Column value profiles: permitted" in second_context["content"]
         # The first turn's context is not replayed with its history.
