@@ -15,11 +15,20 @@ and helper functions see as ``global_constants`` in a pipeline file.
 from __future__ import annotations
 
 import ast
+import datetime as _dt
+import inspect
 import textwrap
-from collections.abc import Iterable, Iterator, Mapping
+import types
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Final, TypeAlias
 
-from haute._types import GLOBAL_CONSTANTS_NAME, GraphNode
+from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    GLOBAL_CONSTANTS_NAME,
+    GlobalConstant,
+    GraphNode,
+    PipelineGraph,
+)
 from haute.errors import GlobalConstantError
 
 
@@ -299,3 +308,206 @@ class _StandaloneGlobalConstants:
 
 STANDALONE_GLOBAL_CONSTANTS: Final = _StandaloneGlobalConstants()
 """The sentinel ``pipeline.global_constants`` and ``submodel.global_constants`` return."""
+
+
+# ---------------------------------------------------------------------------
+# Run-time namespace
+# ---------------------------------------------------------------------------
+
+
+def _resolved_value(constant_type: str, value: object) -> object:
+    if constant_type == "date":
+        assert isinstance(value, str)
+        return _dt.date.fromisoformat(value)
+    return value
+
+
+class GlobalConstantsNamespace:
+    """What node code reads as ``global_constants`` during one run.
+
+    It holds the pipeline's constants resolved for one source as concrete
+    values, so a lazy callback reads the run's value on whatever thread runs
+    it. ``restricted_to`` returns the view one piece of code may read: a read
+    outside the names that code mentions is refused, which keeps the reads
+    the cache identities sign complete.
+    """
+
+    __slots__ = ("_allowed", "_defined", "_error", "_source", "_values")
+
+    def __init__(
+        self,
+        constants: Iterable[GlobalConstant],
+        *,
+        source: str,
+        error: str | None = None,
+        allowed: frozenset[str] | None = None,
+    ) -> None:
+        values: dict[str, object] = {}
+        defined: list[str] = []
+        for constant in constants:
+            defined.append(constant.name)
+            if constant.by_source is None:
+                values[constant.name] = _resolved_value(constant.type, constant.value)
+            elif source in constant.by_source:
+                values[constant.name] = _resolved_value(constant.type, constant.by_source[source])
+        object.__setattr__(self, "_values", values)
+        object.__setattr__(self, "_defined", tuple(defined))
+        object.__setattr__(self, "_source", source)
+        object.__setattr__(self, "_error", error)
+        object.__setattr__(self, "_allowed", allowed)
+
+    @classmethod
+    def for_graph(cls, graph: PipelineGraph, source: str) -> GlobalConstantsNamespace:
+        return cls(graph.global_constants, source=source, error=graph.global_constants_error)
+
+    def restricted_to(self, reads: ConstantReads) -> GlobalConstantsNamespace:
+        """The view code with *reads* may use (all of it for ``EVERY_CONSTANT``)."""
+        view = object.__new__(GlobalConstantsNamespace)
+        for slot in ("_values", "_defined", "_source", "_error"):
+            object.__setattr__(view, slot, getattr(self, slot))
+        allowed = None if isinstance(reads, _EveryConstant) else frozenset(reads)
+        object.__setattr__(view, "_allowed", allowed)
+        return view
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if self._error is not None:
+            raise GlobalConstantError(
+                f"Global constants could not be loaded from {GLOBAL_CONSTANTS_FILE}: {self._error}",
+                constant=name,
+                source=self._source,
+            )
+        if name not in self._defined:
+            defined = (
+                "Defined: " + ", ".join(self._defined) + "."
+                if self._defined
+                else "This pipeline has no global constants."
+            )
+            raise GlobalConstantError(
+                f"Global constant {name!r} is not defined. Define it in the Constants pane. "
+                f"{defined}",
+                constant=name,
+                source=self._source,
+            )
+        if self._allowed is not None and name not in self._allowed:
+            raise GlobalConstantError(
+                f"Code read global constant {name!r} without naming it. Write "
+                f"global_constants.{name} so its value is tracked.",
+                constant=name,
+                source=self._source,
+            )
+        if name not in self._values:
+            raise GlobalConstantError(
+                f"Global constant {name!r} has no value for source {self._source!r}. "
+                f"Set its {self._source} value in the Constants pane.",
+                constant=name,
+                source=self._source,
+            )
+        return self._values[name]
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise GlobalConstantError(
+            "Global constants are read-only in code; change them in the Constants pane.",
+            constant=name,
+            source=self._source,
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise GlobalConstantError(
+            "Global constants are read-only in code; change them in the Constants pane.",
+            constant=name,
+            source=self._source,
+        )
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (
+            _rebuild_namespace,
+            (self._values, self._defined, self._source, self._error, self._allowed),
+        )
+
+    def __dir__(self) -> list[str]:
+        names = self._defined if self._allowed is None else sorted(self._allowed)
+        return list(names)
+
+    def __repr__(self) -> str:
+        return f"<global constants for source {self._source!r}: {', '.join(self._defined)}>"
+
+
+def _rebuild_namespace(
+    values: dict[str, object],
+    defined: tuple[str, ...],
+    source: str,
+    error: str | None,
+    allowed: frozenset[str] | None,
+) -> GlobalConstantsNamespace:
+    namespace = object.__new__(GlobalConstantsNamespace)
+    for slot, value in (
+        ("_values", values),
+        ("_defined", defined),
+        ("_source", source),
+        ("_error", error),
+        ("_allowed", allowed),
+    ):
+        object.__setattr__(namespace, slot, value)
+    return namespace
+
+
+def node_code_globals(
+    namespace: Mapping[str, Any] | None,
+    graph: PipelineGraph,
+    source: str,
+) -> dict[str, Any]:
+    """A new mapping: *namespace* (never mutated) plus ``global_constants`` for *source*."""
+    return {
+        **(namespace or {}),
+        GLOBAL_CONSTANTS_NAME: GlobalConstantsNamespace.for_graph(graph, source),
+    }
+
+
+def bind_code_view(namespace: Mapping[str, Any] | None, code: str) -> Mapping[str, Any] | None:
+    """*namespace* with its constants restricted to what *code* names, if it has any."""
+    if not namespace:
+        return namespace
+    constants = namespace.get(GLOBAL_CONSTANTS_NAME)
+    if not isinstance(constants, GlobalConstantsNamespace):
+        return namespace
+    return {**namespace, GLOBAL_CONSTANTS_NAME: constants.restricted_to(code_constant_reads(code))}
+
+
+def function_constant_reads(fn: Callable[..., Any]) -> ConstantReads:
+    """The constants *fn*'s source names; every constant when its source cannot be read."""
+    try:
+        source = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return EVERY_CONSTANT
+    return code_constant_reads(source)
+
+
+def bind_function_view(
+    fn: Callable[..., Any], constants: GlobalConstantsNamespace
+) -> Callable[..., Any]:
+    """A copy of *fn* whose module globals bind ``global_constants`` to its own view.
+
+    The copy keeps *fn*'s code, defaults and closure, so it behaves as *fn*
+    does, and anything it defines (a lazy callback, say) reads the same view
+    on whatever thread runs it. A callable that is not a plain function is
+    returned as it is.
+    """
+    if not isinstance(fn, types.FunctionType):
+        return fn
+    view = constants.restricted_to(function_constant_reads(fn))
+    copy = types.FunctionType(
+        fn.__code__,
+        {**fn.__globals__, GLOBAL_CONSTANTS_NAME: view},
+        fn.__name__,
+        fn.__defaults__,
+        fn.__closure__,
+    )
+    copy.__kwdefaults__ = fn.__kwdefaults__
+    copy.__qualname__ = fn.__qualname__
+    copy.__module__ = fn.__module__
+    copy.__doc__ = fn.__doc__
+    copy.__annotations__ = fn.__annotations__
+    copy.__dict__.update(fn.__dict__)
+    return copy

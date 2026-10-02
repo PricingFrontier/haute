@@ -1149,6 +1149,10 @@ class PolarsFreeCodeColumnsRequest(BaseModel):
     input_columns: dict[str, list[ColumnInfo]]
     #: The columns the editor knows for a frame-mode surface's ``df``.
     frame_columns: list[ColumnInfo]
+    #: The pipeline's global constants and the source the code reads them for.
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    global_constants_error: str | None = None
+    source: str = "live"
 
     @model_validator(mode="after")
     def _frame_columns_need_a_frame(self) -> PolarsFreeCodeColumnsRequest:

@@ -37,7 +37,7 @@ import polars as pl
 
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
-from haute._types import GLOBAL_CONSTANTS_NAME, NodeType
+from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
 
@@ -507,13 +507,17 @@ def resolve_free_code_columns(
     input_names: Sequence[str],
     input_columns: Mapping[str, ColumnList],
     frame_columns: ColumnList,
+    global_constants: Sequence[GlobalConstant] = (),
+    global_constants_error: str | None = None,
+    source: str = "live",
 ) -> list[ResolvedFreeCode]:
     """The schema of ``df`` after each ``free_code`` step of a rendered list.
 
     The rendered lines up to the end of the step run as node code over empty
     frames of the columns the editor knows (the eligible inputs by name, and
     ``df`` on a frame-mode surface) without the preamble, and only the
-    resulting schema is read. An entry has no columns and a one-line reason
+    resulting schema is read. The code reads the pipeline's global constants
+    for *source*, as a run under that source would. An entry has no columns and a one-line reason
     when the code names an input whose columns are not known, a known column's
     type cannot be rebuilt, or the code or its schema fails.
     """
@@ -538,6 +542,13 @@ def resolve_free_code_columns(
         except SchemaMismatchError as exc:
             frame_problem = exc.message
 
+    from haute._global_constants import GlobalConstantsNamespace
+
+    constants_ns = {
+        GLOBAL_CONSTANTS_NAME: GlobalConstantsNamespace(
+            global_constants, source=source, error=global_constants_error
+        )
+    }
     lines = rendered.code.split("\n")
     resolved: list[ResolvedFreeCode] = []
     for index, step in enumerate(steps):
@@ -561,7 +572,11 @@ def resolve_free_code_columns(
             names, bound = ["df", *names], (frame, *bound)
         try:
             result = _exec_user_code(
-                program, names, bound, alias_first_input_as_df=frame is not None
+                program,
+                names,
+                bound,
+                extra_ns=constants_ns,
+                alias_first_input_as_df=frame is not None,
             )
             if not isinstance(result, pl.LazyFrame):
                 resolved.append(

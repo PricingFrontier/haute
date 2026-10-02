@@ -12,6 +12,7 @@ from typing import Any
 
 import polars as pl
 
+from haute._global_constants import bind_code_view
 from haute._graph_utils import build_instance_mapping
 from haute._sandbox import (
     UnsafeCodeError,
@@ -83,7 +84,10 @@ def _exec_user_code(
     # nested helpers, matching generated function execution. ``df`` is the
     # transform's reserved output slot (or an explicitly seeded implicit input
     # above), so a preamble binding must never supply it.
-    global_ns = {name: value for name, value in (extra_ns or {}).items() if name != "df"}
+    # The code reads the pipeline's constants through a view restricted to the
+    # ones it names, so a read the cache identities cannot see fails here.
+    code_ns = bind_code_view(extra_ns, code)
+    global_ns = {name: value for name, value in (code_ns or {}).items() if name != "df"}
     execution_ns = safe_globals(pl=pl, **global_ns)
     execution_ns.update(local_ns)
 

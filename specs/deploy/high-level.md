@@ -95,7 +95,9 @@ names the node and asks for an API Input.
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
 exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty
 column names present in the inferred output schema, and every retained Data Input has a
-validated, deploy-ready direct Parquet source or snapshot). When `test_quotes.dir` is configured,
+validated, deploy-ready direct Parquet source or snapshot), and every global constant the
+pruned graph reads has a `live` value, since deployed scoring runs under `live`. When
+`test_quotes.dir` is configured,
 the path must exist, be a directory, and contain at least one `*.json` quote; otherwise
 validation fails rather than silently disabling the gate. Every quote is scored through the
 resolved graph. Test-quote files may be plain input rows or "golden" rows with an

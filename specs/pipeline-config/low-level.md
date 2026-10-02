@@ -4,11 +4,11 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel. |
+| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
-| `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), and `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns. |
+| `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
 | `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
@@ -456,6 +456,61 @@ the attribute; any other use of the name, or code that does not parse, means
 (a function or class contributes its name, decorators and defaults but not its body) for any
 binding of the reserved name; only `global_constants = <receiver>.global_constants` is exempt.
 
+**Global constants at run time (`src/haute/_global_constants.py`, `src/haute/pipeline.py`).**
+`GlobalConstantsNamespace` is one run's table: the graph's constants and load error resolved for
+one source as concrete values (`int`, `float`, `str`, `bool` or `datetime.date`). Nothing in it
+consults a context variable or the calling thread, and it pickles. `restricted_to(reads)` returns
+the view one piece of code may use (all of it for `EVERY_CONSTANT`). Reading a name through a
+view returns its value or raises `src/haute/errors.py::GlobalConstantError`, checked in this
+order:
+
+- `Global constants could not be loaded from config/global_constants.json: <error>`;
+- `Global constant 'x' is not defined. Define it in the Constants pane.` followed by the
+  defined names, or by `This pipeline has no global constants.`;
+- `Code read global constant 'x' without naming it. Write global_constants.x so its value is
+  tracked.`, for a defined constant outside the view's reads; or
+- `Global constant 'x' has no value for source 'nb_batch'. Set its nb_batch value in the
+  Constants pane.`
+
+A name starting with an underscore raises an ordinary `AttributeError`, so copy, pickle and
+display probes behave as on any object; setting or deleting an attribute raises the error.
+`dir()` lists the view's names and `repr()` names the source. The error is an `ExecutionError`
+subclass with no public `error_code`, carrying the constant and the source, so a preview shows
+it on the reading node instead of aborting the walk, and every other run propagates it.
+
+- `node_code_globals(namespace, graph, source)` returns a new mapping: the cached preamble
+  namespace, never mutated, plus the run's table under `global_constants`. The graph walker's
+  build step and the chain builder in `src/haute/execution.py` call it with the run's routing
+  source, never a per-node builder override, so every path that builds node functions through
+  them reads it (see [execution-engine](../execution-engine/low-level.md#global-constants)), and
+  `src/haute/trace.py` builds its formula names the same way for the trace's source.
+- `src/haute/_user_exec.py::_exec_user_code` binds `bind_code_view(namespace, code)`, the view
+  for the code's own reads, in place of the table. That covers every builder's code (Transform,
+  Data Input, External File, Rating Step, Scenario Expander and Explore), Model Score
+  post-processing code in `src/haute/_model_scorer.py::_run_score_pipeline` (beside `model`;
+  the builder hands the table to `ModelScorer` as `global_constants`), deployed External File
+  code in `src/haute/deploy/_scorer.py` (beside `obj`) and free-code column resolution. Lazy
+  Polars callbacks the code creates close over that view, so they read the run's values on any
+  thread.
+- `PolarsFreeCodeColumnsRequest` in `src/haute/schemas.py` carries `global_constants`,
+  `global_constants_error` and `source`, and
+  `src/haute/_polars_steps.py::resolve_free_code_columns` builds the table from them.
+- `Pipeline.run` takes a keyword-only `source` (default `"batch"`); it and `Pipeline.score`
+  (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
+  `Pipeline._run_constants`, which loads a declared file through
+  `src/haute/parser.py::load_declared_global_constants` from the pipeline directory that
+  `src/haute/_standalone_nodes.py::pipeline_directory` derives from the first node's function.
+  A load failure is carried in the table, so only reads fail. `Node._invoke` calls the node's
+  function (a transform's function, or a configured node's hook through
+  `src/haute/_standalone_nodes.py::run_configured_node`) as the copy
+  `bind_function_view(fn, table)` returns: the same code, defaults and closure, with globals
+  that are the module's plus `global_constants` bound to the view for
+  `function_constant_reads(fn)`, the reads of the function's source (every constant when its
+  source cannot be read). Two runs therefore never share a binding. Calling a node's decorated
+  name outside a run binds nothing, so its code reads the sentinel. A standalone run of a
+  pipeline that wires a submodel fails before any node runs
+  ([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)).
+
 ## Edge cases and invariants
 
 - `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
@@ -679,107 +734,45 @@ Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_co
 `test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
 generated graphs.
 
+- `tests/test_global_constants_runs.py` verifies that one graph run under `live` and `nb_batch`
+  reads each source's value in Transform, Data Input and External File code; that `getattr` and
+  f-string reads resolve while an `eval` of a string fails with the untracked-read message; that
+  a missing source value, an undefined name and a load error fail only the reading node; that a
+  Data Output write started under `live` reads the batch scenario's values; that the Model Score
+  builder hands the run's table to `ModelScorer` and deployed Model Score code reads `live`
+  values; that the cached preamble namespace is not mutated; the deploy validator's refusals;
+  that a view pickles; that a trace formula shows and computes a constant's value; and that
+  standalone `run(source=...)` and `score()` agree with the executor, two runs on two threads
+  with a grouped lazy callback each read their own values, a missing source value and a file
+  that fails to load fail the reading node, and a module-level read says where constants are
+  read.
+
 ## Approved change contract — global constants
 
 This section names the seams, shapes and tests for the parts of the
 [high-level contract](high-level.md#approved-change-contract--global-constants) still to be
 built; that section owns the behaviour and this one does not restate it. The model, the file,
-parsing, generation, the runtime sentinel, the reads analysis and save are present behaviour,
+parsing, generation, the runtime sentinel, the reads analysis, save and every run's binding are
+present behaviour,
 described in the sections above and in the codegen, expression-parsing and server-api
 specifications. New modules are named in plain text because they do not exist yet. Every
 record is unresolved until its roadmap package lands.
 
-- **Current limitation.** Cache identities sign the constants each node reads, but no
-  execution path binds `global_constants` (node code that names it fails), no editor surface
-  edits constants, and the step renderer has no Constant operand.
+- **Current limitation.** Every run binds `global_constants` for its source (see "Global
+  constants at run time" above), but the editor sends no constants in its requests or saves, no
+  editor surface edits them, and the step renderer has no Constant operand.
 - **Unresolved target.** The seams below, one paragraph per package, built in the order of
-  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source)
-  to [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
+  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
+  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 - **Non-goals.** No new HTTP route: constants travel in the graph of the existing load, save,
   execution and step routes. No constant reaches a `utility` module, a pivot formula or a
   non-step config field. The recovery-draft store is unchanged.
-- **Failure and compatibility semantics.** A read that cannot resolve raises
-  `src/haute/errors.py::GlobalConstantError`, an `ExecutionError` subclass with no public
-  `error_code`: it is an ordinary node-local failure, so a preview shows it on the reading node
-  instead of aborting the walk (as a public contract error would), and every other run
-  propagates it. Save refusals are HTTP 400 with the messages below. No migration or fallback
-  exists.
+- **Failure and compatibility semantics.** Save refusals are HTTP 400 with the messages
+  below. No migration or fallback exists.
 - **Acceptance evidence.** The testing scenarios at the end of this section, each extending the
   named module.
-- **Roadmap package.** [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
-  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
-  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-
-**Execution (GCONST-03).** `src/haute/_global_constants.py` also owns the run-level table, its
-per-node views and the helper that builds node-code globals. A run's table holds the graph's
-constants and load error resolved for one source, as concrete values: nothing in it consults a
-context variable or the calling thread. A view restricts the table to one node's reads (every
-constant when the reads are "every constant"). Reading a name that starts with a letter through
-a view returns the resolved value (`int`, `float`, `str`, `bool` or `datetime.date`) or raises
-the global-constant error:
-
-- `Global constant 'x' is not defined. Define it in the Constants pane.` followed by the
-  defined names, or by `This pipeline has no global constants.`;
-- `Global constant 'x' has no value for source 'nb_batch'. Set its nb_batch value in the
-  Constants pane.`;
-- `Global constants could not be loaded from config/global_constants.json: <error>`; or
-- `Node 'n' read global constant 'x' without naming it. Write global_constants.x so the value
-  is tracked.`, for a defined constant outside the node's reads.
-
-A name starting with an underscore raises an ordinary `AttributeError`, so copy, pickle and
-display probes behave as on any object. Setting or deleting an attribute raises the
-global-constant error. `dir()` lists the view's names and `repr()` names the source.
-`src/haute/errors.py` gains the error class, an `ExecutionError` subclass with no public
-`error_code`, carrying the node, the constant and the source as context.
-
-- The run's source is the `source` its execution already receives, so constants resolve for the
-  value the Source Switches route on: the request's source for previews, traces, Explore,
-  free-code columns and training; `src/haute/executor.py::_resolve_batch_scenario` or `"batch"`
-  for the optimiser (`src/haute/routes/_optimiser_service.py`) and for a Data Output write
-  started under `live` (`src/haute/executor.py::_data_output_scenario`); and `live` for the
-  deploy scorer.
-- Every caller of `src/haute/executor.py::_compile_preamble` that executes node code passes the
-  helper's mapping: a new mapping holding the cached preamble namespace, never mutated, plus the
-  run's table under `global_constants`. Those callers are the executor's graph and sink paths,
-  `src/haute/trace.py`, `src/haute/routes/_node_data_service.py`,
-  `src/haute/routes/_optimiser_service.py`, `src/haute/routes/_training_lifecycle.py`,
-  `src/haute/routes/_training_preparation.py`, `src/haute/_data_points.py`,
-  `src/haute/assistant/_application.py`, `src/haute/assistant/_data_check.py`,
-  `src/haute/assistant/_tools.py` and `src/haute/deploy/_scorer.py`. Each builds the table where
-  the code runs, so it never crosses the interactive worker boundary.
-- Every code execution binds the view for its own node's reads, computed from the configuration
-  it executes, in place of the run's table: the builders in `src/haute/_builders.py`, which call
-  `src/haute/_user_exec.py::_exec_user_code` for Transform, Data Input, External File, Rating
-  Step, Scenario Expander and Explore code; Model Score code in
-  `src/haute/_model_scorer.py::_run_score_pipeline`, beside `model`; deployed External File code
-  in `src/haute/deploy/_scorer.py::_intercept`, beside `obj`; free-code column resolution; and
-  trace evaluation. Lazy Polars callbacks created by node code close over that view, so they
-  read the run's values on any thread.
-- The free-code columns request in `src/haute/routes/pipeline.py` gains `global_constants`,
-  `global_constants_error` and `source`, and
-  `src/haute/_polars_steps.py::resolve_free_code_columns` runs the steps with the steps' view
-  bound.
-- `src/haute/_expression_parser.py::_evaluate_expression_impl` replaces each
-  `global_constants.<name>` in the displayed formula with the value's literal, and evaluates
-  with the node's view bound; `src/haute/_expression_parser.py::parse_expression` treats it as
-  a constant reference, never a referenced column or an unresolved free name.
-- `Pipeline.run` takes a keyword-only `source` (default `"batch"`), and it and `Pipeline.score`
-  (which uses `live`) load a declared file from the pipeline directory, which
-  `src/haute/_standalone_nodes.py::pipeline_directory` derives from a root node function's
-  file, and build the run's table for their source. They call each node's function (a
-  transform's function, or a configured node's hook through
-  `src/haute/_standalone_nodes.py::run_configured_node`) as a copy whose globals are the
-  module's plus `global_constants` bound to that function's view; the reads come from the
-  function's source through the same analysis, and a function whose source cannot be read reads
-  every constant. Two runs therefore never share a binding, and a lazy callback reads its run's
-  values on any thread. `_scenario_ctx` is set to the run's source and reset when the run ends.
-  A load failure is carried in the table, as in the editor, so only reads fail. A standalone run
-  of a pipeline that wires a submodel fails before any node runs, as today
-  ([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)),
-  so standalone parity covers pipelines without submodels.
-- `src/haute/deploy/_validators.py` refuses a pruned graph that reads a constant with no `live`
-  value (a split constant without a `live` key), or that reads constants while a load error is
-  set, naming the constant or the file.
+- **Roadmap package.** [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane)
+  and [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 
 **Pane and stores (GCONST-04).**
 
@@ -852,25 +845,6 @@ and the known columns, and discards a response for a key that is no longer curre
 
 **Testing scenarios.**
 
-- GCONST-03. `tests/test_executor.py`: one graph run under `live` and `nb_batch` reads each
-  source's value in Transform, Data Input, External File and Model Score code; a missing
-  `nb_batch` value fails only the nodes that read it, with the message above; an undefined name
-  and a load error fail only the reading nodes; a read through
-  `eval("global_" "constants.rate")` fails in its node with the untracked-read message while
-  `getattr(global_constants, name)` and `f"rate={global_constants.rate}"` succeed; a grouped
-  lazy `map_batches` callback reads the
-  run's value; an optimiser run and a Data Output write started under `live` read the batch
-  scenario's values; and the cached preamble namespace is not mutated. `tests/test_pipeline.py`:
-  `run(source=...)` and `score()` agree with the executor on a pipeline without submodels,
-  including a grouped lazy callback that reads a constant; two runs of one pipeline under
-  different sources on two threads each read their own values; and a read outside a run, or from
-  a helper function,
-  raises the sentinel's error. `tests/test_expression_parser.py`: the displayed formula shows the
-  value and evaluates it.
-  `tests/test_deploy_validators_gaps.py`: a missing `live` value and a load error are refused,
-  and a constant read only on a pruned branch is not. `tests/test_deploy_scorer_coverage.py`: a
-  deployed Transform and External File read `live` values. `tests/test_polars_steps.py`: free
-  code that reads a constant resolves its columns.
 - GCONST-04. `frontend/src/components/__tests__/Toolbar.test.tsx`: Constants takes the Imports
   slot, and removing a source confirms before it removes split values.
   `frontend/src/panels/__tests__/UtilityPanel.test.tsx`: the `Imports` entry edits the preamble.

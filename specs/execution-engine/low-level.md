@@ -1178,6 +1178,19 @@ once). It reports `done=0` with that total, then each step's start ("Caching X",
 completes, so progress stops short and the response carries the error; a walk without
 a reporter reports nothing.
 
+### Global constants
+
+The graph walker's build step (`src/haute/_graph_walker.py`) and the chain builder in
+`src/haute/execution.py` hand every node builder
+`src/haute/_global_constants.py::node_code_globals` of the cached preamble namespace: a new
+mapping that adds the run's global-constants table, resolved for the run's routing source and
+never for a per-node builder override. Previews, Explore, training, the optimiser, Data Output
+writes, the assistant's checks and deployed scoring all build node functions through these two,
+so each reads the constants of the source it routes on: the request's source, the batch scenario
+(`_resolve_batch_scenario`, or `"batch"`) for the optimiser and a Data Output write started
+under `live`, and `live` for deployed scoring. `_exec_user_code` then binds each code's own view.
+[Pipeline-config](../pipeline-config/low-level.md) owns the table, its views and their errors.
+
 ### Pipeline settings
 
 `src/haute/_pipeline_settings.py` owns the pipeline settings: one JSON object in

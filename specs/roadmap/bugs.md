@@ -326,8 +326,8 @@ the editor builder does.
 **Acceptance:** A deploy scorer test serves an External File whose code calls a
 preamble helper and returns the editor preview's result.
 
-**Dependencies:** None. `GCONST-03` binds `global_constants` in the same
-namespace.
+**Dependencies:** None. The run's global constants are already bound in the
+same namespace.
 
 **Evidence:** `src/haute/deploy/_scorer.py::_intercept`;
 `src/haute/_builders.py::_build_external_file`;
@@ -353,8 +353,8 @@ the specification's hook paragraph.
 helper and gets the standalone run's result, and a deploy scorer test serves
 the same node.
 
-**Dependencies:** None. `GCONST-03` binds `global_constants` in the same
-namespace.
+**Dependencies:** None. The run's global constants are already bound in the
+same namespace.
 
 **Evidence:** `src/haute/_model_scorer.py::_run_score_pipeline`;
 `src/haute/_builders.py::_build_model_score`;
@@ -381,9 +381,9 @@ docstring and the pipeline-config specification, and fix the documentation's
 `nb_batch` input; a bare `run()` behaves as decided, with any refusal naming the
 sources; and `tests/test_pipeline.py` covers both.
 
-**Dependencies:** None. `GCONST-03` gives `run()` the same `source` keyword with
-today's default, so whichever lands second keeps one keyword and this package
-owns the default.
+**Dependencies:** None. `run()` already takes a keyword-only `source`, for
+global constants, with today's default `"batch"`; this package owns the
+default.
 
 **Evidence:** `src/haute/pipeline.py::Pipeline.run`;
 `src/haute/_model_scorer.py::_scenario_ctx`;
@@ -437,8 +437,8 @@ implement it and state it in the pipeline-config specification.
 `haute run`'s result or raises the decided message naming the submodel, in
 `tests/test_pipeline.py`.
 
-**Dependencies:** None. `GCONST-03`'s standalone parity covers root nodes until
-this lands.
+**Dependencies:** None. Standalone global-constant parity covers pipelines
+without submodels until this lands.
 
 **Evidence:** `src/haute/pipeline.py::Pipeline.submodel`;
 `src/haute/pipeline.py::Pipeline.run`;

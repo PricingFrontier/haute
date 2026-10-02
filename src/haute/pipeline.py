@@ -14,7 +14,11 @@ from haute._edge_join import (
     normalise_edge_join_decorator_kwargs,
     resolve_edge_join_role_indices,
 )
-from haute._global_constants import STANDALONE_GLOBAL_CONSTANTS
+from haute._global_constants import (
+    STANDALONE_GLOBAL_CONSTANTS,
+    GlobalConstantsNamespace,
+    bind_function_view,
+)
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._logging import get_logger
 from haute._standalone_nodes import (
@@ -117,20 +121,29 @@ class Node:
                 node=self.name,
             )
 
-    def _run_configured(self, frames: tuple[pl.DataFrame, ...]) -> pl.DataFrame:
+    def _run_configured(self, fn: Callable, frames: tuple[pl.DataFrame, ...]) -> pl.DataFrame:
         result: pl.DataFrame = run_configured_node(
             self.node_type,
             self.kind,
             name=self.name,
             config=self.config,
-            fn=self.fn,
+            fn=fn,
             frames=frames,
             pipeline_dir=self.pipeline_dir,
         )
         return result
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
+        return self._invoke(dfs, None)
+
+    def _invoke(
+        self,
+        dfs: tuple[pl.DataFrame, ...],
+        constants: GlobalConstantsNamespace | None,
+    ) -> pl.DataFrame:
+        """Run the node on *dfs*, its function reading *constants* when a run gives them."""
         self._raise_if_unresolved_instance()
+        fn = self.fn if constants is None else bind_function_view(self.fn, constants)
         if self.is_source:
             if dfs:
                 raise ExecutionError(
@@ -140,8 +153,8 @@ class Node:
                     received=len(dfs),
                 )
             if self.kind != "transform":
-                return self._run_configured(())
-            result: pl.DataFrame = self.fn()
+                return self._run_configured(fn, ())
+            result: pl.DataFrame = fn()
             return result
         arity = self.input_arity
         if len(dfs) == 0:
@@ -162,8 +175,8 @@ class Node:
                 received=len(dfs),
             )
         if self.kind != "transform":
-            return self._run_configured(dfs)
-        result = self.fn(*dfs)
+            return self._run_configured(fn, dfs)
+        result = fn(*dfs)
         return result
 
 
@@ -613,7 +626,33 @@ class Pipeline(NodeRegistry):
             terminals=[n.name for n in leaves],
         )
 
-    def _execute_transform(self, n: Node, outputs: dict[str, Any]) -> None:
+    def _run_constants(self, source: str) -> GlobalConstantsNamespace:
+        """The run's global constants for *source*, from the file the constructor names.
+
+        The file is read from the pipeline directory of the first node's
+        function. A file that cannot be loaded is carried in the table, so only
+        the code that reads a constant fails.
+        """
+        if self._global_constants_file is None:
+            return GlobalConstantsNamespace((), source=source)
+        from haute._standalone_nodes import pipeline_directory
+        from haute.errors import ConfigError
+        from haute.parser import load_declared_global_constants
+
+        root = self._nodes[0]
+        try:
+            base_dir = pipeline_directory(root.fn, root.name, root.pipeline_dir)
+        except ConfigError:
+            base_dir = None
+        constants, error = load_declared_global_constants(base_dir)
+        return GlobalConstantsNamespace(constants, source=source, error=error)
+
+    def _execute_transform(
+        self,
+        n: Node,
+        outputs: dict[str, Any],
+        constants: GlobalConstantsNamespace | None = None,
+    ) -> None:
         """Resolve *n*'s wired inputs from *outputs* and store its result.
 
         Shared by :meth:`run` and :meth:`score`.  Fails loud when the node
@@ -650,25 +689,30 @@ class Pipeline(NodeRegistry):
             )
             for edge in input_edges
         ]
-        outputs[n.name] = n(*input_dfs)
+        outputs[n.name] = n._invoke(tuple(input_dfs), constants)
 
-    def run(self) -> pl.DataFrame:
-        """Execute the full pipeline, following edges for data flow."""
+    def run(self, *, source: str = "batch") -> pl.DataFrame:
+        """Execute the full pipeline under *source*, following edges for data flow.
+
+        *source* is what Source Switches route on and which value each global
+        constant takes.
+        """
         from haute._model_scorer import _scenario_ctx
 
         if not self._nodes:
             raise ValueError("Pipeline has no nodes")
 
-        _token = _scenario_ctx.set("batch")
+        _token = _scenario_ctx.set(source)
         try:
             order = self._topo_order()
+            constants = self._run_constants(source)
             outputs: dict[str, Any] = {}
 
             for n in order:
                 if n.is_source:
-                    outputs[n.name] = n()
+                    outputs[n.name] = n._invoke((), constants)
                 else:
-                    self._execute_transform(n, outputs)
+                    self._execute_transform(n, outputs, constants)
 
             return _collect_standalone_output(outputs[self._resolve_output_node(order).name])
         finally:
@@ -693,6 +737,7 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set("live")
         try:
             order = self._topo_order()
+            constants = self._run_constants("live")
             outputs: dict[str, Any] = {}
 
             sources = [n for n in order if n.is_source]
@@ -755,12 +800,12 @@ class Pipeline(NodeRegistry):
                     outputs[n.name] = seed_value
                 else:
                     # Not a deploy input - run its own load logic.
-                    outputs[n.name] = n()
+                    outputs[n.name] = n._invoke((), constants)
 
             for n in order:
                 if n.is_source:
                     continue
-                self._execute_transform(n, outputs)
+                self._execute_transform(n, outputs, constants)
 
             return _collect_standalone_output(outputs[self._resolve_output_node(order).name])
         finally:

@@ -27,54 +27,10 @@ the Utility pane until they exist); and assistant support for constants.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GCONST-03 | Planned | P2 | Every run reads each constant's value for the source it runs under: in the editor, standalone and deployed. |
 | GCONST-04 | Planned | P2 | The toolbar's Constants button opens a pane that edits the constants, per source where split. |
 | GCONST-05 | Planned | P2 | The step editor offers constants wherever it offers variables, and in typed function arguments. |
 
 ## Planned improvements
-
-### GCONST-03 — Every run reads each constant's value for its source
-**Why:** A split constant's value depends on the source, so every path that
-runs node code has to bind `global_constants` for the source it runs under and
-fail loudly, in the node that reads it, when that source has no value.
-
-**Plan:** One helper builds node-code globals from the cached preamble
-namespace and a table of concrete values resolved for the source the run
-executes under (the value its Source Switches route on), without mutating the
-cached namespace. Every caller of `haute.executor._compile_preamble` that
-executes node code uses it; deployed scoring uses `live`. Each code execution
-binds a view of the table restricted to its node's reads, so a read by an
-untracked route fails in that node and the cache identities stay sound. The
-view raises a `GlobalConstantError` naming the constant, the source and the fix
-for an undefined name, a missing source value, a constants file that failed to
-load, or an untracked read. `Pipeline.run(source=...)` (default `"batch"`, as
-today) and `score()` load the file and call each node function as a copy whose
-globals bind its view, so lazy callbacks read the run's values on any thread
-and concurrent runs never share a binding. Trace formulas show the constant's
-value; the free-code columns request carries the constants and the source; and
-deploy validation refuses a deployed graph that reads a constant with no `live`
-value.
-
-**Acceptance:** One pipeline run under `live` and under `nb_batch` sees each
-source's value in a Polars node's code, a Data Input's code, an External File's
-code and a Model Score's code; a missing `nb_batch` value fails only the nodes
-that read the constant, naming it and the source; an `eval` of a string that
-reads a constant fails in its node; the optimiser and a Data Output write
-started under `live` read the batch scenario's values;
-`pipeline.run(source="nb_batch")` and `score()` agree with the executor on a
-pipeline without submodels, including a grouped lazy callback, and two runs
-under different sources on two threads each read their own values; a trace of a
-formula that
-reads a constant shows its value; and deploy validation refuses a missing
-`live` value.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/executor.py::_compile_preamble`;
-`src/haute/_user_exec.py::_exec_user_code`;
-`src/haute/pipeline.py::Pipeline`;
-`src/haute/_expression_parser.py::_evaluate_expression_impl`;
-`src/haute/deploy/_scorer.py`.
 
 ### GCONST-04 — The Constants pane
 **Why:** Analysts set and compare constants per source in the editor, without
@@ -103,7 +59,7 @@ panel mounted; and a browser test defines
 a split constant, previews a node that reads it under `live` and `nb_batch`,
 and sees each value.
 
-**Dependencies:** GCONST-03.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/components/Toolbar.tsx`;
 `frontend/src/panels/ImportsPanel.tsx`;

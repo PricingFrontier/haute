@@ -3962,6 +3962,40 @@ def test_free_code_columns_endpoint_resolves_free_code_on_a_frame_surface(
     assert stray.status_code == 422
 
 
+def test_free_code_columns_endpoint_reads_the_constants_for_the_requested_source(
+    client: TestClient,
+) -> None:
+    """Free code reads each constant's value for the source the request names."""
+    steps = [
+        source(),
+        step(
+            "c",
+            "free_code",
+            code="df = df.with_columns(pl.lit(1).alias(global_constants.column))",
+        ),
+    ]
+    constants = [
+        {"name": "column", "type": "text", "by_source": {"live": "live_col", "nb_batch": "nb_col"}}
+    ]
+
+    def resolve(source_name: str) -> dict[str, Any]:
+        body = _columns_body(steps, ["quotes"], input_columns={"quotes": QUOTE_COLUMNS})
+        response = client.post(
+            FREE_CODE_COLUMNS,
+            json={**body, "global_constants": constants, "source": source_name},
+        )
+        assert response.status_code == 200
+        [entry] = response.json()["free_code_columns"]
+        return entry
+
+    added = {"dtype": "Int32"}
+    assert resolve("live")["columns"] == [*QUOTE_COLUMNS, {"name": "live_col", **added}]
+    assert resolve("nb_batch")["columns"] == [*QUOTE_COLUMNS, {"name": "nb_col", **added}]
+    missing = resolve("other")
+    assert missing["columns"] is None
+    assert "no value for source 'other'" in missing["message"]
+
+
 def test_free_code_columns_endpoint_runs_nothing_without_free_code(client: TestClient) -> None:
     """A list without free code answers at once; one that does not render is a 422."""
     plain = client.post(

@@ -1430,6 +1430,54 @@ def _wrap_expression_code(code: str) -> str:
     return code_clean
 
 
+_GLOBAL_CONSTANT_READ = re.compile(r"\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b")
+
+
+def _global_constant_values(namespace: Mapping[str, Any], code: str) -> dict[str, Any]:
+    """The scalar values of the constants *code* reads that resolve in *namespace*."""
+    constants = namespace.get("global_constants")
+    if constants is None:
+        return {}
+    values: dict[str, Any] = {}
+    for name in set(_GLOBAL_CONSTANT_READ.findall(code)):
+        try:
+            value = getattr(constants, name)
+        except Exception:  # noqa: BLE001 - an unresolved read stays as written in the trace
+            continue
+        if isinstance(value, (bool, int, float, str)):
+            values[name] = value
+    return values
+
+
+class _InlineGlobalConstants(ast.NodeTransformer):
+    def __init__(self, values: Mapping[str, Any]) -> None:
+        self._values = values
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "global_constants"
+            and node.attr in self._values
+        ):
+            return ast.copy_location(ast.Constant(self._values[node.attr]), node)
+        return self.generic_visit(node)
+
+
+def _inline_global_constants(code: str, values: Mapping[str, Any]) -> str:
+    """*code* with each resolved ``global_constants.<name>`` read replaced by its literal.
+
+    A constant is a scalar literal of the run, so inlining it lets the row-local
+    evaluation compute the formula; the displayed formula keeps the name.
+    """
+    if not values:
+        return code
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    return ast.unparse(ast.fix_missing_locations(_InlineGlobalConstants(values).visit(tree)))
+
+
 def _evaluate_expression_impl(
     code: str,
     target_column: str,
@@ -1439,6 +1487,7 @@ def _evaluate_expression_impl(
 ) -> EvaluatedExpression:
     code = _wrap_expression_code(code)
     namespace = dict(preamble_ns or {})
+    constant_values = _global_constant_values(namespace, code)
 
     # Literal preamble constants display beside the row's values; the row wins.
     effective_row = {
@@ -1472,6 +1521,16 @@ def _evaluate_expression_impl(
             parsed.expression_text, _display_values(input_values, row)
         )
 
+    # Show each global constant's value where the formula reads it.
+    substituted_text = _GLOBAL_CONSTANT_READ.sub(
+        lambda match: (
+            _format_value(constant_values[match.group(1)])
+            if match.group(1) in constant_values
+            else match.group(0)
+        ),
+        substituted_text,
+    )
+
     # Resolve preamble constants in substituted text
     if preamble_ns:
         for name, val in preamble_ns.items():
@@ -1480,7 +1539,9 @@ def _evaluate_expression_impl(
                 substituted_text = _replace_column_name(substituted_text, name, _format_value(val))
 
     traced_row = _native_row(row_values) if row is None else row
-    node = _locate_defining_expression(code, target_column)
+    node = _locate_defining_expression(
+        _inline_global_constants(code, constant_values), target_column
+    )
     computed = (
         _RowValue(reason="expression_not_located")
         if node is None

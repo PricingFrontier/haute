@@ -357,6 +357,9 @@ async def _resolve_free_code_columns_isolated(
             for name, columns in body.input_columns.items()
         },
         frame_columns=[(c.name, c.dtype) for c in body.frame_columns],
+        global_constants=body.global_constants,
+        global_constants_error=body.global_constants_error,
+        source=body.source,
     )
     try:
         context = create_admitted_execution_context(

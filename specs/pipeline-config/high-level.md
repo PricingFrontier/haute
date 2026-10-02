@@ -449,7 +449,54 @@ constants and declares none. A pipeline without constants has no file, keyword o
 other module-level statement, node function, preamble, node code or step variable may bind
 `global_constants`. In the live API both bindings return one sentinel: every read of it raises
 a global-constant error saying that constants are read in node code while the pipeline runs.
-How runs, cache identities and the editor use constants is the
+
+Code reads a constant as `global_constants.<name>` in the code box and the free-code steps of
+every stepped node type (Transform, Data Input, External File, Rating Step, Model Score,
+Scenario Expander and Explore), and in a pipeline file's node functions.
+A node reads the constants its code names as `global_constants.<name>` (in an f-string's
+expressions too) and its steps reference.
+Code that uses the name `global_constants` any other way (passing it to a function, `getattr`
+with a computed name) may read every constant. No other route to a constant is tracked, so a
+read by any other route (`eval` of a string, say) fails in that node, naming the constant and
+asking for `global_constants.<name>`. A cached result can therefore never depend on a constant
+its identity does not sign.
+
+Every run binds `global_constants` for the source it executes under, which is the value its
+Source Switches route on:
+
+- previews, traces, free-code column resolution, Explore and training use the toolbar's source,
+  which their requests carry;
+- the optimiser, and a Data Output write started under `live`, use the graph's batch scenario
+  (its Source Switches' one non-live source, or `"batch"`), as they do today;
+- deployed scoring uses `live`;
+- `pipeline.run(source=...)` uses the source it is given (by default `"batch"`, the scenario a
+  standalone run uses today), and `pipeline.score()` and `haute run` use `live`.
+
+A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
+Polars callback that reads a constant during collection reads the run's value on whichever
+thread runs it, and two runs under different sources never see each other's values. A
+standalone run of a pipeline that wires a submodel fails before any node runs
+([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)),
+so the binding in a submodel file serves `ruff check` and imports until standalone runs execute
+submodels.
+
+No node, step variable, node code or preamble may bind the name `global_constants`, so nothing
+shadows it. A constant's name is only ever an attribute of that name, so it can never collide
+with an input, a preamble binding or a step variable.
+
+Reading an undefined constant, a split constant with no value for the run's source, or any
+constant while its file failed to load raises a global-constant error in the node that reads
+it, naming the constant, the source and the fix, and so does a read by a route the reads
+analysis cannot see, such as `eval` of a string. That error is an ordinary node failure: a
+preview shows it on the reading node and keeps previewing the rest, and every other run stops
+with it. A trace shows each constant's value where a formula reads it.
+
+Deployment: the deployed graph carries the pipeline's constants and reads their `live`
+values. Deploy validation refuses a deployed graph that reads a constant with no `live` value,
+naming it. A constant read only on a branch that deployment prunes away does not need a `live`
+value.
+
+How the editor edits constants and how structured steps read them is the
 [approved change contract](#approved-change-contract--global-constants) below until its
 packages land.
 
@@ -560,30 +607,27 @@ parse errors naming the line.
 ## Approved change contract — global constants
 
 This section specifies the parts of global constants still to be built. Declaring, storing,
-generating and saving them is present behaviour, described under
+generating, saving and reading them in code is present behaviour, described under
 [Global constants](#behaviour) above and in [codegen](../codegen/high-level.md),
 [expression-parsing](../expression-parsing/high-level.md) and
 [server-api](../server-api/high-level.md). Every record here is unresolved until its roadmap
 package lands. Each package folds its part into the present-tense specification of the
-component that owns it (this one, [execution-engine](../execution-engine/high-level.md),
-[deploy](../deploy/high-level.md),
-[frontend-shared](../frontend-shared/high-level.md),
+component that owns it (this one, [frontend-shared](../frontend-shared/high-level.md),
 [frontend-graph-canvas](../frontend-graph-canvas/high-level.md) and
 [frontend-node-editors](../frontend-node-editors/high-level.md)), and the last package to land
 removes this section. The [low-level contract](low-level.md#approved-change-contract--global-constants)
 names the seams, shapes and tests.
 
-- **Current limitation.** A pipeline can declare and save global constants, but nothing reads
-  them. Node code that names `global_constants.<name>` fails in the editor, whose executor binds
-  no such name, and in a standalone run, where the name is the sentinel. Cache identities
-  already sign the constants each node reads ([caching](../caching/high-level.md)), but no
-  editor surface edits one, and the step editor has no Constant operand.
-- **Unresolved target.** Every code box and every structured step reads a constant as
-  `global_constants.<name>`, without an edge, including inside submodels, and each run reads
-  the value for the source it runs under. The toolbar's Imports button becomes Constants and
-  opens the pane that edits them.
-  [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source)
-  to [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) build
+- **Current limitation.** Every run reads node code's constants for its source, as
+  [Global constants](#behaviour) describes, but no editor surface edits them: the toolbar opens
+  Imports, the editor's requests carry no constants (so code that reads one fails in the editor
+  as undefined), and a save from the editor removes a hand-written constants file. The step
+  editor has no Constant operand.
+- **Unresolved target.** The toolbar's Imports button becomes Constants and opens the pane that
+  edits them, the editor's saves and execution requests carry them, and every structured step
+  reads a constant as `global_constants.<name>` through a Constant operand.
+  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
+  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) build
   it.
 - **Non-goals.** The Constant node keeps its behaviour. Config fields outside the step editor
   (banding edges, rating tables, optimiser bounds, file paths) and Explore pivot formulas do
@@ -593,61 +637,21 @@ names the seams, shapes and tests.
   on the canvas undo stack, as preamble edits are not. The assistant neither reads nor writes
   constants. `haute run` keeps running the `live` source, and recovery drafts do not cover the
   constants file.
-- **Failure and compatibility semantics.** Reading an undefined constant, a split constant with
-  no value for the run's source, or any constant while its file failed to load raises a
-  global-constant error in the node that reads it, naming the constant, the source and the fix,
-  and so does a read by a route the reads analysis cannot see, such as `eval` of a string. That
-  error is an ordinary node failure: a preview shows it on the reading node and keeps previewing
-  the rest, and every other run stops with it. Save refuses a step operand naming an undefined
+- **Failure and compatibility semantics.** Save refuses a step operand naming an undefined
   constant (unless the file failed to load, when the definitions are unavailable) and one whose
-  constant has a type its slot does not take. Deploy refuses a deployed graph that reads a
-  constant with no `live` value. Nothing migrates.
+  constant has a type its slot does not take. A step's constant read fails at run time as a
+  code read does. Nothing migrates.
 - **Acceptance evidence.** Each roadmap package's acceptance tests, extending the modules the
   low-level contract names, and one browser test that defines a split constant in the pane and
   previews a Transform and a filter step that read it, under `live` and under `nb_batch`,
   seeing each source's value.
-- **Roadmap package.** [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
-  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
-  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor), in that
-  order.
+- **Roadmap package.** [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane)
+  and [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor), in
+  that order.
 
-**Reading a constant.** Code reads a constant as `global_constants.<name>`, an attribute of the
-one reserved name, in the code box and the free-code steps of every stepped node type
-(Transform, Data Input, External File, Rating Step, Model Score, Scenario Expander and Explore).
-A structured step reads one through a Constant operand, offered wherever the step editor offers
-a variable, and in a typed function argument, where the constant's type must fit the argument;
-the step renders as `global_constants.<name>`.
-
-A node reads the constants its code names as `global_constants.<name>` (in an f-string's
-expressions too) and its steps reference.
-Code that uses the name `global_constants` any other way (passing it to a function, `getattr`
-with a computed name) may read every constant. No other route to a constant is tracked, so a
-read by any other route (`eval` of a string, say) fails in that node, naming the constant and
-asking for `global_constants.<name>`. A cached result can therefore never depend on a constant
-its identity does not sign.
-
-Every run binds `global_constants` for the source it executes under, which is the value its
-Source Switches route on:
-
-- previews, traces, free-code column resolution, Explore and training use the toolbar's source,
-  which their requests carry;
-- the optimiser, and a Data Output write started under `live`, use the graph's batch scenario
-  (its Source Switches' one non-live source, or `"batch"`), as they do today;
-- deployed scoring uses `live`;
-- `pipeline.run(source=...)` uses the source it is given (by default `"batch"`, the scenario a
-  standalone run uses today), and `pipeline.score()` and `haute run` use `live`.
-
-A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
-Polars callback that reads a constant during collection reads the run's value on whichever
-thread runs it, and two runs under different sources never see each other's values. A
-standalone run of a pipeline that wires a submodel fails before any node runs
-([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)),
-so the binding in a submodel file serves `ruff check` and imports until standalone runs execute
-submodels.
-
-No node, step variable, node code or preamble may bind the name `global_constants`, so nothing
-shadows it. A constant's name is only ever an attribute of that name, so it can never collide
-with an input, a preamble binding or a step variable.
+**Reading a constant in a step.** A structured step reads a constant through a Constant
+operand, offered wherever the step editor offers a variable, and in a typed function argument,
+where the constant's type must fit the argument; the step renders as `global_constants.<name>`.
 
 **The Constants pane.** The toolbar's Imports button becomes Constants, in the same column
 under Utility, and opens the Global Constants pane in the right-hand panel. The preamble editor
@@ -678,8 +682,3 @@ the toolbar's Save stays available. Save is refused while any constant is invali
   warning line, with a button that removes it.
 - When the constants file failed to load, the pane shows the load error and is read-only, and
   save sends no constants.
-
-**Deployment.** The deployed graph carries the pipeline's constants and reads their `live`
-values. Deploy validation refuses a deployed graph that reads a constant with no `live` value,
-naming it. A constant read only on a branch that deployment prunes away does not need a `live`
-value.
