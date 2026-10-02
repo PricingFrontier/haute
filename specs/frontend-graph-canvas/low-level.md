@@ -42,7 +42,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal repair confirmation surface. It submits only document/target identities and the document revision, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
-| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins the server's choice of build in one call, waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe, asks the input-snapshot build to `refresh`, and removes a structured Quote Input's working cache first, because the JSON build endpoint answers a still-valid working cache with no work. |
+| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins the server's choice of build in one call, waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe and asks the input-snapshot build to `refresh`, which re-reads the source and, for a structured Quote Input, rebuilds every table from one shred of it; nothing is deleted first. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. |
@@ -276,7 +276,7 @@ reconciliation rather than dropping them or committing a second mutation.
   `data.nodeType || node.type || ""`).
 - **`PipelineAPIReturn`** (`usePipelineAPI.ts`) — the hook's full surface:
   `loading`, `previewData`/`setPreviewData`, `previewBusy`, `nodeStatuses`,
-  `fetchPreview`/`cancelPreview`/`stopPreview`/`refreshPreview`/`previewNodeFrame`, and
+  `fetchPreview`/`cancelPreview`/`stopPreview`/`refreshPreview(node, options?)`/`previewNodeFrame`, and
   `handleSave: () => Promise<boolean>` (resolves `true`/`false`, never
   rejects).
 - **`FetchPreviewOptions`** — `{ debounceMs? }`, the per-call override for
@@ -306,6 +306,24 @@ reconciliation rather than dropping them or committing a second mutation.
   waited for without cancelling it and then asked again, at most three times.
   `onBuildProgress` reports each running status (rows read, phase) of the
   build it waits for.
+- **`refreshPreview(node, { rereadSource })`.** The preview frame's Refresh
+  (and Ctrl/Cmd+Enter) passes `rereadSource: true`; a trace's re-preview does
+  not. When `refreshRereadInput` (`utils/inputSnapshotSource.ts`) names an
+  input for the target — a structured Quote Input with an emitting table, or
+  the original of an instance of one — the target's preview request first runs
+  `ensureInputSnapshots([input], { force: true })`, which re-reads the file and
+  rebuilds every table whether or not the file changed. It runs under that
+  request: the loading panel shows the Quote Input preparation messages, with
+  no "Building input snapshot…" toast; Stop and supersession cancel the build
+  as they cancel any preparation; and a failure is the node's preview error.
+  Every outcome raises the node-data epoch, since a forced build publishes each
+  table on its own. Once the build ends the preview starts again as a new
+  request, without the re-read, for the node as the graph now is, so it is
+  stored at the raised epoch and not fetched again; an edit made while the file
+  was read does not cost the read. A stopped, superseded or deleted request
+  runs nothing more. Every other target, and a Refresh without the option, is
+  previewed as before. An input has no upstream, so the stale-upstream gap-fill
+  never carries the re-read.
 - **Step progress.** Every preview and recovery-preview request carries a fresh
   `request_id` (`newPreviewRequestId`), and `pollPreviewProgress`
   (`hooks/previewProgressPoller.ts`) asks `GET /api/pipeline/preview/progress/{id}`
@@ -1592,6 +1610,16 @@ again through the editor and save paths.
     preparation is prepared again and previewed at its new version, with the
     abandoned preparation never ending the new request's busy state, and a
     graph that keeps changing stops with the refresh instruction.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.rereadSource.test.ts` — the
+    frame's Refresh on a structured Quote Input forces a rebuild of its tables
+    before the preview request, raising the node-data epoch so the stored
+    preview is current and not fetched again, with no build toast; an instance
+    re-reads its original's file; a re-preview without the option, a Data Input,
+    a Quote Input with no emitting table and one reading a flat file keep the
+    freshness rules; Stop cancels the re-read and runs no preview; a failed
+    re-read is the node's preview error; a graph edited during the re-read
+    is previewed as it now is without reading again; and a node that left the
+    graph while its file was read runs nothing more.
   - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) —
     `handleSave` reads `activeSource` at invocation time, not a stale
     closure; a `rowLimit` change mid-fetch does not affect the

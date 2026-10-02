@@ -381,10 +381,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   counted with equal weight, so the bar can jump; before the plan is known it says
   "Preparing inputs…" (or the preparation message) with no bar.
 - **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
-  data preview frame of a node that reads a snapshot (`inputSnapshotSource` of
-  the node, or of its original for an instance): a Data Input other than a
-  direct Parquet scan, or a structured Quote Input with an emitting table. It
-  re-reads the source with `ensureInputSnapshots([input], { force: true })`,
+  data preview frame of a Data Input that reads a snapshot (`inputSnapshotSource`
+  of the node, or of its original for an instance): one other than a direct
+  Parquet scan. A Quote Input has no Import; its Refresh re-reads its source
+  (below). Import re-reads the source with `ensureInputSnapshots([input], { force: true })`,
   showing "Importing · N rows" while a bounded build streams rows and
   "Importing…" otherwise, and registers as the node's work so the frame's Stop
   stops it. The import belongs to the node that started it
@@ -397,13 +397,25 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   earlier failed Stop, is cancelled again in the background (five attempts, two
   seconds apart) and reported if it never stops.
   Every outcome (completed, failed, stopped) re-reads the snapshot status and
-  raises the node-data epoch, since a failed Quote Input import can publish some
-  tables; only a completed, unstopped import re-previews the node. Its title
-  says when the input was last imported (`utils/importedTitle.ts`): the newest
-  generation, "Partly imported (k of n tables)" for a Quote Input missing some,
-  or "Not imported yet". A stop whose cancellation fails keeps the import
-  running, and Stop cancels it again. Refresh keeps its freshness rules; Import
-  is the one action that re-reads a source whose changes cannot be detected. A previewable active node without results gets an explicit empty
+  raises the node-data epoch, since a build can publish before a stop or a
+  failure reaches it; only a completed, unstopped import re-previews the node.
+  Its title says when the input was last imported (`utils/importedTitle.ts`):
+  the published generation's time, or "Not imported yet". A stop whose
+  cancellation fails keeps the import running, and Stop cancels it again. A
+  Data Input's Refresh keeps its freshness rules; Import is the one action that
+  re-reads a source whose changes cannot be detected.
+- **Refresh re-reads a structured Quote Input.** Refresh on a JSON, JSONL,
+  NDJSON or XML Quote Input with an emitting table (or on an instance of one,
+  which re-reads its original's source) re-reads the file and caches every
+  table again, whether or not the file changed, and then previews the node
+  (`refreshPreview`'s `rereadSource`, in
+  [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)). The
+  re-read is part of that preview: the loading panel shows the Quote Input
+  preparation messages, Stop cancels the build, and opening another node
+  supersedes it like any preview. Only the panel's Refresh (and Ctrl/Cmd+Enter)
+  re-reads; any other preview of the node or of a node below it, a trace's
+  re-preview included, keeps the freshness rules, under which the preparation
+  it runs rebuilds only the tables of a changed file. A previewable active node without results gets an explicit empty
   preview frame so Refresh remains reachable. `NodePanelHeader` contains no
   Refresh action; `SchemaWarningBanner` keeps its refresh callback.
 - `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled

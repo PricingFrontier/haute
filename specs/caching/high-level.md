@@ -115,7 +115,9 @@ the input-cache status route, builds missing or stale tables through the
 input-cache build job, and awaits it before execution. The preview panel shows the
 preparation. Build or status failures stop preview with an actionable error;
 cancellation cancels the job and prevents late execution. Ready, fresh tables are
-reused without rebuilding.
+reused without rebuilding, except by the Quote Input's own Refresh, which re-reads
+the file and rebuilds every table before previewing it; a Quote Input has no
+separate Import.
 
 Before Studio sends a preview, it asks the backend which inputs the preview
 reads — none above a shared snapshot it seeds from, none outside its lineage — and

@@ -42,6 +42,7 @@ import {
 } from "../utils/submodelRuntimeTarget"
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 import { instanceOriginal } from "../utils/instanceOriginal"
+import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
 import { apiErrorMessage } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
@@ -84,7 +85,7 @@ export interface PipelineAPIReturn {
    */
   stopPreview: () => void
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
-  refreshPreview: (node: Node) => void
+  refreshPreview: (node: Node, options?: RefreshPreviewOptions) => void
   /** Re-preview a multi-frame node showing a specific frame (the
    * frame-select dropdown on the canvas preview top-bar). Focused: it only
    * repaints `previewData` for the requested frame. The node is resolved from
@@ -109,6 +110,15 @@ export interface FetchPreviewOptions {
    * idle delay so quick click-throughs are cancelled before backend work begins.
    */
   debounceMs?: number
+}
+
+export interface RefreshPreviewOptions {
+  /**
+   * The preview frame's Refresh: when the target is a structured Quote Input
+   * (or an instance of one), re-read its file and cache every table again,
+   * whether or not the file changed, before previewing it.
+   */
+  rereadSource?: boolean
 }
 
 function nodeLabel(node: Node): string {
@@ -139,6 +149,11 @@ export const MAX_PREVIEW_PREPARATION_RESTARTS = 2
 interface ImmediatePreviewOptions {
   bypassCache?: boolean
   snapshotsEnsured?: boolean
+  /**
+   * An input whose snapshot is built again from its source before this preview
+   * prepares; the preview then starts again as a new request.
+   */
+  rereadInput?: Node
   /** Preparations already abandoned because the graph changed under them. */
   preparationRestarts?: number
 }
@@ -446,11 +461,14 @@ export default function usePipelineAPI({
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
   const ensureSnapshotsForNodes = useCallback(
-    async (nodes: Node[], signal: AbortSignal) => {
+    async (nodes: Node[], signal: AbortSignal, { force = false }: { force?: boolean } = {}) => {
       const { ensureInputSnapshots } = await import("./ensureInputSnapshots")
       return ensureInputSnapshots(nodes, {
         signal,
-        onBuildStart: () => addToast("info", "Building input snapshot…"),
+        force,
+        // A forced build is the one the user asked for, and the loading panel
+        // already says what it is doing.
+        onBuildStart: force ? undefined : () => addToast("info", "Building input snapshot…"),
         onProgress: (message) => {
           if (signal.aborted || previewAbort.current?.signal !== signal) return
           setPreviewData((previous) => previous ? {
@@ -462,6 +480,16 @@ export default function usePipelineAPI({
       })
     },
     [addToast],
+  )
+  // Refresh's re-read of a structured Quote Input. A forced build publishes
+  // each table on its own, some even when it fails or is stopped, so every
+  // outcome tells the node's readers to ask again.
+  const rereadInputSnapshot = useCallback(
+    (input: Node, signal: AbortSignal) =>
+      ensureSnapshotsForNodes([input], signal, { force: true }).finally(() => {
+        useNodeDataStore.getState().bumpEpoch()
+      }),
+    [ensureSnapshotsForNodes],
   )
   // Prepare only the inputs the previews of `targets` read: the backend
   // answers from the seed plan each would run under, so an input above a
@@ -792,25 +820,44 @@ export default function usePipelineAPI({
           signal: controller.signal,
         }))
     }
+    // The re-read published the input's tables and raised the node-data epoch,
+    // so the preview starts again as a new request: at the raised epoch, for the
+    // graph as it now is. A stopped, superseded or deleted one runs nothing more.
+    const previewAfterReread = (): never => {
+      const current = graphRef.current.nodes.find((candidate) => candidate.id === node.id)
+      const restart = fetchPreviewImmediateRef.current
+      if (
+        current &&
+        restart &&
+        previewRequestSeq.current === requestId &&
+        documentStillCurrent() &&
+        !controller.signal.aborted
+      ) {
+        restart(current, undefined, { ...options, rereadInput: undefined })
+      }
+      throw new DOMException("Preview request was superseded.", "AbortError")
+    }
     const previewRequest =
       recoveryPreview || options?.snapshotsEnsured
         ? executePreview()
-        : ensureSnapshotsForPreviews(
-            graph,
-            [
-              {
-                nodeId: runtimeNodeIdForVisibleNode(
-                  graphRef.current.nodes,
-                  node.id,
-                  activeSubmodelIdentity,
-                ),
-                source: snapshotSource,
-                requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
-                portLabel,
-              },
-            ],
-            controller.signal,
-          ).then(executePreview)
+        : options?.rereadInput
+          ? rereadInputSnapshot(options.rereadInput, controller.signal).then(previewAfterReread)
+          : ensureSnapshotsForPreviews(
+              graph,
+              [
+                {
+                  nodeId: runtimeNodeIdForVisibleNode(
+                    graphRef.current.nodes,
+                    node.id,
+                    activeSubmodelIdentity,
+                  ),
+                  source: snapshotSource,
+                  requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
+                  portLabel,
+                },
+              ],
+              controller.signal,
+            ).then(executePreview)
     previewRequest
       .then((result) => {
         rootCapturedIds = capturedGenerationIds(result)
@@ -887,7 +934,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -978,7 +1025,7 @@ export default function usePipelineAPI({
   }, [previewDebounce, restoreAfterStop])
 
   /** Lazily preview upstream nodes that are missing _columns, then preview the target node. */
-  const refreshPreview = useCallback((node: Node) => {
+  const refreshPreview = useCallback((node: Node, options: RefreshPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
     previewTarget.current = node
     stopRetry.current = null
@@ -1035,8 +1082,11 @@ export default function usePipelineAPI({
         (!nodeData(n)._columns || nodeData(n)._columnsSource !== activeSourceRef.current))
 
     if (staleUpstream.length === 0) {
-      // No upstream gaps — just preview the selected node directly
-      fetchPreviewImmediate(node, requestId, { bypassCache: true })
+      // No upstream gaps — just preview the selected node directly. An input
+      // has no upstream, so this is where the frame's Refresh re-reads a
+      // structured Quote Input's source first.
+      const rereadInput = options.rereadSource ? refreshRereadInput(node, nodeMap) : null
+      fetchPreviewImmediate(node, requestId, { bypassCache: true, rereadInput: rereadInput ?? undefined })
       return
     }
 
