@@ -36,7 +36,7 @@ If the node's settings or connections cannot work, a red box at the top, **EDGE 
 | **JOINING INPUT** | The input on the join handle, by name, or "Not connected". Its bin removes that connection. |
 | **Swap** | Swaps the two inputs' roles. It is available once each role has exactly one input. |
 
-The names are the ones the node's code uses for its inputs: a Quote Input table's label (for example, `quote_info`), a submodel output's `alias__port` name, or the upstream node's name - never an internal node ID such as `Quote_Input_1`.
+The names are the ones the node's code uses for its inputs: a Quote Input table's label (for example, `quote_info`), a submodel output's port name (for example, `factored`), or the upstream node's name - never an internal node ID such as `Quote_Input_1`.
 
 ### Join settings
 

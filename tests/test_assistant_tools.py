@@ -3845,7 +3845,95 @@ class TestActionableErrors:
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
         assert error["where"] == {"op_index": 0, "node": "response", "field": "outputMapping"}
         assert "'rated_quotes'" in error["message"] and "'quotes'" in error["message"]
-        assert error["fix"] == "Set row 1's source_port to the name of an incoming edge: 'quotes'."
+        assert error["fix"] == (
+            "The edges into 'response' provide the input 'quotes'; set row 1's source_port "
+            "to 'quotes'. " + _input_naming_rule()
+        )
+        assert error["did_you_mean"] == ["quotes"]
+
+    @pytest.mark.parametrize(
+        ("port", "handles", "fix", "did_you_mean"),
+        [
+            pytest.param(
+                # An edge from a Quote Input is named by its frame, so naming the
+                # node is answered with the frame, never a plain add_edge from it.
+                "quote_inputs",
+                ("additional_driver_claims",),
+                "The edges into 'response' provide the input 'additional_driver_claims'; "
+                "set row 1's source_port to 'additional_driver_claims'. " + _input_naming_rule(),
+                ["additional_driver_claims"],
+                id="the-quote-input-node",
+            ),
+            pytest.param(
+                "quote_inputs",
+                (),
+                "'response' has no incoming edge, so row 1 reads nothing. Add "
+                '{"op": "add_edge", "source": "<upstream node>", "target": "response"} to '
+                'this plan, with "source_handle": "<frame>" when the source is a Quote '
+                "Input, and set row 1's source_port to the name that edge gives. "
+                + _input_naming_rule(),
+                None,
+                id="the-quote-input-node-with-no-edge",
+            ),
+            pytest.param(
+                "ad_driver_claims",
+                ("quote", "additional_driver_claims"),
+                "The edges into 'response' provide the inputs 'quote', "
+                "'additional_driver_claims'; set row 1's source_port to "
+                "'additional_driver_claims' if that is the frame the column comes from. "
+                + _input_naming_rule(),
+                ["additional_driver_claims"],
+                id="an-invented-frame-name",
+            ),
+        ],
+    )
+    async def test_an_output_row_reading_a_quote_input_frame_is_told_the_frame_name(
+        self,
+        steps_first_project: Path,
+        port: str,
+        handles: tuple[str, ...],
+        fix: str,
+        did_you_mean: list[str] | None,
+    ):
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        row = {
+            "source_port": port,
+            "source_column": "quote_id",
+            "output_path": "$[:].quote_id",
+            "enabled": True,
+        }
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Respond with the quote id.",
+                "ops": [
+                    _CLAIMS_QUOTE_INPUT,
+                    {
+                        "op": "add_node",
+                        "node_type": "output",
+                        "name": "response",
+                        "config": {"outputMapping": [row], "outputFormat": "json"},
+                    },
+                    *(
+                        {
+                            "op": "add_edge",
+                            "source": "quote_inputs",
+                            "target": "response",
+                            "source_handle": handle,
+                        }
+                        for handle in handles
+                    ),
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("invalid_ops", True)
+        assert error["where"] == {"op_index": 1, "node": "response", "field": "outputMapping"}
+        assert error["fix"] == fix
+        assert error.get("did_you_mean") == did_you_mean
 
     async def test_a_step_reading_an_unconnected_node_names_the_edge_to_add(
         self, steps_first_project: Path
@@ -3903,7 +3991,8 @@ class TestActionableErrors:
                 "ad_driver_claims",
                 ("additional_driver_claims",),
                 "The edges into 'claims_agg' provide the input 'additional_driver_claims'; "
-                "set the source step's input to 'additional_driver_claims'.",
+                "set the source step's input to 'additional_driver_claims'. "
+                + _input_naming_rule(),
                 ["additional_driver_claims"],
                 id="an-edge-under-another-name",
             ),
@@ -3912,7 +4001,8 @@ class TestActionableErrors:
                 ("quote", "additional_driver_claims"),
                 "The edges into 'claims_agg' provide the inputs 'quote', "
                 "'additional_driver_claims'; set the source step's input to "
-                "'additional_driver_claims' if that is the frame df starts from.",
+                "'additional_driver_claims' if that is the frame df starts from. "
+                + _input_naming_rule(),
                 ["additional_driver_claims"],
                 id="two-edges-under-other-names",
             ),

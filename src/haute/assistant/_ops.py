@@ -2980,35 +2980,44 @@ def _unread_source_input(
     return name if isinstance(name, str) and name not in input_names else None
 
 
-def _source_input_fix(node_id: str, name: str, input_names: Sequence[str]) -> tuple[str, list[str]]:
-    """The fix for a source step reading *name*, which no incoming edge gives.
+def _input_name_fix(
+    node_id: str,
+    written: str,
+    input_names: Sequence[str],
+    *,
+    reader: str,
+    field: str,
+    purpose: str,
+) -> tuple[str, list[str]]:
+    """The fix for *field* of *node_id* naming *written*, an input no incoming edge gives.
 
-    With no incoming edge the step has nothing to read, so the fix adds one
-    and says how an edge names its input. Otherwise it lists the names the
-    edges give and suggests one: the only one, or the one closest to *name*.
-    Returns the fix and its suggestion.
+    *reader* is what reads the input (``its source step``, ``row 1``) and
+    *purpose* what its frame is for (``df starts from``). With no incoming
+    edge there is nothing to name, so the fix adds an edge; otherwise it lists
+    the names the edges give and suggests one: the only one, or the one
+    closest to *written*. Either way it states the naming rule. Returns the
+    fix and its suggestion.
     """
 
     if not input_names:
         return (
-            f"{node_id!r} has no incoming edge, so its source step reads nothing. Add "
+            f"{node_id!r} has no incoming edge, so {reader} reads nothing. Add "
             f'{{"op": "add_edge", "source": "<upstream node>", "target": "{node_id}"}} to '
             'this plan, with "source_handle": "<frame>" when the source is a Quote Input, '
-            "and set the source step's input to the name that edge gives. " + INPUT_NAMING_RULE,
+            f"and set {field} to the name that edge gives. {INPUT_NAMING_RULE}",
             [],
         )
     names = list(dict.fromkeys(input_names))
     provided = (
         f"The edges into {node_id!r} provide the input{'s' if len(names) > 1 else ''} "
         + ", ".join(repr(item) for item in names)
-        + "; set the source step's input to "
+        + f"; set {field} to "
     )
     if len(names) == 1:
-        return f"{provided}{names[0]!r}.", names
-    close = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
-    if close:
-        return f"{provided}{close[0]!r} if that is the frame df starts from.", close
-    return f"{provided}the one df starts from.", []
+        return f"{provided}{names[0]!r}. {INPUT_NAMING_RULE}", names
+    close = difflib.get_close_matches(written, names, n=1, cutoff=0.6)
+    choice = f"{close[0]!r} if that is the frame {purpose}" if close else f"the one {purpose}"
+    return f"{provided}{choice}. {INPUT_NAMING_RULE}", close
 
 
 def _validate_assistant_authored_steps(
@@ -3048,7 +3057,14 @@ def _validate_assistant_authored_steps(
                 f'{{"op": "add_edge", "source": "{unwired}", "target": "{node.id}"}}.'
             )
         elif unread is not None:
-            fix, suggested = _source_input_fix(node.id, unread, input_names)
+            fix, suggested = _input_name_fix(
+                node.id,
+                unread,
+                input_names,
+                reader="its source step",
+                field="the source step's input",
+                purpose="df starts from",
+            )
         _invalid(
             f"Node {node.id!r} has an invalid step list: {detail}",
             where={"node": node.id, "field": "steps", **({} if step is None else {"step": step})},
@@ -3125,7 +3141,10 @@ def _validate_output_rows_read_inputs(
     """Refuse an assistant-written output row whose source_port names no incoming edge.
 
     The engine lets a one-input output's rows name any frame, so a wrong name
-    saves silently; the assistant's rows must name the frame they read.
+    saves silently; the assistant's rows must name the frame they read. A row
+    naming an unconnected node a plain edge would name the same is told that
+    edge; any other row, such as one naming a Quote Input or a submodel node,
+    is told the names the incoming edges give and the naming rule.
     """
 
     rows = node.data.config.get("outputMapping")
@@ -3137,18 +3156,28 @@ def _validate_output_rows_read_inputs(
         if not is_active_mapping_entry(dict(row)) or port in names:
             continue
         connected = ", ".join(repr(name) for name in names) or "none"
-        unwired = isinstance(port, str) and port in nodes_by_id and port != node.id
+        source = nodes_by_id.get(port) if isinstance(port, str) and port != node.id else None
+        suggested: list[str] = []
+        if source is not None and _plain_edge_input_name(source) == port:
+            fix = (
+                f"Connect {port!r} to {node.id!r} in the same plan: "
+                f'{{"op": "add_edge", "source": "{port}", "target": "{node.id}"}}.'
+            )
+        else:
+            fix, suggested = _input_name_fix(
+                node.id,
+                port if isinstance(port, str) else "",
+                names,
+                reader=f"row {position}",
+                field=f"row {position}'s source_port",
+                purpose="the column comes from",
+            )
         _invalid(
             f"Row {position} of the outputMapping of node {node.id!r} reads source_port {port!r}, "
             f"which no incoming edge provides; its incoming edges are {connected}.",
             where={"node": node.id, "field": "outputMapping"},
-            fix=(
-                f"Connect {port!r} to {node.id!r} in the same plan: "
-                f'{{"op": "add_edge", "source": "{port}", "target": "{node.id}"}}.'
-                if unwired
-                else f"Set row {position}'s source_port to the name of an incoming edge: "
-                f"{connected}."
-            ),
+            fix=fix,
+            did_you_mean=suggested,
         )
 
 

@@ -1506,6 +1506,37 @@ class TestSubmodelBoundary:
             _apply(base, [{"op": "delete_node", "node": "submodel__sm1"}])
         assert caught.value.code == "submodel_boundary"
 
+    def test_an_output_row_naming_an_occurrence_is_told_its_port_name(self):
+        """An edge from a submodel output is named by its port, never by the
+        occurrence, so the fix names the port rather than a plain add_edge."""
+
+        from haute.assistant._catalog import INPUT_NAMING_RULE
+        from haute.assistant._ops import _validate_output_rows_read_inputs
+
+        row = {
+            "source_port": "vehicle_factors",
+            "source_column": "policy_id",
+            "output_path": "$[:].policy_id",
+            "enabled": True,
+        }
+        graph = _graph(
+            [
+                _node("vehicle_factors", "submodel"),
+                _node("response", "output", outputMapping=[row]),
+            ],
+            [_edge("vehicle_factors", "response", sh="out__factored")],
+        )
+        nodes = {node.id: node for node in graph.nodes}
+
+        with pytest.raises(OpValidationError) as caught:
+            _validate_output_rows_read_inputs(graph, nodes["response"], nodes)
+
+        assert caught.value.fix == (
+            "The edges into 'response' provide the input 'factored'; set row 1's source_port "
+            "to 'factored'. " + INPUT_NAMING_RULE
+        )
+        assert caught.value.did_you_mean == ("factored",)
+
 
 # ---------------------------------------------------------------------------
 # Atomicity and purity

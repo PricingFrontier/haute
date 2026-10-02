@@ -681,8 +681,10 @@ refused with the step, and on a surface whose code sees only `df` a step that re
 input or upstream node by name is refused with "<Surface> code sees only df". A
 Transform's source step that reads an input no incoming edge gives is refused with a fix
 that teaches the naming: when no edge reaches the node, add an `add_edge` into it in the
-same plan and name the input after that edge, with the rule; otherwise the names its
-edges give, suggesting the only one or the one closest to the name written.
+same plan and name the input after that edge; otherwise the names its edges give,
+suggesting the only one or the one closest to the name written; either way it states the
+rule. A response row whose `source_port` names no incoming edge gets the same fix, unless
+it names an unconnected node a plain edge would name the same, which is told that edge.
 
 **Writes to stepped nodes land in the saved config or fail naming the fix.** A node
 the assistant adds starts from the palette's config for its type (`node_defaults.json`),
@@ -1239,7 +1241,8 @@ creates that same mapping directly after its source. Each mapping row's `source_
 names the frame it reads by the input name its edge gives: the created node's id for a
 recipe's own output, and, when `source` is a `$ref` to a node the plan adds, the ref,
 which the plan resolves to that node's name rather than saving the ref. A dry-run refuses
-a response row the plan writes whose `source_port` names no incoming edge, because the
+a response row the plan writes whose `source_port` names no incoming edge, with a fix that
+names the inputs the edges give and states the input-naming rule, because the
 engine lets a one-input response read any name and the wrong name would save silently. A bare output name is a material
 mapping ambiguity and requires clarification. A recipe argument failure is a structured
 error located at the `recipe` operation, with `fix` naming the correction and the

@@ -1757,7 +1757,13 @@ the turn that follows.
   `outputMapping` it writes, every active row's `source_port` must be the input name of
   one of its incoming edges (`_validate_output_rows_read_inputs`); otherwise the plan
   fails as `invalid_ops` located at the node and `outputMapping`, listing the incoming
-  edges, with a fix that adds the edge when the port names an unconnected node. The
+  edges. When the port names an unconnected node whose plain edge (no source handle)
+  gives that name, the fix adds that edge; otherwise, as when the port names a Quote
+  Input or a submodel node, whose edges are named by the frame or port they select, the
+  fix is the input-name fix the source step gets (`_input_name_fix`, with `row <n>` and
+  `row <n>'s source_port`, "the frame the column comes from"): the edge to add when none
+  reaches the node, else the names the edges give with one suggested (also
+  `did_you_mean`), then `INPUT_NAMING_RULE`. The
   engine lets a one-input response read any name, so without this check a wrong name
   saved silently. Saved rows the plan does not write are not judged.
 - **A categorical factor bands text** — a categorical banding factor the plan writes
@@ -1864,15 +1870,16 @@ the turn that follows.
   step reading an upstream node that is not wired in gets the `add_edge` fix (only a node
   whose plain edge, with no source handle, gives its own id counts, so a Quote Input or a
   submodel never does: their edges are named by the frame or port they select), and that
-  a Transform's source step reading an input no incoming edge gives (`_source_input_fix`)
-  gets a fix that teaches the naming: with no incoming edge, `'<node>' has no incoming
-  edge, so its source step reads nothing. Add {"op": "add_edge", "source": "<upstream
-  node>", "target": "<node>"} to this plan, with "source_handle": "<frame>" when the
-  source is a Quote Input, and set the source step's input to the name that edge gives.`
-  followed by `INPUT_NAMING_RULE`; otherwise `The edges into '<node>' provide the
-  input(s) <names>; set the source step's input to <name>`, naming the only one, or the
-  closest by `difflib` (cutoff 0.6, also returned as `did_you_mean`) "if that is the frame
-  df starts from", or "the one df starts from" when none is close. Each `free_code` step
+  a Transform's source step reading an input no incoming edge gives gets the input-name
+  fix (`_input_name_fix`, shared with the response-row check) that teaches the naming:
+  with no incoming edge, `'<node>' has no incoming edge, so its source step reads
+  nothing. Add {"op": "add_edge", "source": "<upstream node>", "target": "<node>"} to
+  this plan, with "source_handle": "<frame>" when the source is a Quote Input, and set
+  the source step's input to the name that edge gives.`; otherwise `The edges into
+  '<node>' provide the input(s) <names>; set the source step's input to <name>.`, naming
+  the only one, or the closest by `difflib` (cutoff 0.6) "if that is the frame df starts
+  from", or "the one df starts from" when none is close. Either form ends with
+  `INPUT_NAMING_RULE`, and the suggested name is also returned as `did_you_mean`. Each `free_code` step
   is then checked on its own code. A top-level bare expression that calls a method on
   `df` or on an incoming input (`df.filter(...)` alone) is refused naming the node, the
   step's number and its id, because its result is discarded; the rendered program's
@@ -2346,12 +2353,13 @@ fixture for route tests). The implemented coverage is:
   node and operation that wrote it (`invalid_config` for a rating row without its factor,
   `schema_unresolvable` with the parser's fix for number breakpoints on a Date column),
   and a schema failure at the node that raised, naming the terminal; a categorical factor
-  on a number column points at breakpoints; a response row naming no incoming edge, and
-  a step reading an unconnected node, carry the fix that names the edge; a source step
-  reading an input no edge gives carries the add_edge-and-naming-rule fix when no edge
-  reaches its node (also when it names a Quote Input node, which no plain edge names),
-  and otherwise the names one edge or two edges from Quote Input frames give, suggesting
-  the close one; a
+  on a number column points at breakpoints; a step reading an unconnected node carries
+  the fix that names the edge; a source step, and a response row, reading an input no
+  edge gives carries the add_edge-and-naming-rule fix when no edge reaches its node (also
+  when it names a Quote Input node, which no plain edge names), and otherwise the names
+  one edge or two edges from Quote Input frames give, suggesting the close one, with the
+  rule; a response row naming a submodel occurrence is told its port's name (at the
+  validator, since the assistant cannot wire a submodel); a
   `response_output` after a node the plan adds saves that node's name; a switch routing a
   scenario to a dropped input is `scenario_unrouted`; the live renewal plan's shape (a new
   Data Input wired into the switch with a `target_handle`, and that handle mapped to the new
