@@ -28,7 +28,8 @@ test.describe("save conflict", () => {
     await expect(labelInputA).toHaveValue("raw_rows")
     await labelInputA.fill("raw_rows_a")
     await labelInputA.press("Enter")
-    await expect(pageA.getByTitle("Unsaved changes")).toBeVisible()
+    // The rename has landed on page A's canvas, so page A now holds unsaved work.
+    await expect(pageA.getByTestId("node-raw_rows_a")).toBeVisible()
 
     // 2. On page B: rename label to raw_rows_b, save, wait for "Saved" alert
     await rawRowsNodeB.click()
@@ -36,7 +37,7 @@ test.describe("save conflict", () => {
     await expect(labelInputB).toHaveValue("raw_rows")
     await labelInputB.fill("raw_rows_b")
     await labelInputB.press("Enter")
-    await expect(pageB.getByTitle("Unsaved changes")).toBeVisible()
+    await expect(pageB.getByTestId("node-raw_rows_b")).toBeVisible()
     await pageB.getByRole("button", { name: "Save", exact: true }).click()
     await expect(pageB.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 

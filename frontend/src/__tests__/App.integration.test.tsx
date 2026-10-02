@@ -1497,6 +1497,23 @@ describe("App integration - save pipeline", () => {
   })
 })
 
+describe("App integration - server status", () => {
+  it("reports the server Offline on the Pipeline button once live sync loses it", async () => {
+    render(<App />)
+    await waitForAppReady()
+    const latestSocket = () => MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    const pipeline = screen.getByTestId("toolbar-pipeline-settings")
+    // Still connecting: not evidence of anything, so no "Offline" flash.
+    expect(pipeline).toHaveTextContent(/^Calculating$/)
+
+    act(() => latestSocket().onopen?.())
+    expect(pipeline).toHaveTextContent(/^Calculating$/)
+
+    act(() => (latestSocket().onclose as unknown as (event: CloseEvent) => void)({ code: 1006 } as CloseEvent))
+    expect(pipeline).toHaveTextContent(/^Offline$/)
+  })
+})
+
 describe("App integration - error handling", () => {
   it("shows an error toast when loadPipeline rejects, without crashing", async () => {
     vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("Backend offline"))

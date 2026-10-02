@@ -836,6 +836,15 @@ reconciliation rather than dropping them or committing a second mutation.
     `useSubmodelNavigation.handleDocumentReload` returns to root view, clears
     `activeSubmodelIdentity`, resets the view stack to the pipeline level, and
     shows the parent graph without throwing.
+    The hook returns a `WsStatus`: `idle` while sync is not enabled (the
+    pipeline is loading or failed to load), `connecting` from enabling until
+    the first attempt opens or fails, `connected` while a socket is open,
+    `reconnecting` as soon as a socket closes (before any session probe that
+    close starts has settled) while retries remain, and `disconnected` when
+    retries are exhausted, the socket cannot
+    be constructed, or the session has expired. Only `reconnecting` and
+    `disconnected` mean the server is known to be unreachable; the toolbar
+    shows "Offline" for those two alone.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
     `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
     session-expired reason force-refreshes the HttpOnly cookie, then reconnects;
@@ -1600,7 +1609,10 @@ again through the editor and save paths.
   `frontend/src/hooks/__tests__/`:**
   - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
     `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` cover
-    connection, reconnect/resync, source identity, message generations,
+    connection (including the `idle` → `connecting` → `connected` status
+    sequence, and `reconnecting` only after a first attempt fails or an
+    open connection drops — at once, with the close's session probe held
+    pending), reconnect/resync, source identity, message generations,
     bounded invalid-edge warnings, malformed/unknown frames, delayed fit,
     and the required submodels apply/ref-before-save contract.
   - `frontend/src/hooks/__tests__/useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/

@@ -131,7 +131,7 @@ vi.mock("../components/Toolbar", async () => {
     await vi.importActual<typeof import("../stores/useNodeResultsStore")>("../stores/useNodeResultsStore")
 
   return {
-    default: function MockToolbar(props: { nodeCount: number; dirty: boolean }) {
+    default: function MockToolbar(props: { nodeCount: number }) {
       const jobCountSignature = useNodeResultsStore(
         (s) => `${Object.keys(s.solveJobs).length}:${Object.keys(s.trainJobs).length}`,
       )
@@ -139,7 +139,6 @@ vi.mock("../components/Toolbar", async () => {
 
       mockToolbarRender({
         nodeCount: props.nodeCount,
-        dirty: props.dirty,
         solveJobCount,
         trainJobCount,
       })

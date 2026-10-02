@@ -218,7 +218,8 @@ test.describe("frontend canvas assurance", () => {
     await expect(bandingPanel.getByLabel("Output Column")).toHaveValue(
       "vehicle_age_band",
     )
-    await expect(page.getByTitle("Unsaved changes", { exact: true })).toHaveCount(0)
+    // Browsing the factor list made no edit: nothing to undo.
+    await expect(page.getByRole("button", { name: "Undo", exact: true })).toBeDisabled()
     // Banding shows numbers only for the whole dataset, so its data is cached
     // first; until then it says so rather than counting the preview.
     await expect(bandingPanel.getByText("Not cached · Refresh this node to count all rows")).toBeVisible()

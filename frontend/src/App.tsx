@@ -857,10 +857,6 @@ function FlowEditor() {
     touchOptimiserPreview(activePanelNodeId)
   }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
 
-  // Store-maintained dirty flag.
-  // Subscribe to the primitive so frequent React Flow node updates do not
-  // serialize the graph from App's selector.
-  const dirty = useGraphStore((s) => s.dirty)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCapabilities = useDocumentStatusStore((s) => s.capabilities)
   const reservedApiInputFrameLabels = useMemo(
@@ -1595,7 +1591,6 @@ function FlowEditor() {
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
         nodeCount={nodes.length}
-        dirty={dirty}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={undo}

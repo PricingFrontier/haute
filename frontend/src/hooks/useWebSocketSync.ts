@@ -21,7 +21,13 @@ import {
   notifyHauteSessionExpired,
 } from "../api/client"
 
-export type WsStatus = "connected" | "reconnecting" | "disconnected"
+/** Live-sync connection state. `idle`: sync is not enabled (the pipeline is
+ *  loading or failed to load). `connecting`: no attempt has failed yet.
+ *  `reconnecting`: a connection dropped or an attempt failed, and retries
+ *  continue. `disconnected`: retries are exhausted, the socket could not be
+ *  built, or the session expired. Only the last two mean the server is known
+ *  to be unreachable. */
+export type WsStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected"
 
 interface WebSocketSyncParams {
   preambleRef: React.MutableRefObject<string>
@@ -168,17 +174,17 @@ export default function useWebSocketSync({
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
-  const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
+  const [status, setStatus] = useState<WsStatus>(() => enabled ? "connecting" : "idle")
   const retriesRef = useRef(0)
 
   useEffect(() => {
     if (!enabled) {
       retriesRef.current = 0
-      setStatus("disconnected")
+      setStatus("idle")
       return
     }
 
-    setStatus("reconnecting")
+    setStatus("connecting")
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const wsUrl = `${protocol}//${window.location.host}/ws/sync`
     let ws: WebSocket | null = null
@@ -432,6 +438,9 @@ export default function useWebSocketSync({
 
       ws.onclose = (event) => {
         if (!mounted) return
+        // The socket is gone whatever follows, so say so now rather than
+        // after a session probe below settles — its request can be slow to fail.
+        setStatus("reconnecting")
         if (event.code === 1008 && isHauteSessionExpiredReason(event.reason)) {
           void bootstrapHauteSession(true)
             .then(() => {

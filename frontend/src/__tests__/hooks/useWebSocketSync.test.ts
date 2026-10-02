@@ -235,7 +235,28 @@ describe("useWebSocketSync", () => {
       const { result } = renderHook(() => useWebSocketSync({ ...params, enabled: false }))
 
       expect(mockWSInstances).toHaveLength(0)
-      expect(result.current).toBe("disconnected")
+      // Idle, not disconnected: an unloaded pipeline says nothing about the
+      // server, so nothing may report it offline.
+      expect(result.current).toBe("idle")
+    })
+
+    it("connects from idle once enabled, then returns to idle when disabled", () => {
+      const params = makeHookParams()
+      const { result, rerender } = renderHook(
+        ({ enabled }) => useWebSocketSync({ ...params, enabled }),
+        { initialProps: { enabled: false } },
+      )
+      expect(result.current).toBe("idle")
+
+      rerender({ enabled: true })
+      expect(result.current).toBe("connecting")
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+      expect(result.current).toBe("connected")
+
+      rerender({ enabled: false })
+      expect(result.current).toBe("idle")
     })
 
     it("creates a WebSocket connection when enabled after an initially disabled mount", () => {
@@ -296,8 +317,9 @@ describe("useWebSocketSync", () => {
       const params = makeHookParams()
       const { result } = renderHook(() => useWebSocketSync(params))
 
-      // Initially should be "reconnecting" (the initial useState default)
-      expect(result.current).toBe("reconnecting")
+      // The first attempt is "connecting" — no failure has been observed, so
+      // the server is not reported offline while it is merely being reached.
+      expect(result.current).toBe("connecting")
 
       // Simulate WebSocket opening
       act(() => {
@@ -305,6 +327,17 @@ describe("useWebSocketSync", () => {
       })
 
       expect(result.current).toBe("connected")
+    })
+
+    it("reports reconnecting once the first attempt fails", () => {
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+      expect(result.current).toBe("connecting")
+
+      act(() => {
+        latestWS().onclose?.({ code: 1011 } as CloseEvent)
+      })
+      expect(result.current).toBe("reconnecting")
     })
 
     it("surfaces a WebSocket constructor failure and stops reconnecting", () => {
@@ -1444,6 +1477,53 @@ describe("useWebSocketSync", () => {
         expect(mockWSInstances).toHaveLength(2)
       } finally {
         window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    it.each([
+      ["a first attempt fails before opening", { code: 1006, reason: "" }],
+      ["an open connection closes for an expired session", { code: 1008, reason: "Missing or invalid Haute session token" }],
+    ])("reports reconnecting at once when %s, before its session probe settles", async (_label, close) => {
+      const originalFetch = globalThis.fetch
+      // The probe is held unanswered, as a slow server would leave it.
+      let answerProbe: ((response: Response) => void) | undefined
+      const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { answerProbe = resolve }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+
+      try {
+        if (close.code === 1008) {
+          act(() => {
+            latestWS().onopen?.(new Event("open"))
+          })
+          expect(result.current).toBe("connected")
+        } else {
+          expect(result.current).toBe("connecting")
+        }
+        act(() => {
+          latestWS().onclose?.(close as CloseEvent)
+        })
+        await act(async () => {
+          await Promise.resolve()
+        })
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(result.current).toBe("reconnecting")
+      } finally {
+        // Settle the probe: the session bootstrap is shared module state, and
+        // a request left pending would be joined by later tests.
+        await act(async () => {
+          answerProbe?.({
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            json: () => Promise.resolve({ ok: true }),
+          } as Response)
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+        })
         globalThis.fetch = originalFetch
       }
     })
