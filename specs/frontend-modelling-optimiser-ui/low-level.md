@@ -18,7 +18,6 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the `ModalShell` Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title, description}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. Its collapsed bar summarises the first two of the metrics the result leads with (`headlineMetrics`). |
-| `frontend/src/panels/modelling/ModellingResultExpired.tsx` | `ModellingResultExpired`: the results panel of a Model Training node whose remembered result is gone from the server. The app shows it in place of the data preview when the active node has no result and the results store records its result as expired: a preview frame with the node's label and the remembered modelling panel height, saying the last training result is no longer available (the server restarted or it expired), that training results are not kept across a server restart, and to train the model again or open its MLflow run if it was logged. |
 | `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab; `validationMetricsLead` (a validation fit ran and the diagnostics are in-sample) and `headlineMetrics` (test metrics, else the validation selection means when they lead, else the diagnostics), shared by the Summary's first card and the collapsed bar. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
@@ -225,9 +224,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    summaries' `validation_rows` and K `validation_fit_count`, and described as the
    out-of-sample performance used to select the model; the in-sample diagnostics card
    follows. A `"final_test"` result keeps its test metrics first, and a run without
-   validation is unchanged. When the active node has no result and the results store
-   records its remembered result as expired, the app shows `ModellingResultExpired` in place
-   of the data preview.
+   validation is unchanged. A node with no result shows its data preview, whether or not the
+   results store records its remembered result as expired.
 5. `parseTrainStatusResponse` preserves explicit `null` values in categorical PDP grids;
    missing value fields, non-scalar values and null numeric grid values remain invalid.
    `PdpTab` displays the null level as `(missing)` without changing its prediction or
@@ -660,8 +658,8 @@ the point's rows, mean SHAP, relativity and range, and the values table lists ev
 `frontend/src/panels/modelling/__tests__/FeaturesTab.test.tsx` shows the SHAP beeswarm button
 only for a result with beeswarm rows, and that choosing it replaces the search and Features
 shown controls with the top-20 line. `frontend/src/__tests__/App.integration.test.tsx` proves the results
-panel of a Model Training node says why an expired result is gone, and says nothing of it
-when a result is present or no training was remembered; optimiser helper/frontier coverage is under
+panel of a Model Training node shows its data preview when its remembered result has expired
+or no training was remembered, and the result panes when a result is present; optimiser helper/frontier coverage is under
 `frontend/src/panels/optimiser/__tests__/`. `frontend/src/__tests__/utils/banding.test.ts` covers
 the factor-level and optimiser-source utility. Smaller visual summaries/charts are also exercised
 through their parent preview tests; not every helper has a dedicated test file.
@@ -845,15 +843,12 @@ The behavioural contract is defined in
   otherwise, so an upstream or submodel edit saved before the reload still shows the stale
   warning; a missing job (`404`) or any other status forgets the handle and records the node's
   result as expired in the results store (`markTrainResultExpired`, keyed by node, holding the
-  job ID), unless the node has meanwhile gained a result or a running job. That one record is
-  what both surfaces read, and it lasts for the session until the node starts training or gets
-  a result. The Export pane reports "The last training result for this node is no longer
-  available (the server restarted or it expired). Train this model again to export it." The
-  results panel (`ModellingResultExpired`) reports "The last training result for this node is
-  no longer available (the server restarted or it expired). Training results are not kept
-  across a server restart: train this model again to see them, or open its MLflow run if it
-  was logged." A transient status failure keeps the handle and records nothing. Storage
-  failures are tolerated.
+  job ID), unless the node has meanwhile gained a result or a running job. The Export pane
+  reads that record, which lasts for the session until the node starts training or gets a
+  result, and reports "The last training result for this node is no longer available (the
+  server restarted or it expired). Train this model again to export it." The results panel
+  does not read it: without a result it shows the node's data preview. A transient status
+  failure keeps the handle and records nothing. Storage failures are tolerated.
   `ModelFileExportSection` is headed "Model file" with an Info icon tooltip describing the
   action. It mounts the shared `PathPickerField` labelled "Filename or path *", bound to
   `model_export_path`, with manual entry and a browser filtered to the model extension.

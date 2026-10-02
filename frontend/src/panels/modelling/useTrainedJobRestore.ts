@@ -20,8 +20,8 @@ import {
  * training lineage of the graph the editor would submit now matches the one
  * recorded from the submitted request; otherwise it is restored as stale.
  * A remembered result the server no longer holds is recorded in the results
- * store (`expiredTrainJobs`), so the Export pane and the results panel can say
- * so instead of simply showing nothing.
+ * store (`expiredTrainJobs`), so the Export pane can say so instead of simply
+ * showing nothing.
  */
 export function useTrainedJobRestore(
   nodeId: string,

@@ -2749,7 +2749,7 @@ describe("App integration - panel open/close", () => {
 })
 
 describe("App integration - a Model Training node's results panel", () => {
-  const RESULTS_GONE = /no longer available \(the server restarted or it expired\)\. Training results are not kept across a server restart/
+  const RESULTS_GONE = /no longer available \(the server restarted or it expired\)/
 
   async function openModelNode(): Promise<void> {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
@@ -2763,12 +2763,14 @@ describe("App integration - a Model Training node's results panel", () => {
     await screen.findByTestId("node-panel")
   }
 
-  it("says why the last training result is gone when the server no longer holds it", async () => {
+  it("shows the data preview, not a lost-results message, when the server no longer holds the result", async () => {
     useNodeResultsStore.setState({ expiredTrainJobs: { model: "job_gone" } })
     await openModelNode()
 
-    const message = await screen.findByText(RESULTS_GONE)
-    expect(message).toHaveTextContent("train this model again to see them, or open its MLflow run if it was logged.")
+    // The node's ordinary preview frame is shown, as for a node never trained.
+    await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
+    expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+    expect(screen.queryByRole("tablist", { name: "Model result panes" })).toBeNull()
   })
 
   it("shows the results, and no such message, when a result is present", async () => {

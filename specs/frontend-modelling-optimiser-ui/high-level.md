@@ -31,9 +31,8 @@ results are supplied by API and result-store layers.
   feature importance, AVE, PDP and SHAP curves) only when backed by non-empty result data, and resets
   selection to summary when the result changes. When a node has no result because the one the
   browser remembered is gone from the server (it restarted, or the job expired), its results
-  panel says so in place of the data preview: training results are not kept across a server
-  restart, so train the model again, or open its MLflow run if it was logged. The Export pane
-  reports the same fact from the same record.
+  panel shows the node's data preview, as for a node that was never trained; the Export pane
+  says the last result is no longer available and to train the model again to export it.
 - The Features tab switches between importance measures with one button each: Prediction,
   then Loss and SHAP (mean absolute SHAP) when the result has them, then SHAP beeswarm when
   it has beeswarm rows (CatBoost, XGBoost, LightGBM). The beeswarm draws one row per feature,
