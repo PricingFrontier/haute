@@ -1627,3 +1627,162 @@ class TestRatingStepSidecars:
 
         with pytest.raises(ValueError, match="duplicate JSON key 'value'"):
             load_node_config(path)
+
+
+class TestGlobalConstantsFile:
+    """The canonical ``config/global_constants.json`` loader and serialiser."""
+
+    CANONICAL = (
+        "{\n"
+        '  "constants": [\n'
+        "    {\n"
+        '      "name": "inflation",\n'
+        '      "type": "float",\n'
+        '      "value": 1.05\n'
+        "    },\n"
+        "    {\n"
+        '      "name": "constant_x",\n'
+        '      "type": "integer",\n'
+        '      "by_source": {\n'
+        '        "live": 1,\n'
+        '        "nb_batch": 2\n'
+        "      }\n"
+        "    },\n"
+        "    {\n"
+        '      "name": "label",\n'
+        '      "type": "text",\n'
+        '      "value": "café"\n'
+        "    },\n"
+        "    {\n"
+        '      "name": "flag",\n'
+        '      "type": "boolean",\n'
+        '      "value": false\n'
+        "    },\n"
+        "    {\n"
+        '      "name": "as_at",\n'
+        '      "type": "date",\n'
+        '      "by_source": {\n'
+        '        "live": "2026-10-02"\n'
+        "      }\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+
+    def test_the_canonical_file_round_trips_byte_identically(self) -> None:
+        from haute._config_io import global_constants_json, parse_global_constants
+
+        constants = parse_global_constants(self.CANONICAL.encode("utf-8"))
+
+        assert [constant.name for constant in constants] == [
+            "inflation",
+            "constant_x",
+            "label",
+            "flag",
+            "as_at",
+        ]
+        assert constants[1].by_source == {"live": 1, "nb_batch": 2}
+        assert global_constants_json(constants) == self.CANONICAL
+
+    def test_a_float_written_as_a_whole_number_reads_and_writes_as_a_float(self) -> None:
+        from haute._config_io import global_constants_json, parse_global_constants
+
+        raw = json.dumps({"constants": [{"name": "rate", "type": "float", "value": 1}]})
+        constants = parse_global_constants(raw.encode("utf-8"))
+
+        assert constants[0].value == 1.0
+        assert isinstance(constants[0].value, float)
+        assert '"value": 1.0' in global_constants_json(constants)
+
+    def test_load_reads_the_file_and_lets_a_missing_file_raise(self, tmp_path: Path) -> None:
+        from haute._config_io import load_global_constants
+
+        path = tmp_path / "global_constants.json"
+        with pytest.raises(FileNotFoundError):
+            load_global_constants(path)
+        path.write_text(self.CANONICAL, encoding="utf-8")
+
+        assert len(load_global_constants(path)) == 5
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            ({"constants": [], "extra": 1}, "unknown key(s) ['extra']"),
+            ({}, "must have a 'constants' list"),
+            (
+                {"constants": [{"name": "a", "type": "float", "value": 1, "oops": 1}]},
+                "constant 1 ('a'): unknown key 'oops'",
+            ),
+            (
+                {"constants": [{"name": "a", "type": "float", "value": 1, "by_source": {}}]},
+                "needs exactly one of 'value'",
+            ),
+            ({"constants": [{"name": "a", "type": "float"}]}, "needs exactly one of 'value'"),
+            (
+                {"constants": [{"name": "1a", "type": "float", "value": 1}]},
+                "must start with a letter",
+            ),
+            (
+                {"constants": [{"name": "_a", "type": "float", "value": 1}]},
+                "must start with a letter",
+            ),
+            ({"constants": [{"name": "class", "type": "float", "value": 1}]}, "Python keyword"),
+            (
+                {
+                    "constants": [
+                        {"name": "a", "type": "float", "value": 1},
+                        {"name": "a", "type": "float", "value": 2},
+                    ]
+                },
+                "constant 2 ('a'): the name 'a' is already defined",
+            ),
+            ({"constants": [{"name": "a", "type": "integer", "value": 1.5}]}, "a whole number"),
+            ({"constants": [{"name": "a", "type": "integer", "value": True}]}, "a whole number"),
+            ({"constants": [{"name": "a", "type": "float", "value": "1"}]}, "a finite number"),
+            ({"constants": [{"name": "a", "type": "text", "value": 1}]}, "must be text"),
+            ({"constants": [{"name": "a", "type": "boolean", "value": 1}]}, "true or false"),
+            ({"constants": [{"name": "a", "type": "date", "value": "2026-13-01"}]}, "a real date"),
+            ({"constants": [{"name": "a", "type": "date", "value": "2026-1-1"}]}, "a real date"),
+            (
+                {"constants": [{"name": "a", "type": "float", "by_source": {"": 1}}]},
+                "a source name must be non-empty",
+            ),
+            (
+                {"constants": [{"name": "a", "type": "decimal", "value": 1}]},
+                "type: Input should be",
+            ),
+        ],
+    )
+    def test_an_invalid_file_names_the_entry_and_the_field(
+        self,
+        payload: dict[str, Any],
+        message: str,
+    ) -> None:
+        from haute._config_io import parse_global_constants
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError) as excinfo:
+            parse_global_constants(json.dumps(payload).encode("utf-8"))
+
+        assert str(excinfo.value).startswith("config/global_constants.json ")
+        assert message in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        ("raw", "message"),
+        [
+            (b'\xef\xbb\xbf{"constants": []}', "Unexpected UTF-8 BOM"),
+            (b'{"constants": [], "constants": []}', "duplicate JSON key 'constants'"),
+            (b"[]", "must hold a JSON object"),
+            (b"\xff\xfe", "not valid JSON"),
+        ],
+    )
+    def test_bytes_that_are_not_one_strict_utf8_json_object_are_refused(
+        self,
+        raw: bytes,
+        message: str,
+    ) -> None:
+        from haute._config_io import parse_global_constants
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError, match=message):
+            parse_global_constants(raw)

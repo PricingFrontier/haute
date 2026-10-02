@@ -143,6 +143,14 @@ Out of scope (owned by neighbouring components, cross-linked below):
   error is converted into a one-element opaque chain (or `[]`), while non-syntax internal failures
   are not caught.
 
+**Global constants.** The strict parser reads the pipeline constructor's `global_constants`
+keyword, which may name only `config/global_constants.json`, and loads that file into the
+graph. A missing, unreadable or invalid file never fails the parse: the graph carries no
+constants, the reason as `global_constants_error`, and a warning. The generated
+`global_constants = pipeline.global_constants` (or `submodel.global_constants`) is recognised as
+generated code; any other module-level binding of the name, a node function of that name, and a
+submodel constructor that declares constants are `ParseError`s naming the line.
+
 ## Design rationale
 
 - The primary structural parser uses Python's `ast` module because pipeline files are executable

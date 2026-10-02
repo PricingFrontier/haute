@@ -5595,3 +5595,12 @@ def test_frame_global_df_saves_as_incomplete_placeholder(tmp_path: Path) -> None
     parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
     parsed_node = next(n for n in parsed.nodes if n.id == node_id)
     assert parsed_node.data.config["steps"] == offending_steps
+
+
+def test_a_step_variable_cannot_take_the_reserved_global_constants_name() -> None:
+    with pytest.raises(PolarsStepError, match="'global_constants' is not a valid name"):
+        render_polars_steps(
+            [source(), step("v", "variable", name="global_constants", value=num(1))],
+            ["quotes"],
+            start="input",
+        )

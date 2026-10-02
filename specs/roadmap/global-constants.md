@@ -27,59 +27,12 @@ the Utility pane until they exist); and assistant support for constants.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GCONST-01 | Planned | P2 | A pipeline's global constants load, validate and save with its `.py`, which names them. |
 | GCONST-02 | Planned | P1 | Cache identities sign the constants each node reads, so editing one re-runs only the nodes that read it. |
 | GCONST-03 | Planned | P2 | Every run reads each constant's value for the source it runs under: in the editor, standalone and deployed. |
 | GCONST-04 | Planned | P2 | The toolbar's Constants button opens a pane that edits the constants, per source where split. |
 | GCONST-05 | Planned | P2 | The step editor offers constants wherever it offers variables, and in typed function arguments. |
 
 ## Planned improvements
-
-### GCONST-01 — Global constants in the pipeline model, file and code
-**Why:** A pipeline has no home for a shared, typed value that differs by
-source. The preamble and utility modules are the same under every source, and
-the Constant node is read only through an edge and a join, with its values
-coerced from strings. Nothing else in this roadmap can be built until the graph
-carries constants and the `.py` names them.
-
-**Plan:** Add the global constant model to the canonical graph and the editor
-document, and copy it through every graph built field by field
-(`upstream_subgraph` and the recovery snapshot graph). Parse the
-`global_constants="config/global_constants.json"` constructor keyword, load and
-validate that file as the contract states, cover its bytes in the document
-revision, and recognise the generated
-`global_constants = pipeline.global_constants` binding
-(`submodel.global_constants` in a submodel definition file). Emit the keyword
-and the bindings whenever the graph has constants, and give the live API the
-keyword and a `global_constants` sentinel at the same time, so a generated file
-always imports. Save writes the file, removes it when no constants remain, never
-rewrites or deletes it while it fails to load (and then skips the
-undefined-name checks), warns for each split constant missing a value for one of
-the pipeline's sources, and refuses invalid constants, a code read of an
-undefined constant, and every other binding of the reserved name. Regenerate the
-browser API contracts.
-
-**Acceptance:** A pipeline holding uniform and split constants of all five
-types saves, reloads and regenerates byte-identically, and so does each of its
-submodel files, which import; removing the last constant removes the file, the
-keyword and the binding; each malformed file named in the contract's failure
-records loads with an error naming the entry and survives a save untouched,
-while an unrelated edit still saves; an edit of the constants file by another
-writer after load, including one that lands between the load's read and its
-revision calculation, makes the save fail as stale; a node named
-`global_constants`, a preamble or node code that binds the name, a step
-variable of that name and a code read of an undefined constant are refused at
-save; and the editor document carries the constants and the load error.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_types.py::PipelineGraph`;
-`src/haute/_graph_utils.py::upstream_subgraph`;
-`src/haute/_ast_helpers.py::_extract_meta`;
-`src/haute/_pipeline_recovery.py::_source_references`;
-`src/haute/codegen.py::_render_module`;
-`src/haute/routes/_save_pipeline.py::SavePipelineService`;
-`src/haute/schemas.py::PipelineEditorDocument`.
 
 ### GCONST-02 — Cache identities sign the constants each node reads
 **Why:** A cached result must never outlive a change to a value its code
@@ -106,7 +59,7 @@ signs every constant; a read inside an f-string is recorded on Python 3.11 as on
 later versions; and the cache identity contract test classifies the new class
 for every consumer.
 
-**Dependencies:** GCONST-01.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_cache.py::CacheInputClass`;
 `src/haute/_cache.py::graph_fingerprint`;

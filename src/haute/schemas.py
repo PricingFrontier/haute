@@ -55,6 +55,7 @@ from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
+from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
@@ -814,6 +815,8 @@ class PipelineEditorDocument(BaseModel):
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    global_constants_error: str | None = None
     source_file: str = ""
     source_revision: RevisionToken | None = None
     source_text: str = ""

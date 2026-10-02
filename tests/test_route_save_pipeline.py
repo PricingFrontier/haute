@@ -2691,3 +2691,216 @@ class TestStaleSavePrecondition:
         assert not (tmp_path / "config" / "polars" / "extra_polars.json").exists()
         assert not (tmp_path / "config" / "polars" / "node_extra_polars.json").exists()
         assert not (tmp_path / "config").exists() or not list((tmp_path / "config").rglob("*.json"))
+
+
+# ---------------------------------------------------------------------------
+# Global constants
+# ---------------------------------------------------------------------------
+
+_CONSTANTS_SOURCE = (
+    '"""Pipeline: main"""\n\n'
+    "import haute\n"
+    "import polars as pl\n\n"
+    'pipeline = haute.Pipeline("main")\n\n\n'
+    "@pipeline.polars\n"
+    "def quotes() -> pl.LazyFrame:\n"
+    '    df = pl.LazyFrame({"age": [30, 70]})\n'
+    "    return df\n"
+)
+
+
+def _constants_project(tmp_path: Path, source: str = _CONSTANTS_SOURCE) -> Path:
+    main = tmp_path / "main.py"
+    main.write_text(source, encoding="utf-8")
+    return main
+
+
+def _save_constants_graph(
+    tmp_path: Path,
+    graph: PipelineGraph,
+    *,
+    preamble: str | None = None,
+    sources: list[str] | None = None,
+):
+    from tests.conftest import current_source_revision
+
+    return SavePipelineService(project_root=tmp_path).save(
+        SavePipelineRequest(
+            graph=graph,
+            name="main",
+            preamble=preamble,
+            source_file="main.py",
+            sources=sources or ["live"],
+            base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+        )
+    )
+
+
+def _with_constants(graph: PipelineGraph, constants: list[dict]) -> PipelineGraph:
+    return PipelineGraph.model_validate({**graph.model_dump(), "global_constants": constants})
+
+
+def _with_node_code(graph: PipelineGraph, code: str) -> PipelineGraph:
+    payload = graph.model_dump()
+    payload["nodes"][0]["data"]["config"]["code"] = code
+    return PipelineGraph.model_validate(payload)
+
+
+class TestSaveGlobalConstants:
+    RATE = [{"name": "rate", "type": "float", "value": 1.05}]
+
+    def test_the_file_and_the_generated_lines_come_and_go_with_the_constants(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        constants_path = tmp_path / "config" / "global_constants.json"
+
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), self.RATE))
+
+        saved = main.read_text(encoding="utf-8")
+        assert 'global_constants="config/global_constants.json"' in saved
+        assert "\nglobal_constants = pipeline.global_constants\n" in saved
+        assert json.loads(constants_path.read_text(encoding="utf-8")) == {
+            "constants": [{"name": "rate", "type": "float", "value": 1.05}]
+        }
+
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), []))
+
+        assert not constants_path.exists()
+        assert "global_constants" not in main.read_text(encoding="utf-8")
+
+    def test_a_file_that_fails_to_load_survives_an_unrelated_save_untouched(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), self.RATE))
+        # Node code reads the constant before the file breaks.
+        _save_constants_graph(
+            tmp_path,
+            _with_node_code(
+                parse_pipeline_file(main),
+                'df = pl.LazyFrame({"age": [30]}).with_columns(pl.lit(global_constants.rate))',
+            ),
+        )
+        constants_path = tmp_path / "config" / "global_constants.json"
+        broken = b'{"constants": [ not json'
+        constants_path.write_bytes(broken)
+        graph = parse_pipeline_file(main)
+        assert graph.global_constants == []
+        assert graph.global_constants_error is not None
+
+        response = _save_constants_graph(
+            tmp_path,
+            _with_node_code(
+                graph,
+                'df = pl.LazyFrame({"age": [31]}).with_columns(pl.lit(global_constants.rate))',
+            ),
+        )
+
+        assert response.status == "saved"
+        assert constants_path.read_bytes() == broken
+        saved = main.read_text(encoding="utf-8")
+        assert 'global_constants="config/global_constants.json"' in saved
+        assert "\nglobal_constants = pipeline.global_constants\n" in saved
+        assert '"age": [31]' in saved
+
+    def test_constants_cannot_overwrite_a_file_that_failed_to_load(self, tmp_path: Path) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        _save_constants_graph(tmp_path, _with_constants(parse_pipeline_file(main), self.RATE))
+        constants_path = tmp_path / "config" / "global_constants.json"
+        constants_path.write_bytes(b"{")
+        graph = _with_constants(parse_pipeline_file(main), self.RATE)
+
+        with pytest.raises(HTTPException) as excinfo:
+            _save_constants_graph(tmp_path, graph)
+
+        assert excinfo.value.status_code == 400
+        assert "Fix or remove the file" in str(excinfo.value.detail)
+        assert constants_path.read_bytes() == b"{"
+
+    def test_a_split_constant_missing_a_source_saves_with_a_warning(self, tmp_path: Path) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        graph = _with_constants(
+            parse_pipeline_file(main),
+            [{"name": "loading", "type": "float", "by_source": {"live": 1.0}}],
+        )
+
+        response = _save_constants_graph(tmp_path, graph, sources=["live", "nb_batch"])
+
+        assert "Global constant 'loading' has no value for source 'nb_batch'." in response.warnings
+
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            pytest.param(
+                lambda graph: PipelineGraph.model_validate(
+                    {
+                        **graph.model_dump(),
+                        "nodes": [
+                            {
+                                **graph.model_dump()["nodes"][0],
+                                "data": {
+                                    **graph.model_dump()["nodes"][0]["data"],
+                                    "label": "global_constants",
+                                },
+                            }
+                        ],
+                    }
+                ),
+                "would be named 'global_constants'",
+                id="node-name",
+            ),
+            pytest.param(
+                lambda graph: _with_node_code(graph, "global_constants = 1\ndf = pl.LazyFrame()"),
+                "code binds 'global_constants'",
+                id="node-code-binding",
+            ),
+            pytest.param(
+                lambda graph: _with_node_code(
+                    graph, "df = pl.LazyFrame({'x': [global_constants.missing]})"
+                ),
+                "reads global constant(s) ['missing']",
+                id="undefined-read",
+            ),
+        ],
+    )
+    def test_what_would_shadow_or_miss_a_constant_is_refused(
+        self,
+        tmp_path: Path,
+        mutate,
+        message: str,
+    ) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+        before = main.read_bytes()
+
+        with pytest.raises(HTTPException) as excinfo:
+            _save_constants_graph(tmp_path, mutate(parse_pipeline_file(main)))
+
+        assert excinfo.value.status_code == 400
+        assert message in str(excinfo.value.detail)
+        assert main.read_bytes() == before
+
+    def test_a_preamble_that_binds_the_name_is_refused(self, tmp_path: Path) -> None:
+        from haute.parser import parse_pipeline_file
+
+        main = _constants_project(tmp_path)
+
+        with pytest.raises(HTTPException) as excinfo:
+            _save_constants_graph(
+                tmp_path, parse_pipeline_file(main), preamble="global_constants = {}"
+            )
+
+        assert excinfo.value.status_code == 400
+        assert "The preamble binds 'global_constants'" in str(excinfo.value.detail)

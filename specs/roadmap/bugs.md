@@ -292,8 +292,8 @@ while the file on disk holds one, naming each line and the two fixes: move the
 statement above the constructor, where it becomes preamble, or wrap it in
 preserve markers. The file is never rewritten without the statement. The
 statements that stay recognised are the node functions, `connect` chains,
-submodel registrations, preserved blocks and, once `GCONST-01` lands, the
-generated `global_constants` binding.
+submodel registrations, preserved blocks and the generated `global_constants`
+binding.
 
 **Acceptance:** A pipeline with a constant, a helper function and a trailing
 statement after the constructor loads with one diagnostic per statement, naming

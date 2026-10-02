@@ -186,6 +186,28 @@ class PreambleError(ExecutionError):
         super().__init__(message)
 
 
+class GlobalConstantError(ExecutionError):
+    """A read of ``global_constants`` that cannot resolve to a value.
+
+    It has no public ``error_code`` on purpose: it is an ordinary node-local
+    failure, so a preview shows it on the node that read the constant and keeps
+    previewing the rest, and every other run stops with it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        constant: str | None = None,
+        source: str | None = None,
+        node: str | None = None,
+    ) -> None:
+        self.constant = constant
+        self.source = source
+        self.node = node
+        super().__init__(message)
+
+
 class ContractResolutionError(ExecutionError):
     """Raised when profiled production execution cannot resolve a node contract."""
 

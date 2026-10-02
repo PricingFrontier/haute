@@ -12,7 +12,13 @@ import ast
 import re
 from typing import Any
 
-from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
+from haute._global_constants import module_binding_lines
+from haute._types import (
+    DECORATOR_TO_NODE_TYPE,
+    GLOBAL_CONSTANTS_FILE,
+    GLOBAL_CONSTANTS_NAME,
+    NodeType,
+)
 from haute.errors import ParseError
 
 __all__ = [
@@ -549,6 +555,73 @@ def _extract_pipeline_meta(tree: ast.Module) -> tuple[str, str]:
 def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
     """Find submodel = haute.Submodel("name", description="...") at module level."""
     return _extract_meta(tree, "submodel", "unnamed")
+
+
+def _constructor_call(tree: ast.Module, var_name: str) -> ast.Call | None:
+    """The first ``<var_name> = <call>`` at module level, as ``_extract_meta`` finds it."""
+    for node in ast.iter_child_nodes(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == var_name
+            and isinstance(node.value, ast.Call)
+        ):
+            return node.value
+    return None
+
+
+def _extract_global_constants_declaration(tree: ast.Module, *, receiver: str) -> bool:
+    """Whether the ``<receiver>`` constructor names the global constants file.
+
+    A pipeline constructor may name exactly ``config/global_constants.json``;
+    any other value is a ``ParseError`` naming that path. A submodel's
+    constants are its pipeline's, so a submodel constructor that names one
+    is a ``ParseError`` too.
+    """
+    call = _constructor_call(tree, receiver)
+    if call is None:
+        return False
+    for kw in call.keywords:
+        if kw.arg != GLOBAL_CONSTANTS_NAME:
+            continue
+        if receiver != "pipeline":
+            raise ParseError(
+                "A submodel does not declare global constants: it reads the constants of "
+                "the pipeline that registers it. Remove the global_constants= keyword.",
+                line=kw.value.lineno,
+            )
+        value = _eval_meta_value(receiver, GLOBAL_CONSTANTS_NAME, kw.value)
+        if value != GLOBAL_CONSTANTS_FILE:
+            raise ParseError(
+                f"pipeline global_constants must be {GLOBAL_CONSTANTS_FILE!r}, the one place "
+                f"a pipeline's global constants live: got {value!r}.",
+                line=kw.value.lineno,
+            )
+        return True
+    return False
+
+
+def _reject_reserved_global_constants_bindings(tree: ast.Module, *, receiver: str) -> None:
+    """Raise ``ParseError`` for a module-level binding of the reserved name.
+
+    Only the generated ``global_constants = <receiver>.global_constants``
+    may bind it; any other assignment, import alias or definition, a node
+    function named ``global_constants`` and one in the preamble included,
+    would shadow the pipeline's global constants.
+    """
+    lines = module_binding_lines(tree.body, receiver=receiver)
+    if lines:
+        where = (
+            f"line {lines[0]} binds"
+            if len(lines) == 1
+            else "lines " + ", ".join(str(line) for line in lines) + " bind"
+        )
+        raise ParseError(
+            f"{GLOBAL_CONSTANTS_NAME!r} is reserved for the pipeline's global constants, but "
+            f"{where} it. Rename the binding.",
+            line=lines[0],
+        )
 
 
 # ---------------------------------------------------------------------------

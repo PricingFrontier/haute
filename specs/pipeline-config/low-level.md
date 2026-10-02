@@ -4,10 +4,11 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. |
+| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel. |
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
+| `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), and `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
 | `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
@@ -440,6 +441,21 @@ forwards projection/profile fields; external-file resolution validates
 `path`/`fileType` and forwards `modelClass`. Invalid tables raise
 `ApiInputSchemaError`, which the HTTP contract adapter maps to 422.
 
+**Global constants.** `src/haute/parser.py::load_declared_global_constants` loads the file a
+pipeline constructor declares, from the pipeline's folder or through an injected byte reader,
+and returns no constants with the reason when the file is missing, unreadable or invalid,
+which never fails the parse. `src/haute/_config_io.py::parse_global_constants` decodes the
+bytes as strict UTF-8, rejects duplicate keys and validates each entry through
+`src/haute/_types.py::GlobalConstant`, naming the entry and the field in a `ConfigError`.
+The reads analysis in `src/haute/_global_constants.py::node_constant_reads` takes the
+configuration a node executes: each Constant operand in its steps contributes its name, and its
+`code` and free-code steps are parsed as a function body (so a closing `return` parses), where
+every attribute of the name `global_constants`, an f-string's expressions included, contributes
+the attribute; any other use of the name, or code that does not parse, means
+`EVERY_CONSTANT`. Strings and comments are not inspected. The binding checks walk module scope
+(a function or class contributes its name, decorators and defaults but not its body) for any
+binding of the reserved name; only `global_constants = <receiver>.global_constants` is exempt.
+
 ## Edge cases and invariants
 
 - `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
@@ -583,6 +599,12 @@ forwards projection/profile fields; external-file resolution validates
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
 - `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type (a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, instance execution with implicit mapping, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps, or main's earlier one-line rendering with list arguments, keeps them, the earlier spelling reproduces the renderer's previous output for each step kind, while a mixed list argument or a respelled free-code statement is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the explicit-instance mapping round trip, the render and free-code columns endpoints, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without `_discarded_sidecar`, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, every corpus translation without inputs reloading unchanged on a Data Input, and a free-code step whose code opens with a comment keeping its steps on every frame-start surface through the editor's save and the assistant's apply (`test_comment_first_free_code_keeps_its_steps_through_the_editor_save`, `test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply`).
+- Global constants: `tests/test_config_io.py` covers the file's round trip and every
+  refusal; `tests/test_parser_roundtrip.py` the byte-identical round trip of every kind of
+  constant, with and without a submodel file, and a missing file as a load error that keeps its
+  lines; `tests/test_parser_fail_loudly.py` the constructor keyword and every refused binding;
+  `tests/test_pipeline.py` the keyword, the sentinel and importing generated files;
+  `tests/test_polars_steps.py` the reserved step variable name.
 - `tests/test_polars_steps_catalogue.py` reads the editor's `catalogue.ts` and holds its step kinds and required fields, operators, aggregates, join and fill vocabularies, cast types, function argument shapes and depth cap equal to the renderer's.
 - The free-code cases in `tests/test_polars_steps.py` cover multiline rendering and inclusive line ranges, syntax and control-flow validation without executing code, execution between structured steps, actual runtime error locations, helper-return and trailing-comment round trips, and render API responses, including the columns resolved after each free-code step (a column the code creates, a `Datetime` column's type carried through, a frame-mode `df`) and the reason given when they cannot be (an input with no known columns, code that fails on an empty frame).
 - `tests/test_polars_steps_corpus.py` executes the 45-snippet equivalence corpus in `tests/fixtures/polars_steps_corpus/` (hand-written Polars across 18 categories and each snippet's step translation, auxiliary upstream nodes included) on a normal and a hard synthetic dataset (`tests/assistant_eval/_frames.py`, shared with the assistant evaluation), comparing exact dtypes, null patterns and row order (order-free only where the snippet leaves it unspecified) and requiring the same exception class when the snippet raises; the two snippets the vocabulary does not express (Enum categories, `cut` banding) are listed with their reasons and the suite asserts those constructs are still absent from the vocabulary.
@@ -659,159 +681,36 @@ generated graphs.
 
 ## Approved change contract — global constants
 
-This section names the seams, shapes and tests for the behaviour the
-[high-level contract](high-level.md#approved-change-contract--global-constants) specifies; that
-section owns the behaviour and this one does not restate it. New modules are named in plain
-text because they do not exist yet. Every record is unresolved until its roadmap package lands.
+This section names the seams, shapes and tests for the parts of the
+[high-level contract](high-level.md#approved-change-contract--global-constants) still to be
+built; that section owns the behaviour and this one does not restate it. The model, the file,
+parsing, generation, the runtime sentinel, the reads analysis and save are present behaviour,
+described in the sections above and in the codegen, expression-parsing and server-api
+specifications. New modules are named in plain text because they do not exist yet. Every
+record is unresolved until its roadmap package lands.
 
-- **Current limitation.** No graph, document, file, parser, code generator, executor, cache
-  identity, renderer or editor surface knows a global constant. Shared values reach node code
-  only as preamble bindings, through the `extra_ns` channel of
-  `src/haute/_user_exec.py::_exec_user_code`, the same under every source.
+- **Current limitation.** Nothing reads a declared constant: no cache identity signs one, no
+  execution path binds `global_constants` (node code that names it fails), no editor surface
+  edits constants, and the step renderer has no Constant operand.
 - **Unresolved target.** The seams below, one paragraph per package, built in the order of
-  [GCONST-01](../roadmap/global-constants.md#gconst-01--global-constants-in-the-pipeline-model-file-and-code)
+  [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads)
   to [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 - **Non-goals.** No new HTTP route: constants travel in the graph of the existing load, save,
   execution and step routes. No constant reaches a `utility` module, a pivot formula or a
   non-step config field. The recovery-draft store is unchanged.
-- **Failure and compatibility semantics.** File and constructor errors are `ConfigError` and
-  `ParseError` as listed below. A read that cannot resolve raises a new global-constant error,
-  an `ExecutionError` subclass with no public `error_code`: it is an ordinary node-local
-  failure, so a preview shows it on the reading node instead of aborting the walk (as a public
-  contract error would), and every other run propagates it. Save refusals are HTTP 400 with the
-  messages below, and an invalid constant in a request fails request validation. No
-  migration or fallback exists; a graph without constants serialises, fingerprints and
-  generates exactly as today apart from the contract version bumps GCONST-02 makes.
+- **Failure and compatibility semantics.** A read that cannot resolve raises
+  `src/haute/errors.py::GlobalConstantError`, an `ExecutionError` subclass with no public
+  `error_code`: it is an ordinary node-local failure, so a preview shows it on the reading node
+  instead of aborting the walk (as a public contract error would), and every other run
+  propagates it. Save refusals are HTTP 400 with the messages below. No migration or fallback
+  exists; a graph without constants fingerprints exactly as today apart from the contract
+  version bumps GCONST-02 makes.
 - **Acceptance evidence.** The testing scenarios at the end of this section, each extending the
   named module.
-- **Roadmap package.** [GCONST-01](../roadmap/global-constants.md#gconst-01--global-constants-in-the-pipeline-model-file-and-code),
-  [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads),
+- **Roadmap package.** [GCONST-02](../roadmap/global-constants.md#gconst-02--cache-identities-sign-the-constants-each-node-reads),
   [GCONST-03](../roadmap/global-constants.md#gconst-03--every-run-reads-each-constants-value-for-its-source),
   [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
   [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-
-**The model (GCONST-01).** `src/haute/_types.py` gains a `GlobalConstantType` literal (`integer`,
-`float`, `text`, `boolean`, `date`) and a `GlobalConstant` model with `extra="forbid"`: `name`,
-`type`, `value` and `by_source`, where a value is a strict JSON scalar (strict bool, int, float
-or str, never coerced). Its validators enforce the high-level rules: the name matches
-`^[A-Za-z][A-Za-z0-9_]*$` and is not a keyword; exactly one of `value` and `by_source` is set;
-every `by_source` key is a non-empty unpadded string; and every value is valid for the type (an
-`integer` is an int that is not a bool; a `float` is a finite int or float, not a bool, stored as
-a float; `text` is a str; a `boolean` is a bool; a `date` is a str that matches
-`^\d{4}-\d{2}-\d{2}$` and that `datetime.date.fromisoformat` accepts). `PipelineGraph` gains
-`global_constants: list[GlobalConstant]` (empty by default, names unique) and
-`global_constants_error: str | None`, which the parser sets when the declared file fails to
-load. Execution requests carry the error with the constants, and executions honour it; save
-replaces whatever a request carries there with the state of the file on disk before it
-generates code. Copies made with `PipelineGraph.model_copy` keep both, and so does every place
-that rebuilds a graph field by field: `src/haute/_graph_utils.py::upstream_subgraph`, whose
-subgraphs seed plans and data points fingerprint, and
-`src/haute/routes/pipeline.py::_canonical_snapshot_graph` copy both explicitly. Lineage
-subgraphs, flattened graphs and the deploy-pruned graph therefore carry them. A submodel
-definition's own graph (built by `src/haute/routes/_submodel_ops.py::create_submodel_graph` or
-parsed by `src/haute/_parser_submodels.py`) carries none: constants belong to the root
-pipeline, whose values the flattened graph executes.
-
-**The file (GCONST-01).** `src/haute/_config_io.py` gains the canonical relative path
-`config/global_constants.json`, a loader and a serialiser. The loader reads the file as node
-configs are read (UTF-8, duplicate keys rejected), requires one object whose only key is
-`constants`, a list, and validates each entry through `GlobalConstant`; every failure is a
-`ConfigError` naming the path and, for an entry, its index, its name when it has one, and the
-field. The serialiser writes `{"constants": [...]}` with each entry's keys in the order `name`,
-`type`, then `value` or `by_source`, through `json.dumps(..., indent=2, ensure_ascii=False)` and a
-trailing newline, as `src/haute/_config_io.py::collect_node_configs` writes node configs.
-
-**Parse (GCONST-01).** The constructor walk in `src/haute/_ast_helpers.py` (beside
-`src/haute/_ast_helpers.py::_extract_meta`) reads the pipeline constructor's `global_constants`
-keyword: absent declares no constants, the exact string `"config/global_constants.json"`
-declares the file, and any other value is a `ParseError` naming the canonical value. A submodel
-constructor never carries the keyword. `src/haute/parser.py::parse_pipeline_source` loads a
-declared file from the folder node configs resolve against; a `ConfigError` or `OSError`, or a
-declared file that does not exist, sets `global_constants_error` to its message and appends that
-message to the graph warning instead of failing the parse. The module-level statement
-`global_constants = pipeline.global_constants`, or `global_constants = submodel.global_constants`
-in a submodel file, is recognised as generated: it is neither preamble nor a preserved block.
-Every other module-level statement that binds `global_constants` (an assignment, annotated
-assignment, import alias, function or class definition), including one in the preamble, is a
-`ParseError` naming its line, and so is a decorated node function named `global_constants`. The
-editor-document builders in `src/haute/routes/_helpers.py` and `src/haute/_pipeline_recovery.py`
-carry `global_constants` and `global_constants_error` into
-`src/haute/schemas.py::PipelineEditorDocument`, which gains both fields. The revision manifest
-covers the file: `src/haute/_pipeline_recovery.py::_source_references` returns the
-constructor-declared constants file beside the decorators' `config=` references, so
-`src/haute/_pipeline_recovery.py::_recovery_artifacts` lists it, and an edit of the file by
-anyone else makes an older document stale. The editor-document load reads the file once,
-through the load's `src/haute/_pipeline_recovery.py::_SourceCaptures`, and the loader validates
-those captured bytes (it accepts captured text as well as a path). The captured bytes reach
-`src/haute/_pipeline_revision.py::pipeline_recovery_revision` through `known_bytes`, so the
-constants a document carries are exactly the bytes its revision authenticates, and a file that
-is missing or unreadable is recorded as such by both.
-
-**Generate (GCONST-01).** `src/haute/codegen.py::_render_module` takes the root graph's
-constants state. When the root graph has constants or a constants load error, a pipeline file
-gets the `global_constants="config/global_constants.json"` constructor keyword after
-`description`, and every file (pipeline and submodel definition) gets the binding statement as
-its own block directly after the constructor. `src/haute/codegen.py::graph_to_code_multi` passes
-that state to every definition file it renders. Otherwise neither appears, and the output is
-byte-identical to today's.
-
-**Runtime API (GCONST-01).** A generated file must import as soon as codegen emits these
-lines, so this package also changes the live API. `src/haute/pipeline.py::Pipeline` takes a
-keyword-only `global_constants` argument, which must be `None` or the canonical path (a
-`ValueError` names it), and `Pipeline` and `src/haute/pipeline.py::Submodel` expose a
-`global_constants` property that returns one module-level sentinel. Reading any attribute of
-the sentinel raises the global-constant error: `Global constants are read in node code while
-the pipeline runs: call pipeline.run(source=...) or pipeline.score(...). A helper function takes
-a constant as an argument.` GCONST-03 gives each run its own binding; the sentinel stays what
-module-level code and helper functions see.
-
-**Reads (GCONST-01).** A new module, src/haute/_global_constants.py, owns the reads analysis
-that save validation, the cache identities and the pane share. A node's reads come from the
-configuration it executes (an instance's original) and are a set of names or the marker "every
-constant":
-
-- each object anywhere in its `steps` whose `kind` is `constant` contributes its `name`;
-- its `code` and each free-code step's code are parsed, never executed, as a function body
-  (wrapped under a `def`, as `src/haute/_ast_helpers.py` wraps a body to find its docstring), so
-  a closing `return` parses. Every attribute load whose value is the name `global_constants`
-  contributes the attribute, including one inside an f-string's expression, which the AST
-  exposes on every supported Python version (Python 3.11 tokenises a whole f-string as one
-  string token, so a token scan cannot). Any other use of the name (an argument, a `getattr`
-  target, a subscript, a binding), or code that does not parse, makes the reads "every
-  constant". String literals and comments are not inspected.
-
-A read by any other route (an `eval` of a string, a frame or module lookup) is not predicted
-here; the per-node namespace views under GCONST-03 refuse it at run time, which is what makes
-these reads a sound cache dependency.
-
-**Save (GCONST-01).** `src/haute/routes/_save_pipeline.py::SavePipelineService` validates and
-writes constants inside the existing transaction:
-
-- Save derives the on-disk constants state first: declared or not, and loaded or failed. While a
-  declared file fails to load, the undefined-name checks for code reads (here) and for Constant
-  operands (GCONST-05) are skipped, because the definitions are unavailable rather than absent;
-  every other check still runs. The constants file is among the artifacts whose identities
-  `SavePipelineService._require_base_revision` captures and
-  `SavePipelineService._require_artifact_identity` checks before a write or delete.
-- `validate_graph` refuses, with HTTP 400 naming the offender: a node whose function name is
-  `global_constants`; a preamble whose top-level statements bind the name; node code or
-  free-code step code that binds it (an assignment or `for` target, an import alias, a function
-  or class definition); and a code read naming a constant the graph does not define (reads of
-  "every constant" are not checked statically). Save returns one warning per split constant and
-  per source in the request's `sources` that lacks a value:
-  `Global constant 'x' has no value for source 'nb_batch'.`
-- `_write_config_files` writes the serialised constants file when the graph has constants. The
-  disk-derived baseline that `_remove_stale_config_files` diffs against includes the constants
-  file when the on-disk pipeline declares it and it loads, so removing the last constant deletes
-  it after the transaction commits. A declared on-disk file that fails to load joins the
-  protected set instead, and a request whose graph carries constants is then refused with HTTP
-  400: `Global constants could not be loaded from config/global_constants.json: <error>. Fix or
-  remove the file, then save again.`
-- `src/haute/_polars_steps.py` refuses a step variable named `global_constants`, which joins
-  its reserved names.
-
-The browser contracts regenerate through `scripts/generate_api_contracts.py`, with the OpenAPI
-fingerprint test.
 
 **Cache identities (GCONST-02).** `src/haute/_cache.py::CacheInputClass` gains
 `GLOBAL_CONSTANTS`, and every consumer contract classifies it:
@@ -837,7 +736,7 @@ Constant records nested in a payload use a new closed `CacheIdentityRecord` memb
 Node output snapshots, seed plans and data points sign `graph_fingerprint` of a lineage
 subgraph, so each signs exactly its lineage's reads without a change of its own.
 
-**Execution (GCONST-03).** src/haute/_global_constants.py also owns the run-level table, its
+**Execution (GCONST-03).** `src/haute/_global_constants.py` also owns the run-level table, its
 per-node views and the helper that builds node-code globals. A run's table holds the graph's
 constants and load error resolved for one source, as concrete values: nothing in it consults a
 context variable or the calling thread. A view restricts the table to one node's reads (every
@@ -935,7 +834,8 @@ global-constant error. `dir()` lists the view's names and `repr()` names the sou
   dependencies, and `frontend/src/utils/graphSnapshot.ts::toCanonicalGraphPayload` serialises
   both. `frontend/src/hooks/usePipelineAPI.ts` sends `graph.global_constants` with every save,
   and none while `globalConstantsError` is set.
-- A pure helper computes each constant's readers from graph state with the reads rule above,
+- A pure helper computes each constant's readers from graph state with the reads rule of
+  `src/haute/_global_constants.py::node_constant_reads`,
   for the pane and the step editor. The toolbar's remove-source action asks the graph store
   which split constants hold a value for the source, confirms when any do, and sets the
   constants without those values before
@@ -955,10 +855,11 @@ takes and whether the slot requires a value of at least zero.
   is at least zero, `int` takes an `integer`, `number` an `integer` or a `float`, `text` a
   `text`, `scalar` any type but `date`, and `dtype` takes none.
 
-The graph-level check in src/haute/_global_constants.py renders each stepped node and verifies
+The graph-level check in `src/haute/_global_constants.py` renders each stepped node and verifies
 every reference: the constant exists, its type is taken, and every value it holds is at least
 zero where required. Save validation runs it (HTTP 400 naming the node, the step number, the
-constant and the reason). The render request in `src/haute/routes/pipeline.py` gains an optional
+constant and the reason), except while the constants file fails to load, when the definitions
+are unavailable, as for code reads. The render request in `src/haute/routes/pipeline.py` gains an optional
 `global_constants`; when it is present, each failed reference is reported as its step's problem.
 
 In the editor, `frontend/src/panels/editors/polarsSteps/types.ts` gains the constant operand.
@@ -977,28 +878,6 @@ and the known columns, and discards a response for a key that is no longer curre
 
 **Testing scenarios.**
 
-- GCONST-01. `tests/test_config_io.py`: the loader and serialiser round trip, and each invalid
-  file is refused with its entry and field named: an unknown top-level or entry key, a missing
-  `constants`, both or neither of `value` and `by_source`, a name with a leading digit or
-  underscore or that is a keyword, a duplicate name, `1.5` or `true` as an `integer`, `"1"` as a
-  `float`, `1` as `text` or as a `boolean`, `"2026-13-01"` and `"2026-1-1"` as a `date`, and an
-  empty `by_source` key. `tests/test_parser_roundtrip.py` and
-  `tests/test_codegen_roundtrip_property.py`: a pipeline with constants of all five types, uniform
-  and split, round-trips byte-identically, with and without a submodel, and a pipeline without
-  constants generates today's bytes. `tests/test_parser_fail_loudly.py`: another keyword value,
-  another binding of the name (preamble included) and a node function of that name each raise.
-  `tests/test_route_save_pipeline.py` and `tests/test_save_pipeline_integrity.py`: the file and
-  the generated lines appear and disappear with the constants; a file that fails to load
-  survives a save byte-identically, while a request carrying constants is refused; an unrelated
-  edit saves while the file fails to load and node code and a step still read a constant; and
-  the missing-value warnings and the 400 refusals are returned. `tests/test_pipeline_revision.py`:
-  an edit of the constants file by another writer after load makes the document's save fail with
-  409 and leaves the file untouched, and a writer that replaces the file just after the load
-  captured it leaves the document's revision describing the captured bytes, so its save is
-  refused as stale. `tests/test_polars_steps.py`: the reserved variable name is
-  refused. `tests/test_pipeline_recovery.py`: a recovery document carries the constants and the
-  load error. `tests/test_pipeline.py`: the constructor keyword's validation, the sentinel's
-  error, and a generated pipeline file and submodel file with constants that both import.
 - GCONST-02. `tests/test_cache_identity_contract.py`: every consumer classifies the new input
   class. `tests/test_lineage_preview_cache.py`: a preview key changes when a read constant's
   value for the request's source changes, does not change for another source's value or for an

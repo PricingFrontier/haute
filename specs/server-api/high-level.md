@@ -331,6 +331,19 @@ fallback) the deadline bounds the response but cannot stop the snippet's thread.
 steps themselves read no rows; Free code that reads a file itself does so on each
 resolution, as it does in a preview.
 
+**Saving global constants.** The editor document carries the pipeline's global constants
+and their load error, and the request graph carries the constants back. Save writes
+`config/global_constants.json` whenever the graph has constants and removes it, with the
+constructor keyword and the bindings, when none remain. The document revision covers the file
+through the same captured read the document's constants come from, so a save from a document
+loaded before another writer changed the file is refused as stale. The file's load state comes
+from disk, never from the request: while the declared file fails to load, save neither rewrites
+nor deletes it, keeps the keyword and the bindings, skips the checks against the unavailable
+definitions, and refuses a request that carries constants. Save refuses (HTTP 400) a node named
+`global_constants`, a preamble or node code that binds the name, and a code read of an
+undefined constant, and warns for each split constant missing a value for one of the
+pipeline's sources.
+
 ## Design rationale
 
 - **One stable schema surface, one shared error hierarchy.** Nearly every route in the product —

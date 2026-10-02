@@ -16,10 +16,13 @@ This module provides:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from copy import deepcopy
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
+
+from pydantic import ValidationError
 
 from haute._banding_config import (
     compact_banding_config_for_sidecar,
@@ -30,7 +33,14 @@ from haute._logging import get_logger
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    GlobalConstant,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
+from haute.errors import ConfigError
 
 logger = get_logger(component="config_io")
 
@@ -386,3 +396,88 @@ def config_load_errors(graph: PipelineGraph) -> dict[str, str]:
             continue
         errors[rel_path] = str(err)
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Global constants file
+# ---------------------------------------------------------------------------
+
+_GLOBAL_CONSTANT_KEY_ORDER = ("name", "type", "value", "by_source")
+
+
+def _constant_validation_message(exc: ValidationError) -> str:
+    """The first validation failure of one constant entry, as one readable clause."""
+    error = exc.errors(include_url=False)[0]
+    location = ".".join(str(part) for part in error["loc"])
+    if error["type"] == "extra_forbidden":
+        return f"unknown key {location!r}"
+    message = str(error["msg"]).removeprefix("Value error, ")
+    return f"{location}: {message}" if location else message
+
+
+def parse_global_constants(
+    raw: bytes,
+    *,
+    source: str = GLOBAL_CONSTANTS_FILE,
+) -> list[GlobalConstant]:
+    """Validate the bytes of a global constants file.
+
+    The file holds one object whose only key, ``constants``, lists the
+    entries in display order. Every failure is a ``ConfigError`` naming
+    *source* and, for an entry, its position, its name when it has one, and
+    the field. The bytes are strict UTF-8, as node config JSON is.
+    """
+    try:
+        loaded = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys_hook)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ConfigError(f"{source} is not valid JSON: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ConfigError(
+            f"{source} must hold a JSON object with a 'constants' list.",
+        )
+    unknown = sorted(set(loaded) - {"constants"})
+    if unknown:
+        raise ConfigError(
+            f"{source} has unknown key(s) {unknown!r}; its only key is 'constants'.",
+        )
+    entries = loaded.get("constants")
+    if not isinstance(entries, list):
+        raise ConfigError(f"{source} must have a 'constants' list.")
+    constants: list[GlobalConstant] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        name = entry.get("name") if isinstance(entry, dict) else None
+        label = f"constant {index}" + (f" ({name!r})" if isinstance(name, str) else "")
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{source} {label} must be a JSON object.")
+        try:
+            constant = GlobalConstant.model_validate(entry)
+        except ValidationError as exc:
+            raise ConfigError(
+                f"{source} {label}: {_constant_validation_message(exc)}",
+            ) from exc
+        if constant.name in seen:
+            raise ConfigError(
+                f"{source} {label}: the name {constant.name!r} is already defined.",
+            )
+        seen.add(constant.name)
+        constants.append(constant)
+    return constants
+
+
+def load_global_constants(path: Path) -> list[GlobalConstant]:
+    """Read and validate one pipeline's global constants file.
+
+    An ``OSError`` (a missing or unreadable file) propagates to the caller,
+    which decides how a declared file that cannot be read is reported.
+    """
+    return parse_global_constants(path.read_bytes())
+
+
+def global_constants_json(constants: Sequence[GlobalConstant]) -> str:
+    """Serialise *constants* as the canonical file, in order, as node configs are written."""
+    entries = []
+    for constant in constants:
+        record = constant.model_dump(exclude_none=True)
+        entries.append({key: record[key] for key in _GLOBAL_CONSTANT_KEY_ORDER if key in record})
+    return json.dumps({"constants": entries}, indent=2, ensure_ascii=False) + "\n"

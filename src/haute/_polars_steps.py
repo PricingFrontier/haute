@@ -37,7 +37,7 @@ import polars as pl
 
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
-from haute._types import NodeType
+from haute._types import GLOBAL_CONSTANTS_NAME, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
 
@@ -389,7 +389,7 @@ _OPTIONAL_STEP_KEYS: dict[str, frozenset[str]] = {
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_RESERVED_NAMES = frozenset({"df", "pl"})
+_RESERVED_NAMES = frozenset({"df", "pl", GLOBAL_CONSTANTS_NAME})
 
 
 # ---------------------------------------------------------------------------

@@ -1452,3 +1452,101 @@ class TestDuplicateNodeName:
             @p.polars
             def src(df: pl.DataFrame) -> pl.DataFrame:  # noqa: F811 - intentional collision
                 return df
+
+
+class TestGlobalConstantsRuntimeApi:
+    """The live API a generated file with constants imports against."""
+
+    def test_the_constructor_names_only_the_canonical_file(self) -> None:
+        Pipeline("p", global_constants="config/global_constants.json")
+
+        with pytest.raises(ValueError, match="must be 'config/global_constants.json'"):
+            Pipeline("p", global_constants="constants.json")
+
+    def test_the_sentinel_explains_where_constants_are_read(self) -> None:
+        from haute.errors import GlobalConstantError
+
+        sentinel = Pipeline("p").global_constants
+
+        assert (
+            sentinel
+            is Submodel("s", definition_id="s", input_ports=[], output_ports=[]).global_constants
+        )
+        with pytest.raises(GlobalConstantError, match="read in node code while the pipeline runs"):
+            _ = sentinel.rate
+        with pytest.raises(GlobalConstantError, match="read-only"):
+            sentinel.rate = 2
+        with pytest.raises(AttributeError):
+            _ = sentinel.__wrapped__
+
+    def test_generated_pipeline_and_submodel_files_with_constants_import(
+        self,
+        tmp_path,
+    ) -> None:
+        import importlib.util
+
+        from haute._types import PipelineGraph
+        from haute.codegen import graph_to_code_multi
+
+        INNER_CODE = "df = pl.LazyFrame({'b': [global_constants.rate]})"  # noqa: N806
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "quotes",
+                        "data": {
+                            "label": "quotes",
+                            "nodeType": "polars",
+                            "config": {"code": "df = pl.LazyFrame({'a': [global_constants.rate]})"},
+                        },
+                    },
+                    {
+                        "id": "instance_sm",
+                        "type": "submodel",
+                        "data": {
+                            "label": "sm_alias",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                        },
+                    },
+                ],
+                "edges": [],
+                "global_constants": [{"name": "rate", "type": "float", "value": 1.0}],
+                "submodels": {
+                    "definition_sm": {
+                        "definitionId": "definition_sm",
+                        "file": "modules/sm.py",
+                        "graph": {
+                            "pipeline_name": "sm",
+                            "nodes": [
+                                {
+                                    "id": "inner",
+                                    "data": {
+                                        "label": "inner",
+                                        "nodeType": "polars",
+                                        "config": {"code": INNER_CODE},
+                                    },
+                                }
+                            ],
+                            "edges": [],
+                        },
+                        "inputPorts": [],
+                        "outputPorts": [],
+                    }
+                },
+            }
+        )
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+        for rel_path, code in files.items():
+            target = tmp_path / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(code, encoding="utf-8")
+
+        for rel_path in files:
+            spec = importlib.util.spec_from_file_location(
+                f"generated_{rel_path.replace('/', '_')[:-3]}", tmp_path / rel_path
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            assert module.global_constants is Pipeline("x").global_constants

@@ -14,6 +14,7 @@ from haute._edge_join import (
     normalise_edge_join_decorator_kwargs,
     resolve_edge_join_role_indices,
 )
+from haute._global_constants import STANDALONE_GLOBAL_CONSTANTS
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._logging import get_logger
 from haute._standalone_nodes import (
@@ -25,6 +26,7 @@ from haute._standalone_nodes import (
 )
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
     GraphEdge,
     NodeType,
     SubmodelInputPort,
@@ -272,6 +274,17 @@ class NodeRegistry:
         self._submodel_registrations: list[RegisteredSubmodel] = []
         self._pipeline_dir = "."
 
+    @property
+    def global_constants(self) -> Any:
+        """What module-level code reads as ``global_constants``.
+
+        A generated pipeline or submodel file binds this right after its
+        constructor so node code reads a defined name. Outside a node
+        function's run it is a sentinel whose every read says where constants
+        are read.
+        """
+        return STANDALONE_GLOBAL_CONSTANTS
+
     def _register_node(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Internal decorator to register a function as a node.
 
@@ -510,6 +523,21 @@ class Pipeline(NodeRegistry):
         pipeline.connect("read_data", "transform").connect("transform", "result")
         result = pipeline.run()
     """
+
+    def __init__(
+        self,
+        name: str,
+        description: str = "",
+        *,
+        global_constants: str | None = None,
+    ) -> None:
+        if global_constants is not None and global_constants != GLOBAL_CONSTANTS_FILE:
+            raise ValueError(
+                f"Pipeline global_constants must be {GLOBAL_CONSTANTS_FILE!r}, the one place a "
+                f"pipeline's global constants live: got {global_constants!r}."
+            )
+        super().__init__(name, description)
+        self._global_constants_file = global_constants
 
     def _topo_order(self) -> list[Node]:
         """Return nodes in topological order based on edges."""

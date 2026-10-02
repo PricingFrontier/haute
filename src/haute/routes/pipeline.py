@@ -104,7 +104,7 @@ from haute._step_progress import (
 )
 from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._topo import ancestors
-from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
+from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, SubmodelDefinition
 from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerMemoryLimitExceededError,
@@ -1836,6 +1836,8 @@ def _canonical_snapshot_graph(
     pipeline_description: str | None = None,
     preamble: str | None = None,
     preserved_blocks: list[str] | None = None,
+    global_constants: list[GlobalConstant] | None = None,
+    global_constants_error: str | None = None,
     source_file: str = "",
 ) -> PipelineGraph:
     """Build a fresh canonical graph from already-validated ready elements."""
@@ -1916,6 +1918,8 @@ def _canonical_snapshot_graph(
         pipeline_description=pipeline_description,
         preamble=preamble,
         preserved_blocks=list(preserved_blocks or []),
+        global_constants=list(global_constants or []),
+        global_constants_error=global_constants_error,
         source_file=source_file,
     )
 
@@ -1999,6 +2003,8 @@ def _plan_recovery_preview(
         pipeline_description=document.pipeline_description,
         preamble=document.preamble,
         preserved_blocks=document.preserved_blocks,
+        global_constants=document.global_constants,
+        global_constants_error=document.global_constants_error,
         source_file=document.source_file,
     )
     validate_pipeline_graph_shape_contracts(

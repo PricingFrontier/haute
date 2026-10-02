@@ -18,10 +18,12 @@ from typing import TypeVar
 from haute._ast_helpers import (
     _extract_connect_calls,
     _extract_function_bodies,
+    _extract_global_constants_declaration,
     _extract_preamble,
     _extract_preserved_blocks,
     _extract_submodel_meta,
     _is_submodel_authored_decorator,
+    _reject_reserved_global_constants_bindings,
 )
 from haute._flatten import flatten_graph
 from haute._graph_builders import (
@@ -411,6 +413,10 @@ def parse_submodel_source(
         ) from exc
 
     submodel_name, submodel_desc = _extract_submodel_meta(tree)
+    # A submodel reads its pipeline's constants: it declares none and binds the
+    # reserved name only as the generated ``submodel.global_constants``.
+    _extract_global_constants_declaration(tree, receiver="submodel")
+    _reject_reserved_global_constants_bindings(tree, receiver="submodel")
 
     # Nested submodels are capped at one level. Returning the outer child
     # graph while dropping these authored references would corrupt the source

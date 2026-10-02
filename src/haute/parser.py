@@ -18,11 +18,14 @@ from pathlib import Path
 from haute._ast_helpers import (
     _extract_connect_calls,
     _extract_function_bodies,
+    _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
     _is_pipeline_authored_decorator,
+    _reject_reserved_global_constants_bindings,
 )
+from haute._config_io import parse_global_constants
 from haute._graph_builders import (
     _build_edges,
     _build_rf_nodes,
@@ -46,6 +49,7 @@ from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
 from haute._submodel_paths import resolve_submodel_reference
+from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
 from haute.errors import ConfigError, ParseError
 from haute.graph_utils import PipelineGraph
 
@@ -80,6 +84,54 @@ def _format_load_error_warning(labels: list[str]) -> str | None:
         f"Config files could not be loaded for: {names}{suffix}. "
         "These configs will not be overwritten on save."
     )
+
+
+def load_declared_global_constants(
+    base_dir: Path | None,
+    *,
+    read_bytes: Callable[[Path], bytes] | None = None,
+) -> tuple[list[GlobalConstant], str | None]:
+    """Load the global constants file a pipeline constructor names.
+
+    Returns the constants, or no constants and why the file could not be
+    loaded: a declared file that is missing, unreadable or invalid never fails
+    the parse. *read_bytes* lets editor recovery read the file through the
+    same capture its revision hashes.
+    """
+    if base_dir is None:
+        return [], (
+            f"{GLOBAL_CONSTANTS_FILE} cannot be located: the pipeline source has no folder."
+        )
+    path = base_dir / GLOBAL_CONSTANTS_FILE
+    try:
+        raw = read_bytes(path) if read_bytes is not None else path.read_bytes()
+    except FileNotFoundError:
+        return [], (
+            f"{GLOBAL_CONSTANTS_FILE} is named by the pipeline constructor but does not exist."
+        )
+    except OSError as exc:
+        return [], f"{GLOBAL_CONSTANTS_FILE} could not be read: {exc}"
+    try:
+        return parse_global_constants(raw), None
+    except ConfigError as exc:
+        return [], str(exc)
+
+
+def _graph_warning(load_error_labels: list[str], global_constants_error: str | None) -> str | None:
+    parts = [
+        part
+        for part in (
+            _format_load_error_warning(load_error_labels),
+            (
+                f"Global constants could not be loaded: {global_constants_error} "
+                "The file will not be overwritten on save."
+                if global_constants_error
+                else None
+            ),
+        )
+        if part
+    ]
+    return " ".join(parts) or None
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +191,7 @@ def parse_pipeline_source(
     _base_dir: Path | None = None,
     _submodel_base_dir: Path | None = None,
     _read_submodel_source: Callable[[Path], str] | None = None,
+    _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
 ) -> PipelineGraph:
     """Parse pipeline source code and return a PipelineGraph.
 
@@ -151,6 +204,8 @@ def parse_pipeline_source(
             file. Editor recovery injects its first-read byte capture here so
             one load never pairs parsed child content with different bytes
             than its revision authenticates. Defaults to ``read_user_text``.
+        _read_global_constants_bytes: The same override for the global
+            constants file the constructor names. Defaults to reading it.
     """
     if not source_file and _base_dir is not None:
         source_file = str((_base_dir / "__source__.py").resolve())
@@ -168,6 +223,13 @@ def parse_pipeline_source(
 
     # Pipeline metadata
     pipeline_name, pipeline_desc = _extract_pipeline_meta(tree)
+    declares_global_constants = _extract_global_constants_declaration(tree, receiver="pipeline")
+    _reject_reserved_global_constants_bindings(tree, receiver="pipeline")
+    global_constants, global_constants_error = (
+        load_declared_global_constants(_base_dir, read_bytes=_read_global_constants_bytes)
+        if declares_global_constants
+        else ([], None)
+    )
 
     # Find @pipeline.<type> decorated functions
     func_bodies = _extract_function_bodies(source, tree=tree)
@@ -195,9 +257,12 @@ def parse_pipeline_source(
         pipeline_description=pipeline_desc,
         preamble=preamble,
         preserved_blocks=preserved_blocks,
+        global_constants=global_constants,
+        global_constants_error=global_constants_error,
         source_file=source_file,
-        warning=_format_load_error_warning(load_error_labels),
+        warning=_graph_warning(load_error_labels, global_constants_error),
     )
+    graph._parser_global_constants_declared = declares_global_constants
     graph._parser_parameter_names = {
         str(node["func_name"]): [str(name) for name in node["param_names"]] for node in raw_nodes
     }
@@ -309,6 +374,8 @@ def parse_pipeline_source(
             registrations=registrations,
             registration_definitions=registration_definitions,
         )
+        # The merge rebuilds the graph from its dump, which holds no private state.
+        graph._parser_global_constants_declared = declares_global_constants
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,
         explicit_connects=explicit_connects,
