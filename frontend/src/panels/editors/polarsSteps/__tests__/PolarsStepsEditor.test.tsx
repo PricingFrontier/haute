@@ -110,7 +110,7 @@ function Harness({
       inputSources={inputSources}
       errorLine={errorLine}
       runError={runError}
-      upstreamColumns={COLUMNS}
+      frameColumns={COLUMNS}
     />
   )
 }

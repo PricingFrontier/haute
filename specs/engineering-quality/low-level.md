@@ -11,7 +11,7 @@
 | `specs/corpus.toml` | Versioned declaration for supported component documents outside the conventional high/low pair; records a closed document kind and exact required headings. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
-| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, coverage shards/gate, compatibility/probe, performance, optional dependencies, platform, mutation-config, frontend, and browser E2E lanes. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
+| `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, duration-balanced coverage shards and their gate, duration-balanced compatibility shards, the 3.14 probe, performance, optional dependencies, platform, mutation-config, frontend static and test lanes, and two browser E2E shards. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the weekly/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate, the latter daily as well as on manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on every non-pull-request failure. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
 | `.github/workflows/property-exploration.yml` | Runs the weekly/manual wide-budget Hypothesis lane (HAUTE_PROPERTY_EXAMPLES over `scripts/property_test_files.txt`) and raises/updates property-watch issues on eligible failures. |
@@ -26,7 +26,7 @@
 | `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules (including `no-restricted-syntax` bans outside tests: `for (;;)`, `while (true)` and `setInterval`, which keep job polling in `hooks/jobPollingController.ts`, and local copies of the error-text, byte and duration formatting, and object-guard helpers, each exempt only in its owning module), thirteen explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
 | `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
-| `frontend/e2e/browserInteractions.ts` | Shared Playwright helpers for app-level modifier shortcuts and React Flow submodel double-click dispatch. |
+| `frontend/e2e/browserInteractions.ts` | Shared Playwright helpers for app-level modifier shortcuts, React Flow submodel double-click dispatch, and waiting for the canvas viewport to settle after the initial fit or a reveal glide. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/graph-editing-sequence.spec.ts` | Playwright witness, against the real backend, that a graph editing sequence (group and dissolve, disconnect, undo and redo, copy and paste, delete) conserves graph structure and previewed rows through save and reopen. |
 | `frontend/e2e/rename-execution.spec.ts` | Playwright witness, against the real backend, that renaming an upstream node keeps a downstream coded transform executable through preview, save and reload. |
@@ -34,6 +34,8 @@
 | `frontend/e2e/data-io-nodes.spec.ts` | Playwright coverage for data-I/O node browser flows. |
 | `frontend/e2e/edge-join.spec.ts` | Deterministic full-browser Edge Join workflow: compatible-edge feedback and insertion, configuration/preview, save/reload topology, repeated joins, named API-input source-handle preservation, immediate unsaved-submodel drill/render identity coverage, and downstream trace highlighting. |
 | `frontend/e2e/active-node-reveal.spec.ts` | Deterministic Chromium witness that the active node stays visible beside its inspector and preview pane: a clicked node panned into the canvas corner is moved inside the narrowed canvas at unchanged zoom, and node search centres its node in that canvas at zoom 0.8. |
+| `frontend/e2e/box-selection.spec.ts` | Chromium witness that a box selection ends once the editor changes the selection: after a box select, a node dropped from the palette follows its first drag and opens its own context menu on the first right-click. |
+| `frontend/e2e/data-preview-scroll.spec.ts` | Chromium witness that a data preview keeps its scroll place: a preview scrolled fully right with the wheel stays fully right, with the new column in view, through two Refreshes that each add a column. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
@@ -59,6 +61,8 @@
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/property_test_files.txt` | Manifest of every Hypothesis test module for the property-exploration lane; `tests/test_workflow_coverage.py` keeps it equal to the modules that import `hypothesis`. |
+| `scripts/test_file_durations.json` | Recorded per-module backend test durations from the coverage lane, used only to balance the CI shards (`tests/_ci_shards.py`). |
+| `scripts/refresh_test_durations.py` | Rewrites `scripts/test_file_durations.json` from pytest JUnit reports (xunit1 family), summing each module's test-case times; refuses reports without test cases or with a test case lacking its `file` or a finite non-negative `time`. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
 | `scripts/generate_api_contracts.py` | Deterministically composes the execution-strategy diagnostic and Explore chart root models (validation mode) and the converted response models of each module group (`RESPONSE_CONTRACT_GROUPS`, serialization mode with every sent field required) into one Draft 2020-12 JSON Schema bundle (a serialization-mode definition that differs from a pilot's validation-mode one of the same name is emitted as `<Name>Output`, with its references rewritten; a response root is never renamed), fixes the recursive finite-JSON definition, and atomically writes or byte-checks the committed frontend source artifact. |
 | `scripts/extract_polars_io.py` | Extracts the Polars I/O argument schema by introspection, and with `--diff` reports installed-versus-committed drift as a non-failing Markdown freshness summary. |
@@ -102,6 +106,7 @@
 | `specs/roadmap/<component>.md` | One self-contained, non-normative improvement queue per component. Each package defines its problem, plan, acceptance criteria, dependencies, and current code/test evidence. |
 | `tests/workflow_coverage.toml` | Versioned workflow coverage ledger: workflow families, node types, and scenario records with coverage state, owning package, test references, and execution evidence. |
 | `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
+| `tests/_ci_shards.py` | Pytest file sharding for the CI full-suite lanes, wired by `tests/conftest.py`: `--shard=K/N` keeps only the test modules assigned to shard K and ignores every other module before it is imported; `--shard-durations` names an alternative durations file. |
 | `tests/_test_debt_scanner.py` | Test-debt scanning primitives (backend AST visitor, frontend source scanner, frontend test-file predicate) shared by `tests/test_test_debt.py` and `tests/test_workflow_coverage.py`; a support module, not a test. |
 | `tests/_property_budget.py` | Shared Hypothesis settings for the generated families: `pr_budget` (small, derandomised, no example database, reproduction blob printed) and the `exploration_examples` override read from the `EXPLORATION_ENV` variable (HAUTE_PROPERTY_EXAMPLES); a support module, not a test. |
 | `scripts/benchmarks/` | Point-in-time benchmark, probe and reproduction programs with their raw results and metadata, linked from the dated reports under `specs/roadmap/`; not an automatically current product-behaviour contract. `specs/roadmap/` itself holds only Markdown reports and the provenance record its index links. |
@@ -193,6 +198,16 @@
   `slow`, `perf`, `sandbox_strict`, and `meta` markers (meta-marked
   repository-health modules are deselected from the Python compatibility
   lanes in `.github/workflows/ci.yml`).
+- **Test-file durations** in `scripts/test_file_durations.json` are
+  `{"version": 1, "files": {"tests/<module>.py": seconds}}`: repository-relative
+  POSIX module paths and finite non-negative seconds rounded to one decimal
+  place, measured on the 3.12 coverage lane. **Shard assignment** for
+  `--shard=K/N` sorts the recorded modules that still exist by descending
+  duration (ties by path) and places each on the least-loaded shard (ties to
+  the lower index); any other test module goes to shard
+  `crc32(path) mod N + 1`. The assignment depends only on N, the durations
+  file, and the files present, so every shard and every xdist worker computes
+  the same partition.
 - **Component improvement package** is a `### <package-id>` section in one
   flat `specs/roadmap/<component>.md` file. It has a stable ID, priority/order,
   problem, plan, acceptance criteria, dependencies, and current evidence. The
@@ -225,8 +240,10 @@
 2. `.github/workflows/ci.yml` synchronises the locked dev environment. Its
    canary runs Ruff then the manifest in `scripts/core_test_files.txt`; static
    CI runs Ruff, mypy, and `HAUTE_BUILD_FRONTEND=1 uv build`.
-3. Backend coverage runs the full test corpus in two pytest-split shards. The
-   gate combines the coverage files, enforces the global 90% floor, writes JSON,
+3. Backend coverage runs the full test corpus on 3.12 in four file shards
+   (`--shard=K/4`). Each shard uploads its coverage data file and a JUnit
+   report, the input to `scripts/refresh_test_durations.py`. The gate combines
+   the four coverage files, enforces the global 90% floor, writes JSON,
    invokes `scripts/check_critical_coverage.py` for per-file floors, then invokes
    `scripts/check_changed_coverage.py` against the pull-request base SHA (or the
    preceding main revision for a push). The coverage-gate checkout contains the
@@ -239,17 +256,26 @@
    satisfy a coverage gate. The changed-code check also writes a table of every
    changed file with changed executable code, gated or reported, to the job
    summary.
-4. Compatibility, optional-dependency, platform, package, init, and mutation
+4. Compatibility runs the same corpus without coverage, excluding `perf` and
+   `meta` tests, in three file shards on each of 3.11 and 3.13
+   (`--shard=K/3`). Optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
-5. The frontend CI job runs `npm ci` then the frontend-only preflight. Every
+5. Frontend CI runs two jobs after `npm ci`. The static job runs
+   `npm run check:contracts`, `typecheck`, `lint`, `build`, `check:bundle`,
+   and `test:benchmark:pr` as separate steps in that order; the tests job runs
+   `npm run test:coverage` (Vitest with its global thresholds, then the
+   critical-coverage check). Together they run exactly the npm scripts of the
+   frontend-only preflight, which remains the local equivalent. Every
    frontend preflight mode runs `npm run check:contracts` before type checking;
    the backend core subset separately proves the Pydantic-to-schema stage through
    `tests/test_api_contract_generation.py`. Ordinary regeneration runs the Python
    stage followed by the Node stage, while application build and runtime only
    consume the committed results. Browser
-   E2E additionally synchronises Python, installs Chromium/Firefox, and runs
-   `npm run test:e2e`; Playwright calls `scripts/run_frontend_e2e_server.py` and
+   E2E runs as two Playwright shards (`npm run test:e2e -- --shard=K/2`, which
+   Playwright splits by test count over whole spec files); each shard
+   synchronises Python, installs Chromium/Firefox, starts its own server, and
+   uploads its own report. Playwright calls `scripts/run_frontend_e2e_server.py` and
    waits for its readiness URL. The harness preserves the same-origin Vite
    proxy and real HttpOnly-cookie bootstrap used by the product; it never
    exports a browser-readable session-token variable or adds a browser bearer
@@ -266,9 +292,9 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against default ceilings of 284 KiB initial and
-   1,569 KiB total JavaScript gzip. The measured bundle is approximately
-   282.5 KiB initial and 1,566.7 KiB total. The Polars step builder accounts
+   modulepreload chunks against default ceilings of 285 KiB initial and
+   1,581 KiB total JavaScript gzip. The measured bundle is approximately
+   283.8 KiB initial and 1,571.1 KiB total. The Polars step builder accounts
    for approximately 24.3 KiB of the aggregate total since the 1,350.2 KiB
    baseline, with the editor interface in the existing lazy TransformEditor
    chunk and no new dependency. Initial-path raises admit only
@@ -337,6 +363,21 @@
 - Coverage data uses relative paths so artifacts from separate runner checkout
   paths can be combined correctly. Shards disable the immediate fail-under
   check; only the combine gate is authoritative.
+- A sharded backend lane partitions test modules, never individual tests: a
+  module belongs to exactly one shard and every other shard ignores it before
+  import, so the union of a lane's shards is exactly the unsharded collection.
+  Recorded durations only balance the shards. A stale, missing, or renamed
+  entry can unbalance them but can neither drop nor duplicate a test, so
+  refreshing the durations file is maintenance, not a correctness step. A
+  malformed `--shard` value (not `K/N` with 1 ≤ K ≤ N) or a missing, unreadable,
+  wrongly versioned, or malformed durations file fails the run before
+  collection. Each sharded CI job's matrix lists exactly `1..N` for its
+  `--shard=${{ matrix.shard }}/N`, and the coverage gate combines exactly the
+  data files of shards `1..N`; a shard left out of the matrix would otherwise
+  drop its modules silently.
+- The two frontend CI jobs together run exactly the npm scripts that the
+  frontend-only preflight runs, with the bundle budget after the build, so the
+  split cannot lose a gate that the local preflight still runs.
 - Changed-code coverage normalises Windows/POSIX separators and Git rename paths,
   ignores deletions and changed non-executable lines, treats every executable line
   in an untracked configured Python file as new, and fails if a changed configured
@@ -497,6 +538,15 @@
 - `frontend/scripts/generate-api-contracts.test.mjs` — isolated schema-to-browser generation, standalone-validator import, per-artifact stale rejection, and read-only check-mode contracts.
 - `tests/test_bug_regressions.py` — named deep-review bug regressions (streaming restoration, source/pipeline path handling, preview source files, and Polars/parser safety).
 - `tests/test_bugfixes.py` — regression contracts for streaming chunk restoration, source/pipeline path resolution, preview source files, and parser/config safety.
+- `tests/test_ci_shards.py` — `--shard` parsing and durations-file validation
+  failures, deterministic longest-first assignment with ties and CRC-32
+  placement of unrecorded modules, a pytester partition proof (each module
+  runs in exactly one shard, an unassigned module is never imported, and xdist
+  workers select the same modules), `scripts/refresh_test_durations.py`
+  aggregation and refusal cases, and the CI invariants that every sharded
+  matrix lists `1..N` for its `--shard=${{ matrix.shard }}/N`, the coverage
+  gate combines exactly those shards' data files, and the refresh recipe
+  downloads the JUnit artifact the coverage shards upload.
 - `tests/test_coverage_gaps.py` — targeted edge coverage for config/fingerprint/builders/artifacts/model helpers, schemas, and node discovery.
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
 - `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.

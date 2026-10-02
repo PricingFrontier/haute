@@ -888,6 +888,56 @@ describe("NodePanel", () => {
     expect((paneProps.inputSources as Array<{ name: string }>).map((source) => source.name)).toEqual(["claims"])
   })
 
+  it("passes the node's recorded columns to its Polars tab and keeps them while only its code changes", () => {
+    steppedCodePaneProps.length = 0
+    const scored = [
+      { name: "policy_id", dtype: "String" },
+      { name: "prediction", dtype: "Float64" },
+    ]
+    const scoreNode = (config: Record<string, unknown>, recorded: boolean) => makeNode({
+      id: "score_1",
+      data: {
+        label: "Score",
+        description: "",
+        nodeType: "modelScore",
+        config,
+        ...(recorded ? { _columns: scored, _availableColumns: scored, _columnsSource: "live" } : {}),
+      },
+    })
+    const { rerender, props } = renderPanel({ node: scoreNode({ output_column: "prediction" }, true) })
+    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    expect(steppedCodePaneProps.at(-1)?.nodeColumns).toEqual(scored)
+
+    // A code edit clears the stash until the refreshed preview records it again.
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={scoreNode({ output_column: "prediction", code: "df = df.filter(pl.col(\"pre" }, false)} />
+      </GraphProvider>,
+    )
+    expect(steppedCodePaneProps.at(-1)?.nodeColumns).toEqual(scored)
+
+    // Any other setting drops them until the node is previewed again.
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={scoreNode({ output_column: "pred_freq", code: "df = df.filter(pl.col(\"pre" }, false)} />
+      </GraphProvider>,
+    )
+    expect(steppedCodePaneProps.at(-1)?.nodeColumns).toBeUndefined()
+  })
+
+  it.each([
+    ["polars", transformEditorProps],
+    ["explore", exploreCodeEditorProps],
+  ] as const)("passes a %s node's recorded columns to its code editor", (nodeType, editorProps) => {
+    const recorded = [{ name: "loss_ratio", dtype: "Float64" }]
+    renderPanel({
+      node: makeNode({
+        data: { label: "Code", description: "", nodeType, config: {}, _availableColumns: recorded, _columnsSource: "live" },
+      }),
+    })
+    expect(editorProps.at(-1)?.nodeColumns).toEqual(recorded)
+  })
+
   it("mounts the stepped code pane in frame mode on a Data Input's Polars tab", () => {
     steppedCodePaneProps.length = 0
     renderPanel({

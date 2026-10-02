@@ -384,6 +384,42 @@ test.describe("Transform step builder journey", () => {
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
   })
 
+  test("completes the column a Rating Step creates in its Polars code box while the code is typed", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+
+    // One table entry makes the table write browser_relativity (see the journey above); its input has no such column.
+    await seedGraph(page, (nodes) => {
+      const rating = nodes.find((node) => node.id === "browser_rating")
+      if (!rating) throw new Error("browser_rating missing from the fixture")
+      const config = rating.data.config as { tables: Array<Record<string, unknown>> }
+      const entry = { proposer_age_band: "unmatched", channel_band: "unmatched", vehicle_age_band: "unmatched", value: "2.5" }
+      rating.data.config = { ...config, tables: config.tables.map((table) => ({ ...table, entries: [entry] })) }
+    })
+
+    const recorded = page.waitForResponse(async (response) => {
+      if (response.request().method() !== "POST" || !response.url().includes("/api/pipeline/preview")) return false
+      if ((response.request().postDataJSON() as { node_id?: unknown }).node_id !== "browser_rating" || !response.ok()) return false
+      const result = (await response.json()) as { available_columns?: Array<{ name: string }> }
+      return (result.available_columns ?? []).some((column) => column.name === "browser_relativity")
+    })
+    await page.getByRole("button", { name: /Rating Step node: browser_rating/i }).click()
+    const panel = page.getByTestId("node-panel")
+    await expect(panel).toBeVisible()
+    await recorded
+    await panel.getByRole("button", { name: /^polars$/i }).click()
+
+    // Pausing past the editor's commit debounce on every key commits each
+    // half-typed edit, which clears the node's recorded columns until the
+    // node is previewed again.
+    await panel.locator(".cm-content").click()
+    await page.keyboard.type('df = df.with_columns(pl.col("browser_r', { delay: 200 })
+
+    const completions = page.locator(".cm-tooltip-autocomplete")
+    await expect(completions).toBeVisible()
+    await expect(completions.getByRole("option", { name: "browser_relativity" })).toBeVisible()
+  })
+
   test("authors a Scenario Expander's post-expansion steps, previews them and reopens them", async ({ page }) => {
     test.slow()
     await openApp(page)

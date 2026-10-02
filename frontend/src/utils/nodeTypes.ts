@@ -145,6 +145,22 @@ export const PALETTE_TYPES: NodeTypeValue[] = [
   NODE_TYPES.OPTIMISER, NODE_TYPES.OPTIMISER_APPLY,
 ]
 
+const CONNECTION_DROP_EXCLUDED_TYPES = new Set<string>([
+  NODE_TYPES.OUTPUT, NODE_TYPES.EXTERNAL_FILE,
+])
+
+/**
+ * Node types offered when a connection from an output is released on empty
+ * canvas: Edge Join first, then the palette types that take a data input
+ * (Quote Response and Load File are left out on purpose).
+ */
+export const CONNECTION_DROP_TYPES: NodeTypeValue[] = [
+  NODE_TYPES.EDGE_JOIN,
+  ...PALETTE_TYPES.filter(
+    (type) => !SOURCE_ONLY_TYPES.has(type) && !CONNECTION_DROP_EXCLUDED_TYPES.has(type),
+  ),
+]
+
 /** Derived lookups used by components that need one metadata field. */
 export const nodeTypeIcons: Record<string, React.ElementType> =
   Object.fromEntries(Object.entries(NODE_TYPE_META).map(([k, v]) => [k, v.icon]))

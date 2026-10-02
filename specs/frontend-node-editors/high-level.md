@@ -325,7 +325,7 @@ per-aggregation row filters, and a join's key check, row order and suffix, where
 means differing from a new step's value, so a suffix other than `_right`). Column pickers
 offer the start input's columns (for an edge from a multi-output producer such as a
 submodel, the columns of that output handle as recorded by the last preview; in `frame`
-mode, the surface's upstream columns) plus columns derived by earlier steps, never another
+mode, the pane's code columns) plus columns derived by earlier steps, never another
 input's columns before a join brings them in, while accepting free text: every column box
 lists the names starting with what is typed beneath it (all of them while the box is empty,
 none active), typing makes the first match active (clearing the box again leaves none
@@ -548,8 +548,8 @@ an input. The pane's step editor renders against the surface's eligible input na
 which come from the same table the backend uses (`edges` for a Transform, `none` for a
 Data Input) rather than from the input chips it displays, so it never offers a join the
 executor would refuse: while that list is empty the `Add step` chooser withholds join
-and concat and keeps group by, pivot and unpivot. Column suggestions use the same
-upstream columns the code box used. An empty frame-mode list renders to empty code, so
+and concat and keeps group by, pivot and unpivot. A frame-mode step list starts its
+column suggestions from the pane's code columns (below). An empty frame-mode list renders to empty code, so
 the confirmed switch to code on an empty list writes empty code, and the node behaves
 exactly as with an empty code box until a step is added. Every Polars tab (Data Input,
 External File, Scenario Expander, Rating Step, Model Score) and Explore's own "Polars
@@ -560,6 +560,19 @@ an empty list, and changing a Data Input's provider or format keeps its steps as
 keeps its code. Renaming an upstream node rewrites the input references inside a stepped
 External File's steps, as it does for a Transform. A node loaded without a `steps` list
 stays in code mode; the switch is one way.
+
+**Code columns.** Every pane's code box completes column names inside a string literal
+from its code columns: the node's input columns, then the node's own columns as its last
+preview under the active source recorded them (before its own column selection and
+renames), each name once with its input type first. The node's own columns hold what
+it scores, rates, expands or reads, such as a Model Score's prediction column, a Rating
+Step's rated outputs, a Scenario Expander's scenario columns and a Data Input's source
+columns, and the columns its code creates. Every config edit clears the node's recorded
+columns until the node is previewed again (Refresh, or selecting it again), which would
+take them away at the first pause in typing, so the panel keeps the last recorded
+columns while only the node's code or steps change. Any other config change, or a
+switch of the active source, drops them until the node is previewed again. A column the node's code renames or drops is
+suggested under the name its last preview recorded.
 
 ## Design rationale
 

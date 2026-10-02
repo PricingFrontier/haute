@@ -105,7 +105,7 @@ export default function PolarsStepsEditor({
   onDeleteInput,
   errorLine,
   runError,
-  upstreamColumns,
+  frameColumns,
   start,
   nodeId,
 }: {
@@ -120,8 +120,8 @@ export default function PolarsStepsEditor({
   errorLine?: number | null
   /** The last run's error message for this node; render errors stay quiet until a run has failed. */
   runError?: string | null
-  /** The frame a frame-mode surface starts from, as far as the preview knows it. */
-  upstreamColumns?: { name: string; dtype: string }[]
+  /** The columns a frame-mode list starts its suggestions from: the pane's code columns. */
+  frameColumns?: { name: string; dtype: string }[]
   start: StepStart
   /** The node being edited: its free-code columns resolve one request at a time. */
   nodeId: string
@@ -140,9 +140,9 @@ export default function PolarsStepsEditor({
   const known: KnownColumns = useMemo(
     () => ({
       inputs: Object.fromEntries(inputSources.flatMap((s) => (s.columns?.length ? [[s.name, s.columns]] : []))),
-      frame: isFrame ? (upstreamColumns ?? []) : [],
+      frame: isFrame ? (frameColumns ?? []) : [],
     }),
-    [inputSources, isFrame, upstreamColumns],
+    [inputSources, isFrame, frameColumns],
   )
   const rendered = useRenderedSteps(steps, inputNames, start, known, nodeId, (code) => {
     if (config.code !== code) onUpdate("code", code)

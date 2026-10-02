@@ -34,12 +34,16 @@ import {
 } from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { attachEditorEdgeIdentities } from "../utils/editorIdentities"
-import { edgeJoinCanonicalTargetHandle } from "../utils/edgeJoinRoles"
+import { EDGE_JOIN_BASE_HANDLE, edgeJoinCanonicalTargetHandle } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
-import type { ConnectionValidationResult } from "../utils/connectionValidation"
+import {
+  validatePipelineConnection,
+  type ConnectionValidationResult,
+} from "../utils/connectionValidation"
 import useToastStore from "../stores/useToastStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 import type { PreviewData } from "../panels/DataPreview"
+import type { SimpleNode } from "../panels/editors/_shared"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 const JSON_API_INPUT_SUFFIXES = [".json", ".jsonl", ".ndjson"] as const
@@ -102,6 +106,17 @@ type ContextMenuData = {
   isSingleton?: boolean
 }
 
+/** A source-handle connection released on empty canvas, awaiting a node type. */
+export type ConnectionDropMenuState = {
+  /** Client coordinates of the release point, where the menu opens. */
+  x: number
+  y: number
+  /** Flow position of the release point, where the new node is placed. */
+  position: { x: number; y: number }
+  source: string
+  sourceHandle: string | null
+}
+
 type UseEdgeHandlersParams = {
   selectedNode: Node | null
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
@@ -126,6 +141,7 @@ type UseEdgeHandlersParams = {
   existingSingletonTypes: ReadonlySet<NodeTypeValue>
   resolveGraphIdentities: (nodes: readonly Node[], edges: readonly Edge[]) => Promise<{ nodes: Node[]; edges: Edge[] }>
   findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
+  isPaneAtPoint?: (point: { x: number; y: number }) => boolean
   validateConnection?: (connection: Connection) => ConnectionValidationResult
   commitBoundaryConnection?: (connection: Connection) => boolean
   deleteBoundaryEdge?: (edgeId: string) => boolean
@@ -163,6 +179,7 @@ export default function useEdgeHandlers({
   existingSingletonTypes,
   resolveGraphIdentities,
   findEdgeIdAtPoint = () => null,
+  isPaneAtPoint = () => false,
   validateConnection,
   commitBoundaryConnection,
   deleteBoundaryEdge,
@@ -175,6 +192,8 @@ export default function useEdgeHandlers({
   const edgeJoinCandidateEdgeIdRef = useRef<string | null>(null)
   const structuralCreationSerialRef = useRef(0)
   const [edgeJoinCandidateEdgeId, setEdgeJoinCandidateEdgeId] = useState<string | null>(null)
+  const [connectionDropMenu, setConnectionDropMenu] = useState<ConnectionDropMenuState | null>(null)
+  const closeConnectionDropMenu = useCallback(() => setConnectionDropMenu(null), [])
 
   const clearEdgeJoinCandidate = useCallback(() => {
     edgeJoinCandidateEdgeIdRef.current = null
@@ -418,7 +437,21 @@ export default function useEdgeHandlers({
       if (fromHandle?.type !== "source") return
       const releasePoint = connectionEndPoint(event)
       const targetEdgeId = findEdgeIdAtPoint(releasePoint)
-      if (!targetEdgeId) return
+      if (!targetEdgeId) {
+        if (!isPaneAtPoint(releasePoint)) return
+        const sourceNode = graphRef.current.nodes.find((node) => node.id === sourceNodeId)
+        // Submodel boundary edges are committed by the boundary editor, which
+        // needs both endpoints on the canvas already.
+        if (!sourceNode || nodeData(sourceNode).nodeType === NODE_TYPES.SUBMODEL_PORT) return
+        setConnectionDropMenu({
+          x: releasePoint.x,
+          y: releasePoint.y,
+          position: screenToFlowPosition(releasePoint),
+          source: sourceNodeId,
+          sourceHandle: fromHandle.id ?? null,
+        })
+        return
+      }
       void commitEdgeJoinResult(insertEdgeJoinNode({
         nodes: graphRef.current.nodes,
         edges: graphRef.current.edges,
@@ -440,6 +473,7 @@ export default function useEdgeHandlers({
       commitConnection,
       findEdgeIdAtPoint,
       graphRef,
+      isPaneAtPoint,
       lastSelectedNodeRef,
       nodeIdCounterRef,
       pushSnapshot,
@@ -454,6 +488,104 @@ export default function useEdgeHandlers({
       resolveGraphIdentities,
     ],
   )
+
+  /** Toasts and returns true when a singleton type is already in the pipeline. */
+  const refuseOccupiedSingleton = useCallback((type: string): boolean => {
+    if (
+      !isSingletonType(type)
+      || !(
+        existingSingletonTypes.has(type as NodeTypeValue)
+        || graphRef.current.nodes.some((node) => nodeData(node).nodeType === type)
+      )
+    ) return false
+    addToast("info", `Only one ${NODE_TYPE_META[type as NodeTypeValue].name} node is allowed per pipeline`)
+    return true
+  }, [addToast, existingSingletonTypes, graphRef])
+
+  /**
+   * Resolves a new node's server identity, then hands it and the graph it was
+   * created against to `apply` — unless the graph changed in the meantime.
+   */
+  const createNodeAfterIdentity = useCallback((
+    newNode: Node,
+    apply: (resolvedNode: Node, graph: { nodes: Node[]; edges: Edge[] }) => void,
+  ) => {
+    const capturedGraph = graphRef.current
+    const requestSerial = ++structuralCreationSerialRef.current
+    void (async () => {
+      try {
+        const resolved = await resolveGraphIdentities([newNode], [])
+        if (resolved.nodes.length !== 1 || resolved.nodes[0]?.id !== newNode.id || resolved.edges.length !== 0) {
+          throw new Error("identity resolver returned an invalid node")
+        }
+        if (structuralCreationSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
+          addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
+          return
+        }
+        apply(resolved.nodes[0], capturedGraph)
+      } catch (err: unknown) {
+        addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
+  }, [addToast, graphRef, resolveGraphIdentities])
+
+  /** Creates the chosen node where the connection was released, wired to the dragged output. */
+  const createNodeFromConnectionDrop = useCallback((type: NodeTypeValue) => {
+    const drop = connectionDropMenu
+    if (!drop) return
+    setConnectionDropMenu(null)
+    if (refuseOccupiedSingleton(type)) return
+
+    const id = `${type}_${nodeIdCounterRef.current + 1}`
+    const newNode = appNode({ id, type, position: drop.position })
+    const connection = {
+      source: drop.source,
+      sourceHandle: drop.sourceHandle,
+      target: id,
+      targetHandle: type === NODE_TYPES.EDGE_JOIN ? EDGE_JOIN_BASE_HANDLE : null,
+    }
+    const validation = validatePipelineConnection(
+      connection,
+      [...graphRef.current.nodes, newNode] as unknown as SimpleNode[],
+      graphRef.current.edges,
+      submodels,
+    )
+    if (!validation.ok) {
+      reportConnectionValidationFailure(validation)
+      return
+    }
+    nodeIdCounterRef.current += 1
+
+    createNodeAfterIdentity(newNode, (resolvedNode, graph) => {
+      const nextNodes = selectOnlyNode([...graph.nodes, resolvedNode], id)
+      const created = nextNodes[nextNodes.length - 1]
+      const [nextEdge] = attachEditorEdgeIdentities([appEdge(connection)], nextNodes)
+      pushSnapshot()
+      setNodesRaw(nextNodes)
+      setEdgesRaw([...graph.edges, nextEdge])
+      setSelectedNode(created)
+      setLastSelectedId?.(id)
+      lastSelectedNodeRef.current = created
+      clearTrace()
+      cancelPreview()
+    })
+  }, [
+    cancelPreview,
+    clearTrace,
+    connectionDropMenu,
+    createNodeAfterIdentity,
+    graphRef,
+    lastSelectedNodeRef,
+    nodeIdCounterRef,
+    pushSnapshot,
+    refuseOccupiedSingleton,
+    reportConnectionValidationFailure,
+    setEdgesRaw,
+    setLastSelectedId,
+    setNodesRaw,
+    setSelectedNode,
+    submodels,
+  ])
 
   const onSelectionChange: OnSelectionChangeFunc = useCallback(({ nodes: selectedNodes }) => {
     if (selectedNodes.length !== 1) {
@@ -539,17 +671,7 @@ export default function useEdgeHandlers({
       const type = event.dataTransfer.getData("application/reactflow-type")
       if (!type) return
 
-      if (
-        isSingletonType(type)
-        && (
-          existingSingletonTypes.has(type as NodeTypeValue)
-          || graphRef.current.nodes.some((node) => nodeData(node).nodeType === type)
-        )
-      ) {
-        const name = NODE_TYPE_META[type as NodeTypeValue].name
-        addToast("info", `Only one ${name} node is allowed per pipeline`)
-        return
-      }
+      if (refuseOccupiedSingleton(type)) return
 
       // Parse the drag-config JSON. Malformed payloads must fail loudly
       // (Issue #35) — silently swallowing the error would create a node
@@ -581,28 +703,14 @@ export default function useEdgeHandlers({
         config,
       })
 
-      const capturedGraph = graphRef.current
-      const requestSerial = ++structuralCreationSerialRef.current
-      void (async () => {
-        try {
-          const resolved = await resolveGraphIdentities([newNode], [])
-          if (resolved.nodes.length !== 1 || resolved.nodes[0]?.id !== newNode.id || resolved.edges.length !== 0) {
-            throw new Error("identity resolver returned an invalid node")
-          }
-          if (structuralCreationSerialRef.current !== requestSerial || graphRef.current !== capturedGraph) {
-            addToast("error", "Node creation was not applied because the graph changed while identity resolution was running.")
-            return
-          }
-          const resolvedNode = { ...resolved.nodes[0], selected: true }
-          setNodes((nds) => selectOnlyNode([...nds, resolvedNode], resolvedNode.id))
-          setSelectedNode(resolvedNode)
-          setLastSelectedId?.(resolvedNode.id)
-        } catch (err: unknown) {
-          addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      })()
+      createNodeAfterIdentity(newNode, (resolved) => {
+        const resolvedNode = { ...resolved, selected: true }
+        setNodes((nds) => selectOnlyNode([...nds, resolvedNode], resolvedNode.id))
+        setSelectedNode(resolvedNode)
+        setLastSelectedId?.(resolvedNode.id)
+      })
     },
-    [screenToFlowPosition, nodeIdCounterRef, graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, existingSingletonTypes, resolveGraphIdentities],
+    [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, refuseOccupiedSingleton, createNodeAfterIdentity],
   )
 
   return {
@@ -612,6 +720,9 @@ export default function useEdgeHandlers({
     onConnectionPointerMove,
     clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId,
+    connectionDropMenu,
+    closeConnectionDropMenu,
+    createNodeFromConnectionDrop,
     onSelectionChange,
     openNode,
     onNodeClick,

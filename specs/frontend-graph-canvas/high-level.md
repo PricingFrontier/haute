@@ -344,8 +344,21 @@ candidate, with the error toast.
   splitting the edge, selects the new edge-join, and records the complete
   rewrite as one undoable action. A rejected edge release reports its
   actionable edge-join reason without changing nodes, edges, selection,
-  dirty state, or history; an ordinary blank-canvas cancellation remains a
-  no-op. Self-loops, duplicate edges, a third input to an edge-join, a role
+  dirty state, or history. Releasing a source-handle gesture on empty
+  canvas — not on a node, handle, edge, or canvas control — opens an Add
+  node menu at the release point instead of cancelling. It lists Edge Join
+  first, then every palette type in palette order except the types that
+  take no input (Quote Input, Data Input, Constant), Quote Response, and
+  Load File; an
+  occupied singleton type is listed but disabled, as in the palette.
+  Choosing a type creates that node at the release point with the dragged
+  output as its input (an Edge Join's base input), selects it, and records
+  node and edge as one undoable action. A connection the new node could
+  not accept is refused with the connection-rejection toast and creates
+  nothing. Escape, a click outside the menu, or a click on the canvas
+  closes it without changing the graph. A target-handle gesture, a
+  gesture from a submodel boundary port, and a read-only canvas release on
+  empty canvas as a no-op. Self-loops, duplicate edges, a third input to an edge-join, a role
   (base/join) that already has an input, and a connection that would exceed
   a node type's `maxInputs` are all rejected silently or with a named toast.
   Dropping a palette item parses its
@@ -359,6 +372,16 @@ candidate, with the error toast.
   clears any prior node's preview, but does not issue a predictably failing
   execution request; Infer Tables followed by an explicit refresh is the
   normal first-preview flow.
+- **Box selection.** A left-drag across empty canvas selects every node it
+  touches, and React Flow holds that selection as a group whose bounding
+  rectangle drags the nodes together. The group lasts only while the
+  selection is the one the drag made: a click on a node, an edge, or empty
+  canvas ends it, and so does any selection the editor makes itself —
+  dropping a palette item, creating a node from a connection drop, inserting
+  an edge-join, pasting, duplicating, creating an instance, select-all, undo,
+  redo, or a graph reload. A node the editor has just created and selected
+  therefore drags and opens its context menu with the first gesture, not
+  only after a click elsewhere.
 - **Active node visibility.** The inspector panel and the preview pane take
   their space from the canvas, so opening them must not leave the node they
   describe hidden behind them. Whenever a node becomes the inspector's active
@@ -630,6 +653,16 @@ candidate, with the error toast.
   the latest graph to prevent a stale hover result from authorising a
   rewrite. A conditional live-region status mirrors the visual highlight so
   the affordance is not pointer-only.
+- **The editor ends React Flow's box-selection group itself.** React Flow ends
+  the group only on its own pane, node, and edge clicks, Delete, and the start
+  of the next box. A selection the editor sets through the controlled `nodes`
+  prop would otherwise leave the group's rectangle — drawn transparent in
+  Haute, but still taking pointer events — over the new selection, swallowing
+  its clicks, context menus, and hover. React Flow 12.10 also binds that
+  rectangle's drag only when the group first mounts, so a rectangle that
+  remounts around a node not yet measured (every just-created node) cannot
+  drag either. The rule is keyed on the selection rather than on each creation
+  path, so a future path that selects nodes needs no extra call.
 - **Missing graph context throws instead of defaulting to an empty graph**, so
   a misconfigured mount surfaces immediately through
   the enclosing `ErrorBoundary` instead of silently rendering editors against

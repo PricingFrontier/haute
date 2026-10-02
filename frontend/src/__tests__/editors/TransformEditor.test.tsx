@@ -19,9 +19,10 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../panels/editors/CodeEditor", () => ({
-  CodeEditor: ({ defaultValue, onChange, placeholder }: { defaultValue: string; onChange?: (v: string) => void; placeholder?: string }) => (
+  CodeEditor: ({ defaultValue, onChange, placeholder, availableColumns }: { defaultValue: string; onChange?: (v: string) => void; placeholder?: string; availableColumns?: string[] }) => (
     <textarea
       data-testid="code-editor"
+      data-available-columns={JSON.stringify(availableColumns ?? [])}
       defaultValue={defaultValue}
       onChange={(e) => onChange?.(e.target.value)}
       placeholder={placeholder}
@@ -84,6 +85,31 @@ describe("TransformEditor", () => {
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("df = claims.filter(pl.col('amount') > 0)")
+  })
+
+  it("completes the inputs' columns, then the columns the node's code creates", () => {
+    const inputs = [
+      { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+    ]
+    render(
+      <TransformEditor
+        nodeId="node-1"
+        config={{ code: "df = claims.with_columns(severity=pl.col('amount') / pl.col('count'))" }}
+        onUpdate={vi.fn()}
+        inputSources={inputs}
+        upstreamColumns={[
+          { name: "amount", dtype: "Float64" },
+          { name: "count", dtype: "Int64" },
+        ]}
+        nodeColumns={[
+          { name: "amount", dtype: "Float64" },
+          { name: "count", dtype: "Int64" },
+          { name: "severity", dtype: "Float64" },
+        ]}
+      />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(JSON.parse(editor.dataset.availableColumns ?? "")).toEqual(["amount", "count", "severity"])
   })
 
   it("shows return df hint below code editor", () => {

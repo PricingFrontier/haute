@@ -80,7 +80,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // contract, so the four validator modules that carry it (execution, explore,
 // training, optimiser) grow together, with the preview warning that names it.
 // The complete production bundle is 1,558.7 KiB; 1,569 KiB restores about 10 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1569
+// The assistant rework adds lazy panel code (the build checklist, data-check
+// findings on change cards, context chips, the empty state and readiness card),
+// and main's connection drop menu adds its lazy menu. The complete production
+// bundle is 1,571.1 KiB; 1,581 KiB restores about 10 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1581
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -183,7 +187,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // the assistant to fix" action and their UI-store mirror. The panel, its store
 // and its API module stay lazy (App.assistantLazy.test.ts). The merged initial
 // bundle is 282.5 KiB; 284 KiB restores ~1.5 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 284
+// The connection drop menu adds ~0.6 KiB of deliberate eager core: creating the
+// chosen node and its edge runs in the canvas edge handlers on release, beside
+// the empty-canvas hit-test and the menu's type list. The menu itself stays
+// lazy. With both, the merged initial bundle is 283.8 KiB; 285 KiB restores
+// ~1.2 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 285
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
