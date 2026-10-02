@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, act, within } from "@testing-library/react"
 
 vi.mock("../MlflowSettingsModal", () => ({
   default: () => <div data-testid="mlflow-modal-stub" />,
@@ -27,8 +27,9 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
-    canCreateSubmodel: true,
-    onCreateSubmodel: vi.fn(),
+    submodelAction: "create" as const,
+    canRunSubmodelAction: true,
+    onSubmodelAction: vi.fn(),
     canCreateInstance: true,
     onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
@@ -364,7 +365,33 @@ describe("Toolbar", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
-    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
+  })
+
+  it("reads Dissolve in the dissolve mode and still runs the caller's action", () => {
+    const props = makeProps({ submodelAction: "dissolve" })
+    render(<Toolbar {...props} />)
+    const button = screen.getByRole("button", { name: "Dissolve" })
+    expect(button).toHaveAttribute("data-testid", "toolbar-submodel")
+    expect(button).toHaveAttribute("title", "Dissolve the selected submodel back into its nodes")
+    expect(screen.queryByRole("button", { name: "Submodel" })).not.toBeInTheDocument()
+
+    fireEvent.click(button)
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the inactive label in the button so switching modes never changes its width", () => {
+    const { rerender } = render(<Toolbar {...makeProps()} />)
+    const button = screen.getByTestId("toolbar-submodel")
+    const label = (text: string) => within(button).getByText(text)
+    // jsdom has no layout, so this pins the mechanism: both labels share one
+    // grid cell and the hidden one still sizes it.
+    expect(label("Submodel")).not.toHaveClass("invisible")
+    expect(label("Dissolve")).toHaveClass("invisible")
+
+    rerender(<Toolbar {...makeProps({ submodelAction: "dissolve" })} />)
+    expect(label("Submodel")).toHaveClass("invisible")
+    expect(label("Dissolve")).not.toHaveClass("invisible")
   })
 
   it("clicking Instance creates an instance of the selection", () => {
@@ -375,7 +402,7 @@ describe("Toolbar", () => {
   })
 
   it("greys out the selection actions when the selection cannot support them", () => {
-    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    const props = makeProps({ canRunSubmodelAction: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
     expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
@@ -383,7 +410,7 @@ describe("Toolbar", () => {
   })
 
   it("still calls the handler when unavailable, so the refusal can explain itself", () => {
-    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    const props = makeProps({ canRunSubmodelAction: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
     // ``can*`` drives presentation only. The handler owns the policy and
@@ -391,12 +418,12 @@ describe("Toolbar", () => {
     // would make the toolbar the one entry point that refuses in silence.
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
     fireEvent.click(screen.getByTestId("toolbar-instance"))
-    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
     expect(props.onCreateInstance).toHaveBeenCalledOnce()
   })
 
   it("keeps unavailable selection actions reachable so they can explain themselves", () => {
-    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: false })} />)
+    render(<Toolbar {...makeProps({ canRunSubmodelAction: false, canCreateInstance: false })} />)
     const submodel = screen.getByTestId("toolbar-submodel")
     // Not the `disabled` attribute: that would drop the button from the tab
     // order and suppress the title that states the requirement.
@@ -405,7 +432,7 @@ describe("Toolbar", () => {
   })
 
   it("enables the two selection actions independently", () => {
-    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: true })} />)
+    render(<Toolbar {...makeProps({ canRunSubmodelAction: false, canCreateInstance: true })} />)
     // One node selected: instancing works, grouping needs a second node.
     expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
     expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false")

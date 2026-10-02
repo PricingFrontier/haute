@@ -15,7 +15,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler, and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler and the Submodel button's Dissolve mode (a lone selected submodel occurrence routes the button to `handleDissolveSubmodel`, one request at a time), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/hooks/useGraphCommitController.ts` | The single state authority for selected-node config and label commits: assigns per-node request generations, captures the graph/document identity fence, resolves prospective node/API-frame identities, invokes the pure preflight planner, and applies one history-aware graph transaction only while the request still owns that fence. |
 | `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings (a coded transform gains an `inputMapping` binding; a stepped original on an `edges` surface, a Transform or an External File, has its `source`/`join`/`concat` input references rewritten in place through `polarsStepInputs.ts` and never gains one), checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. `frontend/src/utils/__tests__/nodeUpdatePlan.steps.test.ts` covers the stepped rewrite and its collision rejection. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; each ordinary card uses one shared default port row with optional `inputs`/target content on the left and its node/output name plus optional source handle on the right; edge-join handles retain their specialised quiet treatment; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
@@ -1466,7 +1466,11 @@ again through the editor and save paths.
     prunes with a warning; W1.3: renaming a connected port rebinds its edge
     in one undo entry; W1.4: a blanked port label never reaches the graph;
     editing a non-port field never prunes a valid edge); panel
-    open/close mutual exclusivity (Utility/Imports/Git/branch indicator).
+    open/close mutual exclusivity (Utility/Imports/Git/branch indicator);
+    the Submodel button's Dissolve mode (a lone selected submodel occurrence
+    reads Dissolve and is dissolved by one request however often the button
+    is clicked while it runs, a mixed selection still groups, and a read-only
+    canvas refuses with a toast and sends nothing).
   - `frontend/src/__tests__/App.connectionMode.test.ts` — `ConnectionMode.Loose` is enabled and a
     graph-level `isValidConnection` validator is wired to `<ReactFlow>`.
   - `frontend/src/__tests__/App.findCast.test.tsx` — regression #38 (a `lastSelectedId` pointing

@@ -528,7 +528,14 @@ candidate, with the error toast.
   same canonical node-type metadata used by the shared handler; an attempted
   unavailable action remains explainable without being presented as enabled.
   The context menu's entry for an existing submodel node
-  reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
+  reads "Dissolve Submodel", not "Ungroup Submodel". Selecting exactly one
+  submodel occurrence turns the toolbar's Submodel button into "Dissolve",
+  which dissolves that occurrence through the same handler as the context
+  menu entry; a read-only canvas refuses it with a toast, and Ctrl+G stays
+  create-only. The button keeps the wider label's width in both modes, so
+  selecting a submodel does not reflow the toolbar. A repeat click while
+  that dissolve is in flight sends nothing: a second transform would
+  supersede the first and report it as not applied. Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
   non-previewable node type. Create and dissolve are main-canvas
   operations: while a drilled submodel view is active both handlers refuse to

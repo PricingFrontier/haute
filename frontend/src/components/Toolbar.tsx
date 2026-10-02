@@ -1,5 +1,5 @@
 import { Suspense, lazy, useState, useMemo, useRef, useCallback, useEffect } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Ungroup, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -44,11 +44,13 @@ interface ToolbarProps {
   onZoomOut: () => void
   onOpenUtility: () => void
   onOpenImports: () => void
-  /** Group the current selection into a submodel. Enabled only when the
-   *  selection can actually be grouped — 2+ nodes, not already inside a
-   *  submodel, not a read-only instance. The caller owns that policy. */
-  canCreateSubmodel: boolean
-  onCreateSubmodel: () => void
+  /** What the Submodel button does for the current selection: "create"
+   *  groups 2+ nodes into a new submodel, and "dissolve" (exactly one
+   *  submodel occurrence selected) expands it back into the pipeline. The
+   *  caller owns the mode, the availability and the click's policy. */
+  submodelAction: "create" | "dissolve"
+  canRunSubmodelAction: boolean
+  onSubmodelAction: () => void
   /** Create a linked instance of the single selected non-singleton node (the
    *  generic `instanceOf` path, not just submodels). */
   canCreateInstance: boolean
@@ -70,7 +72,7 @@ export default function Toolbar({
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
   onOpenUtility, onOpenImports,
-  canCreateSubmodel, onCreateSubmodel,
+  submodelAction, canRunSubmodelAction, onSubmodelAction,
   canCreateInstance, onCreateInstance,
   onCentre, onAutoLayout,
   isAutoLayouting,
@@ -119,6 +121,7 @@ export default function Toolbar({
   }, [helpOpen])
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
   const offlineTitle = OFFLINE_TITLES[wsStatus]
+  const dissolvesSubmodel = submodelAction === "dissolve"
 
   const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
@@ -392,13 +395,25 @@ export default function Toolbar({
         <div className="flex flex-col gap-1 w-fit">
           <button
             data-testid="toolbar-submodel"
-            onClick={onCreateSubmodel}
-            aria-disabled={!canCreateSubmodel}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Group the selected nodes into a submodel - select 2 or more (Ctrl+G)"
+            onClick={onSubmodelAction}
+            aria-disabled={!canRunSubmodelAction}
+            aria-label={dissolvesSubmodel ? "Dissolve" : "Submodel"}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md grid w-full"
+            title={dissolvesSubmodel
+              ? "Dissolve the selected submodel back into its nodes"
+              : "Group the selected nodes into a submodel - select 2 or more (Ctrl+G)"}
           >
-            <Group size={13} aria-hidden="true" />
-            Submodel
+            {/* Both labels share one grid cell and the inactive one is only
+                hidden, so the button keeps the wider label's width and
+                selecting a submodel never reflows the toolbar. */}
+            <span className={`col-start-1 row-start-1 flex items-center justify-center gap-1${dissolvesSubmodel ? " invisible" : ""}`}>
+              <Group size={13} aria-hidden="true" />
+              Submodel
+            </span>
+            <span className={`col-start-1 row-start-1 flex items-center justify-center gap-1${dissolvesSubmodel ? "" : " invisible"}`}>
+              <Ungroup size={13} aria-hidden="true" />
+              Dissolve
+            </span>
           </button>
           <button
             data-testid="toolbar-instance"
