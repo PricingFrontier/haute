@@ -215,6 +215,39 @@ describe("useUIStore", () => {
       useUIStore.getState().clearAssistantPreviewError()
       expect(useUIStore.getState().assistantPreviewErrorNodeId).toBeNull()
     })
+
+    it("keeps an unseen outcome until the panel opens", () => {
+      useUIStore.setState({ assistantUnseenOutcome: true, assistantOpen: true })
+      useUIStore.getState().endAssistantTurn()
+      expect(useUIStore.getState().assistantUnseenOutcome).toBe(true)
+
+      useUIStore.getState().setAssistantOpen(false)
+      expect(useUIStore.getState().assistantUnseenOutcome).toBe(true)
+    })
+  })
+
+  describe("setChangeFocus", () => {
+    it("rings a new focus object each time and clears it with null", () => {
+      useUIStore.getState().setChangeFocus(["bands"])
+      const first = useUIStore.getState().changeFocus
+      expect(first).toEqual({ nodeIds: ["bands"] })
+
+      useUIStore.getState().setChangeFocus(["bands"])
+      expect(useUIStore.getState().changeFocus).toEqual({ nodeIds: ["bands"] })
+      expect(useUIStore.getState().changeFocus).not.toBe(first)
+
+      useUIStore.getState().setChangeFocus(null)
+      expect(useUIStore.getState().changeFocus).toBeNull()
+    })
+  })
+
+  describe("setNodeSearchOpen", () => {
+    it("takes a value or an updater", () => {
+      useUIStore.getState().setNodeSearchOpen(true)
+      expect(useUIStore.getState().nodeSearchOpen).toBe(true)
+      useUIStore.getState().setNodeSearchOpen((open) => !open)
+      expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    })
   })
 
   // -----------------------------------------------------------------------
