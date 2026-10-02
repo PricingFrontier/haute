@@ -118,12 +118,20 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   its fit, a GLM's first call (its second carries the one deviance row its history holds), and
   CatBoost's GPU fit, which polls only the iteration. The training worker
   forwards both in its `iteration` progress event, whose `history` field is that row or
-  `null`. The job's live `train_loss_history` appends each row, keeps the last
-  `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200, setting `train_loss_history_truncated`),
-  and the live chart finds its `train_` and `eval_` keys as the Loss tab does. Only the fit
-  whose model the job keeps sends iteration events: after a refit that is the final fit
-  (no evaluation set), while a validation fit that is refit reports only its progress
-  message.
+  `null`. Every fit sends iteration events (each validation fit, cross-validation fold
+  and tuning trial fit, then the final fit), paced by the run's `_LiveRounds`: a fit's
+  first and last rounds always pass, the rounds between at most once a second until the
+  run has spent 3,000 of them, keeping the run inside the worker's progress-event limit.
+  Each fit's per-round callback checks cancellation every round and, on a paced round,
+  reports "Iteration i of n" across its training span before forwarding the row. The
+  job's live `train_loss_history` holds the current fit: a row whose iteration does not
+  follow the last starts a new history, and `_append_live_loss_row` keeps the first row
+  of each of fewer than `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200) even buckets of
+  the fit's round budget plus the newest row, so the rows span every round so far
+  (`train_loss_history_truncated` records a dropped row). Iteration events update only
+  the round readout and the history; the job's progress fraction and message come from
+  its progress events. The live chart finds its `train_` and `eval_` keys as the Loss
+  tab does.
 - **`ALGORITHM_REGISTRY`** (`_algorithms.py`) — `dict[str, type[BaseAlgorithm]]`,
   `{"catboost": CatBoostAlgorithm}` unconditionally; `"glm": GLMAlgorithm` is added only
   if `import rustystats` succeeds (lazy `try/except ImportError` at module import time),
@@ -545,7 +553,8 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    to the outer job. Messages identify the current fit, total fits (including the
    final model), and current iteration/total when the algorithm supplies them.
    Fit-local fractions map into monotonically increasing overall progress. Selection
-   metrics never enter the final model's iteration callback or loss chart. Progress
+   fits stream their own loss rows to the live chart, which starts afresh with each fit;
+   selection metrics never enter the final model's loss history. Progress
    callbacks retain cancellation and memory checkpoints; a progress-only caller
    receives iteration updates even without an execution context.
    CatBoost callback iteration numbers are already one-based; the displayed count

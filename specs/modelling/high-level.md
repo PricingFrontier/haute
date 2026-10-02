@@ -441,8 +441,8 @@ evaluation/tuning artifacts.
 
 Live tuning progress is monotonic over planning, trial/fold fits, final fit and
 publication and exposes phase, one-based trial/fold indices and counts,
-completed/total fits, and best objective so far. Only the final fit contributes model
-loss history. Live training and exported scripts use the same config builder and
+completed/total fits, and best objective so far. Every trial fit draws its own live
+loss curve, but only the final fit contributes model loss history. Live training and exported scripts use the same config builder and
 produce equivalent evaluation plans, fit bounds and result artifacts.
 
 ## Design rationale

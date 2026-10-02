@@ -7,6 +7,7 @@ import gc
 import hashlib
 import os
 import tempfile
+import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, field
@@ -204,6 +205,46 @@ def _training_stage(
     name: str,
 ) -> AbstractContextManager[None]:
     return execution_context.stage(name) if execution_context is not None else nullcontext()
+
+
+#: The least time between two of a run's paced rounds reaching the live display.
+_LIVE_ROUND_SECONDS = 1.0
+#: The paced rounds one run may send, keeping every fit's first and last rounds
+#: and the stage messages well inside the worker's progress-event limit.
+_LIVE_ROUND_BUDGET = 3_000
+
+
+class _LiveRounds:
+    """Paces a run's per-round progress and loss rows across all of its fits.
+
+    Each fit's first and last rounds always pass, so the live chart starts and
+    finishes every fit; the rounds between pass at most once a second until the
+    run's budget is spent.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._last = float("-inf")
+        self._spent = 0
+
+    def fit(self) -> Callable[[int, int], bool]:
+        """A gate for one fit: whether its round *iteration* of *total* is due."""
+        first = True
+
+        def due(iteration: int, total: int) -> bool:
+            nonlocal first
+            now = self._clock()
+            if first or iteration >= total:
+                first = False
+                self._last = now
+                return True
+            if self._spent >= _LIVE_ROUND_BUDGET or now - self._last < _LIVE_ROUND_SECONDS:
+                return False
+            self._spent += 1
+            self._last = now
+            return True
+
+        return due
 
 
 def _training_streaming_collect(
@@ -635,6 +676,8 @@ class TrainingJob:
         self._contract_categorical_levels: dict[str, list[str | None]] = {}
         self._contract_target_dtype: str = ""
         self._contract_offset_dtype: str = ""
+        # Shared with the evaluation jobs cloned from this one.
+        self._live_rounds = _LiveRounds()
 
     def run(
         self,
@@ -719,7 +762,17 @@ class TrainingJob:
                 split_result,
                 prepared.features,
                 prepared.cat_features,
-                on_iteration,
+                (
+                    self._round_callback(
+                        on_iteration,
+                        _report,
+                        span=(0.3, 0.7),
+                        check_cancelled=check_cancelled,
+                        execution_context=execution_context,
+                    )
+                    if on_iteration is not None or progress is not None
+                    else None
+                ),
                 _report,
                 execution_context=execution_context,
             )
@@ -893,7 +946,7 @@ class TrainingJob:
         source_sha256: str | None = None,
     ) -> TrainingJob:
         """Clone this job for one evaluation selection or deployable final fit."""
-        return TrainingJob(
+        child = TrainingJob(
             name=name,
             data=data,
             target=self.target,
@@ -924,6 +977,47 @@ class TrainingJob:
             positive_class=self.positive_class,
             device=self.device,
         )
+        child._live_rounds = self._live_rounds
+        return child
+
+    def _round_callback(
+        self,
+        on_iteration: IterationCallback | None,
+        report: Callable[[str, float], None],
+        *,
+        span: tuple[float, float],
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> IterationCallback:
+        """One fit's per-round callback.
+
+        Every round checks for cancellation; the paced ones report the round
+        across *span* of the fit's progress and pass the round's loss row to
+        *on_iteration*, so each fit draws its own live curve.
+        """
+        due = self._live_rounds.fit()
+        start, end = span
+
+        def round_done(
+            iteration: int,
+            total: int,
+            metrics: dict[str, float],
+            history_row: dict[str, float] | None,
+        ) -> None:
+            if check_cancelled is not None:
+                check_cancelled()
+            _training_checkpoint(execution_context, label="training_round")
+            if not due(iteration, total):
+                return
+            if total > 0:
+                report(
+                    f"Iteration {iteration} of {total}",
+                    start + (end - start) * min(iteration / total, 1.0),
+                )
+            if on_iteration is not None:
+                on_iteration(iteration, total, metrics, history_row)
+
+        return round_done
 
     def _prepare_fit_features(
         self,
@@ -1160,8 +1254,13 @@ class TrainingJob:
         progress: Callable[[str, float], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
+        on_iteration: IterationCallback | None = None,
     ) -> SelectionFit:
-        """Fit one selection partition without publishing model or diagnostics."""
+        """Fit one selection partition without publishing model or diagnostics.
+
+        *on_iteration* receives the fit's paced rounds, so the live display
+        draws a selection fit the job does not keep.
+        """
         if self.evaluation_plan is None or self.evaluation_fit_index is None:
             raise HauteValidationError(
                 "run_evaluation_fit requires an internal evaluation selection job"
@@ -1180,31 +1279,20 @@ class TrainingJob:
             prepared = self._prepare_fit_features(prepared, report)
             split_result = self._split_data(prepared, report, execution_context=execution_context)
 
-            def selection_iteration(
-                iteration: int,
-                total: int,
-                _metrics: dict[str, float],
-                _history_row: dict[str, float] | None,
-            ) -> None:
-                if check_cancelled is not None:
-                    check_cancelled()
-                _training_checkpoint(
-                    execution_context,
-                    label="evaluation_selection_iteration",
-                )
-                if total > 0:
-                    report(
-                        f"Iteration {iteration} of {total}",
-                        0.3 + 0.5 * min(iteration / total, 1.0),
-                    )
-
             trained = self._train_model(
                 split_result,
                 prepared.features,
                 prepared.cat_features,
                 (
-                    selection_iteration
+                    self._round_callback(
+                        on_iteration,
+                        report,
+                        span=(0.3, 0.8),
+                        check_cancelled=check_cancelled,
+                        execution_context=execution_context,
+                    )
                     if progress is not None
+                    or on_iteration is not None
                     or check_cancelled is not None
                     or execution_context is not None
                     else None
@@ -1267,6 +1355,7 @@ class TrainingJob:
         check_cancelled: Callable[[], None] | None,
         execution_context: ExecutionContext | None,
         on_tuning_progress: Callable[[dict[str, Any]], None] | None,
+        on_iteration: IterationCallback | None,
     ) -> tuple[
         tuple[EvaluationFitResult, ...],
         dict[str, Any],
@@ -1385,6 +1474,7 @@ class TrainingJob:
                         child.run_evaluation_fit(
                             check_cancelled=check_cancelled,
                             execution_context=execution_context,
+                            on_iteration=on_iteration,
                         ).result
                     )
                     completed_fits += 1
@@ -1588,6 +1678,7 @@ class TrainingJob:
                         check_cancelled=check_cancelled,
                         execution_context=execution_context,
                         on_tuning_progress=on_tuning_progress,
+                        on_iteration=on_iteration,
                     )
                 total = self.tuning.total_fit_count
                 completed_before_final = self.tuning.trial_fit_count
@@ -1631,6 +1722,7 @@ class TrainingJob:
                                 progress=fit_progress,
                                 check_cancelled=check_cancelled,
                                 execution_context=execution_context,
+                                on_iteration=on_iteration,
                             )
                             ordinary_fits.append(selection.result)
                             selection_histories.append(selection.loss_history)

@@ -9,6 +9,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from haute.modelling import _training_job
 from haute.modelling._evaluation import (
     EvaluationConfig,
     EvaluationFitResult,
@@ -546,15 +547,44 @@ def test_failure_cleans_all_staged_evaluation_artifacts(
     )
 
 
+def test_live_rounds_pass_each_fits_first_and_last_and_pace_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    rounds = _training_job._LiveRounds(clock=lambda: now[0])
+    due = rounds.fit()
+    passed = []
+    for iteration, at in [(1, 0.0), (2, 0.4), (3, 1.1), (4, 1.5), (5, 2.2), (6, 2.3)]:
+        now[0] = at
+        if due(iteration, 6):
+            passed.append(iteration)
+    assert passed == [1, 3, 5, 6]
+    # The next fit's first round passes straight after the last one.
+    assert rounds.fit()(1, 6) is True
+
+    # Once the run's budget is spent only a fit's first and last rounds pass.
+    monkeypatch.setattr(_training_job, "_LIVE_ROUND_BUDGET", 1)
+    rounds = _training_job._LiveRounds(clock=lambda: now[0])
+    due = rounds.fit()
+    passed = []
+    for iteration in range(1, 7):
+        now[0] += 5.0
+        if due(iteration, 6):
+            passed.append(iteration)
+    assert passed == [1, 2, 6]
+
+
 @pytest.mark.parametrize(
     "validation",
     [{"method": "single", "size": 0.2}, {"method": "cross_validation", "fold_count": 2}],
 )
-def test_real_selection_fits_report_iterations_without_mixing_final_loss_history(
+def test_real_selection_fits_stream_their_rounds_without_mixing_final_loss_history(
     tmp_path: Path, validation: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
     monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
+    # Unpaced, so every round of every fit reaches the callbacks.
+    monkeypatch.setattr(_training_job, "_LIVE_ROUND_SECONDS", 0.0)
     job = TrainingJob(
         name="progress",
         data=pl.DataFrame({"y": range(30), "feature": range(30)}),
@@ -565,10 +595,10 @@ def test_real_selection_fits_report_iterations_without_mixing_final_loss_history
         evaluation=evaluation(validation=validation),
     )
     events: list[tuple[str, float]] = []
-    final_iterations: list[int] = []
+    iterations: list[int] = []
     result = job.run(
         progress=lambda message, fraction: events.append((message, fraction)),
-        on_iteration=lambda iteration, *_: final_iterations.append(iteration),
+        on_iteration=lambda iteration, *_: iterations.append(iteration),
     )
     fit_count = result.evaluation["fit_count"]
     selection_fits = result.evaluation["selection_fits"]
@@ -587,10 +617,12 @@ def test_real_selection_fits_report_iterations_without_mixing_final_loss_history
         assert [message for message, _ in updates] == [f"{prefix}{i} of 6" for i in range(1, 7)]
         assert all((fit - 1) / fit_count <= fraction <= fit / fit_count for _, fraction in updates)
         assert updates[-1][1] > updates[0][1]
-    assert len(final_iterations) == expected_final_iterations, (
-        "Validation losses must not enter the final model's loss chart"
-    )
-    assert final_iterations == list(range(1, expected_final_iterations + 1))
+    # Each validation fit streams its rounds, then the final fit streams its own.
+    selection_rounds = list(range(1, 7)) * (fit_count - 1)
+    assert iterations == [*selection_rounds, *range(1, expected_final_iterations + 1)]
+    assert [row["iteration"] for row in result.loss_history] == [
+        float(i) for i in range(1, expected_final_iterations + 1)
+    ], "Validation losses must not enter the final model's loss history"
     fractions = [fraction for _, fraction in events]
     assert fractions == sorted(fractions)
     assert fractions[-1] == 1.0

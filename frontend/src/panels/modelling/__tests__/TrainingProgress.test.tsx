@@ -55,8 +55,8 @@ describe("TrainingProgress", () => {
     expect(container.textContent).toContain("0.1235")
   })
 
-  it("renders the authoritative bounded loss-history snapshot and truncation label", () => {
-    render(
+  it("draws the fit's live loss curve on an x-axis running to its round budget", () => {
+    const { container } = render(
       <TrainingProgress
         trainProgress={makeProgress({
           train_loss_history: [
@@ -69,12 +69,11 @@ describe("TrainingProgress", () => {
     )
 
     expect(screen.getByText("Loss Curve")).toBeInTheDocument()
-    expect(
-      screen.getByText("Showing latest retained loss-history window."),
-    ).toBeInTheDocument()
+    const labels = [...container.querySelectorAll("svg text")].map((text) => text.textContent)
+    expect(labels.at(-1)).toBe("100")
   })
 
-  it("labels no retained window when the history cannot draw a curve", () => {
+  it("draws no chart when the history has no training curve", () => {
     render(
       <TrainingProgress
         trainProgress={makeProgress({
@@ -89,7 +88,6 @@ describe("TrainingProgress", () => {
     )
 
     expect(screen.queryByText("Loss Curve")).toBeNull()
-    expect(screen.queryByText("Showing latest retained loss-history window.")).toBeNull()
   })
 
   it("does not synthesize a chart from the latest loss poll", () => {

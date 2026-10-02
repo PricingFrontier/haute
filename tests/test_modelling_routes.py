@@ -929,6 +929,30 @@ class TestTrainStatusTimeout:
             _store.delete_job("train_done_past_timeout")
 
 
+def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
+    from haute.routes import _training_worker
+
+    limit = _training_worker._max_train_loss_history()
+    history: list[dict[str, float]] = []
+    truncated = False
+    for n in range(1, 1001):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 1000)
+        assert len(history) <= limit
+    iterations = [row["iteration"] for row in history]
+    assert truncated is True
+    assert iterations[0] == 1.0 and iterations[-1] == 1000.0
+    assert iterations == sorted(set(iterations))
+    # Even coverage of the rounds so far: no gap is wider than two buckets.
+    assert max(b - a for a, b in zip(iterations, iterations[1:])) <= 2 * 1000 / (limit - 2)
+
+    # The next fit's first row starts its own history.
+    first = {"iteration": 1.0, "train_rmse": 2.0}
+    history, truncated = _training_worker._append_live_loss_row(history, truncated, first, 300)
+    assert history == [first]
+    assert truncated is False
+
+
 def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
     from haute.routes import _train_service
 

@@ -228,6 +228,36 @@ def _bounded_loss_history(
     return [rows[index] for index in sorted(kept)][:limit], True
 
 
+def _append_live_loss_row(
+    history: list[dict[str, float]],
+    truncated: bool,
+    row: dict[str, float],
+    total: int,
+) -> tuple[list[dict[str, float]], bool]:
+    """Add a fit's newest loss row to the live history, keeping its whole span.
+
+    A row that does not follow the last one starts a new fit's history. The
+    fit's *total* rounds are split into fewer buckets than the limit, and the
+    history keeps the first row to reach each bucket plus the newest row, so
+    its rows span every round so far. Returns the history and whether it has
+    dropped any row it was given.
+    """
+    if history and row["iteration"] <= history[-1]["iteration"]:
+        history, truncated = [], False
+    limit = _max_train_loss_history()
+    stride = max(1, math.ceil(total / max(limit - 2, 1)))
+
+    def bucket(entry: dict[str, float]) -> int:
+        return int(entry["iteration"]) // stride
+
+    if len(history) > 1 and bucket(history[-1]) == bucket(history[-2]):
+        history, truncated = history[:-1], True
+    history = [*history, row]
+    if len(history) > limit:
+        history, truncated = [history[0], *history[-(limit - 1) :]], True
+    return history, truncated
+
+
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
     if request.kind != expected_kind:
         raise HauteValidationError(

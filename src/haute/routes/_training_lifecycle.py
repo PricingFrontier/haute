@@ -147,10 +147,10 @@ from haute.routes._training_preparation import (
     training_seed_plan_request,
 )
 from haute.routes._training_worker import (
+    _append_live_loss_row,
     _assert_json_finite,
     _friendly_error,
     _job_elapsed_seconds,
-    _max_train_loss_history,
     _require_consistent_completed_response,
     _run_dispersion_process_job,
     _run_training_process_job,
@@ -1958,17 +1958,14 @@ class TrainService:
             if current_job is None:
                 raise KeyError(f"Training job {job_id!r} disappeared during progress")
             history = list(current_job.get("train_loss_history") or [])
-            if row is not None:
-                history.append(row)
             truncated = bool(current_job.get("train_loss_history_truncated"))
-            if len(history) > _max_train_loss_history():
-                history = history[-_max_train_loss_history() :]
-                truncated = True
+            if row is not None:
+                history, truncated = _append_live_loss_row(history, truncated, row, total)
+            # The fit's own round readout and loss rows; the job's progress and
+            # message come from its progress events, which span every fit.
             self._store.atomic_update(
                 job_id,
                 {
-                    "progress": event.progress,
-                    "message": event.message,
                     "iteration": iteration,
                     "total_iterations": total,
                     "train_loss": metrics,

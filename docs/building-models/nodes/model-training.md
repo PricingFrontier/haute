@@ -477,8 +477,12 @@ selecting the CPU or reducing rows or features.
   progress message. If anything blocks training, a **Complete before training** list names
   each problem with a **Go to …** link to the pane that fixes it.
 - **Cancel training** stops a run in progress.
-- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live;
-  a tuned run also shows the trial and fold it is on and the best objective so far.
+- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live,
+  for every fit in the run: each validation fit, cross-validation fold and tuning trial,
+  then the final fit. Each fit starts a fresh chart whose axes are set from its first round:
+  rounds from 0 to the fit's round budget, and loss from 0 to a little over the starting
+  loss, so the curve fills in as the fit trains. A tuned run also shows the trial and fold
+  it is on and the best objective so far.
 - **Config changed since last training** appears when you change a training setting after
   training, with **Re-train** to train again.
 
