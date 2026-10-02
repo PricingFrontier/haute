@@ -74,7 +74,8 @@ In scope:
 - Bounded deterministic CatBoost hyperparameter tuning over the persisted
   development-only validation plan.
 - Metric and diagnostic computation (Gini, deviances, double lift, AvE, residuals,
-  Lorenz curve, partial dependence, SHAP, GLM coefficients/relativities/fit statistics).
+  Lorenz curve, partial dependence, SHAP importance and beeswarm, GLM
+  coefficients/relativities/fit statistics).
 - The train-to-deploy feature contract (schema pinning + hash verification).
 - MLflow experiment logging, including a `ModelSignature` built from the same contract.
 - Self-contained HTML model card generation with embedded SVG charts.
@@ -617,6 +618,17 @@ loss-based feature importance are separate stages: the SHAP message must end
 before the full-partition loss-importance calculation starts. Algorithms without
 SHAP never announce that stage. This presentation change preserves diagnostic
 values, sampling, and training parameters.
+
+SHAP runs for the tree families (CatBoost, XGBoost, LightGBM) on one seeded, shuffled
+sample of at most 1,000 diagnostics rows, the same for every family, so its cost does
+not grow with the diagnostics partition. From that one matrix of per-row SHAP values the
+result carries two views: the mean absolute SHAP value per feature (an importance
+ranking), and a beeswarm of the first 500 sampled rows for the 20 features with the
+largest mean absolute SHAP value. Each beeswarm point keeps its row's feature value
+and, for a numeric feature, that value's rank among the plotted rows, which colours
+it from low to high. A categorical level has no order, so it is named rather than
+ranked. SHAP values are on the model's link scale. MLflow and the model card keep
+logging the mean absolute SHAP summary only; the beeswarm is a results-panel view.
 
 Optional diagnostics occupy a deliberate middle ground: neither "abort the whole run if
 SHAP fails" nor "silently drop it and say nothing." Each optional block is wrapped so a

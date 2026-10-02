@@ -17,9 +17,10 @@ from haute._model_scorer import score_frame
 from haute.errors import HauteValidationError
 from haute.modelling._descriptors import XGBOOST
 from haute.modelling._feature_contract import load_contract
+from haute.modelling._shap import BEESWARM_ROWS, SHAP_SAMPLE_ROWS
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob, model_contract_filename
-from haute.modelling._xgboost import XGBoostModel
+from haute.modelling._xgboost import XGBoostAlgorithm, XGBoostModel
 
 EVALUATION = {
     "schema_version": 1,
@@ -90,6 +91,38 @@ def test_each_loss_trains_weighted_and_reloads_with_its_objective(
     assert model.objective() == objective
     identity = load_contract(Path(result.model_path).parent / model_contract_filename("xgb")).model
     assert (identity.algorithm, identity.loss) == ("xgboost", loss)
+
+
+def test_shap_runs_on_the_bounded_sample_and_returns_the_beeswarm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    received: list[int] = []
+    native = XGBoostAlgorithm.shap_values
+
+    def counting(self, model, rows, features, cat_features):
+        received.append(rows.height)
+        return native(self, model, rows, features, cat_features)
+
+    monkeypatch.setattr(XGBoostAlgorithm, "shap_values", counting)
+    _job, result = train(
+        tmp_path,
+        target="severity",
+        loss="RMSE",
+        data=frame(n=1_500),
+        evaluation={**EVALUATION, "validation": {"method": "none"}},
+    )
+
+    assert result.diagnostics_errors == []
+    assert result.development_rows == 1_500
+    assert received == [SHAP_SAMPLE_ROWS]
+    assert [entry["feature"] for entry in result.shap_beeswarm] == [
+        row["feature"] for row in result.shap_summary
+    ]
+    assert {len(entry["shap_values"]) for entry in result.shap_beeswarm} == {BEESWARM_ROWS}
+    beeswarm = {entry["feature"]: entry for entry in result.shap_beeswarm}
+    assert beeswarm["region"]["kind"] == "categorical"
+    assert set(beeswarm["region"]["values"]) <= {*LEVELS, None}
+    assert beeswarm["age"]["kind"] == "numeric"
 
 
 def test_save_reload_is_bit_identical_and_scoring_matches_the_native_booster(

@@ -2002,6 +2002,7 @@ export interface TrainResponse {
   residuals_stats: {
     [k: string]: number;
   };
+  shap_beeswarm: TrainShapBeeswarmFeature[];
   shap_summary: {
     [k: string]: unknown;
   }[];
@@ -2108,6 +2109,16 @@ export interface FitEvidencePayload {
   stopping_reason: 'none' | 'validation' | 'native_exhaustion' | null;
   term_update_steps: number[] | null;
   threads: number;
+}
+/**
+ * One feature's beeswarm row: each plotted row's SHAP value, feature value and rank.
+ */
+export interface TrainShapBeeswarmFeature {
+  feature: string;
+  kind: 'numeric' | 'categorical';
+  shap_values: number[];
+  value_ranks: (number | null)[];
+  values: (number | string | null)[];
 }
 /**
  * The tuning study as published; its invariants are checked where the

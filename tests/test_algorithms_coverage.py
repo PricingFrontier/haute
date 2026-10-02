@@ -23,7 +23,7 @@ def _stub_optional_catboost_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None
     """Keep training-path coverage tests focused on their asserted contract."""
     from haute.modelling._algorithms import CatBoostAlgorithm
 
-    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *a, **kw: [])
+    monkeypatch.delattr(CatBoostAlgorithm, "shap_values")
     monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *a, **kw: [])
     monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
 
@@ -820,7 +820,7 @@ class TestCatBoostImportanceOfAConstantModel:
 
 
 # ---------------------------------------------------------------------------
-# CatBoostAlgorithm.shap_summary — subsampling and 1D edge case
+# Diagnostic progress stages; CatBoostAlgorithm.shap_values 1D edge case
 # ---------------------------------------------------------------------------
 
 
@@ -849,19 +849,18 @@ class TestDiagnosticProgress:
         job, split, trained, pool_builder = metrics_inputs
         progress = []
         active_at_call = []
-        shap_rows = [{"feature": "x", "mean_abs_shap": 0.5}]
         loss_rows = [{"feature": "x", "importance": 0.25}]
 
-        def shap(*args):
+        def shap(model, rows, features, cat_features):
             active_at_call.append(progress[-1])
-            return shap_rows
+            return np.full((rows.height, len(features)), -0.5)
 
         def loss(*args):
             active_at_call.append(progress[-1])
             return loss_rows
 
         if has_shap:
-            trained.algo.shap_summary = shap
+            trained.algo.shap_values = shap
         trained.algo.feature_importance_typed = loss
         pool_builder.side_effect = lambda *args, **kwargs: active_at_call.append(progress[-1])
 
@@ -872,7 +871,8 @@ class TestDiagnosticProgress:
         expected = ["Computing SHAP values"] if has_shap else []
         assert active_at_call == expected + ["Computing loss-based feature importance"] * 2
         assert ("Computing SHAP values" in progress) is has_shap
-        assert result.shap_summary == (shap_rows if has_shap else [])
+        assert result.shap_summary == ([{"feature": "x", "mean_abs_shap": 0.5}] if has_shap else [])
+        assert [entry["feature"] for entry in result.shap_beeswarm] == (["x"] if has_shap else [])
         assert result.feature_importance_loss == loss_rows
         assert result.diagnostics_errors == []
 
@@ -880,7 +880,7 @@ class TestDiagnosticProgress:
         from haute._execution_context import ExecutionCancelledError
 
         job, split, trained, pool_builder = metrics_inputs
-        trained.algo.shap_summary = MagicMock(return_value=[])
+        trained.algo.shap_values = MagicMock(return_value=np.zeros((3, 1)))
         trained.algo.feature_importance_typed = MagicMock(return_value=[])
 
         def report(message, fraction):
@@ -890,14 +890,14 @@ class TestDiagnosticProgress:
         with pytest.raises(ExecutionCancelledError, match="Cancelled"):
             job._compute_metrics(split, ["x"], [], trained, report)
 
-        trained.algo.shap_summary.assert_called_once()
+        trained.algo.shap_values.assert_called_once()
         pool_builder.assert_not_called()
         trained.algo.feature_importance_typed.assert_not_called()
 
 
-class TestShapSummaryCoverage:
+class TestCatBoostShapValues:
     def test_shap_1d_reshaped(self):
-        """1D shap_values array is reshaped to 2D."""
+        """A 1D ShapValues array is one row; the base value column is dropped."""
         from haute.modelling._algorithms import CatBoostAlgorithm
 
         algo = CatBoostAlgorithm()
@@ -908,30 +908,10 @@ class TestShapSummaryCoverage:
         df = pl.DataFrame({"f1": [1.0]})
 
         with patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()):
-            result = algo.shap_summary(mock_model, df, ["f1"], max_rows=1000)
+            values = algo.shap_values(mock_model, df, ["f1"])
 
-        assert len(result) == 1
-        assert result[0]["feature"] == "f1"
-        assert result[0]["mean_abs_shap"] == pytest.approx(0.5)
-
-    def test_subsampling_when_df_exceeds_max_rows(self):
-        """When len(df) > max_rows, sample is taken."""
-        from haute.modelling._algorithms import CatBoostAlgorithm
-
-        algo = CatBoostAlgorithm()
-        mock_model = MagicMock()
-        # 5 rows sampled to 3 — shap returns (3, 2) (1 feature + base)
-        mock_model.get_feature_importance.return_value = np.array(
-            [[0.5, 0.1], [0.3, 0.1], [0.4, 0.1]]
-        )
-
-        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0, 4.0, 5.0]})
-
-        with patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()):
-            result = algo.shap_summary(mock_model, df, ["f1"], max_rows=3)
-
-        assert len(result) == 1
-        assert result[0]["mean_abs_shap"] > 0
+        assert values.shape == (1, 1)
+        assert values[0, 0] == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -2201,8 +2181,8 @@ class TestSHAPExceptionPath:
     def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_optional_catboost_diagnostics(monkeypatch)
 
-    def test_shap_exception_is_logged_and_empty_list_returned(self, tmp_path):
-        """When shap_summary raises, empty list is used."""
+    def test_shap_exception_is_logged_and_empty_list_returned(self, tmp_path, monkeypatch):
+        """When shap_values raises, both SHAP views are empty and the failure is recorded."""
         from haute.modelling._algorithms import CatBoostAlgorithm
         from haute.modelling._training_job import TrainingJob
 
@@ -2217,17 +2197,15 @@ class TestSHAPExceptionPath:
             output_dir=str(tmp_path),
         )
 
-        orig_shap = CatBoostAlgorithm.shap_summary
-
         def failing_shap(self, *args: Any, **kwargs: Any) -> None:
             raise RuntimeError("SHAP failed")
 
-        CatBoostAlgorithm.shap_summary = failing_shap
-        try:
-            result = job.run()
-            assert result.shap_summary == []
-        finally:
-            CatBoostAlgorithm.shap_summary = orig_shap
+        monkeypatch.setattr(CatBoostAlgorithm, "shap_values", failing_shap, raising=False)
+        result = job.run()
+
+        assert result.shap_summary == []
+        assert result.shap_beeswarm == []
+        assert [error["diagnostic"] for error in result.diagnostics_errors] == ["shap"]
 
 
 # ---------------------------------------------------------------------------

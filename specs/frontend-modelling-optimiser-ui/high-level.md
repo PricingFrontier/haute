@@ -34,6 +34,19 @@ results are supplied by API and result-store layers.
   panel says so in place of the data preview: training results are not kept across a server
   restart, so train the model again, or open its MLflow run if it was logged. The Export pane
   reports the same fact from the same record.
+- The Features tab switches between importance measures with one button each: Prediction,
+  then Loss and SHAP (mean absolute SHAP) when the result has them, then SHAP beeswarm when
+  it has beeswarm rows (CatBoost, XGBoost, LightGBM). The beeswarm draws one row per feature,
+  in mean-absolute-SHAP order, and one dot per sampled row placed by its SHAP value on the
+  link scale around a zero line; a numeric feature's dots run from the low to the high
+  colour by the value's rank, and a categorical feature's dots are neutral, with a legend
+  entry saying they have no value order. It replaces the search and Features shown controls
+  with one line saying it shows the top 20 of N features by mean |SHAP| over the sampled
+  rows. Dots stack within their row so dense regions show as height, scaled so the densest
+  stack fits the row. Pointing at a dot names its feature, value (the level for a
+  categorical feature) and SHAP value; each feature row is a single tab stop whose focus
+  states that feature's rows and SHAP range. A closed values table lists, per feature, the
+  rows and the minimum, median and maximum SHAP value.
 - Completed training accepts missing categorical PDP levels as JSON `null` and labels
   them `(missing)` in the chart. Numeric PDP levels remain non-null. Invalid status
   responses stop polling with a visible response error for every background job type

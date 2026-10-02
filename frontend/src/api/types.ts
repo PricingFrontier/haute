@@ -916,6 +916,7 @@ export type {
   MlflowExportReceipt,
   ModelFileExportReceipt,
   TrainExportReceipts,
+  TrainShapBeeswarmFeature,
   TuningReportPayload as TuningReport,
   TuningTrialPayload as TuningTrial,
 } from "../generated/api-contracts.generated"

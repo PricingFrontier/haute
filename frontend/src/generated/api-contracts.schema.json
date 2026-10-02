@@ -12050,6 +12050,13 @@
           "title": "Residuals Stats",
           "type": "object"
         },
+        "shap_beeswarm": {
+          "items": {
+            "$ref": "#/$defs/TrainShapBeeswarmFeature"
+          },
+          "title": "Shap Beeswarm",
+          "type": "array"
+        },
         "shap_summary": {
           "items": {
             "additionalProperties": true,
@@ -12132,6 +12139,7 @@
         "validation_loss_history_truncated",
         "double_lift",
         "shap_summary",
+        "shap_beeswarm",
         "feature_importance_loss",
         "ave_per_feature",
         "residuals_histogram",
@@ -12153,6 +12161,73 @@
         "feature_selection"
       ],
       "title": "TrainResponse",
+      "type": "object"
+    },
+    "TrainShapBeeswarmFeature": {
+      "additionalProperties": false,
+      "description": "One feature's beeswarm row: each plotted row's SHAP value, feature value and rank.",
+      "properties": {
+        "feature": {
+          "title": "Feature",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "shap_values": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Shap Values",
+          "type": "array"
+        },
+        "value_ranks": {
+          "items": {
+            "anyOf": [
+              {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Value Ranks",
+          "type": "array"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "feature",
+        "kind",
+        "shap_values",
+        "values",
+        "value_ranks"
+      ],
+      "title": "TrainShapBeeswarmFeature",
       "type": "object"
     },
     "TrainStatusResponse": {

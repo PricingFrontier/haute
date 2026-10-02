@@ -548,7 +548,15 @@ appears only when the result has something to show in it:
   and a refit, it draws the validation fit and says which fit it is.
 - **Lift**: how well predictions separate lower and higher outcomes.
 - **Residuals**: prediction errors and actual against predicted.
-- **Features**: feature importance.
+- **Features**: feature importance, with a button per measure. **Prediction** is the
+  model's own importance; **Loss** (CatBoost) is how much the loss worsens without each
+  feature; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
+  value. **SHAP beeswarm** shows the top 20 of those features, one dot per sampled row:
+  how far right or left a dot sits is how much that row's value pushed its prediction up
+  or down (on the model's link scale), and its colour runs from blue for a low value to
+  red for a high one. A categorical feature's dots have no value order and take one
+  colour; point at a dot to see its row's value. SHAP is computed on a sample of up to
+  1,000 diagnostics rows, and the beeswarm draws 500 of them.
 - **AvE**: actual against expected across each feature's groups, with exposure.
 - **PDP**: partial dependence, how predictions change as one feature varies.
 

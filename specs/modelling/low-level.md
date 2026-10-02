@@ -67,6 +67,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
+| `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 1,000 diagnostics rows) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into the mean-absolute summary and the beeswarm (`BEESWARM_ROWS` = 500 rows, `BEESWARM_FEATURES` = 20 features). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
@@ -104,8 +105,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   latter can silently produce incorrect curves when columns are swapped.
   `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
   Both also expose algorithm-specific methods that `_training_job._compute_metrics`
-  probes with `hasattr()` rather than an interface method — `shap_summary` /
-  `feature_importance_typed` (CatBoost only), `glm_result` (GLM only).
+  probes with `hasattr()` rather than an interface method — `shap_values`
+  (CatBoost, XGBoost, LightGBM), `feature_importance_typed` (CatBoost only),
+  `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
 - **`IterationCallback`** (`_algorithm_base.py`) — `(iteration, total, metrics,
@@ -1422,13 +1424,41 @@ rows/features) and retry.
   computed for that missing level. The frontend response contract accepts these levels
   and labels them `(missing)`; numeric grid values remain non-null.
 - `_compute_metrics` reports `Computing SHAP values` only immediately before an
-  available `shap_summary` call, then reports `Computing loss-based feature
+  available `shap_values` call, then reports `Computing loss-based feature
   importance` before constructing its pool/calling `feature_importance_typed`.
   Both progress callbacks run outside the optional-diagnostic exception guards,
   so cancellation between stages propagates rather than being recorded as an
-  optional diagnostic failure. Existing 1,000-row SHAP sampling and full-partition
-  loss importance are unchanged. Targeted tests pin stage order, the absence of
-  a SHAP stage for algorithms without it, and cancellation before loss importance.
+  optional diagnostic failure. Loss importance stays full-partition. Targeted tests
+  pin stage order, the absence of a SHAP stage for algorithms without it, and
+  cancellation before loss importance.
+- SHAP is computed once per run, on `shap_sample(diag_df)`: `diag_df.sample(n,
+  seed=42, shuffle=True)` with `n = min(height, 1,000)`, so the rows come in random
+  order even when the partition is smaller than the cap, and the first 500 are a
+  uniform sample rather than the partition's leading (on a temporal split, oldest)
+  rows. Every SHAP-capable adapter receives this sample: XGBoost and LightGBM no
+  longer compute contributions over the whole partition. `shap_values(model, df,
+  features, cat_features)` returns a `float64` matrix of one row per sampled row and
+  one column per feature in training order, without the bias column; an adapter
+  whose model records a different feature order raises rather than mislabelling
+  columns. `shap_diagnostics` builds both views from that matrix, and the job
+  assigns them together: a failure anywhere records one `shap` entry in
+  `diagnostics_errors` and leaves `shap_summary` and `shap_beeswarm` both empty.
+  - `shap_summary` is `[{feature, mean_abs_shap}]`, largest first, ties in training
+    order.
+  - `shap_beeswarm` is one entry per feature for the first 20 features of
+    `shap_summary`, in that order: `{feature, kind, shap_values, values,
+    value_ranks}`, where the three lists hold one item per plotted row (the first 500
+    sampled rows) in the same row order. `kind` is `categorical` for a feature in
+    `cat_features`, else `numeric`. A numeric value is the column cast to `Float64`
+    (as `encode_frame` casts it), NaN reported as null; its rank is the average rank
+    among the plotted rows' non-null values, scaled to 0 (lowest) to 1 (highest) and
+    rounded to 3 decimals, and is null for a null value or when the feature has fewer
+    than two distinct non-null values. A categorical value is the level as a string
+    (null when missing) and its rank is always null.
+  - `TrainShapBeeswarmFeature` in `schemas.py` (`extra="forbid"`) refuses lists of
+    unequal length, a numeric entry carrying text or a categorical entry carrying a
+    number or a rank, and a rank outside 0 to 1.
+  - MLflow (`shap/`) and the model card log `shap_summary` only.
 - **MLflow logging errors** — `_log_model_card` inside `log_experiment` is wrapped in
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
   otherwise-successful experiment log; `build_run_url` similarly catches and returns
@@ -1596,6 +1626,16 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_train_service_coverage.py` and
   `test_train_service_helpers_coverage.py` — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.
+- `test_shap_diagnostics.py` — `shap_sample` caps at 1,000 rows, shuffles a smaller
+  partition and is deterministic; `shap_diagnostics` orders the summary largest first,
+  keeps the beeswarm to the summary's first 20 features and the first 500 rows, ranks
+  numeric values with ties averaged, gives a null or NaN value and a single-valued
+  feature null ranks, and reports categorical levels as strings with null ranks; an
+  XGBoost model whose feature order differs from the requested one raises; the payload
+  model refuses unequal lengths and kind-inconsistent values.
+  `test_xgboost_family.py` and `test_lightgbm_family.py` train a real model on more than
+  1,000 diagnostics rows and prove the adapter's `shap_values` receives exactly 1,000
+  rows and the result carries a 500-row beeswarm.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
@@ -1926,7 +1966,7 @@ used for staged input.
 ## Native model-family adapters
 
 - A new-family adapter pairs a `BaseAlgorithm` subclass (`fit`, `predict`, `feature_importance`,
-  `shap_summary`, `save`) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
+  `save`, and `shap_values` when the family has SHAP) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
   `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
   subclass them without importing `_algorithms` (which registers every adapter).
 - `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:

@@ -509,6 +509,7 @@ def _training_response_payload(
         validation_loss_history_truncated=validation_loss_history_truncated,
         double_lift=train_result.double_lift,
         shap_summary=train_result.shap_summary,
+        shap_beeswarm=train_result.shap_beeswarm,
         feature_importance_loss=train_result.feature_importance_loss,
         ave_per_feature=train_result.ave_per_feature,
         residuals_histogram=train_result.residuals_histogram,

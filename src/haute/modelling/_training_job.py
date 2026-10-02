@@ -51,6 +51,7 @@ from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._feature_contract import ModelIdentity
 from haute.modelling._metrics import compute_metrics
 from haute.modelling._model_export import MODEL_FILE_SUFFIXES
+from haute.modelling._shap import shap_diagnostics, shap_sample
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
     PARTITION_TRAIN,
@@ -269,6 +270,8 @@ class TrainResult:
     validation_loss_history: list[dict[str, float]] = field(default_factory=list)
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
+    #: Per-row SHAP values of the leading sampled rows for the top features.
+    shap_beeswarm: list[dict[str, Any]] = field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
@@ -356,7 +359,8 @@ class _MetricsResult:
     diagnostics_set: str  # "train" | "validation" | "holdout"
     importance: list[dict[str, Any]]
     double_lift: list[dict[str, Any]]
-    shap_summary: list[dict[str, float]]
+    shap_summary: list[dict[str, Any]]
+    shap_beeswarm: list[dict[str, Any]]
     feature_importance_loss: list[dict[str, Any]]
     ave_per_feature: list[dict[str, Any]]
     residuals_histogram: list[dict[str, Any]]
@@ -754,6 +758,7 @@ class TrainingJob:
                 loss_history=train_result.fit_result.loss_history,
                 double_lift=metrics_result.double_lift,
                 shap_summary=metrics_result.shap_summary,
+                shap_beeswarm=metrics_result.shap_beeswarm,
                 feature_importance_loss=metrics_result.feature_importance_loss,
                 ave_per_feature=metrics_result.ave_per_feature,
                 residuals_histogram=metrics_result.residuals_histogram,
@@ -2589,12 +2594,21 @@ class TrainingJob:
 
         # SHAP + LossFunctionChange importance (OPTIONAL: failures
         # surface in diagnostics_errors so the UI can flag a degraded run.)
-        shap_summary: list[dict[str, float]] = []
+        shap_summary: list[dict[str, Any]] = []
+        shap_beeswarm: list[dict[str, Any]] = []
         feature_importance_loss: list[dict[str, Any]] = []
-        if hasattr(algo, "shap_summary"):
+        if hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
-                shap_summary = algo.shap_summary(model, diag_df, features, cat_features)
+                # One bounded sample for every family; both views or neither.
+                shap_rows = shap_sample(diag_df)
+                shap_summary, shap_beeswarm = shap_diagnostics(
+                    algo.shap_values(model, shap_rows, features, cat_features),
+                    shap_rows,
+                    features,
+                    cat_features,
+                )
+                del shap_rows
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "shap", exc)
         if hasattr(algo, "feature_importance_typed"):
@@ -2672,6 +2686,7 @@ class TrainingJob:
             importance=importance,
             double_lift=double_lift,
             shap_summary=shap_summary,
+            shap_beeswarm=shap_beeswarm,
             feature_importance_loss=feature_importance_loss,
             ave_per_feature=ave_per_feature,
             residuals_histogram=residuals_histogram,

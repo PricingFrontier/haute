@@ -7,6 +7,7 @@ import {
   type SVGProps,
 } from "react"
 import { formatChartNumber, formatChartTicks } from "../../utils/chartHelpers"
+import { VALUE_HIGH_COLOR, VALUE_LOW_COLOR } from "./beeswarm"
 
 export const MODELLING_CHART_GRID_COLOR = "var(--border)"
 export const MODELLING_CHART_AXIS_TEXT_COLOR = "var(--text-muted)"
@@ -266,6 +267,68 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
         )
       })}
     </div>
+  )
+}
+
+const VALUE_COLOR_BAR_WIDTH = 8
+
+/**
+ * A vertical low-to-high colour bar at `x` from `top` to `bottom`, captioned
+ * High and Low, with `title` rotated beside it.
+ */
+export function ValueColorBar({
+  gradientId,
+  x,
+  top,
+  bottom,
+  title,
+  captionColor,
+  testId,
+}: {
+  gradientId: string
+  x: number
+  top: number
+  bottom: number
+  title: string
+  captionColor: string
+  testId?: string
+}) {
+  const captionX = x + VALUE_COLOR_BAR_WIDTH + 8
+  const titleX = x + VALUE_COLOR_BAR_WIDTH + 28
+  const titleY = (top + bottom) / 2
+  return (
+    <g>
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0%" stopColor={VALUE_LOW_COLOR} />
+          <stop offset="100%" stopColor={VALUE_HIGH_COLOR} />
+        </linearGradient>
+      </defs>
+      <rect
+        data-testid={testId}
+        x={x}
+        y={top}
+        width={VALUE_COLOR_BAR_WIDTH}
+        height={bottom - top}
+        fill={`url(#${gradientId})`}
+      />
+      <text x={captionX} y={top + 6} fontSize={10} fill={captionColor}>
+        High
+      </text>
+      <text x={captionX} y={bottom + 4} fontSize={10} fill={captionColor}>
+        Low
+      </text>
+      <text
+        x={titleX}
+        y={titleY}
+        fontSize={10}
+        fill={captionColor}
+        textAnchor="middle"
+        transform={`rotate(90 ${titleX} ${titleY})`}
+      >
+        {title}
+      </text>
+    </g>
   )
 }
 

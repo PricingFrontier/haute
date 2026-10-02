@@ -2797,6 +2797,36 @@ class FitEvidencePayload(BaseModel):
     device: str | None = Field(default=None, min_length=1)
 
 
+class TrainShapBeeswarmFeature(BaseModel):
+    """One feature's beeswarm row: each plotted row's SHAP value, feature value and rank."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    #: Link-scale SHAP values, one per plotted row.
+    shap_values: list[float]
+    #: Each row's feature value: a number for a numeric feature, the level for a
+    #: categorical one, null when missing.
+    values: list[float | str | None]
+    #: Each value's rank among the plotted rows, 0 (lowest) to 1 (highest); null for a
+    #: categorical feature, a missing value, or a feature with one distinct value.
+    value_ranks: list[Annotated[float, Field(ge=0, le=1)] | None]
+
+    @model_validator(mode="after")
+    def _validate_rows(self) -> TrainShapBeeswarmFeature:
+        if not len(self.shap_values) == len(self.values) == len(self.value_ranks):
+            raise ValueError("shap_values, values and value_ranks need one item per plotted row")
+        if self.kind == "categorical":
+            if any(value is not None and not isinstance(value, str) for value in self.values):
+                raise ValueError("a categorical feature's values must be levels (text) or null")
+            if any(rank is not None for rank in self.value_ranks):
+                raise ValueError("a categorical feature's value ranks must be null")
+        elif any(isinstance(value, str) for value in self.values):
+            raise ValueError("a numeric feature's values must be numbers or null")
+        return self
+
+
 class TrainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2821,6 +2851,7 @@ class TrainResponse(BaseModel):
     validation_loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
+    shap_beeswarm: list[TrainShapBeeswarmFeature] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = Field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = Field(default_factory=list)

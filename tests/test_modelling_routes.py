@@ -415,10 +415,7 @@ def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> d
 @pytest.fixture(autouse=True)
 def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """Endpoint tests assert job state, metrics, and warnings, not optional charts."""
-    monkeypatch.setattr(
-        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
     monkeypatch.setattr(
         "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
         lambda *a, **kw: [],

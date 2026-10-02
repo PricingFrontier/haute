@@ -112,10 +112,7 @@ def _job(data: str | pl.DataFrame, tmp_path: Path, **overrides: object) -> Train
 
 def _silence_optional_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """Skip SHAP / loss-importance / PDP so full runs stay fast."""
-    monkeypatch.setattr(
-        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
     monkeypatch.setattr(
         "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
         lambda *a, **kw: [],

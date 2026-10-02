@@ -48,6 +48,27 @@
       "mean_abs_shap": 0.4
     }
   ],
+  "shap_beeswarm": [
+    {
+      "feature": "x",
+      "kind": "numeric",
+      "shap_values": [
+        0.42,
+        -0.18,
+        0.05
+      ],
+      "values": [
+        3.5,
+        1.0,
+        null
+      ],
+      "value_ranks": [
+        1.0,
+        0.0,
+        null
+      ]
+    }
+  ],
   "feature_importance_loss": [
     {
       "feature": "x",

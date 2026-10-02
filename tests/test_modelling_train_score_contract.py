@@ -204,10 +204,7 @@ class TestMLflowSignatureLogged:
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
         monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
-        monkeypatch.setattr(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            lambda *a, **kw: [],
-        )
+        monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
             lambda *a, **kw: [],
@@ -521,7 +518,7 @@ def test_pdp_ranking_preserves_native_prediction_order(
             for index, feature in enumerate(display_order)
         ],
     )
-    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *args, **kwargs: [])
+    monkeypatch.delattr(CatBoostAlgorithm, "shap_values")
     monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *args, **kwargs: [])
     monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
     result = TrainingJob(
@@ -597,7 +594,7 @@ class TestDiagnosticsFailLoudlySplit:
         # Patch the *method* used by _compute_metrics.
         with (
             patch(
-                "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
+                "haute.modelling._algorithms.CatBoostAlgorithm.shap_values",
                 side_effect=_exploding_shap,
             ),
             patch(
@@ -638,7 +635,6 @@ class TestDiagnosticsFailLoudlySplit:
         # Force compute_pdp to blow up.  It is imported inside
         # ``_compute_metrics`` so we patch the source module.
         with (
-            patch("haute.modelling._algorithms.CatBoostAlgorithm.shap_summary", return_value=[]),
             patch(
                 "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
                 return_value=[],
