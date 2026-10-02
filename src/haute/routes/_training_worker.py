@@ -250,8 +250,16 @@ def _append_live_loss_row(
     limit = _max_train_loss_history()
     if len(history) <= limit:
         return history, truncated
+    keys = {key for entry in history for key in entry if key != "iteration"}
+    required = 2 + 2 * len(keys)
+    if limit < required:
+        raise RuntimeError(
+            f"HAUTE_TRAIN_LOSS_HISTORY_LIMIT is {limit}, but a live loss history needs at "
+            f"least {required} rows: its first and newest rows and the lowest and highest "
+            f"row of each of its {len(keys)} values."
+        )
     kept = {0, len(history) - 1}
-    for key in {key for entry in history for key in entry if key != "iteration"}:
+    for key in keys:
         values = {index: entry[key] for index, entry in enumerate(history) if key in entry}
         kept.add(min(values, key=values.__getitem__))
         kept.add(max(values, key=values.__getitem__))

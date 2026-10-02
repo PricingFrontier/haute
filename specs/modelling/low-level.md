@@ -132,7 +132,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   the rows holding each value's lowest and highest so far, and the first row to reach
   each of the even buckets the rest of the limit splits the fit's rounds into, so the
   rows span every round so far and keep the fit's extremes
-  (`train_loss_history_truncated` records a dropped row). Iteration events update only
+  (`train_loss_history_truncated` records a dropped row); a limit too small to hold the
+  first, newest and extreme rows fails with an error naming the setting. Iteration events update only
   the round readout and the history; the job's progress fraction and message come from
   its progress events. The live chart finds its `train_` and `eval_` keys as the Loss
   tab does.

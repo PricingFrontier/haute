@@ -972,6 +972,24 @@ def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
     assert truncated is True
 
 
+def test_live_loss_history_refuses_a_limit_too_small_for_its_extremes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import _training_worker
+
+    # Two values need six rows: first, newest, and each value's lowest and highest.
+    monkeypatch.setenv("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "5")
+    history: list[dict[str, float]] = []
+    truncated = False
+    for n in range(1, 6):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n, "eval_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
+    with pytest.raises(RuntimeError, match="needs at least 6 rows"):
+        _training_worker._append_live_loss_row(
+            history, truncated, {"iteration": 6.0, "train_rmse": 0.1, "eval_rmse": 0.1}, 10
+        )
+
+
 def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
     from haute.routes import _train_service
 
